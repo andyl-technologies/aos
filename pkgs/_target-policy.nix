@@ -91,7 +91,11 @@ in rec {
       names;
   };
 
-  releaseDerivations = system: packages: names: let
+  releaseDerivations = {
+    system,
+    packages,
+    names,
+  }: let
     eligibleNames = publicationEligibleNames system names;
     outputStorePath = package: output:
       if output == "module"
@@ -109,8 +113,7 @@ in rec {
         publishedOutputs =
           (if selectedOutput == "out"
           then package.outputs or ["out"]
-          else [selectedOutput])
-          ++ (if package ? module then ["module"] else []);
+          else [selectedOutput]);
         normalizeSource = source: let
           sourcePath = toString source;
           storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
@@ -145,13 +148,14 @@ in rec {
               builtins.unsafeDiscardStringContext (toString (normalizeSource source))
           )
           (declaredSources
-            ++ (if package ? module then [package.module.drvPath] else []));
+            ++ (if package ? module then [package.module] else []));
         contract =
           if !(package ? contract)
           then null
           else {
             document = {
               derivation = builtins.unsafeDiscardStringContext package.contract.document.drvPath;
+              output = package.contract.document.outputName or "out";
               store_path = builtins.unsafeDiscardStringContext (toString package.contract.document);
             };
             selectors =
@@ -198,7 +202,7 @@ in rec {
           };
         derivation = builtins.unsafeDiscardStringContext package.drvPath;
         outputs =
-          map (output:
+          (map (output:
             {
             # A public alias of one non-default derivation output is itself a
             # single-output package root. Normalize that selected root to `out`
@@ -207,14 +211,24 @@ in rec {
               if selectedOutput == "out"
               then output
               else "out";
+            derivation = builtins.unsafeDiscardStringContext package.drvPath;
+            output = output;
             store_path = builtins.unsafeDiscardStringContext (toString (
               outputStorePath package output
             ));
             }
-            // (if output == "module"
-            then {derivation = builtins.unsafeDiscardStringContext package.module.drvPath;}
-            else {}))
-          publishedOutputs;
+            )
+          publishedOutputs)
+          ++ (if package ? module
+          then [
+            {
+              name = "module";
+              derivation = null;
+              output = null;
+              store_path = builtins.unsafeDiscardStringContext (toString package.module);
+            }
+          ]
+          else []);
       }
     ) eligibleNames;
   };

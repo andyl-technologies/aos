@@ -1,0 +1,10 @@
+--- a/agen5/test/error.test
++++ b/agen5/test/error.test
+@@ -47,6 +47,7 @@ strip_variable_msgs() {
+ 	/erasing the .* environment variable/d
+ 	/Failing Guile command:/q
+ 	/^Aborte.*core dumped/q
++	/^qemu: uncaught target signal 6 (Aborted) - core dumped$/d
+ 	p'
+ 
+   rm -f core core.*

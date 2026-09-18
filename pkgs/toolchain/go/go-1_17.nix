@@ -27,7 +27,7 @@ in
       };
       pname = "go-1_17";
       nativeGo = buildPackages.go-1_17;
-      description = "Go 1.17 bootstrap — Darwin-hosted toolchain built with native Go 1.17";
+      description = "Go 1.17 bootstrap toolchain";
     }
   else if stdenv.isCross
   then
@@ -41,7 +41,7 @@ in
       };
       pname = "go-1_17";
       nativeGo = buildPackages.go-1_17;
-      description = "Go 1.17 bootstrap — cross-built Linux-hosted toolchain";
+      description = "Go 1.17 bootstrap toolchain";
     }
   else
     mkDerivation {
@@ -145,7 +145,7 @@ in
       ];
 
       meta = {
-        description = "Go 1.17 bootstrap — built with Go 1.4";
+        description = "Go 1.17 bootstrap toolchain";
         homepage = "https://go.dev";
         license = "BSD-3-Clause";
       };

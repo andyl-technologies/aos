@@ -2227,9 +2227,12 @@ fn load_host_selection_in(
     );
     std::fs::write(&staged_entry, &expression)
         .with_context(|| format!("writing {}", staged_entry.display()))?;
-    let mut evaluator =
-        stock::pure_eval_command_in(eval_store, Some(cmd.store_view.read_root.as_path()))
-            .context("resolving the AOS stock evaluator for host package selection")?;
+    let mut evaluator = stock::pure_eval_command_in(
+        eval_store,
+        Some(cmd.store_view.read_root.as_path()),
+        &cmd.eval_root,
+    )
+    .context("resolving the AOS stock evaluator for host package selection")?;
     evaluator.arg("-");
     let output = stock::output_with_expression(&mut evaluator, &expression)
         .context("spawning restricted host package-selection evaluation")?;

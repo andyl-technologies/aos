@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  stdenv,
   bash,
   coreutils,
   cryptsetup,
@@ -73,14 +74,17 @@ mkDerivation {
   src = null;
 
   buildDeps = [];
-  runtimeDeps = [
-    coreutils
-    cryptsetup
-    e2fsprogs
-    jq
-    systemd
-    util-linux
-  ];
+  runtimeDeps =
+    [
+      coreutils
+      cryptsetup
+      e2fsprogs
+      jq
+      systemd
+      util-linux
+    ]
+    # The installed script needs the target shell after reference scrubbing.
+    ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash];
   propagatedDeps = [];
 
   phases = [

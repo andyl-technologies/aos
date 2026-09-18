@@ -130,12 +130,18 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --disable-nls
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Bison embeds this executable path for runtime parser generation.
+            # The native build dependency is scrubbed from the installed binary.
+            export M4=${m4}/bin/m4
+          ''
+          + ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --disable-nls
+          '';
       }
       {
         name = "build";

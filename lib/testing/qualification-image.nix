@@ -9,6 +9,8 @@
   packageChecks,
   assessmentRoot ? "/etc/aos-release/qualification-assessments",
   stagingHubUrl ? "https://aos.staging.andyl.org",
+  scenarioSource ? ./qualification-image.py,
+  scenarioModules ? {},
 }: let
   platform = pkgs.stdenv.hostPlatform.system;
   isX86 = platform == "x86_64-linux";
@@ -47,13 +49,27 @@
   scenario = pkgs.writeTextFile {
     name = "${name}-scenario.py";
     destination = "/share/aos-release/qualification-image.py";
-    text = builtins.readFile ./qualification-image.py;
+    text = builtins.readFile scenarioSource;
     checkPhase = ''
       PYTHONPYCACHEPREFIX=$TMPDIR/qualification-image-pycache \
         ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
         $out/share/aos-release/qualification-image.py
     '';
   };
+  modules = lib.mapAttrsToList (moduleName: source:
+    assert builtins.match "[A-Za-z_][A-Za-z0-9_]*" moduleName != null;
+      pkgs.writeTextFile {
+        name = "${name}-${moduleName}.py";
+        destination = "/share/aos-release/${moduleName}.py";
+        text = builtins.readFile source;
+        checkPhase = ''
+          PYTHONPYCACHEPREFIX=$TMPDIR/qualification-module-pycache \
+            ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
+            $out/share/aos-release/${moduleName}.py
+        '';
+      })
+  scenarioModules;
+  modulePath = lib.concatStringsSep ":" (map (module: "${module}/share/aos-release") modules);
 in
   assert identity != "";
   assert isX86 || isAarch64;
@@ -66,6 +82,7 @@ in
       export HOME=$PWD/home
       export TMPDIR=$PWD/tmp
       export LC_ALL=C
+      export PYTHONPATH=${lib.escapeShellArg modulePath}
       export AOS_QUALIFICATION_PLATFORM=${lib.escapeShellArg platform}
       export AOS_QUALIFICATION_IDENTITY=${lib.escapeShellArg identity}
       export AOS_QUALIFICATION_CHECKS=${lib.escapeShellArg (builtins.toJSON checks)}
@@ -77,7 +94,7 @@ in
       export AOS_QUALIFICATION_FIRMWARE_CODE=${lib.escapeShellArg firmwareCode}
       export AOS_QUALIFICATION_FIRMWARE_VARS=${lib.escapeShellArg firmwareVars}
       export AOS_QUALIFICATION_SWTPM=${lib.escapeShellArg "${pkgs.swtpm}/bin/swtpm"}
-      export AOS_QUALIFICATION_SGDISK=${lib.escapeShellArg "${pkgs.gptfdisk}/bin/sgdisk"}
+      export AOS_QUALIFICATION_SGDISK=${lib.escapeShellArg "${pkgs.gptfdisk}/sbin/sgdisk"}
       export AOS_QUALIFICATION_MKE2FS=${lib.escapeShellArg "${pkgs.e2fsprogs}/sbin/mke2fs"}
       export AOS_QUALIFICATION_ZSTD=${lib.escapeShellArg "${pkgs.zstd}/bin/zstd"}
       export AOS_QUALIFICATION_SSH=${lib.escapeShellArg "${pkgs.openssh}/bin/ssh"}

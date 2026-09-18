@@ -66,6 +66,10 @@ in
         SRC="$TMPDIR/xz-5.2.5"
         cd "$SRC"
         chmod -R u+w .
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
         find . -name configure -exec chmod +x {} + 2>/dev/null || true
         find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
         chmod +x install-sh missing mkinstalldirs build-aux/install-sh 2>/dev/null || true
@@ -115,15 +119,15 @@ in
 
         # CC wrapper: appends NSS libs at link time, bypassing libtool reordering
         mkdir -p "$TMPDIR/ccwrap"
-        cp ${builtins.toFile "cc-wrapper" ''
-          #!/bin/sh
-          compile=
-          for arg; do case "$arg" in -c|-E|-S) compile=1 ;; esac; done
-          if [ -z "$compile" ]; then
-            exec REAL_GCC -isystem GLIBC_INCLUDE "$@" SYNC_OBJ -B GLIBC_LIB -L GLIBC_LIB -static
-          fi
-          exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
-        ''} "$TMPDIR/ccwrap/gcc"
+        cat > "$TMPDIR/ccwrap/gcc" <<'AOS_TOOL_WRAPPER'
+        #!${prev.bash}/bin/bash
+        compile=
+        for arg; do case "$arg" in -c|-E|-S) compile=1 ;; esac; done
+        if [ -z "$compile" ]; then
+          exec REAL_GCC -isystem GLIBC_INCLUDE "$@" SYNC_OBJ -B GLIBC_LIB -L GLIBC_LIB -static
+        fi
+        exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
+        AOS_TOOL_WRAPPER
         ${prev.sed}/bin/sed -i \
           -e "s|REAL_GCC|${prev.gcc}/bin/gcc|g" \
           -e "s|SYNC_OBJ|$TMPDIR/sync_builtins.o|g" \
@@ -183,8 +187,8 @@ in
           --build=${hostPlatform.config} --host=${hostPlatform.config} \
           --disable-nls --disable-shared --enable-static \
           --disable-threads
-        make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
-        make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+        make SHELL="${prev.bash}/bin/bash" install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
 
         test -x "$out/bin/xz"
         for script in xzdiff xzgrep xzless xzmore; do

@@ -70,6 +70,28 @@ pub async fn unpublish(
         bail!("package '{package}' not found in registry");
     }
 
+    if crate::dry_run::active() {
+        let scope = match (version, platform) {
+            (None, None) => format!("all of package '{package}'"),
+            (Some(version), None) => format!("{package} {version} (every platform)"),
+            (Some(version), Some(platform)) => format!("{package} {version} ({platform})"),
+            (None, Some(platform)) => format!("{package} ({platform}, every version)"),
+        };
+        printer.info(&format!(
+            "Would unpublish {scope} from registry '{registry_name}'"
+        ));
+        printer.kv(
+            if version.is_none() && platform.is_none() {
+                "Would remove"
+            } else {
+                "Would rewrite"
+            },
+            &toml_path.display().to_string(),
+        );
+        printer.info("Dry run: nothing was removed or committed.");
+        return Ok(());
+    }
+
     let mut package_file_removed = false;
     let mut status = "updated";
     if version.is_none() && platform.is_none() {

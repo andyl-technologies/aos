@@ -23,6 +23,8 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
+from qualification_k3s_bindings import bind_k3s_fleet
+
 
 ROOT = pathlib.Path.cwd()
 REQUEST = ROOT / "request.json"
@@ -40,6 +42,7 @@ NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
 ZSTD = os.environ["AOS_QUALIFICATION_ZSTD"]
 UNAME = os.environ["AOS_QUALIFICATION_UNAME"]
 BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
+BOUND_K3S_TOPOLOGY = os.environ.get("AOS_QUALIFICATION_BOUND_K3S_TOPOLOGY")
 
 PACKAGE_CASE = re.compile(
     r"^package-function/(?P<package>[A-Za-z0-9_.+@-]+)/"
@@ -434,7 +437,12 @@ class PackageScenario:
         artifact_ids = decision["artifact"]["artifact_ids"]
         self.package_artifact_ids = list(artifact_ids)
         expected_subjects = list(artifact_ids)
-        if BOUND_IMAGE_VARIANT is not None:
+        if BOUND_K3S_TOPOLOGY is not None:
+            bindings = bind_k3s_fleet(
+                payload, PLATFORM, self.package, BOUND_IMAGE_VARIANT, BOUND_K3S_TOPOLOGY
+            )
+            expected_subjects = bindings.subjects
+        elif BOUND_IMAGE_VARIANT is not None:
             image = one(
                 [
                     entry
@@ -465,9 +473,10 @@ class PackageScenario:
                 or artifact.get("output") is None
             ):
                 raise RuntimeError("package subject lacks its exact Nix output identity")
-            if artifact["output"] in self.outputs:
+            output_name = artifact_id.rsplit("/", 1)[-1]
+            if output_name in self.outputs:
                 raise RuntimeError("package case repeats a named Nix output")
-            self.outputs[artifact["output"]] = artifact["store_path"]
+            self.outputs[output_name] = artifact["store_path"]
         if "out" not in self.outputs:
             raise RuntimeError("package case has no primary out output")
 
@@ -837,6 +846,7 @@ class PackageScenario:
             "AOS_QUALIFICATION_CC": os.environ["AOS_QUALIFICATION_CC"],
             "AOS_QUALIFICATION_CXX": os.environ["AOS_QUALIFICATION_CXX"],
             "AOS_QUALIFICATION_PYTHON": os.environ["AOS_QUALIFICATION_PYTHON"],
+            "AOS_QUALIFICATION_NIX_STORE": os.environ["AOS_QUALIFICATION_NIX_STORE"],
         }
         pathlib.Path(environment["HOME"]).mkdir()
         pathlib.Path(environment["TMPDIR"]).mkdir()

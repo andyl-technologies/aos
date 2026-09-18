@@ -6,7 +6,9 @@ and may be rebuilt from scratch. It supports `edge`, `candidate`, and `stable`;
 these classify software maturity, not pipeline provenance. The default is `edge`.
 Its signing material remains separate from `andyl/main`.
 
-`andyl/testing` does not use an HSM. The intended key management for
+`andyl/testing` does not use an HSM. Its release signer is the
+[file-backed adapter](canonical-releases.md#file-backed-signer-for-registries-without-an-hsm)
+reading operator-held key files. The intended key management for
 `andyl/main` is documented in [Registry key management](registry-key-management.md).
 
 The [public key inventory](registry-testing-public-keys.json) records separate
@@ -134,7 +136,7 @@ aos hub registry create \
   --name testing \
   --visibility public \
   --trust-key "$ANDYL_TESTING_TRUST_KEY" \
-  --if-version absent \
+  --if-version "" \
   --idempotency-key create-andyl-testing-v1 \
   --plan
 ```
@@ -159,10 +161,45 @@ production access profile, deployment identity, plan, and idempotency key. The
 topology row and `aos release bootstrap` publication are separate: create and
 inspect the row first, then install the independently approved empty base.
 
+## Prepare the image signing authorities
+
+The `aos-testing` variant is a canonical release image: `aos.image` emits only
+`system.build.unsignedImageAssembly` and every signature is applied later by
+`aos release finalize-image` through the registry's signer adapter. Four public
+trust inputs are therefore committed, and their private halves are prepared once
+and held in operator custody with the registry and TUF keys.
+
+| Custody file | Public half in the repository | Signer key id |
+| --- | --- | --- |
+| `image/db.key` + `image/db.crt` | `systems/andyl-testing-authorities/db.crt` | `andyl-testing-secure-boot-db-v1` |
+| `image/modsign.key` + `image/modsign.crt` | `systems/andyl-testing-authorities/modsign.crt` | `andyl-testing-kernel-module-v1` |
+| `image/pcr.key` | `systems/andyl-testing-authorities/pcr.pem` | `andyl-testing-pcr-policy-v1` |
+| `image/PK.key`, `image/KEK.key` | `systems/andyl-testing-authorities/enrollment/*.auth` | offline only |
+| `provenance/andyl-testing-provenance-v1` | registry roster trust line | `andyl-testing-provenance-v1` |
+
+Secure Boot db, kernel module signing, and PCR policy are three separate trust
+domains and must stay three separate keys; the profile asserts that their signer
+roles are distinct. The Platform and Key Exchange keys sign only the enrollment
+blobs and never participate in a release, so they stay offline after generation.
+
+Regenerating the `.auth` blobs from the same certificates reproduces identical
+bytes: both the owner GUID and the signing timestamp are fixed. Do not mint a
+different key under an already-published identity — that is a trust-root epoch
+reset, not a key rotation.
+
+The file-backed adapter reads all of these from one configuration; see the
+file-backed signer section of
+[`canonical-releases.md`](canonical-releases.md). Confirm the adapter resolves
+every role before planning a release:
+
+```sh
+aos-release-signer show
+```
+
 ## Publish the first or a later edge release
 
 The prepared first-release profile uses
-`2026.9.0-dev.20260904.1`. For every later edge release, update
+`2026.9.0-dev.20260917.1`. For every later edge release, update
 `aos.system.version` in the testing profile to the next calendar SemVer
 `YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
 building. That value is the disk version and the OCI signed release identity;
@@ -170,10 +207,39 @@ the `aos` package version remains separate provenance.
 
 Before freezing the epoch-one public `.1` plan, create and retain the
 [non-public qualification predecessor](canonical-releases.md#create-a-first-qualification-predecessor)
-at `2026.9.0-dev.20260904.0`. Its protected source revision carries the `.0`
+at `2026.9.0-dev.20260917.0`. Its protected source revision carries the `.0`
 testing profile and uses the reserved snapshot release id and source tag. After
 offline verification, advance the profile to `.1` in a later reviewed protected
-source revision. Do not upload the `.0` snapshot or use its isolated registry
+source revision.
+
+A plan request freezes four policy digests. Only
+`public_evidence_policy_digest` is checked against anything: planning recomputes
+it from the Nix qualification contract and refuses a request that disagrees.
+The other three are operator inputs, digested from whatever bytes the file
+holds, so a document that lives outside the repository makes its digest
+unreproducible for anyone auditing the release.
+
+Both public documents are therefore committed, and a release names them by
+path:
+
+| Digest | Document |
+| --- | --- |
+| `source.contributor_authorization_digest` | [`release-contributor-authorization.json`](release-contributor-authorization.json) |
+| `retention.policy_digest` | [`release-retention-policy.md`](release-retention-policy.md) |
+
+`restricted_operator_policy_digest` is the deliberate exception. It commits to
+the content of a restricted document without publishing it, so that document
+stays in operator custody and its digest is an attestation rather than a
+reproducible derivation.
+
+Plan the snapshot while the `.0` revision is still the head of `master`.
+Planning derives its source identity from the checked-out commit and refuses
+one that is merely an ancestor: `aos release plan` requires `HEAD` to equal the
+protected branch head for every class except `emergency`, and accepts no
+protected branch other than `master`. Merging the `.0` and `.1` revisions
+together therefore leaves no revision from which the snapshot can be planned,
+and recovering means putting `.0` back at the head of `master` before trying
+again. Land `.0`, plan and build the snapshot, and only then land `.1`. Do not upload the `.0` snapshot or use its isolated registry
 commit as the public registry base. The `.1` request names the snapshot's
 verified release id and manifest digest while retaining the approved empty Hub
 base commit and generation.

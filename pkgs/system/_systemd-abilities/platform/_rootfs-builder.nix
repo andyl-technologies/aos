@@ -136,11 +136,20 @@
     rootPaths = allClosures;
   };
 
-  # Pair each closure with a numeric label for exportReferencesGraph.
+  # Identify the active system separately from additional stored closures.
+  # Upgrade candidates and test packages must not install their udev rules.
   # The populate phase greps `closure-*` and sorts -u for unique paths.
   closureGraph =
     lib.concatLists
-    (lib.imap (i: p: ["closure-${toString i}" p]) allClosures);
+    (lib.imap (i: p: [
+        (
+          if p == toString toplevel
+          then "closure-active-system"
+          else "closure-${toString i}"
+        )
+        p
+      ])
+      allClosures);
 
   # Symlink-farm script fragment — one block per package. Ordering
   # matters (earlier wins); callers list higher-priority packages first.
@@ -310,6 +319,27 @@ in
                 fi
               done < store-paths
               echo ""
+
+              # Merge active-system udev rules into the conventional
+              # vendor directory. The Nix store keeps each package isolated,
+              # but udev does not discover rule directories through PATH.
+              # In particular, device-mapper's rules publish /dev/mapper/*
+              # nodes to systemd after dm-verity and dm-crypt activation.
+              mkdir -p rootfs/usr/lib/udev/rules.d
+              grep '^/nix/store/' closure-active-system | sort -u > active-system-paths
+              while IFS= read -r rule_root; do
+                rules_dir="$rule_root/lib/udev/rules.d"
+                [ -d "$rules_dir" ] || continue
+                for rule in "$rules_dir"/*.rules; do
+                  [ -e "$rule" ] || continue
+                  name=$(basename "$rule")
+                  if [ -e "rootfs/usr/lib/udev/rules.d/$name" ]; then
+                    echo "rootfs-builder: duplicate udev rule $name" >&2
+                    exit 1
+                  fi
+                  ln -s "$rule" "rootfs/usr/lib/udev/rules.d/$name"
+                done
+              done < active-system-paths
 
               # ── 3. Selected init and compat symlinks ────────────────────────
               ${managerInitScript}

@@ -108,6 +108,8 @@ in {
       ++ [
         "--without-bash-malloc"
         "bash_cv_func_sigsetjmp=present"
+        # glibc's allocating getcwd works across sandbox bind mounts.
+        "bash_cv_getcwd_malloc=yes"
       ];
     preConfigure = ''
       mkdir -p "$TMPDIR/fakebin"
@@ -135,10 +137,10 @@ in {
       #endif' execute_cmd.c
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     postInstall = ''
       test -x "$out/bin/bash" || { echo "FATAL: bash not installed"; exit 1; }
@@ -155,6 +157,8 @@ in {
     version = "8.30";
     url = "https://mirrors.kernel.org/gnu/coreutils/coreutils-8.30.tar.xz";
     hash = "0pp6vvpzw0v6s45yq58cszrh514a5v8jq32321apszw7rbffkslb";
+    # The filesystem table generator runs on the build host.
+    buildDeps = [prev.perl];
     makeInfo = "true";
     configureInSource = true;
     configureFlags = tripletNoNls;
@@ -168,11 +172,11 @@ in {
       touch .version .tarball-version man/*.1 man/*.x 2>/dev/null || true
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars} -k || true
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars} -k || true
       test -f src/ls || { echo "FATAL: coreutils binaries not built"; exit 1; }
     '';
     installScript = ''
-      make install-exec ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install-exec ${autotoolsVars}
     '';
     postInstall = ''
       for tool in cat chmod cp env false head ln ls mkdir mv printf rm rmdir sleep sort tail tr true wc; do
@@ -218,7 +222,7 @@ in {
       tripletNoNls
       ++ ["--disable-perl-regexp"];
     installScript = ''
-      make install-exec ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install-exec ${autotoolsVars}
     '';
     postInstall = ''
       test -x "$out/bin/grep" || { echo "FATAL: grep not installed"; exit 1; }
@@ -268,7 +272,7 @@ in {
     makeInfo = "true";
     configureFlags = tripletNoNls;
     installScript = ''
-      make install-exec ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install-exec ${autotoolsVars}
     '';
     postUnpack = ''
             if [ -f man/help2man ]; then

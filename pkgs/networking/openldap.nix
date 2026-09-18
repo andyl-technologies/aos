@@ -17,6 +17,7 @@
 }: let
   version = "2.7.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
 in
   mkDerivation {
     platformSupport = {
@@ -168,17 +169,25 @@ in
               -e '/^module_expsym_cmds=/s/$allow_undefined_flag/-Wl,-undefined,dynamic_lookup/' \
               libtool
           ''
-          else ''
-            ./configure \
-              $configureFlags \
-              --prefix=$out \
-              --enable-dynamic \
-              --enable-modules \
-              --enable-slapd \
-              --enable-overlays=mod \
-              --with-cyrus-sasl \
-              --with-tls=openssl
-          '';
+          else
+            lib.optionalString isLinuxCross ''
+              # glibc's memcmp is conforming, and NPTL select blocks only the
+              # calling thread. Neither target runtime probe can run during
+              # cross configure; avoid selecting legacy replacements.
+              export ac_cv_func_memcmp_working=yes
+              export ol_cv_pthread_select_yields=yes
+            ''
+            + ''
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --enable-dynamic \
+                --enable-modules \
+                --enable-slapd \
+                --enable-overlays=mod \
+                --with-cyrus-sasl \
+                --with-tls=openssl
+            '';
       }
       {
         name = "build";

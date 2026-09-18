@@ -38,6 +38,15 @@
   qualification ? null,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
+  buildTarget =
+    if isDarwinCross || isLinuxArmCross
+    then "images"
+    else "bootcycle-images";
+  jdkImage =
+    if isDarwinCross || isLinuxArmCross
+    then "build/*/images/jdk"
+    else "build/*/bootcycle-build/images/jdk";
   buildTools =
     if isDarwinCross
     then buildPackages
@@ -55,14 +64,37 @@
         file
         ;
     };
+
+  # Boot Java executes build-time generators; target compilers still build the JVM.
   bootJdk =
-    if isDarwinCross
+    if isDarwinCross || isLinuxArmCross
     then builtins.getAttr "openjdk-${toString (major - 1)}" buildPackages
     else prevJdk;
+
+  # A matching native JDK assembles images without an auxiliary host JVM build.
   buildJdk =
-    if isDarwinCross
+    if isDarwinCross || isLinuxArmCross
     then builtins.getAttr "openjdk-${toString major}" buildPackages
     else null;
+  linuxBuildJdkFlag =
+    if isLinuxArmCross
+    then " --with-build-jdk=${buildJdk}"
+    else "";
+
+  # jpackage embeds native launchers in the module image, beyond ELF scrubbing.
+  # Replace the full compiler prefix, including its hash, but retain assertions.
+  linuxJpackageCxxFlag =
+    if isLinuxArmCross && major >= 14
+    then " -ffile-prefix-map=${stdenv.gcc}=/aos-toolchain"
+    else "";
+  # JDK 16 and 17 omit the configured X include directory from several headless AWT
+  # compilation rules when cross compiling. Keep those rules on the target
+  # header set selected by configure.
+  linuxLegacyX11CFlag =
+    if isLinuxArmCross && major >= 16 && major <= 17
+    then " -I${xorg-stubs}/include"
+    else "";
+
   nativeMig =
     if isDarwinCross
     then
@@ -1163,7 +1195,7 @@ in
             # with pre-C23 native code whose empty parameter lists retain
             # their historical unspecified-argument meaning under C17.
             $CONFIG_SHELL configure \
-              --with-boot-jdk=${prevJdk} \
+              --with-boot-jdk=${bootJdk}${linuxBuildJdkFlag} \
               --enable-headless-only \
               --with-native-debug-symbols=none \
               --disable-warnings-as-errors \
@@ -1181,8 +1213,8 @@ in
               --with-version-build=${build} \
               --with-version-opt=aos \
               --with-version-pre= \
-              --with-extra-cflags="-std=gnu17 -Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
-              --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
+              --with-extra-cflags="-std=gnu17 -Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks${linuxLegacyX11CFlag}" \
+              --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks${linuxJpackageCxxFlag}" \
               --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
               --with-jobs=$NIX_BUILD_CORES \
               ${extraCfgStr}
@@ -1208,7 +1240,7 @@ in
             sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
           done
 
-          make images JOBS=$NIX_BUILD_CORES
+          make ${buildTarget} JOBS=$NIX_BUILD_CORES
         '';
       }
       {
@@ -1217,7 +1249,7 @@ in
           if isDarwinCross
           then ''
             mkdir -p $out
-            cp -a build/*/images/jdk/* $out/
+            cp -a ${jdkImage}/* $out/
             test -x "$out/bin/java"
             test -x "$out/bin/javac"
             test -f "$out/lib/server/libjvm.dylib"
@@ -1226,7 +1258,7 @@ in
           ''
           else ''
             mkdir -p $out
-            cp -a build/*/images/jdk/* $out/
+            cp -a ${jdkImage}/* $out/
 
             # Patch ELF binaries with the correct dynamic linker and rpath
             INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")

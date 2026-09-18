@@ -9,18 +9,25 @@
   libc=${glibc}
   libc_dev=${glibc.dev}
   runtime="$llvm/lib/aarch64-unknown-linux-gnu"
+  gcc_sysroot=${gcc}/aarch64-unknown-linux-gnu/sys-root
   gcc_dir=$(echo ${gcc}/lib/gcc/aarch64-unknown-linux-gnu/*)
 
-  # Raw Clang needs the same AOS include and library locations as ccWrapper.
+  # Raw Clang needs the hosted GCC sysroot plus the same AOS include and
+  # library locations as ccWrapper. Retain libc before Clang's runtime archives:
+  # their target helpers introduce libc symbols after the default libc scan.
   # glibc's compatibility archives (including libpthread.a) live in static.
   clang_flags=(
-    --sysroot=/
+    "--sysroot=$gcc_sysroot"
     "--gcc-install-dir=$gcc_dir"
+    -rtlib=compiler-rt
+    -unwindlib=libunwind
     -idirafter "$libc_dev/include"
     "-B$libc/lib"
     "-L$libc/lib"
     "-L$libc_dev/lib"
     "-L${glibc.static}/lib"
+    -Wl,--push-state,--no-as-needed,-lc,--pop-state
+    "-Wl,-rpath-link,$gcc_sysroot/../lib64"
     "-Wl,-dynamic-linker=$libc/lib/ld-linux-aarch64.so.1"
     "-Wl,-rpath,$libc/lib"
   )
@@ -65,7 +72,7 @@
   SOURCE
 
   "$llvm/bin/clang++" "''${clang_flags[@]}" \
-    -std=c++17 -stdlib=libc++ -rtlib=compiler-rt -unwindlib=libunwind \
+    -std=c++17 -stdlib=libc++ \
     -isystem "$llvm/include/c++/v1" \
     -L"$runtime" -Wl,-rpath,"$runtime" -pthread runtime.cc -o llvm-runtime
   test "$(./llvm-runtime)" = "LLVM runtime result: 42"

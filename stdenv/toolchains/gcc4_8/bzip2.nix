@@ -31,7 +31,11 @@ in
         cd bzip2-1.0.6
         chmod -R u+w .
 
-        make \
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
+        make SHELL="${prev.bash}/bin/bash" \
           CC="${gcc}/bin/gcc" \
           CFLAGS="-O2 -isystem ${glibc}/include -D_FILE_OFFSET_BITS=64" \
           LDFLAGS="-L${glibc}/lib -static" \

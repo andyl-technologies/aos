@@ -77,7 +77,8 @@ in
     buildDeps = [cmake ninja];
     runtimeDeps = [];
     propagatedDeps = [];
-    cmakeFlags = "-DMINIMAL=ON";
+    # The upstream project predates CMake 4's minimum policy version.
+    cmakeFlags = "-DMINIMAL=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5";
 
     postInstall = ''
       test -x "$out/bin/tini"

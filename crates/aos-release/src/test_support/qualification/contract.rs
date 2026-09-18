@@ -203,31 +203,51 @@ fn image_target(id: &str, platform: &str, accelerator: &str, machine: &str) -> V
 }
 
 fn container_target(id: &str, platform: &str) -> Value {
+    let host = json!({
+        "platform": "x86_64-linux",
+        "backend": {"kind": "physical", "board": null, "chipset": null},
+        "cpu": empty_cpu_scope(),
+    });
+    let container = json!({
+        "platform": platform,
+        "backend": {
+            "kind": "container",
+            "runtime": "containerd-runc",
+            "version": null,
+            "cgroup": null,
+            "network": null,
+            "volume": null,
+        },
+        "cpu": empty_cpu_scope(),
+    });
+    let layers = if platform == "aarch64-linux" {
+        vec![
+            host,
+            json!({
+                "platform": platform,
+                "backend": {
+                    "kind": "qemu",
+                    "accelerator": "tcg",
+                    "machine": "virt",
+                    "machine_version": null,
+                    "version": null,
+                    "cpu_model": null,
+                },
+                "cpu": empty_cpu_scope(),
+            }),
+            container,
+        ]
+    } else {
+        vec![host, container]
+    };
+
     json!({
         "id": id,
         "platform": platform,
         "kind": "container",
         "required": true,
         "environment": {
-            "layers": [
-                {
-                    "platform": platform,
-                    "backend": {"kind": "physical", "board": null, "chipset": null},
-                    "cpu": empty_cpu_scope(),
-                },
-                {
-                    "platform": platform,
-                    "backend": {
-                        "kind": "container",
-                        "runtime": "containerd-runc",
-                        "version": null,
-                        "cgroup": null,
-                        "network": null,
-                        "volume": null,
-                    },
-                    "cpu": empty_cpu_scope(),
-                },
-            ],
+            "layers": layers,
             "boot": "linux-container",
             "security": {
                 "secure_boot": false,

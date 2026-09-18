@@ -1,0 +1,40 @@
+--- a/src/openssl.c
++++ b/src/openssl.c
+@@ -226,7 +226,7 @@
+       break;
+ 
+     case secure_protocol_sslv3:
+-#ifndef OPENSSL_NO_SSL3_METHOD
++#if !defined OPENSSL_NO_SSL3_METHOD && OPENSSL_VERSION_NUMBER < 0x40000000L
+       meth = SSLv3_client_method ();
+ #endif
+       break;
+@@ -927,7 +927,7 @@
+   return *n == '\0';
+ }
+ 
+-static char *_get_rfc2253_formatted (X509_NAME *name)
++static char *_get_rfc2253_formatted (const X509_NAME *name)
+ {
+   int len;
+   char *out = NULL;
+@@ -1191,7 +1191,7 @@
+   if (alt_name_checked == false)
+     {
+       /* Test commomName */
+-      X509_NAME *xname = X509_get_subject_name(cert);
++      const X509_NAME *xname = X509_get_subject_name(cert);
+       common_name[0] = '\0';
+       X509_NAME_get_text_by_NID (xname, NID_commonName, common_name,
+                                  sizeof (common_name));
+@@ -1214,8 +1214,8 @@
+            * */
+ 
+           int i = -1, j;
+-          X509_NAME_ENTRY *xentry;
+-          ASN1_STRING *sdata;
++          const X509_NAME_ENTRY *xentry;
++          const ASN1_STRING *sdata;
+ 
+           if (xname) {
+             for (;;)

@@ -38,9 +38,9 @@ in
 
         # GCC wrapper that always passes -static — libtool strips -static
         # from CC args, but the wrapper ensures it's always present.
-        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
+        printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
           > "$TMPDIR/fakebin/gcc"
-        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
+        printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
           > "$TMPDIR/fakebin/cc"
         chmod +x "$TMPDIR/fakebin/gcc" "$TMPDIR/fakebin/cc"
 
@@ -52,6 +52,10 @@ in
         cp -r ${src} binutils-2.17
         cd binutils-2.17
         chmod -R u+w .
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
 
         # Touch pre-built .info files and pre-generated parser/lexer .c/.h files
         # so make doesn't try to regenerate them (we don't have makeinfo/flex/bison).
@@ -73,7 +77,7 @@ in
         cd "$TMPDIR/build"
 
         MAKEINFO="${texinfo}/bin/makeinfo" \
-        "$TMPDIR/binutils-2.17/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/binutils-2.17/configure" \
           --prefix="$out" \
           --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
           --disable-shared --disable-nls \
@@ -81,8 +85,8 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES" MAKEINFO="${texinfo}/bin/makeinfo"
-        make install MAKEINFO="${texinfo}/bin/makeinfo"
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" MAKEINFO="${texinfo}/bin/makeinfo"
+        make SHELL="${prev.bash}/bin/bash" install MAKEINFO="${texinfo}/bin/makeinfo"
 
         echo "binutils 2.17 installed to $out"
       ''

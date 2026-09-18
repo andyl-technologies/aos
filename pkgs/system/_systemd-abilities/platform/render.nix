@@ -684,8 +684,8 @@ in rec {
     placeholders = builtins.map (key: "#aos-jobscript:${key}#") jobScriptKeys;
 
     textEntries = filterAttrs (_path: entry: entry.kind == "text") entries;
-    linkEntries = filterAttrs (_path: entry: entry.kind == "symlink") entries;
-    unsupportedEntries = filterAttrs (_path: entry: !elem entry.kind ["text" "symlink"]) entries;
+    linkEntries = filterAttrs (_path: entry: elem entry.kind ["symlink" "store-symlink"]) entries;
+    unsupportedEntries = filterAttrs (_path: entry: !elem entry.kind ["text" "symlink" "store-symlink"]) entries;
     unitDrvs = mapAttrs (path: entry:
       makeUnit path {
         enable = true;

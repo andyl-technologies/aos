@@ -25,8 +25,15 @@
   # publication transaction. Keep this test fixture's larger storage and
   # direct-download contracts scoped away from the production server image.
   aos.image.budgets = {
-    maxFirmwarePartitionMiB = 512;
-    maxDownloadMiB = 768;
+    maxBootExecutableMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 192
+      else 160;
+    maxFirmwarePartitionMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 768
+      else 544;
+    maxDownloadMiB = 800;
   };
   aos.image.allowTestArtifacts = true;
 

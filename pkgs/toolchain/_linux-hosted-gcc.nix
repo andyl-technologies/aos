@@ -96,6 +96,9 @@ in
           (cd ${sources.isl} && tar cf - .) | (cd isl && tar xf -)
           chmod -R u+w gmp mpfr mpc isl
 
+          AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} .
+
           # GCC's option generators rely on unset array elements behaving as
           # empty strings, while gawk 5.4 can preserve a numeric zero type.
           patch -p1 < ${../../stdenv/linux-cross/gcc-16-gawk-5.4.patch}
@@ -185,7 +188,7 @@ in
           CXXFLAGS_FOR_BUILD="${nativeCompileFlags}" \
           GCC_FOR_TARGET=${crossCompiler}/bin/${target}-gcc \
           GXX_FOR_TARGET=${crossCompiler}/bin/${target}-g++ \
-          "$TMPDIR/gcc-${version}/configure" \
+          "$CONFIG_SHELL" "$TMPDIR/gcc-${version}/configure" \
             --prefix="$out" \
             --build=${build} \
             --host=${target} \
@@ -214,7 +217,7 @@ in
 
           find . -name configargs.h -type f \
             -exec sed -i "s|$TMPDIR|.|g" {} +
-          make -j"$NIX_BUILD_CORES" all-gcc \
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc \
             ${targetMakeFlags}
         '';
       }
@@ -225,7 +228,7 @@ in
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
           unset ac_cv_build ac_cv_host ac_cv_target
 
-          make install-gcc \
+          make SHELL="$CONFIG_SHELL" install-gcc \
             ${targetMakeFlags}
 
           # Runtime libraries were already built from the same source by the
@@ -315,6 +318,10 @@ in
               exit 1
             fi
           done
+
+          # Source helpers become target programs after installation.
+          AOS_RUNTIME_SHELL="${bash}/bin/bash" AOS_BUILD_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} "$out"
         '';
       }
     ];

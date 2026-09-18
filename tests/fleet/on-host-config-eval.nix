@@ -103,6 +103,7 @@ in {
 
       JQ = "${pkgs.jq}/bin/jq"
       APM = "${pkgs.aos.apm}/bin/apm"
+      PACKAGE_RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
       CMP = "${pkgs.diffutils}/bin/cmp"
       GREP = "${pkgs.grep}/bin/grep"
 
@@ -250,7 +251,7 @@ in {
       assert "multi-user.target" in eval_properties["Before"].split(), eval_properties
       assert eval_properties["MemoryMax"] == str(2 * 1024 * 1024 * 1024), eval_properties
       assert eval_properties["MemoryHigh"] == str(1536 * 1024 * 1024), eval_properties
-      assert eval_properties["TimeoutStartUSec"] == "2min", eval_properties
+      assert eval_properties["TimeoutStartUSec"] == "5min", eval_properties
       assert eval_properties["TasksMax"] == "4096", eval_properties
       assert eval_properties["ProtectSystem"] == "strict", eval_properties
       assert eval_properties["ProtectHome"] == "yes", eval_properties
@@ -351,15 +352,15 @@ in {
           facts=$({JQ} -er '.inputs.instance_facts.store_path' /run/aos/manifest.json)
           rm -rf /run/runtime-config-eval-one /run/runtime-config-eval-two
           mkdir -p /run/runtime-config-eval-one /run/runtime-config-eval-two
-          {APM} __eval \
-            --host-nix "$host_nix" \
+          {PACKAGE_RUNTIME} __eval \
+            --host-nix /run/aos-metadata/host.nix \
             --base-lib "$base_lib" \
             --facts "$facts" \
             --module-abi "$module_abi" \
             --out /run/runtime-config-eval-one/manifest.json \
             --eval-root /run/runtime-config-eval-one
-          {APM} __eval \
-            --host-nix "$host_nix" \
+          {PACKAGE_RUNTIME} __eval \
+            --host-nix /run/aos-metadata/host.nix \
             --base-lib "$base_lib" \
             --facts "$facts" \
             --module-abi "$module_abi" \

@@ -296,7 +296,9 @@
           nix_ldflags="$NIX_LDFLAGS"
         fi
 
-        exec ${cc}/bin/gcc $extra_cflags $hardening_cflags "$@" $hardening_post $extra_ldflags $hardening_ldflags $nix_ldflags
+        # The compiler may still name the binutils used to construct it. Select
+        # this environment's assembler and linker for every driver invocation.
+        exec ${cc}/bin/gcc -B${binutils_}/bin/ $extra_cflags $hardening_cflags "$@" $hardening_post $extra_ldflags $hardening_ldflags $nix_ldflags
         WRAPPER_EOF
         ${chmod} +x $out/bin/gcc
 
@@ -334,7 +336,7 @@
           nix_ldflags="$NIX_LDFLAGS"
         fi
 
-        exec ${cc}/bin/g++ $extra_cflags $hardening_cflags "$@" $hardening_post $extra_ldflags $hardening_ldflags $nix_ldflags
+        exec ${cc}/bin/g++ -B${binutils_}/bin/ $extra_cflags $hardening_cflags "$@" $hardening_post $extra_ldflags $hardening_ldflags $nix_ldflags
         WRAPPER_EOF
         ${chmod} +x $out/bin/g++
 

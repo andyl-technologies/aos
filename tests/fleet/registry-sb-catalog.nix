@@ -87,6 +87,10 @@
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
         (_: {bundle = true;});
+      # The static server binds this directory before publication fills it.
+      environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
+        d /var/lib/sysreg-cache 0755 root root - -
+      '';
     }
   ];
 in {
@@ -96,11 +100,23 @@ in {
   # refused upgrade still downloads) + two further validation passes over the
   # cached closure + three catalog re-syncs. Budgeted like install-from-image.
   timeout = 5400;
+  # Guest initialization and metadata reconciliation precede the scenario.
+  bootTimeout = 600;
+  systemReadyTimeout = 300;
 
   machines = {
     registry = {
       system = serverWithRegistry;
+      extraClosures = [pkgs.aos.apr];
       packages = ["aos-registry-server" "test-static-cache-server"];
+      metadata."host.nix" = ''
+        {
+          aos.networking.hostName = "registry";
+          aos.apm.desiredPackages = ["aos-registry-server" "test-static-cache-server"];
+          "aos-registry-server".enable = true;
+          "test-static-cache-server".enable = true;
+        }
+      '';
       # Match a release workstation: host-built publication inputs enter over
       # a read-only 9p store mount and are registered in-guest below.
       hostStoreMount = true;
@@ -221,7 +237,7 @@ in {
                 touch "$store_path"
                 ${pkgs.util-linux}/bin/mount --bind "$source_path" "$store_path"
               else
-                printf 'unsupported store object: %s\n' "$source_path" >&2
+                printf 'unsupported store object: %s\\n' "$source_path" >&2
                 exit 1
               fi
             fi
@@ -233,9 +249,25 @@ in {
           ${pkgs.nix}/bin/nix-store --check-validity '${sbImageInfo}'
           ${pkgs.util-linux}/bin/findmnt -rn -t 9p -o OPTIONS \
             /run/aos-host-store | grep -qw ro
-          ! touch '${sbImageDisk}'/host-store-write-must-fail
+          # Open the image itself for writing without truncating or changing bytes.
+          ! ${pkgs.coreutils}/bin/dd if=/dev/null of='${sbImageDisk}' count=0 conv=notrunc
 
-          ${pkgs.aos.apr}/bin/apr create sysreg
+          # Privileged sysroot provenance names a signer in the registry roster.
+          ${pkgs.aos.apr}/bin/apr keys generate release --registry sysreg \\
+            > /tmp/sysreg-keygen.out 2>&1
+          PUBLIC_KEY=$(${pkgs.gawk}/bin/awk '/Public key:/ {print $NF; exit}' /tmp/sysreg-keygen.out)
+          SIGNING_KEY=$HOME/.config/apm/keys/sysreg-release.key
+          ${pkgs.aos.apr}/bin/apr create sysreg \\
+            --trust-key "$PUBLIC_KEY" --trust-key-id release --key "$SIGNING_KEY"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/sysreg.toml" <<EOF
+          [registry]
+          name = "sysreg"
+          url = "file://$HOME/.local/share/apm/registries/sysreg"
+
+          [registry.signing_keys]
+          release = "$SIGNING_KEY"
+          EOF
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
           mkdir -p "$REG_DIR/sb-certs"
           cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
@@ -263,6 +295,7 @@ in {
             --image-uki "$SB_UKI" \\
             --no-ca \\
             --registry sysreg \\
+            --key-id release \\
             --no-commit > "$HOME/publish.json"; then
             cat "$HOME/publish.json" >&2
             exit 1
@@ -288,7 +321,11 @@ in {
           git -C "$REG_DIR" commit -m 'release: secure-boot catalog fixture'
           git -C "$REG_DIR" tag v0.0.1
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
-          chown -R aos-gitd:aos-gitd "$ORIGIN"
+          # Resolve ownership through the daemon's idmapped state directory.
+          git_pid=$(systemctl show -p MainPID --value aos-registry-server-gitd.service)
+          test "$git_pid" -gt 0
+          git_owner=$(id -u aos-gitd):$(id -g aos-gitd)
+          ${pkgs.util-linux}/bin/nsenter --target "$git_pid" --mount --root --wd=/ ${pkgs.coreutils}/bin/chown -R "$git_owner" "$ORIGIN"
           echo "$DEFAULT_BRANCH" > /tmp/sysreg-branch
       """), timeout=1200)
 
@@ -367,24 +404,17 @@ in {
       )
 
       # ════ Consumer: stage the registry in SYSTEM scope ════════════════
-      target.succeed(textwrap.dedent(f"""
-          set -eu
-          mkdir -p /etc/apm/registries.d /var/lib/apm/registries \\
-            /var/lib/apm/remote /var/lib/apm/cache
-          cat > /etc/apm/registries.d/sysreg.toml <<'EOF'
-          [registry]
-          name = "sysreg"
-          url = "git://registry:9418/sysreg"
-          priority = 500
-          enabled = true
-
-          [registry.signing]
-          required = false
-          EOF
-          ${pkgs.git}/bin/git clone git://registry:9418/sysreg \\
-            /var/lib/apm/registries/sysreg
-          ln -sfn /var/lib/apm/registries/sysreg /var/lib/apm/remote/sysreg
-      """), timeout=120)
+      target.succeed(
+          "HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm registry --system add "
+          "--no-verify git://registry:9418/sysreg --name sysreg --priority 500 "
+          f"--branch {branch}",
+          timeout=120,
+      )
+      target.succeed(
+          "HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm update --system "
+          "--registry sysreg 2>&1",
+          timeout=120,
+      )
 
       # Helper: (re)publish a catalog state on the registry and fast-forward
       # the target's system clone to it. The package/closure is published
@@ -406,13 +436,16 @@ in {
           script += f'git -C "$REG_DIR" tag {tag}\n'
           script += f'git -C "$REG_DIR" push origin {branch} --tags\n'
           script += "ORIGIN=/var/lib/aos-registry-server/registries/sysreg\n"
-          script += "chown -R aos-gitd:aos-gitd \"$ORIGIN\"\n"
+          # Match the daemon's UID mapping after each new registry commit.
+          script += 'git_pid=$(systemctl show -p MainPID --value aos-registry-server-gitd.service)\n'
+          script += 'test "$git_pid" -gt 0\n'
+          script += 'git_owner=$(id -u aos-gitd):$(id -g aos-gitd)\n'
+          script += '${pkgs.util-linux}/bin/nsenter --target "$git_pid" --mount --root --wd=/ ${pkgs.coreutils}/bin/chown -R "$git_owner" "$ORIGIN"\n'
           registry.succeed(textwrap.dedent(script), timeout=300)
-          # Fast-forward the consumer's clone to the new catalog commit.
+          # Synchronize the new catalog through the same system-registry path.
           target.succeed(
-              "${pkgs.git}/bin/git -C /var/lib/apm/registries/sysreg fetch origin "
-              f"&& ${pkgs.git}/bin/git -C /var/lib/apm/registries/sysreg reset "
-              f"--hard origin/{branch}",
+              "HOME=/tmp USER=root ${pkgs.aos.apm}/bin/apm update --system "
+              "--registry sysreg 2>&1",
               timeout=120,
           )
 
@@ -423,7 +456,7 @@ in {
       # vouch for the image's real signer. The upgrade downloads, then
       # refuses before creating a generation.
       out = target.fail(
-          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
+          "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
           "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=1800,
       )
@@ -465,7 +498,7 @@ in {
           }
       ], rotated_catalog
       out = target.fail(
-          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
+          "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
           "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=600,
       )
@@ -487,7 +520,7 @@ in {
           f"{APR} sb-certs add aos-db --cert-sha256 {signer} --registry sysreg --no-commit",
       )
       out = target.fail(
-          "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
+          "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
           "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
           timeout=600,
       )

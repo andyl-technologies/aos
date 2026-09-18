@@ -116,6 +116,7 @@ impl StockNixEvaluator {
             self.store_view
                 .as_ref()
                 .map(|view| view.read_root.as_path()),
+            &self.root,
         )
     }
 
@@ -326,29 +327,41 @@ fn command_from_path(name: &str) -> Result<Command> {
 pub(super) fn pure_eval_command_in(
     store: Option<&OsStr>,
     read_root: Option<&Path>,
+    eval_root: &Path,
 ) -> Result<Command> {
     let mut command = command_from_path("nix-instantiate")?;
     let nix_cache_home = std::env::var_os("XDG_CACHE_HOME");
-    configure_pure_eval_command(&mut command, nix_cache_home.as_deref(), store, read_root);
+    configure_pure_eval_command(
+        &mut command,
+        eval_root,
+        nix_cache_home.as_deref(),
+        store,
+        read_root,
+    )?;
     Ok(command)
 }
 
 fn configure_pure_eval_command(
     command: &mut Command,
+    eval_root: &Path,
     nix_cache_home: Option<&OsStr>,
     store: Option<&OsStr>,
     read_root: Option<&Path>,
-) {
+) -> Result<()> {
+    let nix_cache_home = match nix_cache_home.filter(|path| !path.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => std::path::absolute(eval_root.join("nix-cache"))
+            .context("resolving the evaluator's Nix cache directory")?,
+    };
+
     command.env_clear();
     if let Some(store) = store {
         command.arg("--store").arg(store);
     }
-    // Nix creates client cache state even for pure evaluation. Preserve only
-    // the service-owned cache directory across the environment scrub so the
-    // hardened read-only home does not make evaluation fail before it starts.
-    if let Some(nix_cache_home) = nix_cache_home {
-        command.env("XDG_CACHE_HOME", nix_cache_home);
-    }
+    // Nix creates client cache state even for pure evaluation. The service
+    // supplies a persistent cache; interactive evaluation instead uses its
+    // writable staging root and never falls back to the image's read-only home.
+    command.env("XDG_CACHE_HOME", nix_cache_home);
     let allowed_uris = read_root.map_or_else(
         || "path:/nix/store/".to_string(),
         |root| format!("path:/nix/store/ path:{}/", root.display()),
@@ -359,6 +372,8 @@ fn configure_pure_eval_command(
         .args(["--option", "restrict-eval", "true"])
         .args(["--option", "allow-import-from-derivation", "false"])
         .args(["--option", "allowed-uris", &allowed_uris]);
+
+    Ok(())
 }
 
 /// Infer a [`KillReason`] when the subprocess was terminated by a signal.
@@ -439,32 +454,22 @@ where
             } else {
                 nix_path_str(path)
             };
+            // Runtime outputs are authenticated names, not evaluator inputs.
+            // Keeping them as data prevents configuration evaluation from
+            // realizing binary closures before the fixed point converges.
             let self_output = member
                 .outputs
                 .self_output
                 .as_deref()
-                .map(|output| {
-                    if locked {
-                        lock_input(Path::new(output), None)
-                    } else {
-                        Ok(nix_string(output))
-                    }
-                })
-                .transpose()?
-                .unwrap_or_else(|| "null".to_string());
+                .map_or_else(|| "null".to_string(), nix_string);
             let dependency_outputs = member
                 .outputs
                 .dependencies
                 .iter()
                 .map(|(package, output)| {
-                    let output = if locked {
-                        lock_input(Path::new(output), None)?
-                    } else {
-                        nix_string(output)
-                    };
-                    Ok(format!("{} = {output};", nix_string(package)))
+                    format!("{} = {};", nix_string(package), nix_string(output))
                 })
-                .collect::<Result<Vec<_>>>()?
+                .collect::<Vec<_>>()
                 .join(" ");
             let package_version = member.version.as_deref().with_context(|| {
                 format!(
@@ -1043,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn locked_entry_admits_self_and_dependency_outputs() {
+    fn locked_entry_preserves_runtime_outputs_as_strings() {
         let mut web = member(
             "web",
             Some("/nix/store/00000000000000000000000000000000-web-config"),
@@ -1063,14 +1068,12 @@ mod tests {
 
         assert_eq!(
             admitted,
-            [
-                PathBuf::from("/nix/store/00000000000000000000000000000000-web-config"),
-                PathBuf::from("/nix/store/hash-web-runtime"),
-                PathBuf::from("/nix/store/hash-openssl-runtime"),
-            ]
+            [PathBuf::from(
+                "/nix/store/00000000000000000000000000000000-web-config"
+            )]
         );
-        assert!(text.contains("self = (admit /nix/store/hash-web-runtime)"));
-        assert!(text.contains("\"openssl\" = (admit /nix/store/hash-openssl-runtime);"));
+        assert!(text.contains("self = \"/nix/store/hash-web-runtime\""));
+        assert!(text.contains("\"openssl\" = \"/nix/store/hash-openssl-runtime\";"));
         assert!(!text.contains("authorization"), "{text}");
     }
 
@@ -1174,10 +1177,12 @@ mod tests {
         command.env("AOS_AMBIENT_SENTINEL", "must-not-survive");
         configure_pure_eval_command(
             &mut command,
+            Path::new("/run/aos-eval"),
             Some(OsStr::new("/var/cache/aos/nix-eval")),
             None,
             None,
-        );
+        )
+        .unwrap();
 
         let args = command
             .get_args()

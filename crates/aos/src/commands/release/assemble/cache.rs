@@ -159,7 +159,8 @@ pub(super) fn assemble(
         let attributes = ArtifactAttributes {
             media_type: "application/x-nix-nar".to_owned(),
             compression: compression(&entry.info.compression)?,
-            nar_hash: None,
+            store_path: Some(source.store_path.clone()),
+            nar_hash: Some(nar_hash(&entry.info.nar_hash)?),
             relationships: cache_relationships(entry, &entries, &canonical_ids)?,
             expected: Some(nar_identity(entry)?),
             ..ArtifactAttributes::plain("application/x-nix-nar")

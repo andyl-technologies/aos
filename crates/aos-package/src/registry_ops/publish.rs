@@ -275,11 +275,34 @@ pub(crate) async fn publish_to_registry_directory(
             &platform,
         )?);
     }
+
+    let letter = first_letter(pkg_name);
+    let pkg_dir = dir.join("packages").join(&letter);
+
+    // A preview has completed all derivation and validation work. Stop before
+    // taking the publication lock or writing any registry state.
+    if crate::dry_run::active() {
+        let toml_path = pkg_dir.join(format!("{pkg_name}.toml"));
+        printer.info(&format!(
+            "Would publish {pkg_name} {pkg_version} ({platform}) to registry '{}'",
+            dir.display()
+        ));
+        printer.kv("Would write", &toml_path.display().to_string());
+        printer.kv(
+            "Entry",
+            if toml_path.exists() {
+                "added to the existing package TOML"
+            } else {
+                "a new package TOML"
+            },
+        );
+        printer.info("Dry run: nothing was written, signed, or committed.");
+        return Ok(());
+    }
+
     let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(&dir)?;
 
     printer.step(2, 4, "Writing package TOML...");
-    let letter = first_letter(pkg_name);
-    let pkg_dir = dir.join("packages").join(&letter);
     std::fs::create_dir_all(&pkg_dir)?;
 
     let toml_path = pkg_dir.join(format!("{pkg_name}.toml"));

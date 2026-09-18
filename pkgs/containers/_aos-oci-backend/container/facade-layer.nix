@@ -71,7 +71,10 @@ in
       pkgs.gzip
       pkgs.jq
       pkgs.tar
+      referenceGraph
     ];
+    # These roots are inspected as payload, never executed by the builder.
+    inherit packageRoots;
 
     outputChecks.out = {};
     inherit facadeSpec;

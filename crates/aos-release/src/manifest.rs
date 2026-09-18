@@ -32,6 +32,9 @@ pub const MANIFEST_ENVELOPE_V1: &str = "aos.release.manifest-envelope/v1";
 pub struct FinalArtifactSet {
     /// Stable logical ids resolved by the artifact inventory.
     pub artifact_ids: Vec<String>,
+    /// Resolved native package contract inputs retained from the frozen plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_contract: Option<crate::plan::PlannedPackageContract>,
 }
 
 /// Final package result across all four platforms.
@@ -398,6 +401,9 @@ fn validate_final_cells(
                     artifact: planned_set,
                 },
             ) => {
+                if final_set.package_contract != planned_set.package_contract {
+                    bail!("final package contract inputs differ from the planned cell");
+                }
                 let planned_ids: Vec<_> = planned_set
                     .artifacts
                     .iter()

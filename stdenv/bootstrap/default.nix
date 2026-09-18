@@ -366,35 +366,28 @@
     }
     // stage5-tools
   );
-in {
-  # ── Public exports (consumed by toolchains/gcc3_4) ──────────────────
-  inherit gcc; # GCC 2.95.3 (self-hosted, linked against glibc)
-  inherit glibc; # glibc 2.2.5 (GCC-compiled)
-  inherit binutils; # binutils 2.20.1a (GCC-compiled)
-  inherit bash; # bash 2.05b (GCC-compiled)
-  inherit gnumake; # GNU Make 3.79.1 (GCC-compiled)
-  inherit sed; # GNU sed 4.0.9 (GCC-compiled)
-  inherit grep; # GNU grep 2.4 (GCC-compiled)
-  inherit patch; # GNU patch 2.5.9 (GCC-compiled)
-  inherit coreutils; # GNU Coreutils 5.0 (GCC-compiled)
-  inherit gawk; # GNU awk 3.0.6 (GCC-compiled)
-  inherit findutils; # GNU findutils 4.1 (GCC-compiled)
-  inherit diffutils; # GNU diffutils 2.7 (GCC-compiled)
-  inherit tar; # GNU tar 1.12 (GCC-compiled)
-  inherit gzip; # GNU gzip 1.2.4 (GCC-compiled)
+in
+  (import ./exports.nix {
+    inherit buildPlatform;
+    tools = {
+      inherit gcc glibc binutils linuxHeaders bash gnumake sed grep patch coreutils gawk findutils diffutils tar gzip;
+    };
+  })
+  // {
+    # ── Public exports (consumed by toolchains/gcc3_4) ──────────────────
 
-  meta = {
-    description = "AOS source bootstrap: hex0 → posix-tools → Mes → TCC → GCC 2.95.3";
-    build = {
-      os = "linux";
-      cpu = [
-        "x86_64"
-        "i686"
-      ];
+    meta = {
+      description = "AOS source bootstrap: hex0 → posix-tools → Mes → TCC → GCC 2.95.3";
+      build = {
+        os = "linux";
+        cpu = [
+          "x86_64"
+          "i686"
+        ];
+      };
+      execute = {
+        os = "linux";
+        cpu = "i686";
+      };
     };
-    execute = {
-      os = "linux";
-      cpu = "i686";
-    };
-  };
-}
+  }

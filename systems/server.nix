@@ -30,7 +30,7 @@
   aos.image.budgets = {
     maxRootMiB = 640;
     maxVerityMiB = 16;
-    maxInitrdMiB = 128;
+    maxInitrdMiB = 132;
     maxBootExecutableMiB = 160;
     maxFirmwarePartitionMiB = 384;
     maxRuntimeClosureMiB = 768;

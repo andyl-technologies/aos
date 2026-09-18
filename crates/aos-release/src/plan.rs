@@ -77,6 +77,31 @@ pub struct PlatformCell<T> {
 pub struct PlannedArtifactSet {
     /// Exact planned artifacts the final manifest must resolve.
     pub artifacts: Vec<PlannedArtifact>,
+    /// Resolved package contract inputs, when this package exposes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_contract: Option<PlannedPackageContract>,
+}
+
+/// Resolved publication inputs for one native package contract.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedPackageContract {
+    /// Planned artifact containing the context-free contract document.
+    pub document_artifact: String,
+    /// Exact evaluated package-output bindings used to resolve the document.
+    pub selectors: Vec<PackageOutputBinding>,
+}
+
+/// One symbolic package output and its evaluated immutable store path.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageOutputBinding {
+    /// Package name, or `self` for the package owning the contract.
+    pub package: String,
+    /// Logical package output selected by the contract.
+    pub output: String,
+    /// Exact evaluated store path for that output.
+    pub store_path: String,
 }
 
 /// Frozen Nix identity for one planned output or non-Nix final artifact.
@@ -102,21 +127,17 @@ impl PlannedArtifactSet {
         }
         for artifact in &self.artifacts {
             require_identifier(&artifact.id, "planned artifact id")?;
-            let nix_fields = [
-                artifact.derivation.is_some(),
-                artifact.output.is_some(),
-                artifact.store_path.is_some(),
-            ];
-            if nix_fields.iter().any(|present| *present)
-                && !nix_fields.iter().all(|present| *present)
-            {
-                bail!("planned Nix artifact identity must be all present or all absent");
+            if artifact.derivation.is_some() != artifact.output.is_some() {
+                bail!("planned derivation and output identities must be present together");
             }
-            if let (Some(derivation), Some(output), Some(store_path)) =
-                (&artifact.derivation, &artifact.output, &artifact.store_path)
-            {
+            if artifact.derivation.is_some() && artifact.store_path.is_none() {
+                bail!("planned derivation artifacts must have an evaluated store path");
+            }
+            if let (Some(derivation), Some(output)) = (&artifact.derivation, &artifact.output) {
                 require_store_path(derivation, true)?;
                 require_identifier(output, "planned output name")?;
+            }
+            if let Some(store_path) = &artifact.store_path {
                 require_store_path(store_path, false)?;
             }
             if artifact
@@ -128,6 +149,30 @@ impl PlannedArtifactSet {
             }
             for source in &artifact.source_store_paths {
                 require_store_path(source, false)?;
+            }
+        }
+
+        if let Some(contract) = &self.package_contract {
+            let document = self
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == contract.document_artifact)
+                .context("package contract document artifact is absent")?;
+            if document.derivation.is_none() || document.output.is_none() {
+                bail!("package contract document must be an independently built artifact");
+            }
+            if contract.selectors.windows(2).any(|pair| pair[0] >= pair[1]) {
+                bail!("package contract selectors must be unique and sorted");
+            }
+            for selector in &contract.selectors {
+                if selector.package != "self" {
+                    require_identifier(&selector.package, "contract selector package")?;
+                }
+                require_identifier(&selector.output, "contract selector output")?;
+                if selector.output == "contract" {
+                    bail!("package contracts cannot select another package contract");
+                }
+                require_store_path(&selector.store_path, false)?;
             }
         }
         require_unique_by(

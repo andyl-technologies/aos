@@ -17,9 +17,8 @@ use aos_provider_protocol::{TRANSACTION_BLOB_OUTPUT_TYPE, TransactionBlobOutput}
 use aos_storage_provisioning::{
     AuthorizedProvisioningInput, CanonicalProvisioningPlan, CanonicalProvisioningSource,
     ProvisioningIntent, ProvisioningMarkerObservation, ProvisioningMarkerState, ProvisioningPlan,
-    ProvisioningTrustMode, canonicalize_provisioning_plan,
-    validate_authorized_provisioning_input, validate_provisioning_intent,
-    validate_provisioning_marker_observation,
+    ProvisioningTrustMode, canonicalize_provisioning_plan, validate_authorized_provisioning_input,
+    validate_provisioning_intent, validate_provisioning_marker_observation,
 };
 use rand::RngCore as _;
 use serde::Deserialize;
@@ -216,8 +215,8 @@ fn evaluate_complete_initrd(
         None,
         store.as_deref(),
     )?;
-    let facts = fs::read(facts_json)
-        .with_context(|| format!("reading facts {}", facts_json.display()))?;
+    let facts =
+        fs::read(facts_json).with_context(|| format!("reading facts {}", facts_json.display()))?;
     let facts: aos_metadata::fetcher::Facts = serde_json::from_slice(&facts)
         .with_context(|| format!("parsing facts {}", facts_json.display()))?;
     let facts_module = aos_metadata::facts_render::render_host_facts_nix(&facts);
@@ -228,6 +227,7 @@ fn evaluate_complete_initrd(
     let mut command = super::stock::pure_eval_command_in(
         store.as_deref(),
         Some(store_view.read_root.as_path()),
+        host_nix.parent().unwrap_or_else(|| Path::new(".")),
     )?;
     command.arg("-");
     let output = super::stock::output_with_expression(&mut command, &expression)
@@ -421,8 +421,22 @@ fn generate_marker_uuid() -> String {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
     )
 }
 
@@ -440,7 +454,11 @@ mod tests {
         );
 
         assert!(expression.contains("evalCompleteInitrdConfig"));
-        for forbidden in ["evalProvisioningConfig", "evalHostSelection", "evalHostConfig"] {
+        for forbidden in [
+            "evalProvisioningConfig",
+            "evalHostSelection",
+            "evalHostConfig",
+        ] {
             assert!(!expression.contains(forbidden), "{forbidden}");
         }
     }

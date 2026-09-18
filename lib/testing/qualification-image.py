@@ -57,6 +57,16 @@ BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
 MAX_RECOVERY_INITRD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_RECOVERY_EXECUTABLE_BYTES = 128 * 1024 * 1024
 
+# Hosted AArch64 boots under TCG and can advance guest time several times more
+# slowly than wall time when image qualifications share the build host. Keep
+# native KVM deadlines tight while allowing the emulated guest to finish the
+# same boot and reboot sequence.
+# TCG can take nearly 30 minutes to reach stage 2 when qualifications share
+# the build host. Leave enough margin for activation and subsequent restarts.
+BOOT_READY_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 600
+REBOOT_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 720
+REBOOT_READY_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 420
+
 
 def canonical(value: Any) -> bytes:
     """Encodes the canonical JSON form used by release evidence."""
@@ -265,6 +275,7 @@ class VirtualMachine:
         ssh_key: pathlib.Path,
         counts: Counts,
         recovery_media: pathlib.Path | None = None,
+        extra_disks: list[dict[str, int]] | None = None,
     ) -> None:
         self.name = name
         self.root = ROOT / name
@@ -286,6 +297,7 @@ class VirtualMachine:
         self.host_config = host_config
         self.ssh_key = ssh_key
         self.recovery_media = recovery_media
+        self.extra_disks = []
         self.port = available_port()
         self.counts = counts
         self.qemu: subprocess.Popen[bytes] | None = None
@@ -298,10 +310,18 @@ class VirtualMachine:
         with self.disk.open("r+b") as output:
             output.truncate(32768 * 1024 * 1024)
         run([SGDISK, "-e", str(self.disk)])
+        for index, disk in enumerate(extra_disks or [], start=1):
+            path = self.root / f"extra-{index}.raw"
+            with path.open("wb") as output:
+                output.truncate(disk["sizeMiB"] * 1024 * 1024)
+            self.extra_disks.append(path)
         if PLATFORM == "x86_64-linux":
             shutil.copyfile(FIRMWARE_VARS, self.vars)
         else:
-            self.vars.write_text("{}", encoding="ascii")
+            self.vars.write_text(
+                json.dumps({"version": 2, "variables": []}) + "\n",
+                encoding="ascii",
+            )
 
     def _start_swtpm(self) -> None:
         if self.tpm_socket.exists():
@@ -369,6 +389,8 @@ class VirtualMachine:
             "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
             "-device", tpm_device,
         ]
+        for disk in self.extra_disks:
+            arguments += ["-drive", f"file={disk},format=raw,if=virtio"]
         if self.recovery_media is not None:
             arguments += [
                 "-drive", f"id=recovery,file={self.recovery_media},format=raw,if=none",
@@ -389,7 +411,7 @@ class VirtualMachine:
         self.serial = socket.socket(socket.AF_UNIX)
         self.serial.connect(str(self.serial_socket))
         threading.Thread(target=self._drain_serial, args=(self.serial,), daemon=True).start()
-        self.wait_for_ssh(600)
+        self.wait_for_ssh(BOOT_READY_TIMEOUT)
 
     def _drain_serial(self, serial: socket.socket) -> None:
         while True:
@@ -472,27 +494,37 @@ class VirtualMachine:
 
     def reboot(self) -> None:
         before = self.ssh("cat /proc/sys/kernel/random/boot_id").strip()
-        self.ssh("systemctl reboot", timeout=30, check=False)
-        deadline = time.monotonic() + 720
+        response = self.ssh("systemctl reboot", timeout=30, check=False)
+        deadline = time.monotonic() + REBOOT_TIMEOUT
         while time.monotonic() < deadline:
             try:
                 after = self.ssh(
                     "cat /proc/sys/kernel/random/boot_id",
                     timeout=15,
-                    check=False,
                 ).strip()
-                if after and after != before:
-                    self.wait_for_ssh(420)
-                    self.counts.reboot_cycles += 1
-                    return
-            except (subprocess.TimeoutExpired, OSError):
-                pass
+            except (subprocess.TimeoutExpired, OSError, RuntimeError):
+                # SSH commonly disconnects during a reboot. Its diagnostic
+                # output must never be accepted as a new guest boot identity.
+                time.sleep(2)
+                continue
+
+            if after and after != before:
+                self.wait_for_ssh(REBOOT_READY_TIMEOUT)
+                self.counts.reboot_cycles += 1
+                return
+
             time.sleep(2)
-        raise RuntimeError(f"timed out rebooting {self.name}")
+        raise RuntimeError(
+            f"timed out rebooting {self.name}\nreboot request output:\n{response}"
+        )
 
     def power_cycle(self) -> None:
-        self.ssh("systemctl poweroff", timeout=30, check=False)
-        self._wait_exit(180)
+        response = self.ssh("systemctl poweroff", timeout=30, check=False)
+        try:
+            self._wait_exit(180)
+        except RuntimeError as error:
+            raise RuntimeError(f"{error}\npoweroff request output:\n{response}") from error
+
         self.stop_processes()
         self.start()
         self.counts.cold_boot_cycles += 1
@@ -935,18 +967,19 @@ class Scenario:
             "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c) -eq 1"
         )
         machine.ssh("findmnt -n -o SOURCE /var | grep -Fx /dev/mapper/var")
+        # Mapper paths can be block nodes rather than symlinks. Resolve the
+        # mounted device through its unpadded kernel major/minor number.
         machine.ssh(
             "set -eu; "
-            "var_device=$(basename $(readlink -f /dev/mapper/var)); "
-            "grep -Eq '^CRYPT-LUKS2-' /sys/class/block/$var_device/dm/uuid"
+            "var_device=$(findmnt -n -r -o MAJ:MIN /var); "
+            "grep -Eq '^CRYPT-LUKS2-' /sys/dev/block/$var_device/dm/uuid"
         )
         machine.ssh("findmnt -n -o FSTYPE,OPTIONS / | grep -E '^erofs .*ro'")
         machine.ssh(
             "set -eu; "
             "grep -Eq '(^| )roothash=[0-9a-f]{64}($| )' /proc/cmdline; "
-            "root=$(findmnt -n -o SOURCE /); "
-            "block=$(basename $(readlink -f $root)); "
-            "grep -Eq '^CRYPT-VERITY|^verity-' /sys/class/block/$block/dm/uuid"
+            "root_device=$(findmnt -n -r -o MAJ:MIN /); "
+            "grep -Eq '^CRYPT-VERITY|^verity-' /sys/dev/block/$root_device/dm/uuid"
         )
         machine.ssh(
             "set -eu; "
@@ -1227,7 +1260,7 @@ http {
         )["current"]
         if not isinstance(generation_one, int) or generation_one < 1:
             raise RuntimeError("first configuration activation lacks a valid generation")
-        machine.ssh("test $(hostname) = qualification-one")
+        machine.ssh('test "$(cat /proc/sys/kernel/hostname)" = qualification-one')
         operator_uid = machine.ssh("id -u", user="qualification").strip()
         if operator_uid != "2000":
             raise RuntimeError("named qualification user could not authenticate over SSH")
@@ -1267,7 +1300,7 @@ http {
         machine.wait_for_ssh(180)
         machine.ssh("grep -Fx two /etc/qualification-generation")
         machine.ssh(
-            f"set -eu; test $(hostname) = qualification-two; "
+            f'set -eu; test "$(cat /proc/sys/kernel/hostname)" = qualification-two; '
             f"ip -4 -o address show dev {shlex.quote(interface)} "
             f"| grep -F ' {address} '; "
             f"ip -4 route show default dev {shlex.quote(interface)} "
@@ -1277,7 +1310,7 @@ http {
         machine.ssh(f"apm rollback --system --generation {generation_one}", timeout=600)
         machine.wait_for_ssh(180)
         machine.ssh("grep -Fx one /etc/qualification-generation")
-        machine.ssh("test $(hostname) = qualification-one")
+        machine.ssh('test "$(cat /proc/sys/kernel/hostname)" = qualification-one')
 
         machine.ssh(
             "set -eu; printf 'packages = []\\n' >/run/desired.toml; "

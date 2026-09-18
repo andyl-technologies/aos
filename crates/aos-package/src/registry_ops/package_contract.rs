@@ -414,7 +414,10 @@ mod tests {
                     derivation: "/nix/store/dddddddddddddddddddddddddddddddd-owner.drv".to_string(),
                     outputs: vec![DerivationOutput {
                         name: "out".to_string(),
-                        derivation: None,
+                        derivation: Some(
+                            "/nix/store/dddddddddddddddddddddddddddddddd-owner.drv".to_string(),
+                        ),
+                        output: Some("out".to_string()),
                         store_path: "/nix/store/11111111111111111111111111111111-owner".to_string(),
                     }],
                     contract: Some(DerivationPackageContract {
@@ -422,6 +425,7 @@ mod tests {
                             derivation:
                                 "/nix/store/cccccccccccccccccccccccccccccccc-owner-contract.drv"
                                     .to_string(),
+                            output: "out".to_string(),
                             store_path:
                                 "/nix/store/22222222222222222222222222222222-owner-contract"
                                     .to_string(),
@@ -445,14 +449,22 @@ mod tests {
                     outputs: vec![
                         DerivationOutput {
                             name: "extra".to_string(),
-                            derivation: None,
+                            derivation: Some(
+                                "/nix/store/ffffffffffffffffffffffffffffffff-provider.drv"
+                                    .to_string(),
+                            ),
+                            output: Some("extra".to_string()),
                             store_path:
                                 "/nix/store/33333333333333333333333333333333-provider-extra"
                                     .to_string(),
                         },
                         DerivationOutput {
                             name: "out".to_string(),
-                            derivation: None,
+                            derivation: Some(
+                                "/nix/store/ffffffffffffffffffffffffffffffff-provider.drv"
+                                    .to_string(),
+                            ),
+                            output: Some("out".to_string()),
                             store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider"
                                 .to_string(),
                         },

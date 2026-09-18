@@ -3,6 +3,7 @@
   lib,
   mkDerivation,
   fetchurl,
+  stdenv,
   gnumake,
   pkg-config,
   openssl,
@@ -149,20 +150,26 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --enable-shared \
-            --disable-static \
-            --with-openssl \
-            --with-zlib \
-            --with-zstd \
-            --with-bz2lib \
-            --without-xml2 \
-            --with-expat \
-            --with-lz4
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # The native xz unpacker also supplies pkg-config metadata. Prefer
+            # target compression libraries when configure resolves link flags.
+            export PKG_CONFIG_PATH=${openssl}/lib/pkgconfig:${zlib}/lib/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${expat}/lib/pkgconfig:${xz}/lib/pkgconfig:$PKG_CONFIG_PATH
+          ''
+          + ''
+            ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              --disable-static \
+              --with-openssl \
+              --with-zlib \
+              --with-zstd \
+              --with-bz2lib \
+              --without-xml2 \
+              --with-expat \
+              --with-lz4
+          '';
       }
       {
         name = "build";

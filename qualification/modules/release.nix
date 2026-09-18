@@ -62,11 +62,20 @@ in {
             then removeAttrs requirement ["matrix_spec"]
             else requirement)
           cfg.requirements);
-          package_rules = named "name" (builtins.mapAttrs (_: rule:
-            if rule.execution == null
-            then removeAttrs rule ["execution"]
-            else rule
-          ) cfg.packageRules);
+          package_rules = named "name" (builtins.mapAttrs (
+              _: rule:
+                if rule.execution == null
+                then removeAttrs rule ["execution"]
+                else
+                  rule
+                  // {
+                    execution =
+                      if rule.execution.topology == null
+                      then removeAttrs rule.execution ["topology"]
+                      else rule.execution;
+                  }
+            )
+            cfg.packageRules);
           claims = named "id" cfg.claims;
           support = {
             inherit (cfg.support) default trains;

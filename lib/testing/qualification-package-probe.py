@@ -247,7 +247,9 @@ def run_step(
         completed = subprocess.run(
             argv,
             cwd=root,
-            env=os.environ.copy(),
+            # Shell helpers trust PWD before resolving their working directory.
+            # Keep it consistent with cwd, including across emulated subprocesses.
+            env={**os.environ, "PWD": str(root)},
             input=stdin.encode(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

@@ -350,7 +350,15 @@ in
     system_variant = "server";
   };
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
-  assert builtins.all (target: builtins.length target.environment.layers == 2) contract.targets;
+  assert builtins.length contract.targets == 4;
+  assert builtins.all (target:
+    builtins.length target.environment.layers
+    == (
+      if target.id == "container-aarch64-linux"
+      then 3
+      else 2
+    ))
+  contract.targets;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
   assert executor.passthru.qualification.platform == "x86_64-linux";
   assert executor.passthru.qualification.caseScenarios == {};
@@ -369,8 +377,20 @@ in
     != null) (builtins.attrNames abilityRequirements);
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
-  assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios == ["package-function/aos-recovery/x86_64-linux"];
+  assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
+  == [
+    "package-function/aos-recovery/x86_64-linux"
+    "package-function/k3s-combined/x86_64-linux"
+    "package-function/k3s-control-plane/x86_64-linux"
+    "package-function/k3s-worker/x86_64-linux"
+    "package-function/k3s/x86_64-linux"
+  ];
   assert builtins.match ".*/aos-qualification-x86_64-linux-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/x86_64-linux" != null;
+  assert builtins.all (name:
+    builtins.match ".*/aos-qualification-x86_64-linux-${name}-fleet"
+    releaseExecutor.passthru.qualification.caseScenarios."package-function/${name}/x86_64-linux"
+    != null) ["k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"];
+  assert builtins.length contract.claims == 8;
   assert contract.support.default
   == {
     kind = "standard";

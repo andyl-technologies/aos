@@ -31,6 +31,10 @@ in
         cd binutils-2.41
         chmod -R u+w .
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
         # Touch pre-generated flex/bison/yacc files so they appear newer than sources
         find . -type f \( -name '*.l' -o -name '*.y' \) -exec touch {} + 2>/dev/null || true
         sleep 1
@@ -46,8 +50,8 @@ in
         # $out doesn't close over the prev tier, but this tier-internal build
         # still needs headers at build time.
         mkdir -p "$TMPDIR/ccwrap"
-        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
-        printf '#!/bin/sh\nexec ${gcc}/bin/g++ -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/g++"
+        printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
+        printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/g++ -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/g++"
         chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
         ln -sf gcc "$TMPDIR/ccwrap/cc"
         ln -sf g++ "$TMPDIR/ccwrap/c++"
@@ -58,7 +62,7 @@ in
         CC="$TMPDIR/ccwrap/gcc" CXX="$TMPDIR/ccwrap/g++" \
         CFLAGS="-O2" \
         CXXFLAGS="-O2" \
-        "$TMPDIR/binutils-2.41/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/binutils-2.41/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
           --disable-shared --disable-nls \
@@ -68,8 +72,8 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-        make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+        make SHELL="${prev.bash}/bin/bash" install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
 
         # Phase 7: scrub prev.glibc from installed binaries. Binutils was
         # built -static against prev.glibc, so no DT_NEEDED/RPATH linkage,

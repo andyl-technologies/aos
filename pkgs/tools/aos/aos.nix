@@ -21,6 +21,7 @@
   dbus,
   sbsigntools,
   systemd,
+  systemd-measure,
   mtools,
   nftables,
   qemu-img,
@@ -84,7 +85,9 @@
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
   aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
-  aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
+  aprRuntimeTools =
+    [bash nix openssl sbsigntools mtools qemu-img zstd]
+    ++ lib.optionals stdenv.hostPlatform.isLinux [systemd-measure];
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
@@ -101,6 +104,7 @@
   ];
   aosForbiddenRuntimeDeps =
     [sbsigntools mtools tpm2-tools which]
+    ++ lib.optionals stdenv.hostPlatform.isLinux [systemd-measure]
     ++ lib.optionals (!isDarwinCross) [systemd];
   aprForbiddenRuntimeDeps =
     [tpm2-tools which]
@@ -153,6 +157,7 @@
     "aos-registry-spa"
     "aos-registry-surface"
     "aos-release"
+    "aos-release-signer"
     "aos-remote"
     "aos-server"
     "aos-systemd"

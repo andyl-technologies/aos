@@ -74,7 +74,7 @@ the actual tested configurations and evidence separately for each release.
 | QEMU | x86_64 | KVM | A3 | `disk-x86_64-linux`: `q35`, persistent UEFI/TPM, virtio disk/NIC; record host and guest CPU identities |
 | QEMU | aarch64 | TCG | A3, functional contract | `disk-aarch64-linux`: `virt`, persistent UEFI/TPM, virtio disk/NIC; record emulated CPU model/features |
 | OCI container | x86_64 | containerd/runc, native host | A3 | `container-x86_64-linux`: persistent network workload and recorded host configuration |
-| OCI container | aarch64 | containerd/runc, native host | A3 | `container-aarch64-linux`: persistent network workload and recorded host configuration |
+| OCI container | aarch64 | containerd/runc inside a QEMU TCG `virt` guest on x86_64 Linux | A3, emulated functional contract | `container-aarch64-linux`: persistent network workload; record the physical host, guest and container layers |
 | QEMU | x86_64 / aarch64 | Other architecture/accelerator combinations | Set per additional claim | Separate machine/CPU/device configuration and evidence |
 | Physical hardware | x86_64 / aarch64 | Native | Set per claim | CPU SKU set, chipset/SoC, firmware, device/driver combinations |
 | Cloud VM | x86_64 / aarch64 | Provider virtualization | Set per claim | Provider/service, exact instance SKU, region and virtual device profile |
@@ -179,14 +179,24 @@ Scenario reports must show the counts and comparisons, not just a success flag.
 
 ### OCI-container acceptance
 
-Run these checks with AOS-built containerd/runc on both native Linux architectures.
-Record the runtime versions and host configuration in the environment inventory.
+Run these checks with AOS-built containerd/runc on native x86_64 Linux and
+inside a full-system QEMU TCG ARM64 Linux guest on x86_64 Linux.
+Use AOS-built QEMU and guest runtime tools;
+host binfmt user-mode emulation is outside this reference scope.
+
+Record the physical x86_64 host, QEMU `virt` guest and ARM64 container as three
+ordered layers for the ARM64 target, including the host and guest kernels,
+QEMU version/machine/CPU model, runtime versions and CPU identities. This
+qualifies the recorded emulated workload; it makes no native ARM64 hardware
+or performance claim. The same topology must cover staging and observation.
+Native ARM64 coverage requires its own explicit target and evidence.
+
 Existing fleet tests provide regression coverage; the same checks against the
 exact published artifacts are required before a public release can pass this gate.
 
 | Test | Pass condition |
 | --- | --- |
-| Pull and platform selection | A clean client anonymously pulls by the release's immutable digest; the signed index selects the correct architecture; selected manifest/config/layer digests match the release; no emulation is needed |
+| Pull and platform selection | A clean client anonymously pulls by the release's immutable digest; the signed index selects the correct architecture; selected manifest/config/layer digests match the release; execution matches the declared native or full-system TCG topology |
 | Documented launch | The published run command starts the declared workload with only its documented user, mounts, capabilities and privileges; readiness and HTTP/TLS checks pass; no undeclared privileged mode or host access is added to make the test pass |
 | Network | Published ports and container DNS work; restart/recreation does not leave stale connectivity; traffic reaches the intended container |
 | Lifecycle and state | Complete 10 stop/start/recreate cycles using a named volume; each graceful stop respects the documented timeout and exit behavior; numbered committed records and hashes survive removal/recreation; an abrupt kill preserves records already acknowledged as durable |
@@ -727,7 +737,7 @@ aos release qualification respond \
   --identity linux-x86-v1
 ```
 
-The Linux executors include a native program for each mandatory staging
+The x86_64 Linux executor includes a native program for its staging
 container claim. It reconstructs an OCI layout only from the anonymously
 downloaded objects, imports that layout into a private AOS-built containerd and
 runc instance, and runs ten bounded create, network, state, stop, and remove
@@ -736,7 +746,17 @@ and shutdown logs in the executor attempt. It records the host CPU, kernel,
 resources, container runtime, cgroup, network, and volume identities directly
 from the executing machine.
 
-Before running that program, place the reviewed compatibility assessment for
+The ARM64 container claim uses the report-import adapter. Provision the ARM64
+TCG guest on the recorded x86_64 host, execute the same lifecycle checks with
+the exact downloaded candidate, and retain a report containing all three
+observed layers. A guest-local two-layer report cannot satisfy this profile;
+report import does not synthesize the missing outer host or QEMU evidence.
+Missing reports fail closed. Automated guest provisioning and collection of
+this combined inventory remain operator setup work before release readiness.
+The topology change alters the contract digest: regenerate requests, plans,
+assessments and case-bound reports; do not reuse earlier native-only evidence.
+
+Before running the native program, place the reviewed compatibility assessment for
 each target at
 `/etc/aos-release/qualification-assessments/<target-id>.json`. The file is the
 canonical `CompatibilityAssessment` object for the exact environment-profile

@@ -795,16 +795,16 @@ pub fn cases(
                                     anyhow::anyhow!("package lacks its criticality classification")
                                 })?;
                             let mut subjects = artifact.artifact_ids.clone();
-                            if let Some(PackageExecution::RecoveryImage { system_variant }) =
-                                &rule.execution
-                            {
+                            subjects.extend(package_contract_subjects(manifest, artifact)?);
+                            if let Some(execution) = &rule.execution {
+                                let system_variant = execution.system_variant();
                                 let image = manifest
                                     .images
                                     .iter()
                                     .find(|image| image.system_variant == *system_variant)
                                     .ok_or_else(|| {
                                         anyhow::anyhow!(
-                                            "package {} requires absent recovery image variant {}",
+                                            "package {} requires absent execution image variant {}",
                                             package.name,
                                             system_variant
                                         )
@@ -815,7 +815,7 @@ pub fn cases(
                                     .find(|image_cell| image_cell.platform == cell.platform)
                                     .ok_or_else(|| {
                                         anyhow::anyhow!(
-                                            "package {} recovery image lacks platform {}",
+                                            "package {} execution image lacks platform {}",
                                             package.name,
                                             cell.platform
                                         )
@@ -825,11 +825,18 @@ pub fn cases(
                                 } = &image_cell.decision
                                 else {
                                     bail!(
-                                        "package {} recovery image platform is not an artifact",
+                                        "package {} execution image platform is not an artifact",
                                         package.name
                                     );
                                 };
                                 subjects.extend(image_artifact.artifact_ids.iter().cloned());
+                                if let PackageExecution::K3sFleet { topology, .. } = execution {
+                                    subjects.extend(k3s_fleet_subjects(
+                                        manifest,
+                                        cell.platform,
+                                        *topology,
+                                    )?);
+                                }
                             }
                             add(
                                 format!("{}/{}", package.name, cell.platform),
@@ -920,6 +927,101 @@ pub fn cases(
     Ok(result)
 }
 
+/// Returns source artifacts selected by a package's native contract.
+fn package_contract_subjects(
+    manifest: &ReleaseManifestV1,
+    package: &crate::manifest::FinalArtifactSet,
+) -> Result<Vec<String>> {
+    let Some(contract) = &package.package_contract else {
+        return Ok(Vec::new());
+    };
+    let mut subjects = Vec::new();
+    for selector in &contract.selectors {
+        let matches = manifest
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.store_path.as_deref() == Some(selector.store_path.as_str()))
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [artifact] => subjects.push(artifact.id.clone()),
+            [] => bail!(
+                "package contract selector {}:{} lacks retained artifact evidence",
+                selector.package,
+                selector.output
+            ),
+            _ => bail!("package contract selector store path is ambiguous"),
+        }
+    }
+    Ok(subjects)
+}
+
+/// Binds every service package and published workload used by a K3s fleet.
+fn k3s_fleet_subjects(
+    manifest: &ReleaseManifestV1,
+    platform: Platform,
+    topology: crate::qualification::K3sTopology,
+) -> Result<Vec<String>> {
+    if !platform.supports_images() {
+        bail!("K3s fleet qualification requires a Linux platform");
+    }
+
+    let mut subjects = Vec::new();
+    for name in topology.packages() {
+        let package = manifest
+            .packages
+            .iter()
+            .find(|package| package.name == name)
+            .ok_or_else(|| anyhow::anyhow!("K3s fleet lacks package {name}"))?;
+        let cell = package
+            .platforms
+            .iter()
+            .find(|cell| cell.platform == platform)
+            .ok_or_else(|| anyhow::anyhow!("K3s fleet package {name} lacks platform {platform}"))?;
+        let MatrixCell::Artifact { artifact } = &cell.decision else {
+            bail!("K3s fleet package {name}/{platform} is not an artifact");
+        };
+        if name != "k3s"
+            && !artifact.package_contract.as_ref().is_some_and(|contract| {
+                contract.selectors.iter().any(|selector| {
+                    matches!(selector.package.as_str(), "self") && selector.output == "module"
+                })
+            })
+        {
+            bail!("K3s fleet {name} lacks its native package module binding");
+        }
+        subjects.extend(artifact.artifact_ids.iter().cloned());
+        subjects.extend(package_contract_subjects(manifest, artifact)?);
+    }
+
+    let indexes = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::OciIndex)
+        .collect::<Vec<_>>();
+    let manifests = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == ArtifactKind::OciManifest && artifact.platform == Some(platform)
+        })
+        .collect::<Vec<_>>();
+    if indexes.len() != 1 || manifests.len() != 1 {
+        bail!("K3s fleet requires one published OCI index and platform manifest");
+    }
+    subjects.extend(indexes.into_iter().map(|artifact| artifact.id.clone()));
+    subjects.extend(manifests.into_iter().map(|artifact| artifact.id.clone()));
+    subjects.extend(
+        manifest
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.kind == ArtifactKind::OciBlob && artifact.platform == Some(platform)
+            })
+            .map(|artifact| artifact.id.clone()),
+    );
+    Ok(subjects)
+}
+
 fn inherited_package_roles(
     contract: &crate::qualification::QualificationContract,
     manifest: &ReleaseManifestV1,
@@ -945,7 +1047,9 @@ fn inherited_package_roles(
             let MatrixCell::Artifact { artifact } = &cell.decision else {
                 continue;
             };
-            propagate_package_role(&artifacts, &artifact.artifact_ids, role, &mut roles)?;
+            let mut roots = artifact.artifact_ids.clone();
+            roots.extend(package_contract_subjects(manifest, artifact)?);
+            propagate_package_role(&artifacts, &roots, role, &mut roles)?;
         }
     }
 

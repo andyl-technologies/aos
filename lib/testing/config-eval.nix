@@ -18,6 +18,8 @@
   lib,
   mkSystem,
 }: let
+  frozenPackageChecks = import ./frozen-pkgs.nix {inherit lib;};
+
   opKey = "ops:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIJiuCf/fX/rsn5ODyT5ebEVtabAmZceKi2aD+cBWjWKL";
 
   # A well-formed system declaring one operator config key.
@@ -168,6 +170,7 @@ in
         script = ''
           set -eu
           : ${builtins.toString evalAssertions}
+          : ${builtins.toString frozenPackageChecks}
           mkdir -p "$out"
           eval_state="$TMPDIR/aos-root"
           profile_root="$TMPDIR/profiles"

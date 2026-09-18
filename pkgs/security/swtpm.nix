@@ -19,6 +19,7 @@
   libtasn1,
   libseccomp,
   openssl,
+  gmp,
   stdenv,
   buildPackages,
 }: let
@@ -128,9 +129,10 @@ in
         else []
       )
       ++ (
+        # swtpm_localca links GMP directly; retain it through reference cleanup.
         if stdenv.hostPlatform.isDarwin
         then []
-        else [libseccomp]
+        else [libseccomp gmp]
       );
     propagatedDeps = [libtpms];
 

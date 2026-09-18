@@ -94,7 +94,10 @@ mod tests {
                 derivation: "/nix/store/dddddddddddddddddddddddddddddddd-demo.drv".to_string(),
                 outputs: vec![DerivationOutput {
                     name: "out".to_string(),
-                    derivation: None,
+                    derivation: Some(
+                        "/nix/store/dddddddddddddddddddddddddddddddd-demo.drv".to_string(),
+                    ),
+                    output: Some("out".to_string()),
                     store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo".to_string(),
                 }],
                 contract: None,

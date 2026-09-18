@@ -5,6 +5,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  patch,
   bzip2,
   ncurses,
   readline,
@@ -103,32 +104,28 @@ in
       [
         gnumake
         pkg-config
+        patch
       ]
       ++ (
-        if isDarwinCross
+        if stdenv.isCross
         then [buildPackages.python3-3_12]
         else []
       );
-    runtimeDeps =
-      [
-        zlib
-        openssl
-        xz
-      ]
-      ++ (
-        if isDarwinCross
-        then [
-          bzip2
-          ncurses
-          readline
-          sqlite
-          zstd
-          # CPython 3.12 uses system libffi for _ctypes. Its historical
-          # --with-system-ffi switch is no longer recognized by configure.
-          libffi
-        ]
-        else []
-      );
+    runtimeDeps = [
+      # Keep the optional standard-library extensions complete in the
+      # native bootstrap interpreter as well as cross-built interpreters.
+      bzip2
+      ncurses
+      readline
+      sqlite
+      zstd
+      zlib
+      openssl
+      xz
+      # CPython 3.12 uses system libffi for _ctypes. Its historical
+      # --with-system-ffi switch is no longer recognized by configure.
+      libffi
+    ];
     propagatedDeps = [];
 
     # CPython models PyTupleObject's variable-length ob_item storage as a
@@ -149,59 +146,81 @@ in
         '';
       }
       {
-        name = "configure";
+        name = "patch";
         script = ''
-          ${
-            if isDarwinCross
-            then ''
-              # Python 3.12 predates upstream's Darwin cross cases. Teach its
-              # generated configure script the same platform facts carried by
-              # current CPython without regenerating release artifacts.
-              sed -i '/^[[:space:]]*\*-\*-vxworks\*)$/i\
-              \    *-*-darwin*)\
-              \        ac_sys_system=Darwin\
-              \        ac_sys_release=20.0.0\
-              \        _host_cpu=$host_cpu\
-              \        ;;' configure
-              # The first cross-platform switch initializes the release after
-              # selecting ac_sys_system. Preserve Darwin's kernel release at
-              # that later assignment as current CPython does.
-              sed -i 's/^[[:space:]]*ac_sys_release=$/  ac_sys_release=20.0.0/' configure
-              # Target-runtime probes cannot execute on the Linux builder.
-              # Cache Darwin's documented results so IPv6, pthreads, PTYs,
-              # libffi complex values, and timezone support stay enabled.
-              export ac_cv_buggy_getaddrinfo=no
-              export ac_cv_file__dev_ptmx=yes
-              export ac_cv_file__dev_ptc=no
-              export ac_cv_pthread_is_default=yes
-              export ac_cv_kthread=no
-              export ac_cv_pthread=no
-              export ac_cv_ffi_complex_double_supported=yes
-              export ac_cv_pthread_system_supported=yes
-              export ac_cv_working_tzset=yes
-            ''
-            else ""
-          }
-          LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --enable-shared \
-            ${
-            if isDarwinCross
-            then ""
-            else "--with-system-ffi=no"
-          } \
-            --with-system-expat=no \
-            --with-ensurepip=no \
-            --without-static-libpython \
-            --disable-test-modules \
-            --with-openssl=${openssl} \
-            ${
-            if isDarwinCross
-            then ''--with-build-python=${buildPackages.python3-3_12}/bin/python3''
-            else ""
-          }
+          # OpenSSL 4 makes ASN.1 strings opaque; preserve certificate decoding
+          # through the public data and length accessors.
+          patch -p1 < ${./python3-3_12-openssl4.patch}
         '';
+      }
+      {
+        name = "configure";
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # These runtime probes cannot execute during cross configure. AOS
+            # glibc supplies IPv6, POSIX threads, Unix98 PTYs and working tzset.
+            export ac_cv_buggy_getaddrinfo=no
+            export ac_cv_file__dev_ptmx=yes
+            export ac_cv_file__dev_ptc=no
+            export ac_cv_pthread_is_default=yes
+            export ac_cv_kthread=no
+            export ac_cv_pthread=no
+            export ac_cv_ffi_complex_double_supported=yes
+            export ac_cv_pthread_system_supported=yes
+            export ac_cv_working_tzset=yes
+          ''
+          + ''
+            ${
+              if isDarwinCross
+              then ''
+                # Python 3.12 predates upstream's Darwin cross cases. Teach its
+                # generated configure script the same platform facts carried by
+                # current CPython without regenerating release artifacts.
+                sed -i '/^[[:space:]]*\*-\*-vxworks\*)$/i\
+                \    *-*-darwin*)\
+                \        ac_sys_system=Darwin\
+                \        ac_sys_release=20.0.0\
+                \        _host_cpu=$host_cpu\
+                \        ;;' configure
+                # The first cross-platform switch initializes the release after
+                # selecting ac_sys_system. Preserve Darwin's kernel release at
+                # that later assignment as current CPython does.
+                sed -i 's/^[[:space:]]*ac_sys_release=$/  ac_sys_release=20.0.0/' configure
+                # Target-runtime probes cannot execute on the Linux builder.
+                # Cache Darwin's documented results so IPv6, pthreads, PTYs,
+                # libffi complex values, and timezone support stay enabled.
+                export ac_cv_buggy_getaddrinfo=no
+                export ac_cv_file__dev_ptmx=yes
+                export ac_cv_file__dev_ptc=no
+                export ac_cv_pthread_is_default=yes
+                export ac_cv_kthread=no
+                export ac_cv_pthread=no
+                export ac_cv_ffi_complex_double_supported=yes
+                export ac_cv_pthread_system_supported=yes
+                export ac_cv_working_tzset=yes
+              ''
+              else ""
+            }
+            LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --enable-shared \
+              ${
+              if stdenv.isCross
+              then ""
+              else "--with-system-ffi=no"
+            } \
+              --with-system-expat=no \
+              --with-ensurepip=no \
+              --without-static-libpython \
+              --disable-test-modules \
+              --with-openssl=${openssl} \
+              ${
+              if stdenv.isCross
+              then ''--with-build-python=${buildPackages.python3-3_12}/bin/python3''
+              else ""
+            }
+          '';
       }
       {
         name = "build";
