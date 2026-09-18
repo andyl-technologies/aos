@@ -58,7 +58,7 @@ aos hub registry create \
   --name main \
   --visibility public \
   --trust-key "$ANDYL_MAIN_TRUST_KEY" \
-  --if-version absent \
+  --if-version "" \
   --idempotency-key create-andyl-main-v1 \
   --plan
 
