@@ -188,3 +188,72 @@ fn main_edge_requires_production_assurance_and_testing_stable_does_not() {
         assert_ne!(main[0].policy_digest, testing[0].policy_digest);
     }
 }
+
+#[test]
+fn arm64_container_evidence_requires_the_complete_tcg_topology() {
+    use aos_release::platform::Platform;
+    use aos_release::qualification::environment::{Accelerator, Backend, EnvironmentInventory};
+
+    let policy = contract();
+    let target = policy
+        .targets
+        .iter()
+        .find(|target| target.id == "container-aarch64-linux")
+        .unwrap();
+    let profile = target.environment.as_ref().unwrap();
+    profile.validate(Platform::Aarch64Linux).unwrap();
+
+    // Test-only observations exercise admission; they are never release evidence.
+    let mut value = serde_json::to_value(profile).unwrap();
+    value.as_object_mut().unwrap().remove("kernel_options");
+    value["schema_version"] = "aos.release.environment-inventory/v1".into();
+    value["firmware"] = serde_json::Value::Null;
+    value["image_capabilities_digest"] = serde_json::Value::Null;
+    value["resources"]["memory_mib"] = 8192.into();
+    for layer in value["layers"].as_array_mut().unwrap() {
+        layer["cpu"] = serde_json::json!({
+            "vendor": "test-vendor",
+            "model": "test-model",
+            "sku": null,
+            "revision": null,
+            "microcode": null,
+            "features": []
+        });
+        layer["kernel_release"] = "test-kernel".into();
+        for identity in layer["backend"].as_object_mut().unwrap().values_mut() {
+            if identity.is_null() {
+                *identity = "test-identity".into();
+            }
+        }
+    }
+    let observed: EnvironmentInventory = serde_json::from_value(value).unwrap();
+    profile.matches(&observed).unwrap();
+
+    let mut missing_host = observed.clone();
+    missing_host.layers.remove(0);
+    assert!(profile.matches(&missing_host).is_err());
+
+    let mut missing_guest = observed.clone();
+    missing_guest.layers.remove(1);
+    assert!(profile.matches(&missing_guest).is_err());
+
+    let mut native_arm64 = observed.clone();
+    native_arm64.layers.remove(1);
+    native_arm64.layers[0].platform = Platform::Aarch64Linux;
+    native_arm64.validate().unwrap();
+    assert!(profile.matches(&native_arm64).is_err());
+
+    let mut false_kvm = observed.clone();
+    if let Backend::Qemu { accelerator, .. } = &mut false_kvm.layers[1].backend {
+        *accelerator = Accelerator::Kvm;
+    } else {
+        panic!("ARM64 reference scope must contain a QEMU layer");
+    }
+    assert!(profile.matches(&false_kvm).is_err());
+
+    let mut missing_emulator_version = observed;
+    if let Backend::Qemu { version, .. } = &mut missing_emulator_version.layers[1].backend {
+        *version = None;
+    }
+    assert!(profile.matches(&missing_emulator_version).is_err());
+}

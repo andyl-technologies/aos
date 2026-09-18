@@ -456,8 +456,12 @@
       package-function = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
     }
     // lib.optionalAttrs hostPlatform.isLinux {
-      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
       "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
+    }
+    // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+      # ARM64 container qualification imports a report with the outer x86 host,
+      # TCG guest and container layers; the local runner observes only two.
+      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
     };
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";
