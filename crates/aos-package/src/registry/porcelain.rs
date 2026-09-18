@@ -68,7 +68,9 @@ fn open(dir: &Path) -> Result<Repository> {
 /// libgit2 failure; ordinary git-level failures (missing ref/object) are
 /// reported through [`Output::success`].
 pub(crate) fn dispatch(dir: &Path, args: &[&str]) -> Result<Output> {
-    if mutates(args) {
+    // Ordered so a normal run pays only an atomic load: the description is
+    // built solely on the path that is about to fail.
+    if crate::dry_run::active() && mutates(args) {
         crate::dry_run::refuse_mutation(&format!("run `git {}`", args.join(" ")))?;
     }
     match args {
