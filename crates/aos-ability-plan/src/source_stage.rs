@@ -119,8 +119,8 @@ pub struct SourceStageImplementation {
 pub struct SourceStageRequest {
     /// Identifies the package carrier that authored the request.
     pub package: LocalKey,
-    /// Names the exact root or generated requirement declaration.
-    pub requirement: String,
+    /// Identifies the exact root or generated requirement declaration.
+    pub requirement: SourceStageRequirementReference,
     /// Names the consuming instance declaration.
     pub consumer: String,
     /// Carries the authored request scope.
@@ -133,12 +133,31 @@ pub struct SourceStageRequest {
     pub parameters: AbilityValue,
 }
 
+/// Identifies a requirement without deriving provenance from a declaration key.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SourceStageRequirementReference {
+    /// Selects one requirement from an authenticated package projection.
+    Package {
+        /// Identifies the package that owns the requirement.
+        package: LocalKey,
+        /// Names the requirement inside the package's checked projection.
+        #[serde(rename = "localKey")]
+        local_key: LocalKey,
+    },
+    /// Selects one generated requirement by its exact fixed-point declaration key.
+    Composition {
+        /// Names the generated requirement retained in the same fixed point.
+        declaration: String,
+    },
+}
+
 /// Retains one provider-activated nested requirement.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceStageCompositionRequirement {
-    /// Names the selected implementation that activated this requirement.
-    pub implementation: String,
+    /// Identifies the selected implementation that activated this requirement.
+    pub implementation: SourceStageImplementation,
     /// Names the implementation-local requirement alias.
     pub alias: LocalKey,
     /// Carries the authenticated package requirement declaration.
@@ -1171,7 +1190,10 @@ mod tests {
                     request_names[&request.id].clone(),
                     SourceStageRequest {
                         package: request.package.clone(),
-                        requirement: format!("{}:fixture", request.package.as_str()),
+                        requirement: SourceStageRequirementReference::Package {
+                            package: request.package.clone(),
+                            local_key: LocalKey::new("fixture").expect("requirement key"),
+                        },
                         consumer: instance_names[&request.id.consumer].clone(),
                         scope: request.id.scope.clone(),
                         local_key: request.id.key.clone(),
