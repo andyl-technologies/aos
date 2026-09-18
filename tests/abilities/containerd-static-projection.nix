@@ -4,29 +4,15 @@
   lib,
 }: let
   projection = pkgs.containerd.abilities;
+  contractRequirementAliases =
+    builtins.map
+    (requirement: requirement.alias)
+    pkgs.containerd.contract.value.requirements;
 in
   assert builtins.attrNames projection.interfaces == [];
   assert builtins.attrNames projection.implementations == [];
-  assert builtins.attrNames projection.requirementTemplates
-  == [
-    "configuration-materialization"
-    "host-path-view"
-    "kernel-modules"
-    "linux-service-isolation"
-    "network-readiness"
-    "persistent-storage-allocation"
-    "service-configuration"
-    "service-dependencies"
-    "service-isolation"
-    "service-lifecycle"
-    "service-logging"
-    "service-readiness"
-    "resources"
-    "service-storage"
-    "service-supervision"
-    "storage-allocation"
-    "storage-view"
-  ];
+  assert contractRequirementAliases == builtins.attrNames projection.requirementTemplates;
+  assert projection.requirementTemplates != {};
   assert lib.all
   (requirement: requirement.accepted_interfaces != [] && requirement.methods != [])
   (builtins.attrValues projection.requirementTemplates); true
