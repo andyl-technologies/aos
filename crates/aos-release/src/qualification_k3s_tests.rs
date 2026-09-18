@@ -11,6 +11,14 @@ fn fixture(topology: K3sTopology) -> Result<(ReleasePlanV1, ReleaseManifestV1)> 
     for name in topology.packages() {
         let mut planned = planned_template.clone();
         planned.name = name.into();
+        for cell in &mut planned.platforms {
+            if !cell.platform.supports_images() {
+                cell.decision = MatrixCell::NotApplicable {
+                    rule: "k3s-execution-fixture".into(),
+                    reason: "This fixture exercises K3s only on Linux.".into(),
+                };
+            }
+        }
         plan.packages.push(planned);
         let mut package = template.clone();
         package.name = name.into();
