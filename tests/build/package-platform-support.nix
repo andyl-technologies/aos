@@ -84,6 +84,14 @@
     names = packageNames;
     configurationBaseLib = configurationBaseProbe;
   };
+  # A platform blocker must be retained without forcing an unbuildable package
+  # or a Linux image's configuration base for a Darwin target.
+  blockedDarwinDerivations = support.releaseDerivations {
+    system = "aarch64-darwin";
+    names = ["aos"];
+    packages.aos = throw "blocked package must not be evaluated";
+    configurationBaseLib = throw "blocked configuration base must not be evaluated";
+  };
   x86Packages = publicationMatrix.x86_64-darwin;
   armPackages = publicationMatrix.aarch64-darwin;
   x86LinuxPackages = publicationMatrix.x86_64-linux;
@@ -218,6 +226,7 @@ in
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
+  assert blockedDarwinDerivations.packages == [];
   assert releaseInventory.platforms == support.canonicalSystems;
   assert builtins.attrNames publicationMatrix == builtins.sort builtins.lessThan support.canonicalSystems;
   assert x86LinuxPackages == support.targetPackageNames "x86_64-linux" packageNames;
