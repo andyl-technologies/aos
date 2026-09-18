@@ -381,11 +381,34 @@ pub(crate) async fn publish_to_registry_directory(
             &mut local_provenance_signer
         };
 
+    let letter = first_letter(pkg_name);
+    let pkg_dir = dir.join("packages").join(&letter);
+
+    // Everything above derives and validates the entry: store-path inspection,
+    // metadata, provenance signer resolution. Stop before taking the publish
+    // lock, because a preview must not block a concurrent real publisher.
+    if crate::dry_run::active() {
+        let toml_path = pkg_dir.join(format!("{pkg_name}.toml"));
+        printer.info(&format!(
+            "Would publish {pkg_name} {pkg_version} ({platform}) to registry '{}'",
+            dir.display()
+        ));
+        printer.kv("Would write", &toml_path.display().to_string());
+        printer.kv(
+            "Entry",
+            if toml_path.exists() {
+                "added to the existing package TOML"
+            } else {
+                "a new package TOML"
+            },
+        );
+        printer.info("Dry run: nothing was written, signed, or committed.");
+        return Ok(());
+    }
+
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
     printer.step(2, 4, "Writing package TOML...");
-    let letter = first_letter(pkg_name);
-    let pkg_dir = dir.join("packages").join(&letter);
     std::fs::create_dir_all(&pkg_dir)?;
 
     let toml_path = pkg_dir.join(format!("{pkg_name}.toml"));
@@ -872,6 +895,16 @@ pub(crate) fn publish_canonical_named_output(
         .with_context(|| format!("reading primary package entry {}", toml_path.display()))?;
     let new_content =
         record_named_output(&content, package, version, platform, output, store_path)?;
+
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would record named output '{output}' of {package} {version} ({platform})"
+        ));
+        printer.kv("Would write", &toml_path.display().to_string());
+        printer.info("Dry run: nothing was written.");
+        return Ok(());
+    }
+
     fs::write(&toml_path, new_content)
         .with_context(|| format!("writing supplemental output to {}", toml_path.display()))?;
 

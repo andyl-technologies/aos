@@ -36,6 +36,17 @@ pub async fn tag(
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     let tag_message = message.unwrap_or("AOS registry release");
 
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would create signed tag '{name}' on HEAD of registry '{registry_name}'"
+        ));
+        printer.kv("Target", &git(&dir, &["rev-parse", "HEAD"])?);
+        printer.kv("Message", tag_message);
+        printer.kv("Signing key", signing_key.path());
+        printer.info("Dry run: no tag was created.");
+        return Ok(());
+    }
+
     sign_tag(
         &dir,
         name,
@@ -96,6 +107,20 @@ pub async fn sign(
         .with_context(|| format!("resolving existing tag object for '{tag_name}'"))?;
     let target = git(&dir, &["rev-list", "-n", "1", tag_name])
         .with_context(|| format!("resolving tag '{tag_name}' target commit"))?;
+
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would re-sign tag '{tag_name}' of registry '{registry_name}'"
+        ));
+        printer.kv("Target", &target);
+        printer.kv("Current tag object", &previous_tag_object);
+        printer.kv("Signing key", signing_key.path());
+        // Re-signing rewrites the tag object, so anything that pinned the old
+        // id must be refreshed; say so rather than let it surprise the operator.
+        printer.info("  The tag object id would change, replacing the existing signature.");
+        printer.info("Dry run: the tag is unchanged.");
+        return Ok(());
+    }
 
     sign_tag(
         &dir,

@@ -112,6 +112,17 @@ async fn channel_init(
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     assert_release_tag_exists(&dir, version)?;
 
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would initialize channel '{channel_name}' of registry '{registry_name}' \
+             with all 256 partitions on {version}"
+        ));
+        printer.kv("Signing key", signing_key.path());
+        printer.info("  256 partition tags would be signed and the frontier set.");
+        printer.info("Dry run: the channel is unchanged.");
+        return Ok(());
+    }
+
     let mut map = PartitionMap::new();
     for bucket in 0..=u8::MAX {
         write_channel_partition_tag(&dir, channel_name, bucket, version, signing_key.path())?;
@@ -176,6 +187,27 @@ async fn channel_advance(
             return Ok(());
         }
         printer.info("No partitions selected for advancement.");
+        return Ok(());
+    }
+
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would advance {} partition(s) of channel '{channel_name}' \
+             in registry '{registry_name}' to {version}",
+            selected.len()
+        ));
+        // The exact buckets are the reviewable part of a rollout: which slice
+        // of the fleet this step would move.
+        printer.kv(
+            "Partitions",
+            &selected
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        printer.kv("Signing key", signing_key.path());
+        printer.info("Dry run: the channel is unchanged.");
         return Ok(());
     }
 

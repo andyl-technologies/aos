@@ -181,19 +181,17 @@ fn dry_run_create_marks_the_json_preview() -> Result<()> {
     Ok(())
 }
 
-/// The second half of the fix: a mutating subcommand that never implemented
-/// `--dry-run` refuses the flag instead of silently ignoring it.
+/// Read-only subcommands refuse the flag rather than accepting it as a no-op,
+/// so `--dry-run` never implies a command was given preview handling it lacks.
 #[test]
-fn dry_run_is_refused_by_subcommands_that_ignore_it() -> Result<()> {
+fn dry_run_is_refused_by_read_only_subcommands() -> Result<()> {
     let home = TempDir::new()?;
-    let created = apr(home.path(), &["create", "demo"])?;
-    assert!(created.status.success(), "fixture create should succeed");
 
-    let output = apr(home.path(), &["disable", "demo", "--dry-run"])?;
+    let output = apr(home.path(), &["list", "--dry-run"])?;
 
     assert!(
         !output.status.success(),
-        "a subcommand without dry-run support must refuse the flag rather than mutate"
+        "a read-only subcommand must refuse the flag"
     );
     let text = stderr(&output);
     assert!(
@@ -201,4 +199,104 @@ fn dry_run_is_refused_by_subcommands_that_ignore_it() -> Result<()> {
         "expected the unsupported-dry-run refusal, got:\n{text}"
     );
     Ok(())
+}
+
+/// `apr commit --dry-run` reports the commit it would make and leaves HEAD
+/// exactly where it was.
+#[test]
+fn dry_run_commit_leaves_head_untouched() -> Result<()> {
+    let home = TempDir::new()?;
+    let created = apr(home.path(), &["create", "demo"])?;
+    assert!(created.status.success(), "fixture create should succeed");
+
+    let registry = registry_path(home.path(), "demo");
+    std::fs::write(
+        registry.join("registry.toml"),
+        "[registry]\nname = \"demo\"\n",
+    )?;
+    let before = head_commit(&registry)?;
+
+    let output = apr(
+        home.path(),
+        &[
+            "commit",
+            "registry.toml",
+            "-m",
+            "preview only",
+            "--registry",
+            "demo",
+            "--dry-run",
+        ],
+    )?;
+
+    assert!(
+        output.status.success(),
+        "dry-run commit should succeed:\nstderr:\n{}",
+        stderr(&output),
+    );
+    assert_eq!(
+        head_commit(&registry)?,
+        before,
+        "a dry-run commit must not move HEAD"
+    );
+    let text = stderr(&output);
+    assert!(
+        text.contains("Would commit"),
+        "expected a commit preview, got:\n{text}"
+    );
+    Ok(())
+}
+
+/// `apr tag --dry-run` creates no tag.
+#[test]
+fn dry_run_tag_creates_no_tag() -> Result<()> {
+    let home = TempDir::new()?;
+    let created = apr(home.path(), &["create", "demo"])?;
+    assert!(created.status.success(), "fixture create should succeed");
+
+    let output = apr(
+        home.path(),
+        &["tag", "v1.0.0", "--registry", "demo", "--dry-run"],
+    )?;
+
+    // Whether this reaches the preview or fails resolving a signing key, the
+    // one thing it must never do is leave a tag behind.
+    let tags = git_output(&registry_path(home.path(), "demo"), &["tag", "--list"])?;
+    assert!(
+        tags.trim().is_empty(),
+        "a dry-run tag must not create a tag, found:\n{tags}"
+    );
+    if output.status.success() {
+        let text = stderr(&output);
+        assert!(
+            text.contains("Would create signed tag"),
+            "expected a tag preview, got:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+/// Read the `HEAD` commit id of a registry clone, hermetic against the host
+/// git configuration.
+fn head_commit(repo: &Path) -> Result<String> {
+    git_output(repo, &["rev-parse", "HEAD"])
+}
+
+/// Run a read-only git command against `repo`, insulated from host config.
+fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git {} failed:\n{}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

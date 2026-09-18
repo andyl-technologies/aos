@@ -154,7 +154,7 @@ pub struct AprCli {
     #[arg(long, global = true)]
     pub system: bool,
 
-    /// Show what would be done without doing it (create, cache)
+    /// Show what would be done without doing it
     #[arg(long, global = true)]
     pub dry_run: bool,
 
