@@ -9,6 +9,7 @@
     inherit lib;
     modules = [
       lib.abilities.module
+      ../../modules/_package-contributions.nix
       {
         aos.abilities.environment = {
           authority = "test";
@@ -16,17 +17,6 @@
           stage = "initrd";
         };
         aos.boot.substrateServices.enable = true;
-        aos.metadata.storageProvisioning = {
-          authorizationConfiguration = {
-            schema = "aos.metadata.provisioning-authorization-configuration/v1";
-            trust_mode = "platform";
-            trusted_config_keys = [];
-            base_library = {
-              store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-base-lib";
-              abi_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-            };
-          };
-        };
       }
     ];
     packageModules = [

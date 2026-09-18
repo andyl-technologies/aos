@@ -172,7 +172,6 @@ in {
       };
     }
     (lib.mkIf (cfg.backend == "zfs-zvol") {
-      aos.kernel.modulePackages = [zfsPackage];
       aos.boot.initrd.modulePackages = [zfsPackage];
       aos.boot.initrd.packageRoots = [zfsPackage];
       aos.boot.initrd.loadModules = ["zfs"];

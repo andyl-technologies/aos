@@ -810,9 +810,11 @@
 
       abilitySelectionFor = package: packageConfig: let
         declarationFor = collection: kind: localKey: let
-          matches = attrsets.filterAttrs
+          matches =
+            attrsets.filterAttrs
             (_: declaration:
-              declaration.package == package
+              declaration.package
+              == package
               && declaration.localKey == localKey)
             packageConfig.aos.abilities.${collection};
           declarations = builtins.attrNames matches;
@@ -832,7 +834,8 @@
         implementationFor = declarationFor "implementations" "implementation";
         bindingsForImplementation = localKey: let
           implementation = implementationFor localKey;
-          bindingNames = builtins.filter
+          bindingNames =
+            builtins.filter
             (name:
               packageConfig.aos.abilities.bindings.${name}.implementation
               == implementation.declaration)
@@ -843,8 +846,12 @@
             providerDeclaration = binding.providerInstance;
             requestDeclaration = binding.request;
             requestValue =
-              packageConfig.aos.abilities.requests.${requestDeclaration}
-              or packageConfig.aos.abilities.compositionRequests.${requestDeclaration}
+              packageConfig.aos.abilities.requests.${
+                requestDeclaration
+              }
+              or packageConfig.aos.abilities.compositionRequests.${
+                requestDeclaration
+              }
               or (throw
                 "evalModules: selected binding '${navigationKey}' refers to absent request '${requestDeclaration}'");
           in {
@@ -1035,7 +1042,9 @@
         key = builtins.toJSON selected;
         selectsOwnDefault = selected.package == package && selected.output == "out";
       in
-        outputs.dependencies.${key}
+        outputs.dependencies.${
+          key
+        }
         or (
           if selectsOwnDefault
           then outputs.self
@@ -1193,12 +1202,13 @@
         declaresEnable = module: let
           evaluated = builtins.tryEval (
             if builtins.isFunction module
-            then module {
-              config = {};
-              options = {};
-              inherit lib pkgs;
-              name = "<authorship-entry>";
-            }
+            then
+              module {
+                config = {};
+                options = {};
+                inherit lib pkgs;
+                name = "<authorship-entry>";
+              }
             else module
           );
           declaredOptions =
@@ -1253,7 +1263,8 @@
           else {};
         containsNamedContributions = (documentType.kind or null) == "attrs-of";
         detectsNestedEnable =
-          declaration != null
+          declaration
+          != null
           && containsNamedContributions
           && submoduleDeclaresImmediateEnable declaration.option.type;
       in
@@ -1461,6 +1472,13 @@
         (builtins.unsafeDiscardStringContext (builtins.toString marker))
         owner)
       defaultDependencyOwners);
+      isPackageValue = value:
+        builtins.isAttrs value
+        && (
+          value ? outPath
+          || value ? drvPath
+          || (value ? type && value.type == "derivation")
+        );
       tagDefaultDependency = provenance: value: let
         owner = ownerForProvenance provenance;
         markerPaths = builtins.attrNames (attrsets.filterAttrs (_: candidate: candidate == owner) defaultDependencyMarkers);
@@ -1474,7 +1492,7 @@
           then builtins.appendContext current markerContext
           else if builtins.isList current
           then builtins.map tag current
-          else if builtins.isAttrs current && !((current.type or null) == "derivation")
+          else if builtins.isAttrs current && !(isPackageValue current)
           then
             builtins.mapAttrs (name: child:
               if name == "_module"
@@ -1495,7 +1513,7 @@
               (builtins.attrNames (builtins.getContext current)))
           else if builtins.isList current
           then builtins.concatLists (builtins.map collect current)
-          else if builtins.isAttrs current && !((current.type or null) == "derivation")
+          else if builtins.isAttrs current && !(isPackageValue current)
           then
             builtins.concatLists (builtins.map
               (name:

@@ -36,6 +36,13 @@
   baseModules,
   ## The image variant's own module list (e.g. `[ ./systems/server.nix ]`).
   systemModules,
+  ## Ephemeral repository-test modules included in the build-time baseline but
+  ## deliberately excluded from the deployable replay source set.
+  fixtureModules ? [],
+  ## Authenticated operator modules participating in the image-build fixed point.
+  operatorModules ? [],
+  ## Generation-pinned runtime modules participating in the image-build fixed point.
+  runtimeModules ? [],
   ## The ABI resolved from the image's complete module list, including inline
   ## image settings that cannot be copied into the source-backed library.
   moduleAbi,
@@ -93,6 +100,7 @@
       modules =
         baseModules
         ++ systemModules
+        ++ fixtureModules
         ++ [
           {aos.system.moduleAbi = lib.mkForce moduleAbi;}
           {aos.abilities.environment = environment;}
@@ -104,7 +112,14 @@
             bindings = abilityBindings;
           };
         };
-      inherit pkgs lib packageModules selectedProviderModules;
+      inherit
+        pkgs
+        lib
+        operatorModules
+        runtimeModules
+        packageModules
+        selectedProviderModules
+        ;
       enableAbilitySelection = true;
       specialArgs.abilityResolution = {
         requests = abilityRequests;
@@ -293,18 +308,46 @@
         };
     });
 
-  # The variant's module list, materialized as a Nix expression the bundled
-  # entrypoint imports. Paths are rewritten to the bundled `./systems` copy so
-  # they resolve inside the base-lib store path under `restrict-eval`.
+  # The image's source-backed module list, materialized as a Nix expression the
+  # bundled entrypoint imports. Paths are rewritten to the corresponding
+  # repository tree carried by the base library so they resolve under
+  # `restrict-eval`.
   systemModulesNix = let
     rel = m: let
       s = builtins.toString m;
-      # Keep only the `systems/...` tail so the path resolves under `$out`.
-      parts = lib.splitString "/systems/" s;
+      bundledTrees = [
+        {
+          marker = "/lib/";
+          prefix = "./lib/";
+        }
+        {
+          marker = "/modules/";
+          prefix = "./modules/";
+        }
+        {
+          marker = "/pkgs/";
+          prefix = "./pkgs/";
+        }
+        {
+          marker = "/systems/";
+          prefix = "./systems/";
+        }
+      ];
+      matches =
+        builtins.filter (
+          tree: builtins.length (lib.splitString tree.marker s) > 1
+        )
+        bundledTrees;
     in
-      if builtins.length parts > 1
-      then "./systems/" + builtins.elemAt parts 1
-      else throw "base-lib: system module ${s} is not under a systems/ directory";
+      if builtins.length matches == 1
+      then let
+        tree = builtins.head matches;
+        parts = lib.splitString tree.marker s;
+      in
+        tree.prefix + builtins.elemAt parts 1
+      else
+        throw
+        "base-lib: image module ${s} is not inside exactly one bundled repository tree";
   in
     "[\n"
     + lib.concatMapStringsSep "\n" (m: "  ${rel m}") systemModules

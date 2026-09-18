@@ -154,7 +154,7 @@
   serverConfigFor = clientTls: peerTls:
     {
       name = cfg.name;
-      "data-dir" = resultOf "data-storage" "storage-path";
+      "data-dir" = resultOf "data-storage" "planned-path";
       "listen-client-urls" = lib.concatStringsSep "," cfg.client.listenUrls;
       "advertise-client-urls" = lib.concatStringsSep "," cfg.client.advertiseUrls;
       "listen-peer-urls" = lib.concatStringsSep "," cfg.peer.listenUrls;

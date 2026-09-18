@@ -12,21 +12,15 @@
 {
   pkgs,
   lib,
+  mkSystem,
 }: let
-  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
-
-  system = aos.mkSystem {
+  system = mkSystem {
     modules = [../../systems/server.nix];
     operatorModules = [
       {
         environment.etc."runtime-config/materialized.conf" = {
           text = "host-owned\n";
           mode = "0644";
-        };
-        systemd.services.runtime-config-materialized = {
-          wantedBy = ["multi-user.target"];
-          serviceConfig.Type = "oneshot";
-          script = "printf materialized > /run/runtime-config-materialized";
         };
       }
     ];

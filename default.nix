@@ -150,7 +150,12 @@
   #   mkSystem ./path.nix                              — single module path
   #   mkSystem [ ./a.nix ./b.nix ]                     — list of modules
   #   mkSystem { modules = [...]; specialArgs = {}; }   — full attrset
-  mkSystemState = args: let
+  #
+  # Inline modules support evaluation-only callers. Exported image outputs
+  # require source-backed module paths because the in-image evaluator must
+  # replay the exact same module graph. The private fixture constructor below
+  # admits ephemeral test overlays that never become deployable config input.
+  mkSystemState = {allowInlineModules ? false}: args: let
     moduleList =
       if builtins.isList args
       then args
@@ -189,7 +194,15 @@
       if builtins.isAttrs args && args ? packageModules
       then args.packageModules
       else [];
-    systemModules = builtins.filter builtins.isPath moduleList;
+    inlineSystemModules = builtins.filter (module: !builtins.isPath module) moduleList;
+    systemModules =
+      if inlineSystemModules == []
+      then moduleList
+      else if allowInlineModules
+      then builtins.filter builtins.isPath moduleList
+      else
+        throw
+        "mkSystem: image and base-library outputs require every system module to be a source path; received ${toString (builtins.length inlineSystemModules)} inline module(s)";
     baseLibProbe = {
       aos.config.evalAtBoot = {
         baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
@@ -240,9 +253,8 @@
       initrdAbilityEvaluation
       ;
     # Determine the resolved image ABI from the complete caller module list.
-    # The base library bundles only source-backed system modules, so without
-    # carrying this value explicitly an inline image override would leave the
-    # runtime image and its evaluator library on different ABIs.
+    # Evaluation-only inline modules may affect this value without forcing the
+    # source-backed base library.
     moduleAbi =
       selectionEvaluation
       .config
@@ -264,6 +276,11 @@
     baseLib = (mkBaseLibFor effectivePkgs) {
       baseModules = modules;
       inherit systemModules systemName moduleAbi;
+      fixtureModules =
+        if allowInlineModules
+        then inlineSystemModules
+        else [];
+      inherit operatorModules runtimeModules;
       hostPackageModules = finalPackageModules;
       inherit
         hostProviderModules
@@ -324,9 +341,13 @@
       })
       finalHostEvaluation;
   };
-  mkSystem = args: (mkSystemState args).system;
+  mkSystem = args: (mkSystemState {} args).system;
+  # Repository fixtures may layer ephemeral values that are never accepted as
+  # deployable configuration sources. Replay tests use source-backed modules.
+  mkFixtureSystem = args:
+    (mkSystemState {allowInlineModules = true;} args).system;
   mkAbilityQualificationProjection = args:
-    (mkSystemState args).qualificationProjection;
+    (mkSystemState {} args).qualificationProjection;
 
   # Auto-discover system definitions from ./systems/*.nix
   discoverSystems = let
@@ -377,7 +398,7 @@
   # ---------------------------------------------------------------------------
 
   # The default system used for eval/build checks and package integration tests.
-  serverSystemState = mkSystemState {
+  serverSystemState = mkSystemState {} {
     modules = [./systems/server.nix];
     systemName = "server";
   };
@@ -387,13 +408,7 @@
   # the production server system remains EROFS + dm-verity and is exercised by
   # the image and fleet checks that construct its authenticated partition set.
   serverVmSystem = mkSystem {
-    modules = [
-      ./systems/server.nix
-      {
-        aos.filesystems.rootFsType = lib.mkForce "ext4";
-        aos.security.verity.enable = lib.mkForce false;
-      }
-    ];
+    modules = [./systems/_server-vm.nix];
     systemName = "server-vm";
   };
   containerImages = discoverSystems.server.build.containers;
@@ -487,7 +502,8 @@
     cohorts ? null,
   }: let
     spec = import source {
-      inherit lib mkSystem pkgs;
+      inherit lib pkgs;
+      mkSystem = mkFixtureSystem;
       qualificationImage = true;
     };
   in
@@ -513,7 +529,8 @@
       report = {kind = "matrix";};
     };
   nativeAdapterMatrixCohort = import ./tests/fleet/ability-native-power-loss.nix {
-    inherit lib mkSystem mkAbilityQualificationProjection pkgs;
+    inherit lib mkAbilityQualificationProjection pkgs;
+    mkSystem = mkFixtureSystem;
     qualificationProjection = serverSystemState.qualificationProjection;
     qualificationImage = true;
   };
@@ -529,12 +546,14 @@
     matrix = nativeAdapterMatrix.spec;
   };
   nativeEffectReferenceCohort = import ./tests/fleet/ability-native-effect-boundaries-reference.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    inherit lib pkgs nativeAdapterMatrix;
+    mkSystem = mkFixtureSystem;
     qualificationImage = true;
   };
   nativeEffectRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
-      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
+      inherit lib pkgs cellId nativeAdapterMatrix;
+      mkSystem = mkFixtureSystem;
       systems = discoverSystems;
     })
   nativeEffectBoundaryCells.groups.rollout;
@@ -544,7 +563,8 @@
     matrix = nativeAdapterMatrix.spec;
   };
   nativeProviderStateReferenceCohort = import ./tests/fleet/ability-native-provider-state-reference.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    inherit lib pkgs nativeAdapterMatrix;
+    mkSystem = mkFixtureSystem;
     qualificationImage = true;
   };
   nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
@@ -553,16 +573,19 @@
   };
   nativeCancellationSystemdCells = nativeCancellationCells.groups.systemd;
   nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    inherit lib pkgs nativeAdapterMatrix;
+    mkSystem = mkFixtureSystem;
     qualificationImage = true;
   };
   nativeCancellationRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-cancellation-rollout-cohort.nix {
-      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
+      inherit lib pkgs cellId nativeAdapterMatrix;
+      mkSystem = mkFixtureSystem;
     })
   nativeCancellationCells.groups.rollout;
   nativeCancellationReferenceCohort = import ./tests/fleet/ability-native-cancellation-reference.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    inherit lib pkgs nativeAdapterMatrix;
+    mkSystem = mkFixtureSystem;
     qualificationImage = true;
   };
 
@@ -571,11 +594,13 @@
     matrix = nativeAdapterMatrix.spec;
   };
   nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    inherit lib pkgs nativeAdapterMatrix;
+    mkSystem = mkFixtureSystem;
     qualificationImage = true;
   };
   nativeProviderNegativeSystemdManager = import ./tests/fleet/ability-native-provider-negative-systemd-manager.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
+    inherit lib pkgs nativeAdapterMatrix;
+    mkSystem = mkFixtureSystem;
     qualificationImage = true;
   };
   nativeAdapterRoleScenarios = [
@@ -854,7 +879,8 @@
         acc
         // prefixAttrs name (
           pkg.checks (builtins.intersectAttrs (builtins.functionArgs pkg.checks) {
-            inherit testing pkgs mkSystem;
+            inherit testing pkgs;
+            mkSystem = mkFixtureSystem;
             self = pkg;
           })
         )
@@ -862,13 +888,16 @@
   ) {} (builtins.attrNames pkgs);
 
   packagePresetCheck = import ./tests/packages/preset.nix {
-    inherit pkgs mkSystem testing;
+    inherit pkgs testing;
+    mkSystem = mkFixtureSystem;
   };
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
-    inherit pkgs mkSystem testing;
+    inherit pkgs testing;
+    mkSystem = mkFixtureSystem;
   };
   selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
-    inherit pkgs lib mkSystem testing;
+    inherit pkgs lib testing;
+    mkSystem = mkFixtureSystem;
   };
 
   # Stdenv cross-cutting integration check
@@ -927,7 +956,8 @@
     loadSpec = filename: let
       specModule = import (./tests/fleet + "/${filename}");
       availableArgs = {
-        inherit lib pkgs mkSystem mkAbilityQualificationProjection;
+        inherit lib pkgs mkAbilityQualificationProjection;
+        mkSystem = mkFixtureSystem;
         inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
         systems = discoverSystems;
         # Fleet checks consume the exact local-platform production subject and
@@ -1670,10 +1700,15 @@ in {
       crucible-guest = pkgs.crucible-guest;
     };
     eval-standalone = import ./lib/testing/eval.nix {
-      inherit pkgs lib mkSystem;
+      inherit pkgs lib;
+      mkDeployableSystem = mkSystem;
+      mkSystem = mkFixtureSystem;
       system = serverSystem;
     };
-    abilities = import ./tests/abilities {inherit pkgs lib mkSystem;};
+    abilities = import ./tests/abilities {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
     # Pure evaluation and focused all-variant output contracts are one gate.
     # Rendered store paths remain contextual Nix references rather than
@@ -1767,10 +1802,12 @@ in {
         pkgs = buildPackages;
       };
       external-image-assembly = import ./tests/build/external-image-assembly.nix {
-        inherit pkgs lib mkSystem;
+        inherit pkgs lib;
+        mkSystem = mkFixtureSystem;
       };
       initrd-stage-contract = import ./tests/build/initrd-stage-contract.nix {
-        inherit pkgs lib mkSystem;
+        inherit pkgs lib;
+        mkSystem = mkFixtureSystem;
       };
       systemd-verity = import ./tests/abilities/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
@@ -1812,28 +1849,37 @@ in {
     tla = import ./lib/testing/tla.nix {inherit pkgs lib;};
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
-    module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
+    module-enforcement = import ./lib/testing/module-enforcement.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     package-documentation = import ./tests/packages/documentation.nix {
       inherit pkgs lib;
       system = serverSystem;
     };
     # Off-host config-eval preflight and flat-to-module parity gates.
     # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
-    config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
+    config-eval = import ./lib/testing/config-eval.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     config-manifest = import ./lib/testing/config-manifest.nix {
       inherit pkgs lib;
       system = discoverSystems.server;
     };
     config-provenance = import ./lib/testing/config-provenance.nix {
-      inherit pkgs mkSystem;
+      inherit pkgs;
+      mkSystem = mkFixtureSystem;
       serverModule = ./systems/server.nix;
     };
     nginx-config = import ./tests/packages/nginx-config.nix {
-      inherit pkgs lib mkSystem;
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
       serverModule = ./systems/server.nix;
     };
     registry-hub = import ./tests/packages/registry-hub.nix {
-      inherit pkgs lib mkSystem;
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
       serverModule = ./systems/server.nix;
     };
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
@@ -1843,7 +1889,8 @@ in {
         goldenRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
       };
       eval = import ./tests/containers/eval.nix {
-        inherit pkgs lib mkSystem;
+        inherit pkgs lib;
+        mkSystem = mkFixtureSystem;
         serverModule = ./systems/server.nix;
         testingModule = ./systems/aos-testing.nix;
         aosSystem = hostPlatform.system;
@@ -1895,7 +1942,10 @@ in {
         ];
       };
     };
-    config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
+    config-materialize = import ./lib/testing/config-materialize.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     # Complete non-KVM on-host configuration gate. The image lifecycle and
     # degraded-network contracts are exercised by the fleet aggregate below.
     runtime-config-all = pkgs.mkDerivation {

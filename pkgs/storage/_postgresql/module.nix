@@ -272,8 +272,8 @@
     };
   };
 
-  stateRuntimePath = resultOf "state-storage" "storage-path";
-  runtimeRuntimePath = resultOf "runtime-storage" "storage-path";
+  stateRuntimePath = resultOf "state-storage" "planned-path";
+  runtimeRuntimePath = resultOf "runtime-storage" "planned-path";
   statePlannedPath = resultOf "state-storage" "planned-path";
   runtimePlannedPath = resultOf "runtime-storage" "planned-path";
   dataRuntimePath = pathWithin {

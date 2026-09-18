@@ -7,6 +7,7 @@
 ##! just a config refresh).
 {
   config,
+  initrdAbilityEvaluation ? null,
   lib,
   pkgs,
   ...
@@ -40,8 +41,19 @@
     ]
     ++ hardwareAutoloadedInitrdModules;
   uniqueStoreRoots = lib.uniqueBy (root: builtins.toString root);
+  initrdPackageArtifacts =
+    if initrdAbilityEvaluation == null
+    then []
+    else
+      lib.flatten (
+        builtins.attrValues
+        initrdAbilityEvaluation.config.aos.contributions.initrdRuntimeArtifacts
+      );
 in {
-  imports = [./_kernel-parameter-contributions.nix];
+  imports = [
+    ./_initrd-runtime-artifact-contributions.nix
+    ./_kernel-parameter-contributions.nix
+  ];
 
   options.aos.boot = {
     ## Kernel command line parameters.
@@ -194,6 +206,7 @@ in {
     aos.boot.initrd.runtimeRoots = lib.unique (builtins.map builtins.toString (
       config.aos.boot.initrd.packageRoots
       ++ config.aos.boot.initrd.nonPackageRuntimeArtifacts
+      ++ initrdPackageArtifacts
     ));
 
     # Provider-neutral kernel command line intent.

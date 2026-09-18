@@ -25,6 +25,12 @@
     abilityIdentityKeyFor "aos.ability.request-output-key/v1" {
       inherit request output;
     };
+  lifetimeRank = {
+    attempt = 0;
+    transaction = 1;
+    instance = 2;
+    persistent = 3;
+  };
 
   fail = message: throw "ability composition: ${message}";
   guaranteeFor = reference:
@@ -457,6 +463,30 @@
     then fail "every derived child request key must have exactly one producer"
     else builtins.mapAttrs (_: children: (builtins.head children).declaration) childrenByRequest;
 
+  outputDescriptorFor = requestName: outputName: let
+    selected =
+      builtins.filter (
+        entry: entry.binding.request == requestName
+      )
+      selections;
+    entry =
+      if builtins.length selected == 1
+      then builtins.head selected
+      else fail "resultOf '${requestName}.${outputName}' must name one selected request";
+    aggregateDescriptor = entry.interface.outputs.${outputName} or null;
+    methodDescriptors = builtins.concatMap (methodName:
+      lib.optional
+      (builtins.hasAttr outputName entry.interface.methods.${methodName}.outputs)
+      entry.interface.methods.${methodName}.outputs.${outputName})
+    (requestedMethods entry);
+    candidates =
+      if aggregateDescriptor != null
+      then [aggregateDescriptor]
+      else methodDescriptors;
+  in
+    if builtins.length candidates != 1
+    then fail "resultOf '${requestName}.${outputName}' must name one exact authorized output"
+    else builtins.head candidates;
   planningOutputFor = requestName: outputName: let
     matching = builtins.concatLists (builtins.map (group:
       if
@@ -465,22 +495,14 @@
       then [group.result.outputs.${requestName}.${outputName}]
       else [])
     resultGroups);
-    selected =
-      builtins.filter (
-        entry: entry.binding.request == requestName
-      )
-      selections;
-    descriptor =
-      if builtins.length selected == 1
-      then (builtins.head selected).interface.outputs.${outputName} or null
-      else null;
+    descriptor = outputDescriptorFor requestName outputName;
   in
     if builtins.length matching != 1
     then fail "composition resultOf '${requestName}.${outputName}' must resolve one exact provider output"
     else if descriptor == null || descriptor.phase != "planning"
     then fail "composition resultOf '${requestName}.${outputName}' is not a planning output"
     else builtins.head matching;
-  resolveCompositionValue = groupKey: trail: value:
+  resolveCompositionValue = groupKey: recipientLifetime: trail: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then let
       matchingChildren =
@@ -503,14 +525,21 @@
         then value.request
         else child.request;
       reference = "${requestName}.${value.output}";
+      descriptor = outputDescriptorFor requestName value.output;
     in
-      if builtins.elem reference trail
+      if lifetimeRank.${descriptor.lifetime} < lifetimeRank.${recipientLifetime}
+      then fail "composition resultOf '${reference}' cannot outlive its ${descriptor.lifetime} output"
+      else if descriptor.phase == "runtime"
+      then value // {request = requestName;}
+      else if descriptor.phase != "planning"
+      then fail "composition resultOf '${reference}' has an unsupported value phase"
+      else if builtins.elem reference trail
       then fail "composition output cycle includes '${reference}'"
-      else resolveCompositionValue groupKey (trail ++ [reference]) (planningOutputFor requestName value.output)
+      else resolveCompositionValue groupKey recipientLifetime (trail ++ [reference]) (planningOutputFor requestName value.output)
     else if builtins.isAttrs value
-    then builtins.mapAttrs (_: resolveCompositionValue groupKey trail) value
+    then builtins.mapAttrs (_: resolveCompositionValue groupKey recipientLifetime trail) value
     else if builtins.isList value
-    then builtins.map (resolveCompositionValue groupKey trail) value
+    then builtins.map (resolveCompositionValue groupKey recipientLifetime trail) value
     else value;
   compositionGroups = builtins.map (group:
     group
@@ -520,7 +549,18 @@
         // {
           realizations =
             builtins.mapAttrs (
-              _: resolveCompositionValue group.groupKey []
+              resourceKey: let
+                matches =
+                  builtins.filter (
+                    resource: resource.resource.key == resourceKey
+                  )
+                  group.resources;
+                resource =
+                  if builtins.length matches == 1
+                  then builtins.head matches
+                  else fail "composition realization '${resourceKey}' has no exact desired resource lifetime";
+              in
+                resolveCompositionValue group.groupKey resource.lifetime []
             )
             group.result.realizations;
         };

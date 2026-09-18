@@ -4,7 +4,6 @@
   lib,
   ...
 }: let
-  cfg = config.aos.metadata.storageProvisioning;
   abilityTypes = lib.abilities.types;
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   configurationInput = lib.abilities.interfaces.configurationInput.types;
@@ -34,7 +33,7 @@
       };
     };
   };
-  authorizationConfiguration = abilityTypes.record {
+  authorizationConfigurationType = abilityTypes.record {
     fields = {
       schema = abilityTypes.enum ["aos.metadata.provisioning-authorization-configuration/v1"];
       trust_mode = abilityTypes.enum ["platform" "signed"];
@@ -87,15 +86,17 @@
     fields = {request = storage.requestType;} // nativeTools;
   };
   acquisitionParameters = abilityTypes.record {
-    fields = {
-      request = storage.requestType;
-      platform = abilityTypes.deferredResult detectedPlatform;
-    } // nativeTools;
+    fields =
+      {
+        request = storage.requestType;
+        platform = abilityTypes.deferredResult detectedPlatform;
+      }
+      // nativeTools;
   };
   authorizationParameters = abilityTypes.record {
     fields = {
       request = storage.requestType;
-      configuration = authorizationConfiguration;
+      configuration = authorizationConfigurationType;
       acquired_metadata = abilityTypes.deferredResult acquiredMetadata;
     };
   };
@@ -225,10 +226,38 @@
     artifact = runtimeArtifact;
     inherit entryPoint arguments result;
   };
+  configured =
+    lib.hasAttrByPath ["aos" "config" "evalAtBoot" "trust"] config
+    && lib.hasAttrByPath ["aos" "config" "evalAtBoot" "baseLib"] config
+    && lib.hasAttrByPath ["aos" "config" "evalAtBoot" "baseLibAbiHash"] config
+    && lib.hasAttrByPath ["aos" "apm" "configKeys"] config;
+  trust = config.aos.config.evalAtBoot.trust;
+  configKeys = config.aos.apm.configKeys;
+  keyFileContent = keys: "${lib.concatStringsSep "\n" keys}\n";
+  configTrustAnchors =
+    config.aos.initrdRuntime.renderedFileTrees.aos-metadata-provider;
+  trustedConfigKeys =
+    lib.mapAttrsToList (operator: keys: let
+      content = keyFileContent keys;
+    in {
+      kind = "immutable-file";
+      path = "${configTrustAnchors}/${operator}.pub";
+      content_sha256 = "sha256:${builtins.hashString "sha256" content}";
+    })
+    configKeys;
+  configuredAuthorization = {
+    schema = "aos.metadata.provisioning-authorization-configuration/v1";
+    trust_mode = trust;
+    trusted_config_keys = trustedConfigKeys;
+    base_library = {
+      store_path = toString config.aos.config.evalAtBoot.baseLib;
+      abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
+    };
+  };
 in {
   options.aos.metadata.storageProvisioning = {
     authorizationConfiguration = lib.mkOption {
-      type = abilityTypes.optional authorizationConfiguration;
+      type = abilityTypes.optional authorizationConfigurationType;
       default = null;
       internal = true;
       readOnly = true;
@@ -292,5 +321,20 @@ in {
         ${authorizationAlias}.implementation = authorizationAlias;
       };
     }
+  ];
+
+  config.aos.metadata.storageProvisioning.authorizationConfiguration =
+    lib.mkIf configured
+    configuredAuthorization;
+
+  config.aos.contributions.initrdRuntimeFiles.aos-metadata-provider = lib.mkIf configured (
+    lib.mapAttrs' (operator: keys:
+      lib.nameValuePair "${operator}.pub" (keyFileContent keys))
+    configKeys
+  );
+
+  config.aos.contributions.initrdRuntimeArtifacts.aos-metadata-provider = lib.mkIf configured [
+    (builtins.toString configTrustAnchors)
+    (builtins.toString config.aos.config.evalAtBoot.baseLib)
   ];
 }

@@ -91,7 +91,7 @@ in
         entry_point = "bin/test-http-server";
         arguments = [
           "--port=8000"
-          (resultReference "test-http-server:content" "storage-path")
+          (resultReference "test-http-server:content" "planned-path")
         ];
       };
       ignore_failure = false;

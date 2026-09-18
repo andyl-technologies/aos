@@ -16,14 +16,13 @@
 {
   pkgs,
   lib,
+  mkSystem,
 }: let
-  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
-
   opKey = "ops:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIJiuCf/fX/rsn5ODyT5ebEVtabAmZceKi2aD+cBWjWKL";
 
   # A well-formed system declaring one operator config key.
   mkConfigSystem = keys:
-    aos.mkSystem {
+    mkSystem {
       modules = [
         ../../systems/server.nix
         {aos.apm.configKeys.ops = keys;}
@@ -32,7 +31,7 @@
 
   systemA = mkConfigSystem [opKey];
   systemB = mkConfigSystem [opKey];
-  signedSystem = aos.mkSystem {
+  signedSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {
@@ -41,7 +40,7 @@
       }
     ];
   };
-  signedWithoutKeySystem = aos.mkSystem {
+  signedWithoutKeySystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {aos.config.evalAtBoot.trust = "signed";}
@@ -90,7 +89,7 @@
     !(builtins.tryEval brokenSystem.config.system.build.toplevel.name).success;
 
   # Fail-closed: an operator-prefix mismatch is also rejected.
-  mismatchSystem = aos.mkSystem {
+  mismatchSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {aos.apm.configKeys.ops = ["other:Ed25519:AAAA"];}
@@ -101,23 +100,39 @@
 
   defaultTrustsPlatform =
     systemA.config.aos.config.evalAtBoot.trust == "platform";
-  signedAuthorization =
-    signedSystem.config.aos.metadata.storageProvisioning.authorizationConfiguration;
-  stage2Script = signedSystem.config.systemd.services.aos-eval.script;
+  signedTrustAnchors =
+    builtins.filter
+    (root:
+      builtins.match
+      "/nix/store/[a-z0-9]+-aos-initrd-runtime-files-aos-metadata-provider"
+      root
+      != null)
+    signedSystem.config.aos.boot.initrd.runtimeRoots;
+  signedEvalServices =
+    builtins.filter
+    (resource:
+      resource.kind
+      == "aos.service.instance"
+      && (resource.value.manager_identity.name or resource.value.service) == "aos-eval")
+    (builtins.attrValues signedSystem.config.aos.abilities.resolvedResources);
+  signedEvalService =
+    if builtins.length signedEvalServices == 1
+    then builtins.head signedEvalServices
+    else throw "config-eval: the signed fixed point must contain one package-owned evaluation service";
+  stage2Arguments =
+    (builtins.head signedEvalService.value.lifecycle.start).executable.arguments;
   signedModeRequiresSignature =
-    signedAuthorization.schema
-    == "aos.metadata.provisioning-authorization-configuration/v1"
-    && signedAuthorization.trust_mode == "signed"
-    && builtins.length signedAuthorization.trusted_config_keys == 1
-    && (builtins.head signedAuthorization.trusted_config_keys).kind == "immutable-file"
-    && builtins.match
-    "/nix/store/[a-z0-9]+-aos-provisioning-trust-anchors/ops.pub"
-    (builtins.head signedAuthorization.trusted_config_keys).path
-    != null;
+    signedSystem.config.aos.config.evalAtBoot.trust
+    == "signed"
+    && builtins.length signedTrustAnchors == 1;
   stage2UsesRetainedManifest =
-    lib.hasInfix "__eval-service" stage2Script
-    && !lib.hasInfix "/run/aos-metadata" stage2Script
-    && !lib.hasInfix "--host-nix" stage2Script;
+    builtins.elem "__eval-service" stage2Arguments
+    && !(builtins.any
+      (argument:
+        builtins.isString argument
+        && lib.hasInfix "/run/aos-metadata" argument)
+      stage2Arguments)
+    && !(builtins.elem "--host-nix" stage2Arguments);
   signedModeWithoutKeyThrows =
     !(builtins.tryEval signedWithoutKeySystem.config.system.build.toplevel.name).success;
 

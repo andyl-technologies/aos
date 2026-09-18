@@ -3,9 +3,17 @@
   lib,
   pkgs,
 }: let
+  aosPackageModule = lib.abilities.authenticatedPackageModuleRecordFor pkgs.aos;
+  systemdPackageModule = lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd;
+  packageProfileProviderModule =
+    aosPackageModule
+    // {
+      module = "${pkgs.aos.module}/package-profile-readiness-provider.nix";
+    };
   evaluate = {
     enabled,
     stage ? "host",
+    providerModules ? [],
   }:
     lib.evalModules {
       inherit lib;
@@ -26,17 +34,15 @@
           aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = enabled;
         }
       ];
-      packageModules = [
-        {
-          name = "aos";
-          version = pkgs.aos.version;
-          module = pkgs.aos.module + "/module.nix";
-        }
-        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
-      ];
+      packageModules = [aosPackageModule systemdPackageModule];
+      selectedProviderModules = providerModules;
     };
   disabled = evaluate {enabled = false;};
   enabled = evaluate {enabled = true;};
+  providerEnabled = evaluate {
+    enabled = true;
+    providerModules = [packageProfileProviderModule];
+  };
   initrd = evaluate {
     enabled = true;
     stage = "initrd";
@@ -50,6 +56,8 @@
   profileLifecycle = requests."aos:package-profile-convergence-lifecycle".parameters;
   quoteLifecycle = requests."systemd:aos-attest-lifecycle".parameters;
   snapshotImplementation = enabled.config.aos.abilities.implementations."aos:synchronized-registry-snapshot";
+  providedReadinessImplementation =
+    providerEnabled.config.aos.abilities.implementations."aos:package-profile-readiness";
 in
   assert !(disabledRequests ? "aos:package-profile-specification");
   assert !(disabledRequests ? "aos:package-profile-readiness");
@@ -60,6 +68,10 @@ in
   assert requests."aos:package-profile-readiness".parameters == "system-profile";
   assert enabled.config.aos.abilities.implementations."aos:package-profile-readiness".providerModule.path
   == "package-profile-readiness-provider.nix";
+  assert builtins.isFunction providedReadinessImplementation.provide;
+  assert providedReadinessImplementation.description
+  == "Publishes package-profile convergence through the package-owned lifecycle resource.";
+  assert !(providerEnabled.config.aos.abilities.implementations ? "aos:aos:package-profile-readiness");
   assert enabled.config.aos.abilities.instances."aos:synchronized-registry-snapshot".implementation
   == "aos:synchronized-registry-snapshot";
   assert !(initrd.config.aos.abilities.instances ? "aos:synchronized-registry-snapshot");

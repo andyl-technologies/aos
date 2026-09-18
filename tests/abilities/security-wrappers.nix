@@ -9,10 +9,7 @@
       lib.abilities.module
       ../../modules/_package-contributions.nix
       {
-        options.aos.security.sudo.enable = lib.mkOption {
-          type = lib.types.bool;
-          default = true;
-        };
+        aos.security.sudo.enable = true;
         aos.abilities.environment = {
           authority = "deployment";
           key = "wrapper-test";

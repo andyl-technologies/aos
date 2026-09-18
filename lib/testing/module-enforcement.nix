@@ -17,14 +17,13 @@
 {
   pkgs,
   lib,
+  mkSystem,
 }: let
-  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
-
   # --- Assertion enforcement ------------------------------------------
   #
   # Build a broken server system with a failing assertion. The config
   # itself must still be inspectable (Option B semantics).
-  brokenSystem = aos.mkSystem {
+  brokenSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {
@@ -48,7 +47,7 @@
   brokenBuildThrows = !brokenTryBuild.success;
 
   # Control: a well-formed system with passing assertions builds fine.
-  healthySystem = aos.mkSystem {
+  healthySystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {
@@ -68,7 +67,7 @@
     healthySystem.config.aos.image.rootPartitionMiB
     > healthySystem.config.aos.image.budgets.maxRootMiB;
 
-  overriddenRootPartitionSystem = aos.mkSystem {
+  overriddenRootPartitionSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {aos.image.rootPartitionMiB = 1536;}
@@ -79,7 +78,7 @@
     == 1536
     && overriddenRootPartitionSystem.config.aos.boot.storage.zfs.rootSlotSizeMiB == 1536;
 
-  undersizedRootPartitionSystem = aos.mkSystem {
+  undersizedRootPartitionSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {aos.image.rootPartitionMiB = 511;}
@@ -93,7 +92,7 @@
 
   # The ESP budget is also its storage geometry. Reject a contract that cannot
   # hold two maximum-sized UKIs before any image derivation is realized.
-  undersizedEspSystem = aos.mkSystem {
+  undersizedEspSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {aos.image.budgets.maxFirmwarePartitionMiB = lib.mkForce 351;}
@@ -107,7 +106,7 @@
 
   # A ZFS installer must not allocate zvols smaller than payloads admitted by
   # the image contract.
-  undersizedZfsSlotSystem = aos.mkSystem {
+  undersizedZfsSlotSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {
@@ -836,6 +835,37 @@
     .observedOwners
     == ["redis" "other"];
 
+  packageValuesAreAtomicForDependencyOwnership = let
+    packageLikeValue = {
+      outPath = "/nix/store/00000000000000000000000000000000-package";
+      internal = throw "dependency ownership traversed package internals";
+    };
+  in
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options = {
+            artifacts = lib.mkOption {
+              type = lib.types.attrsOf (lib.types.submodule {
+                options.package = lib.mkOption {type = lib.types.package;};
+              });
+              default = {};
+              contributable = true;
+            };
+            observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
+          };
+          config.artifacts.inert.package = packageLikeValue;
+        })
+        ({provenance, ...}: {
+          config.observedOwners = provenance.dependencyOwnersOfAttr ["artifacts"] "inert";
+        })
+      ];
+      inherit lib;
+    })
+    .config
+    .observedOwners
+    == ["@base"];
+
   packageDefaultDependencyOwner =
     (lib.evalModules {
       modules = [
@@ -1416,6 +1446,10 @@
       {
         ok = mixedDependencyOwnersDetected;
         message = "mixed artifact dependency owners";
+      }
+      {
+        ok = packageValuesAreAtomicForDependencyOwnership;
+        message = "package values are atomic for dependency ownership";
       }
       {
         ok = packageDefaultDependencyOwner;

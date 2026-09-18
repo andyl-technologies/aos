@@ -81,9 +81,9 @@
     if condition
     then fragments
     else [];
-  runtimePath = resultOf "runtime-storage" "storage-path";
-  statePath = resultOf "state-storage" "storage-path";
-  logPath = resultOf "log-storage" "storage-path";
+  runtimePath = resultOf "runtime-storage" "planned-path";
+  statePath = resultOf "state-storage" "planned-path";
+  logPath = resultOf "log-storage" "planned-path";
   documentPath = relativePath:
     pathWithin {
       base = statePath;

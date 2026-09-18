@@ -381,6 +381,13 @@ It produces concrete instances, provider definitions, desired resources, and
 conditional requirements. No second ability-specific module set owns or merges
 configuration.
 
+Image modules are source-backed paths retained with the in-image evaluator, so
+the evaluator replays the exact system graph that produced the image. Inline
+module values are limited to evaluation-only callers and explicitly
+non-deployable repository fixtures. Requesting a deployable image or base
+library from a graph containing one fails rather than packaging a partial
+graph; fixture overlays do not count as evaluator-replay evidence.
+
 If concrete requirements need another provider-selection round, the outer
 evaluator updates the selected module set and reevaluates the entire fixed point
 from explicit inputs. The final successful evaluation is the sole authoritative

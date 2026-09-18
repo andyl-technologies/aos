@@ -36,7 +36,7 @@
             executable = {
               artifact = lib.abilities.packageOutput {};
               entry_point = "bin/desired-prune-test-start";
-              arguments = [(resultOf "state" "storage-path")];
+              arguments = [(resultOf "state" "planned-path")];
             };
             ignore_failure = false;
           }
@@ -55,7 +55,7 @@
       storage.mounts = [
         {
           name = "state";
-          source = resultOf "state" "storage-path";
+          source = resultOf "state" "planned-path";
           access = "read-write";
         }
       ];

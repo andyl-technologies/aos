@@ -58,7 +58,7 @@
               entry_point = "bin/aos-credential-delivery-test-consumer";
               arguments = [
                 (resultOf "join-token" "credential-path")
-                (resultOf "state" "storage-path")
+                (resultOf "state" "planned-path")
               ];
             };
             ignore_failure = false;
@@ -86,7 +86,7 @@
       storage.mounts = [
         {
           name = "state";
-          source = resultOf "state" "storage-path";
+          source = resultOf "state" "planned-path";
           access = "read-write";
         }
       ];
