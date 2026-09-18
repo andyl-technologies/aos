@@ -29,8 +29,18 @@
     "aos.platform.linux.service-isolation"
   ];
 
-  polkitDevicePolicy = pkgs.polkit.abilities.requirementTemplates.linux-service-device-policy;
   systemdDevicePolicy = projectedInterfaces.linux-service-device-policy;
+  expectedDevicePolicySelector = {
+    inherit (systemdDevicePolicy) name abi;
+  };
+  polkitDevicePolicies =
+    builtins.filter
+    (requirement: builtins.elem expectedDevicePolicySelector requirement.accepted_interfaces)
+    (builtins.attrValues pkgs.polkit.abilities.requirementTemplates);
+  polkitDevicePolicy =
+    if builtins.length polkitDevicePolicies == 1
+    then builtins.head polkitDevicePolicies
+    else throw "Polkit must consume exactly one Linux service device-policy ability";
 
   selected = lib.evalModules {
     inherit lib;
@@ -66,11 +76,7 @@ in
   (builtins.attrNames projectedLinuxInterfaces)
   == expectedLinuxInterfaceNames;
   assert polkitDevicePolicy.accepted_interfaces
-  == [
-    {
-      inherit (systemdDevicePolicy) name abi;
-    }
-  ];
+  == [expectedDevicePolicySelector];
   assert builtins.all
   (name: selectedInterfaces ? "systemd:${name}")
   (builtins.attrNames projectedLinuxInterfaces); true
