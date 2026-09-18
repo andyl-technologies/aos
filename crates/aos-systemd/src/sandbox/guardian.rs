@@ -1,8 +1,8 @@
 //! Closed transient-unit contract for per-assignment lease guardians.
 //!
-//! The specification transfers exactly ten named read-only authority
-//! descriptors and starts one descriptor-pinned executable. It exposes no
-//! general property map or arbitrary service-manager operation.
+//! The specification transfers one executable descriptor followed by exactly
+//! ten named read-only authority descriptors. It exposes no general property
+//! map or arbitrary service-manager operation.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -25,10 +25,11 @@ const GUARDIAN_SLICE: &str = "aos-assignment-guardians.slice";
 const GUARDIAN_STATE_PREFIX: &str = "aos/lease-guards";
 const GUARDIAN_ENVIRONMENT_PREFIX: &str = "AOS_GUARDIAN_INCARNATION=";
 const GUARDIAN_BINDING_PREFIX: &str = "AOS_GUARDIAN_LAUNCH_BINDING=";
+const GUARDIAN_EXECUTABLE_DESCRIPTOR_NAME: &str = "guardian-executable";
+const GUARDIAN_EXECUTABLE_LAUNCH_ARGUMENT: &str = "--exec-pinned-activation";
 const GUARDIAN_ALLOWED_ADDRESS_FAMILIES: &[&str] = &["AF_UNIX"];
 const GUARDIAN_ALLOWED_SYSCALLS: &[&str] = &["@system-service"];
-const GUARDIAN_DENIED_SOCKET_OPERATIONS: &[&str] =
-    &["accept", "accept4", "bind", "connect", "listen"];
+const GUARDIAN_DENIED_SOCKET_OPERATIONS: &[&str] = &["accept", "accept4", "bind", "listen"];
 const MAXIMUM_POLICY_BYTES: u64 = 64 * 1024;
 const MAXIMUM_PLAN_BYTES: u64 = 256 * 1024;
 const MAXIMUM_LEASE_BYTES: u64 = 64 * 1024;
@@ -102,9 +103,17 @@ impl GuardianExecutableDescriptor {
         Ok(())
     }
 
-    fn transferred_path(&self) -> Result<SandboxDescriptorPath> {
+    fn transferred(&self) -> Result<(Fd<'static>, String)> {
         self.revalidate()?;
-        Ok(self.path.clone())
+        let descriptor = self
+            .path
+            .descriptor()
+            .try_clone_to_owned()
+            .map_err(|error| invalid(format!("cannot transfer guardian executable: {error}")))?;
+        Ok((
+            Fd::from(descriptor),
+            GUARDIAN_EXECUTABLE_DESCRIPTOR_NAME.to_owned(),
+        ))
     }
 }
 
@@ -492,6 +501,7 @@ fn validate_guardian_descriptor(
 pub struct GuardianUnitSpec {
     name: SandboxUnitName,
     executable: GuardianExecutableDescriptor,
+    executable_path: String,
     credentials: GuardianCredentialDescriptors,
     binding: [u8; 32],
     incarnation_hex: String,
@@ -507,15 +517,18 @@ impl GuardianUnitSpec {
     /// exact handoff. Each assignment receives a separate dynamic service
     /// identity, 0700 durable state directory, and private network and IPC
     /// namespaces. The only allowed address family is `AF_UNIX` for the one
-    /// readiness datagram; bind/listen/connect/accept are denied.
+    /// readiness datagram. Bind, listen, and accept are denied; systemd's
+    /// service executor requires an `AF_UNIX` connect while preparing the
+    /// dynamic service identity before it enters the Guardian executable.
     ///
     /// # Errors
     ///
-    /// Returns an error for a zero incarnation-derived name or invalid start
-    /// timeout.
+    /// Returns an error for a zero incarnation-derived name, non-absolute
+    /// launcher path, or invalid start timeout.
     pub fn new(
         name: SandboxUnitName,
         executable: GuardianExecutableDescriptor,
+        executable_path: String,
         credentials: GuardianCredentialDescriptors,
         binding: [u8; 32],
         timeout_start: Duration,
@@ -525,10 +538,14 @@ impl GuardianUnitSpec {
         if binding == [0; 32] {
             return Err(invalid("guardian launch binding is zero"));
         }
+        if !executable_path.starts_with('/') || executable_path.as_bytes().contains(&0) {
+            return Err(invalid("guardian executable path is not absolute"));
+        }
         duration_micros(timeout_start, "guardian start timeout")?;
         Ok(Self {
             name,
             executable,
+            executable_path,
             credentials,
             binding,
             incarnation_hex: super::encode_hex(incarnation),
@@ -554,7 +571,9 @@ impl GuardianUnitSpec {
             "{GUARDIAN_BINDING_PREFIX}{}",
             super::encode_hex32(self.binding)
         );
-        let executable = self.executable.transferred_path()?;
+        let mut descriptors = Vec::with_capacity(GuardianCredentialRole::ALL.len() + 1);
+        descriptors.push(self.executable.transferred()?);
+        descriptors.extend(self.credentials.transferred()?);
         let state_directory = format!("{GUARDIAN_STATE_PREFIX}/{}", self.incarnation_hex);
         Ok(vec![
             string_property("Description", format!("AOS lease guardian {}", self.name)),
@@ -622,14 +641,20 @@ impl GuardianUnitSpec {
                 "InaccessiblePaths",
                 vec!["/run/dbus/system_bus_socket".to_owned()],
             )?,
-            complex_property("ExtraFileDescriptors", self.credentials.transferred()?)?,
+            complex_property("ExtraFileDescriptors", descriptors)?,
             string_array_property("Environment", vec![environment, binding])?,
             bool_property("SetLoginEnvironment", false),
             u64_property(
                 "TimeoutStartUSec",
                 duration_micros(self.timeout_start, "guardian start timeout")?,
             ),
-            exec_property(&executable.path, vec![executable.path.clone()])?,
+            exec_property(
+                &self.executable_path,
+                vec![
+                    self.executable_path.clone(),
+                    GUARDIAN_EXECUTABLE_LAUNCH_ARGUMENT.to_owned(),
+                ],
+            )?,
         ])
     }
 }
@@ -757,11 +782,10 @@ mod tests {
     }
 
     fn spec() -> (tempfile::TempDir, GuardianUnitSpec) {
-        let executable = File::open(
-            std::env::current_exe()
-                .unwrap_or_else(|error| panic!("test executable path failed: {error}")),
-        )
-        .unwrap_or_else(|error| panic!("test executable failed: {error}"));
+        let executable_path = std::env::current_exe()
+            .unwrap_or_else(|error| panic!("test executable path failed: {error}"));
+        let executable = File::open(&executable_path)
+            .unwrap_or_else(|error| panic!("test executable failed: {error}"));
         let executable = GuardianExecutableDescriptor::from_descriptor(executable.as_fd())
             .unwrap_or_else(|error| panic!("test executable pin failed: {error}"));
         let directory =
@@ -770,6 +794,7 @@ mod tests {
         let spec = GuardianUnitSpec::new(
             SandboxUnitName::from_incarnation([0xab; 16]),
             executable,
+            executable_path.to_string_lossy().into_owned(),
             descriptors,
             [0xcd; 32],
             Duration::from_secs(10),
@@ -977,6 +1002,27 @@ mod tests {
         assert_eq!(u64::try_from(interval).unwrap_or_default(), u64::MAX);
         assert_eq!(u32::try_from(burst).unwrap_or_default(), 1);
 
+        let syscall_filters = properties
+            .iter()
+            .filter(|(name, _)| name == "SystemCallFilter")
+            .map(|(_, value)| <(bool, Vec<String>)>::try_from(value.try_clone().unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            syscall_filters,
+            vec![
+                (true, vec!["@system-service".to_owned()]),
+                (
+                    false,
+                    vec![
+                        "accept".to_owned(),
+                        "accept4".to_owned(),
+                        "bind".to_owned(),
+                        "listen".to_owned(),
+                    ],
+                ),
+            ]
+        );
+
         let (_, environment) = properties
             .iter()
             .find(|(name, _)| name == "Environment")
@@ -993,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn authority_descriptors_have_one_exact_canonical_order() {
+    fn activation_descriptors_have_one_exact_canonical_order() {
         let (_directory, spec) = spec();
         let properties = spec
             .properties()
@@ -1004,15 +1050,15 @@ mod tests {
             .unwrap_or_else(|| panic!("guardian descriptor property is absent"));
         let descriptors = Vec::<(Fd<'static>, String)>::try_from(value)
             .unwrap_or_else(|error| panic!("descriptor property decode failed: {error}"));
+        let expected = std::iter::once(GUARDIAN_EXECUTABLE_DESCRIPTOR_NAME)
+            .chain(GuardianCredentialRole::ALL.iter().map(|role| role.as_str()))
+            .collect::<Vec<_>>();
         assert_eq!(
             descriptors
                 .iter()
                 .map(|(_, name)| name.as_str())
                 .collect::<Vec<_>>(),
-            GuardianCredentialRole::ALL
-                .iter()
-                .map(|role| role.as_str())
-                .collect::<Vec<_>>()
+            expected
         );
     }
 

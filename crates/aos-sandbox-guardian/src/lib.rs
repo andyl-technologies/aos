@@ -24,7 +24,10 @@ pub use authority::{
     DormantGuardianProtectedOwnerV1, GuardianArtifacts, GuardianAuthority, GuardianAuthorityError,
     PendingGuardianState, ReadinessConfirmedGuardian,
 };
-pub use runtime::{GuardianRuntimeError, ReadyNotifier, run_from_environment};
+pub use runtime::{
+    GuardianRuntimeError, PINNED_ACTIVATION_ARGUMENT, ReadyNotifier, exec_pinned_activation,
+    run_from_environment,
+};
 pub use state::{
     DurablyPersistedGuardian, GuardianState, GuardianStateCodecError, GuardianStateStore,
     GuardianStateStoreError,

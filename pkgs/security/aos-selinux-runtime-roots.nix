@@ -24,8 +24,9 @@ mkDerivation {
         cp \
           ${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33 \
           expected_policy.bin
-        "$LD" -r -b binary -o expected_policy.o expected_policy.bin
-        "$OBJCOPY" \
+        ${buildPackages.binutils}/bin/ld \
+          -r -b binary -o expected_policy.o expected_policy.bin
+        ${buildPackages.binutils}/bin/objcopy \
           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
           expected_policy.o
 
@@ -51,8 +52,7 @@ mkDerivation {
   ];
 
   passthru = {
-    expectedPolicy =
-      "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+    expectedPolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
     immutablePolicy = aos-selinux-production-policy;
     evidenceSources = [
       (builtins.path {

@@ -124,14 +124,13 @@
   # duplicate the payload and can pull kernel SDKs into the immutable image.
   # Callers compose capability roots with harness roots; both may retain the
   # same output. Form their union before the strict reference-graph boundary.
-  allClosures =
-    lib.unique (
-      map builtins.toString (
-        [toplevel kernel]
-        ++ lib.optionals rootHandoff [immutableStage0]
-        ++ extraClosures
-      )
-    );
+  allClosures = lib.unique (
+    map builtins.toString (
+      [toplevel kernel]
+      ++ lib.optionals rootHandoff [immutableStage0]
+      ++ extraClosures
+    )
+  );
 
   regInfo = import ./closure-info.nix {inherit pkgs lib;} {
     rootPaths = allClosures;
@@ -274,7 +273,6 @@ in
               chmod 0700 rootfs/root/.config
               chmod 0755 rootfs/root/.config/apm
               chmod 0755 rootfs/root/.config/apm/registries.d
-              mkdir -p rootfs/run/current-system
 
               # ── 2. Copy the closure into /nix/store ─────────────────────────
               total=$(wc -l < store-paths)
@@ -376,7 +374,7 @@ in
               cp -a "$SYSTEMD_PRESETS"/. rootfs/usr/lib/systemd/system-preset/
 
               # ── 7. /run/current-system → toplevel ───────────────────────────
-              ln -sfn "$TOPLEVEL" rootfs/run/current-system
+              ln -sfnT "$TOPLEVEL" rootfs/run/current-system
 
               # ── 8. /aos-toplevel seed pointer ──────────────────────────────
               # First-boot bootstrap: aos-seed-profiles.service reads this

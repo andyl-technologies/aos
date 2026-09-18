@@ -105,6 +105,15 @@ pub struct CgroupPopulationMonitor {
     events: File,
 }
 
+/// Reports whether an exact cgroup-v2 subtree is accepting scheduler time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CgroupFreezerState {
+    /// The subtree is thawed.
+    Thawed,
+    /// The subtree and all of its descendants are frozen.
+    Frozen,
+}
+
 /// Describes the recursive task population of one retained cgroup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CgroupPopulationState {
@@ -208,6 +217,90 @@ impl RetainedCgroupAnchor {
         Ok(CgroupPopulationMonitor {
             events: File::from(events.into_owned_fd()),
         })
+    }
+
+    /// Reads the kernel-confirmed freezer state of this exact cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained cgroup is stale, its bounded
+    /// `cgroup.events` record cannot be read, or the record omits a canonical
+    /// `frozen` field.
+    pub fn freezer_state(&self) -> Result<CgroupFreezerState> {
+        self.validate_active()?;
+        let events = self.root.open_regular(Path::new("cgroup.events"))?;
+        let mut bytes = [0_u8; 4097];
+        let length = File::from(events.into_owned_fd())
+            .read_at(&mut bytes, 0)
+            .map_err(|source| Error::Syscall {
+                operation: "read cgroup.events",
+                source,
+            })?;
+        if length == 0 || length == bytes.len() {
+            return Err(Error::MalformedKernelResponse {
+                object: "cgroup.events",
+                message: "freezer record is empty or oversized".to_owned(),
+            });
+        }
+        parse_freezer_state(&bytes[..length])
+    }
+
+    /// Requests a freezer transition for this exact cgroup subtree.
+    ///
+    /// Completion of the write does not prove that every task has reached the
+    /// requested state. Callers must observe [`Self::freezer_state`] until it
+    /// reports the requested value before treating the transition as complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained cgroup is stale, the freezer control
+    /// file is not an exact regular cgroup-v2 file, permission is denied, or
+    /// the kernel does not accept the complete control record.
+    pub fn request_freezer_state(&self, state: CgroupFreezerState) -> Result<()> {
+        self.validate_active()?;
+        let freezer = rustix::fs::openat(
+            self.root.as_fd(),
+            Path::new("cgroup.freeze"),
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|source| Error::Syscall {
+            operation: "open cgroup.freeze",
+            source: source.into(),
+        })?;
+        if uapi::filesystem_type(freezer.as_fd())? != CGROUP2_SUPER_MAGIC
+            || uapi::fstat(freezer.as_fd())?.st_mode & libc::S_IFMT != libc::S_IFREG
+        {
+            return Err(Error::WrongDescriptorType {
+                expected: "cgroup-v2 freezer control",
+            });
+        }
+        let mut remaining: &[u8] = match state {
+            CgroupFreezerState::Thawed => b"0\n",
+            CgroupFreezerState::Frozen => b"1\n",
+        };
+        while !remaining.is_empty() {
+            match rustix::io::write(&freezer, remaining) {
+                Ok(0) => {
+                    return Err(Error::MalformedKernelResponse {
+                        object: "cgroup.freeze",
+                        message: "kernel accepted an incomplete freezer record".to_owned(),
+                    });
+                }
+                Ok(written) => remaining = &remaining[written..],
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(source) => {
+                    return Err(Error::Syscall {
+                        operation: "write cgroup.freeze",
+                        source: source.into(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Sends `SIGKILL` to every task in this exact cgroup and its descendants.
@@ -395,6 +488,31 @@ impl RetainedCgroupAnchor {
     }
 }
 
+fn parse_freezer_state(bytes: &[u8]) -> Result<CgroupFreezerState> {
+    let text = std::str::from_utf8(bytes).map_err(|_| Error::MalformedKernelResponse {
+        object: "cgroup.events",
+        message: "freezer record is not UTF-8".to_owned(),
+    })?;
+    let mut fields = text.lines().filter_map(|line| line.strip_prefix("frozen "));
+    let state = match fields.next() {
+        Some("0") => CgroupFreezerState::Thawed,
+        Some("1") => CgroupFreezerState::Frozen,
+        _ => {
+            return Err(Error::MalformedKernelResponse {
+                object: "cgroup.events",
+                message: "frozen field is absent or invalid".to_owned(),
+            });
+        }
+    };
+    if fields.next().is_some() {
+        return Err(Error::MalformedKernelResponse {
+            object: "cgroup.events",
+            message: "frozen field is repeated".to_owned(),
+        });
+    }
+    Ok(state)
+}
+
 fn recheck_process(process: &PidFd, before: PidFdInfo) -> Result<PidFdInfo> {
     let after = process.info()?;
     if after.pid() != before.pid()
@@ -429,6 +547,26 @@ mod tests {
     use std::process::{Child, Command};
     #[cfg(feature = "kernel-tests")]
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn freezer_state_requires_one_canonical_kernel_field() {
+        assert_eq!(
+            parse_freezer_state(b"populated 1\nfrozen 0\n").expect("thawed state"),
+            CgroupFreezerState::Thawed
+        );
+        assert_eq!(
+            parse_freezer_state(b"populated 1\nfrozen 1\n").expect("frozen state"),
+            CgroupFreezerState::Frozen
+        );
+        for invalid in [
+            b"populated 1\n".as_slice(),
+            b"frozen 2\n".as_slice(),
+            b"frozen 0\nfrozen 1\n".as_slice(),
+            b"frozen 1\xff\n".as_slice(),
+        ] {
+            assert!(parse_freezer_state(invalid).is_err());
+        }
+    }
 
     #[test]
     fn ordinary_directory_with_matching_file_names_is_not_a_cgroup() {

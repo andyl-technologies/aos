@@ -589,6 +589,7 @@ async fn guardian_reducer_terminal_start_persists_cleanup_before_replay_stop() {
     assert!(stop_roles.lock().unwrap().is_empty());
     drop(interrupted);
 
+    worker.residual_stop_once.store(true, Ordering::SeqCst);
     let mut recovered = configured_broker(&fixture, credentials.path(), store.clone(), worker);
     let receipt = recovered
         .apply_runtime(

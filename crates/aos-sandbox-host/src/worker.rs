@@ -12,7 +12,8 @@ use std::sync::Mutex;
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
-    CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
+    CgroupFreezerState, CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root,
+    RetainedCgroupAnchor,
 };
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
@@ -126,9 +127,9 @@ pub enum WorkerOperation {
     },
     /// Stops the incarnation-derived service and awaits its job.
     Stop,
-    /// Freezes the complete service cgroup.
+    /// Freezes the verified payload subtree while leaving its supervisor live.
     Freeze,
-    /// Thaws the complete service cgroup.
+    /// Thaws the verified payload subtree.
     Thaw,
     /// Sends the typed all-process `SIGKILL` operation.
     Kill,
@@ -143,7 +144,7 @@ pub enum ObservedRuntimeState {
     Starting,
     /// The runtime is active and not frozen.
     Ready,
-    /// The runtime's complete service cgroup is frozen.
+    /// The runtime's payload subtree is frozen.
     Frozen,
     /// systemd is deactivating the runtime.
     Stopping,
@@ -1066,13 +1067,24 @@ async fn rollback_launch<B: LaunchBackend + Sync>(
     Err(original)
 }
 
-fn classify_state(observation: &SandboxUnitObservation) -> ObservedRuntimeState {
+fn classify_state(
+    observation: &SandboxUnitObservation,
+    payload_freezer: Option<CgroupFreezerState>,
+) -> ObservedRuntimeState {
     match observation.active_state.as_str() {
         "activating" => ObservedRuntimeState::Starting,
-        "active" if matches!(observation.freezer_state, FreezerState::Frozen) => {
+        "active"
+            if matches!(observation.freezer_state, FreezerState::Running)
+                && payload_freezer == Some(CgroupFreezerState::Frozen) =>
+        {
             ObservedRuntimeState::Frozen
         }
-        "active" => ObservedRuntimeState::Ready,
+        "active"
+            if matches!(observation.freezer_state, FreezerState::Running)
+                && payload_freezer == Some(CgroupFreezerState::Thawed) =>
+        {
+            ObservedRuntimeState::Ready
+        }
         "deactivating" => ObservedRuntimeState::Stopping,
         "inactive" => ObservedRuntimeState::Exited,
         _ => ObservedRuntimeState::Failed,

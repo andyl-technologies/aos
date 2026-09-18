@@ -30,6 +30,8 @@ in
     };
 
     buildDeps = [
+      buildPackages.binutils
+      buildPackages.patchelf
       meson
       ninja
       pkg-config
@@ -166,6 +168,26 @@ in
           '';
       }
     ];
+
+    postFinalize = ''
+      # The generic fixup can shrink a build RPATH to an empty DT_RUNPATH.
+      # The loader treats an empty search component as the current directory,
+      # so remove the tag entirely from the final installed ELF state.
+      find "$out" -type f -print > installed-objects
+      while IFS= read -r object; do
+        dynamic=$(${buildPackages.binutils}/bin/readelf -dW "$object" 2>/dev/null) \
+          || continue
+        if ! printf '%s\n' "$dynamic" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+          continue
+        fi
+
+        rpath=$(${buildPackages.patchelf}/bin/patchelf --print-rpath "$object")
+        if [ -z "$rpath" ]; then
+          ${buildPackages.patchelf}/bin/patchelf --remove-rpath "$object"
+        fi
+      done < installed-objects
+      rm -f installed-objects
+    '';
 
     meta = {
       description = "Pluggable Authentication Modules for Linux";

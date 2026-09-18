@@ -31,7 +31,19 @@ impl SystemdOneShotWorker {
                 payload: None,
             });
         };
-        let state = classify_state(&observation);
+        let payload_freezer = if observation.active_state == "active" {
+            let cgroup = observation.cgroup.as_ref().ok_or_else(|| {
+                HostError::Worker("active sandbox unit has no exact cgroup".to_owned())
+            })?;
+            Some(
+                resolve_payload_cgroup(&self.cgroup_root, cgroup)?
+                    .freezer_state()
+                    .map_err(|error| HostError::Worker(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let state = classify_state(&observation, payload_freezer);
         let leader = match observation.supervisor_pid {
             Some(pid) => Some(self.pin_leader(identity, &observation, pid)?),
             None if matches!(
@@ -579,21 +591,25 @@ impl HostWorker for SystemdOneShotWorker {
                         return Ok(current);
                     }
                     WorkerOperation::Freeze => {
+                        let payload =
+                            resolve_payload_cgroup(&self.cgroup_root, &name.cgroup_path())?;
                         before_effect()?;
-                        client
-                            .freeze_sandbox_unit(&name)
-                            .await
-                            .map_err(|error| worker_error(&error))?;
+                        payload
+                            .request_freezer_state(CgroupFreezerState::Frozen)
+                            .map_err(|error| HostError::Worker(error.to_string()))?;
+                        await_payload_freezer(&payload, CgroupFreezerState::Frozen).await?;
                     }
                     WorkerOperation::Thaw if current.state == ObservedRuntimeState::Ready => {
                         return Ok(current);
                     }
                     WorkerOperation::Thaw => {
+                        let payload =
+                            resolve_payload_cgroup(&self.cgroup_root, &name.cgroup_path())?;
                         before_effect()?;
-                        client
-                            .thaw_sandbox_unit(&name)
-                            .await
-                            .map_err(|error| worker_error(&error))?;
+                        payload
+                            .request_freezer_state(CgroupFreezerState::Thawed)
+                            .map_err(|error| HostError::Worker(error.to_string()))?;
+                        await_payload_freezer(&payload, CgroupFreezerState::Thawed).await?;
                     }
                     WorkerOperation::Kill => {
                         before_effect()?;
@@ -667,19 +683,18 @@ impl HostWorker for SystemdOneShotWorker {
         let root = rustix::fs::fstat(payload.root.as_fd())
             .map_err(|error| HostError::Worker(error.to_string()))?;
         let network = payload.network.identity();
-        let inspector = LinuxPayloadInspector {
-            payload_root: &payload.cgroup,
-        };
         let supervisor_info = current_supervisor
             .pidfd
             .info()
             .map_err(|error| HostError::Worker(error.to_string()))?;
-        let refreshed = discover_payload_leader(
-            &inspector,
-            supervisor_info.pid(),
-            (root.st_dev, root.st_ino),
-            (network.device, network.inode),
-        )?;
+        let refreshed = inspect_quiesced_payload(&payload.cgroup, |inspector| {
+            discover_payload_leader(
+                inspector,
+                supervisor_info.pid(),
+                (root.st_dev, root.st_ino),
+                (network.device, network.inode),
+            )
+        })?;
         if refreshed
             .pidfd
             .info()
@@ -840,10 +855,9 @@ impl HostWorker for SystemdOneShotWorker {
             .process_identity()
             .map_err(|error| HostError::Worker(error.to_string()))?;
         let payload_root = resolve_payload_root(&self.cgroup_root, &supervisor.cgroup)?;
-        let inspector = LinuxPayloadInspector {
-            payload_root: &payload_root,
-        };
-        let payload = recover_payload_leader(&inspector, supervisor_info.pid(), expected_proof)?;
+        let payload = inspect_quiesced_payload(&payload_root, |inspector| {
+            recover_payload_leader(inspector, supervisor_info.pid(), expected_proof)
+        })?;
         payload.recheck_kernel(supervisor)?;
         let proof = runtime_proof_snapshot_with_workspace_mount_id(
             expected_proof.workspace_mount_id,
@@ -1144,15 +1158,14 @@ pub(super) fn verify_supervisor_pins(
         .map_err(|error| HostError::Worker(error.to_string()))?;
     let network = pins.network().identity();
     let payload_root = resolve_payload_root(cgroup_root, &leader.cgroup)?;
-    let inspector = LinuxPayloadInspector {
-        payload_root: &payload_root,
-    };
-    let payload = discover_payload_leader(
-        &inspector,
-        info.pid(),
-        (root.st_dev, root.st_ino),
-        (network.device, network.inode),
-    )?;
+    let payload = inspect_quiesced_payload(&payload_root, |inspector| {
+        discover_payload_leader(
+            inspector,
+            info.pid(),
+            (root.st_dev, root.st_ino),
+            (network.device, network.inode),
+        )
+    })?;
     // The nspawn supervisor deliberately remains outside the guest root, so
     // `/proc/<supervisor>/root` is not evidence for the container root. The
     // root guarantee here is instead the owned descriptor transferred through
@@ -1287,4 +1300,103 @@ fn resolve_payload_root(
         .resolve(Path::new(relative), ResolveOptions::directory())
         .map_err(|error| HostError::Worker(error.to_string()))?;
     BeneathRoot::from_resolved(resolved).map_err(|error| HostError::Worker(error.to_string()))
+}
+
+fn resolve_payload_cgroup(
+    cgroup_root: &BeneathRoot,
+    service: &SandboxCgroupPath,
+) -> Result<RetainedCgroupAnchor> {
+    let payload = resolve_payload_root(cgroup_root, service)?;
+    CgroupV2Root::try_from(payload)
+        .and_then(|root| root.resolve(Path::new(".")))
+        .map_err(|error| HostError::Worker(error.to_string()))
+}
+
+fn inspect_quiesced_payload<T>(
+    payload_root: &BeneathRoot,
+    inspect: impl FnOnce(&LinuxPayloadInspector<'_>) -> Result<T>,
+) -> Result<T> {
+    // A normal payload may fork continuously. Freeze only its delegated
+    // subtree so the two bounded process snapshots form one stable proof while
+    // the nspawn supervisor remains available to the host.
+    let root = CgroupV2Root::from_owned(
+        payload_root
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| HostError::Worker(error.to_string()))?,
+    )
+    .map_err(|error| HostError::Worker(error.to_string()))?;
+    let payload = root
+        .resolve(Path::new("."))
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+    let initial_state = payload
+        .freezer_state()
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+
+    if initial_state == CgroupFreezerState::Thawed {
+        payload
+            .request_freezer_state(CgroupFreezerState::Frozen)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        await_payload_freezer_blocking(&payload, CgroupFreezerState::Frozen)?;
+    }
+
+    let result = inspect(&LinuxPayloadInspector { payload_root });
+    if initial_state == CgroupFreezerState::Frozen {
+        return result;
+    }
+
+    let thaw = payload
+        .request_freezer_state(CgroupFreezerState::Thawed)
+        .map_err(|error| HostError::Worker(error.to_string()))
+        .and_then(|()| await_payload_freezer_blocking(&payload, CgroupFreezerState::Thawed));
+    match (result, thaw) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(HostError::Worker(format!(
+            "{primary}; additionally failed to thaw payload after inspection: {cleanup}"
+        ))),
+    }
+}
+
+fn await_payload_freezer_blocking(
+    payload: &RetainedCgroupAnchor,
+    expected: CgroupFreezerState,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let observed = payload
+            .freezer_state()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        if observed == expected {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(HostError::Worker(format!(
+                "payload cgroup did not reach {expected:?} freezer state"
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+async fn await_payload_freezer(
+    payload: &RetainedCgroupAnchor,
+    expected: CgroupFreezerState,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let observed = payload
+            .freezer_state()
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        if observed == expected {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(HostError::Worker(format!(
+                "payload cgroup did not reach {expected:?} freezer state"
+            )));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 }

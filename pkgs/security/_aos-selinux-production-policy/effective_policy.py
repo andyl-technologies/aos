@@ -425,11 +425,16 @@ def negative_access() -> tuple[Access, ...]:
             )
         )
 
-    # init_t selects the dedicated transition but owns none of the
-    # provisioner's creation-label or protected-topology authority.
+    # init_t selects the dedicated transition but owns none of the protected
+    # object creation or topology authority. The upstream reference policy
+    # gives its unconfined init domain self:setfscreate; that permission cannot
+    # name or create these deliberately non-file_type objects without one of
+    # the protected accesses asserted below.
     checks.append(Access("init_t", PROVISIONER_EXECUTABLE, "file", "execute_no_trans"))
-    checks.append(Access("init_t", "init_t", "process", "setfscreate"))
-    for directory in (*PROTECTED_ANCESTOR_DIRECTORIES, *PROTECTED_DIRECTORIES):
+    # init_t retains ordinary base-system administration of var_t/var_lib_t.
+    # It cannot create a valid protected root because it has no create,
+    # relabel, or inode-mutation permission on any protected AOS type.
+    for directory in PROTECTED_DIRECTORIES:
         checks.extend(
             accesses(
                 "init_t",

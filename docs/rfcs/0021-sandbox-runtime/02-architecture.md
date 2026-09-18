@@ -114,6 +114,12 @@ assignment-freeze verb. At the deadline it exits, so the `BindsTo=` relationship
 stops the payload even if that request or the node daemon failed; the packet
 gate expires independently in kernel context.
 
+Guardian activation transfers the exact executable descriptor before the ten
+ordered authority descriptors. The immutable store-path launcher immediately
+replaces itself through that descriptor with `execveat(2)`, so the process that
+verifies authority and reports readiness is the executable Host pinned during
+plan compilation rather than a later pathname resolution.
+
 The guardian persists the authority expiry, lease generation, and host boot
 ID before acknowledging readiness. A reboot invalidates the local timer state
 and old plans; transient payload units are not resumed until current authority

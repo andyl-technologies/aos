@@ -138,9 +138,9 @@ in {
           mode = "0700";
         }
       ];
-      # The server package order has one reviewed collision: coreutils `kill`
-      # wins over util-linux, matching the production system PATH.
-      allowedFacadeCollisions = ["kill"];
+      # The current package set has one `kill` provider (util-linux), so the
+      # reviewed production facade contains no executable collisions.
+      allowedFacadeCollisions = [];
       shell = true;
     };
 

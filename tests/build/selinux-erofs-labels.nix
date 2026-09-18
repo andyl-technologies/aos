@@ -125,7 +125,7 @@ in
           assert entries[loader]["kind"] == "regular", entries[loader]
           assert entries[loader]["context"].split(":", 3)[2] == "ld_so_t", entries[loader]
           assert entries["/proc"]["context"] is None, entries["/proc"]
-          assert entries["/sys"]["context"] is None, entries["/sys"]
+          assert entries["/sys"]["context"].split(":", 3)[2] == "sysfs_t", entries["/sys"]
           ' \
             ${labeledRootfs}/rootfs-selinux-contexts.json \
             /nix.lower/store/${builtins.baseNameOf pkgs.systemd}/lib/systemd/systemd \

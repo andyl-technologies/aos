@@ -289,6 +289,7 @@ in
   assert builtins.elem "--disable-system" qemuUser.passthru.configureFlags;
   assert builtins.elem "--disable-plugins" qemuUser.passthru.configureFlags;
   assert builtins.elem "--disable-tools" qemuUser.passthru.configureFlags;
+  assert builtins.elem "--disable-download" qemuUser.passthru.configureFlags;
   assert !(builtins.elem "--enable-plugins" qemuUser.passthru.configureFlags);
   assert targetRunner != null;
   assert targetRunner.system == buildSystem;

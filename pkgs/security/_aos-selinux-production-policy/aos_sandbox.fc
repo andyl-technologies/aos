@@ -5,6 +5,13 @@
 /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
 /usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
 /usr/lib/systemd/aos-empty-ld-so-preload -- system_u:object_r:lib_t
+/aos-registration -- system_u:object_r:etc_t
+/aos-toplevel -l system_u:object_r:etc_t
+/root -d system_u:object_r:user_home_dir_t
+/root(/.*)? system_u:object_r:user_home_t
+/run/current-system -l system_u:object_r:var_run_t
+/run/etc -d system_u:object_r:var_run_t
+/sysroot -d system_u:object_r:root_t
 
 /var/lib/aos/sandbox-network -d system_u:object_r:aos_sandbox_network_root_t
 /var/lib/aos/sandbox-network/broker-state(/.*)? system_u:object_r:aos_sandbox_network_state_t

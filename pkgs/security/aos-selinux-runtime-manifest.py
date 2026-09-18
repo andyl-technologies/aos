@@ -299,7 +299,7 @@ def validate_compiled_dlopen_contract(
     readelf: Path,
     literal_sonames: list[str],
     absent_literal_sonames: list[str],
-    constructed_families: list[tuple[str, str]],
+    constructed_families: list[list[str] | tuple[str, str]],
     constructed_sonames: list[str],
     inventory: dict[str, Path],
 ) -> None:
@@ -314,10 +314,11 @@ def validate_compiled_dlopen_contract(
     literal_callers: list[tuple[Path, set[str], list[Path]]] = []
     constructed_callers: list[tuple[Path, list[Path]]] = []
 
-    if len(constructed_families) != len(set(constructed_families)):
+    normalized_families = [tuple(family) for family in constructed_families]
+    if len(normalized_families) != len(set(normalized_families)):
         fail("reviewed constructed dlopen family list contains duplicates")
     family_inventory: dict[tuple[str, str], set[str]] = {}
-    for prefix, suffix in constructed_families:
+    for prefix, suffix in normalized_families:
         if not prefix or not suffix or not SONAME.fullmatch(f"{prefix}x{suffix}"):
             fail(f"constructed dlopen family is noncanonical: {prefix!r}, {suffix!r}")
         family_members = {
@@ -376,7 +377,7 @@ def validate_compiled_dlopen_contract(
             for soname in bare - set(needed) - elf_sonames
             if not any(
                 soname.startswith(prefix) and soname.endswith(suffix)
-                for prefix, suffix in constructed_families
+                for prefix, suffix in normalized_families
             )
         }
         compiled_literal_sonames.update(literal_candidates)
@@ -458,7 +459,7 @@ def validate_compiled_dlopen_contract(
     validate_absolute_dlopen_paths(absolute_dsos, closure)
 
     linked_bytes = b"\0".join(elf.read_bytes() for elf in linked_elfs)
-    for prefix, suffix in constructed_families:
+    for prefix, suffix in normalized_families:
         if prefix.encode("ascii") not in linked_bytes or suffix.encode("ascii") not in linked_bytes:
             fail(
                 "constructed dlopen family is absent from the compiled PID 1 "
@@ -483,12 +484,14 @@ def validate_compiled_dlopen_contract(
             fail(f"reviewed constructed dlopen target is absent: {soname}")
         if not any(
             soname.startswith(prefix) and soname.endswith(suffix)
-            for prefix, suffix in constructed_families
+            for prefix, suffix in normalized_families
         ):
             fail(f"reviewed constructed dlopen target has no family: {soname}")
 
 
-def validate_elf_closure(paths: list[Path], systemd: Path, patchelf: Path) -> str:
+def validate_elf_closure(
+    paths: list[Path], systemd: Path, patchelf: Path, readelf: Path
+) -> str:
     """Validates the interpreter and every closure-wide search directory.
 
     Direct dependency resolution belongs to the compiled PID 1 fixed-point
@@ -531,7 +534,13 @@ def validate_elf_closure(paths: list[Path], systemd: Path, patchelf: Path) -> st
             rpath_lines = run_patchelf(patchelf, "--print-rpath", candidate)
             if rpath_lines is None or len(rpath_lines) > 1:
                 fail(f"cannot determine the runtime search path for {candidate}")
-            search = [] if not rpath_lines else rpath_lines[0].split(":")
+            has_rpath, has_runpath = dynamic_search_tags(readelf, candidate)
+            if has_rpath and has_runpath:
+                fail(f"runtime closure member {candidate} has both DT_RPATH and DT_RUNPATH")
+            encoded_search = rpath_lines[0] if rpath_lines else ""
+            if not encoded_search and (has_rpath or has_runpath):
+                fail(f"runtime closure member {candidate} has an empty runtime search tag")
+            search = encoded_search.split(":") if encoded_search else []
             validate_search_directories(search, candidate, closure)
 
     return str(physical_interpreter)
@@ -723,7 +732,12 @@ def main() -> None:
         fail("required static executable output is absent from the exported runtime closure")
 
     validate_symlinks(paths)
-    interpreter = validate_elf_closure(paths, arguments.systemd, arguments.patchelf)
+    interpreter = validate_elf_closure(
+        paths,
+        arguments.systemd,
+        arguments.patchelf,
+        arguments.readelf,
+    )
     validate_static_executable(
         arguments.required_static_executable,
         paths,

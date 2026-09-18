@@ -6,12 +6,12 @@ use std::process::{Command, Output, Stdio};
 use rustix::io::{FdFlags, fcntl_setfd};
 
 const LAUNCH_MODE: &str = "AOS_GUARDIAN_TEST_LAUNCH_MODE";
-const ACTIVATION_NAMES: &str = "broker-plan-policy.cbor:broker-plan-public-key:broker-revocation-scope:ownership-lease-policy.cbor:ownership-lease-public-key:node-id:broker-plan.cbor:broker-plan-signature.cbor:ownership-lease.cbor:ownership-lease-signature.cbor";
+const ACTIVATION_NAMES: &str = "guardian-executable:broker-plan-policy.cbor:broker-plan-public-key:broker-revocation-scope:ownership-lease-policy.cbor:ownership-lease-public-key:node-id:broker-plan.cbor:broker-plan-signature.cbor:ownership-lease.cbor:ownership-lease-signature.cbor";
 
 #[test]
 fn exact_binary_rejects_a_forged_complete_tuple_with_missing_descriptors() {
     if std::env::var(LAUNCH_MODE).ok().as_deref() == Some("missing") {
-        exec_guardian("10", ACTIVATION_NAMES);
+        exec_guardian("11", ACTIVATION_NAMES);
     }
 
     let output = run_launcher("missing");
@@ -21,7 +21,7 @@ fn exact_binary_rejects_a_forged_complete_tuple_with_missing_descriptors() {
 #[test]
 fn exact_binary_rejects_a_forged_descriptor_name_set() {
     if std::env::var(LAUNCH_MODE).ok().as_deref() == Some("names") {
-        exec_guardian("10", "broker-plan-policy.cbor:wrong");
+        exec_guardian("11", "guardian-executable:broker-plan-policy.cbor:wrong");
     }
 
     let output = run_launcher("names");
@@ -31,7 +31,7 @@ fn exact_binary_rejects_a_forged_descriptor_name_set() {
 #[test]
 fn exact_binary_rejects_an_extra_inherited_descriptor() {
     if std::env::var(LAUNCH_MODE).ok().as_deref() == Some("extra") {
-        let inherited = (0..11)
+        let inherited = (0..12)
             .map(|_| {
                 let file = std::fs::File::open("/dev/null")
                     .unwrap_or_else(|error| panic!("cannot open inherited fixture: {error}"));
@@ -40,8 +40,8 @@ fn exact_binary_rejects_an_extra_inherited_descriptor() {
                 file
             })
             .collect::<Vec<_>>();
-        assert_eq!(inherited.len(), 11);
-        exec_guardian("10", ACTIVATION_NAMES);
+        assert_eq!(inherited.len(), 12);
+        exec_guardian("11", ACTIVATION_NAMES);
     }
 
     let output = run_launcher("extra");

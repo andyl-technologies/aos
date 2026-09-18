@@ -303,6 +303,7 @@ pub struct PreparedLaunch {
 #[derive(Clone, Debug)]
 pub struct GuardianConfig {
     executable: GuardianExecutableDescriptor,
+    executable_path: String,
     timeout_start: Duration,
 }
 
@@ -330,6 +331,7 @@ impl GuardianConfig {
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         Ok(Self {
             executable,
+            executable_path: path.to_owned(),
             timeout_start,
         })
     }
@@ -348,6 +350,7 @@ impl GuardianConfig {
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         Ok(Self {
             executable,
+            executable_path: path.to_string_lossy().into_owned(),
             timeout_start: Duration::from_secs(30),
         })
     }
@@ -358,6 +361,7 @@ impl GuardianConfig {
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         Ok(Self {
             executable,
+            executable_path: "/invalid-test-guardian".to_owned(),
             timeout_start: Duration::from_secs(30),
         })
     }
@@ -394,6 +398,7 @@ impl GuardianConfig {
         GuardianUnitSpec::new(
             SandboxUnitName::from_incarnation(incarnation_id),
             self.executable.clone(),
+            self.executable_path.clone(),
             credentials,
             binding,
             self.timeout_start,
@@ -636,8 +641,26 @@ impl NspawnConfig {
         let attachment_anchor_path =
             SandboxDescriptorPath::for_current_process(attachment_anchor.pin.as_fd())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+
+        // The anchor is attached in this mount namespace. Pass that exact
+        // namespace alongside it so nspawn can clone the validated mount in a
+        // short-lived child without granting mount authority to Host itself.
+        let attachment_anchor_namespace = rustix::fs::open(
+            "/proc/self/ns/mnt",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let attachment_anchor_namespace = NamespaceFd::from_owned(
+            attachment_anchor_namespace,
+            aos_sandbox_linux::pidfd::NamespaceKind::Mount,
+        )
+        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let attachment_anchor_namespace_path =
+            SandboxDescriptorPath::for_current_process(attachment_anchor_namespace.as_fd())
+                .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let paths = SandboxResolvedPaths::from_descriptors(root_path, network_path)
-            .with_attachment_anchor(attachment_anchor_path);
+            .with_attachment_anchor(attachment_anchor_path, attachment_anchor_namespace_path);
         let spec = SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation(*fence.incarnation_id()),
             command,

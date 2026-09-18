@@ -10,6 +10,8 @@
   python3,
   setuptools,
   distlib,
+  pip,
+  wheel,
   patchelf,
   gcc-libs,
   glib,
@@ -26,6 +28,7 @@
     "--disable-plugins"
     "--disable-tools"
     "--disable-docs"
+    "--disable-download"
     "--disable-guest-agent"
     "--enable-pie"
   ];
@@ -50,6 +53,8 @@ in
       python3
       setuptools
       distlib
+      pip
+      wheel
       patchelf
       glib.dev
       glib.tools
@@ -80,7 +85,7 @@ in
       {
         name = "configure";
         script = ''
-          export PYTHONPATH="${meson}/lib/python3/site-packages:${distlib}/lib/python3.14/site-packages:${setuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          export PYTHONPATH="${meson}/lib/python3/site-packages:${distlib}/lib/python3.14/site-packages:${setuptools}/lib/python3.14/site-packages:${pip}/lib/python3.14/site-packages:${wheel}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           export PYTHON=${python3}/bin/python3
           export PKG_CONFIG=${pkg-config}/bin/pkg-config
           export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"

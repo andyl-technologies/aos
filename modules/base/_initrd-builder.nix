@@ -34,8 +34,6 @@
 ##!                   systemd-networkd `.network` files (from the typed
 ##!                   `boot.initrd.systemd.network` tree); copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
-##!   keepBinutils — retain current binutils for signed UKI section inspection
-##!                  in recovery-enabled normal initrds.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -52,7 +50,6 @@
   immutableSelinuxPolicy ? null,
   maskedUnits ? [],
   validateBootIdentity ? false,
-  keepBinutils ? false,
 }: let
   immutableStage0 =
     if stage0Init == null && immutableSelinuxPolicy == null
@@ -370,18 +367,19 @@ in
     name = "aos-initrd";
     src = null;
 
-    buildDeps = [
-      cpio
-      zstd
-      coreutils
-      findutils
-    ]
-    ++ lib.optionals immutableStage0 [
-      nativeErofsUtils
-      nativeLibselinux
-      nativePatchelf
-      nativePython
-    ];
+    buildDeps =
+      [
+        cpio
+        zstd
+        coreutils
+        findutils
+      ]
+      ++ lib.optionals immutableStage0 [
+        nativeErofsUtils
+        nativeLibselinux
+        nativePatchelf
+        nativePython
+      ];
 
     # `exportReferencesGraph` writes one file per package/name pair
     # containing that package's transitive runtime closure. Nix
@@ -805,9 +803,11 @@ in
                  root/nix/store/*-linux-headers-2.6.* \
                  root/nix/store/*-linux-*-dev \
                  root/nix/store/*-source
-          ${lib.optionalString (!keepBinutils) ''
-            rm -rf root/nix/store/*-binutils-2.41*
-          ''}
+          # Normal boot validates the signed command-line tuple directly and
+          # never inspects PE sections. Recovery owns its separate initrd and
+          # keeps objcopy there; retaining the full current binutils closure in
+          # this initrd would consume the fixed normal-boot artifact budget.
+          rm -rf root/nix/store/*-binutils-2.41*
 
           # util-linux: man pages, zsh completion, etc.
           find root/nix/store -maxdepth 2 -type d -name '*-util-linux-*' -print0 \

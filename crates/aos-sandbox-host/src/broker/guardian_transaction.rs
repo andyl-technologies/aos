@@ -10,6 +10,8 @@
 //! Composite Stop uses the same exact binding, invocation, manager-reference,
 //! and cgroup-quiescence evidence.
 
+use std::time::Duration;
+
 use aos_sandbox_broker::BrokerEffectIntentV1;
 use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimeRequest};
@@ -33,6 +35,8 @@ use crate::worker::{
     ObservedRuntimeState, WorkerObservation,
 };
 use crate::{HostError, Result};
+
+const POST_UNREF_OBSERVATION_DELAY: Duration = Duration::from_millis(50);
 
 impl<C, S, W> HostBroker<C, S, W>
 where
@@ -254,7 +258,13 @@ where
                     self.retain_runtime_observation(identity, observation)?;
                     return Ok(response);
                 }
-                StopDecision::ObserveAgain => return Err(composite_stop_pending()),
+                StopDecision::ObserveAgain => {
+                    // systemd collects an unreferenced transient unit
+                    // asynchronously after its stop job completes. Give the
+                    // manager a bounded opportunity to publish NoSuchUnit
+                    // before leaving the durable operation pending.
+                    tokio::time::sleep(POST_UNREF_OBSERVATION_DELAY).await;
+                }
                 StopDecision::Reject(_) => {
                     return Err(HostError::Worker(
                         "composite Stop is not authorized by current durable evidence".to_owned(),
@@ -330,7 +340,12 @@ where
                 )?;
                 self.commit_state(&proposed)
             }
-            ExactWorkerStopOutcome::Residual(_) => Err(composite_stop_pending()),
+            ExactWorkerStopOutcome::Residual(_) => {
+                // The exact stop remains durably selected. Its advancement
+                // loop must reobserve or retry it rather than escaping before
+                // systemd finishes the terminal transition.
+                Ok(())
+            }
             ExactWorkerStopOutcome::Foreign(_) => Err(HostError::Worker(
                 "composite Stop exact target became foreign".to_owned(),
             )),
@@ -1053,7 +1068,12 @@ where
                         *identity,
                     );
                 }
-                GuardianDecision::ObserveAgain => return Err(guardian_pending()),
+                GuardianDecision::ObserveAgain => {
+                    // UnrefUnit and transient-unit collection are distinct
+                    // manager operations. Reobserve after yielding so ordinary
+                    // collection latency does not escape as a failed launch.
+                    tokio::time::sleep(POST_UNREF_OBSERVATION_DELAY).await;
+                }
                 GuardianDecision::Quarantine => return Err(guardian_quarantined()),
                 GuardianDecision::Reject(_) => return Err(guardian_rejected()),
                 GuardianDecision::Persist(_) | GuardianDecision::HistoricalComplete => {
@@ -1186,7 +1206,12 @@ where
                 proposed.set_guardian_phase(&request_id, phase, &self.authority)?;
                 self.commit_state(&proposed)
             }
-            ExactWorkerStopOutcome::Residual(_) => Err(guardian_pending()),
+            ExactWorkerStopOutcome::Residual(_) => {
+                // Keep the committed cleanup effect live. The bounded
+                // compensation loop will reobserve the exact object and may
+                // safely retry the same stop without weakening absence proof.
+                Ok(())
+            }
             ExactWorkerStopOutcome::Foreign(_) => Err(guardian_quarantined()),
         }
     }

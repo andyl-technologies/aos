@@ -12,7 +12,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use aos_sandbox_guardian::GuardianState;
@@ -75,6 +75,8 @@ const GUARDIAN_STATE_FILE: &str = "authority-state";
 const GUARDIAN_STATE_LOCK_FILE: &str = "authority-state.lock";
 const SIBLING_ACCESS_PROBE_TEST: &str =
     "broker::tests::guardian_systemd::dynamic_identity_cannot_access_sibling_guardian_state";
+
+static QUALIFICATION_WORKSPACE_MOUNT: OnceLock<Arc<OwnedFd>> = OnceLock::new();
 
 #[derive(Default)]
 struct WorkerTrace {
@@ -563,6 +565,7 @@ async fn production_worker_enforces_guardian_before_payload_across_restart_and_d
             "start_guardian",
             "guardian_ready",
             "observe_guardian",
+            "observe_guardian",
         ]
     );
     assert!(matches!(
@@ -768,6 +771,8 @@ async fn production_worker_enforces_guardian_before_payload_across_restart_and_d
             "observe_guardian",
             "start_payload_after_guardian_ready",
             "payload_ready",
+            "observe_guardian",
+            "observe_guardian",
         ]
     );
 
@@ -1255,7 +1260,7 @@ fn dynamic_identity_cannot_access_sibling_guardian_state() {
 
     let sibling_state = PathBuf::from(std::env::var_os("AOS_GUARDIAN_SIBLING_STATE").unwrap());
     let read_error = std::fs::File::open(sibling_state.join(GUARDIAN_STATE_FILE)).unwrap_err();
-    assert_permission_denied(read_error);
+    assert_state_inaccessible(read_error);
 
     let write_probe = PathBuf::from(std::env::var_os("AOS_GUARDIAN_WRITE_PROBE").unwrap());
     let write_error = std::fs::OpenOptions::new()
@@ -1263,7 +1268,7 @@ fn dynamic_identity_cannot_access_sibling_guardian_state() {
         .create_new(true)
         .open(write_probe)
         .unwrap_err();
-    assert_permission_denied(write_error);
+    assert_state_inaccessible(write_error);
 }
 
 async fn arm_guardian_without_payload(
@@ -1721,9 +1726,12 @@ fn assert_unprivileged_probe_credentials() {
     assert_eq!(no_new_privileges.trim(), "1");
 }
 
-fn assert_permission_denied(error: std::io::Error) {
+fn assert_state_inaccessible(error: std::io::Error) {
+    // Private mount namespaces may conceal the sibling path entirely; the
+    // fallback DAC boundary exposes the path but denies access.
     assert!(
-        error.kind() == std::io::ErrorKind::PermissionDenied
+        error.kind() == std::io::ErrorKind::NotFound
+            || error.kind() == std::io::ErrorKind::PermissionDenied
             || error.raw_os_error() == Some(rustix::io::Errno::ACCESS.raw_os_error())
             || error.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error()),
         "sibling state failed for an unexpected reason: {error}"
@@ -1749,26 +1757,33 @@ fn qualification_nspawn(executable: &str) -> NspawnConfig {
 }
 
 fn qualification_resources(fence: &ValidatedAssignmentFence) -> Result<ResolvedLaunchResources> {
-    let workspace_directory = open(
-        QUALIFICATION_WORKSPACE,
-        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .unwrap();
-    let workspace_identity = fstat(&workspace_directory).unwrap();
-    let workspace_source = BeneathRoot::from_owned(workspace_directory)
-        .unwrap()
-        .resolve(
-            Path::new("."),
-            aos_sandbox_linux::path::ResolveOptions::directory(),
+    // A durable launch replay must resolve the same kernel mount object, not a
+    // fresh detached clone with a different mount ID.
+    let workspace_mount = QUALIFICATION_WORKSPACE_MOUNT.get_or_init(|| {
+        let workspace_directory = open(
+            QUALIFICATION_WORKSPACE,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
         )
         .unwrap();
-    let workspace_mount = DetachedMount::clone_from(&workspace_source, true).unwrap();
+        let workspace_source = BeneathRoot::from_owned(workspace_directory)
+            .unwrap()
+            .resolve(
+                Path::new("."),
+                aos_sandbox_linux::path::ResolveOptions::directory(),
+            )
+            .unwrap();
+        let detached = DetachedMount::clone_from(&workspace_source, true).unwrap();
+
+        Arc::new(detached.as_fd().try_clone_to_owned().unwrap())
+    });
+    let workspace_pin = workspace_mount.as_fd().try_clone_to_owned().unwrap();
+    let workspace_identity = fstat(&workspace_pin).unwrap();
     let workspace = ResolvedWorkspace::from_pinned(
         QUALIFICATION_WORKSPACE.to_owned(),
         workspace_identity.st_dev,
         workspace_identity.st_ino,
-        workspace_mount.as_fd().try_clone_to_owned().unwrap(),
+        workspace_pin,
     )
     .unwrap();
 
@@ -1789,7 +1804,7 @@ fn qualification_resources(fence: &ValidatedAssignmentFence) -> Result<ResolvedL
     .unwrap();
 
     std::fs::create_dir_all(QUALIFICATION_ANCHOR).unwrap();
-    std::fs::set_permissions(QUALIFICATION_ANCHOR, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(QUALIFICATION_ANCHOR, std::fs::Permissions::from_mode(0o755)).unwrap();
     let anchor = open(
         QUALIFICATION_ANCHOR,
         OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -2297,6 +2312,7 @@ fn live_guardian_request_with_lifetimes(
         .boottime_nanoseconds()
         .checked_add(request_lifetime_nanoseconds)
         .unwrap();
+    base.launch_plan.get_or_insert_default().uid_range_start = QUALIFICATION_UID_START;
     let bytes = encode_host_guardian_companion_v1(
         &base.encode_to_vec(),
         &guardian_plan,

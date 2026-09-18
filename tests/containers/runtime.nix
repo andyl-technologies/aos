@@ -350,18 +350,11 @@ in
           test ! -e production-facade/usr/bin/.aos-unwrapped
           test ! -e production-facade/usr/bin/.apm-unwrapped
           test ! -e production-facade/usr/bin/.apr-unwrapped
-          test "$(readlink production-facade/usr/bin/kill)" = ${pkgs.coreutils}/bin/coreutils \
-            || fail "production facade changed the reviewed kill winner"
-          jq -e \
-            --arg winner ${lib.escapeShellArg "${pkgs.coreutils}/bin/coreutils"} \
-            --arg shadowed ${lib.escapeShellArg "${pkgs.util-linux}/bin/kill"} '
-              .expectedCollisions == ["kill"]
-              and .collisions == [{
-                name: "kill",
-                winner: $winner,
-                shadowed: $shadowed,
-                shadowedSource: $shadowed
-              }]
+          test "$(readlink production-facade/usr/bin/kill)" = ${pkgs.util-linux}/bin/kill \
+            || fail "production facade changed the reviewed kill provider"
+          jq -e '
+              .expectedCollisions == []
+              and .collisions == []
             ' ${productionFacade}/facade.json >/dev/null \
             || fail "production facade collisions differ from reviewed policy"
 

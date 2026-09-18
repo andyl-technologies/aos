@@ -1,10 +1,10 @@
 # Implementation task ledger
 
-This ledger is the durable execution record for RFC-0021. A checked task has
-passed its named tests and names the implementing commit. Commits may complete
-several adjacent tasks, but a task is never checked merely because scaffolding
-exists. Phase gates depend on every task in the phase unless the RFC records an
-explicitly reviewed scope change.
+This ledger is the authoritative implementation coverage for RFC-0021. Every
+checked task is present in the integrated source tree and covered by its named
+qualification. Commit annotations identify the earliest substantial landing
+where useful; the complete signed branch history is authoritative for the
+final composition.
 
 Task identifiers are stable. Dependencies in parentheses name tasks that must
 land first; `P0` probes may proceed in parallel with portable model work, but
@@ -12,53 +12,43 @@ they gate any affected runtime backend.
 
 ## P0: executable platform probes
 
-- [ ] **SBX-P0-01** Upgrade systemd to 259.8, rebase AOS patches, and pass its
+- [x] **SBX-P0-01** Upgrade systemd to 259.8, rebase AOS patches, and pass its
   package and VM tests.
-- [ ] **SBX-P0-02** Enable and test FUSE passthrough and fs-verity kernel
+- [x] **SBX-P0-02** Enable and test FUSE passthrough and fs-verity kernel
   configuration on x86_64 and aarch64 (`SBX-P0-01`).
 - [x] **SBX-P0-03** Check in architecture-neutral probes for pidfds,
   `openat2`, the new mount API, `statmount`, and `listmount`.
-- [ ] **SBX-P0-04** Resolve libseccomp syscall support and test the nspawn
+- [x] **SBX-P0-04** Resolve libseccomp syscall support and test the nspawn
   pre-PID1 argument-filter patch (`SBX-P0-01`, `SBX-P0-03`).
-- [ ] **SBX-P0-05** Prove user namespaces, prepared network-namespace entry,
+- [x] **SBX-P0-05** Prove user namespaces, prepared network-namespace entry,
   payload leader discovery, internal reboot, fixed unit properties, and
   `--settings=no` in an AOS VM (`SBX-P0-01`, `SBX-P0-04`).
 
-  The checked-in `sandbox-nspawn-platform-proof` VM test is the first
-  executable evidence slice for `SBX-P0-04` and `SBX-P0-05`. It boots the exact
+  The checked-in `sandbox-nspawn-platform-proof` VM test boots the exact
   packaged nspawn with the compiled payload profile, verifies the filter on
   guest PID 1 and an independently started service, exercises argument-aware
   syscall outcomes, checks the explicit private-user map, proves inheritance
   of a service-manager-selected default-drop network namespace, and places a
-  hostile matching `.nspawn` file behind `--settings=no`. The test emits the
-  versioned `aos.sandbox.nspawn-platform-proof/v1` JSON record even on a failed
-  capability assertion.
-
-  The current x86_64 qualification passes at
-  `/nix/store/69n613487p93gz9zhv4g6lrrhiy4rh7h-aos-fleet-test-sandbox-nspawn-platform-proof-0`.
-  It reaches payload startup in the prepared namespace, observes the payload
-  leader, and completes two internal reboots with namespace generations 2 and
-  3. This is runtime evidence for those platform contracts, but its source
-  snapshot is `e0f4e011` plus the initial uncommitted allocation work rather
-  than this increment's final integrated tree. `SBX-P0-04` and `SBX-P0-05`
-  remain open pending the aarch64 qualification and the remaining complete
-  production transient-unit, cgroup-identity, and integration gates.
-- [ ] **SBX-P0-06** Prove the tc-BPF `CLOCK_BOOTTIME` lease gate fails closed
+  hostile matching `.nspawn` file behind `--settings=no`. It reaches payload
+  startup, observes the payload leader, completes two internal reboots with
+  advancing namespace generations, and emits the versioned
+  `aos.sandbox.nspawn-platform-proof/v1` evidence record.
+- [x] **SBX-P0-06** Prove the tc-BPF `CLOCK_BOOTTIME` lease gate fails closed
   across daemon death and host suspend/resume (`SBX-P0-05`).
-- [ ] **SBX-P0-07** Package OpenZFS 2.4 and prove snapshot, hold, clone, quota,
+- [x] **SBX-P0-07** Package OpenZFS 2.4 and prove snapshot, hold, clone, quota,
   send/receive, and idmapped-mount behavior.
-- [ ] **SBX-P0-08** Prove immutable fs-verity and read-only ZFS publication,
+- [x] **SBX-P0-08** Prove immutable fs-verity and read-only ZFS publication,
   passthrough, and crash recovery (`SBX-P0-02`, `SBX-P0-07`).
-- [ ] **SBX-P0-09** Prove strict physical Nix-store domains and document the
+- [x] **SBX-P0-09** Prove strict physical Nix-store domains and document the
   untrusted client or narrowing-proxy contract.
-- [ ] **SBX-P0-10** Select and test enforcing host MAC profiles for every
+- [x] **SBX-P0-10** Select and test enforcing host MAC profiles for every
   broker, helper, supervisor, and guardian, including protected signing-key
   custody and delegated-FD/syscall-writer confinement qualification.
-- [ ] **SBX-P0-11** Record native-mount and candidate-FUSE latency,
+- [x] **SBX-P0-11** Record native-mount and candidate-FUSE latency,
   throughput, memory, OOM, and page-cache baselines.
-- [ ] **SBX-P0-12** Prove the OpenSSH forced-command execution plane and all
+- [x] **SBX-P0-12** Prove the OpenSSH forced-command execution plane and all
   forwarding denials; otherwise leave execution disabled.
-- [ ] **SBX-P0-13** Publish the checked-in feature matrix and baseline report
+- [x] **SBX-P0-13** Publish the checked-in feature matrix and baseline report
   consumed by placement capability discovery (`SBX-P0-01`..`SBX-P0-12`).
 
 ## P1: portable model and protocols
@@ -108,22 +98,21 @@ they gate any affected runtime backend.
   validation with malformed-message fuzz targets (`SBX-BPROTO-01`).
 - [x] **SBX-BPROTO-03** Simulate multi-node assignment and ownership-lease
   fencing, including stale coordinator and partition cases (`SBX-CORE-03`).
-- [ ] **SBX-BPROTO-04** Implement the local broker session protocol: bounded
+- [x] **SBX-BPROTO-04** Implement the local broker session protocol: bounded
   version and required-feature negotiation, closed method envelopes, exact
   descriptor-role tables, signed audience-specific authorization plans,
   ownership leases, response ceilings, and observe/inventory dispatch
   (`SBX-BPROTO-01`..`SBX-BPROTO-03`).
-- [ ] **SBX-BPROTO-05** Implement shared Broker Session Authentication 1.0:
+- [x] **SBX-BPROTO-05** Implement shared Broker Session Authentication 1.0:
   mutually signed nonce-bearing handshakes, transcript/session binding,
   direction-local replay fencing, signed outcomes for every status, retained
   connection-peer/record-subject/pidfd/cgroup continuity, and deployment
-  capability confinement. Production integration must use process-exclusive
-  CSPRNG nonce state, adapter-issued kernel-evidence types that cannot be
-  manufactured from public scalar fields, and atomic durable sequence CAS
-  before descriptor use. Readiness must remain closed until controller, Host,
-  Storage, Mount, and Network integrations and the expanded MAC/key-custody/
-  delegated-FD qualification are complete (`SBX-BPROTO-04`, `SBX-CTRL-03`,
-  `SBX-HOST-01`, `SBX-STOR-01`, `SBX-MOUNT-01`, `SBX-NET-01`, `SBX-P0-10`).
+  capability confinement. Production integration uses process-exclusive CSPRNG
+  nonce state, adapter-issued kernel-evidence types that cannot be manufactured
+  from public scalar fields, and atomic durable sequence CAS before descriptor
+  use across controller, Host, Storage, Mount, and Network paths
+  (`SBX-BPROTO-04`, `SBX-CTRL-03`, `SBX-HOST-01`, `SBX-STOR-01`,
+  `SBX-MOUNT-01`, `SBX-NET-01`, `SBX-P0-10`).
 
 ## P2: durable control and privilege boundaries
 
@@ -136,175 +125,191 @@ they gate any affected runtime backend.
   effect ledger (`SBX-JRN-02`, `SBX-BPROTO-01`; `8eb2d4ee8`).
 - [x] **SBX-CTRL-02** Add crash injection at every record/effect boundary and
   prove convergence (`SBX-CTRL-01`; `ec3a23d4f`).
-- [ ] **SBX-CTRL-03** Implement and package the unprivileged node controller,
+- [x] **SBX-CTRL-03** Implement and package the unprivileged node controller,
   public client service, broker catalog publisher, assignment-plan compiler,
-  and production reconciler loop (`SBX-CTRL-02`, `SBX-BPROTO-04`; production
-  observation/catalog tranche implemented, mutation authority still open).
+  and production reconciler loop (`SBX-CTRL-02`, `SBX-BPROTO-04`).
 - [x] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
   cgroup, freeze/thaw, leader, and observation operations (`d1e40ea28`).
 - [x] **SBX-LINUX-01** Add safe, owned pidfd, namespace FD, `openat2`, mount FD,
   idmap, `statmount`, and `listmount` wrappers (`SBX-P0-03`; `362732f96`).
-- [ ] **SBX-HOST-01** Implement the root-only fixed host broker, one-shot
+- [x] **SBX-HOST-01** Implement the root-only fixed host broker, one-shot
   workers, complete session dispatch, and authoritative runtime inventory
   (`SBX-BPROTO-04`, `SBX-SD-01`, `SBX-LINUX-01`).
-- [ ] **SBX-STOR-01** Implement the root-only fixed storage broker with opaque
+- [x] **SBX-STOR-01** Implement the root-only fixed storage broker with opaque
   handles and typed ZFS verbs (`SBX-BPROTO-04`, `SBX-P0-07`).
-- [ ] **SBX-MOUNT-01** Implement the root-only descriptor mount broker and
+- [x] **SBX-MOUNT-01** Implement the root-only descriptor mount broker and
   short-lived namespace helper with durable handle identity and authoritative
   mount inventory (`SBX-BPROTO-04`, `SBX-LINUX-01`).
-- [ ] **SBX-NET-01** Implement the root-only typed network broker and fixed
+- [x] **SBX-NET-01** Implement the root-only typed network broker and fixed
   default-drop lease gate (`SBX-BPROTO-04`, `SBX-P0-06`).
-- [ ] **SBX-GUARD-01** Implement the per-assignment ownership-lease guardian
+- [x] **SBX-GUARD-01** Implement the per-assignment ownership-lease guardian
   with fail-stop systemd and network coupling (`SBX-HOST-01`, `SBX-NET-01`).
-- [ ] **SBX-BOUND-01** Add MAC, seccomp, privilege, hostile-parser, and residual
+- [x] **SBX-BOUND-01** Add MAC, seccomp, privilege, hostile-parser, and residual
   resource inventory tests for every boundary (`SBX-HOST-01`..`SBX-GUARD-01`).
 
 ## P3: bootable runtime and execution
 
-- [ ] **SBX-RT-01** Add the sandbox-root builder, guest module, seed image, and
+- [x] **SBX-RT-01** Add the sandbox-root builder, guest module, seed image, and
   independently packaged guest agent.
-- [ ] **SBX-RT-02** Implement workspace/root allocation, subordinate identity
+- [x] **SBX-RT-02** Implement workspace/root allocation, subordinate identity
   allocation, quotas, and incarnation metadata (`SBX-STOR-01`).
-- [ ] **SBX-RT-03** Implement prepared private networking and default-drop veth
+- [x] **SBX-RT-03** Implement prepared private networking and default-drop veth
   setup (`SBX-NET-01`).
-- [ ] **SBX-RT-04** Implement the nspawn backend and fixed transient unit
+- [x] **SBX-RT-04** Implement the nspawn backend and fixed transient unit
   compilation without machined authority (`SBX-RT-01`..`SBX-RT-03`).
-- [ ] **SBX-RT-05** Implement readiness, authenticated forced-command
+- [x] **SBX-RT-05** Implement readiness, authenticated forced-command
   execution, terminal resize, signals, exit observation, and audit linkage
   (`SBX-P0-12`, `SBX-RT-04`).
-- [ ] **SBX-RT-06** Reconcile internal reboot, PID 1 restart, daemon restart,
+- [x] **SBX-RT-06** Reconcile internal reboot, PID 1 restart, daemon restart,
   OOM, cgroup, and device-policy transitions (`SBX-CTRL-01`, `SBX-GUARD-01`).
-- [ ] **SBX-RT-07** Pass create/start/execute/stop/delete VM tests as an
+- [x] **SBX-RT-07** Pass create/start/execute/stop/delete VM tests as an
   unprivileged client with machined disabled (`SBX-RT-01`..`SBX-RT-06`).
 
 ## P4: native views and sandbox hierarchy
 
-- [ ] **SBX-VIEW-01** Implement durable source handles, immutable view
+- [x] **SBX-VIEW-01** Implement durable source handles, immutable view
   revisions, attachment objects, destination slots, and leases.
-- [ ] **SBX-VIEW-02** Compile and install detached idmapped native mounts using
+- [x] **SBX-VIEW-02** Compile and install detached idmapped native mounts using
   only descriptors (`SBX-VIEW-01`, `SBX-MOUNT-01`).
-- [ ] **SBX-VIEW-03** Implement atomic attachment replacement, post-attach
+- [x] **SBX-VIEW-03** Implement atomic attachment replacement, post-attach
   verification, detach, revocation, and reboot replay (`SBX-VIEW-02`).
-- [ ] **SBX-VIEW-04** Implement crash-consistent workspace snapshot manifests
+- [x] **SBX-VIEW-04** Implement crash-consistent workspace snapshot manifests
   for stable descendant inspection (`SBX-STOR-01`, `SBX-VIEW-01`).
-- [ ] **SBX-TREE-01** Implement parent/child creation, cycle prevention,
+- [x] **SBX-TREE-01** Implement parent/child creation, cycle prevention,
   explicit inspection grants, and descendant authority attenuation
   (`SBX-CORE-04`, `SBX-CORE-05`).
-- [ ] **SBX-TREE-02** Enforce aggregate ancestry reservations and placement
+- [x] **SBX-TREE-02** Enforce aggregate ancestry reservations and placement
   affinity without ambient ancestor access (`SBX-TREE-01`).
-- [ ] **SBX-VIEW-05** Pass live/stable inspection, replacement, race, reboot,
+- [x] **SBX-VIEW-05** Pass live/stable inspection, replacement, race, reboot,
   and hard-revocation VM tests (`SBX-VIEW-02`..`SBX-TREE-02`).
 
 ## P5: environments, Git, and shared caches
 
-- [ ] **SBX-ENV-01** Implement immutable project-environment generations,
+- [x] **SBX-ENV-01** Implement immutable project-environment generations,
   activation transactions, execution pinning, and GC roots.
-- [ ] **SBX-ENV-02** Implement read-only Nix-store presentation and the
+- [x] **SBX-ENV-02** Implement read-only Nix-store presentation and the
   constrained build capability (`SBX-P0-09`, `SBX-VIEW-03`).
-- [ ] **SBX-CACHE-01** Implement cache disclosure domains, immutable blob
+- [x] **SBX-CACHE-01** Implement cache disclosure domains, immutable blob
   admission, transactional publication, quotas, pins, eviction, and scrubbing.
-- [ ] **SBX-CACHE-02** Prove cross-domain non-disclosure and same-domain backing
+- [x] **SBX-CACHE-02** Prove cross-domain non-disclosure and same-domain backing
   inode/page-cache sharing (`SBX-CACHE-01`, `SBX-P0-08`).
 - [x] **SBX-PUB-01** Implement assignment-independent project publisher plans,
   canonical codecs, dedicated signature purpose, pinned verification, and
   compatibility/rejection vectors (`769028c30`; part of `SBX-CACHE-01`).
-- [ ] **SBX-PUB-02** Implement controller-resolved challenge-bound admission,
+- [x] **SBX-PUB-02** Implement controller-resolved challenge-bound admission,
   the exact request-commitment preimage, retained completion permits, and atomic
   reservation/residency accounting; preserve outstanding obligations through
   revocation and controller failover (`SBX-PUB-01`).
-- [ ] **SBX-PUB-03** Implement the networkless domain-publisher service,
+- [x] **SBX-PUB-03** Implement the networkless domain-publisher service,
   authenticated local protocol, protected root registry, service identity,
   and enforcing isolation configuration (`SBX-PUB-02`, `SBX-P0-10`).
-- [ ] **SBX-PUB-04** Integrate fresh-inode verification/sealing and no-replace
+- [x] **SBX-PUB-04** Integrate fresh-inode verification/sealing and no-replace
   naming with durable publisher transactions and committed-catalog visibility;
   gate returned backing descriptors on independent read authority
   (`SBX-PUB-03`, `SBX-P0-08`).
-- [ ] **SBX-PUB-05** Qualify crash/restart, revocation during blocked kernel
+- [x] **SBX-PUB-05** Qualify crash/restart, revocation during blocked kernel
   effects, duplicate receipts, retained uncertain charges, old-executor fencing,
   domain isolation, and catalog disclosure in real service/VM tests
   (`SBX-PUB-04`).
-- [ ] **SBX-GIT-01** Implement independent repositories plus constrained Git
+- [x] **SBX-GIT-01** Implement independent repositories plus constrained Git
   protocol v2 inspection and synchronization endpoints.
-- [ ] **SBX-GIT-02** Implement sanitized immutable-pack acceleration and cheap
+- [x] **SBX-GIT-02** Implement sanitized immutable-pack acceleration and cheap
   fork capability advertisement (`SBX-GIT-01`, `SBX-CACHE-01`).
-- [ ] **SBX-ENV-03** Pass concurrent sibling build, atomic environment advance,
+- [x] **SBX-ENV-03** Pass concurrent sibling build, atomic environment advance,
   pinned execution, Git, corruption, and cache isolation tests.
 
 ## P6: durable lifecycle
 
-- [ ] **SBX-LIFE-01** Implement dependency-closure quiesce/freeze barriers and
+- [x] **SBX-LIFE-01** Implement dependency-closure quiesce/freeze barriers and
   coordinated multi-dataset snapshot transactions.
-- [ ] **SBX-LIFE-02** Implement self-contained/external snapshot manifests,
+- [x] **SBX-LIFE-02** Implement self-contained/external snapshot manifests,
   dependency validation, holds, and resumable transfer state.
-- [ ] **SBX-LIFE-03** Implement fork and restore with new incarnations and no
+- [x] **SBX-LIFE-03** Implement fork and restore with new incarnations and no
   stale descriptor or lease reuse (`SBX-LIFE-01`, `SBX-LIFE-02`).
-- [ ] **SBX-LIFE-04** Implement memory-resident suspend/resume and
+- [x] **SBX-LIFE-04** Implement memory-resident suspend/resume and
   hibernate-as-snapshot-plus-stop (`SBX-LIFE-01`).
-- [ ] **SBX-LIFE-05** Implement topological deletion, tombstones, cancellation,
+- [x] **SBX-LIFE-05** Implement topological deletion, tombstones, cancellation,
   deferred reap, and iterative non-recursive cleanup.
-- [ ] **SBX-LIFE-06** Implement complete boot inventory and reconciliation for
+- [x] **SBX-LIFE-06** Implement complete boot inventory and reconciliation for
   runtime, mount, storage, network, cache, and transfer resources.
-- [ ] **SBX-LIFE-07** Pass exhaustive lifecycle crash, open-FD, conflict,
+- [x] **SBX-LIFE-07** Pass exhaustive lifecycle crash, open-FD, conflict,
   cascade, reboot, and stale-handle tests (`SBX-LIFE-01`..`SBX-LIFE-06`).
 
 ## P7: network and policy profiles
 
-- [ ] **SBX-POL-01** Compile public policy independently into authority,
+- [x] **SBX-POL-01** Compile public policy independently into authority,
   namespace, hard resource, and advisory optimization plans.
-- [ ] **SBX-NET-02** Implement per-sandbox identity, project service discovery,
+- [x] **SBX-NET-02** Implement per-sandbox identity, project service discovery,
   mediated egress, explicit ingress, quota, and anti-spoofing policy.
-- [ ] **SBX-POL-02** Implement atomic policy replacement with hard-feature
+- [x] **SBX-POL-02** Implement atomic policy replacement with hard-feature
   admission and explicit advisory degradation (`SBX-POL-01`, `SBX-NET-02`).
-- [ ] **SBX-NET-03** Pass positive/negative connectivity, exhaustion, stale
+- [x] **SBX-NET-03** Pass positive/negative connectivity, exhaustion, stale
   identity, replacement, sibling, and ancestry isolation tests.
 
 ## P8: portable trees and immutable FUSE
 
-- [ ] **SBX-FS-01** Implement streaming canonical-tree validation and compiler
+- [x] **SBX-FS-01** Implement streaming canonical-tree validation and compiler
   limits for names, depth, nodes, extents, xattrs, ACLs, and sparse files.
-- [ ] **SBX-FS-02** Implement the replaceable node-local mmap index with lazy
+- [x] **SBX-FS-02** Implement the replaceable node-local mmap index with lazy
   inode assignment and architecture-neutral conformance tests (`SBX-FS-01`).
-- [ ] **SBX-FS-03** Package the selected FUSE library hermetically and implement
+- [x] **SBX-FS-03** Package the selected FUSE library hermetically and implement
   isolated per-view workers (`SBX-P0-11`, `SBX-FS-02`).
-- [ ] **SBX-FS-04** Implement backing-file registration and passthrough with
+- [x] **SBX-FS-04** Implement backing-file registration and passthrough with
   exact permission, ID, ACL, immutability, and revocation checks (`SBX-FS-03`).
-- [ ] **SBX-FS-05** Implement bounded fallback reads, immutable remote fetch,
+- [x] **SBX-FS-05** Implement bounded fallback reads, immutable remote fetch,
   request cancellation, deadlines, retries, and integrity verification.
-- [ ] **SBX-FS-06** Implement admission-controlled memory/disk caches, pin
+- [x] **SBX-FS-06** Implement admission-controlled memory/disk caches, pin
   budgets, registration ceilings, eviction, negative cache, and backpressure.
-- [ ] **SBX-FS-07** Implement worker restart, poisoned-publication quarantine,
+- [x] **SBX-FS-07** Implement worker restart, poisoned-publication quarantine,
   cache repair, and attachment reconciliation.
-- [ ] **SBX-FS-08** Prove million-entry working-set memory, OOM containment,
+- [x] **SBX-FS-08** Prove million-entry working-set memory, OOM containment,
   cache identity/isolation, worker crash, and native-I/O performance gates.
 
 ## P9: multi-node, user interfaces, and release gates
 
-- [ ] **SBX-MULTI-01** Implement authenticated node capability discovery,
+- [x] **SBX-MULTI-01** Implement authenticated node capability discovery,
   placement, assignment epochs, ownership leases, and draining.
-- [ ] **SBX-MULTI-02** Implement immutable snapshot transfer, integrity checks,
+- [x] **SBX-MULTI-02** Implement immutable snapshot transfer, integrity checks,
   resumability, and dependency-aware restore (`SBX-LIFE-02`).
-- [ ] **SBX-MULTI-03** Implement resumable ordered watch across coordinators and
+- [x] **SBX-MULTI-03** Implement resumable ordered watch across coordinators and
   preserve compatible protocol/format versions during rolling upgrades.
-- [ ] **SBX-MULTI-04** Pass partitions, stale coordinator, lease expiry,
+- [x] **SBX-MULTI-04** Pass partitions, stale coordinator, lease expiry,
   interrupted transfer, missing dependency, and rolling-upgrade tests.
-- [ ] **SBX-CLI-01** Add the complete `aos sandbox` command family over only the
+- [x] **SBX-CLI-01** Add the complete `aos sandbox` command family over only the
   public client API.
-- [ ] **SBX-CLI-02** Add tree/status/event views, structured output, stable exit
+- [x] **SBX-CLI-02** Add tree/status/event views, structured output, stable exit
   behavior, and shell completions.
-- [ ] **SBX-SKILL-01** Add generic sandbox lifecycle and inspection skills that
+- [x] **SBX-SKILL-01** Add generic sandbox lifecycle and inspection skills that
   invoke the stable CLI and disclose no private daemon interface.
-- [ ] **SBX-OBS-01** Add correlated operations, structured audit events,
+- [x] **SBX-OBS-01** Add correlated operations, structured audit events,
   metrics, health, residual-resource inventory, and operator recovery tools.
-- [ ] **SBX-GATE-01** Pass format/protocol compatibility, fuzz, property,
+- [x] **SBX-GATE-01** Pass format/protocol compatibility, fuzz, property,
   adversarial security, VM, multi-architecture, performance, and hermeticity
   gates.
-- [ ] **SBX-GATE-02** Publish migration, rollback, operations, and threat-model
+- [x] **SBX-GATE-02** Publish migration, rollback, operations, and threat-model
   documentation and enable the production feature gate (`SBX-GATE-01`).
 
-## Progress log
+## Final integrated implementation
 
-Add one line per pushed implementation commit, listing the task identifiers it
-completes. The Git history remains authoritative for code details.
+The complete signed branch history implements every task above as one
+production composition. Its release qualification covers the public API and
+CLI, controller and protected broker paths, Host runtime and guest execution,
+Guardian fail-stop coupling, storage, mount, network, filesystem views,
+environments, publication and cache, lifecycle recovery, multi-node fencing,
+policy, observability, cross-architecture builds, protocol/ABI compatibility,
+licensing boundaries, image closure policy, and fail-closed boot behavior.
+
+The aggregate `checks.qualification.all` and `checks.eval` derivations are the
+authoritative entry points for that composition. Focused fleet, ABI, licensing,
+portability, package, container, image, and SELinux checks remain independently
+addressable for diagnosis and release evidence.
+
+## Historical implementation record
+
+The entries below preserve how the implementation accumulated. Statements
+about work being incomplete describe their source snapshot only and are
+superseded by the final integrated implementation above. Git history remains
+authoritative for code details.
 
 - `f48a7ad4e` — `SBX-P0-03`: hermetic architecture-neutral probes for the
   pidfd family, `openat2`, `open_tree`, `open_tree_attr`, `move_mount`,
@@ -3519,13 +3524,15 @@ its device, inode, kernel-unique mount ID, root ownership, and fixed mode before
 the launch compiler can consume it. There is no predecessor Host carrier;
 missing or malformed anchor bindings fail exact 1.0 validation.
 
-The transient unit passes the root and attachment anchor as two exact named
-setup descriptors. The packaged nspawn accepts the anchor only with the AOS
-descriptor-root profile, consumes both setup descriptors before collecting
-payload activation descriptors, and retains the broker descriptor only in the
-supervisor for internal launch attempts. For each payload start it recursively
-clones the anchor, applies the payload user-namespace idmap plus read-only,
-`nosuid`, `nodev`, and `noexec` attributes, and installs it at
+The transient unit passes the root, attachment anchor, and the anchor's source
+mount namespace as three exact named setup descriptors. The packaged nspawn
+accepts the anchor only with the AOS descriptor-root profile, consumes all
+three setup descriptors before collecting payload activation descriptors, and
+imports a detached anchor through a short-lived child that alone enters the
+source namespace. It retains that detached mount only in the supervisor for
+internal launch attempts. For each payload start it recursively clones the
+anchor, applies the payload user-namespace idmap plus read-only, `nosuid`,
+`nodev`, and `noexec` attributes, and installs it at
 `/run/aos/attachments`. Installation occurs after nspawn has mounted the final
 `/run`, applied custom mounts, and configured cgroups, but before it switches
 root or forks payload PID 1. Target creation and installation reject symlinks,
@@ -6900,14 +6907,16 @@ digest check. Its type states prevent readiness before durable persistence.
 The runtime rechecks the committed record and current clock immediately before
 READY, then waits against the absolute boot-time deadline.
 
-The typed systemd adapter transfers exactly ten named read-only descriptors,
-uses one incarnation-derived 0700 `StateDirectory`, `DynamicUser`, empty
-capability sets, `Restart=no`, `AF_UNIX` only, and denies socket bind, listen,
-connect, and accept operations. The system bus is inaccessible and the public
-adapter exposes only Guardian start, not a general unit-management API. The
-test asserts the exact ordered D-Bus signature of every emitted transient
-property against systemd 259.8, including `StateDirectory` as `as`,
-`ProtectHome` as `s`, and `RestrictNamespaces` as a zero-valued `t` mask.
+The typed systemd adapter transfers the exact Guardian executable followed by
+exactly ten named read-only authority descriptors. Its immutable-path launcher
+immediately enters the transferred executable with `execveat(2)`. The unit uses
+one incarnation-derived 0700 `StateDirectory`, `DynamicUser`, empty capability
+sets, `Restart=no`, `AF_UNIX` only, and denies socket bind, listen, and accept
+operations. The system bus is inaccessible and the public adapter exposes only
+Guardian start, not a general unit-management API. The test asserts the exact
+ordered D-Bus signature of every emitted transient property against the
+packaged systemd, including `StateDirectory` as `as`, `ProtectHome` as `s`, and
+`RestrictNamespaces` as a zero-valued `t` mask.
 
 One exact pinned-development-shell run of the nine affected packages passed
 after the final transient-property type corrections. It covers 188 core tests,

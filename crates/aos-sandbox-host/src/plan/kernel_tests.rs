@@ -16,7 +16,20 @@
 use std::os::unix::fs::PermissionsExt as _;
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyRuntimeRequest, Audience, Feature, ResourceLimit, RuntimeAction,
+    ApplyRuntimeRequest, Audience, Feature, GuardianArmCompanionV1, ResourceLimit, RuntimeAction,
+};
+use aos_sandbox_core::format::{
+    descriptor_for_bytes, encode_broker_authorization_plan, encode_signature,
+};
+use aos_sandbox_core::model::{
+    KeyReference, KeyUsage, Signature, SignatureBytes, SignaturePurpose, SignatureStatement,
+    StableKeyId,
+};
+use aos_sandbox_core::{
+    AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, BrokerAudience,
+    BrokerAuthorizationPlan, BrokerGrant, BrokerGrantTarget, BrokerVerb, DesiredGeneration,
+    IncarnationId, MediaType, NodeId, ObjectDescriptor, ObjectDigest, PortableMediaType,
+    ProtocolId, ProtocolVersion, RevocationScopeId, SandboxId, TrustScopeId,
 };
 use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::BeneathRoot;
@@ -70,7 +83,7 @@ fn resources() -> ResolvedLaunchResources {
         ResolvedNetwork::from_pinned(NETWORK.to_owned(), identity.device, identity.inode, network)
             .unwrap();
     std::fs::create_dir_all(ATTACHMENT_ANCHOR).unwrap();
-    std::fs::set_permissions(ATTACHMENT_ANCHOR, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(ATTACHMENT_ANCHOR, std::fs::Permissions::from_mode(0o755)).unwrap();
     let anchor = directory(ATTACHMENT_ANCHOR);
     let anchor_identity = fstat(&anchor).unwrap();
     let anchor_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(anchor.as_fd())
@@ -98,6 +111,81 @@ fn resources() -> ResolvedLaunchResources {
         },
         attachment_anchor,
     }
+}
+
+fn guardian_plan_pair() -> (Vec<u8>, Vec<u8>) {
+    let assignment = BrokerAssignment::new(
+        SandboxId::from_bytes([0x60; 16]),
+        IncarnationId::from_bytes(INCARNATION),
+        AssignmentEpoch::new(1),
+        DesiredGeneration::new(1),
+        ObjectDigest::from_bytes([0x63; 32]),
+    )
+    .unwrap();
+    let lease_authority = KeyReference::new(
+        StableKeyId::new("qualification-ownership-authority".to_owned()).unwrap(),
+        1,
+        ObjectDigest::from_bytes([0x68; 32]),
+        KeyUsage::OwnershipLease,
+    );
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Guardian,
+        ProtocolId::Guardian,
+        ProtocolVersion::new(1, 0),
+        assignment,
+        NodeId::from_bytes([0x69; 16]),
+        lease_authority,
+        vec![
+            BrokerGrant::new(
+                BrokerVerb::GuardianArm,
+                BrokerGrantTarget::Assignment,
+                BrokerArgumentCommitment::for_canonical_bytes(b"qualification guardian arm"),
+                4096,
+                0,
+            )
+            .unwrap(),
+        ],
+        ObjectDigest::from_bytes([0x6a; 32]),
+        RevocationScopeId::from_bytes([0x6b; 16]),
+        100,
+        200,
+        Vec::new(),
+    )
+    .unwrap();
+    let broker_plan = encode_broker_authorization_plan(&plan);
+    let subject = descriptor_for_bytes(
+        MediaType::new(
+            PortableMediaType::BrokerAuthorizationPlan
+                .as_str()
+                .to_owned(),
+        )
+        .unwrap(),
+        &broker_plan,
+    );
+    let signer = KeyReference::new(
+        StableKeyId::new("qualification-controller".to_owned()).unwrap(),
+        1,
+        ObjectDigest::from_bytes([0x6c; 32]),
+        KeyUsage::BrokerAuthorization,
+    );
+    let policy = ObjectDescriptor::new(
+        MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned()).unwrap(),
+        ObjectDigest::from_bytes([0x6d; 32]),
+        1,
+    );
+    let statement = SignatureStatement::new(
+        subject,
+        TrustScopeId::from_bytes([0x6e; 16]),
+        signer,
+        SignaturePurpose::BrokerAuthorization,
+        100,
+        Some(200),
+        policy,
+    )
+    .unwrap();
+    let signature = encode_signature(&Signature::new(statement, SignatureBytes::new([0x6f; 64])));
+
+    (broker_plan, signature)
 }
 
 fn launch_request(now: u64) -> Vec<u8> {
@@ -145,6 +233,13 @@ fn launch_request(now: u64) -> Vec<u8> {
         minor: 0,
         ..Default::default()
     });
+    let (broker_plan, broker_plan_signature) = guardian_plan_pair();
+    request.guardian_arm = Some(GuardianArmCompanionV1 {
+        broker_plan,
+        broker_plan_signature,
+        ..Default::default()
+    })
+    .into();
     request.encode_to_vec()
 }
 

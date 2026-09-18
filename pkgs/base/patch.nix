@@ -17,7 +17,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/patch/patch-${version}.tar.xz"];
-      hash = "sha256-rGEL2per4Nn2t8ljJVoR3LGWwl4zfGH5Tkd41jLx2P0=";
+      hash = "sha256-+Hzuae7CtPy/YKOWsDCtaqNBXxkqpffuhMrV4R9/WuM=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake];

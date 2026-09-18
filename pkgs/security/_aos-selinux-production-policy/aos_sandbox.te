@@ -4,8 +4,6 @@ require {
     role system_r;
 
     attribute domain;
-    attribute file_type;
-
     type init_t;
     type device_t;
     type fixed_disk_device_t;
@@ -48,15 +46,10 @@ typeattribute aos_sandbox_runtime_roots_t domain;
 role system_r types aos_sandbox_runtime_roots_t;
 
 type aos_sandbox_host_exec_t;
-typeattribute aos_sandbox_host_exec_t file_type;
 type aos_sandbox_network_publisher_exec_t;
-typeattribute aos_sandbox_network_publisher_exec_t file_type;
 type aos_sandbox_namespace_inspector_exec_t;
-typeattribute aos_sandbox_namespace_inspector_exec_t file_type;
 type aos_sandbox_network_lifecycle_worker_exec_t;
-typeattribute aos_sandbox_network_lifecycle_worker_exec_t file_type;
 type aos_sandbox_runtime_roots_exec_t;
-typeattribute aos_sandbox_runtime_roots_exec_t file_type;
 
 # PID 1 alone enters each fixed domain through its labeled executable.
 allow init_t aos_sandbox_host_exec_t:file { execute getattr map open read };
@@ -102,29 +95,23 @@ allow aos_sandbox_runtime_roots_t device_t:lnk_file { getattr read };
 allow aos_sandbox_runtime_roots_t fixed_disk_device_t:blk_file getattr;
 
 type aos_sandbox_network_root_t;
-typeattribute aos_sandbox_network_root_t file_type;
 type aos_sandbox_network_state_t;
-typeattribute aos_sandbox_network_state_t file_type;
 
 # The protected inspector store has four non-aliasing directory roles. A record
 # is born with its final role type in staging because rename preserves the inode
-# type. fs-verity, not a post-rename type change, rejects later content writes.
+# type. These protected object types deliberately do not join the base policy's
+# broad file_type attribute: all required access is enumerated below, and an
+# inherited files_unconfined_type-to-file_type allow would bypass that matrix.
+# fs-verity, not a post-rename type change, rejects later content writes.
 type aos_sandbox_network_expected_staging_t;
-typeattribute aos_sandbox_network_expected_staging_t file_type;
 type aos_sandbox_network_expected_final_t;
-typeattribute aos_sandbox_network_expected_final_t file_type;
 type aos_sandbox_network_expected_record_t;
-typeattribute aos_sandbox_network_expected_record_t file_type;
 
 type aos_sandbox_network_spent_staging_t;
-typeattribute aos_sandbox_network_spent_staging_t file_type;
 type aos_sandbox_network_spent_final_t;
-typeattribute aos_sandbox_network_spent_final_t file_type;
 type aos_sandbox_network_spent_record_t;
-typeattribute aos_sandbox_network_spent_record_t file_type;
 
 type aos_sandbox_network_store_t;
-typeattribute aos_sandbox_network_store_t file_type;
 
 # Only the provisioner can create or validate the fixed descendant tree.
 # Parent name creation and child inode creation remain separate and auditable.

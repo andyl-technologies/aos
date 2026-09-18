@@ -64,7 +64,13 @@
     hash = cargoDepsHash;
   };
   packages = import ./_packages.nix;
-  workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;
+  workspaceMembers = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;
+  workspacePackageName = member: let
+    manifest = builtins.fromTOML (builtins.readFile (../../../crates + "/${member}/Cargo.toml"));
+  in
+    manifest.package.name
+    or (throw "crucible: workspace member '${member}' has no package name");
+  workspacePackages = map workspacePackageName workspaceMembers;
   nonCrucibleWorkspacePackages = builtins.filter (package: !(builtins.elem package packages)) workspacePackages;
   gplSidePackages = ["crucible-qemu-plugin" "crucible-debug-gateway"];
   controllerPackages = builtins.filter (package: !(builtins.elem package gplSidePackages)) packages;

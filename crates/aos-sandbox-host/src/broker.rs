@@ -334,12 +334,16 @@ where
         }
 
         let admission_clock = trusted_clock()?;
+        let verification_clock = match &existing_effect {
+            Some(effect) => historical_clock(effect)?,
+            None => admission_clock.clone(),
+        };
         let request = if candidate.canonical_request().is_some() {
             decode_runtime_request(
                 request_bytes,
                 peer,
                 policy,
-                admission_clock.boottime_nanoseconds(),
+                verification_clock.boottime_nanoseconds(),
             )?
         } else {
             replay_request
@@ -373,7 +377,7 @@ where
             &request,
             request_bytes,
             protocol_version,
-            &admission_clock,
+            &verification_clock,
             prior_fence_bytes,
         )?;
         if let Some(existing) = &existing_effect {
@@ -1928,6 +1932,7 @@ mod tests {
         ordering_events: Arc<Mutex<Vec<&'static str>>>,
         stop_roles: Arc<Mutex<Vec<ExactUnitRole>>>,
         fail_stop_once: Arc<AtomicBool>,
+        residual_stop_once: Arc<AtomicBool>,
     }
 
     impl GuardianWorker {
@@ -1949,6 +1954,7 @@ mod tests {
                 ordering_events: Arc::new(Mutex::new(Vec::new())),
                 stop_roles: Arc::new(Mutex::new(Vec::new())),
                 fail_stop_once: Arc::new(AtomicBool::new(false)),
+                residual_stop_once: Arc::new(AtomicBool::new(false)),
             }
         }
 
@@ -2296,6 +2302,13 @@ mod tests {
                     self.guardian_alive.store(false, Ordering::SeqCst);
                     self.guardian_terminal.store(false, Ordering::SeqCst);
                 }
+            }
+            if self.residual_stop_once.swap(false, Ordering::SeqCst) {
+                return Ok(ExactWorkerStopOutcome::Residual(GuardianObservation {
+                    binding: Some(binding),
+                    invocation_id: Some(invocation_id),
+                    state: GuardianObservedState::TerminalInactive,
+                }));
             }
             Ok(ExactWorkerStopOutcome::AwaitingAbsence(
                 GuardianObservation {

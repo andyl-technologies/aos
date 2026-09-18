@@ -43,14 +43,43 @@ in
         script = ''
           set -eu
 
+          mkdir source-tests
+          cp \
+            ${../../pkgs/security/aos-selinux-runtime-manifest.py} \
+            source-tests/aos-selinux-runtime-manifest.py
+          cp \
+            ${../../pkgs/security/aos-selinux-runtime-manifest_test.py} \
+            source-tests/aos-selinux-runtime-manifest_test.py
+          cp \
+            ${../../pkgs/security/aos-selinux-stage0.c} \
+            source-tests/aos-selinux-stage0.c
+          cp \
+            ${../../pkgs/security/aos-selinux-runtime-roots.c} \
+            source-tests/aos-selinux-runtime-roots.c
+          cp \
+            ${../../pkgs/security/aos-selinux-runtime-roots_source_test.py} \
+            source-tests/aos-selinux-runtime-roots_source_test.py
+          cp \
+            ${../../pkgs/system/aos-systemd-rpath-sanitize.py} \
+            source-tests/aos-systemd-rpath-sanitize.py
+          cp \
+            ${../../pkgs/system/aos-systemd-rpath-sanitize_test.py} \
+            source-tests/aos-systemd-rpath-sanitize_test.py
+          cp \
+            ${../../pkgs/filesystem/aos-device-mapper-rpath-sanitize.py} \
+            source-tests/aos-device-mapper-rpath-sanitize.py
+          cp \
+            ${../../pkgs/filesystem/aos-device-mapper-rpath-sanitize_test.py} \
+            source-tests/aos-device-mapper-rpath-sanitize_test.py
+
           PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
-            ${../../pkgs/security/aos-selinux-runtime-manifest_test.py}
+            source-tests/aos-selinux-runtime-manifest_test.py
           PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
-            ${../../pkgs/security/aos-selinux-runtime-roots_source_test.py}
+            source-tests/aos-selinux-runtime-roots_source_test.py
           PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
-            ${../../pkgs/system/aos-systemd-rpath-sanitize_test.py}
+            source-tests/aos-systemd-rpath-sanitize_test.py
           PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
-            ${../../pkgs/filesystem/aos-device-mapper-rpath-sanitize_test.py}
+            source-tests/aos-device-mapper-rpath-sanitize_test.py
 
           if ${pkgs.binutils}/bin/readelf -l \
             ${stage0}/bin/aos-selinux-stage0 | grep -q INTERP; then
@@ -117,7 +146,7 @@ in
           ' "$manifest"
 
           mkdir extracted
-          dump.erofs --extract=extracted ${rootfs}/root.img
+          ${pkgs.erofs-utils}/bin/fsck.erofs --extract=extracted ${rootfs}/root.img
           cmp \
             extracted/usr/lib/systemd/aos-selinux-root-handoff \
             ${stage0}/bin/aos-selinux-stage0

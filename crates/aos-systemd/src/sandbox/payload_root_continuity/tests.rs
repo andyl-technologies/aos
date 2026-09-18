@@ -39,6 +39,10 @@ fn root_continuity_policy_digest_is_sensitive_to_every_projected_choice() {
             attachment_anchor: "changed-attachment-role",
             ..PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1.descriptor_roles
         },
+        DescriptorRoleVocabularyV1 {
+            attachment_anchor_namespace: "changed-attachment-namespace-role",
+            ..PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1.descriptor_roles
+        },
     ] {
         assert_ne!(
             PayloadRootContinuityProjectionV1 {
@@ -705,6 +709,7 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     let mut preimage = b"aos.systemd.payload-root-continuity-policy.v1\0".to_vec();
     append_string(&mut preimage, "aos-sandbox-root-mount-v1");
     append_string(&mut preimage, "aos-sandbox-attachment-anchor-v1");
+    append_string(&mut preimage, "aos-sandbox-attachment-anchor-namespace-v1");
 
     // This independently spells out every canonical tag, width, and field
     // rather than traversing the production projection or its encoders.
@@ -869,7 +874,7 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     let independently_assembled_digest: [u8; 32] = Sha256::digest(preimage).into();
     assert_eq!(
         encode_hex32(independently_assembled_digest),
-        "18cdd877bdd79baae664104954b5a3461dae4d14cb86428621d9959246a9424a"
+        "57e3b7b2c87ad8cf85d1deb2ace91272e1fda52406a10ce1d1c703535beae50f"
     );
     assert_eq!(digest_v1(), independently_assembled_digest);
 }

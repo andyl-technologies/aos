@@ -1,7 +1,29 @@
 diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
+index 2db084a..884229b 100644
 --- a/src/nspawn/nspawn-root-fd.c
 +++ b/src/nspawn/nspawn-root-fd.c
-@@ -55,9 +55,34 @@
+@@ -2,6 +2,8 @@
+ 
+ #include <fcntl.h>
+ #include <sys/file.h>
++#include <sys/mount.h>
++#include <sys/socket.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+@@ -9,7 +11,11 @@
+ 
+ #include "alloc-util.h"
+ #include "fd-util.h"
++#include "namespace-util.h"
+ #include "nspawn-root-fd.h"
++#include "pidref.h"
++#include "process-util.h"
++#include "socket-util.h"
+ #include "string-util.h"
+ #include "strv.h"
+ 
+@@ -55,9 +61,132 @@ int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char
          return 0;
  }
  
@@ -26,59 +48,169 @@ diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
 +        return 0;
 +}
 +
++int aos_attachment_anchor_namespace_from_fd(int fd, int *ret_namespace_fd) {
++        _cleanup_close_ int namespace_fd = -EBADF;
++        int r;
++
++        assert(ret_namespace_fd);
++
++        namespace_fd = fcntl(fd, F_DUPFD_CLOEXEC, SD_LISTEN_FDS_START);
++        if (namespace_fd < 0)
++                return -errno;
++        r = fd_is_namespace(namespace_fd, NAMESPACE_MOUNT);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return -EINVAL;
++
++        *ret_namespace_fd = TAKE_FD(namespace_fd);
++        return 0;
++}
++
++int aos_attachment_anchor_clone(
++                int anchor_fd,
++                int source_namespace_fd,
++                int *ret_mount_fd) {
++
++        _cleanup_close_pair_ int errno_pipe[2] = EBADF_PAIR, transfer_socket[2] = EBADF_PAIR;
++        _cleanup_(pidref_done) PidRef child = PIDREF_NULL;
++        int r;
++
++        assert(anchor_fd >= 0);
++        assert(source_namespace_fd >= 0);
++        assert(ret_mount_fd);
++
++        r = fd_is_namespace(source_namespace_fd, NAMESPACE_MOUNT);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return -EINVAL;
++
++        if (pipe2(errno_pipe, O_CLOEXEC) < 0)
++                return -errno;
++        if (socketpair(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0, transfer_socket) < 0)
++                return -errno;
++
++        /* The attached anchor is meaningful only in the Host service's mount
++         * namespace. Enter it only in a short-lived child, clone the exact
++         * validated descriptor, and return a detached mount to the parent. */
++        r = namespace_fork(
++                        "(aos-anchor-ns)",
++                        "(aos-anchor-clone)",
++                        FORK_RESET_SIGNALS|FORK_DEATHSIG_SIGKILL,
++                        /* pidns_fd= */ -EBADF,
++                        source_namespace_fd,
++                        /* netns_fd= */ -EBADF,
++                        /* userns_fd= */ -EBADF,
++                        /* root_fd= */ -EBADF,
++                        &child);
++        if (r < 0)
++                return r;
++        if (r == 0) {
++                _cleanup_close_ int mount_fd = -EBADF;
++
++                errno_pipe[0] = safe_close(errno_pipe[0]);
++                transfer_socket[0] = safe_close(transfer_socket[0]);
++
++                mount_fd = open_tree(
++                                anchor_fd,
++                                "",
++                                OPEN_TREE_CLONE|OPEN_TREE_CLOEXEC|AT_EMPTY_PATH|AT_RECURSIVE);
++                if (mount_fd < 0)
++                        report_errno_and_exit(errno_pipe[1], -errno);
++
++                r = send_one_fd(transfer_socket[1], mount_fd, /* flags= */ 0);
++                if (r < 0)
++                        report_errno_and_exit(errno_pipe[1], r);
++
++                _exit(EXIT_SUCCESS);
++        }
++
++        errno_pipe[1] = safe_close(errno_pipe[1]);
++        transfer_socket[1] = safe_close(transfer_socket[1]);
++
++        r = pidref_wait_for_terminate_and_check("(aos-anchor-ns)", &child, /* flags= */ 0);
++        if (r < 0)
++                return r;
++
++        r = read_errno(errno_pipe[0]);
++        if (r < 0)
++                return r;
++
++        r = receive_one_fd(transfer_socket[0], MSG_DONTWAIT);
++        if (r < 0)
++                return r;
++
++        *ret_mount_fd = r;
++        return 0;
++}
++
 +int aos_root_directory_acquire(
 +                bool with_attachment_anchor,
 +                int *ret_root_fd,
 +                int *ret_lock_fd,
 +                char **ret_path,
-+                int *ret_anchor_fd) {
++                int *ret_anchor_fd,
++                int *ret_anchor_namespace_fd) {
          _cleanup_strv_free_ char **names = NULL;
 -        int n, r;
 +        int expected, n, r;
  
          /* This is a setup-only descriptor, never a payload activation socket.
           * Unsetting LISTEN_* makes the later fdset collector empty. Require the
-@@ -66,10 +91,16 @@
+@@ -66,10 +195,22 @@ int aos_root_directory_acquire(int *ret_root_fd, int *ret_lock_fd, char **ret_pa
          n = sd_listen_fds_with_names(/* unset_environment= */ true, &names);
          if (n < 0)
                  return n;
 -        if (n != 1 || !streq_ptr(names[0], AOS_ROOT_DIRECTORY_FD_NAME))
-+        expected = with_attachment_anchor ? 2 : 1;
++        expected = with_attachment_anchor ? 3 : 1;
 +        if (n != expected ||
 +            !streq_ptr(names[0], AOS_ROOT_DIRECTORY_FD_NAME) ||
-+            (with_attachment_anchor && !streq_ptr(names[1], AOS_ATTACHMENT_ANCHOR_FD_NAME)))
++            (with_attachment_anchor &&
++             (!streq_ptr(names[1], AOS_ATTACHMENT_ANCHOR_FD_NAME) ||
++              !streq_ptr(names[2], AOS_ATTACHMENT_ANCHOR_NAMESPACE_FD_NAME))))
                  r = -EINVAL;
 -        else
 +        else {
                  r = aos_root_directory_from_fd(SD_LISTEN_FDS_START, ret_root_fd, ret_lock_fd, ret_path);
 +                if (r >= 0 && with_attachment_anchor)
 +                        r = aos_attachment_anchor_from_fd(SD_LISTEN_FDS_START + 1, ret_anchor_fd);
++                if (r >= 0 && with_attachment_anchor)
++                        r = aos_attachment_anchor_namespace_from_fd(
++                                        SD_LISTEN_FDS_START + 2,
++                                        ret_anchor_namespace_fd);
 +        }
  
          for (int i = 0; i < n; i++)
                  safe_close(SD_LISTEN_FDS_START + i);
 diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
+index 1356eea..cc356ab 100644
 --- a/src/nspawn/nspawn-root-fd.h
 +++ b/src/nspawn/nspawn-root-fd.h
-@@ -2,6 +2,13 @@
+@@ -2,6 +2,17 @@
  #pragma once
  
  #define AOS_ROOT_DIRECTORY_FD_NAME "aos-sandbox-root-mount-v1"
 +#define AOS_ATTACHMENT_ANCHOR_FD_NAME "aos-sandbox-attachment-anchor-v1"
++#define AOS_ATTACHMENT_ANCHOR_NAMESPACE_FD_NAME "aos-sandbox-attachment-anchor-namespace-v1"
  
  int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char **ret_path);
 -int aos_root_directory_acquire(int *ret_root_fd, int *ret_lock_fd, char **ret_path);
 +int aos_attachment_anchor_from_fd(int fd, int *ret_anchor_fd);
++int aos_attachment_anchor_namespace_from_fd(int fd, int *ret_namespace_fd);
++int aos_attachment_anchor_clone(int anchor_fd, int source_namespace_fd, int *ret_mount_fd);
 +int aos_root_directory_acquire(
 +                bool with_attachment_anchor,
 +                int *ret_root_fd,
 +                int *ret_lock_fd,
 +                char **ret_path,
-+                int *ret_anchor_fd);
++                int *ret_anchor_fd,
++                int *ret_anchor_namespace_fd);
 diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+index 366403b..e0c84b2 100644
 --- a/src/nspawn/nspawn.c
 +++ b/src/nspawn/nspawn.c
-@@ -139,6 +139,7 @@
+@@ -149,6 +149,7 @@ typedef enum ContainerStatus {
  
  static char *arg_directory = NULL;
  static bool arg_aos_root_directory_fd = false;
@@ -86,8 +218,7 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
  static char *arg_template = NULL;
  static char *arg_chdir = NULL;
  static char *arg_pivot_root_new = NULL;
-@@ -1173,7 +1174,18 @@
- 
+@@ -1175,6 +1176,17 @@ static int parse_argv(int argc, char *argv[]) {
                          arg_aos_root_directory_fd = true;
                          break;
  
@@ -105,7 +236,7 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
                  OPTION_LONG("restrict-address-families", "LIST", "Restrict socket address families to the given allowlist"):
                          r = parse_address_families(opts.arg, &arg_restrict_address_families, &arg_restrict_address_families_is_allowlist);
                          if (r < 0)
-@@ -3964,10 +3978,83 @@
+@@ -3973,10 +3985,76 @@ static DissectImageFlags determine_dissect_image_flags(void) {
                   (arg_userns_ownership != USER_NAMESPACE_OWNERSHIP_AUTO) ? DISSECT_IMAGE_IDENTITY_UID : 0);
  }
  
@@ -114,7 +245,7 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
 +                int attachment_anchor_fd,
 +                int idmap_userns_fd) {
 +
-+        _cleanup_close_ int anchor_mount_fd = -EBADF, target_fd = -EBADF;
++        _cleanup_close_ int target_fd = -EBADF;
 +        struct stat target_stat;
 +        int r;
 +
@@ -122,19 +253,12 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
 +        assert(attachment_anchor_fd >= 0);
 +        assert(idmap_userns_fd >= 0);
 +
-+        anchor_mount_fd = open_tree(
-+                        attachment_anchor_fd,
-+                        "",
-+                        OPEN_TREE_CLONE|OPEN_TREE_CLOEXEC|AT_EMPTY_PATH|AT_RECURSIVE);
-+        if (anchor_mount_fd < 0)
-+                return log_error_errno(errno, "Failed to clone AOS attachment anchor: %m");
-+
 +        struct mount_attr attr = {
 +                .attr_set = MOUNT_ATTR_IDMAP|MOUNT_ATTR_RDONLY|MOUNT_ATTR_NOSUID|
 +                            MOUNT_ATTR_NODEV|MOUNT_ATTR_NOEXEC,
 +                .userns_fd = idmap_userns_fd,
 +        };
-+        if (mount_setattr(anchor_mount_fd, "", AT_EMPTY_PATH|AT_RECURSIVE, &attr, sizeof(attr)) < 0)
++        if (mount_setattr(attachment_anchor_fd, "", AT_EMPTY_PATH|AT_RECURSIVE, &attr, sizeof(attr)) < 0)
 +                return log_error_errno(errno, "Failed to protect AOS attachment anchor: %m");
 +
 +        r = userns_mkdir(directory, "/run/aos", 0755, 0, 0);
@@ -162,7 +286,7 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
 +                                SYNTHETIC_ERRNO(EPERM),
 +                                "AOS attachment-anchor target has unsafe ownership or mode.");
 +
-+        r = path_is_mount_point_full("/run/aos/attachments", directory, 0);
++        r = is_mount_point_at(target_fd, /* path= */ NULL, /* flags= */ 0);
 +        if (r < 0)
 +                return log_error_errno(r, "Failed to inspect AOS attachment-anchor mountpoint: %m");
 +        if (r > 0)
@@ -171,7 +295,7 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
 +                                "AOS attachment-anchor target is already a mountpoint.");
 +
 +        if (move_mount(
-+                        anchor_mount_fd,
++                        attachment_anchor_fd,
 +                        "",
 +                        target_fd,
 +                        "",
@@ -187,9 +311,9 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
                  int mount_fd,
 +                int attachment_anchor_fd,
                  DissectedImage *dissected_image,
+                 MStack *mstack,
                  int fd_outer_socket,
-                 int fd_inner_socket,
-@@ -3976,6 +4063,7 @@
+@@ -3986,6 +4064,7 @@ static int outer_child(
                  const char *unix_export_path) {
  
          _cleanup_strv_free_ char **os_release_pairs = NULL;
@@ -197,8 +321,8 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
          bool idmap = false;
          ssize_t l;
          int r;
-@@ -4026,8 +4114,6 @@
-                 assert(!arg_image);
+@@ -4037,8 +4116,6 @@ static int outer_child(
+                 assert(!arg_mstack);
  
                  if (arg_aos_root_directory_fd) {
 -                        _cleanup_close_ int idmap_userns_fd = -EBADF;
@@ -206,7 +330,7 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
                          /* Attribute only the detached root before attachment.
                           * Upstream's later pathname remap unmounts the root,
                           * which fails with EBUSY for a prepared tree containing
-@@ -4436,6 +4522,16 @@
+@@ -4485,6 +4562,16 @@ static int outer_child(
                          return r;
          }
  
@@ -223,35 +347,36 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
          /* We have different codepaths here for privileged and non-privileged mode. In privileged mode we'll
           * now switch into the target directory, and then do the final setup from there. If a user namespace
           * is then allocated for the container, the root mount and everything else will be out of reach for
-@@ -5260,6 +5356,7 @@
- static int run_container(
+@@ -5395,6 +5482,7 @@ static int run_container(
+                 const char *runtime_dir,
                  const char *directory,
                  int mount_fd,
 +                int attachment_anchor_fd,
                  DissectedImage *dissected_image,
+                 MStack *mstack,
                  int userns_fd,
-                 FDSet *fds,
-@@ -5412,6 +5509,7 @@
+@@ -5548,6 +5636,7 @@ static int run_container(
                  r = outer_child(&barrier,
                                  directory,
                                  mount_fd,
 +                                attachment_anchor_fd,
                                  dissected_image,
+                                 mstack,
                                  fd_outer_socket_pair[1],
-                                 fd_inner_socket_pair[1],
-@@ -6146,7 +6244,10 @@
+@@ -6272,7 +6361,11 @@ static int do_cleanup(void) {
  static int run(int argc, char *argv[]) {
-         bool remove_directory = false, remove_image = false, veth_created = false;
+         bool remove_image = false, veth_created = false;
          _cleanup_close_ int master = -EBADF, userns_fd = -EBADF, mount_fd = -EBADF;
 -        _cleanup_close_ int aos_root_fd = -EBADF, aos_root_lock_fd = -EBADF;
 +        _cleanup_close_ int
 +                aos_root_fd = -EBADF,
 +                aos_root_lock_fd = -EBADF,
-+                aos_attachment_anchor_fd = -EBADF;
++                aos_attachment_anchor_fd = -EBADF,
++                aos_attachment_anchor_namespace_fd = -EBADF;
          _cleanup_fdset_free_ FDSet *fds = NULL;
          int r, ret = EXIT_SUCCESS;
          char veth_name[IFNAMSIZ] = "";
-@@ -6166,6 +6267,13 @@
+@@ -6295,6 +6388,13 @@ static int run(int argc, char *argv[]) {
          if (r <= 0)
                  goto finish;
  
@@ -265,7 +390,7 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
          if (arg_aos_root_directory_fd) {
                  /* Descriptor roots have no pathname identity for image lookup,
                   * snapshots, registration, or settings discovery. Keep this
-@@ -6183,7 +6291,12 @@
+@@ -6312,11 +6412,33 @@ static int run(int argc, char *argv[]) {
                          goto finish;
                  }
  
@@ -275,22 +400,61 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
 +                                &aos_root_fd,
 +                                &aos_root_lock_fd,
 +                                &arg_directory,
-+                                &aos_attachment_anchor_fd);
++                                &aos_attachment_anchor_fd,
++                                &aos_attachment_anchor_namespace_fd);
                  if (r < 0) {
                          log_error_errno(r, "Failed to acquire AOS root descriptor: %m");
                          goto finish;
-@@ -6741,6 +6854,7 @@
+                 }
++
++                if (arg_aos_attachment_anchor_fd) {
++                        _cleanup_close_ int detached_anchor_fd = -EBADF;
++
++                        r = aos_attachment_anchor_clone(
++                                        aos_attachment_anchor_fd,
++                                        aos_attachment_anchor_namespace_fd,
++                                        &detached_anchor_fd);
++                        if (r < 0) {
++                                log_error_errno(r, "Failed to import AOS attachment anchor: %m");
++                                goto finish;
++                        }
++
++                        close_and_replace(aos_attachment_anchor_fd, detached_anchor_fd);
++                        aos_attachment_anchor_namespace_fd = safe_close(aos_attachment_anchor_namespace_fd);
++                }
+         }
+ 
+         if (arg_cleanup)
+@@ -6962,10 +7084,24 @@ static int run(int argc, char *argv[]) {
+                         break;
+                 }
+ 
++                _cleanup_close_ int aos_attachment_anchor_mount_fd = -EBADF;
++
++                if (arg_aos_attachment_anchor_fd) {
++                        aos_attachment_anchor_mount_fd = mount_fd_clone(
++                                        aos_attachment_anchor_fd,
++                                        /* recursive= */ true,
++                                        &aos_attachment_anchor_fd);
++                        if (aos_attachment_anchor_mount_fd < 0) {
++                                r = log_error_errno(aos_attachment_anchor_mount_fd, "Failed to clone AOS attachment anchor: %m");
++                                goto finish;
++                        }
++                }
++
                  r = run_container(
+                                 runtime_dir,
                                  rootdir,
                                  arg_aos_root_directory_fd ? aos_mount_fd : mount_fd,
-+                                aos_attachment_anchor_fd,
++                                aos_attachment_anchor_mount_fd,
                                  dissected_image,
+                                 mstack,
                                  userns_fd,
-                                 fds,
 diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
+index 5c1f795..05b9aa3 100644
 --- a/src/nspawn/test-nspawn-root-fd.c
 +++ b/src/nspawn/test-nspawn-root-fd.c
-@@ -57,40 +57,76 @@
+@@ -57,40 +57,84 @@ TEST(rejects_host_root_and_non_directory) {
          ASSERT_ERROR(aos_root_directory_from_fd(-1, &root, &lock, &alias), EBADF);
  }
  
@@ -324,12 +488,12 @@ diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
 -                { "2", AOS_ROOT_DIRECTORY_FD_NAME ":unexpected", -EINVAL },
 +                { false, "1", AOS_ROOT_DIRECTORY_FD_NAME, 0 },
 +                { true,
-+                  "2",
-+                  AOS_ROOT_DIRECTORY_FD_NAME ":" AOS_ATTACHMENT_ANCHOR_FD_NAME,
++                  "3",
++                  AOS_ROOT_DIRECTORY_FD_NAME ":" AOS_ATTACHMENT_ANCHOR_FD_NAME ":" AOS_ATTACHMENT_ANCHOR_NAMESPACE_FD_NAME,
 +                  0 },
 +                { false, "0", "", -EINVAL },
 +                { false, "1", "unexpected", -EINVAL },
-+                { true, "2", AOS_ROOT_DIRECTORY_FD_NAME ":unexpected", -EINVAL },
++                { true, "3", AOS_ROOT_DIRECTORY_FD_NAME ":unexpected:unexpected", -EINVAL },
          };
  
          ASSERT_OK(mkdtemp_malloc("/tmp/test-nspawn-root-role.XXXXXX", &directory));
@@ -342,7 +506,8 @@ diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
                  if (r == 0) {
                          _cleanup_free_ char *pid = NULL, *alias = NULL;
 -                        int source, root = -EBADF, lock = -EBADF;
-+                        int source, anchor_source, root = -EBADF, lock = -EBADF, anchor = -EBADF;
++                        int source, anchor_source, namespace_source;
++                        int root = -EBADF, lock = -EBADF, anchor = -EBADF, anchor_namespace = -EBADF;
  
                          ASSERT_OK_ERRNO(source = open(directory, O_PATH|O_DIRECTORY|O_CLOEXEC));
                          ASSERT_OK_ERRNO(dup2(source, SD_LISTEN_FDS_START));
@@ -350,13 +515,19 @@ diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
                                  safe_close(source);
 -                        if (c->count[0] == '2')
 -                                ASSERT_OK_ERRNO(dup2(SD_LISTEN_FDS_START, SD_LISTEN_FDS_START + 1));
-+                        if (c->count[0] == '2') {
++                        if (c->count[0] == '3') {
 +                                ASSERT_OK_ERRNO(anchor_source = open(
 +                                                anchor_directory,
 +                                                O_PATH|O_DIRECTORY|O_CLOEXEC));
 +                                ASSERT_OK_ERRNO(dup2(anchor_source, SD_LISTEN_FDS_START + 1));
 +                                if (anchor_source != SD_LISTEN_FDS_START + 1)
 +                                        safe_close(anchor_source);
++                                ASSERT_OK_ERRNO(namespace_source = open(
++                                                "/proc/self/ns/mnt",
++                                                O_RDONLY|O_CLOEXEC));
++                                ASSERT_OK_ERRNO(dup2(namespace_source, SD_LISTEN_FDS_START + 2));
++                                if (namespace_source != SD_LISTEN_FDS_START + 2)
++                                        safe_close(namespace_source);
 +                        }
                          ASSERT_OK_ERRNO(asprintf(&pid, "%d", getpid()));
                          ASSERT_OK_ERRNO(setenv("LISTEN_PID", pid, 1));
@@ -370,7 +541,8 @@ diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
 +                                                        &root,
 +                                                        &lock,
 +                                                        &alias,
-+                                                        &anchor),
++                                                        &anchor,
++                                                        &anchor_namespace),
 +                                        c->expected);
                          ASSERT_NULL(getenv("LISTEN_PID"));
                          ASSERT_NULL(getenv("LISTEN_FDS"));

@@ -337,7 +337,7 @@ impl PayloadRootContinuityPolicyV1 {
     }
 }
 
-/// Carries the root and network pins resolved atomically for one launch assignment.
+/// Carries the root, network, and optional attachment pins for one launch assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxResolvedPaths {
     root_directory: String,
@@ -345,6 +345,7 @@ pub struct SandboxResolvedPaths {
     root_pin: SandboxDescriptorPath,
     _network_pin: SandboxDescriptorPath,
     attachment_anchor_pin: Option<SandboxDescriptorPath>,
+    attachment_anchor_namespace_pin: Option<SandboxDescriptorPath>,
 }
 
 /// Carries the sole nspawn command profile accepted by the typed transport.
@@ -455,13 +456,20 @@ impl SandboxResolvedPaths {
             root_pin: root_directory,
             _network_pin: network_namespace,
             attachment_anchor_pin: None,
+            attachment_anchor_namespace_pin: None,
         }
     }
 
-    /// Adds the Mount-owned descriptor installed at `/run/aos/attachments`.
+    /// Adds the Mount-owned descriptor installed at `/run/aos/attachments` and
+    /// the exact mount namespace in which that attached mount is cloneable.
     #[must_use]
-    pub fn with_attachment_anchor(mut self, anchor: SandboxDescriptorPath) -> Self {
+    pub fn with_attachment_anchor(
+        mut self,
+        anchor: SandboxDescriptorPath,
+        source_namespace: SandboxDescriptorPath,
+    ) -> Self {
         self.attachment_anchor_pin = Some(anchor);
+        self.attachment_anchor_namespace_pin = Some(source_namespace);
         self
     }
 
@@ -1191,7 +1199,7 @@ mod tests {
             spec.command.clone(),
             spec.paths
                 .clone()
-                .with_attachment_anchor(descriptor_path("/")),
+                .with_attachment_anchor(descriptor_path("/"), descriptor_path("/proc/self/ns/mnt")),
             spec.resources,
             spec.timeout_start,
             spec.timeout_stop,
@@ -1584,9 +1592,10 @@ mod tests {
     }
 
     #[test]
-    fn attachment_anchor_is_a_second_named_setup_descriptor() {
+    fn attachment_anchor_and_namespace_are_named_setup_descriptors() {
         let resources = SandboxResources::new(1, 1, 1, 1).unwrap();
-        let resolved = paths().with_attachment_anchor(descriptor_path("/"));
+        let resolved = paths()
+            .with_attachment_anchor(descriptor_path("/"), descriptor_path("/proc/self/ns/mnt"));
         let spec = SandboxUnitSpec::new_nspawn(
             SandboxUnitName::from_incarnation([1; 16]),
             command([1; 16]),
@@ -1615,6 +1624,7 @@ mod tests {
             vec![
                 "aos-sandbox-root-mount-v1",
                 "aos-sandbox-attachment-anchor-v1",
+                "aos-sandbox-attachment-anchor-namespace-v1",
             ]
         );
     }

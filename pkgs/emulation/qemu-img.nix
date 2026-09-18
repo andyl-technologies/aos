@@ -7,6 +7,8 @@
   qemu,
   glib,
   zlib,
+  libgcrypt,
+  gnutls,
 }: let
   version = qemu.version;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -31,7 +33,15 @@ in
     buildDeps =
       lib.optional (!isDarwinCross) qemu
       ++ lib.optional isDarwinCross darwinSigner;
-    runtimeDeps = [glib zlib];
+    runtimeDeps =
+      [
+        glib
+        zlib
+      ]
+      ++ lib.optionals (!isDarwinCross) [
+        libgcrypt
+        gnutls
+      ];
     propagatedDeps = [];
     disallowedReferences = [qemu];
     # The source utility is already stripped. Darwin's copied binary must be

@@ -111,7 +111,7 @@ CapabilityBoundingSet=<closed nspawn-supervisor set>
 RestrictAddressFamilies=<closed union required by supervisor and payload profile>
 SystemCallFilter=<closed inherited supervisor/payload ceiling>
 ProtectSystem=strict
-ExtraFileDescriptors=<one detached root mount named aos-sandbox-root-mount-v1>
+ExtraFileDescriptors=<root mount, attachment anchor, and anchor source mount namespace>
 PrivateTmp=yes
 TemporaryFileSystem=/run/systemd/nspawn:rw,mode=0700,nosuid,nodev,noexec,size=16M
 SELinuxContext=<dedicated nspawn-supervisor domain>
@@ -152,10 +152,11 @@ veth or raise an external link. It never uses `-U`,
 Neither the property set nor argv is supplied by the public caller.
 
 The privileged workspace publisher prepares a detached recursive root mount.
-It travels as one named D-Bus file descriptor, not a root pathname for the
-restricted supervisor to reopen. Nspawn's AOS descriptor profile requires the
-exact role and arity, rejects host root and non-directory objects, and retains
-an inode-based exclusive lock. Its supervisor-local descriptor alias is never
+It travels as the named `aos-sandbox-root-mount-v1` D-Bus file descriptor, not
+a root pathname for the restricted supervisor to reopen. Nspawn's AOS
+descriptor profile requires the exact role and arity, rejects host root and
+non-directory objects, and retains an inode-based exclusive lock. Its
+supervisor-local descriptor alias is never
 canonicalized for image lookup or pathname locking. Nspawn clones the detached
 tree for each boot, applies the fixed idmap to the detached root alone with
 `mount_setattr`, and attaches it with `move_mount`, retaining a detached

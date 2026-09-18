@@ -90,6 +90,12 @@ the sandbox create, rename, or replacement permission. Arbitrary workload
 paths are not attachment destinations. Friendly locations are immutable links
 or facades to these slots where the profile permits them.
 
+The launch handoff transfers both the pinned anchor and the exact source mount
+namespace where that anchor is attached. A short-lived nspawn child enters only
+that namespace, clones the anchor into a detached mount, and returns the clone
+to its parent. Neither Host nor the long-lived nspawn supervisor enters the
+source namespace, and the source namespace descriptor is closed after import.
+
 Pinning an `O_PATH` target is not enough because an attacker may have raced an
 old pathname before the anchor policy took effect. The worker verifies the
 slot's anchor mount ID, parent chain, inode identity, and non-writability before

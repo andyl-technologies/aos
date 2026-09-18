@@ -83,10 +83,11 @@
   # interpolation only) and keeping it as a stable per-machine field
   # avoids parameterising downstream helpers on the mode.
   #
-  # The guest agent reaches every fleet machine one of two ways: baked into
+  # Machines that expect the guest agent receive it one of two ways: baked into
   # the /var seed (kernel boot + `varProvisioning = "baked"`, the default), or
   # through a test-only unit baked into the effective system for image/repart
-  # boots that ship no seed. The latter references the bundled agent payload
+  # boots that ship no seed. Serial-only negative tests set `expectAgent = false`
+  # and carry no agent payload. The image path references a bundled payload
   # directly; it is intentionally not placed in the runtime package seed,
   # because host evaluation would otherwise need a registry entry for test
   # infrastructure before the harness could establish its control channel.
@@ -98,13 +99,14 @@
       bootMode = m.bootMode or "kernel";
       varProvisioning = m.varProvisioning or "baked";
       packages = m.packages or [];
+      expectAgent = m.expectAgent or true;
       # `baked` /var seeds the agent at build time; every other shape uses
       # the test-only unit added by `mkNewpathModule` below.
       bakesAgent = bootMode == "kernel" && varProvisioning == "baked";
       agentBundled = m.system.config.aos.packages.aos-test-agent.bundle or false;
       seedPackages = builtins.filter (package: package != "aos-test-agent") packages;
       checkedPackages =
-        if bakesAgent || agentBundled
+        if !expectAgent || bakesAgent || agentBundled
         then seedPackages
         else
           throw ''
@@ -128,7 +130,7 @@
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
       extraDisks = m.extraDisks or [];
-      expectAgent = m.expectAgent or true;
+      inherit expectAgent;
       memoryMiB = m.memoryMiB or 2048;
       tpm = m.tpm or false;
       firmwareVars = m.firmwareVars or null;
@@ -310,7 +312,7 @@
         [
           (mkNewpathModule {
             inherit m hostsEntries sshAuthorizedKey;
-            bakeAgentUnit = !m.bakesAgent;
+            bakeAgentUnit = m.expectAgent && !m.bakesAgent;
           })
         ]
         # A baked-/var kernel machine already carries the fleet control agent

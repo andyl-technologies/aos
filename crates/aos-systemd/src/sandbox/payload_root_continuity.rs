@@ -63,6 +63,8 @@ const NSPAWN_ALLOWED_SYSCALLS: &[&str] = &[
 const NSPAWN_ENVIRONMENT: &[&str] = &["LANG=C.UTF-8", "PATH=", "SYSTEMD_LOG_TARGET=journal"];
 const NSPAWN_ROOT_DESCRIPTOR_ROLE: &str = "aos-sandbox-root-mount-v1";
 const NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE: &str = "aos-sandbox-attachment-anchor-v1";
+const NSPAWN_ATTACHMENT_ANCHOR_NAMESPACE_DESCRIPTOR_ROLE: &str =
+    "aos-sandbox-attachment-anchor-namespace-v1";
 const NSPAWN_SUPERVISOR_SELINUX_CONTEXT: &str = "system_u:system_r:aos_nspawn_t:s0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +77,7 @@ enum DescriptorRoleV1 {
 struct DescriptorRoleVocabularyV1<'a> {
     root: &'a str,
     attachment_anchor: &'a str,
+    attachment_anchor_namespace: &'a str,
 }
 
 impl<'a> DescriptorRoleVocabularyV1<'a> {
@@ -503,6 +506,7 @@ const PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1: PayloadRootContinuityProjectionV1<'
         descriptor_roles: DescriptorRoleVocabularyV1 {
             root: NSPAWN_ROOT_DESCRIPTOR_ROLE,
             attachment_anchor: NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE,
+            attachment_anchor_namespace: NSPAWN_ATTACHMENT_ANCHOR_NAMESPACE_DESCRIPTOR_ROLE,
         },
         nspawn_arguments: NSPAWN_ARGUMENT_POLICY_V1,
         unit_properties: UNIT_PROPERTY_POLICY_V1,
@@ -516,6 +520,7 @@ impl PayloadRootContinuityProjectionV1<'_> {
         hash.update(DOMAIN);
         semantic_string(&mut hash, self.descriptor_roles.root);
         semantic_string(&mut hash, self.descriptor_roles.attachment_anchor);
+        semantic_string(&mut hash, self.descriptor_roles.attachment_anchor_namespace);
         hash.update(canonical_len(self.nspawn_arguments.len()));
         for argument in self.nspawn_arguments {
             match argument {
@@ -805,14 +810,33 @@ impl PayloadRootContinuityProjectionV1<'_> {
                     let mut descriptors =
                         vec![(Fd::from(root_fd), self.descriptor_roles.root.to_owned())];
                     if let Some(anchor) = &spec.paths.attachment_anchor_pin {
+                        let source_namespace = spec
+                            .paths
+                            .attachment_anchor_namespace_pin
+                            .as_ref()
+                            .ok_or_else(|| {
+                                invalid(
+                                    "nspawn attachment anchor omitted its source mount namespace",
+                                )
+                            })?;
                         let anchor_fd = anchor.pin.try_clone().map_err(|error| {
                             invalid(format!(
                                 "cannot duplicate nspawn attachment-anchor descriptor: {error}"
                             ))
                         })?;
+                        let source_namespace_fd =
+                            source_namespace.pin.try_clone().map_err(|error| {
+                                invalid(format!(
+                                    "cannot duplicate nspawn attachment-anchor namespace: {error}"
+                                ))
+                            })?;
                         descriptors.push((
                             Fd::from(anchor_fd),
                             self.descriptor_roles.attachment_anchor.to_owned(),
+                        ));
+                        descriptors.push((
+                            Fd::from(source_namespace_fd),
+                            self.descriptor_roles.attachment_anchor_namespace.to_owned(),
                         ));
                     }
                     Some(complex_property(name, descriptors)?)

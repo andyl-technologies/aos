@@ -1,6 +1,6 @@
 # RFC-0021: Generic sandboxes and filesystem views
 
-- **Status:** Proposed; implementation in progress
+- **Status:** Implemented
 - **Date:** 2026-09-03
 - **Audience:** maintainers of `aos`, AOS system images, systemd integration,
   package and cache infrastructure, storage, security policy, and distributed
@@ -20,19 +20,20 @@ operations for execution, inspection, snapshot, suspend, resume, fork, and
 deletion. The service is not specific to coding agents; agents use the same
 public CLI and API as every other client.
 
-The planned initial production runtime backend is `systemd-nspawn`, launched as
+The initial production runtime backend is `systemd-nspawn`, launched as
 a transient systemd unit without making `systemd-machined` the source of truth.
 AOS owns desired state, capability delegation, storage lineage, mount
 attachment, and reconciliation. Backends remain pluggable: the portable API
 describes sandbox semantics and required capabilities rather than nspawn
 arguments.
 
-The current source tree contains the portable runtime-backend and durable
-execution contracts, a dormant Host-protocol projection, and the bounded guest
-agent protocol and reducer. It does not yet contain a concrete runtime-backend
-implementation, an active Host-to-backend call site, or a guest-local effect
-adapter. Those source foundations do not activate nspawn, the public execution
-surface, readiness, or any production service route.
+The source tree implements the portable contracts and their production paths:
+the public API and CLI, durable controller, authenticated privileged brokers,
+systemd-nspawn Host backend, guest agent, ownership guardian, storage and
+network effects, native and FUSE filesystem views, lifecycle recovery,
+multi-node fencing, policy, observability, and release qualification. The
+implementation task ledger records the executable evidence and historical
+increments behind that final integrated state.
 
 Dynamic filesystem attachment is part of the first architecture, not an
 afterthought. A source-neutral **filesystem view** abstraction selects among:

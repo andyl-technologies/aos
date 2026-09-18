@@ -5,6 +5,7 @@
   aos-selinux-runtime-roots,
   systemd,
   buildPackages,
+  stdenv,
   loadedPolicy ? "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33",
   expectedPolicy ? "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33",
   admissionUnit ? "aos-selinux-stage0-hold.target",
@@ -32,6 +33,7 @@ in
       buildPackages.binutils
       buildPackages.patchelf
       buildPackages.python3
+      stdenv.binutils
     ];
     runtimeDeps = [];
     propagatedDeps = [];
@@ -75,9 +77,12 @@ in
             --known-dlopen-soname libaudit.so.1 \
             --known-dlopen-soname libblkid.so.1 \
             --known-dlopen-soname libc.so.6 \
+            --known-dlopen-soname libcrypt.so.2 \
             --known-dlopen-soname libcryptsetup.so.12 \
+            --known-dlopen-soname libcrypto.so.4 \
             --known-dlopen-soname libdw.so.1 \
             --known-dlopen-soname libelf.so.1 \
+            --known-dlopen-soname libfdisk.so.1 \
             --known-dlopen-soname libgcc_s.so.1 \
             --known-dlopen-soname libidn2.so.0 \
             --known-dlopen-soname libkmod.so.2 \
@@ -90,10 +95,17 @@ in
             --known-dlopen-soname libseccomp.so.2 \
             --known-dlopen-soname libselinux.so.1 \
             --known-dlopen-soname libsepol.so.2 \
+            --known-dlopen-soname libssl.so.4 \
             --known-dlopen-soname libtss2-esys.so.0 \
             --known-dlopen-soname libtss2-mu.so.0 \
             --known-dlopen-soname libtss2-rc.so.0 \
+            --known-dlopen-soname libz.so.1 \
             --known-dlopen-soname libzstd.so.1 \
+            --known-absent-dlopen-soname libbz2.so.1 \
+            --known-absent-dlopen-soname libcrypt.so.1 \
+            --known-absent-dlopen-soname libcrypt.so.1.1 \
+            --known-absent-dlopen-soname libcrypto.so.3 \
+            --known-absent-dlopen-soname libssl.so.3 \
             --known-absent-dlopen-soname libtss2-tcti-default.so \
             --constructed-dlopen-family libtss2-tcti- .so.0 \
             --known-constructed-dlopen-soname libtss2-tcti-device.so.0
@@ -101,23 +113,26 @@ in
           # These objects are linked into the target executable. Use the
           # target-aware tools exported by the cross cc-wrapper, while all
           # programs executed for inspection remain build-platform tools.
-          "$LD" -r -b binary -o loaded_policy.o loaded_policy.bin
-          "$LD" -r -b binary -o expected_policy.o expected_policy.bin
-          "$LD" -r -b binary \
+          ${stdenv.binutils}/bin/ld -r -b binary \
+            -o loaded_policy.o loaded_policy.bin
+          ${stdenv.binutils}/bin/ld -r -b binary \
+            -o expected_policy.o expected_policy.bin
+          ${stdenv.binutils}/bin/ld -r -b binary \
             -o systemd_runtime_manifest.o systemd_runtime_manifest.bin
-          "$OBJCOPY" \
+          ${stdenv.binutils}/bin/objcopy \
             --rename-section .data=.rodata,alloc,load,readonly,data,contents \
             loaded_policy.o
-          "$OBJCOPY" \
+          ${stdenv.binutils}/bin/objcopy \
             --rename-section .data=.rodata,alloc,load,readonly,data,contents \
             expected_policy.o
-          "$OBJCOPY" \
+          ${stdenv.binutils}/bin/objcopy \
             --rename-section .data=.rodata,alloc,load,readonly,data,contents \
             systemd_runtime_manifest.o
 
           $CC \
             -std=c17 \
             -D_GNU_SOURCE \
+            -I. \
             -Os \
             -Wall \
             -Wextra \

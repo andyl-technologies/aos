@@ -319,17 +319,24 @@ class DlopenInventoryTests(unittest.TestCase):
                 if option == "--print-needed":
                     return ["libmissing.so.1"]
                 if option == "--print-rpath":
-                    return []
+                    # patchelf emits one blank line when the ELF has no tag.
+                    return [""]
                 self.fail(f"closure-wide scan unexpectedly requested {option}")
 
             with (
                 mock.patch.object(manifest, "run_patchelf", side_effect=patchelf_output),
+                mock.patch.object(
+                    manifest, "dynamic_search_tags", return_value=(False, False)
+                ),
                 mock.patch.object(manifest, "closure_owner", return_value=str(root)),
                 mock.patch.object(Path, "is_file", autospec=True, side_effect=is_file),
                 mock.patch.object(Path, "resolve", autospec=True, side_effect=resolve),
             ):
                 resolved = manifest.validate_elf_closure(
-                    [root], systemd, Path("/tools/patchelf")
+                    [root],
+                    systemd,
+                    Path("/tools/patchelf"),
+                    Path("/tools/readelf"),
                 )
 
         self.assertEqual(resolved, str(interpreter))

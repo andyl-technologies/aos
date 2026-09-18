@@ -1,7 +1,9 @@
 //! Single-process guardian startup, readiness, and absolute deadline wait.
 
+use std::ffi::CString;
 use std::io::IoSlice;
 use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 
@@ -15,7 +17,7 @@ use aos_sandbox_core::{
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inherited_fd::duplicate_inherited_descriptor;
 use aos_sandbox_linux::pidfd::SingleThreadedProcess;
-use rustix::fs::{FileType, OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstat};
+use rustix::fs::{AtFlags, FileType, OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstat};
 use rustix::net::{
     AddressFamily, SendAncillaryBuffer, SendFlags, SocketAddrUnix, SocketFlags, SocketType,
     sendmsg_addr, socket_with,
@@ -30,6 +32,9 @@ use crate::{
 };
 
 const ACTIVATION_FD_BASE: i32 = 3;
+/// Selects the one-shot launcher mode that enters the transferred executable.
+pub const PINNED_ACTIVATION_ARGUMENT: &str = "--exec-pinned-activation";
+const EXECUTABLE_DESCRIPTOR: &str = "guardian-executable";
 const PLAN_POLICY: &str = "broker-plan-policy.cbor";
 const PLAN_PUBLIC_KEY: &str = "broker-plan-public-key";
 const PLAN_REVOCATION_SCOPE: &str = "broker-revocation-scope";
@@ -40,7 +45,8 @@ const BROKER_PLAN: &str = "broker-plan.cbor";
 const BROKER_PLAN_SIGNATURE: &str = "broker-plan-signature.cbor";
 const OWNERSHIP_LEASE: &str = "ownership-lease.cbor";
 const OWNERSHIP_LEASE_SIGNATURE: &str = "ownership-lease-signature.cbor";
-const ACTIVATION_NAMES: [&str; 10] = [
+const ACTIVATION_NAMES: [&str; 11] = [
+    EXECUTABLE_DESCRIPTOR,
     PLAN_POLICY,
     PLAN_PUBLIC_KEY,
     PLAN_REVOCATION_SCOPE,
@@ -61,6 +67,53 @@ const REQUIRED_DYNAMIC_SEALS: SealFlags = SealFlags::SEAL
     .union(SealFlags::SHRINK)
     .union(SealFlags::GROW)
     .union(SealFlags::WRITE);
+
+/// Replaces the launcher with the exact executable transferred as activation fd 3.
+///
+/// The launcher exists only because systemd must open `ExecStart` before it
+/// installs `ExtraFileDescriptors`. The replacement drops the launcher-only
+/// argument while preserving the complete activation descriptor tuple and
+/// environment for normal Guardian startup.
+///
+/// # Errors
+///
+/// Returns an error when fd 3 is absent, the environment cannot be encoded for
+/// `execveat(2)`, or the kernel rejects descriptor-based execution.
+pub fn exec_pinned_activation() -> Result<(), GuardianRuntimeError> {
+    let executable = duplicate_inherited_descriptor(ACTIVATION_FD_BASE)
+        .map_err(|_| GuardianRuntimeError::InvalidActivation)?;
+    let argument = CString::new("aos-sandbox-guardian")
+        .map_err(|_| GuardianRuntimeError::InvalidActivation)?;
+    let arguments = [argument.as_ptr().cast::<u8>(), std::ptr::null()];
+
+    let environment = std::env::vars_os()
+        .map(|(name, value)| {
+            let mut entry = name.as_os_str().as_bytes().to_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(value.as_os_str().as_bytes());
+            CString::new(entry).map_err(|_| GuardianRuntimeError::InvalidActivation)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut environment_pointers = environment
+        .iter()
+        .map(|entry| entry.as_ptr().cast::<u8>())
+        .collect::<Vec<_>>();
+    environment_pointers.push(std::ptr::null());
+
+    // SAFETY: both pointer arrays are NUL-terminated and retain their backing
+    // C strings for the call. The empty path and EMPTY_PATH flag select the
+    // validated executable descriptor; success replaces this process image.
+    let error = unsafe {
+        rustix::runtime::execveat(
+            &executable,
+            c"",
+            arguments.as_ptr(),
+            environment_pointers.as_ptr(),
+            AtFlags::EMPTY_PATH,
+        )
+    };
+    Err(GuardianRuntimeError::Descriptor(error))
+}
 
 /// Sends the sole readiness acknowledgement after durable authority recheck.
 pub trait ReadyNotifier {
@@ -198,8 +251,9 @@ impl ActivatedGuardianInputs {
         }
         prove_closed_activation_set()?;
 
-        let mut descriptors = Vec::with_capacity(ACTIVATION_NAMES.len());
-        for offset in 0..ACTIVATION_NAMES.len() {
+        let credential_count = ACTIVATION_NAMES.len() - 1;
+        let mut descriptors = Vec::with_capacity(credential_count);
+        for offset in 1..ACTIVATION_NAMES.len() {
             let raw = ACTIVATION_FD_BASE
                 .checked_add(
                     i32::try_from(offset).map_err(|_| GuardianRuntimeError::InvalidActivation)?,
