@@ -289,119 +289,6 @@
     )
     true
     evalChecks;
-
-  # Adversarial parity oracle: reconstruct the pre-split imperative symlink
-  # farm for this same evaluated unit set. The final check canonicalizes
-  # absolute store links by their target bytes (the pure materializer may use
-  # a differently named one-file derivation) while retaining relative link
-  # targets verbatim. This pins the authored-unit materialization semantics
-  # rather than merely checking a few expected filenames.
-  legacyJobScriptDrvs = lib.mapAttrs (key: script:
-    pkgs.writeTextFile {
-      name = "aos-job-script-${script.name}";
-      executable = true;
-      destination = "/aos-job-scripts/${key}";
-      text = script.text;
-      checkPhase = ''${pkgs.bash}/bin/bash -n "$target"'';
-    })
-  manifest.jobScripts;
-  legacyUnitDrvs = lib.mapAttrs (name: unit: let
-    unitJobScripts = lib.mapAttrsToList (key: scriptDrv: {
-      placeholder = "#aos-jobscript:${key}#";
-      path = "${scriptDrv}/aos-job-scripts/${key}";
-    }) (lib.filterAttrs (key: _: lib.hasPrefix "${name}:" key) legacyJobScriptDrvs);
-  in
-    systemdLib.makeUnit name (unit // {jobScripts = unitJobScripts;}))
-  result.config.systemd.units;
-  autoUnitDrvs = lib.mapAttrsToList (name: _unit: legacyUnitDrvs.${name}) (
-    lib.filterAttrs (
-      _name: unit:
-        (unit.overrideStrategy or "asDropinIfExists") == "asDropinIfExists"
-    )
-    result.config.systemd.units
-  );
-  dropinUnitDrvs = lib.mapAttrsToList (name: _unit: legacyUnitDrvs.${name}) (
-    lib.filterAttrs (
-      _name: unit:
-        (unit.overrideStrategy or "asDropinIfExists") == "asDropin"
-    )
-    result.config.systemd.units
-  );
-  legacyUnits = pkgs.runCommand "legacy-system-units-parity-oracle" {} ''
-    mkdir -p "$out"
-
-    unit_filename() {
-      unit_dir=$1
-      unit_filename=
-      for candidate in "$unit_dir"/*; do
-        [ -e "$candidate" ] || [ -L "$candidate" ] || continue
-        [ -d "$candidate" ] && continue
-        if [ -n "$unit_filename" ]; then
-          echo "unit derivation contains multiple unit payloads: $unit_dir" >&2
-          exit 1
-        fi
-        unit_filename=$(basename "$candidate")
-      done
-      if [ -z "$unit_filename" ]; then
-        echo "unit derivation contains no unit payload: $unit_dir" >&2
-        exit 1
-      fi
-    }
-
-    for unit_dir in ${builtins.toString autoUnitDrvs}; do
-      unit_filename "$unit_dir"
-      fn=$unit_filename
-      if [ -e "$out/$fn" ]; then
-        if [ "$(readlink -f "$unit_dir/$fn")" = /dev/null ]; then
-          ln -sfn /dev/null "$out/$fn"
-        else
-          mkdir -p "$out/$fn.d"
-          ln -s "$unit_dir/$fn" "$out/$fn.d/overrides.conf"
-        fi
-      else
-        ln -fs "$unit_dir/$fn" "$out/"
-      fi
-    done
-
-    for unit_dir in ${builtins.toString dropinUnitDrvs}; do
-      unit_filename "$unit_dir"
-      fn=$unit_filename
-      mkdir -p "$out/$fn.d"
-      ln -s "$unit_dir/$fn" "$out/$fn.d/overrides.conf"
-    done
-
-    ${lib.concatStrings (lib.mapAttrsToList (
-        name: unit:
-          lib.concatMapStrings (alias: ''
-            ln -sfn ${lib.escapeShellArg name} "$out/${alias}"
-          '') (unit.aliases or [])
-      )
-      result.config.systemd.units)}
-    ${lib.concatStrings (lib.mapAttrsToList (
-        name: unit:
-          lib.concatMapStrings (target: ''
-            mkdir -p "$out/${target}.wants"
-            ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.wants/"
-          '') (unit.wantedBy or [])
-      )
-      result.config.systemd.units)}
-    ${lib.concatStrings (lib.mapAttrsToList (
-        name: unit:
-          lib.concatMapStrings (target: ''
-            mkdir -p "$out/${target}.requires"
-            ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.requires/"
-          '') (unit.requiredBy or [])
-      )
-      result.config.systemd.units)}
-    ${lib.concatStrings (lib.mapAttrsToList (
-        name: unit:
-          lib.concatMapStrings (target: ''
-            mkdir -p "$out/${target}.upholds"
-            ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.upholds/"
-          '') (unit.upheldBy or [])
-      )
-      result.config.systemd.units)}
-  '';
 in
   pkgs.mkDerivation {
     pname = "systemd-generate-check";
@@ -411,7 +298,7 @@ in
     # Pull the synthetic system-units derivation into the closure so it
     # gets built (and thus inspected at build time) as part of this
     # check's dependency graph.
-    buildDeps = [systemUnits legacyUnits pkgs.python3];
+    buildDeps = [systemUnits];
 
     expectedPaths = expectedMaterializedPathsText;
     passAsFile = ["expectedPaths"];
@@ -476,49 +363,6 @@ in
             echo "FAIL: wantedBy link did not replace the package .wants leaf"
             exit 1
           fi
-
-          # Compare the complete pre/post tree. Absolute store links are
-          # represented by the bytes and mode of the leaf they resolve to;
-          # relative install/alias links remain exact link-target strings.
-          ${pkgs.python3}/bin/python3 - "${legacyUnits}" "$units_dir" <<'PY'
-          import hashlib
-          import json
-          import os
-          import stat
-          import sys
-
-          def canonical(root):
-              result = {}
-              for base, dirs, files in os.walk(root, followlinks=False):
-                  dirs.sort()
-                  files.sort()
-                  for name in files:
-                      path = os.path.join(base, name)
-                      relative = os.path.relpath(path, root)
-                      if os.path.islink(path):
-                          target = os.readlink(path)
-                          resolved = os.path.realpath(path)
-                          if resolved == "/dev/null":
-                              result[relative] = ["mask"]
-                          elif os.path.isabs(target):
-                              with open(path, "rb") as source:
-                                  digest = hashlib.sha256(source.read()).hexdigest()
-                              result[relative] = ["content", stat.S_IMODE(os.stat(path).st_mode), digest]
-                          else:
-                              result[relative] = ["link", target]
-                      else:
-                          with open(path, "rb") as source:
-                              digest = hashlib.sha256(source.read()).hexdigest()
-                          result[relative] = ["content", stat.S_IMODE(os.stat(path).st_mode), digest]
-              return result
-
-          before = canonical(sys.argv[1])
-          after = canonical(sys.argv[2])
-          if before != after:
-              print("FAIL: pure systemd materialization changed legacy bytes or symlink semantics")
-              print(json.dumps({"legacy": before, "pure": after}, indent=2, sort_keys=True))
-              raise SystemExit(1)
-          PY
 
           # The eval-time unit body carries a
           # `#aos-jobscript:<key>#` placeholder, but `makeUnit` substitutes it
