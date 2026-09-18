@@ -98,9 +98,19 @@ pub struct SourceStageInstance {
     ///
     /// Bindings remain authoritative for the implementations used through an
     /// instance because one provider instance may expose several interfaces.
-    pub implementation: Option<String>,
+    pub implementation: Option<SourceStageImplementation>,
     /// Carries typed instance configuration.
     pub configuration: AbilityValue,
+}
+
+/// Identifies one implementation through retained package provenance.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceStageImplementation {
+    /// Identifies the authenticated package that owns the implementation.
+    pub package: LocalKey,
+    /// Names the implementation inside that package's checked projection.
+    pub local_key: LocalKey,
 }
 
 /// Retains one standard module-system request declaration.
@@ -141,8 +151,8 @@ pub struct SourceStageCompositionRequirement {
 pub struct SourceStageBinding {
     /// Names the selected root or child request declaration.
     pub request: String,
-    /// Names the selected package implementation declaration.
-    pub implementation: String,
+    /// Identifies the selected package implementation declaration.
+    pub implementation: SourceStageImplementation,
     /// Names the selected provider instance declaration.
     pub provider_instance: String,
     /// Names its exclusive aggregate contribution slot.
@@ -362,7 +372,7 @@ fn selected_resource_implementation<'a>(
     fixed_point: &'a SourceStageFixedPoint,
     packages: &'a [PackageDocument],
     instance_name: &str,
-    implementation_name: &str,
+    implementation_reference: &SourceStageImplementation,
 ) -> AnyResult<(&'a SourceStageInstance, &'a InstanceId, serde_json::Value)> {
     let instance = fixed_point
         .instances
@@ -372,22 +382,19 @@ fn selected_resource_implementation<'a>(
         .instance_identities
         .get(instance_name)
         .context("source resource instance has no canonical identity")?;
-    let (package_name, local_name) = implementation_name
-        .split_once(':')
-        .context("source resource implementation is not package-qualified")?;
     ensure!(
-        instance.package.as_str() == package_name,
+        instance.package == implementation_reference.package,
         "source resource implementation crosses package provenance"
     );
     let package = packages
         .iter()
-        .find(|package| package.package.name == instance.package)
+        .find(|package| package.package.name == implementation_reference.package)
         .context("source resource implementation package is absent")?;
     let implementation = package
         .implementation
         .providers
         .iter()
-        .find(|implementation| implementation.name.as_str() == local_name)
+        .find(|implementation| implementation.name == implementation_reference.local_key)
         .context("source resource implementation is absent")?;
     let descriptor = implementation.descriptor_digest()?;
     ensure!(
@@ -833,8 +840,8 @@ impl SourceStageBundle {
                                 permission.slot == selected.slot
                                     && permission.aggregate.provider == *provider
                             }))
-                        && implementation_name(binding.packages(), checked)
-                            .is_some_and(|name| name == selected.implementation)
+                        && implementation_reference(binding.packages(), checked)
+                            .is_some_and(|reference| reference == selected.implementation)
                 })
                 .count();
             if matches != 1 {
@@ -866,7 +873,7 @@ impl SourceStageFixedPoint {
     ) -> Result<Vec<crate::transition::SourceEnabledProvider>, SourceStageBundleError> {
         let selected = |name: &str,
                         instance: &SourceStageInstance,
-                        qualified: &str|
+                        reference: &SourceStageImplementation|
          -> Result<
             crate::transition::SourceEnabledProvider,
             SourceStageBundleError,
@@ -875,21 +882,18 @@ impl SourceStageFixedPoint {
                 .instance_identities
                 .get(name)
                 .ok_or(SourceStageBundleError::FixedPointAuthority)?;
-            let (package_name, implementation_name) = qualified
-                .split_once(':')
-                .ok_or(SourceStageBundleError::FixedPointAuthority)?;
-            if package_name != instance.package.as_str() {
+            if reference.package != instance.package {
                 return Err(SourceStageBundleError::FixedPointAuthority);
             }
             let package = packages
                 .iter()
-                .find(|package| package.package.name.as_str() == package_name)
+                .find(|package| package.package.name == reference.package)
                 .ok_or(SourceStageBundleError::FixedPointAuthority)?;
             let implementation = package
                 .implementation
                 .providers
                 .iter()
-                .find(|provider| provider.name.as_str() == implementation_name)
+                .find(|provider| provider.name == reference.local_key)
                 .ok_or(SourceStageBundleError::FixedPointAuthority)?;
             Ok(crate::transition::SourceEnabledProvider {
                 instance: identity.clone(),
@@ -919,10 +923,10 @@ impl SourceStageFixedPoint {
             )?);
         }
         for (name, instance) in &self.instances {
-            let Some(qualified) = &instance.implementation else {
+            let Some(reference) = &instance.implementation else {
                 continue;
             };
-            providers.push(selected(name, instance, qualified)?);
+            providers.push(selected(name, instance, reference)?);
         }
         providers.sort_by(|left, right| {
             left.instance
@@ -963,10 +967,10 @@ fn source_authority(
     Ok(Sha256Digest::separated(material.schema, bytes))
 }
 
-fn implementation_name(
+fn implementation_reference(
     packages: &[PackageDocument],
     binding: &aos_ability_model::Binding,
-) -> Option<String> {
+) -> Option<SourceStageImplementation> {
     let package_digest = binding.provider_package?;
     packages.iter().find_map(|package| {
         if package.content_digest().ok()? != package_digest {
@@ -979,12 +983,9 @@ fn implementation_name(
             .find(|provider| {
                 provider.descriptor_digest().ok() == Some(binding.implementation.descriptor)
             })
-            .map(|provider| {
-                format!(
-                    "{}:{}",
-                    package.package.name.as_str(),
-                    provider.name.as_str()
-                )
+            .map(|provider| SourceStageImplementation {
+                package: package.package.name.clone(),
+                local_key: provider.name.clone(),
             })
     })
 }
@@ -1109,7 +1110,7 @@ mod tests {
                     .bindings()
                     .iter()
                     .find(|selected| selected.provider == instance.instance)
-                    .and_then(|selected| implementation_name(binding.packages(), selected));
+                    .and_then(|selected| implementation_reference(binding.packages(), selected));
                 (
                     name,
                     SourceStageInstance {
@@ -1149,7 +1150,7 @@ mod tests {
                 .or_insert_with(|| SourceStageInstance {
                     package: package.package.name.clone(),
                     local_key: None,
-                    implementation: implementation_name(binding.packages(), selected),
+                    implementation: implementation_reference(binding.packages(), selected),
                     configuration: AbilityValue::new(serde_json::json!({}))
                         .expect("provider configuration"),
                 });
@@ -1189,7 +1190,7 @@ mod tests {
                     format!("source-binding-{index}"),
                     SourceStageBinding {
                         request: request_names[&selected.request].clone(),
-                        implementation: implementation_name(binding.packages(), selected)
+                        implementation: implementation_reference(binding.packages(), selected)
                             .expect("implementation name"),
                         provider_instance: instance_names[&selected.provider].clone(),
                         slot: selected.caller_grant.contributions.first().map_or_else(

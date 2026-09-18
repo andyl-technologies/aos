@@ -1,11 +1,15 @@
 ##! Canonical runtime projection of one completed source-stage fixed point.
 {abilities}: let
-  packageFromDeclaration = context: declaration: let
-    matched = builtins.match "([^:]+):.+" declaration;
+  implementationReference = context: declaration: let
+    implementation =
+      abilities.implementations.${declaration}
+      or (throw "${context} '${declaration}' is absent from the completed fixed point");
   in
-    if matched == null
-    then throw "${context} '${declaration}' is not package-qualified"
-    else builtins.head matched;
+    if implementation.package == null || implementation.localKey == null
+    then throw "${context} '${declaration}' has no authenticated package provenance"
+    else {
+      inherit (implementation) package localKey;
+    };
   unique = values:
     builtins.attrNames (builtins.listToAttrs (builtins.map (value: {
         name = value;
@@ -22,11 +26,11 @@
       if instance.implementation == null
       then []
       else [
-        (packageFromDeclaration "instance implementation" instance.implementation)
+        (implementationReference "instance implementation" instance.implementation).package
       ];
     selected = builtins.concatMap (binding:
       if binding.providerInstance == name
-      then [(packageFromDeclaration "binding implementation" binding.implementation)]
+      then [(implementationReference "binding implementation" binding.implementation).package]
       else [])
     (builtins.attrValues abilities.bindings);
     consumed = builtins.concatMap (request:
@@ -43,7 +47,11 @@
       "source-stage instance '${name}' must resolve exactly one authenticated package owner; candidates: ${builtins.toJSON candidates}";
   projectInstance = name: instance: {
     package = packageForInstance name instance;
-    inherit (instance) localKey implementation configuration;
+    inherit (instance) localKey configuration;
+    implementation =
+      if instance.implementation == null
+      then null
+      else implementationReference "instance implementation" instance.implementation;
   };
   projectRequest = name: request:
     if request.package == null || request.localKey == null
@@ -51,17 +59,21 @@
     else {
       inherit (request) package requirement consumer scope localKey lifetime parameters;
     };
+  projectBinding = _: binding: {
+    inherit (binding) request providerInstance slot;
+    implementation = implementationReference "binding implementation" binding.implementation;
+  };
 in {
   inherit
     (abilities)
     environment
     instanceIdentities
-    bindings
     compositionOutputs
     compositionRequirements
     compositionPendingRequests
     resolvedResources
     ;
+  bindings = builtins.mapAttrs projectBinding abilities.bindings;
   instances = builtins.mapAttrs projectInstance abilities.instances;
   requests = builtins.mapAttrs projectRequest abilities.requests;
   compositionRequests = builtins.mapAttrs projectRequest abilities.compositionRequests;
