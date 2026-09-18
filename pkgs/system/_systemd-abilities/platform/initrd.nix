@@ -69,6 +69,14 @@
       name = lib.mkOption {type = lib.types.nonEmptyStr;};
     };
   };
+  providerNetworkRenderPlanType = lib.types.submodule {
+    config._module.strict = true;
+    options = {
+      input = lib.mkOption {type = lib.types.str;};
+      name = lib.mkOption {type = lib.types.nonEmptyStr;};
+      resolverEnabled = lib.mkOption {type = lib.types.bool;};
+    };
+  };
 
   # Render each initrd unit category through its stage-1 *-ToUnit
   # renderer and key the result by unit file name (e.g. "foo.service").
@@ -101,7 +109,10 @@
     if initrdAbilityEvaluation == null
     then []
     else initrdAbilityEvaluation.config.systemd.providerUnitPlans or [];
-  initrdNetworkFiles = lib.mapAttrs (_: systemdLib.networkToText) cfg.network;
+  initrdProviderNetworkPlans =
+    if initrdAbilityEvaluation == null
+    then []
+    else initrdAbilityEvaluation.config.systemd.providerNetworkConfigurationPlans or [];
 in {
   options.boot.initrd.systemd = {
     enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
@@ -160,19 +171,6 @@ in {
       description = "Typed .automount units to include in the systemd initrd. Keyed by `where`, not by name.";
     };
 
-    network = lib.mkOption {
-      type = systemdTypes.initrdNetworks;
-      default = {};
-      description = ''
-        Typed systemd-networkd `.network` files for the initrd. Each
-        attribute renders to `/etc/systemd/network/<name>.network` (the
-        `.network` suffix is appended). Unlike the unit options above
-        these are networkd *config*, not units, so they bypass
-        `generateUnits` and are copied into the initrd directly. Used by
-        stage-1 metadata networking to DHCP for instance metadata.
-      '';
-    };
-
     maskedUnits = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -195,11 +193,12 @@ in {
       options = {
         etc = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
         jobScripts = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
-        networkFiles = lib.mkOption {type = lib.types.attrsOf lib.types.lines;};
         providerPlans = lib.mkOption {
           type = lib.types.listOf providerRenderPlanType;
         };
-        renderedNetworks = lib.mkOption {type = lib.types.listOf lib.types.str;};
+        providerNetworkPlans = lib.mkOption {
+          type = lib.types.listOf providerNetworkRenderPlanType;
+        };
         renderedUnits = lib.mkOption {type = lib.types.listOf lib.types.str;};
       };
     };
@@ -282,10 +281,9 @@ in {
     system.build.systemdInitrdPlan = {
       etc = systemdLib.unitsToEtc pureInitrdUnits;
       jobScripts = initrdJobScripts;
-      networkFiles = initrdNetworkFiles;
       providerPlans = initrdProviderPlans;
+      providerNetworkPlans = initrdProviderNetworkPlans;
       renderedUnits = builtins.attrNames renderedInitrdUnits;
-      renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
     };
   };
 }

@@ -60,22 +60,15 @@
         passAsFile = ["providerArtifactsJson"];
       } ''
         providerArtifactsPath="$providerArtifactsJsonPath" \
-          ${providerPackage}/bin/aos-systemd-provider assemble
+            ${providerPackage}/bin/aos-systemd-provider assemble
       '';
-  networkFiles = lib.mapAttrs (name: text:
-    buildContext.writeTextFile {
-      name = "systemd-initrd-network-${name}";
-      destination = "/${name}.network";
-      inherit text;
-    })
-  plan.networkFiles;
-  initrdNetworkDir = buildContext.runCommand "initrd-systemd-networks" {} (
-    ''mkdir -p "$out"''
-    + lib.concatStringsSep "\n" (lib.mapAttrsToList (
-        name: source: "cp ${source}/${name}.network $out/${name}.network"
-      )
-      networkFiles)
-  );
+  providerNetworkArtifacts = builtins.map renderProviderPlan plan.providerNetworkPlans;
+  initrdNetworkDir =
+    if providerNetworkArtifacts == []
+    then null
+    else if builtins.length providerNetworkArtifacts == 1
+    then "${builtins.head providerNetworkArtifacts}/etc/systemd/network"
+    else throw "systemd initrd requires at most one selected network-configuration resource";
   selectedArtifactBackend = config.aos.artifacts.backend;
   artifactBackend =
     if
@@ -152,7 +145,6 @@
     loadModules = config.aos.boot.initrd.loadModules;
     initrdRuntimeRoots = config.aos.boot.initrd.runtimeRoots;
     renderedUnits = plan.renderedUnits;
-    renderedNetworks = plan.renderedNetworks;
     initrdStaticContract = checkedStaticContract;
     initrdSourceStageBundle = sourceStageBundle;
     maskedUnits =

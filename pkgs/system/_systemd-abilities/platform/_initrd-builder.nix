@@ -34,9 +34,8 @@
 ##!                   /etc/systemd/system directory (from generateUnits)
 ##!   initrdRuntimeRoots — canonical store paths whose closures are copied
 ##!                   into the initrd and exposed on its interactive PATH.
-##!   initrdNetworkDir — derivation whose output is a directory of rendered
-##!                   systemd-networkd `.network` files (from the typed
-##!                   `boot.initrd.systemd.network` tree); copied into
+##!   initrdNetworkDir — selected provider artifact directory containing
+##!                   rendered systemd-networkd `.network` files; copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
 ##!   keepBinutils — retain current binutils for signed UKI section inspection
 ##!                  in recovery-enabled normal initrds.
@@ -56,7 +55,6 @@
   initrdRuntimeRoots,
   initrdNetworkDir ? null,
   renderedUnits,
-  renderedNetworks,
   handoff,
   initrdSourceStageBundle,
   initrdStaticContract,
@@ -102,7 +100,7 @@
         available_stage = "build";
       }
     ]
-    ++ lib.optional (initrdNetworkDir != null && renderedNetworks != []) {
+    ++ lib.optional (initrdNetworkDir != null) {
       kind = "network-configuration";
       store_path = "${initrdNetworkDir}";
       available_stage = "build";
@@ -679,9 +677,7 @@
             cp -a ${initrdUnits}/. root/etc/systemd/system/ || true
           fi
 
-          # ── 7a. Rendered networkd .network config from
-          #    boot.initrd.systemd.network. These are config, not units, so
-          #    they bypass generateUnits and land in /etc/systemd/network/.
+          # ── 7a. Network configuration rendered by the selected provider.
           mkdir -p root/etc/systemd/network
           ${lib.optionalString (initrdNetworkDir != null) ''
             if [ -d ${initrdNetworkDir} ]; then
@@ -699,6 +695,14 @@
           mkdir -p root/etc/systemd/system/network-online.target.wants
           ln -sfn /lib/systemd/system/systemd-networkd-wait-online.service \
             root/etc/systemd/system/network-online.target.wants/systemd-networkd-wait-online.service
+          mkdir -p \
+            root/etc/systemd/system/systemd-networkd-wait-online.service.d
+          cat > \
+            root/etc/systemd/system/systemd-networkd-wait-online.service.d/10-aos-any-link.conf <<EOF
+          [Service]
+          ExecStart=
+          ExecStart=${systemd}/lib/systemd/systemd-networkd-wait-online --any
+          EOF
 
           # ── 8. Masked units ─────────────────────────────────────────────
           chmod u+w root/etc/systemd/system
@@ -923,6 +927,12 @@
 
           archive_size=$(stat -c %s "$out/initrd.img")
           archive_sha256=$(sha256sum "$out/initrd.img" | cut -d ' ' -f1)
+          rendered_networks=$(
+            ${findutils}/bin/find root/etc/systemd/network \
+              -maxdepth 1 -type f -printf '%f\n' \
+              | LC_ALL=C ${coreutils}/bin/sort \
+              | ${jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
+          )
           ${jq}/bin/jq -cS -n \
             --arg schema aos.boot.initrd-stage-contract/v1 \
             --arg platform ${lib.escapeShellArg lib.system} \
@@ -931,7 +941,7 @@
             --argjson archiveSize "$archive_size" \
             --argjson dependencyRoots ${lib.escapeShellArg (builtins.toJSON dependencyRoots)} \
             --argjson renderedUnits ${lib.escapeShellArg (builtins.toJSON renderedUnits)} \
-            --argjson renderedNetworks ${lib.escapeShellArg (builtins.toJSON renderedNetworks)} \
+            --argjson renderedNetworks "$rendered_networks" \
             --argjson loadModules ${lib.escapeShellArg (builtins.toJSON loadModules)} \
             --argjson maskedUnits ${lib.escapeShellArg (builtins.toJSON maskedUnits)} \
             --argjson handoff ${lib.escapeShellArg (builtins.toJSON handoff)} \

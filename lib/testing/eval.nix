@@ -443,11 +443,22 @@
       != "libexec/aos-metadata-provisioning-provider"
     then throw "the initrd fixed point must route provisioning authorization through the AOS metadata provider"
     else if
-      system.config.boot.initrd.systemd.network."80-dhcp".networkConfig.LinkLocalAddressing
-      != "ipv4"
+      (initrdRequest "aos-boot-preparations" "bootstrap-network").links
+      != [
+        {
+          kind = "ethernet";
+          name = "dhcp";
+          selector.kind = "ethernet";
+          addressing = {
+            dhcp = true;
+            addresses = [];
+            dns = [];
+            link_local = "ipv4";
+            ipv4_link_local_route = true;
+          };
+        }
+      ]
     then throw "DHCP-less metadata acquisition requires an initrd IPv4 link-local source address"
-    else if !system.config.boot.initrd.systemd.network."80-dhcp".networkConfig.IPv4LLRoute
-    then throw "DHCP-less metadata acquisition requires an initrd route to link-local IMDS"
     else if
       !(builtins.elem
         (initrdOutput "aos-boot-preparations" "initrd-filesystems" "resource")

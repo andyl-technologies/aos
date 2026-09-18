@@ -200,22 +200,5 @@ in {
         }
       ];
     };
-
-    # DHCP on every physical NIC in the initrd. IPv4 link-local addressing is
-    # the DHCP-less metadata bootstrap: it provides an on-link source address
-    # and route to 169.254.169.254 so the agent can learn the provider's real
-    # static address. Kind=!* excludes virtual links (bridges/bonds/etc.).
-    # Brought up only when the network gate fires (cloud platforms).
-    boot.initrd.systemd.network."80-dhcp" = {
-      matchConfig = {
-        Type = "ether";
-        Kind = "!*";
-      };
-      networkConfig = {
-        DHCP = "yes";
-        LinkLocalAddressing = "ipv4";
-        IPv4LLRoute = true;
-      };
-    };
   };
 }
