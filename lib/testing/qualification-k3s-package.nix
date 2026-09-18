@@ -25,7 +25,7 @@ in
   assert builtins.substring 0 11 packageExecutable == "/nix/store/";
   assert systemVariant != "";
   assert builtins.elem topology ["combined-worker" "control-plane-worker"];
-    pkgs.writeShellScriptBin name ''
+    pkgs.buildPackages.writeShellScriptBin name ''
       set -euo pipefail
 
       export AOS_QUALIFICATION_BOUND_IMAGE_VARIANT=${lib.escapeShellArg systemVariant}
