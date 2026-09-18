@@ -17,7 +17,10 @@
     }
     config;
   interface = lib.abilities.interfaces.eventLogPolicy.interface;
-  configured = config.aos.abilities.environment != null;
+  configured =
+    config.aos.abilities.environment
+    != null
+    && config.aos.abilities.environment.stage == "host";
 in {
   config.aos.abilities = {
     requirementTemplates.event-log-policy = {

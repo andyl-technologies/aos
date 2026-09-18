@@ -270,7 +270,7 @@
     inherit lib pkgs;
   };
   stagedEnvironment = import ./staged-environment.nix {
-    inherit lib mkSystem;
+    inherit lib pkgs mkSystem;
   };
   postgresqlService = import ./postgresql-service.nix {
     inherit lib pkgs;
@@ -280,6 +280,9 @@
   };
   networkPolicyCore = import ./network-policy-core.nix {
     inherit lib;
+  };
+  selectedPackageProviderDiscovery = import ./selected-package-provider-discovery.nix {
+    inherit lib pkgs;
   };
   securityWrappers = import ./security-wrappers.nix {
     inherit lib pkgs;
@@ -689,6 +692,7 @@ in
   assert filesystemEntryProvider;
   assert aosControllerTerminal;
   assert networkPolicyCore;
+  assert selectedPackageProviderDiscovery;
   assert kernelTunables;
   assert blockStorage;
   assert baseFilesystemsNative;

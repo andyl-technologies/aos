@@ -45,6 +45,10 @@
   };
   fragments = [device mapping format swap];
   contributions = builtins.map serviceManagement.splitContribution fragments;
+  configured =
+    config.aos.abilities.environment
+    != null
+    && config.aos.abilities.environment.stage == "host";
 in {
   options.aos.filesystems.encryptedSwap = {
     enable = lib.mkOption {
@@ -90,7 +94,7 @@ in {
         builtins.map (contribution: contribution.declarations) contributions
       );
     }
-    (lib.mkIf cfg.enable {
+    (lib.mkIf (cfg.enable && configured) {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
         ++ builtins.map (contribution: contribution.configured) contributions

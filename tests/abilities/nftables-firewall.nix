@@ -64,7 +64,11 @@
     packageContract.option_declarations;
   request = enabled.config.aos.abilities.requests."nftables:ruleset";
 in
-  assert enabled.config.environment.systemPackages == [pkgs.nftables];
+  assert enabled.config.environment.systemPackages
+  == [
+    pkgs.nftables
+    pkgs.aos-network-ruleset-provider
+  ];
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
   assert documentedOptionPaths

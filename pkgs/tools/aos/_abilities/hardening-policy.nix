@@ -24,7 +24,11 @@
     };
   };
   tunables = serviceManagement.splitContribution kernelTunables;
-  configured = config.aos.abilities.environment != null && enabled;
+  configured =
+    enabled
+    && config.aos.abilities.environment
+    != null
+    && config.aos.abilities.environment.stage == "host";
 in {
   config = lib.mkMerge [
     {

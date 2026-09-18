@@ -4,7 +4,6 @@
   initialPackageModules,
   evaluate,
   discoverPackageModules ? _: [],
-  candidateImplementations ? {},
   maxRounds ? 16,
 }: let
   canonicalModules =
@@ -85,13 +84,9 @@
       builtins.map moduleIdentity nextPackageModules
       != builtins.map moduleIdentity packageModules;
     additions = import ./select-ability-bindings.nix {
-      inherit lib candidateImplementations;
+      inherit lib;
       abilities = evaluation.config.aos.abilities;
     };
-    selectedPackageModules = mergeModules nextPackageModules additions.packageModules;
-    selectedPackageSetChanged =
-      builtins.map moduleIdentity selectedPackageModules
-      != builtins.map moduleIdentity packageModules;
     nextSelection = mergeSelection selection additions;
     nextBindings = forceBindings (bindings // additions.bindings);
     selectionChanged = nextSelection != selection;
@@ -99,10 +94,10 @@
   in
     if round >= maxRounds
     then throw "ability selection did not converge within ${toString maxRounds} complete module evaluations"
-    else if packageSetChanged || selectedPackageSetChanged
+    else if packageSetChanged
     then
       resolve {
-        packageModules = selectedPackageModules;
+        packageModules = nextPackageModules;
         inherit selection;
         round = round + 1;
       }

@@ -218,11 +218,16 @@ in {
       requiredFeatures = [];
     };
 
-    instances = lib.mkIf (config.aos.abilities.environment != null) {
-      configuration-materialization.implementation = "configuration-materialization";
-      configuration-materialization-terminal.implementation = "configuration-materialization-terminal";
-      image-rollout-effects.implementation = "image-rollout-effects";
-      image-rollout-terminal.implementation = "image-rollout-terminal";
-    };
+    instances =
+      lib.mkIf (
+        config.aos.abilities.environment
+        != null
+        && config.aos.abilities.environment.stage == "host"
+      ) {
+        configuration-materialization.implementation = "configuration-materialization";
+        configuration-materialization-terminal.implementation = "configuration-materialization-terminal";
+        image-rollout-effects.implementation = "image-rollout-effects";
+        image-rollout-terminal.implementation = "image-rollout-terminal";
+      };
   };
 }

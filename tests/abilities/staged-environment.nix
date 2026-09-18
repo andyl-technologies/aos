@@ -1,6 +1,7 @@
 ##! Checks that initrd contributions use a distinct ordinary ability fixed point.
 {
   lib,
+  pkgs,
   mkSystem,
 }: let
   nixFilesUnder = directory: let
@@ -49,6 +50,7 @@
       ../../systems/_kernel.nix
       ../../systems/_system-manager.nix
       {
+        aos.boot.initrd.packageRoots = [pkgs.aos-boot-preparation-provider];
         aos.abilities.stages.initrd.modules = [
           ({config, ...}: {
             config.aos.abilities = lib.mkMerge [

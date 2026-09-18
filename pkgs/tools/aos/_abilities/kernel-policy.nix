@@ -46,7 +46,10 @@
     kernelModules
     kernelTunables
   ];
-  configured = config.aos.abilities.environment != null;
+  configured =
+    config.aos.abilities.environment
+    != null
+    && config.aos.abilities.environment.stage == "host";
 in {
   config = lib.mkMerge [
     {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}

@@ -5,7 +5,10 @@
   pkgs,
   ...
 }: {
-  environment.systemPackages = [pkgs.nftables];
+  environment.systemPackages = [
+    pkgs.nftables
+    pkgs.aos-network-ruleset-provider
+  ];
 
   system.checks.firewall = lib.mkIf config.aos.firewall.enable {
     description = "nftables firewall checks";
