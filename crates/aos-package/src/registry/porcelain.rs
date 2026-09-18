@@ -68,6 +68,9 @@ fn open(dir: &Path) -> Result<Repository> {
 /// libgit2 failure; ordinary git-level failures (missing ref/object) are
 /// reported through [`Output::success`].
 pub(crate) fn dispatch(dir: &Path, args: &[&str]) -> Result<Output> {
+    if mutates(args) {
+        crate::dry_run::refuse_mutation(&format!("run `git {}`", args.join(" ")))?;
+    }
     match args {
         ["init", rest @ ..] => init(dir, rest),
         ["ls-tree", rest @ ..] => ls_tree(dir, rest),
@@ -113,6 +116,53 @@ pub(crate) fn dispatch(dir: &Path, args: &[&str]) -> Result<Output> {
         ["pull", rest @ ..] => pull(dir, rest),
         ["fetch", rest @ ..] => fetch(dir, rest),
         _ => bail!("unsupported git invocation: git {}", args.join(" ")),
+    }
+}
+
+/// Reports whether a git invocation changes repository or working-tree state.
+///
+/// This is the write barrier's classifier, so it is deliberately written as an
+/// allowlist of the read-only shapes with a catch-all mutating arm: an
+/// invocation nobody has classified is treated as a write. A new read-only
+/// subcommand that is missed here only costs a spurious refusal during a dry
+/// run, while a new mutating one that were missed would let a preview write.
+///
+/// `dispatch` matches exact argument shapes, so the shapes here mirror it.
+/// Where one subcommand spans both roles the discriminating argument is
+/// matched: `git branch` lists, but `git branch <name>` creates.
+fn mutates(args: &[&str]) -> bool {
+    match args {
+        // Plain queries: no repository or working-tree state changes.
+        ["ls-tree", ..]
+        | ["rev-parse", ..]
+        | ["rev-list", ..]
+        | ["merge-base", ..]
+        | ["for-each-ref", ..]
+        | ["cat-file", ..]
+        | ["show", ..]
+        | ["config", _]
+        | ["tag", "--list"]
+        | ["remote"]
+        | ["remote", "get-url", _]
+        | ["status", ..]
+        | ["ls-files", ..]
+        | ["diff", ..]
+        | ["log", ..] => false,
+
+        // `git branch` and `git switch` list without an operand and act with
+        // one; `--list`/`--show-current` are explicit query forms.
+        ["branch"] | ["branch", "--list", ..] | ["branch", "--show-current"] => false,
+        ["switch", "--show-current"] => false,
+
+        // `git fetch` is permitted during a preview. It only adds objects and
+        // moves remote-tracking refs; local branches, the working tree, and
+        // anything published are untouched. Previewing a change request means
+        // diffing against a draft that only exists on the remote, so refusing
+        // the fetch would make those previews impossible rather than safe.
+        // `git pull` stays a mutation: it is a fetch plus a merge.
+        ["fetch", ..] => false,
+
+        _ => true,
     }
 }
 
@@ -1342,6 +1392,57 @@ fn pull(dir: &Path, rest: &[&str]) -> Result<Output> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// The classifier decides whether the dry-run write barrier lets an
+    /// invocation through, so a misclassified write is a preview that mutates.
+    #[test]
+    fn mutates_classifies_every_dispatched_subcommand() {
+        for args in [
+            ["rev-parse", "HEAD"].as_slice(),
+            &["cat-file", "-p", "HEAD"],
+            &["status", "--porcelain"],
+            &["log", "-1"],
+            &["diff", "HEAD"],
+            &["ls-files"],
+            &["ls-tree", "HEAD"],
+            &["tag", "--list"],
+            &["remote"],
+            &["config", "user.name"],
+            &["branch"],
+            &["branch", "--show-current"],
+            &["fetch", "origin"],
+        ] {
+            assert!(!mutates(args), "should be read-only: git {args:?}");
+        }
+
+        for args in [
+            ["init"].as_slice(),
+            &["add", "."],
+            &["commit", "-m", "x"],
+            &["tag", "-d", "v1"],
+            &["branch", "topic"],
+            &["branch", "-d", "topic"],
+            &["switch", "topic"],
+            &["merge", "topic"],
+            &["push", "origin", "stable"],
+            &["pull", "--rebase"],
+            &["update-ref", "refs/heads/x", "abc"],
+            &["read-tree", "-u", "--reset", "HEAD"],
+            &["remote", "add", "origin", "url"],
+            &["config", "user.name", "someone"],
+            &["symbolic-ref", "HEAD", "refs/heads/stable"],
+        ] {
+            assert!(mutates(args), "should be a mutation: git {args:?}");
+        }
+    }
+
+    /// An invocation nobody classified must be treated as a write, so adding a
+    /// mutating subcommand later cannot silently slip past the barrier.
+    #[test]
+    fn mutates_defaults_unknown_invocations_to_write() {
+        assert!(mutates(&["some-new-subcommand"]));
+        assert!(mutates(&[]));
+    }
 
     /// A repo with a `stable` branch plus an `origin/stable` remote-tracking
     /// ref and a symbolic `origin/HEAD`, returning the dir and the commit hex.
