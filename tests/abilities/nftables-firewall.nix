@@ -107,12 +107,12 @@ in
           port = 22;
         }
         {
-          transport = "tcp";
-          port = 443;
-        }
-        {
           transport = "udp";
           port = 41641;
+        }
+        {
+          transport = "tcp";
+          port = 443;
         }
       ];
       prerequisites = [];
