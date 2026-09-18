@@ -33,6 +33,10 @@
   };
 
   fail = message: throw "ability composition: ${message}";
+  implementationPackage = name: implementation:
+    if implementation.package == null
+    then fail "implementation '${name}' has no authenticated package owner"
+    else implementation.package;
   guaranteeFor = reference:
     if builtins.hasAttr reference abilities.guarantees
     then lib.abilities.guaranteeIdentity abilities.guarantees.${reference}
@@ -137,7 +141,7 @@
         slot = authored.slot;
         request = requestKey;
         declaration = {
-          package = builtins.head (lib.splitString ":" group.implementationKey);
+          package = implementationPackage group.implementationKey group.implementation;
           localKey = localRequestKey;
           requirement = requirementKey;
           consumer = group.providerInstance;

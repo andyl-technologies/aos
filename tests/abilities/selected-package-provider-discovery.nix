@@ -35,14 +35,34 @@
     pkgs.aos-network-ruleset-provider
   ];
   selected = select withProvider;
+  providerName = "aos-network-ruleset-provider:network-ruleset";
+  unownedProvider =
+    withProvider.config.aos.abilities
+    // {
+      implementations =
+        withProvider.config.aos.abilities.implementations
+        // {
+          ${providerName} =
+            withProvider.config.aos.abilities.implementations.${providerName}
+            // {package = null;};
+        };
+    };
+  unownedProviderFails =
+    !(builtins.tryEval (builtins.deepSeq (
+        import ../../lib/build/select-ability-bindings.nix {
+          inherit lib;
+          abilities = unownedProvider;
+        }
+      )
+      true)).success;
   selectedBindings = builtins.attrValues selected.bindings;
   selectedInstances = builtins.attrValues selected.instances;
 in
   assert selectionFails consumerOnly;
+  assert unownedProviderFails;
   assert builtins.length selectedBindings == 1;
   assert (builtins.head selectedBindings).request == "nftables:ruleset";
   assert (builtins.head selectedBindings).implementation
   == "aos-network-ruleset-provider:network-ruleset";
   assert builtins.length selectedInstances == 1;
-  assert (builtins.head selectedInstances).package == "aos-network-ruleset-provider";
-  true
+  assert (builtins.head selectedInstances).package == "aos-network-ruleset-provider"; true
