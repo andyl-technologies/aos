@@ -24,7 +24,7 @@ use aos_ability_model::{
 };
 use aos_ability_plan::{
     SourceStageBinding, SourceStageBundle, SourceStageFixedPoint, SourceStageRequest,
-    SourceStageStaticContract, TransitionPlanner,
+    SourceStageRequirementReference, SourceStageStaticContract, TransitionPlanner,
 };
 use aos_ability_validate::{
     BindingValidationInputs, PackageOutputSelector, ValidationContext,
@@ -752,25 +752,31 @@ impl<'a> SourceComposition<'a> {
         name: &str,
         source: &SourceStageRequest,
     ) -> Result<&'a aos_ability_model::RequirementDeclaration> {
-        if self.fixed_point.requests.contains_key(name) {
-            let (package_name, alias) = declaration_parts(&source.requirement)?;
-            ensure!(
-                package_name == source.package,
-                "root request crosses package provenance"
-            );
-            let package = self.package(&package_name)?;
-            package
-                .requirements
-                .iter()
-                .find(|requirement| requirement.alias == alias)
-                .with_context(|| format!("source root request {name:?} has no requirement"))
-        } else {
-            Ok(&self
-                .fixed_point
-                .composition_requirements
-                .get(&source.requirement)
-                .with_context(|| format!("source child request {name:?} has no requirement"))?
-                .requirement)
+        match &source.requirement {
+            SourceStageRequirementReference::Package { package, local_key } => {
+                ensure!(
+                    self.fixed_point.requests.contains_key(name) && *package == source.package,
+                    "root request crosses package provenance"
+                );
+                let package = self.package(package)?;
+                package
+                    .requirements
+                    .iter()
+                    .find(|requirement| requirement.alias == *local_key)
+                    .with_context(|| format!("source root request {name:?} has no requirement"))
+            }
+            SourceStageRequirementReference::Composition { declaration } => {
+                ensure!(
+                    self.fixed_point.composition_requests.contains_key(name),
+                    "root request references a composition requirement"
+                );
+                Ok(&self
+                    .fixed_point
+                    .composition_requirements
+                    .get(declaration)
+                    .with_context(|| format!("source child request {name:?} has no requirement"))?
+                    .requirement)
+            }
         }
     }
 
@@ -859,17 +865,6 @@ fn binding_id(name: &str, binding: &SourceStageBinding, request: &RequestId) -> 
         "source-{}",
         digest.hex()
     ))?))
-}
-
-fn declaration_parts(value: &str) -> Result<(LocalKey, LocalKey)> {
-    let Some((package, declaration)) = value.split_once(':') else {
-        bail!("qualified declaration {value:?} has no package separator")
-    };
-    ensure!(
-        !declaration.contains(':'),
-        "qualified declaration {value:?} has several separators"
-    );
-    Ok((LocalKey::new(package)?, LocalKey::new(declaration)?))
 }
 
 fn value_expression(value: &serde_json::Value) -> Result<ValueExpression> {

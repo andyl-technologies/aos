@@ -53,29 +53,58 @@
       then null
       else implementationReference "instance implementation" instance.implementation;
   };
-  projectRequest = name: request:
+  projectRequest = name: request: requirement:
     if request.package == null || request.localKey == null
     then throw "source-stage request '${name}' has no package declaration provenance"
     else {
-      inherit (request) package requirement consumer scope localKey lifetime parameters;
+      inherit (request) package consumer scope localKey lifetime parameters;
+      inherit requirement;
     };
+  projectRootRequest = name: request: let
+    requirement =
+      abilities.requirementTemplates.${request.requirement}
+      or (throw "source-stage request '${name}' references absent package requirement '${request.requirement}'");
+  in
+    if requirement.package == null || requirement.localKey == null
+    then throw "source-stage request '${name}' requirement has no package declaration provenance"
+    else if requirement.package != request.package
+    then throw "source-stage request '${name}' crosses package requirement provenance"
+    else
+      projectRequest name request {
+        kind = "package";
+        inherit (requirement) package localKey;
+      };
+  projectCompositionRequest = name: request:
+    if !(builtins.hasAttr request.requirement abilities.compositionRequirements)
+    then throw "source-stage request '${name}' references absent composition requirement '${request.requirement}'"
+    else
+      projectRequest name request {
+        kind = "composition";
+        declaration = request.requirement;
+      };
   projectBinding = _: binding: {
     inherit (binding) request providerInstance slot;
     implementation = implementationReference "binding implementation" binding.implementation;
   };
+  projectCompositionRequirement = _: requirement:
+    requirement
+    // {
+      implementation = implementationReference "composition requirement implementation" requirement.implementation;
+    };
 in {
   inherit
     (abilities)
     environment
     instanceIdentities
     compositionOutputs
-    compositionRequirements
     compositionPendingRequests
     resolvedResources
     ;
   bindings = builtins.mapAttrs projectBinding abilities.bindings;
+  compositionRequirements =
+    builtins.mapAttrs projectCompositionRequirement abilities.compositionRequirements;
   instances = builtins.mapAttrs projectInstance abilities.instances;
-  requests = builtins.mapAttrs projectRequest abilities.requests;
-  compositionRequests = builtins.mapAttrs projectRequest abilities.compositionRequests;
+  requests = builtins.mapAttrs projectRootRequest abilities.requests;
+  compositionRequests = builtins.mapAttrs projectCompositionRequest abilities.compositionRequests;
   executionObserver = abilities.resolvedExecutionObserver;
 }

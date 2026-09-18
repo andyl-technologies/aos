@@ -36,7 +36,8 @@ pub use source_stage::{
     SourceStageBinding, SourceStageBundle, SourceStageBundleError,
     SourceStageCompositionRequirement, SourceStageExecutionObserver, SourceStageFixedPoint,
     SourceStageImplementation, SourceStageInstance, SourceStageOutput, SourceStageRequest,
-    SourceStageResolvedResource, SourceStageStaticContract, SourceStageTransitionProvenance,
+    SourceStageRequirementReference, SourceStageResolvedResource, SourceStageStaticContract,
+    SourceStageTransitionProvenance,
 };
 pub use transition::{
     AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,
