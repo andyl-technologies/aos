@@ -216,6 +216,6 @@ in
     meta = {
       description = "GCC runtime shared libraries (libstdc++.so, libgcc_s.so)";
       homepage = "https://gcc.gnu.org/";
-      license = "GPL-3.0-or-later";
+      license = "GPL-3.0-or-later WITH GCC-exception-3.1";
     };
   }

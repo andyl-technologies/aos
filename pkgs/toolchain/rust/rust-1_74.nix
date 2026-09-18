@@ -58,7 +58,7 @@ in
       supportsChangeId = false;
       # Rust 1.74 also predates the target split-debuginfo bootstrap key.
       supportsSplitDebuginfo = false;
-      description = "Rust 1.74.0 — Darwin-hosted bootstrap root built with native Rust 1.74";
+      description = "Rust 1.74.0 — bootstrap root";
     }
   else if stdenv.isCross && stdenv.hostPlatform.isLinux
   then
@@ -73,7 +73,7 @@ in
       targetLlvm = llvm-17;
       supportsChangeId = false;
       supportsSplitDebuginfo = false;
-      description = "Rust 1.74.0 — Linux-hosted bootstrap root built with native Rust 1.74";
+      description = "Rust 1.74.0 — bootstrap root";
     }
   else
     mkDerivation {
@@ -295,8 +295,8 @@ in
       ];
 
       meta = {
-        description = "Rust 1.74.0 — bootstrapped from C++ via mrustc (root of Rust bootstrap chain)";
-        homepage = "https://github.com/thepowersgang/mrustc";
+        description = "Rust 1.74.0 — bootstrap root";
+        homepage = "https://www.rust-lang.org";
         license = "MIT OR Apache-2.0";
       };
     }

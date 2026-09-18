@@ -67,7 +67,7 @@ in
       # builds its wrapper against the current default LLVM headers.
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
       targetLlvm = llvm;
-      description = "Rust ${version} — Darwin-hosted bootstrap chain intermediate";
+      description = "Rust ${version} — bootstrap chain intermediate";
     }
   else if stdenv.isCross && stdenv.hostPlatform.isLinux
   then
@@ -77,7 +77,7 @@ in
       nativeRust = buildPackages.${prevRust.pname};
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
       targetLlvm = llvm;
-      description = "Rust ${version} — Linux-hosted bootstrap chain intermediate";
+      description = "Rust ${version} — bootstrap chain intermediate";
     }
   else
     mkDerivation {

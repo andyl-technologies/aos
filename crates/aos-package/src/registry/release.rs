@@ -741,7 +741,7 @@ fn validate_release_identity_and_entries(
             bail!("invalid registry release entry id '{}'", entry.id);
         }
         validate_package_name(&entry.name)?;
-        semver::Version::parse(&entry.version)
+        aos_registry_surface::package_version::validate_package_version(&entry.version)
             .with_context(|| format!("invalid version for entry '{}'", entry.id))?;
         if !matches!(
             entry.platform.as_str(),
@@ -1626,6 +1626,21 @@ mod tests {
             },
             support: None,
         }
+    }
+
+    #[test]
+    fn transaction_preserves_upstream_package_versions_but_requires_semver_releases() {
+        let mut input = transaction("0".repeat(64));
+        input.entries[0].version = "5.3p15".to_owned();
+        input.entries[1].version = "R2025_04_04".to_owned();
+        assert!(input.validate().is_ok());
+
+        input.entries[0].version = "../escape".to_owned();
+        assert!(input.validate().is_err());
+
+        input.entries[0].version = "4.4".to_owned();
+        input.release = "4.4".to_owned();
+        assert!(input.validate().is_err());
     }
 
     fn initialize_registry(path: &Path) -> Result<String> {

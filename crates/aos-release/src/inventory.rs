@@ -78,6 +78,13 @@ pub enum InventoryDecision {
     },
 }
 
+impl InventoryDecision {
+    /// Requires evaluation only when the policy permits an artifact.
+    fn requires_derivation(&self) -> bool {
+        matches!(self, Self::Eligible { blockers, .. } if blockers.is_empty())
+    }
+}
+
 /// Exact derivations and outputs evaluated for one target package set.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -152,7 +159,8 @@ pub struct PackagePublicationMetadata {
 
 impl PackagePublicationMetadata {
     pub(crate) fn validate(&self) -> Result<()> {
-        semver::Version::parse(&self.version).context("parsing package publication version")?;
+        aos_registry_surface::package_version::validate_package_version(&self.version)
+            .context("validating package publication version")?;
         for (value, label) in [
             (&self.description, "package description"),
             (&self.license_expression, "package license expression"),
@@ -388,7 +396,7 @@ fn package_publication_metadata<'a>(
     let mut selected = None;
     let mut incomplete = false;
     for cell in &package.platforms {
-        if !matches!(&cell.decision, InventoryDecision::Eligible { .. }) {
+        if !cell.decision.requires_derivation() {
             continue;
         }
         let metadata = derivations
@@ -435,7 +443,7 @@ fn index_derivations<'a>(
     for package in &package_inventory.packages {
         for cell in &package.platforms {
             let present = indexed.contains_key(&(cell.platform, package.name.as_str()));
-            if present != matches!(&cell.decision, InventoryDecision::Eligible { .. }) {
+            if present != cell.decision.requires_derivation() {
                 bail!("derivation inventory does not match package eligibility");
             }
         }
@@ -445,7 +453,7 @@ fn index_derivations<'a>(
             .packages
             .iter()
             .flat_map(|package| &package.platforms)
-            .filter(|cell| matches!(&cell.decision, InventoryDecision::Eligible { .. }))
+            .filter(|cell| cell.decision.requires_derivation())
             .count()
     {
         bail!("derivation inventory contains an unknown package");
@@ -471,7 +479,13 @@ fn validate_decision(platform: Platform, decision: &InventoryDecision) -> Result
             {
                 bail!("eligible package disposition conflicts with its platform");
             }
-            if wave.is_none_or(|wave| !(1..=5).contains(&wave)) {
+            // Waves describe Darwin implementation order. Linux-only entries
+            // deliberately have no wave in the shared Nix inventory.
+            if disposition == "linux-only" {
+                if wave.is_some() {
+                    bail!("Linux-only package cannot have a publication wave");
+                }
+            } else if wave.is_none_or(|wave| !(1..=5).contains(&wave)) {
                 bail!("eligible package requires a valid publication wave");
             }
             for blocker in blockers {
@@ -587,9 +601,40 @@ mod tests {
                     "target"
                 }
                 .to_owned(),
-                wave: Some(1),
+                wave: (!platform.supports_images()).then_some(1),
                 blockers: Vec::new(),
             },
+        }
+    }
+
+    #[test]
+    fn publication_waves_follow_the_nix_disposition_policy() {
+        for platform in Platform::ALL {
+            for disposition in ["target", "independent", "linux-only", "darwin-only"] {
+                for wave in [None, Some(0), Some(1), Some(5), Some(6)] {
+                    let decision = InventoryDecision::Eligible {
+                        disposition: disposition.to_owned(),
+                        wave,
+                        blockers: Vec::new(),
+                    };
+                    let compatible_platform = match disposition {
+                        "linux-only" => platform.supports_images(),
+                        "darwin-only" => !platform.supports_images(),
+                        _ => true,
+                    };
+                    let valid_wave = if disposition == "linux-only" {
+                        wave.is_none()
+                    } else {
+                        matches!(wave, Some(1..=5))
+                    };
+
+                    assert_eq!(
+                        validate_decision(platform, &decision).is_ok(),
+                        compatible_platform && valid_wave,
+                        "{platform} {disposition} {wave:?}",
+                    );
+                }
+            }
         }
     }
 
@@ -694,11 +739,24 @@ mod tests {
                 }],
             })
             .collect::<Vec<_>>();
+        // A blocked cell has no realizable derivation. It must not suppress
+        // the independently publishable cells of the same package.
+        let mut derivations = derivations;
+        let blocked_package = derivations[0].packages.pop().unwrap();
         let plan = inventory.package_plan(&derivations)?;
+
         assert!(matches!(
             plan[0].platforms[0].decision,
             MatrixCell::Blocked { .. }
         ));
+        assert!(
+            plan[0].platforms[1..]
+                .iter()
+                .all(|cell| matches!(cell.decision, MatrixCell::Artifact { .. }))
+        );
+
+        derivations[0].packages.push(blocked_package);
+        assert!(inventory.package_plan(&derivations).is_err());
         Ok(())
     }
 
