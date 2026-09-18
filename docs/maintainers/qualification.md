@@ -502,6 +502,12 @@ aos release qualification respond \
   --identity linux-x86-v1
 ```
 
+Linux disk scenarios run QEMU and their other executables from the AOS build-host
+package set while using firmware from the image's target package set. ARM64 TCG
+images can therefore run on an x86_64 Linux host, and their inventory records
+that outer host separately from the ARM64 guest. x86_64 disk qualification still
+requires an x86_64 host with KVM.
+
 The x86_64 Linux executor includes a native program for its staging
 container claim. It reconstructs an OCI layout only from the anonymously
 downloaded objects, imports that layout into a private AOS-built containerd and
