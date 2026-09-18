@@ -180,6 +180,10 @@ fn initial_keys_roster(
 /// `--key` or `--key-id` is supplied, the static dumb-HTTP object store is
 /// refreshed, and `--remote` configures an `origin` remote on the clone.
 ///
+/// In dry-run mode ([`crate::dry_run`]), every precondition is still checked
+/// and reported, but the function returns before the first write and no
+/// registry is created.
+///
 /// # Errors
 ///
 /// Fails when the registry directory already exists; when `--trust-key` is
@@ -222,6 +226,16 @@ pub async fn create(
     // The initial commit needs a maintainer identity; likewise refuse
     // before creating anything on disk.
     require_commit_identity()?;
+
+    // Every check above is a pure inspection, so a dry run reaches this point
+    // having reported exactly the failures a real run would. Stop before the
+    // first write: a registry root commit is a trust anchor, and creating one
+    // that the operator only asked to preview would silently establish an
+    // identity that later releases pin.
+    if crate::dry_run::active() {
+        report_planned_create(name, &dir, remote, trust_key, trust_key_id, printer);
+        return Ok(());
+    }
 
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -286,6 +300,44 @@ description = ""
     printer.success(&format!("Registry '{name}' created at {}", dir.display()));
 
     Ok(())
+}
+
+/// Reports the registry a real `create` would write, without touching disk.
+///
+/// The head commit and branch listing the non-dry-run JSON carries are
+/// deliberately absent: they do not exist yet, and inventing them would let a
+/// caller mistake a preview for a created registry.
+fn report_planned_create(
+    name: &str,
+    dir: &Path,
+    remote: Option<&str>,
+    trust_key: Option<&str>,
+    trust_key_id: Option<&str>,
+    printer: &Printer,
+) {
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "create",
+            "dry_run": true,
+            "registry": name,
+            "path": dir.display().to_string(),
+            "remote": remote,
+            "trust_key_id": trust_key.map(|_| trust_key_id.unwrap_or("initial")),
+        }));
+        return;
+    }
+
+    printer.info(&format!(
+        "Would create registry '{name}' at {}",
+        dir.display()
+    ));
+    if let Some(url) = remote {
+        printer.kv("Would set remote", url);
+    }
+    if trust_key.is_some() {
+        printer.kv("Would seed trust key", trust_key_id.unwrap_or("initial"));
+    }
+    printer.info("Dry run: nothing was written.");
 }
 
 #[cfg(test)]

@@ -61,6 +61,7 @@ pub mod desired;
 pub mod documentation;
 mod documentation_lsp;
 pub mod download;
+pub mod dry_run;
 pub(crate) mod ebpf_lsm;
 pub mod environment;
 pub(crate) mod exposed_units;
@@ -5281,7 +5282,56 @@ pub async fn run_apr(
         ProfileScope::User
     };
     let config = config::ApmConfig::load(scope)?;
+
+    // Arm the write barrier before anything dispatches. Handlers stop early and
+    // print a plan; this makes a handler that forgets fail loudly instead of
+    // quietly writing. See [`crate::dry_run`].
+    dry_run::set(dry_run);
+
     run_registry(&config, command, dry_run, printer).await
+}
+
+/// Reports whether a registry subcommand honors the global `--dry-run` flag.
+///
+/// `--dry-run` is a promise that nothing is written, so a command that accepts
+/// the flag and mutates anyway breaks it in the most damaging direction. The
+/// dispatcher refuses the flag for anything absent from this list rather than
+/// silently ignoring it, and [`crate::dry_run`] enforces the promise beneath
+/// the handlers.
+///
+/// Read-only subcommands are absent on purpose. `--dry-run` means nothing for
+/// them, and accepting it would suggest the flag had been considered where it
+/// had not; refusing says plainly that the command never writes anyway.
+///
+/// `release` is also absent: it carries its own `--dry-run`, which belongs
+/// after the subcommand name and is threaded through separately.
+fn implements_global_dry_run(command: &RegistryCommand) -> bool {
+    matches!(
+        command,
+        RegistryCommand::Add { .. }
+            | RegistryCommand::Branch { .. }
+            | RegistryCommand::Cache { .. }
+            | RegistryCommand::Change { .. }
+            | RegistryCommand::Channel { .. }
+            | RegistryCommand::Commit { .. }
+            | RegistryCommand::Create { .. }
+            | RegistryCommand::Disable { .. }
+            | RegistryCommand::Enable { .. }
+            | RegistryCommand::Keys { .. }
+            | RegistryCommand::Merge { .. }
+            | RegistryCommand::Origin { .. }
+            | RegistryCommand::Publish { .. }
+            | RegistryCommand::Pull { .. }
+            | RegistryCommand::Push { .. }
+            | RegistryCommand::Remove { .. }
+            | RegistryCommand::SbCerts { .. }
+            | RegistryCommand::Sign { .. }
+            | RegistryCommand::Store { .. }
+            | RegistryCommand::Tag { .. }
+            | RegistryCommand::Trust { .. }
+            | RegistryCommand::Unpublish { .. }
+            | RegistryCommand::Web { .. }
+    )
 }
 
 /// Dispatch an `apr` subcommand to its handler.
@@ -5294,6 +5344,14 @@ async fn run_registry(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
+    if dry_run && !implements_global_dry_run(command) {
+        bail!(
+            "--dry-run is not implemented for this apr subcommand, and apr will not \
+             run a mutating operation while pretending to preview it; \
+             `apr cache` and `apr create` accept the global --dry-run, and \
+             `apr release` takes its own --dry-run after the subcommand name"
+        );
+    }
     match command {
         RegistryCommand::List => registry_list(config, printer).await,
         RegistryCommand::Add {
@@ -5990,6 +6048,33 @@ async fn registry_add(
     // writable config layer (`/var/lib/apm/config` for --system), never the
     // read-only `/etc/apm` seed.
     let registries_dir = config.scope.writable_config_dir().join("registries.d");
+
+    if dry_run::active() {
+        printer.kv(
+            "Would write",
+            &registries_dir
+                .join(format!("{name}.toml"))
+                .display()
+                .to_string(),
+        );
+        if !trusted_keys.is_empty() {
+            printer.kv("Would pin trust keys", &trusted_keys.len().to_string());
+        }
+        if clone {
+            printer.kv(
+                "Would clone into",
+                &config
+                    .scope
+                    .registries_path()
+                    .join(&name)
+                    .display()
+                    .to_string(),
+            );
+        }
+        printer.info("Dry run: nothing was written.");
+        return Ok(());
+    }
+
     fs::create_dir_all(&registries_dir)
         .with_context(|| format!("creating {}", registries_dir.display()))?;
 
@@ -6387,6 +6472,26 @@ async fn registry_remove(
     let toml_path = registry_config_path_for_removal(config, name)?;
     let toml_existed = toml_path.exists();
 
+    if dry_run::active() {
+        printer.info(&format!("Would remove registry '{name}':"));
+        if toml_existed {
+            printer.kv("Config", &toml_path.display().to_string());
+        }
+        if keep_local {
+            printer.info("  --keep-local: the authoring clone and cache would be kept.");
+        } else {
+            let cache_dir = config.cache_path().join(name);
+            if cache_dir.exists() {
+                printer.kv("Cache", &cache_dir.display().to_string());
+            }
+            if clone_dir.exists() {
+                printer.kv("Local clone", &clone_dir.display().to_string());
+            }
+        }
+        printer.info("Dry run: nothing was removed.");
+        return Ok(());
+    }
+
     if toml_path.exists() {
         fs::remove_file(&toml_path).with_context(|| format!("removing {}", toml_path.display()))?;
     }
@@ -6457,6 +6562,22 @@ async fn registry_set_enabled(
 
     let toml_path = config.registry_overlay_path(name);
     let previous_enabled = reg_config.enabled;
+
+    if dry_run::active() {
+        let verb = if enabled { "enable" } else { "disable" };
+        if previous_enabled == enabled {
+            printer.info(&format!(
+                "Registry '{name}' is already {verb}d; nothing would change."
+            ));
+        } else {
+            printer.info(&format!(
+                "Would {verb} registry '{name}' in {}",
+                toml_path.display()
+            ));
+        }
+        return Ok(());
+    }
+
     write_registry_enabled(&toml_path, enabled)?;
 
     let action = if enabled {
