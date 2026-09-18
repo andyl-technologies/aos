@@ -212,6 +212,26 @@ testing profile and uses the reserved snapshot release id and source tag. After
 offline verification, advance the profile to `.1` in a later reviewed protected
 source revision.
 
+A plan request freezes four policy digests. Only
+`public_evidence_policy_digest` is checked against anything: planning recomputes
+it from the Nix qualification contract and refuses a request that disagrees.
+The other three are operator inputs, digested from whatever bytes the file
+holds, so a document that lives outside the repository makes its digest
+unreproducible for anyone auditing the release.
+
+Both public documents are therefore committed, and a release names them by
+path:
+
+| Digest | Document |
+| --- | --- |
+| `source.contributor_authorization_digest` | [`release-contributor-authorization.json`](release-contributor-authorization.json) |
+| `retention.policy_digest` | [`release-retention-policy.md`](release-retention-policy.md) |
+
+`restricted_operator_policy_digest` is the deliberate exception. It commits to
+the content of a restricted document without publishing it, so that document
+stays in operator custody and its digest is an attestation rather than a
+reproducible derivation.
+
 Plan the snapshot while the `.0` revision is still the head of `master`.
 Planning derives its source identity from the checked-out commit and refuses
 one that is merely an ancestor: `aos release plan` requires `HEAD` to equal the
