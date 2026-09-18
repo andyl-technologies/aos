@@ -284,7 +284,7 @@
   adminLogEnabled = cfg.admin.enable && cfg.admin.accessLog == "service-log";
   adminLogPath =
     if adminLogEnabled
-    then resultOf "admin-log-view" "storage-path"
+    then resultOf "admin-log-view" "planned-path"
     else null;
   renderedBootstrap =
     render {

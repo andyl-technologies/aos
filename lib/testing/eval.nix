@@ -11,6 +11,7 @@
   lib,
   system,
   mkSystem,
+  mkDeployableSystem,
 }: let
   baseLib = system.config.aos.config.evalAtBoot.baseLib;
   abilityRequests = system.config.aos.abilities.requests;
@@ -18,14 +19,68 @@
   imageBootCommitDependencies = abilityRequests."aos:image-boot-commit-dependencies".parameters;
   initrdAbilityRequests = system.config.system.build.initrdAbilityGraph.requests;
   initrdAbilityImplementations = system.config.system.build.initrdAbilityGraph.implementations;
+  initrdTrustAnchors =
+    builtins.filter
+    (root:
+      builtins.match
+      "/nix/store/[a-z0-9]+-aos-initrd-runtime-files-aos-metadata-provider"
+      root
+      != null)
+    system.config.aos.boot.initrd.runtimeRoots;
+  hostAbilityResources = builtins.attrValues system.config.aos.abilities.resolvedResources;
+  serviceResource = managerName: let
+    matches =
+      builtins.filter
+      (resource:
+        resource.kind
+        == "aos.service.instance"
+        && (resource.value.manager_identity.name or resource.value.service) == managerName)
+      hostAbilityResources;
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "the host fixed point must contain one service resource managed as '${managerName}'";
+  resultOfAos = request: {
+    _type = "aos-request-output-reference";
+    request = "aos:${request}";
+    output = "resource";
+  };
+  aosEvalService = serviceResource "aos-eval";
+  registrySyncService = serviceResource "aos-registry-sync";
+  activationPreflightService = serviceResource "aos-graph-compile";
+  activationService = serviceResource "aos-activate";
+  aosEvalCommand = builtins.head aosEvalService.value.lifecycle.start;
+  registrySyncCommand = builtins.head registrySyncService.value.lifecycle.start;
+  activationPreflightCommand = builtins.head activationPreflightService.value.lifecycle.start;
+  activationCommand = builtins.head activationService.value.lifecycle.start;
   initrdRequest = package: name: initrdAbilityRequests."${package}:${name}".parameters;
   initrdOutput = package: name: output: {
     _type = "aos-request-output-reference";
     request = "${package}:${name}";
     inherit output;
   };
+  initrdAbilityResources =
+    builtins.attrValues system.config.system.build.initrdAbilityGraph.resolvedResources;
+  initrdServiceResource = serviceName: let
+    matches =
+      builtins.filter
+      (resource:
+        resource.kind
+        == "aos.service.instance"
+        && resource.value.service == serviceName)
+      initrdAbilityResources;
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "the initrd fixed point must contain one '${serviceName}' service resource";
+  configSeedService = initrdServiceResource "aos-config-seed";
+  configSeedCommand = builtins.head configSeedService.value.lifecycle.start;
   etcOverlayScript = builtins.readFile ../../pkgs/boot/_aos-boot-preparations/etc-overlay-setup.sh;
-  abiOverrideSystem = mkSystem [
+  abiOverrideSystem = mkDeployableSystem [
+    ../../systems/server.nix
+    ./fixtures/module-abi-v2.nix
+  ];
+  inlineAbiOverrideSystem = mkDeployableSystem [
     ../../systems/server.nix
     {aos.system.moduleAbi = 2;}
   ];
@@ -33,34 +88,53 @@
     ../../systems/server.nix
     {aos.roles.server.enable = true;}
   ];
+  serverRoleResources =
+    builtins.attrValues serverRoleSystem.config.aos.abilities.resolvedResources;
+  serverRoleService = serviceName: let
+    matches =
+      builtins.filter
+      (resource:
+        resource.kind
+        == "aos.service.instance"
+        && resource.value.service == serviceName)
+      serverRoleResources;
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "the server role must contain one '${serviceName}' service resource";
+  sshReadyService = serverRoleService "aos-ssh-ready";
+  sshDaemonService = serverRoleService "sshd";
+  sshReadyCommand = builtins.head sshReadyService.value.lifecycle.start;
+  sshReadyReference = {
+    _type = "aos-request-output-reference";
+    request = "openssh:aos-ssh-ready-lifecycle";
+    output = "resource";
+  };
   baseLibFollowsImageAbi =
     if abiOverrideSystem.config.aos.config.evalAtBoot.baseLib.passthru.moduleAbi == 2
     then "2"
-    else throw "the base library ABI must follow inline image module overrides";
+    else throw "the base library ABI must follow source-backed image module overrides";
+  inlineAbiBaseLib =
+    builtins.tryEval inlineAbiOverrideSystem.config.aos.config.evalAtBoot.baseLib.drvPath;
+  inlineImageModuleRejected =
+    if !inlineAbiBaseLib.success
+    then "yes"
+    else throw "the base library must reject inline image modules it cannot replay";
   serverSshWaitsForLiveHostPolicy =
-    if !(builtins.hasAttr "aos-ssh-ready" serverRoleSystem.config.systemd.services)
-    then throw "server SSH must emit a host-policy readiness gate"
-    else if
-      !(builtins.elem
-        "aos-ssh-ready.service"
-        serverRoleSystem.config.systemd.services.sshd.after)
+    if
+      !(builtins.elem sshReadyReference sshDaemonService.value.dependencies.after)
+      || !(builtins.elem sshReadyReference sshDaemonService.value.dependencies.wants)
     then throw "server sshd must wait for the host-policy readiness gate"
     else if
-      !(builtins.elem
-        "aos-eval.service"
-        serverRoleSystem.config.systemd.services.aos-ssh-ready.after)
-    then throw "the SSH readiness gate must wait for host evaluation"
-    else if
-      !(containsStr
-        "/run/aos/host-policy-live"
-        serverRoleSystem.config.systemd.services.aos-ssh-ready.script)
-    then throw "the SSH readiness gate must observe the post-swap policy marker"
+      sshReadyCommand.executable.entry_point
+      != "libexec/aos-openssh-host-policy-wait"
+    then throw "the SSH readiness gate must use the package-owned policy observer"
     else if
       builtins.elem
-      "aos-graph-compile.service"
-      serverRoleSystem.config.systemd.services.sshd.after
+      (resultOfAos "aos-graph-compile-lifecycle")
+      sshDaemonService.value.dependencies.after
     then throw "server sshd must not form a cycle with graph activation"
-    else "post-swap marker";
+    else "package-owned readiness resource";
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -111,7 +185,7 @@
       etc = {
         ${hostnamePath} = {
           kind = "text";
-          text = "candidate unit";
+          text = "candidate unit\n#aos-jobscript:${hostnameScript}#";
           mode = "0644";
         };
         ${firewallPath} = {
@@ -168,7 +242,7 @@
       };
     merged = mergeImageManifest {inherit imageManifest baseline candidate;};
   in
-    if merged.etc.${hostnamePath}.text != "candidate unit"
+    if merged.etc.${hostnamePath}.text != "candidate unit\n#aos-jobscript:${hostnameScript}#"
     then throw "a changed generated job script must select its candidate unit body"
     else if merged.ownership.etc.${hostnamePath} != "@host"
     then throw "a changed generated job script must make its candidate unit host-owned"
@@ -258,94 +332,63 @@
   # former enable switches must stay deleted and
   # the stock system must always emit every stage.
   structuralConfiguration =
-    if system.options.aos.config.evalAtBoot ? enable
+    if lib.hasAttrByPath ["aos" "config" "evalAtBoot" "enable"] system.options
     then throw "aos.config.evalAtBoot.enable must not exist"
-    else if system.options.aos.provisioning.metadataAgent ? enable
+    else if lib.hasAttrByPath ["aos" "provisioning" "metadataAgent" "enable"] system.options
     then throw "aos.provisioning.metadataAgent.enable must not exist"
-    else if system.options.aos.provisioning ? repart
+    else if lib.hasAttrByPath ["aos" "provisioning" "repart"] system.options
     then throw "aos.provisioning.repart must not exist"
-    else if system.options.aos.config.unitGraph ? enable
-    then throw "aos.config.unitGraph.enable must not exist"
-    else if !(builtins.hasAttr "aos-eval" system.config.systemd.services)
-    then throw "the stock system must emit aos-eval.service"
-    else if !(builtins.hasAttr "aos-registry-sync" system.config.systemd.services)
-    then throw "the stock system must refresh signed registry metadata before host evaluation"
+    else if aosEvalService.value.service != "configuration-evaluation"
+    then throw "the stock fixed point must contain package-owned host configuration evaluation"
+    else if registrySyncService.value.service != "registry-synchronization"
+    then throw "the stock fixed point must contain package-owned registry synchronization"
     else if
       !(builtins.elem
-        "aos-registry-sync.service"
-        system.config.systemd.services.aos-eval.wants)
+        (resultOfAos "registry-synchronization-lifecycle")
+        aosEvalService.value.dependencies.wants)
     then throw "host evaluation must request the signed registry snapshot refresh"
     else if
       builtins.elem
-      "aos-registry-sync.service"
-      system.config.systemd.services.aos-eval.requires
+      (resultOfAos "registry-synchronization-lifecycle")
+      aosEvalService.value.dependencies.requires
     then throw "registry refresh failure must not suppress registry-independent host evaluation"
     else if
       !(builtins.elem
-        "aos-eval.service"
-        system.config.systemd.services.aos-registry-sync.before)
+        (resultOfAos "registry-synchronization-lifecycle")
+        aosEvalService.value.dependencies.after)
     then throw "the signed registry snapshot refresh must precede host evaluation"
     else if
-      !(containsStr
-        "${pkgs.aos.apm}/bin/apm update --system"
-        system.config.systemd.services.aos-registry-sync.script)
+      registrySyncCommand.executable.entry_point
+      != "bin/apm"
+      || registrySyncCommand.executable.arguments != ["update" "--system"]
     then throw "the registry refresh must update the system-scope snapshot"
     else if
-      !(containsStr
-        "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any"
-        system.config.systemd.services.aos-registry-sync.serviceConfig.ExecStartPre)
-    then throw "the registry refresh must wait for a routable managed interface"
-    else if system.config.systemd.services.aos-registry-sync.unitConfig ? ConditionPathExists
-    then throw "registry refresh must not depend on an ambient host-policy path"
-    else if !(builtins.hasAttr "aos-graph-compile" system.config.systemd.services)
-    then throw "the stock system must emit aos-graph-compile.service"
-    else if !(builtins.hasAttr "aos-activate" system.config.systemd.services)
-    then throw "the stock system must emit aos-activate.service"
-    else if
-      builtins.elem
-      "aos-seed-profiles.service"
-      system.config.systemd.services.aos-firstboot-reeval.requires
-    then throw "stage-2 re-evaluation must not require a vanished initrd unit"
-    else if
       !(builtins.elem
-        "local-fs.target"
-        system.config.systemd.services.aos-firstboot-reeval.requires)
-    then throw "stage-2 re-evaluation must require the durable local filesystem substrate"
-    else if system.config.systemd.services."aos-pkg-install@".serviceConfig.ProtectSystem != "strict"
-    then throw "package config rendering must run with ProtectSystem=strict"
-    else if
-      system.config.systemd.services."aos-pkg-install@".serviceConfig.ReadWritePaths
-      != ["/run/aos"]
-    then throw "package config rendering must write only beneath /run/aos"
-    else if system.config.systemd.services.aos-graph-compile.serviceConfig.ProtectSystem != "strict"
+        (resultOfAos "network-readiness")
+        registrySyncService.value.dependencies.after)
+    then throw "the registry refresh must wait for a routable managed interface"
+    else if (registrySyncService.value.conditions.all or []) != []
+    then throw "registry refresh must not depend on an ambient host-policy path"
+    else if activationPreflightService.value.isolation.filesystem != "read-only-system"
     then throw "activation preflight must run with ProtectSystem=strict"
     else if
-      system.config.systemd.services.aos-graph-compile.serviceConfig.ReadWritePaths
-      != ["/run/aos" "/run/systemd/system"]
-    then throw "activation preflight must write only its transaction and runtime unit roots"
-    else if !system.config.systemd.services.aos-graph-compile.serviceConfig.NoNewPrivileges
-    then throw "activation preflight must not gain privileges"
+      activationPreflightCommand.executable.arguments
+      != ["__ability-activation-preflight" "--manifest" "/run/aos/manifest.json"]
+    then throw "activation preflight must consume the checked host manifest"
     else if imageBootCommitLifecycle.service != "image-boot-commit"
     then throw "the stock system must author typed image-transition finalization"
-    else if system.config.systemd.services.aos-eval.serviceConfig ? SuccessExitStatus
-    then throw "aos-eval failures must remain visible as failed units"
     else if
-      system.config.systemd.services.aos-eval.environment.XDG_CACHE_HOME
+      aosEvalService.value.environment.variables.XDG_CACHE_HOME
       != "/var/cache/aos/nix-eval"
     then throw "aos-eval.service must direct Nix client caches to its writable cache directory"
     else if
-      !(builtins.elem
-        "@system-service"
-        system.config.systemd.services.aos-eval.serviceConfig.SystemCallFilter)
-    then throw "aos-eval.service must have an allowlisted system-call baseline"
-    else if
       builtins.any
-      (path: containsStr "/run/aos-metadata" path)
-      system.config.systemd.services.aos-eval.serviceConfig.ReadOnlyPaths
+      (entry: containsStr "/run/aos-metadata" entry.source)
+      aosEvalService.value.isolation.host_paths
     then throw "aos-eval.service must not bind an ambient metadata carrier"
-    else if system.config.systemd.services.aos-eval.unitConfig ? ConditionPathExists
+    else if (aosEvalService.value.conditions.all or []) != []
     then throw "aos-eval.service must evaluate the image-default empty module when operator input is absent"
-    else if !(containsStr "__eval-service" system.config.systemd.services.aos-eval.script)
+    else if !(builtins.elem "__eval-service" aosEvalCommand.executable.arguments)
     then throw "aos-eval.service must resolve retained manifest inputs through the package runtime"
     else if
       !(builtins.elem
@@ -370,60 +413,30 @@
       != "libexec/aos-image-rollout-boot"
     then throw "image boot success must use the package-owned compiled finalizer"
     else if
-      !(builtins.elem
-        (toString system.config.aos.config.evalAtBoot.baseLib)
-        system.config.systemd.services.aos-eval.serviceConfig.ReadOnlyPaths)
-    then throw "aos-eval.service must bind the immutable base library read-only"
-    else if
       !(containsStr
         "readlink /sysroot/aos-toplevel"
         etcOverlayScript)
     then throw "the boot /etc lower must come from the image that actually booted"
     else if
-      !(containsStr
-        ".aos-package-runtime-unwrapped __materialize"
-        system.config.boot.initrd.systemd.services."aos-config-seed".script)
-    then throw "the initrd must restore the committed non-base configuration lower before mounting /etc"
+      configSeedCommand.executable.entry_point
+      != "bin/aos-boot-preparations"
+      || configSeedCommand.executable.arguments != ["seed-configuration"]
+    then throw "the initrd must restore committed configuration through the package-owned seeding service"
     else if !(builtins.elem pkgs.aos.packageRuntime system.config.aos.boot.initrd.packageRoots)
     then throw "the initrd configuration backend must carry the AOS materializer closure explicitly"
     else if
-      !(containsStr
-        ''generation="/sysroot/var/lib/profiles/system/gen-$AOS_PROFILE_GEN"''
-        system.config.boot.initrd.systemd.services."aos-config-seed".script)
-    then throw "initrd configuration restoration must select the current retained generation"
-    else if
-      !(containsStr
-        ''manifest="$generation/manifest.json"''
-        system.config.boot.initrd.systemd.services."aos-config-seed".script)
-    then throw "initrd configuration restoration must read the selected generation manifest"
-    else if
-      !(containsStr
-        ''"$generation/config-lower/etc.erofs"''
-        system.config.boot.initrd.systemd.services."aos-config-seed".script)
-    then throw "initrd configuration restoration must mount the selected generation lower"
-    else if
       !(builtins.elem
-        "aos-activate.service"
-        system.config.systemd.targets.aos-config.requires)
-    then throw "aos-config.target must pull in the atomic activation commit"
-    else if
-      !(builtins.elem
-        "aos-activate.service"
-        system.config.systemd.targets.aos-config.after)
-    then throw "aos-config.target must wait for the atomic activation commit"
-    else if
-      !(builtins.elem
-        "aos-activate.service"
-        system.config.systemd.services.aos-preset.after)
-    then throw "package presets must run after host configuration activation"
-    else if
-      !(containsStr
-        "__ability-activate"
-        system.config.systemd.services.aos-activate.script)
+        (initrdOutput "aos-boot-preparations" "var" "resource")
+        configSeedService.value.dependencies.requires)
+      || !(builtins.elem
+        (initrdOutput "aos-boot-preparations" "run-etc" "resource")
+        configSeedService.value.dependencies.requires)
+    then throw "initrd configuration restoration must wait for persistent state and its runtime mount"
+    else if !(builtins.elem "__ability-activate" activationCommand.executable.arguments)
     then throw "aos-activate.service must invoke checked native activation"
     else if
-      system.config.systemd.services.aos-activate.serviceConfig.RestartPreventExitStatus
-      != "4"
+      activationService.value.start_policy.restart_preventing_exit_statuses
+      != [4]
     then throw "aos-activate.service must reserve failure status for indeterminate commits"
     else if
       builtins.any
@@ -431,16 +444,16 @@
       ["aos-metadata-fetch" "aos-metadata-authorize" "aos-metadata-network-seed" "aos-provisioning-eval"]
     then throw "metadata provisioning must execute only through the checked initrd ability stage"
     else if
-      (initrdRequest "aos" "provisioning")
-      != system.config.aos.metadata.storageProvisioning.request
-    then throw "the initrd fixed point must contain the exact package-authored storage provisioning request"
+      builtins.length initrdTrustAnchors
+      != 1
+    then throw "the initrd closure must contain the package-authored provisioning trust anchors"
     else if
-      initrdAbilityImplementations."aos:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
-      != "libexec/aos-metadata-provisioning-provider"
+      initrdAbilityImplementations."aos-metadata-provider:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
+      != "bin/aos-metadata-acquisition-provider"
     then throw "the initrd fixed point must route provisioning detection through the AOS metadata provider"
     else if
-      initrdAbilityImplementations."aos:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
-      != "libexec/aos-metadata-provisioning-provider"
+      initrdAbilityImplementations."aos-metadata-provider:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
+      != "bin/aos-metadata-policy-provider"
     then throw "the initrd fixed point must route provisioning authorization through the AOS metadata provider"
     else if
       (initrdRequest "aos-boot-preparations" "bootstrap-network").links
@@ -469,10 +482,13 @@
     else if (initrdRequest "aos-boot-preparations" "nix-overlay-setup-dependencies").implicit_dependencies
     then throw "the initrd /nix overlay must not pull stage-2 default dependencies into switch-root"
     else if
-      builtins.elem
-      "local-fs.target"
-      system.config.systemd.services.cryptswap.after
-    then throw "encrypted swap must not close the mount/swap/local-fs ordering cycle"
+      abilityRequests."cryptsetup:encrypted-swap".parameters.source
+      != {
+        _type = "aos-request-output-reference";
+        request = "cryptsetup:encrypted-swap-format";
+        output = "formatted-path";
+      }
+    then throw "encrypted swap must depend on the typed storage-format result"
     else "ok";
 
   # The edge release artifact is an authenticated capability
@@ -490,6 +506,19 @@
       aos.kernel.sysctl."vm.vfs_cache_pressure" = "50";
     }
   ];
+  serviceResourceNamed = resources: serviceName:
+    builtins.filter
+    (resource:
+      resource.kind
+      == "aos.service.instance"
+      && resource.value.service == serviceName)
+    resources;
+  edgeImageResources = builtins.attrValues edgeImage.config.aos.abilities.resolvedResources;
+  edgeHostResources = builtins.attrValues edgeHost.config.aos.abilities.resolvedResources;
+  edgeHostChronyServices = serviceResourceNamed edgeHostResources "chronyd";
+  edgeHostSshServices = serviceResourceNamed edgeHostResources "sshd";
+  edgeCustomizedResources =
+    builtins.attrValues edgeHostCustomized.config.aos.abilities.resolvedResources;
   edgeImageHostBoundary =
     if !(edgeImage.options.aos.roles.edge ? enable)
     then throw "the base library must expose aos.roles.edge.enable to host.nix"
@@ -505,10 +534,10 @@
     then throw "the production edge image must not bake a security-level policy"
     else if builtins.hasAttr "vm.vfs_cache_pressure" edgeImage.config.aos.kernel.sysctl
     then throw "the production edge image must not bake edge runtime sysctls"
-    else if builtins.hasAttr "chronyd" edgeImage.config.systemd.services
-    then throw "the production edge image unexpectedly rendered chronyd.service"
-    else if builtins.hasAttr "sshd" edgeImage.config.systemd.services
-    then throw "the production edge image unexpectedly rendered sshd.service"
+    else if serviceResourceNamed edgeImageResources "chronyd" != []
+    then throw "the production edge image unexpectedly selected the chronyd service resource"
+    else if serviceResourceNamed edgeImageResources "sshd" != []
+    then throw "the production edge image unexpectedly selected the sshd service resource"
     else if edgeImage.config.aos.filesystems.rootFsType != "erofs"
     then throw "the production edge image must carry an immutable EROFS root"
     else if !edgeImage.config.aos.filesystems.rootReadOnly
@@ -531,16 +560,18 @@
     then throw "aos.roles.edge must select its low-memory swappiness policy"
     else if edgeHost.config.aos.kernel.sysctl."vm.vfs_cache_pressure" != "200"
     then throw "aos.roles.edge must select its low-memory cache-pressure policy"
-    else if !(builtins.hasAttr "chronyd" edgeHost.config.systemd.services)
-    then throw "aos.roles.edge must render chronyd.service"
-    else if !(builtins.hasAttr "sshd" edgeHost.config.systemd.services)
-    then throw "aos.roles.edge must render sshd.service"
+    else if builtins.length edgeHostChronyServices != 1
+    then throw "aos.roles.edge must select exactly one chronyd service resource"
+    else if builtins.length edgeHostSshServices != 1
+    then throw "aos.roles.edge must select exactly one sshd service resource"
     else if edgeHost.config.aos.filesystems.rootFsType != edgeImage.config.aos.filesystems.rootFsType
     then throw "aos.roles.edge must not alter the golden-image filesystem"
     else if edgeHost.config.aos.security.verity.enable != edgeImage.config.aos.security.verity.enable
     then throw "aos.roles.edge must not alter golden-image root authentication"
     else if edgeHostCustomized.config.aos.services.ssh.enable
     then throw "explicit host SSH policy must override the edge role default"
+    else if serviceResourceNamed edgeCustomizedResources "sshd" != []
+    then throw "disabling host SSH policy must remove the sshd service resource"
     else if edgeHostCustomized.config.aos.kernel.sysctl."vm.vfs_cache_pressure" != "50"
     then throw "explicit host sysctl policy must override the edge role default"
     else builtins.seq edgeHost.config.system.build.toplevel.name "ok";
@@ -717,7 +748,7 @@
   nsswitchNoMymachines =
     if containsStr "mymachines" system.config.environment.etc."nsswitch.conf".text
     then throw "modules/base/nsswitch.nix must not rely on nss-mymachines"
-    else if !(containsStr "hosts:          files myhostname resolve [!UNAVAIL=return] dns" system.config.environment.etc."nsswitch.conf".text)
+    else if !(containsStr "hosts: files myhostname resolve [!UNAVAIL=return] dns" system.config.environment.etc."nsswitch.conf".text)
     then throw "modules/base/nsswitch.nix generated an unexpected hosts lookup order"
     else "ok";
 
@@ -799,9 +830,11 @@
     then throw "aos.apm.registries must reject registry names that are invalid APM path components"
     else "ok";
 
-  firewallNoNftablesDropin =
-    if containsStr "nftables.d" system.config.environment.etc."nftables.conf".text
-    then throw "modules/security/firewall.nix must not include /etc/nftables.d drop-ins"
+  firewallUsesTypedRuleset =
+    if system.config.environment.etc ? "nftables.conf"
+    then throw "the provider-neutral firewall must not publish a backend-specific global nftables.conf"
+    else if !(abilityRequests ? "nftables:ruleset")
+    then throw "the nftables package must contribute the host firewall through a typed ruleset request"
     else "ok";
   derivationLibForExecutionCompatibility = import ../derivations.nix {
     system = "x86_64-linux";
@@ -914,7 +947,8 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "config artifacts: $artifact_count frozen closure root(s) verified"
-        echo "base-lib ABI:    follows image module overrides (${baseLibFollowsImageAbi})"
+        echo "base-lib ABI:    follows source-backed image module overrides (${baseLibFollowsImageAbi})"
+        echo "inline modules:  rejected for image/base-lib outputs (${inlineImageModuleRejected})"
         echo "config input ABI: advertised in os-release and toplevel metadata (2)"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
@@ -926,7 +960,7 @@ in
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
-        echo "firewall:       no package drop-in include (${firewallNoNftablesDropin})"
+        echo "firewall:       package-owned typed ruleset (${firewallUsesTypedRuleset})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
         echo "named outputs:  preserve ${namedOutputsPreservePackageMetadata}"
         echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"

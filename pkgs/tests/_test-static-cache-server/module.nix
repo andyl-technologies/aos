@@ -54,7 +54,7 @@
               artifact = lib.abilities.packageOutput {};
               entry_point = "bin/test-static-cache-server";
               arguments = [
-                (resultOf "content" "storage-path")
+                (resultOf "content" "planned-path")
                 (builtins.toString cfg.port)
               ];
             };
@@ -75,7 +75,7 @@
       storage.mounts = [
         {
           name = "content";
-          source = resultOf "content" "storage-path";
+          source = resultOf "content" "planned-path";
           access = "read-write";
         }
       ];

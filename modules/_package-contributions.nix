@@ -6,6 +6,7 @@
 {
   imports = [
     ./base/_filesystem-tree-contributions.nix
+    ./base/_initrd-runtime-artifact-contributions.nix
     ./base/_kernel-parameter-contributions.nix
     ./base/_manager-contributions.nix
     ./base/_pam-contributions.nix

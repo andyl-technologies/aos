@@ -149,10 +149,10 @@
       mode = "0755";
     };
   };
-  registryPath = resultOf "registry-storage" "storage-path";
-  cachePath = resultOf "cache-storage" "storage-path";
-  storePath = resultOf "store-storage" "storage-path";
-  runtimePath = resultOf "runtime-storage" "storage-path";
+  registryPath = resultOf "registry-storage" "planned-path";
+  cachePath = resultOf "cache-storage" "planned-path";
+  storePath = resultOf "store-storage" "planned-path";
+  runtimePath = resultOf "runtime-storage" "planned-path";
   repositoryPath = registryPath;
   bootstrapSocket = pathWithin {
     base = runtimePath;

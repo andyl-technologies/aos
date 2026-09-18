@@ -25,6 +25,13 @@ args @ {lib, ...}: let
             visibility = "protected";
             lifetime = "instance";
           };
+          runtime-attempt-marker = {
+            description = "Proves deferred results cannot outlive their runtime output.";
+            schema = lib.abilities.types.boolean;
+            phase = "runtime";
+            visibility = "protected";
+            lifetime = "attempt";
+          };
           observer-socket = {
             description = "Publishes the protected execution observer socket for the fixture.";
             schema = lib.abilities.types.executionPath;
@@ -358,6 +365,53 @@ args @ {lib, ...}: let
   resolvedTopLevelDesired =
     builtins.head
     (builtins.attrValues resolvedTopLevelReference.config.aos.abilities.desiredResources);
+  deferredRuntimeReference = evaluate {
+    providerAdditions = [
+      {
+        config.aos.abilities.implementations.service-lifecycle = {
+          desiredType = lib.abilities.types.record {
+            fields = {
+              backend = lib.abilities.types.enum ["fixture"];
+              runtime_marker = lib.abilities.types.deferredResult lib.abilities.types.boolean;
+            };
+          };
+          compose = context: {
+            requests = {};
+            outputs = builtins.mapAttrs (_: _: {marker = true;}) context.requests;
+            realizations =
+              builtins.mapAttrs (_: _: {
+                backend = "fixture";
+                runtime_marker = lib.abilities.resultOf "consumer:lifecycle" "runtime-marker";
+              })
+              context.resources;
+          };
+        };
+      }
+    ];
+  };
+  deferredRuntimeDesired =
+    builtins.head
+    (builtins.attrValues deferredRuntimeReference.config.aos.abilities.desiredResources);
+  shortRuntimeReference = evaluate {
+    providerAdditions = [
+      {
+        config.aos.abilities.implementations.service-lifecycle = {
+          desiredType = lib.abilities.types.record {
+            fields.runtime_marker = lib.abilities.types.deferredResult lib.abilities.types.boolean;
+          };
+          compose = context: {
+            requests = {};
+            outputs = builtins.mapAttrs (_: _: {marker = true;}) context.requests;
+            realizations =
+              builtins.mapAttrs (_: _: {
+                runtime_marker = lib.abilities.resultOf "consumer:lifecycle" "runtime-attempt-marker";
+              })
+              context.resources;
+          };
+        };
+      }
+    ];
+  };
   observerSelection = evaluate {
     roundAdditions = [
       {
@@ -671,6 +725,13 @@ in
     assert resolvedTopLevelDesired.realization.dependency.interface == networkOutput.value.interface;
     assert resolvedTopLevelDesired.realization.dependency.resource == networkOutput.value.resource;
     assert resolvedTopLevelDesired.realization.marker;
+    assert deferredRuntimeDesired.realization.runtime_marker
+    == {
+      _type = "aos-request-output-reference";
+      request = "consumer:lifecycle";
+      output = "runtime-marker";
+    };
+    assert rejects shortRuntimeReference.config.aos.abilities.desiredResources;
     assert observerSelection.config.aos.abilities.resolvedExecutionObserver
     == {
       request = "consumer:lifecycle";

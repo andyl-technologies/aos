@@ -85,7 +85,7 @@
       (literal ''
         [${name}]
         path = '')
-      (executionPath (resultOf "export-${name}" "storage-path"))
+      (executionPath (resultOf "export-${name}" "planned-path"))
       (literal ''
 
         comment = ${module.comment or "AOS rsync module ${name}"}
@@ -102,11 +102,11 @@
   configurationFragments =
     [
       (literal "pid file = ")
-      (executionPath (resultOf "runtime-storage" "storage-path"))
+      (executionPath (resultOf "runtime-storage" "planned-path"))
       (literal "/rsyncd.pid\nlock file = ")
-      (executionPath (resultOf "runtime-storage" "storage-path"))
+      (executionPath (resultOf "runtime-storage" "planned-path"))
       (literal "/rsyncd.lock\nuse chroot = no\nlog file = ")
-      (executionPath (resultOf "log-storage" "storage-path"))
+      (executionPath (resultOf "log-storage" "planned-path"))
       (literal "/rsyncd.log\n")
     ]
     ++ lib.concatLists (lib.mapAttrsToList moduleFragments cfg.modules);
@@ -285,17 +285,17 @@
         storage.mounts = [
           {
             name = "state";
-            source = resultOf "state-storage" "storage-path";
+            source = resultOf "state-storage" "planned-path";
             access = "read-write";
           }
           {
             name = "runtime";
-            source = resultOf "runtime-storage" "storage-path";
+            source = resultOf "runtime-storage" "planned-path";
             access = "read-write";
           }
           {
             name = "logs";
-            source = resultOf "log-storage" "storage-path";
+            source = resultOf "log-storage" "planned-path";
             access = "read-write";
           }
         ];

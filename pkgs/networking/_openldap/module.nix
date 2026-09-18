@@ -125,11 +125,11 @@
       (literal "\nmodulepath ")
       (artifactDirectoryPath "libexec/openldap")
       (literal "\npidfile ")
-      (executionPath (resultOf "runtime-storage" "storage-path"))
+      (executionPath (resultOf "runtime-storage" "planned-path"))
       (literal "/slapd.pid\nargsfile ")
-      (executionPath (resultOf "runtime-storage" "storage-path"))
+      (executionPath (resultOf "runtime-storage" "planned-path"))
       (literal "/slapd.args\ndatabase mdb\nmaxsize ${toString cfg.database.maxBytes}\nsuffix \"${quoted cfg.suffix}\"\nrootdn \"${quoted cfg.rootDn}\"\ndirectory ")
-      (executionPath (resultOf "data-view" "storage-path"))
+      (executionPath (resultOf "data-view" "planned-path"))
       (literal "\nindex objectClass eq\n")
     ]
     ++ lib.optionals withTls [
@@ -173,7 +173,7 @@
       name = "openldap";
       allocation = "managed";
       description = "OpenLDAP directory service";
-      home_directory = resultOf "state-storage" "storage-path";
+      home_directory = resultOf "state-storage" "planned-path";
       login_access = "disabled";
       primary_group = resultOf "service-group" "group-name";
       supplementary_groups = [];
@@ -309,12 +309,12 @@
         storage.mounts = [
           {
             name = "data";
-            source = resultOf "data-view" "storage-path";
+            source = resultOf "data-view" "planned-path";
             access = "read-write";
           }
           {
             name = "runtime";
-            source = resultOf "runtime-storage" "storage-path";
+            source = resultOf "runtime-storage" "planned-path";
             access = "read-write";
           }
         ];

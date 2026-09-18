@@ -56,7 +56,7 @@
                 entry_point = "bin/test-http-server";
                 arguments = [
                   "--port=${builtins.toString cfg.port}"
-                  (resultOf "content" "storage-path")
+                  (resultOf "content" "planned-path")
                 ];
               };
               ignore_failure = false;
@@ -78,7 +78,7 @@
       storage.mounts = [
         {
           name = "content";
-          source = resultOf "content" "storage-path";
+          source = resultOf "content" "planned-path";
           access = "read-write";
         }
       ];

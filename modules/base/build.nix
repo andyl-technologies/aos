@@ -1022,6 +1022,8 @@ in {
         pkgs.aos-filesystem-provider
         # Block-storage controllers and their terminal effects are selected
         # through the packages that ship their authenticated provider modules.
+        # cryptsetup also owns the default encrypted-swap consumer module.
+        pkgs.cryptsetup
         pkgs.aos-cryptsetup-provider
         pkgs.aos-storage-format-provider
         pkgs.aos-storage-provisioning-provider

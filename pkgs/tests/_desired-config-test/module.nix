@@ -72,7 +72,7 @@
               entry_point = "bin/desired-config-test-start";
               arguments = [
                 (resultOf "environment" "planned-path")
-                (resultOf "state" "storage-path")
+                (resultOf "state" "planned-path")
               ];
             };
             ignore_failure = false;
@@ -99,7 +99,7 @@
       storage.mounts = [
         {
           name = "state";
-          source = resultOf "state" "storage-path";
+          source = resultOf "state" "planned-path";
           access = "read-write";
         }
       ];

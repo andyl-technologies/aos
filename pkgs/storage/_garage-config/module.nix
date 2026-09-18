@@ -88,8 +88,8 @@
   };
   serverConfig =
     {
-      metadata_dir = resultOf "metadata-storage" "storage-path";
-      data_dir = resultOf "data-storage" "storage-path";
+      metadata_dir = resultOf "metadata-storage" "planned-path";
+      data_dir = resultOf "data-storage" "planned-path";
       db_engine = cfg.dbEngine;
       replication_factor = cfg.replicationFactor;
       rpc_bind_addr = cfg.rpc.bindAddress;
