@@ -76,7 +76,7 @@ in
         and ((.qualification_case.checks | sort) == ([
           "signed-index-and-platform-selection",
           "anonymous-pull",
-          "native-platform-execution",
+          "declared-platform-execution",
           "start-stop-network",
           "repeated-stop-start-and-recreate",
           "persistent-state",
@@ -355,7 +355,7 @@ in
         '.qualification_case.checks | map({key: ., value: {passed: true, detail:
           (if . == "signed-index-and-platform-selection" then "The signed manifest selected the native platform from the reconstructed OCI index."
            elif . == "anonymous-pull" then "The executor downloaded every OCI object anonymously before runtime import."
-           elif . == "native-platform-execution" then "The imported image executed on the requested native architecture."
+           elif . == "declared-platform-execution" then "The imported image executed on the requested native architecture."
            elif . == "start-stop-network" then "Every lifecycle fetched the retained state from the host HTTP server over loopback."
            elif . == "repeated-stop-start-and-recreate" then "Ten isolated create, start, stop, and remove lifecycles completed."
            elif . == "persistent-state" then "The bind-mounted state and complete cycle journal survived every recreation."

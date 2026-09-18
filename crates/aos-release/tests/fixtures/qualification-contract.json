@@ -164,7 +164,7 @@
       "checks": [
         "signed-index-and-platform-selection",
         "anonymous-pull",
-        "native-platform-execution",
+        "declared-platform-execution",
         "start-stop-network",
         "repeated-stop-start-and-recreate",
         "persistent-state",
@@ -515,6 +515,23 @@
               "board": null,
               "chipset": null,
               "kind": "physical"
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "x86_64-linux"
+          },
+          {
+            "backend": {
+              "accelerator": "tcg",
+              "cpu_model": null,
+              "kind": "qemu",
+              "machine": "virt",
+              "machine_version": null,
+              "version": null
             },
             "cpu": {
               "features": [],
