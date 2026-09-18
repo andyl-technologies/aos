@@ -150,6 +150,7 @@ in {
       definitions = lib.mkOption {
         type = lib.types.attrsOf (lib.types.submodule schema);
         default = {};
+        internal = true;
         contributable = true;
         description = "OCI artifact definitions owned by the selected backend.";
       };
