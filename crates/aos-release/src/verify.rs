@@ -1084,6 +1084,45 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn qualification_classifies_eligible_and_blocked_packages() -> anyhow::Result<()> {
+        use crate::platform::MatrixCell;
+
+        let (mut plan, _) = qualification_fixture()?;
+        let contract = plan.qualification.clone().unwrap();
+        let mut excluded = plan.packages[0].clone();
+        excluded.name = "excluded-source-component".into();
+        for cell in &mut excluded.platforms {
+            cell.decision = MatrixCell::NotApplicable {
+                rule: "source-only".into(),
+                reason: "Retained as source, never published as a package.".into(),
+            };
+        }
+        plan.packages.push(excluded);
+
+        contract.validate_plan(&plan)?;
+
+        let added = plan.packages.last_mut().unwrap();
+        added.platforms[0].decision = MatrixCell::Blocked {
+            required_work: "Complete target support.".into(),
+            failure_evidence: crate::digest::Sha256Digest::of_bytes(b"blocked"),
+        };
+        assert!(
+            contract
+                .validate_plan(&plan)
+                .unwrap_err()
+                .to_string()
+                .contains("publication-eligible package inventory")
+        );
+
+        plan.packages.pop();
+        let mut unclassified = plan.packages[0].clone();
+        unclassified.name = "unclassified-published-package".into();
+        plan.packages.push(unclassified);
+        assert!(contract.validate_plan(&plan).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn qualification_binds_private_plan_without_requesting_it_as_a_public_object()
     -> anyhow::Result<()> {
         use crate::qualification::QualificationPhase;
