@@ -27,6 +27,9 @@ pub mod capabilities;
 pub mod claims;
 pub mod environment;
 
+#[cfg(test)]
+mod plan_tests;
+
 /// Schema of archived qualification contracts with untyped environments.
 pub const CONTRACT_V1: &str = "aos.release.qualification-contract/v1";
 
@@ -648,6 +651,7 @@ impl QualificationContract {
                 bail!("required server image target is blocked or inapplicable");
             }
         }
+        self.validate_package_execution_images(plan)?;
         if self
             .thresholds_for(&plan.registry, plan.release_class)?
             .require_complete_matrix
@@ -659,6 +663,50 @@ impl QualificationContract {
             })
         {
             bail!("qualification profile requires a complete package matrix");
+        }
+        Ok(())
+    }
+
+    /// Rejects missing package execution images before builds or signatures.
+    fn validate_package_execution_images(&self, plan: &ReleasePlanV1) -> Result<()> {
+        use crate::platform::MatrixCell;
+
+        for package in &plan.packages {
+            let Some(execution) = self
+                .package_rules
+                .iter()
+                .find(|rule| rule.name == package.name)
+                .and_then(|rule| rule.execution.as_ref())
+            else {
+                continue;
+            };
+
+            for cell in package
+                .platforms
+                .iter()
+                .filter(|cell| matches!(cell.decision, MatrixCell::Artifact { .. }))
+            {
+                let variant = execution.system_variant();
+                let bound_image = plan
+                    .images
+                    .iter()
+                    .find(|image| image.system_variant == variant);
+                let image_cell = bound_image.and_then(|image| {
+                    image
+                        .platforms
+                        .iter()
+                        .find(|image_cell| image_cell.platform == cell.platform)
+                });
+                if !image_cell.is_some_and(|image_cell| {
+                    matches!(image_cell.decision, MatrixCell::Artifact { .. })
+                }) {
+                    bail!(
+                        "package {} requires execution image {variant} for {} in the release plan",
+                        package.name,
+                        cell.platform,
+                    );
+                }
+            }
         }
         Ok(())
     }
