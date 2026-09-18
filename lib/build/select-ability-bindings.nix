@@ -178,10 +178,9 @@
     then builtins.elemAt request.scope (builtins.length request.scope - 1)
     else if request.localKey or null != null
     then request.localKey
-    else let
-      components = lib.splitString ":" requestName;
-    in
-      builtins.elemAt components (builtins.length components - 1);
+    else
+      throw
+      "ability request '${requestName}' has neither an explicit scope nor authenticated package-local identity";
   unresolvedRequestNames =
     builtins.filter
     (name: bindingNamesForRequest name == [])
