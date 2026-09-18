@@ -232,7 +232,7 @@ pub struct QualificationContract {
     pub thresholds: BTreeMap<String, QualificationThresholds>,
     /// Required reference environments.
     pub targets: Vec<QualificationTarget>,
-    /// Complete package classification, independent of platform eligibility.
+    /// Classification of every package eligible on at least one platform.
     pub package_rules: Vec<PackageRule>,
     /// Shared gate catalog.
     pub requirements: Vec<QualificationRequirement>,
@@ -611,9 +611,19 @@ impl QualificationContract {
         {
             bail!("release gates or evidence policy differ from the frozen qualification contract");
         }
+        // The complete inventory also retains packages excluded from every
+        // publication target. Blocked eligible targets still require rules.
         let packages: BTreeSet<_> = plan
             .packages
             .iter()
+            .filter(|package| {
+                package.platforms.iter().any(|cell| {
+                    !matches!(
+                        cell.decision,
+                        crate::platform::MatrixCell::NotApplicable { .. }
+                    )
+                })
+            })
             .map(|package| package.name.as_str())
             .collect();
         let rules: BTreeSet<_> = self
@@ -622,7 +632,9 @@ impl QualificationContract {
             .map(|rule| rule.name.as_str())
             .collect();
         if packages != rules {
-            bail!("qualification classification differs from the complete package inventory");
+            bail!(
+                "qualification classification differs from the publication-eligible package inventory"
+            );
         }
         if plan.images.is_empty() {
             bail!("server qualification requires the Linux image matrix");
