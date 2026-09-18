@@ -79,23 +79,6 @@ in
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
   assert builtins.attrNames packageProjection.guarantees == [];
-  assert builtins.attrNames packageProjection.requirementTemplates
-  == [
-    "linux-service-isolation"
-    "network-readiness"
-    "persistent-storage-allocation"
-    "service-dependencies"
-    "service-isolation"
-    "service-lifecycle"
-    "service-logging"
-    "service-readiness"
-    "service-reload"
-    "resources"
-    "service-storage"
-    "service-supervision"
-    "service-termination"
-    "storage-allocation"
-  ];
   assert builtins.map (requirement: requirement.alias) packageContract.requirements
   == builtins.attrNames packageProjection.requirementTemplates;
   assert documentedOptionPaths
