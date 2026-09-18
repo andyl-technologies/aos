@@ -8,23 +8,20 @@
   mkDerivation,
   aos,
   bash,
+  buildPackages,
   coreutils,
-  dosfstools,
-  gptfdisk,
   git,
-  jq,
-  mtools,
-  qemu,
-  sbsigntools,
-  secure-boot-test-keys,
-  systemd,
-  zstd,
 }: let
-  ukiImage = mkDerivation {
+  # This producer fixture publishes x86_64 image data on every host. Construct
+  # its signed EFI payload and disk formats with native build tools; only the
+  # final generator script and its CLI dependencies execute on the target.
+  inherit (buildPackages) dosfstools gptfdisk jq mtools qemu sbsigntools secure-boot-test-keys systemd zstd;
+
+  ukiImage = buildPackages.mkDerivation {
     pname = "aos-hub-e2e-uki";
     version = "2026.3.0";
     src = null;
-    buildDeps = [coreutils sbsigntools secure-boot-test-keys systemd systemd.tools];
+    buildDeps = [buildPackages.coreutils sbsigntools secure-boot-test-keys systemd systemd.tools];
     phases = [
       {
         name = "build";
@@ -46,14 +43,11 @@
       }
     ];
   };
-  rawImage = mkDerivation {
+  rawImage = buildPackages.mkDerivation {
     pname = "aos-hub-e2e-image-raw";
     version = "2026.3.0";
     src = null;
-    # ukiImage is target data read by mcopy, not a host executable. Its
-    # interpolated path below retains it as an input without build-platform
-    # splicing during cross evaluation.
-    buildDeps = [coreutils dosfstools gptfdisk jq mtools zstd];
+    buildDeps = [buildPackages.coreutils dosfstools gptfdisk jq mtools ukiImage zstd];
     phases = [
       {
         name = "build";
@@ -119,13 +113,11 @@
       }
     ];
   };
-  qcow2Image = mkDerivation {
+  qcow2Image = buildPackages.mkDerivation {
     pname = "aos-hub-e2e-image-qcow2";
     version = "2026.3.0";
     src = null;
-    # rawImage and ukiImage are target data; their interpolated paths retain
-    # them separately from the host tools that must be runnable here.
-    buildDeps = [coreutils jq qemu zstd];
+    buildDeps = [buildPackages.coreutils jq qemu rawImage ukiImage zstd];
     phases = [
       {
         name = "build";
@@ -174,12 +166,11 @@
     filename,
     pname,
   }:
-    mkDerivation {
+    buildPackages.mkDerivation {
       inherit pname;
       version = "2026.3.0";
       src = null;
-      # image is copied as target data and retained by its path interpolation.
-      buildDeps = [coreutils];
+      buildDeps = [buildPackages.coreutils image];
       phases = [
         {
           name = "install";
@@ -210,11 +201,11 @@
     filename = "image-info.json";
     pname = "aos-hub-e2e-image-qcow2-info";
   };
-  sysroot = mkDerivation {
+  sysroot = buildPackages.mkDerivation {
     pname = "aos-hub-e2e-sysroot";
     version = "2026.3.0";
     src = null;
-    buildDeps = [coreutils];
+    buildDeps = [buildPackages.coreutils];
     phases = [
       {
         name = "build";

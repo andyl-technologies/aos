@@ -20,22 +20,16 @@ in
     hostPlatform = buildPlatform;
     targetPlatform = hostPlatform;
 
-    buildDeps =
-      [
-        buildPackages.gnumake
-        buildPackages.m4
-        buildPackages.flex
-        buildPackages.bison
-        buildPackages.texinfo
-        buildPackages.perl
-        buildPackages.python3
-        binutils
-      ]
-      ++ (
-        if finalStage
-        then [buildPackages.patchelf]
-        else []
-      );
+    buildDeps = [
+      buildPackages.gnumake
+      buildPackages.m4
+      buildPackages.flex
+      buildPackages.bison
+      buildPackages.texinfo
+      buildPackages.perl
+      buildPackages.python3
+      binutils
+    ];
     runtimeDeps = [binutils];
     propagatedDeps = [];
 
@@ -57,6 +51,9 @@ in
           (cd ${sources.mpc} && tar cf - .) | (cd source/mpc && tar xf -)
           (cd ${sources.isl} && tar cf - .) | (cd source/isl && tar xf -)
           chmod -R u+w source/gmp source/mpfr source/mpc source/isl
+
+          AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../runtime-scripts.sh} source
 
           # GCC's option generators rely on unset array elements behaving as
           # empty strings, while gawk 5.4 can preserve a numeric zero type.
@@ -106,7 +103,7 @@ in
           cd build
           CC=${buildStdenv.cc}/bin/cc \
           CXX=${buildStdenv.cc}/bin/c++ \
-          ../source/configure \
+          "$CONFIG_SHELL" ../source/configure \
             --prefix="$out" \
             --build=${buildPlatform.config} \
             --host=${buildPlatform.config} \
@@ -122,7 +119,7 @@ in
             --disable-nls \
             ${
             if finalStage
-            then "--enable-languages=c,c++ --enable-shared --enable-threads=posix --enable-default-pie"
+            then "--enable-languages=c,c++ --enable-shared --enable-threads=posix"
             else "--enable-languages=c --disable-libatomic --disable-shared --disable-threads --with-newlib --without-headers"
           }
         '';
@@ -131,14 +128,14 @@ in
         name = "build";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make -j"$NIX_BUILD_CORES" all-gcc
-          make -j"$NIX_BUILD_CORES" all-target-libgcc
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgcc
           ${
             if finalStage
             then ''
-              make -j"$NIX_BUILD_CORES" all-target-libstdc++-v3
-              make -j"$NIX_BUILD_CORES" all-target-libatomic
-              make -j"$NIX_BUILD_CORES" all-target-libgomp
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgomp
             ''
             else ""
           }
@@ -148,43 +145,14 @@ in
         name = "install";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make install-gcc
-          make install-target-libgcc
+          make SHELL="$CONFIG_SHELL" install-gcc
+          make SHELL="$CONFIG_SHELL" install-target-libgcc
           ${
             if finalStage
             then ''
-              make install-target-libstdc++-v3
-              make install-target-libatomic
-              make install-target-libgomp
-
-              # These target runtimes are built outside the ordinary package
-              # wrapper, so give each shared object a store-only path to its
-              # direct target dependencies. This remains necessary when an
-              # executable's --as-needed link omits those transitive DSOs.
-              runtimeDirectory="$out/${hostPlatform.config}/lib64"
-              runtimeRpath="$runtimeDirectory:${libc}/lib"
-              for runtimeLibrary in \
-                libgcc_s.so.1 \
-                libstdc++.so.6 \
-                libatomic.so.1 \
-                libgomp.so.1; do
-                runtimePath="$runtimeDirectory/$runtimeLibrary"
-                if [ ! -f "$runtimePath" ]; then
-                  echo "error: missing target GCC runtime $runtimePath" >&2
-                  exit 1
-                fi
-
-                ${buildPackages.patchelf}/bin/patchelf \
-                  --set-rpath "$runtimeRpath" "$runtimePath"
-                installedRpath=$(
-                  ${buildPackages.patchelf}/bin/patchelf \
-                    --print-rpath "$runtimePath"
-                )
-                if [ "$installedRpath" != "$runtimeRpath" ]; then
-                  echo "error: target GCC runtime has an unexpected RPATH: $runtimePath" >&2
-                  exit 1
-                fi
-              done
+              make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3
+              make SHELL="$CONFIG_SHELL" install-target-libatomic
+              make SHELL="$CONFIG_SHELL" install-target-libgomp
             ''
             else ""
           }

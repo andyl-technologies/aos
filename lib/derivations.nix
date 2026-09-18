@@ -47,6 +47,15 @@
     ;
   hardening = import ./hardening.nix;
 
+  unique = values:
+    builtins.foldl' (
+      accumulated: value:
+        if builtins.elem value accumulated
+        then accumulated
+        else accumulated ++ [value]
+    ) []
+    values;
+
   # Attach evaluation-only fixed-output identity without changing the
   # derivation's builder environment or store identity.
   annotateFixedOutput = drv: contract:
@@ -167,7 +176,7 @@
   # would turn harmless `#!/usr/bin/env ...` references into live
   # `/nix/store/<hash>-python3/bin/python3` paths, pulling python/perl/etc.
   # into closures that never needed them.
-  fixupPhase = {
+  fixupPhaseFor = stripCommand: {
     name = "fixup";
     script = ''
       object_format="''${AOS_OBJECT_FORMAT:-elf}"
@@ -177,11 +186,14 @@
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
-          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
-          find "$p" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
+          find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
+            -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+          find "$p" -type f -name '*.a' \
+            -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
           for d in bin sbin libexec; do
             if [ -d "$p/$d" ]; then
-              find "$p/$d" -type f -exec strip -s {} \; 2>/dev/null || true
+              find "$p/$d" -type f \
+                -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
             fi
           done
         done
@@ -237,6 +249,13 @@
     '';
   };
 
+  fixupPhase = fixupPhaseFor "strip";
+
+  # A native binutils only recognizes its own object targets. Cross packages
+  # without a custom fixup must use the selected target strip so debug sections
+  # cannot retain the compiler in otherwise small runtime closures.
+  crossElfFixupPhase = fixupPhaseFor "\"$STRIP\"";
+
   # Preserve the native phase bytes while avoiding grep -q's intentional
   # early pipe close for large Mach-O archives in Darwin cross builds.
   darwinCrossFixupPhase = let
@@ -277,19 +296,39 @@
         # The env vars are nixpkgs-style ($buildInputs = runtimeDeps,
         # $propagatedBuildInputs = propagatedDeps).
         keep_args=""
+        append_keep_paths() {
+          for p in "$@"; do
+            [ -n "$p" ] && keep_args="$keep_args -e $p"
+          done
+        }
+
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
-          [ -n "$p" ] && keep_args="$keep_args -e $p"
-        done
-        # Structured attrs expose list-valued inputs as Bash arrays. [@]
-        # expands every element while retaining scalar word splitting.
-        for p in ''${buildInputs[@]:-} ''${propagatedBuildInputs[@]:-} ''${nukeRefsKeep[@]:-}; do
-          [ -n "$p" ] && keep_args="$keep_args -e $p"
+          append_keep_paths "$p"
         done
 
-        # Default target set: every executable, every shared lib, every
+        # Structured attrs expose dependency lists as arrays. An ordinary
+        # scalar expansion reads only element zero, which would silently scrub
+        # every later intentional runtime reference from scripts and binaries.
+        if declare -p buildInputs 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${buildInputs[@]}"
+        else
+          append_keep_paths ''${buildInputs:-}
+        fi
+        if declare -p propagatedBuildInputs 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${propagatedBuildInputs[@]}"
+        else
+          append_keep_paths ''${propagatedBuildInputs:-}
+        fi
+        if declare -p nukeRefsKeep 2>/dev/null | grep -q 'declare -a'; then
+          append_keep_paths "''${nukeRefsKeep[@]}"
+        else
+          append_keep_paths ''${nukeRefsKeep:-}
+        fi
+
+        # Default target set: every executable, library, and
         # pkgconfig/.la/Makefile/sysconfig file. These are the locations
-        # autotools/python embed build-tool paths into. Python's
+        # compilers, Autotools, and Python embed build-tool paths into. Python's
         # __pycache__ is included because import compiles _sysconfigdata
         # to .pyc at install time, baking the build-time toolchain refs
         # into a binary blob that the .py-only pattern would miss.
@@ -300,6 +339,7 @@
                -path "*/bin/*" -o -path "*/sbin/*" -o -path "*/libexec/*" \
             -o -name "*.so" -o -name "*.so.*" \
             -o -name "*.dylib" -o -name "*.dylib.*" \
+            -o -name "*.a" -o -name "*.rlib" \
             -o -name "*.pc"  -o -name "*.la" \
             -o -name "Makefile" \
             -o -name "_sysconfigdata*.py"  -o -name "_sysconfigdata*.pyc" \
@@ -458,7 +498,7 @@
   # ---------------------------------------------------------------------------
   # Internal: generate the build script from a list of phases
   # ---------------------------------------------------------------------------
-  phasesToScript = phases: shell: let
+  phasesToScript = phases: shell: useStructuredAttrs: let
     phaseScripts =
       builtins.map (phase: ''
         echo ">>> Phase: ${phase.name}"
@@ -466,6 +506,31 @@
         echo "<<< Phase: ${phase.name} complete"
       '')
       phases;
+    structuredAttrsPreSource =
+      if useStructuredAttrs
+      then
+        "\n"
+        + builtins.concatStringsSep "\n" [
+          "  # Nix writes scalar attrs as plain `declare` statements. Mark those"
+          "  # assignments for export while sourcing the file so compiler and build"
+          "  # subprocesses receive the same environment as an unstructured build."
+          "  case \"$-\" in"
+          "    *a*) __attrs_allexport_was_set=1 ;;"
+          "    *) __attrs_allexport_was_set=0; set -a ;;"
+          "  esac"
+        ]
+      else "";
+    structuredAttrsPostSource =
+      if useStructuredAttrs
+      then
+        builtins.concatStringsSep "\n" [
+          "  if [ \"$__attrs_allexport_was_set\" = 0 ]; then"
+          "    set +a"
+          "  fi"
+          "  unset __attrs_allexport_was_set"
+          ""
+        ]
+      else "";
   in ''
     #!${shell}
     set -eu
@@ -479,9 +544,9 @@
     # array (declare -A outputs=([out]=/nix/store/… [dev]=/nix/store/…))
     # but does NOT set each output name as a scalar. Re-declare them so
     # phase scripts that reference $out / $dev / etc. keep working.
-    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then
+    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then${structuredAttrsPreSource}
       . "$NIX_ATTRS_SH_FILE"
-      if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
+    ${structuredAttrsPostSource}  if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
         AOS_OUTPUT_NAMES="''${!outputs[*]}"
         for __o in "''${!outputs[@]}"; do
           declare -g "$__o=''${outputs[$__o]}"
@@ -577,8 +642,10 @@
   #   buildDeps;       — build-time dependencies (nativeBuildInputs equivalent)
   #   runtimeDeps;     — runtime dependencies (buildInputs equivalent)
   #   propagatedDeps;  — propagated dependencies (propagatedBuildInputs equivalent)
+  #   dependencySearchDeps;      — dependencies searched by the host compiler
+  #   buildDependencySearchDeps; — dependencies searched by build compilers
   #   phases;          — ordered list of { name; script; } records
-  #   postFinalize;     — optional script after fixup, scrub, and output metadata
+  #   postFinalize;    — optional script after fixup, scrub, and output metadata
   #   meta;            — package metadata
   #   update;          — primitive maintenance metadata (evaluation only)
   #   storeDir;        — store directory (default: /nix/store)
@@ -595,6 +662,8 @@
     buildDeps ? [],
     runtimeDeps ? [],
     propagatedDeps ? [],
+    dependencySearchDeps ? null,
+    buildDependencySearchDeps ? null,
     phases ? defaultPhases,
     meta ? {},
     storeDir ? "/nix/store",
@@ -668,6 +737,46 @@
     ...
   }: let
     useStructuredAttrs = outputChecks != null;
+    mergeAllowed = inherited: perOutput:
+      if inherited == null
+      then perOutput
+      else if perOutput == null
+      then inherited
+      else builtins.filter (value: builtins.elem value perOutput) inherited;
+    mergeOutputCheck = output: let
+      packageCheck = outputChecks.${output} or {};
+      mergedAllowedRequisites = mergeAllowed allowedRequisites (packageCheck.allowedRequisites or null);
+      mergedAllowedReferences = mergeAllowed allowedReferences (packageCheck.allowedReferences or null);
+    in
+      packageCheck
+      // {
+        disallowedRequisites = unique (
+          disallowedRequisites ++ (packageCheck.disallowedRequisites or [])
+        );
+        disallowedReferences = unique (
+          disallowedReferences ++ (packageCheck.disallowedReferences or [])
+        );
+      }
+      // (
+        if mergedAllowedRequisites == null
+        then {}
+        else {allowedRequisites = mergedAllowedRequisites;}
+      )
+      // (
+        if mergedAllowedReferences == null
+        then {}
+        else {allowedReferences = mergedAllowedReferences;}
+      );
+    effectiveOutputChecks =
+      if !useStructuredAttrs
+      then null
+      else
+        builtins.listToAttrs (
+          builtins.map (output: {
+            name = output;
+            value = mergeOutputCheck output;
+          }) (unique (outputs ++ builtins.attrNames outputChecks))
+        );
     # Accept either `name` (direct) or `pname` (computed as pname-version).
     name =
       args.name
@@ -687,6 +796,14 @@
     directDeps = buildDeps ++ runtimeDeps ++ propagatedDeps;
     allBuildDeps = collectPropagated directDeps directDeps;
     nativeBuildClosure = collectPropagated buildDeps buildDeps;
+    dependencySearchClosure =
+      if dependencySearchDeps == null
+      then allBuildDeps
+      else collectPropagated dependencySearchDeps dependencySearchDeps;
+    buildDependencySearchClosure =
+      if buildDependencySearchDeps == null
+      then nativeBuildClosure
+      else collectPropagated buildDependencySearchDeps buildDependencySearchDeps;
 
     # Prepend patch phase if patches are provided
     patchPhase = {
@@ -732,6 +849,8 @@
         != outputPlatform.system
         && outputPlatform.objectFormat == "macho"
       then darwinCrossFixupPhase
+      else if buildPlatform.system != outputPlatform.system
+      then crossElfFixupPhase
       else fixupPhase;
 
     allPhases =
@@ -755,7 +874,7 @@
         else []
       );
 
-    builder = phasesToScript allPhases shell;
+    builder = phasesToScript allPhases shell useStructuredAttrs;
 
     # Extra args to pass through to builtins.derivation
     extraArgs = builtins.removeAttrs args [
@@ -766,6 +885,8 @@
       "buildDeps"
       "runtimeDeps"
       "propagatedDeps"
+      "dependencySearchDeps"
+      "buildDependencySearchDeps"
       "phases"
       "meta"
       "storeDir"
@@ -925,9 +1046,9 @@
               else "";
 
             # Environment variables for the build
-            # Only native build dependencies contribute executables and loader
-            # libraries. Host runtime dependencies may contain Darwin binaries
-            # or Mach-O libraries that a Linux builder cannot load.
+            # Only native build dependencies contribute executables. Each tool
+            # resolves its own runtime libraries through its recorded loader and
+            # RPATH; a global loader path would mix incompatible library tiers.
             PATH = makePath nativeBuildClosure;
 
             # Configuration flags
@@ -939,12 +1060,12 @@
               mesonFlags
               ;
 
-            # Dependency search paths — include buildDeps so build-time
-            # libraries (e.g. elfutils for the kernel's objtool) are found.
-            C_INCLUDE_PATH = makeIncPath allBuildDeps;
-            CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
-            LIBRARY_PATH = makeLibPath allBuildDeps;
-            LD_LIBRARY_PATH = makeLibPath nativeBuildClosure;
+            # The primary search paths belong to the compiler producing host
+            # outputs. Cross stdenvs provide separate build-machine paths for
+            # native generators compiled through CC_FOR_BUILD.
+            C_INCLUDE_PATH = makeIncPath dependencySearchClosure;
+            CPLUS_INCLUDE_PATH = makeIncPath dependencySearchClosure;
+            LIBRARY_PATH = makeLibPath dependencySearchClosure;
 
             # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
             # shared libraries at runtime without LD_LIBRARY_PATH.
@@ -954,7 +1075,7 @@
               collectPropagated (runtimeDeps ++ propagatedDeps) (runtimeDeps ++ propagatedDeps)
             );
             PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
-              builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
+              builtins.map (d: "${builtins.toString d}/lib/pkgconfig") dependencySearchClosure
             );
 
             # Store the dependencies for runtime reference
@@ -971,6 +1092,20 @@
             # wrapper falls back to its baked-in default policy.
             AOS_HARDENING_ENABLE = hardeningEnableStr;
           }
+          # Native derivations keep their historical environment. Cross
+          # stdenvs opt into the additional build-machine search variables.
+          // (
+            if buildDependencySearchDeps != null
+            then {
+              AOS_BUILD_C_INCLUDE_PATH = makeIncPath buildDependencySearchClosure;
+              AOS_BUILD_CPLUS_INCLUDE_PATH = makeIncPath buildDependencySearchClosure;
+              AOS_BUILD_LIBRARY_PATH = makeLibPath buildDependencySearchClosure;
+              PKG_CONFIG_PATH_FOR_BUILD = builtins.concatStringsSep ":" (
+                builtins.map (d: "${builtins.toString d}/lib/pkgconfig") buildDependencySearchClosure
+              );
+            }
+            else {}
+          )
           # Reference-control blacklists. Empty list = no constraint, so
           # unconditional inclusion is safe. Under __structuredAttrs the
           # top-level disallowed* attrs are inert and trigger a Nix
@@ -999,7 +1134,7 @@
             if useStructuredAttrs
             then {
               __structuredAttrs = true;
-              inherit outputChecks;
+              outputChecks = effectiveOutputChecks;
             }
             else {}
           )

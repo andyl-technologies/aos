@@ -29,6 +29,8 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
+  # Qualification inspects the same tier values without changing their inputs.
+  exportTiers ? false,
 }: let
   lib = import ../../lib/platform.nix;
 
@@ -104,7 +106,7 @@
   gcc8 = import ./gcc8 {
     prev =
       if needsCross1
-      then gcc4_8_cross
+      then gcc4_8_cross // gcc4_8_cross.buildTools
       else gcc4_8;
     buildPlatform = cross1Platform;
     hostPlatform = cross1Platform;
@@ -123,7 +125,7 @@
   gcc11 = import ./gcc11 {
     prev =
       if needsCross2
-      then gcc8_cross
+      then gcc8_cross // gcc8_cross.buildTools
       else gcc8;
     buildPlatform = cross2Platform;
     hostPlatform = cross2Platform;
@@ -138,7 +140,20 @@
     targetPlatform = mkBuildable targetPlatform;
   };
   # ── latest: change this when adding a new GCC tier ──────────────
-  # Points to the newest tier directory. The final compiler bootstrap happens
-  # inside the tier; the rest of the tier is not rebuilt with itself.
+  # Points to the newest tier directory. Each tier completes its construction
+  # tools before rebuilding the public exports against its own runtime inputs.
 in
-  gcc16
+  if exportTiers
+  then
+    {inherit gcc3_4 gcc3_4_cross gcc4_1 gcc4_4 gcc4_8 gcc8 gcc11 gcc16;}
+    // (
+      if needsCross1
+      then {inherit gcc4_8_cross;}
+      else {}
+    )
+    // (
+      if needsCross2
+      then {inherit gcc8_cross;}
+      else {}
+    )
+  else gcc16

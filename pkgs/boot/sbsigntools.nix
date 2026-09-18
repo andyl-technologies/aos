@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   buildPackages,
+  binutils,
   openssl,
   util-linux,
   gnu-efi,
@@ -36,6 +37,7 @@ in
       buildPackages.automake
       buildPackages.pkg-config
       buildPackages.binutils
+      binutils
       gnu-efi
     ];
     runtimeDeps =
@@ -171,6 +173,8 @@ in
             automake --add-missing -Wno-portability
 
             # Configure
+            export CPPFLAGS="-I${binutils}/include -I${gnu-efi}/include ''${CPPFLAGS:-}"
+            export LDFLAGS="-L${binutils}/lib ''${LDFLAGS:-}"
             HELP2MAN=: \
             ./configure \
               $configureFlags \

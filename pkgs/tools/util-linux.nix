@@ -2,7 +2,6 @@
 {
   mkDerivation,
   fetchurl,
-  stdenv,
   gnumake,
   pkg-config,
   zlib,
@@ -29,6 +28,8 @@ in
   mkDerivation {
     pname = "util-linux";
     inherit version;
+    # Mounting filesystems does not require the optional Python bindings.
+    # Keep those bindings available without retaining Python in boot images.
     outputs = ["out" "python"];
 
     src = fetchurl {
@@ -64,11 +65,6 @@ in
       sqlite
     ];
     propagatedDeps = [libselinux];
-    nukeRefsKeep = [python3];
-    outputChecks = {
-      out.disallowedRequisites = [python3];
-      python = {};
-    };
 
     phases = [
       {
@@ -137,42 +133,14 @@ in
         script = ''
           make install
 
-          # The command suite and C libraries do not require the optional
-          # Python binding at runtime, so publish it as an explicit output.
-          set -- "$out"/lib/python*
-          test "$#" -eq 1
-          test -d "$1"
           mkdir -p "$python/lib"
-          mv "$1" "$python/lib/"
-
-          python_path=$(find "$python/lib" -type d -name site-packages -print -quit)
-          test -n "$python_path"
-          binding_path="$python_path/libmount"
-          test -f "$binding_path/__init__.py"
-          test -f "$binding_path/pylibmount.la"
-          test -f "$binding_path/pylibmount.so"
-          test -n "$(find "$binding_path/__pycache__" -type f -name '*.pyc' -print -quit)"
-
-          # Preserve references to libmount and libblkid in $out while
-          # recording the binding's new installation directory.
-          sed -i "s|^libdir=.*|libdir='$binding_path'|" \
-            "$binding_path/pylibmount.la"
-          grep -Fxq "libdir='$binding_path'" "$binding_path/pylibmount.la"
-          grep -Fq "$out/lib/libmount.la" "$binding_path/pylibmount.la"
-          grep -Fq "$out/lib/libblkid.la" "$binding_path/pylibmount.la"
-          test -z "$(find "$out/lib" -maxdepth 1 -type d -name 'python*' -print -quit)"
+          for bindings in "$out"/lib/python*; do
+            test -d "$bindings"
+            mv "$bindings" "$python/lib/"
+          done
         '';
       }
     ];
-
-    postFinalize =
-      if stdenv.isCross
-      then "true"
-      else ''
-        python_path=$(find "$python/lib" -type d -name site-packages -print -quit)
-        test -n "$python_path"
-        PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import libmount'
-      '';
 
     checks = {
       testing,

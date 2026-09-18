@@ -4,7 +4,6 @@
   fetchurl,
   gnumake,
   pkg-config,
-  buildPackages,
   libaio,
   util-linux,
 }: let
@@ -25,9 +24,6 @@ in
     buildDeps = [
       gnumake
       pkg-config
-      buildPackages.binutils
-      buildPackages.patchelf
-      buildPackages.python3
     ];
     runtimeDeps = [
       libaio
@@ -72,6 +68,12 @@ in
         script = ''
           make install_device-mapper
 
+          # Without libudev at build time, upstream generates an external
+          # blkid rule using our own sbin directory. The helper belongs to
+          # util-linux; adding systemd here would create a dependency cycle.
+          sed -i "s|$out/sbin/blkid |${util-linux}/sbin/blkid |" \
+            $out/lib/udev/rules.d/13-dm-disk.rules
+
           # systemd can observe the initial dm add event before activation and
           # persist SYSTEMD_READY=0. Since libdevmapper cannot depend on
           # systemd's libudev in the bootstrap graph, clear that conservative
@@ -82,17 +84,6 @@ in
         '';
       }
     ];
-
-    # nuke-refs runs after the package's fixup phase. libdevmapper inherited
-    # three dead RPATH entries from util-linux's propagated SELinux libraries;
-    # remove only those reviewed placeholders after reference scrubbing.
-    postFinalize = ''
-      ${buildPackages.python3}/bin/python3 -B \
-        ${./aos-device-mapper-rpath-sanitize.py} \
-        --patchelf ${buildPackages.patchelf}/bin/patchelf \
-        --readelf ${buildPackages.binutils}/bin/readelf \
-        --root "$out"
-    '';
 
     meta = {
       description = "Device-mapper userspace library and tools (libdevmapper, dmsetup)";

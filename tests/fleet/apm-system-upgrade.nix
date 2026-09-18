@@ -84,8 +84,7 @@
     version = "0";
     src = null;
 
-    __structuredAttrs = true;
-    outputChecks = {};
+    outputChecks.out = {};
     exportReferencesGraph.server2 = [server2Top];
 
     buildDeps = [

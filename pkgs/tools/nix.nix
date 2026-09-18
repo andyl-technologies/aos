@@ -1,6 +1,7 @@
 ##! Nix — The purely functional package manager
 {
   mkDerivation,
+  lib,
   fetchurl,
   gnumake,
   cmake,
@@ -32,16 +33,11 @@
   version = "2.24.12";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
-  buildMeson =
-    if stdenv.isCross
-    then buildPackages.meson
-    else meson;
-  # These target libraries are direct DT_NEEDED providers for Nix's installed
-  # ELF objects. Header-only inputs and libraries already retained by the
-  # linker are deliberately absent.
-  crossLinuxRpathLibraries = [
+  linuxRuntimeLibraryPath = lib.makeLibraryPath [
     curl
     openssl
+    sqlite
+    boost
     editline
     libsodium
     libgit2
@@ -49,10 +45,14 @@
     libarchive
     gc
     lowdown
+    bzip2
+    zlib
+    libseccomp
   ];
-  crossLinuxRuntimeLibraryPath = builtins.concatStringsSep ":" (
-    map (dependency: "${dependency}/lib") crossLinuxRpathLibraries
-  );
+  buildMeson =
+    if stdenv.isCross
+    then buildPackages.meson
+    else meson;
   mesonSetupFlags =
     if stdenv.isCross
     then ''      --buildtype=release \
@@ -92,25 +92,19 @@ in
       hash = "sha256-862Kc2J+EH5X9JFIaKzWN6oODXCmh91nGLrC0vZPUMg=";
     };
 
-    buildDeps =
-      [
-        gnumake
-        cmake
-        pkg-config
-        meson
-        ninja
-        python3
-        bison
-        flex
-        # Boost headers for compilation only; the runtime lib reference comes
-        # from `boost` (the lib output) in runtimeDeps below.
-        boost.dev
-      ]
-      ++ (
-        if isLinuxCross
-        then [buildPackages.patchelf]
-        else []
-      );
+    buildDeps = [
+      gnumake
+      cmake
+      pkg-config
+      meson
+      ninja
+      python3
+      bison
+      flex
+      # Boost headers for compilation only; the runtime lib reference comes
+      # from `boost` (the lib output) in runtimeDeps below.
+      boost.dev
+    ];
     runtimeDeps =
       [
         curl
@@ -177,6 +171,12 @@ in
           # split-aware vars work where BOOST_ROOT (single prefix) would not.
           export BOOST_INCLUDEDIR=${boost.dev}/include
           export BOOST_LIBRARYDIR=${boost}/lib
+          ${lib.optionalString isLinuxCross ''
+            # Meson's Boost dependency reports success from BOOST_INCLUDEDIR,
+            # but Nix 2.24's subprojects omit that directory from cross C++
+            # compile commands. Keep target headers explicit in those rules.
+            export CXXFLAGS="-isystem${boost.dev}/include ''${CXXFLAGS:-}"
+          ''}
           # toml11 is header-only and publishes only a CMake package.  Meson's
           # CMake dependency backend does not derive prefix roots from the
           # compiler include path, so expose the AOS package explicitly.
@@ -196,50 +196,41 @@ in
       }
       {
         name = "install";
-        script = ''
-          ninja install
+        script =
+          ''
+            ninja install
 
-          # Create legacy command symlinks (multi-call binary)
-          for cmd in nix-store nix-build nix-instantiate nix-env \
-                     nix-collect-garbage nix-copy-closure nix-daemon \
-                     nix-hash nix-prefetch-url nix-channel; do
-            if [ ! -e "$out/bin/$cmd" ]; then
-              ln -s nix "$out/bin/$cmd"
+            # Create legacy command symlinks (multi-call binary)
+            for cmd in nix-store nix-build nix-instantiate nix-env \
+                       nix-collect-garbage nix-copy-closure nix-daemon \
+                       nix-hash nix-prefetch-url nix-channel; do
+              if [ ! -e "$out/bin/$cmd" ]; then
+                ln -s nix "$out/bin/$cmd"
+              fi
+            done
+
+            # Move build-against artifacts into $dev so the runtime $out (CLI +
+            # libs) carries no headers and no pkg-config. The pkg-config files
+            # reference boost's header output; leaving them in $out would pull
+            # boost.dev back into the runtime closure. Nothing on the appliance
+            # compiles against libnix, so $out needs neither.
+            mkdir -p "$dev"
+            if [ -d "$out/include" ]; then
+              mv "$out/include" "$dev/include"
             fi
-          done
-
-          # Move build-against artifacts into $dev so the runtime $out (CLI +
-          # libs) carries no headers and no pkg-config. The pkg-config files
-          # reference boost's header output; leaving them in $out would pull
-          # boost.dev back into the runtime closure. Nothing on the appliance
-          # compiles against libnix, so $out needs neither.
-          mkdir -p "$dev"
-          if [ -d "$out/include" ]; then
-            mv "$out/include" "$dev/include"
-          fi
-          if [ -d "$out/lib/pkgconfig" ]; then
-            mkdir -p "$dev/lib"
-            mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
-          fi
-
-          ${
-            if isLinuxCross
-            then ''
-              # Meson removes build-tree RPATHs during cross installation, so
-              # restore the declared target runtime closure before the generic
-              # fixup shrinks each ELF to the directories it actually needs.
-              find "$out" -type f \( -name '*.so*' -o -perm -u+x \) |
-                while IFS= read -r object; do
-                  if ${buildPackages.patchelf}/bin/patchelf \
-                    --print-needed "$object" >/dev/null 2>&1; then
-                    ${buildPackages.patchelf}/bin/patchelf \
-                      --add-rpath "$out/lib:${crossLinuxRuntimeLibraryPath}" "$object"
-                  fi
-                done
-            ''
-            else ""
-          }
-        '';
+            if [ -d "$out/lib/pkgconfig" ]; then
+              mkdir -p "$dev/lib"
+              mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
+            fi
+          ''
+          + lib.optionalString isLinuxCross ''
+            # Meson's install step replaces linker-injected cross RPATHs with
+            # Nix's own library directory. Each ELF needs its direct dependency
+            # paths restored; DT_RUNPATH is not inherited through libnix*.so.
+            for binary in "$out/bin/nix" "$out"/lib/libnix*.so; do
+              patchelf --add-rpath "$out/lib:${linuxRuntimeLibraryPath}" "$binary"
+            done
+          '';
       }
     ];
 

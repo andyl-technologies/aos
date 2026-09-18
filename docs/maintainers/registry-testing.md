@@ -6,7 +6,9 @@ and may be rebuilt from scratch. It supports `edge`, `candidate`, and `stable`;
 these classify software maturity, not pipeline provenance. The default is `edge`.
 Its signing material remains separate from `andyl/main`.
 
-`andyl/testing` does not use an HSM. The intended key management for
+`andyl/testing` does not use an HSM. Its release signer is the
+[file-backed adapter](canonical-releases.md#file-backed-signer-for-registries-without-an-hsm)
+reading operator-held key files. The intended key management for
 `andyl/main` is documented in [Registry key management](registry-key-management.md).
 
 The [public key inventory](registry-testing-public-keys.json) records separate
@@ -166,8 +168,19 @@ The prepared first-release profile uses
 `aos.system.version` in the testing profile to the next calendar SemVer
 `YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
 building. That value is the disk version and the OCI signed release identity;
-the `aos` package version remains separate provenance. The plan request must
-use that exact version and contain:
+the `aos` package version remains separate provenance.
+
+Before freezing the epoch-one public `.1` plan, create and retain the
+[non-public qualification predecessor](canonical-releases.md#create-a-first-qualification-predecessor)
+at `2026.9.0-dev.20260904.0`. Its protected source revision carries the `.0`
+testing profile and uses the reserved snapshot release id and source tag. After
+offline verification, advance the profile to `.1` in a later reviewed protected
+source revision. Do not upload the `.0` snapshot or use its isolated registry
+commit as the public registry base. The `.1` request names the snapshot's
+verified release id and manifest digest while retaining the approved empty Hub
+base commit and generation.
+
+The public plan request must use the exact prepared version and contain:
 
 - `registry: "andyl/testing"` (or the active epoch identity);
 - a release class matching the software version (`edge` for this example);
@@ -180,7 +193,7 @@ Follow the [release checklist](release-checklist.md), using
 [`canonical-releases.md`](canonical-releases.md) for command arguments.
 
 For the testing OCI artifact, externally finalize the exact Nix publication
-inputs before `finalize-registry`. The signing key must be the active testing
+inputs before `prepare-registry`. The signing key must be the active testing
 registry key, never a main-registry key:
 
 ```sh
@@ -214,12 +227,13 @@ aos container publish aos "$TESTING_OCI_REFERENCE" \
 ```
 
 Include those exact `container-release.json` and `signature-input.json` paths in
-`aos release finalize-registry`; its reviewed catalog digest includes the
-sidecar. After the signed registry release is promoted and the Hub has indexed
-it, rerun the same `aos container publish` command without `--stage-only`, add
-the production Hub credentials, and use a new stable idempotency key. Record
-the returned verified root and tag resource version. Do not use a generic OCI
-push for the release tag.
+both `aos release prepare-registry` and `aos release finalize-registry`. The
+generated transaction's reviewed catalog digest includes the sidecar, and
+finalization verifies its exact bytes again. After the signed registry release
+is promoted and the Hub has indexed it, rerun the same `aos container publish`
+command without `--stage-only`, add the production Hub credentials, and use a
+new stable idempotency key. Record the returned verified root and tag resource
+version. Do not use a generic OCI push for the release tag.
 
 Do not omit staging qualification even though testing data is disposable. Each
 command consumes the prior phase's exact evidence, refuses replacement outputs,

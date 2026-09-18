@@ -31,7 +31,7 @@
   # OpenZFS is an out-of-tree module, so its build is bound to one exact
   # kernel. `aos.boot.storage` overrides this when the immutable image slots
   # live on zvols and the same build has to be in the initrd.
-  zfsForRunningKernel = pkgs.zfsForKernel config.system.build.kernel;
+  zfsForRunningKernel = config.aos.config.artifacts.zfs-for-running-kernel;
 
   # Build fstab entries from the filesystem configuration.
   #
@@ -187,6 +187,13 @@ in {
   };
 
   config = {
+    # OpenZFS is tied to the image kernel. Freeze that exact package for the
+    # stage-2 evaluator, whose package set deliberately exposes no builders.
+    aos.config._artifactSources.zfs-for-running-kernel =
+      if config.aos.config.frozenArtifacts ? "zfs-for-running-kernel"
+      then null
+      else pkgs.zfsForKernel config.system.build.kernel;
+
     assertions = [
       {
         # /var on the pool is mounted in the initrd, which needs the pool

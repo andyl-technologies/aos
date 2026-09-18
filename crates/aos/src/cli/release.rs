@@ -17,6 +17,8 @@ pub enum ReleaseCommand {
     Plan(ReleasePlanArgs),
     /// Realize and repeat-check every planned Nix output
     Build(ReleaseBuildArgs),
+    /// Assemble finalized release inputs into a closed unsigned payload
+    Assemble(ReleaseAssembleArgs),
     /// Reconcile and display an append-only release journal
     Status(ReleaseStatusArgs),
     /// Exercise and audit a configured external signing provider
@@ -26,7 +28,9 @@ pub enum ReleaseCommand {
     },
     /// Finalize one Linux image assembly through external signers
     FinalizeImage(ReleaseFinalizeImageArgs),
-    /// Author and sign one isolated canonical registry release
+    /// Author one isolated registry tree and emit its review transaction
+    PrepareRegistry(ReleasePrepareRegistryArgs),
+    /// Commit and sign one reviewed isolated canonical registry release
     FinalizeRegistry(ReleaseFinalizeRegistryArgs),
     /// Close and threshold-sign one release bundle
     Finalize(ReleaseFinalizeArgs),
@@ -68,6 +72,8 @@ pub enum ReleaseQualificationCommand {
     Cases(ReleaseQualificationCasesArgs),
     /// Download exact public objects and run a configured scenario
     Execute(ReleaseQualificationExecuteArgs),
+    /// Bind one scenario report to its exact executor request
+    Respond(ReleaseQualificationRespondArgs),
 }
 
 #[derive(Args)]
@@ -97,6 +103,29 @@ pub struct ReleaseQualificationExecuteArgs {
     /// Maximum duration of a scenario in seconds
     #[arg(long, default_value_t = 1800)]
     pub timeout_seconds: u64,
+}
+
+#[derive(Args)]
+pub struct ReleaseQualificationRespondArgs {
+    /// Canonical executor request retained by the native runner
+    #[arg(long)]
+    pub request: PathBuf,
+    /// Canonical scenario registry retained by the native runner
+    #[arg(long)]
+    pub scenarios: PathBuf,
+    /// Canonical report produced by the scenario exercise
+    #[arg(
+        long,
+        conflicts_with = "report_root",
+        required_unless_present = "report_root"
+    )]
+    pub report: Option<PathBuf>,
+    /// Directory of case-digest-named canonical scenario reports
+    #[arg(long, conflicts_with = "report")]
+    pub report_root: Option<PathBuf>,
+    /// Public executor identity expected by the coordinator
+    #[arg(long)]
+    pub identity: String,
 }
 
 #[derive(Args)]
@@ -437,7 +466,7 @@ pub struct ReleaseFinalizeImageArgs {
 }
 
 #[derive(Args)]
-pub struct ReleaseFinalizeRegistryArgs {
+pub struct ReleasePrepareRegistryArgs {
     /// Canonical release plan authorizing the registry transaction
     #[arg(long)]
     pub plan: PathBuf,
@@ -445,10 +474,6 @@ pub struct ReleaseFinalizeRegistryArgs {
     /// Validated build report containing every transaction store output
     #[arg(long)]
     pub build_report: PathBuf,
-
-    /// Reviewed atomic registry transaction with expected surface digests
-    #[arg(long)]
-    pub transaction: PathBuf,
 
     /// Externally signed canonical container-release sidecar to commit
     #[arg(long, requires = "container_signature_input")]
@@ -466,9 +491,9 @@ pub struct ReleaseFinalizeRegistryArgs {
     #[arg(long)]
     pub output: PathBuf,
 
-    /// New canonical finalization result JSON
+    /// New generated transaction JSON for review before finalization
     #[arg(long)]
-    pub result: PathBuf,
+    pub transaction: PathBuf,
 
     /// Absolute path to the deployment-configured signer executable
     #[arg(long)]
@@ -478,13 +503,52 @@ pub struct ReleaseFinalizeRegistryArgs {
     #[arg(long, value_name = "KEY_ID=PATH")]
     pub provenance_key: String,
 
-    /// Registry roster key and public trust line as KEY_ID=PATH
-    #[arg(long, value_name = "KEY_ID=PATH")]
-    pub registry_key: String,
-
     /// Provider verification identity expected for provenance operations
     #[arg(long)]
     pub provenance_verification_identity: String,
+
+    /// Maximum duration of each external signer operation in seconds
+    #[arg(long, default_value_t = 120)]
+    pub signer_timeout_seconds: u64,
+}
+
+#[derive(Args)]
+pub struct ReleaseFinalizeRegistryArgs {
+    /// Canonical release plan authorizing the reviewed transaction
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Validated build report containing every transaction store output
+    #[arg(long)]
+    pub build_report: PathBuf,
+
+    /// Reviewed generated transaction with exact prepared surface digests
+    #[arg(long)]
+    pub transaction: PathBuf,
+
+    /// Prepared isolated registry directory bound by the transaction
+    #[arg(long)]
+    pub prepared_registry: PathBuf,
+
+    /// Externally signed canonical container-release sidecar that was prepared
+    #[arg(long, requires = "container_signature_input")]
+    pub container_release: Option<PathBuf>,
+
+    /// Nix-produced signature input paired with --container-release
+    #[arg(long, requires = "container_release")]
+    pub container_signature_input: Option<PathBuf>,
+
+    /// New canonical finalization result JSON
+    #[arg(long)]
+    pub result: PathBuf,
+
+    /// Absolute path to the deployment-configured signer executable
+    #[arg(long)]
+    pub signer_executable: PathBuf,
+
+    /// Registry roster key and public trust line as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub registry_key: String,
 
     /// Provider verification identity expected for registry operations
     #[arg(long)]
@@ -706,6 +770,10 @@ pub struct ReleaseQualifyRunArgs {
     /// Exact signed staging receipt returned by the Hub
     #[arg(long, alias = "publication-receipt")]
     pub staging_receipt: PathBuf,
+
+    /// Verified prior release bundle used by image update scenarios
+    #[arg(long, conflicts_with = "report_input")]
+    pub predecessor_bundle: Option<PathBuf>,
 
     /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
@@ -1055,10 +1123,61 @@ pub struct ReleaseBuildArgs {
     /// RFC 3339 UTC time at which the build operation began
     #[arg(long)]
     pub started_at: String,
+}
 
-    /// RFC 3339 UTC time at which the completed report is recorded
+#[derive(Args)]
+pub struct ReleaseAssembleArgs {
+    /// Canonical release plan produced by `aos release plan`
+    #[arg(long)]
+    pub plan: PathBuf,
+
+    /// Validated build report for the exact package matrix
+    #[arg(long)]
+    pub build_report: PathBuf,
+
+    /// SPDX document emitted beside the build report
+    #[arg(long)]
+    pub sbom: PathBuf,
+
+    /// Public contributor-authorization summary bound by the plan
+    #[arg(long)]
+    pub contributor_authorization: PathBuf,
+
+    /// Reviewed canonical advisory disposition for the exact SBOM
+    #[arg(long)]
+    pub advisory_disposition: PathBuf,
+
+    /// Externally signed static Nix cache
+    #[arg(long)]
+    pub cache: PathBuf,
+
+    /// Cache-role public Ed25519 key as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub cache_key: String,
+
+    /// Finalized isolated registry directory
+    #[arg(long)]
+    pub registry: PathBuf,
+
+    /// Canonical registry finalization result
+    #[arg(long)]
+    pub registry_result: PathBuf,
+
+    /// Finalized image-set root; repeat for every planned Linux image cell
+    #[arg(long = "image-set")]
+    pub image_sets: Vec<PathBuf>,
+
+    /// Final externally signed container publication bundle
+    #[arg(long)]
+    pub container: Option<PathBuf>,
+
+    /// RFC 3339 UTC time at which assembly validation completed
     #[arg(long)]
     pub completed_at: String,
+
+    /// New directory containing payload and canonical unsigned manifest
+    #[arg(long)]
+    pub output: PathBuf,
 }
 
 #[derive(Args)]
@@ -1092,9 +1211,60 @@ pub struct ReleaseVerifyArgs {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use clap::Parser as _;
 
+    use super::ReleaseCommand;
     use crate::cli::{Cli, Commands};
+
+    #[test]
+    fn assembler_accepts_repeatable_image_sets_and_optional_container() {
+        let Ok(parsed) = Cli::try_parse_from([
+            "aos",
+            "release",
+            "assemble",
+            "--plan",
+            "plan.json",
+            "--build-report",
+            "build.json",
+            "--sbom",
+            "sbom.json",
+            "--contributor-authorization",
+            "authorization.json",
+            "--advisory-disposition",
+            "advisories.json",
+            "--cache",
+            "cache",
+            "--cache-key",
+            "cache-1=cache-1.pub",
+            "--registry",
+            "registry",
+            "--registry-result",
+            "registry-result.json",
+            "--image-set",
+            "images/amd64",
+            "--image-set",
+            "images/arm64",
+            "--container",
+            "container",
+            "--completed-at",
+            "2026-09-03T14:00:00Z",
+            "--output",
+            "assembled",
+        ]) else {
+            panic!("release assemble arguments should parse");
+        };
+        let Commands::Release {
+            command: ReleaseCommand::Assemble(args),
+        } = parsed.command
+        else {
+            panic!("expected release assemble command");
+        };
+        assert_eq!(args.image_sets.len(), 2);
+        assert_eq!(args.container, Some(PathBuf::from("container")));
+        assert_eq!(args.output, PathBuf::from("assembled"));
+    }
 
     #[test]
     fn verifier_requires_explicit_trust_input() {
@@ -1132,6 +1302,27 @@ mod tests {
     }
 
     #[test]
+    fn build_captures_its_completion_time() {
+        let command = [
+            "aos",
+            "release",
+            "build",
+            "--plan",
+            "release-plan.json",
+            "--output",
+            "release-build",
+            "--started-at",
+            "2026-09-03T10:00:00Z",
+        ];
+        assert!(Cli::try_parse_from(command).is_ok());
+
+        let supplied_completion = command
+            .into_iter()
+            .chain(["--completed-at", "2026-09-03T12:00:00Z"]);
+        assert!(Cli::try_parse_from(supplied_completion).is_err());
+    }
+
+    #[test]
     fn image_finalization_requires_explicit_role_keys() {
         assert!(
             Cli::try_parse_from([
@@ -1152,7 +1343,50 @@ mod tests {
     }
 
     #[test]
-    fn registry_finalization_requires_both_public_role_keys() {
+    fn registry_preparation_requires_provenance_role_key() {
+        let base = [
+            "aos",
+            "release",
+            "prepare-registry",
+            "--plan",
+            "release-plan.json",
+            "--build-report",
+            "build-report.json",
+            "--source-registry",
+            "registry",
+            "--output",
+            "isolated-registry",
+            "--transaction",
+            "registry-transaction.json",
+            "--signer-executable",
+            "/opt/aos/signer",
+            "--provenance-key",
+            "provenance=provenance.pub",
+            "--provenance-verification-identity",
+            "provider-provenance",
+        ];
+        assert!(Cli::try_parse_from(base).is_ok());
+
+        let with_container = base
+            .into_iter()
+            .chain([
+                "--container-release",
+                "container-release.json",
+                "--container-signature-input",
+                "signature-input.json",
+            ])
+            .collect::<Vec<_>>();
+        assert!(Cli::try_parse_from(with_container).is_ok());
+
+        let unpaired = base
+            .into_iter()
+            .chain(["--container-release", "container-release.json"])
+            .collect::<Vec<_>>();
+        assert!(Cli::try_parse_from(unpaired).is_err());
+    }
+
+    #[test]
+    fn registry_finalization_requires_reviewed_tree_and_registry_key() {
         let base = [
             "aos",
             "release",
@@ -1163,20 +1397,14 @@ mod tests {
             "build-report.json",
             "--transaction",
             "registry-transaction.json",
-            "--source-registry",
-            "registry",
-            "--output",
+            "--prepared-registry",
             "isolated-registry",
             "--result",
             "registry-result.json",
             "--signer-executable",
             "/opt/aos/signer",
-            "--provenance-key",
-            "provenance=provenance.pub",
             "--registry-key",
             "registry=registry.pub",
-            "--provenance-verification-identity",
-            "provider-provenance",
             "--registry-verification-identity",
             "provider-registry",
             "--git-name",
@@ -1355,6 +1583,41 @@ mod tests {
                 "qualification",
             ])
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn qualification_response_requires_one_report_source() {
+        let base = [
+            "aos",
+            "release",
+            "qualification",
+            "respond",
+            "--request",
+            "request.json",
+            "--scenarios",
+            "scenarios.json",
+            "--identity",
+            "linux-x86-v1",
+        ];
+
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--report", "report.json"])).is_ok());
+        assert!(
+            Cli::try_parse_from(
+                base.into_iter()
+                    .chain(["--report-root", "/run/aos-release/reports"])
+            )
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(base).is_err());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain([
+                "--report",
+                "report.json",
+                "--report-root",
+                "/run/aos-release/reports",
+            ]))
+            .is_err()
         );
     }
 

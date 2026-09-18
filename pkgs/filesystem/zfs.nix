@@ -8,6 +8,8 @@
   lib,
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   gnumake,
   pkg-config,
   patchelf,
@@ -25,10 +27,22 @@
   kernel ? null,
 }: let
   version = "2.4.4";
+  kernelArch = stdenv.hostPlatform.linuxArch;
+  # Kernel SDK helpers execute on the build machine, including while they
+  # finalize modules for a cross target.
+  buildElfutils =
+    if stdenv.isCross
+    then buildPackages.elfutils
+    else elfutils;
+  buildZlib =
+    if stdenv.isCross
+    then buildPackages.zlib
+    else zlib;
 in
   mkDerivation {
     pname = "zfs";
     inherit version;
+    outputs = ["out" "dev"];
 
     src = fetchurl {
       urls = [
@@ -72,7 +86,8 @@ in
           # Kbuild invokes the exact kernel tree's objtool while compiling
           # feature probes. objtool links against libelf, which is a build
           # dependency of the kernel SDK rather than part of its output.
-          export LD_LIBRARY_PATH="${elfutils}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="${buildElfutils}/lib:${buildZlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export ARCH=${kernelArch}
           configure_args=(
             --prefix="$out"
             --sysconfdir="$out/etc"
@@ -111,7 +126,8 @@ in
       {
         name = "build";
         script = ''
-          export LD_LIBRARY_PATH="${elfutils}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="${buildElfutils}/lib:${buildZlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export ARCH=${kernelArch}
           ${
             if kernel == null
             then ""
@@ -125,6 +141,9 @@ in
       {
         name = "install";
         script = ''
+          export LD_LIBRARY_PATH="${buildElfutils}/lib:${buildZlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export ARCH=${kernelArch}
+
           # Override hardcoded paths that would install outside the store
           make install \
             ${
@@ -157,6 +176,27 @@ in
             "$out/bin/zarcsummary" "$out/bin/zilstat"
           rm -f "$out/share/man/man1/dbufstat.1" "$out/share/man/man1/zarcstat.1" \
             "$out/share/man/man1/zarcsummary.1" "$out/share/man/man1/zilstat.1"
+
+          # Kernel and userspace development files are useful to downstream
+          # builds, but production images need only the built modules, shared
+          # libraries, commands, and service integration.
+          mkdir -p "$dev/lib"
+          mv "$out/include" "$dev/include"
+          if [ -d "$out/src" ]; then
+            mv "$out/src" "$dev/src"
+          fi
+          mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
+          for libtool_archive in "$out/lib/"*.la; do
+            if [ -f "$libtool_archive" ]; then
+              mv "$libtool_archive" "$dev/lib/"
+            fi
+          done
+          sed -i \
+            -e "s|^includedir=.*|includedir=$dev/include|" \
+            "$dev/lib/pkgconfig/"*.pc
+          sed -i \
+            -e "s|^libdir=.*|libdir='$out/lib'|" \
+            "$dev/lib/"*.la
 
           # zvol_id is installed below lib/udev rather than bin/libexec, so the
           # generic fixup pass does not recognize it as a runtime executable.

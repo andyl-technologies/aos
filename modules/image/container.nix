@@ -12,10 +12,13 @@
   ...
 }: let
   cfg = config.aos.containers;
+  buildPackages = pkgs.buildPackages;
   containerSchema = import ../../lib/containers/schema.nix;
+  # Archive and inventory builders execute on the build machine, even when
+  # their payload contains binaries for a different architecture.
   oci = import ../../lib/build/oci {
     inherit lib;
-    inherit (pkgs.buildPackages) mkDerivation coreutils findutils gzip jq tar;
+    inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
   };
   retainedSource = name: source:
     pkgs.writeTextFile {
@@ -51,7 +54,14 @@
       goldenRoots = config.environment.systemPackages;
       aosSystem = pkgs.stdenv.hostPlatform.system;
     })
-    .config;
+    .config
+    // {
+      # Only the system-derived definition inherits image fixture policy.
+      # Independently declared containers keep the schema's strict defaults.
+      runtimePolicy = {
+        inherit (config.aos.image) allowTestArtifacts testArtifactRoots;
+      };
+    };
   systemIdentity = {
     inherit
       (config.aos.system)

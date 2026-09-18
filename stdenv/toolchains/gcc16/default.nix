@@ -41,7 +41,15 @@
   # that is the only glibc that exists at this point. Consumed only by the
   # tier-internal builds (binutils, linuxHeaders, glibc, bzip2) and as the
   # host compiler for the final bootstrapped GCC — never exposed downstream.
-  gccRaw = callPackage ./gcc.nix {};
+  # GCC 16 emits RISC-V extension names that binutils 2.35 cannot parse.
+  # Build the newer assembler with the completed predecessor before GCC 16
+  # needs it for its own target libraries.
+  bootstrapBinutils = callPackage ./binutils.nix {gcc = prev.gcc;};
+  gccRaw = callPackage ./gcc.nix (
+    if hostPlatform.constraints.cpu == "riscv64"
+    then {prev = prev // {binutils = bootstrapBinutils;};}
+    else {}
+  );
 
   # Phase 4: final GCC 16.2.0 bootstrapped by gccRaw against THIS tier's
   # glibc-2.39 / binutils-2.41 / linux-headers-6.12. This is what the wrapper
@@ -85,46 +93,51 @@
     # ${glibc.dev}/include for cc-wrapper-symmetry and for callers that probe
     # `gcc -v`. Stage-2's own specs file already has these baked in, so
     # these flags are belt-and-suspenders.
-    gcc = builtins.derivation {
-      name = "gcc-16.2.0-wrapped";
-      system = buildPlatform.system;
-      builder = "${prev.bash}/bin/bash";
-      args = [
-        "-c"
-        ''
-          set -eu
-          export PATH="${prev.coreutils}/bin"
-          mkdir -p $out/bin
+    gcc =
+      builtins.derivation {
+        name = "gcc-16.2.0-wrapped";
+        system = buildPlatform.system;
+        builder = "${prev.bash}/bin/bash";
+        args = [
+          "-c"
+          ''
+            set -eu
+            export PATH="${prev.coreutils}/bin"
+            mkdir -p $out/bin
 
-          echo '#!${prev.bash}/bin/bash' > $out/bin/gcc
-          echo 'exec ${gccStage2}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/gcc
-          chmod +x $out/bin/gcc
+            echo '#!${prev.bash}/bin/bash' > $out/bin/gcc
+            echo 'exec ${gccStage2}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/gcc
+            chmod +x $out/bin/gcc
 
-          if [ -f "${gccStage2}/bin/g++" ]; then
-            echo '#!${prev.bash}/bin/bash' > $out/bin/g++
-            echo 'exec ${gccStage2}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/g++
-            chmod +x $out/bin/g++
-          fi
+            if [ -f "${gccStage2}/bin/g++" ]; then
+              echo '#!${prev.bash}/bin/bash' > $out/bin/g++
+              echo 'exec ${gccStage2}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/g++
+              chmod +x $out/bin/g++
+            fi
 
-          [ -f "$out/bin/gcc" ] && [ ! -e "$out/bin/cc" ] && ln -sf gcc $out/bin/cc
-          [ -f "$out/bin/g++" ] && [ ! -e "$out/bin/c++" ] && ln -sf g++ $out/bin/c++
+            [ -f "$out/bin/gcc" ] && [ ! -e "$out/bin/cc" ] && ln -sf gcc $out/bin/cc
+            [ -f "$out/bin/g++" ] && [ ! -e "$out/bin/c++" ] && ln -sf g++ $out/bin/c++
 
-          # Symlink all other binaries from the final bootstrapped GCC.
-          for f in ${gccStage2}/bin/*; do
-            bn=$(basename "$f")
-            [ ! -e "$out/bin/$bn" ] && ln -s "$f" "$out/bin/$bn"
-          done
+            # Symlink all other binaries from the final bootstrapped GCC.
+            for f in ${gccStage2}/bin/*; do
+              bn=$(basename "$f")
+              [ ! -e "$out/bin/$bn" ] && ln -s "$f" "$out/bin/$bn"
+            done
 
-          # Symlink lib/libexec/include/share and target-specific directories.
-          # `|| true` because ${targetPlatform.config} may not exist in stage2
-          # (Phase 2b removed the binutils-symlink subdir) and the trailing
-          # `[ -e ] && ln -s` would otherwise trip set -e.
-          for d in lib lib64 libexec include share ${targetPlatform.config}; do
-            [ -e "${gccStage2}/$d" ] && ln -s "${gccStage2}/$d" "$out/$d" || true
-          done
-        ''
-      ];
-    };
+            # Symlink lib/libexec/include/share and target-specific directories.
+            # `|| true` because ${targetPlatform.config} may not exist in stage2
+            # (Phase 2b removed the binutils-symlink subdir) and the trailing
+            # `[ -e ] && ln -s` would otherwise trip set -e.
+            for d in lib lib64 libexec include share ${targetPlatform.config}; do
+              [ -e "${gccStage2}/$d" ] && ln -s "${gccStage2}/$d" "$out/$d" || true
+            done
+          ''
+        ];
+      }
+      // {
+        # Retain the compiler's source bundles through the generated wrapper.
+        passthru.evidenceSources = [./default.nix] ++ gccStage2.passthru.evidenceSources;
+      };
 
     # Phase 2: binutils 2.41 built with raw GCC
     binutils = callPackage ./binutils.nix {gcc = gccRaw;};
@@ -158,15 +171,26 @@
       staticNoPie = true;
     };
 
-    mkAutotoolsTool = import ../lib/mk-autotools-tool.nix {
-      inherit
-        lib
-        phases
-        buildPlatform
-        hostPlatform
-        ;
-      tierStdenv = scope.tierBuildStdenv;
-    };
+    mkAutotoolsTool = let
+      mkTool = import ../lib/mk-autotools-tool.nix {
+        inherit
+          lib
+          phases
+          buildPlatform
+          hostPlatform
+          ;
+        tierStdenv = scope.tierBuildStdenv;
+      };
+    in
+      spec:
+        mkTool (
+          if hostPlatform.constraints.cpu == "x86_64"
+          then spec
+          else
+            # The completed predecessor's Perl avoids per-file emulator
+            # startup without introducing a dependency on this tier's Perl.
+            spec // {sourceScriptFilter = prev.perl;}
+        );
 
     manifest = import ./manifest.nix {
       inherit buildPlatform hostPlatform;
@@ -202,42 +226,35 @@
   };
 
   scope = baseScope // manifestTools;
-in {
-  # Expose the unwrapped final gcc-16.2.0 (the let-binding above the scope,
-  # since scope wraps it via the cc-wrapper). Needed by
-  # pkgs.gccUnwrapped so the perl Config scrub can target the unwrapped
-  # path that Configure records.
-  inherit gccStage2;
 
-  inherit
-    (scope)
-    gcc
-    binutils
-    glibc
-    linuxHeaders
-    m4
-    flex
-    bison
-    perl
-    autoconf
-    automake
-    texinfo
-    help2man
-    gperf
-    python3
-    xz
-    bzip2
-    patchelf
-    bash
-    coreutils
-    gnumake
-    sed
-    grep
-    gawk
-    findutils
-    diffutils
-    tar
-    gzip
-    patch
-    ;
-}
+  # Preserve completed construction tools while fixing the generator used by
+  # the public compiler. The public Gawk receives the same scalar-layout fix.
+  gawkOverrides = {
+    postUnpack = ''
+      patch -p1 < ${./patches/gawk-5.4.1-preserve-scalar-format.patch}
+    '';
+    postInstall =
+      baseScope.manifest.gawk.postInstall
+      + ''
+        "$out/bin/gawk" -f ${../../../tests/build/toolchain-awk.awk}
+      '';
+  };
+  compilerGawk = baseScope.mkAutotoolsTool (baseScope.manifest.gawk // gawkOverrides);
+in
+  import ../lib/finalize-native.nix {
+    privateTools = scope // {inherit gccStage2;};
+    directory = ./.;
+    gccVersion = "16.2.0";
+    manifestNames = manifestToolNames;
+    extraToolNames = ["xz" "bzip2" "patchelf"];
+    compiler = gccStage2;
+    compilerSource = ./gcc-stage2.nix;
+    compilerToolOverrides.gawk = compilerGawk;
+    manifestToolOverrides.gawk = gawkOverrides;
+    staticNoPie = true;
+    publicScriptFilter =
+      if hostPlatform.constraints.cpu != "x86_64"
+      then scope.perl
+      else null;
+    inherit buildPlatform hostPlatform targetPlatform;
+  }

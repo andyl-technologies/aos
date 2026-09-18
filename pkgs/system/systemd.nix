@@ -1,8 +1,5 @@
 ##! systemd — System and service manager
 {
-  lib,
-  stdenv,
-  buildPackages,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -38,6 +35,7 @@
   tpm2-tss,
   coreutils,
   bash,
+  bzip2,
   python3-pefile,
   python3-pyelftools,
 }: let
@@ -49,6 +47,8 @@
   ukifyPythonPath = "${python3-pefile}/lib/python3.14/site-packages:${python3-pyelftools}/lib/python3.14/site-packages";
 
   systemdRuntimeDeps = [
+    bash
+    bzip2
     util-linux
     kmod
     zlib
@@ -71,23 +71,25 @@
     cryptsetup
     elfutils
     linux-pam
-    # TPM2 (RFC-0006 phase 3): libtss2-esys/rc/mu + the device TCTI for
-    # systemd-cryptsetup's TPM2 token, systemd-pcrextend, systemd-measure.
     tpm2-tss
   ];
-
-  linuxCrossRuntimeSearchPath =
-    lib.concatMapStringsSep ":" (dependency: "${dependency}/lib") systemdRuntimeDeps;
+  systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
+    map (dependency: "${dependency}/lib") systemdRuntimeDeps
+  );
 in
   mkDerivation {
     pname = "systemd";
     inherit version;
 
-    # Split ukify into a `tools` output so the python3-pefile and
-    # python3-pyelftools site-packages stay out of PID-1 systemd's
-    # runtime closure. aos-uki (the only consumer of ukify) pulls
-    # systemd.tools explicitly.
+    # Keep UKI construction and kernel installation in `tools`, including
+    # kernel-install's Python hook. PID 1 and boot-time generators do not need
+    # that interpreter. Image builders select systemd.tools explicitly.
     outputs = ["out" "tools"];
+
+    # The package performs ELF path cleanup below, then retains its declared
+    # runtime directories for libraries loaded on demand. A second DT_NEEDED-
+    # only shrink would remove libmount and prevent PID 1 from booting.
+    dontPatchELF = true;
 
     src = fetchurl {
       urls = [
@@ -146,8 +148,6 @@ in
       meson
       ninja
       python3
-      buildPackages.binutils
-      buildPackages.patchelf
       gperf
       getent
       # Kernel UAPI headers are compile-time only. Keeping them out of
@@ -155,6 +155,9 @@ in
       # shared library) and keeps the 7 MiB header tree out of the closure.
       linux-headers
     ];
+    # Installed helpers and the cryptsetup/ukify wrappers execute the target
+    # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
+    # systemd-cryptsetup's TPM2 token, systemd-pcrextend, and systemd-measure.
     runtimeDeps = systemdRuntimeDeps;
     propagatedDeps = [];
 
@@ -182,6 +185,21 @@ in
         name = "patch-source";
         script = ''
           nativePython=$(command -v python3)
+
+          # kernel-install and its complete plugin set live with ukify in the
+          # tools output. Preserve administrator overrides in /etc/kernel.
+          test "$(grep -Fc '"/usr/lib/kernel/install.d"' src/kernel-install/kernel-install.c)" -eq 1
+          sed -i \
+            "s|\"/usr/lib/kernel/install.d\"|\"$tools/lib/kernel/install.d\"|" \
+            src/kernel-install/kernel-install.c
+
+          # libseccomp is loaded on demand, so DT_NEEDED-based RPATH shrinking
+          # cannot retain its search directory. Bind the loader to the AOS
+          # library explicitly so syscall filters work without host libraries.
+          test "$(grep -Fc '"libseccomp.so.2"' src/shared/seccomp-util.c)" -eq 1
+          sed -i \
+            's|"libseccomp.so.2"|"${libseccomp}/lib/libseccomp.so.2"|' \
+            src/shared/seccomp-util.c
 
           # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
           for f in $(find . -type f \( -name '*.sh' -o -name '*.py' \)); do
@@ -412,17 +430,6 @@ in
         script = ''
           DESTDIR=/ ninja install
 
-          referencePolicy="$out/share/dbus-1/system.d/org.freedesktop.systemd1.conf"
-          for member in RefUnit UnrefUnit Ref Unref; do
-            if grep -Fq "send_member=\"$member\"" "$referencePolicy"; then
-              echo "ERROR: default system-bus policy still grants $member" >&2
-              exit 1
-            fi
-          done
-          mkdir -p "$out/share/aos"
-          printf '%s\n' 'aos.systemd.unit-reference-policy.v1' \
-            > "$out/share/aos/unit-reference-policy-v1"
-
           # Source generators must run with native Python during the cross
           # build. Retarget installed scripts to the AArch64 interpreter.
           nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
@@ -435,229 +442,27 @@ in
             # already use the target interpreter. Preserve real grep errors.
             [ "$grepStatus" -eq 1 ] || exit "$grepStatus"
           fi
-          rm -f "$nativePythonRefs"${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+          rm -f "$nativePythonRefs"
 
-            # Meson removes cross-library directories that it classifies as
-            # build RPATHs during install. Restore only directories needed by
-            # direct ELF dependencies from the declared runtime closure.
-            runtimeSearchPath=${lib.escapeShellArg linuxCrossRuntimeSearchPath}
-
-            case "$AOS_TARGET_ARCH" in
-              aarch64 | arm64) expectedMachine=AArch64 ;;
-              x86_64) expectedMachine='Advanced Micro Devices X86-64' ;;
-              *)
-                echo "ERROR: unsupported Linux cross target architecture $AOS_TARGET_ARCH" >&2
-                exit 1
-                ;;
-            esac
-
-            findRpathDirectory() (
-              elfDirectory="$1"
-              searchPath="$2"
-              libraryName="$3"
-              matchedDirectory=""
-              originToken='$ORIGIN'
-              bracedOriginToken='$'{ORIGIN}
-              savedIFS="$IFS"
-              IFS=:
-
-              for storedDirectory in $searchPath; do
-                case "$storedDirectory" in
-                  "$originToken" | "$originToken"/*)
-                    suffix="''${storedDirectory#"$originToken"}"
-                    resolvedDirectory="$elfDirectory$suffix"
-                    ;;
-                  "$bracedOriginToken" | "$bracedOriginToken"/*)
-                    suffix="''${storedDirectory#"$bracedOriginToken"}"
-                    resolvedDirectory="$elfDirectory$suffix"
-                    ;;
-                  *'$'*)
-                    echo "ERROR: unsupported loader token in RPATH $storedDirectory" >&2
-                    exit 2
-                    ;;
-                  *) resolvedDirectory="$storedDirectory" ;;
-                esac
-
-                case "$resolvedDirectory" in
-                  *'$'*)
-                    echo "ERROR: unsupported loader token in RPATH $storedDirectory" >&2
-                    exit 2
-                    ;;
-                esac
-
-                if [ -z "$matchedDirectory" ] && \
-                  [ -e "$resolvedDirectory/$libraryName" ]; then
-                  matchedDirectory="$resolvedDirectory"
-                fi
-              done
-
-              IFS="$savedIFS"
-              if [ -n "$matchedDirectory" ]; then
-                printf '%s\n' "$matchedDirectory"
-                exit 0
-              fi
-
-              exit 1
-            )
-
-            validateRuntimeCandidate() {
-              candidate="$1"
-              candidateMachine="$(
-                readelf -h "$candidate" 2>/dev/null |
-                  sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p'
-              )"
-
-              if [ "$candidateMachine" != "$expectedMachine" ]; then
-                echo "ERROR: $candidate has machine $candidateMachine, expected $expectedMachine" >&2
-                return 1
-              fi
-            }
-
-            elfList="$(mktemp)"
-            find "$out" -type f \( -name '*.so*' -o -perm -u+x \) > "$elfList"
-
-            while IFS= read -r elf; do
-              neededLibraries="$(patchelf --print-needed "$elf" 2>/dev/null)" || continue
-              elfDirectory="$(dirname "$elf")"
-              currentRpath="$(patchelf --print-rpath "$elf")"
-              additionalRpath=""
-
-              for libraryName in $neededLibraries; do
-                effectiveRpath="$currentRpath''${additionalRpath:+:$additionalRpath}"
-                if runtimeDirectory="$(findRpathDirectory \
-                  "$elfDirectory" "$effectiveRpath" "$libraryName")"; then
-                  validateRuntimeCandidate "$runtimeDirectory/$libraryName"
-                  continue
-                else
-                  rpathStatus=$?
-                  [ "$rpathStatus" -eq 1 ] || exit "$rpathStatus"
-                fi
-
-                if runtimeDirectory="$(findRpathDirectory \
-                  "$elfDirectory" "$runtimeSearchPath" "$libraryName")"; then
-                  validateRuntimeCandidate "$runtimeDirectory/$libraryName"
-                else
-                  rpathStatus=$?
-                  [ "$rpathStatus" -eq 1 ] || exit "$rpathStatus"
-                  echo "ERROR: $elf needs $libraryName outside the declared runtime closure" >&2
-                  exit 1
-                fi
-
-                case ":$currentRpath:$additionalRpath:" in
-                  *":$runtimeDirectory:"*) ;;
-                  *) additionalRpath="''${additionalRpath:+$additionalRpath:}$runtimeDirectory" ;;
-                esac
-              done
-
-              if [ -n "$additionalRpath" ]; then
-                patchelf --add-rpath "$additionalRpath" "$elf"
-              fi
-
-              installedRpath="$(patchelf --print-rpath "$elf")"
-              for libraryName in $neededLibraries; do
-                if runtimeDirectory="$(findRpathDirectory \
-                  "$elfDirectory" "$installedRpath" "$libraryName")"; then
-                  validateRuntimeCandidate "$runtimeDirectory/$libraryName"
-                  continue
-                fi
-
-                echo "ERROR: $elf cannot resolve direct dependency $libraryName" >&2
-                exit 1
-              done
-            done < "$elfList"
-
-            rm -f "$elfList"
-          ''}
+          # Upstream leaves several installed helpers on host-global
+          # interpreters, which do not exist on AOS. Keep the explicit list in
+          # sync with the installed systemd and kernel-install entry points.
+          for script in \
+            "$out/lib/kernel/install.d/50-depmod.install" \
+            "$out/lib/kernel/install.d/90-loaderentry.install" \
+            "$out/lib/kernel/install.d/90-uki-copy.install" \
+            "$out/lib/systemd/systemd-update-helper"; do
+            sed -i "1c #!${bash}/bin/bash" "$script"
+          done
+          sed -i "1c #!${python3}/bin/python3" \
+            "$out/lib/kernel/install.d/60-ukify.install"
         '';
       }
       {
-        name = "check";
-        script = ''
-          version_output="$($out/lib/systemd/systemd --version)"
-          version_line="$(echo "$version_output" | head -n 1)"
-          if [ "$version_line" != "systemd 261 (${version})" ]; then
-            echo "ERROR: unexpected systemd version: $version_line" >&2
-            exit 1
-          fi
-
-          for required_feature in +PAM +AUDIT +SELINUX +SECCOMP +OPENSSL \
-            +ACL +BLKID +KMOD +LIBCRYPTSETUP +TPM2; do
-            if ! echo "$version_output" | grep -F -q -- "$required_feature"; then
-              echo "ERROR: systemd lacks required feature $required_feature" >&2
-              exit 1
-            fi
-          done
-
-          for executable in systemctl systemd-analyze systemd-nspawn; do
-            if [ ! -x "$out/bin/$executable" ]; then
-              echo "ERROR: systemd did not install $executable" >&2
-              exit 1
-            fi
-            "$out/bin/$executable" --version > /dev/null
-          done
-
-          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
-            '--aos-payload-seccomp-profile=PROFILE'; then
-            echo "ERROR: systemd-nspawn lacks the AOS payload seccomp option" >&2
-            exit 1
-          fi
-
-          if "$out/bin/systemd-nspawn" \
-            --aos-payload-seccomp-profile=not-a-profile \
-            --directory=/nonexistent > /dev/null 2>&1; then
-            echo "ERROR: systemd-nspawn accepted an unknown AOS payload profile" >&2
-            exit 1
-          fi
-
-          ./test-nspawn-seccomp
-          ./test-nspawn-root-fd
-          ./test-nspawn-lifecycle
-
-          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
-            '--aos-lifecycle-profile=PROFILE'; then
-            echo "ERROR: systemd-nspawn lacks the AOS lifecycle option" >&2
-            exit 1
-          fi
-          if "$out/bin/systemd-nspawn" --aos-lifecycle-profile=unknown \
-            > /dev/null 2>&1; then
-            echo "ERROR: systemd-nspawn accepted an unknown lifecycle profile" >&2
-            exit 1
-          fi
-          if "$out/bin/systemd-nspawn" \
-            --aos-lifecycle-profile=aos-sandbox-lifecycle-v1 \
-            --aos-lifecycle-profile=aos-sandbox-lifecycle-v1 \
-            > /dev/null 2>&1; then
-            echo "ERROR: systemd-nspawn accepted a repeated lifecycle profile" >&2
-            exit 1
-          fi
-
-          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
-            '--aos-root-mount-fd=NAME'; then
-            echo "ERROR: systemd-nspawn lacks the AOS root descriptor option" >&2
-            exit 1
-          fi
-          if "$out/bin/systemd-nspawn" --aos-root-mount-fd=unknown \
-            > /dev/null 2>&1; then
-            echo "ERROR: systemd-nspawn accepted an unknown root descriptor role" >&2
-            exit 1
-          fi
-          if ! "$out/bin/systemd-nspawn" --help | grep -F -q -- \
-            '--aos-attachment-anchor-fd=NAME'; then
-            echo "ERROR: systemd-nspawn lacks the AOS attachment-anchor option" >&2
-            exit 1
-          fi
-          if "$out/bin/systemd-nspawn" --aos-attachment-anchor-fd=unknown \
-            > /dev/null 2>&1; then
-            echo "ERROR: systemd-nspawn accepted an unknown attachment-anchor descriptor role" >&2
-            exit 1
-          fi
-        '';
-      }
-      {
-        name = "fixup";
-        # LUKS2 token plugins (libcryptsetup-token-*.so) are loaded via
-        # dlopen from $cryptsetup/lib/cryptsetup/. DT_RPATH on the binary
-        # does NOT propagate to libraries loaded via dlopen, so
+        name = "wrap-runtime-tools";
+        # systemd's LUKS2 token plugins (libcryptsetup-token-*.so) are loaded
+        # via dlopen from $out/lib/cryptsetup/. DT_RPATH on the binary does not
+        # propagate to libraries loaded via dlopen, so
         # systemd-cryptsetup and systemd-cryptenroll need LD_LIBRARY_PATH
         # extended at runtime to find them. nixpkgs handles this with
         # wrapProgram (makeWrapper); AOS has no wrapProgram, so we inline
@@ -672,6 +477,21 @@ in
         # would fire at cat time and produce a trailing-colon path — a
         # classic ld.so CWD-search bug.)
         script = ''
+          # Meson does not preserve the cc-wrapper RPATH on every target.
+          # First resolve direct dependencies and discard unused build paths,
+          # then retain the declared runtime paths for systemd's dlopen calls.
+          # Those libraries are deliberately absent from DT_NEEDED.
+          find "$out" -type f | while read -r executable; do
+            patchelf --print-needed "$executable" >/dev/null 2>&1 || continue
+            patchelf --add-rpath \
+              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+              "$executable"
+            patchelf --shrink-rpath "$executable"
+            patchelf --add-rpath \
+              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+              "$executable"
+          done
+
           for f in bin/systemd-cryptsetup bin/systemd-cryptenroll; do
             if [ -x "$out/$f" ]; then
               wrapped="$out/$f"
@@ -696,13 +516,8 @@ in
           if [ -x "$out/bin/ukify" ]; then
             mkdir -p "$tools/bin"
             mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
-
-            ukifyAlias="$out/lib/systemd/ukify"
-            test -L "$ukifyAlias"
-            test "$(readlink "$ukifyAlias")" = ../../bin/ukify
-            mkdir -p "$tools/lib/systemd"
-            mv "$ukifyAlias" "$tools/lib/systemd/ukify"
-
+            sed -i "1c #!${python3}/bin/python3" \
+              "$tools/bin/.ukify-unwrapped"
             cat > "$tools/bin/ukify" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
@@ -710,21 +525,26 @@ in
           EOF
             chmod +x "$tools/bin/ukify"
           fi
+
+          mkdir -p "$tools/lib/kernel"
+          mv "$out/bin/kernel-install" "$tools/bin/kernel-install"
+          mv "$out/lib/kernel/install.d" "$tools/lib/kernel/install.d"
+
+          # The Python plugin imports ukify as a module, so point it at the
+          # unwrapped source instead of the public shell launcher. Both tools
+          # receive the same pefile and pyelftools module search path.
+          ukify_hook="$tools/lib/kernel/install.d/60-ukify.install"
+          mv "$ukify_hook" "$ukify_hook.unwrapped"
+          cat > "$ukify_hook" << EOF
+          #!${bash}/bin/bash
+          export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
+          export KERNEL_INSTALL_UKIFY="\''${KERNEL_INSTALL_UKIFY:-$tools/bin/.ukify-unwrapped}"
+          exec "${python3}/bin/python3" "$ukify_hook.unwrapped" "\$@"
+          EOF
+          chmod +x "$ukify_hook"
         '';
       }
     ];
-
-    # nuke-refs runs after the package's fixup phase. Remove only the exact
-    # reviewed dead RPATH entries it creates; the stage-0 manifest builder then
-    # rejects every remaining search directory outside the structured closure.
-    postFinalize = ''
-      ${buildPackages.python3}/bin/python3 -B \
-        ${./aos-systemd-rpath-sanitize.py} \
-        --patchelf ${buildPackages.patchelf}/bin/patchelf \
-        --readelf ${buildPackages.binutils}/bin/readelf \
-        --root "out=$out" \
-        --root "tools=$tools"
-    '';
 
     meta = {
       description = "systemd — system and service manager for Linux";

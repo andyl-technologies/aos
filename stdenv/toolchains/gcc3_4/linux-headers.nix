@@ -40,6 +40,10 @@ in
         # Copy source tree to writable location
         cp -r ${src} "$TMPDIR/linux-2.6.9"
         chmod -R u+w "$TMPDIR/linux-2.6.9"
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/linux-2.6.9"
         cd "$TMPDIR/linux-2.6.9"
 
         # Linux 2.6.9 does not have headers_install target.
@@ -53,7 +57,7 @@ in
 
         # Create version/autoconf headers.
         # Linux 2.6.9 uses ARCH=i386 (not x86, which was unified in 2.6.24).
-        make ARCH=i386 include/linux/version.h 2>/dev/null || true
+        make SHELL="${prev.bash}/bin/bash" ARCH=i386 include/linux/version.h 2>/dev/null || true
         if ! test -f include/linux/version.h; then
           # Manually create version.h if make failed
           printf '#define UTS_RELEASE "2.6.9"\n#define LINUX_VERSION_CODE 132617\n#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))\n' > include/linux/version.h

@@ -103,6 +103,9 @@ in {
       ++ [
         "--without-bash-malloc"
         "bash_cv_func_sigsetjmp=present"
+        # glibc supports getcwd(NULL, 0). The cross default selects Bash's
+        # fallback, which cannot resolve directories across sandbox bind mounts.
+        "bash_cv_getcwd_malloc=yes"
       ];
     preConfigure = ''
       mkdir -p "$TMPDIR/fakebin"
@@ -110,9 +113,8 @@ in {
       ${fakeScript "makeinfo"}
       export PATH="$TMPDIR/fakebin:$PATH"
     '';
-    # Bash's generated build helpers are not ordered for parallel consumers.
     buildScript = ''
-      make -j1
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
     '';
     postInstall = ''
       test -x "$out/bin/bash" || { echo "FATAL: bash not installed"; exit 1; }
@@ -199,10 +201,10 @@ in {
     preConfigure = fakeAutotools;
     postConfigure = stripMakefileRegenRules;
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     postInstall = ''
       test -f "$out/bin/find" || { echo "FATAL: find not installed"; exit 1; }

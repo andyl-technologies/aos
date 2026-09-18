@@ -29,16 +29,18 @@
 }: let
   version = "2.55.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
   buildBash =
-    if stdenv.isCross
+    if isDarwinCross
     then buildPackages.bash
     else bash;
   buildPerl =
-    if stdenv.isCross
+    if isDarwinCross
     then buildPackages.perl
     else perl;
   buildPython3 =
-    if stdenv.isCross
+    if isDarwinCross
     then buildPackages.python3
     else python3;
   cargoBuildTool =
@@ -59,6 +61,8 @@
         src = rustSource;
         inherit (currentRust) version changeId configFileName;
       }
+    else if isLinuxCross
+    then rust.passthru.buildTool
     else rust;
   gettextRuntime =
     if isDarwinCross
@@ -78,20 +82,17 @@
     then featureFlags
     else "PERL_PATH=${buildPerl}/bin/perl PYTHON_PATH=${buildPython3}/bin/python3";
   buildShellFlag = "SHELL_PATH=${buildBash}/bin/bash";
-  # Git's Makefile runs uname independently of configure. Select the target
-  # Darwin capabilities, or at least report the target CPU on cross Linux.
-  targetPlatformFlags =
-    if isDarwinCross
-    then " uname_S=Darwin uname_M=${stdenv.hostPlatform.darwinArch} uname_R=22.1.0"
-    else lib.optionalString stdenv.isCross " HOST_CPU=${stdenv.hostPlatform.parsed.cpu.name}";
+  # Link the declared target library without executing curl-config, whose
+  # interpreter may be unavailable in the sandbox or on a cross builder.
+  curlLinkFlag = ''CURL_LDFLAGS="-L${curl}/lib -lcurl"'';
+
+  # Git's Makefile runs uname independently of configure. Override the Linux
+  # builder result so config.mak.uname selects the target Darwin capabilities.
+  targetPlatformFlags = lib.optionalString isDarwinCross " uname_S=Darwin uname_M=${stdenv.hostPlatform.darwinArch} uname_R=22.1.0";
   # Darwin's precompose support calls iconv directly; its SDK provides the
   # canonical header and system-library stub.
   iconvConfigureFlag = lib.optionalString (!isDarwinCross) "--without-iconv";
-  # CURLDIR supplies the target include and library paths. Disable curl-config
-  # execution and spell out the remaining facts for the pinned target curl.
-  crossCurlFlags = assert !stdenv.isCross || builtins.compareVersions curl.version "7.34.0" >= 0;
-    lib.optionalString stdenv.isCross " CURL_CONFIG=: CURL_LDFLAGS=-lcurl USE_CURL_FOR_IMAP_SEND=YesPlease";
-  cargoTargetFlags = lib.optionalString isDarwinCross ''
+  cargoTargetFlags = lib.optionalString stdenv.isCross ''
     CARGO_ARGS="--release --target ${stdenv.hostPlatform.config}" \
     RUST_TARGET_DIR=target/${stdenv.hostPlatform.config}/release'';
 in
@@ -113,14 +114,12 @@ in
         pkg-config
         autoconf
         cargoBuildTool
-      ]
-      ++ lib.optionals stdenv.isCross [
-        buildBash
+        # Translation catalogs need a compiler that runs on the builder.
         buildPackages.gettext
       ]
       ++ lib.optionals (!minimal) [
-        buildPerl
-        buildPython3
+        perl
+        python3
       ];
     runtimeDeps =
       [
@@ -137,9 +136,10 @@ in
         python3
       ];
     propagatedDeps = [];
-    disallowedReferences = lib.optionals stdenv.isCross (
-      [buildBash buildPackages.gettext]
+    disallowedReferences = lib.optionals isDarwinCross (
+      [buildBash]
       ++ lib.optionals (!minimal) [buildPerl buildPython3]
+      ++ [buildPackages.gettext]
     );
 
     phases = [
@@ -155,14 +155,11 @@ in
         script = ''
           make configure${lib.optionalString stdenv.isCross ''
 
-            # These runtime probes describe fixed target libc behavior. Seed
-            # them when target binaries cannot run on the builder.
+            # These runtime probes describe fixed target-libc behavior. Seed
+            # them when the target binaries cannot run on the Linux builder.
             export ac_cv_fread_reads_directories=yes
             export ac_cv_snprintf_returns_bogus=no
           ''}${lib.optionalString isDarwinCross ''
-
-            # Darwin keeps iconv enabled, so its runtime-only BOM probe also
-            # needs a target answer during cross compilation.
             export ac_cv_iconv_omits_bom=no
           ''}
           ./configure \
@@ -180,9 +177,26 @@ in
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES \
-            NO_INSTALL_HARDLINKS=1${targetPlatformFlags}${crossCurlFlags} \
+          ${lib.optionalString isLinuxCross ''
+            # Cargo's build script runs on the builder, while libgitcore is
+            # linked into target Git. Keep target headers and linker flags
+            # out of the build script's native compiler invocation.
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset AOS_OBJECT_FORMAT AOS_RUST_TARGET AOS_GOARCH AOS_GOOS
+            unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+            unset LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+            exec ${buildPackages.cc}/bin/cc "$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export CARGO_TARGET_${nativeCargoTarget}_LINKER="$PWD/.aos-build-tools/cc-for-build"
+          ''}make -j$NIX_BUILD_CORES \
+            NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
+            ${curlLinkFlag} \
             ${cargoTargetFlags} \
             ${buildFeatureFlags}
         '';
@@ -191,11 +205,12 @@ in
         name = "install";
         script = ''
           make install \
-            NO_INSTALL_HARDLINKS=1${targetPlatformFlags}${crossCurlFlags} \
+            NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
+            ${curlLinkFlag} \
             ${cargoTargetFlags} \
             ${buildFeatureFlags}
-          ${lib.optionalString stdenv.isCross ''
+          ${lib.optionalString isDarwinCross ''
             retarget_tool_root() {
               nativeRoot=$1
               targetRoot=$2
@@ -204,9 +219,9 @@ in
                 echo "cannot retarget unequal-length store paths" >&2
                 exit 1
               fi
-              # Git also compiles these paths into ELF or Mach-O binaries, so
-              # search binary and text outputs. Equal-length replacement
-              # preserves load-command and string-table offsets.
+              # Git also compiles these paths into Mach-O binaries, so search
+              # binary and text outputs. Equal-length replacement preserves
+              # load-command and string-table offsets.
               { grep -rlZ -F "$nativeRoot" "$out" 2>/dev/null || true; } \
                 | xargs -0 -r sed -i "s|$nativeRoot|$targetRoot|g"
             }

@@ -24,12 +24,17 @@ in
       "-c"
       ''
         set -eu
-        export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+        export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+        export MAKEINFO="${prev.texinfo}/bin/makeinfo"
         export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
         cp -r ${src} "$TMPDIR/src"
         chmod -R u+w "$TMPDIR/src"
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/src"
 
         # Touch all files first, then touch generated .c/.h to prevent regeneration
         find "$TMPDIR/src" -type f -exec touch {} + 2>/dev/null || true
@@ -48,7 +53,7 @@ in
         CFLAGS="-O2 -isystem ${crossGlibc}/include" \
         CXXFLAGS="-O2 -isystem ${crossGlibc}/include" \
         LDFLAGS="-L${crossGlibc}/lib -static" \
-        "$TMPDIR/src/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/src/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${hostPlatform.config} \
@@ -58,8 +63,9 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        # Regenerated BFD documentation needs the build host's real Texinfo.
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" MAKEINFO="$MAKEINFO"
+        make SHELL="${prev.bash}/bin/bash" install MAKEINFO="$MAKEINFO"
 
         echo "Native binutils 2.25 (${hostPlatform.config}) installed to $out"
       ''

@@ -145,6 +145,7 @@ in
                 libgcrypt = null;
                 gnutls = null;
                 fuse3 = null;
+                bash = null;
                 stdenv = {isCross = false;};
                 buildPackages = null;
                 pname = "qemu-crucible";

@@ -8,7 +8,16 @@
   gcc,
   buildPlatform,
   hostPlatform,
+  sourceScriptFilter ? (
+    if hostPlatform.constraints.cpu == "x86_64"
+    then null
+    else prev.perl
+  ),
 }: let
+  scriptFilter = import ../lib/source-script-filter.nix {
+    filter = sourceScriptFilter;
+  };
+
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.41.tar.xz";
     sha256 = "0shr30dgkifjzlgqgsf0f0nmb8ffbqrkh93w54bnz4sk4v0s7lgi";
@@ -31,6 +40,10 @@ in
         cd binutils-2.41
         chmod -R u+w .
 
+        # Pin source helpers that configure or make can execute directly.
+        ${scriptFilter.setup}AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} ${scriptFilter.root}${scriptFilter.cleanup}
+
         # Touch pre-generated flex/bison/yacc files so they appear newer than sources
         find . -type f \( -name '*.l' -o -name '*.y' \) -exec touch {} + 2>/dev/null || true
         sleep 1
@@ -46,8 +59,8 @@ in
         # $out doesn't close over the prev tier, but this tier-internal build
         # still needs headers at build time.
         mkdir -p "$TMPDIR/ccwrap"
-        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
-        printf '#!/bin/sh\nexec ${gcc}/bin/g++ -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/g++"
+        printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -L${prev.glibc.static or prev.glibc}/lib -idirafter ${prev.glibc.dev or prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
+        printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/g++ -L${prev.glibc.static or prev.glibc}/lib -idirafter ${prev.glibc.dev or prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/g++"
         chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
         ln -sf gcc "$TMPDIR/ccwrap/cc"
         ln -sf g++ "$TMPDIR/ccwrap/c++"
@@ -58,7 +71,7 @@ in
         CC="$TMPDIR/ccwrap/gcc" CXX="$TMPDIR/ccwrap/g++" \
         CFLAGS="-O2" \
         CXXFLAGS="-O2" \
-        "$TMPDIR/binutils-2.41/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/binutils-2.41/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
           --disable-shared --disable-nls \
@@ -68,26 +81,15 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-        make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-
-        # Phase 7: scrub prev.glibc from installed binaries. Binutils was
-        # built -static against prev.glibc, so no DT_NEEDED/RPATH linkage,
-        # but Go-style debug-info strings and libtool .la files embed the
-        # prev.glibc store path (~877 occurrences). The hash replacement is
-        # length-preserving so static-linked ELFs and archive headers survive.
-        _hash_prev_glibc=$(echo "${prev.glibc}" | ${prev.sed}/bin/sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
-        ${prev.findutils}/bin/find "$out" -type f | while read f; do
-          if ${prev.grep}/bin/grep -qF "$_hash_prev_glibc" "$f" 2>/dev/null; then
-            ${prev.sed}/bin/sed -i "s|$_hash_prev_glibc|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" "$f"
-          fi
-        done
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+        make SHELL="${prev.bash}/bin/bash" install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
 
         echo "binutils 2.41 installed to $out"
       ''
     ];
   }
   // {
+    passthru.evidenceSources = [src ./binutils.nix];
     meta = {
       description = "GNU binutils 2.41 — linker, assembler, and binary utilities";
       homepage = "https://www.gnu.org/software/binutils/";

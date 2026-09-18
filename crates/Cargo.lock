@@ -216,6 +216,7 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]
@@ -771,6 +772,24 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-release-signer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-release",
+ "base64 0.22.1",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
  "tempfile",
 ]
 

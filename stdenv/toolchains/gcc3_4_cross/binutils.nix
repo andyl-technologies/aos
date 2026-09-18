@@ -29,11 +29,19 @@ in
 
         # Dummy lex/flex/makeinfo for configure and install
         mkdir -p "$TMPDIR/fakebin"
-        printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
-        printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
-        printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/fakebin/makeinfo"
+        printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
+        printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
+        printf '#!${prev.bash}/bin/bash\nexit 0\n' > "$TMPDIR/fakebin/makeinfo"
         chmod +x "$TMPDIR/fakebin/lex" "$TMPDIR/fakebin/flex" "$TMPDIR/fakebin/makeinfo"
         export PATH="$TMPDIR/fakebin:$PATH"
+
+        mkdir -p "$TMPDIR/src"
+        (cd ${src} && tar cf - .) | (cd "$TMPDIR/src" && tar xf -)
+        chmod -R u+w "$TMPDIR/src"
+
+        # Configure and make execute helpers from this writable source tree.
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} "$TMPDIR/src"
 
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
@@ -43,7 +51,7 @@ in
         RANLIB="${crossBinutils}/bin/${hostPlatform.config}-ranlib" \
         CFLAGS="-O2 -isystem ${crossGlibc}/include" \
         LDFLAGS="-L${crossGlibc}/lib -static" \
-        ${src}/configure \
+        "${prev.bash}/bin/bash" "$TMPDIR/src/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${hostPlatform.config} \
@@ -53,8 +61,8 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES"
+        make SHELL="${prev.bash}/bin/bash" install
 
         echo "Native binutils 2.15 (${hostPlatform.config}) installed to $out"
       ''

@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
   gnumake,
   pkg-config,
   file,
@@ -69,106 +70,42 @@ in
       {
         name = "configure";
         script =
-          if stdenv.isCross
-          then
-            ''
-              ${
-                if stdenv.hostPlatform.isDarwin
-                then ''
-                  # Cyrus SASL uses K&R-style prototype compatibility macros.
-                  # Build this release in the dialect its configure logic expects.
-                  export CFLAGS="''${CFLAGS:-} -std=gnu17"
-                ''
-                else ""
-              }
-
-              # makemd5 generates a target header but executes on the build
-              # machine. Isolate its compiler from target paths and hardening.
-              native_cc="$BUILD_CC"
-              mkdir -p .aos-build-tools
-              cat > .aos-build-tools/cc-for-build <<EOF
-              #!$CONFIG_SHELL
-              native_hardening=
-              for token in \$AOS_HARDENING_ENABLE; do
-                case "\$token" in
-                  pacret) ;;
-                  *) native_hardening="\$native_hardening \$token" ;;
-                esac
-              done
-              export AOS_HARDENING_ENABLE="\$native_hardening"
-              unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
-              unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
-              unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
-              exec "$native_cc" "\$@"
-              EOF
-              chmod +x .aos-build-tools/cc-for-build
-              export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
-              export CPPFLAGS_FOR_BUILD=
-              export LDFLAGS_FOR_BUILD=
-
-            ''
-            + (
-              if stdenv.hostPlatform.isDarwin
-              then ''
-                # Darwin cross builds do not have an emulator for configure's
-                # runtime GSSAPI probe. Preserve the established platform cache.
-                export ac_cv_gssapi_supports_spnego=yes
-              ''
-              else if stdenv.targetRunner != null
-              then ''
-                # Reproduce upstream's runtime test against the target MIT
-                # Kerberos library before caching the result for configure.
-                cat > .aos-build-tools/gssapi-spnego-probe.c <<'EOF'
-                #include <gssapi/gssapi.h>
-
-                int main(void)
-                {
-                    gss_OID_desc spnego_oid = { 6, (void *) "\x2b\x06\x01\x05\x05\x02" };
-                    gss_OID_set mech_set;
-                    OM_uint32 min_stat;
-                    int have_spnego = 0;
-
-                    if (gss_indicate_mechs(&min_stat, &mech_set) == GSS_S_COMPLETE) {
-                        gss_test_oid_set_member(&min_stat, &spnego_oid, mech_set, &have_spnego);
-                        gss_release_oid_set(&min_stat, &mech_set);
-                    }
-
-                    return (!have_spnego);
-                }
-                EOF
-
-                if "$CC" .aos-build-tools/gssapi-spnego-probe.c \
-                  -lgssapi_krb5 -o .aos-build-tools/gssapi-spnego-probe \
-                  && ${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system} \
-                    .aos-build-tools/gssapi-spnego-probe; then
-                  export ac_cv_gssapi_supports_spnego=yes
-                else
-                  echo 'target GSSAPI library does not advertise SPNEGO' >&2
-                  exit 1
-                fi
-              ''
-              else ''
-                echo 'cross build cannot run the target GSSAPI SPNEGO probe' >&2
-                exit 1
-              ''
-            )
-            + ''
-              ./configure \
-                $configureFlags \
-                --prefix=$out \
-                --enable-shared \
-                --enable-static \
-                --enable-gssapi \
-                --enable-scram \
-                --with-openssl=${openssl} \
-                --with-sqlite3=${sqlite}
-            ''
-          else ''
+          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          then ''
             # Cyrus SASL uses K&R-style prototype compatibility macros. C23
             # changes empty parameter lists to mean no parameters, so build
             # this release in the dialect its configure logic expects.
             export CFLAGS="''${CFLAGS:-} -std=gnu17"
 
+            # makemd5 generates a target header and executes on Linux. Isolate
+            # its compiler from target SDK paths and arm64 PAC hardening.
+            native_cc="$BUILD_CC"
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<EOF
+            #!$CONFIG_SHELL
+            native_hardening=
+            for token in \$AOS_HARDENING_ENABLE; do
+              case "\$token" in
+                pacret) ;;
+                *) native_hardening="\$native_hardening \$token" ;;
+              esac
+            done
+            export AOS_HARDENING_ENABLE="\$native_hardening"
+            unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+            unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
+            exec "$native_cc" "\$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export CC_FOR_BUILD="$PWD/.aos-build-tools/cc-for-build"
+            export CPPFLAGS_FOR_BUILD=
+            export LDFLAGS_FOR_BUILD=
+
+            # MIT Kerberos installs the SPNEGO mechanism and all of the
+            # configure test's GSSAPI symbols linked successfully. The final
+            # probe enumerates mechanisms at runtime, which a Linux builder
+            # cannot do with the Mach-O test executable.
+            export ac_cv_gssapi_supports_spnego=yes
             ./configure \
               $configureFlags \
               --prefix=$out \
@@ -178,7 +115,29 @@ in
               --enable-scram \
               --with-openssl=${openssl} \
               --with-sqlite3=${sqlite}
-          '';
+          ''
+          else
+            lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              # MIT Kerberos includes SPNEGO; configure otherwise tries to run
+              # its mechanism-enumeration executable while cross compiling.
+              export ac_cv_gssapi_supports_spnego=yes
+            ''
+            + ''
+              # Cyrus SASL uses K&R-style prototype compatibility macros. C23
+              # changes empty parameter lists to mean no parameters, so build
+              # this release in the dialect its configure logic expects.
+              export CFLAGS="''${CFLAGS:-} -std=gnu17"
+
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --enable-shared \
+                --enable-static \
+                --enable-gssapi \
+                --enable-scram \
+                --with-openssl=${openssl} \
+                --with-sqlite3=${sqlite}
+            '';
       }
       {
         name = "build";
@@ -209,7 +168,7 @@ in
       cli = testing.mkToolCheck {
         pname = "tool-sasl2";
         tool = self;
-        command = "sasl2pluginviewer";
+        command = "${self}/sbin/pluginviewer -s";
       };
 
       soname = testing.mkSONAMECheck {

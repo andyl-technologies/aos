@@ -224,6 +224,12 @@ in
       }
     ];
 
+    passthru.evidenceSources = [
+      policySupport
+      refpolicy-production.src
+      linux.src
+    ];
+
     meta = {
       description = "Offline SELinux policy matched to the production Linux class map";
       license = "GPL-2.0-or-later";

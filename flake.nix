@@ -55,6 +55,30 @@
       );
     aosFor = targetSystem: aosForWith targetSystem {};
 
+    qualificationExecutorPackages = system: aos:
+      {
+        qualification-executor = aos.releaseQualificationExecutor;
+        "qualification-executor-${system}" = aos.releaseQualificationExecutor;
+      }
+      // (
+        if system == "x86_64-linux"
+        then
+          builtins.listToAttrs (map (target: {
+              name = "qualification-executor-${target}";
+              value =
+                (import ./. {
+                  inherit system;
+                  crossSystem = target;
+                })
+                .releaseQualificationExecutor;
+            }) [
+              "aarch64-linux"
+              "x86_64-darwin"
+              "aarch64-darwin"
+            ])
+        else {}
+      );
+
     coordinatedContainer = variant: _: let
       # The bootstrap ladder starts on x86_64 and performs its reviewed
       # x86_64→aarch64 transition at gcc4_8_cross. Post-cross target tools run
@@ -243,6 +267,7 @@
             pkgs = aos.pkgs;
           };
         }
+        // qualificationExecutorPackages system aos
         // systemPackages aos
         // containers
         // individualPackages

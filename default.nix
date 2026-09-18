@@ -88,11 +88,38 @@
         targetPlatform = hostPlatform;
       };
 
+  # UEFI firmware is freestanding guest code, independent of the host OS that
+  # runs QEMU. Darwin package builds therefore use the matching Linux-target
+  # GNU toolchain instead of producing Mach-O firmware inputs. x86_64 reuses
+  # the native build package set; aarch64 needs the existing Linux cross set.
+  firmwarePackages =
+    if !hostPlatform.isDarwin
+    then null
+    else if hostPlatform.isAarch64
+    then let
+      firmwarePlatform = lib.mkPlatform "aarch64-linux";
+      firmwareStdenv = import ./stdenv/linux-cross {
+        inherit
+          lib
+          buildStdenv
+          buildPackages
+          buildPlatform
+          ;
+        hostPlatform = firmwarePlatform;
+        targetPlatform = firmwarePlatform;
+      };
+    in
+      import ./pkgs {
+        inherit lib buildPackages;
+        stdenv = firmwareStdenv;
+      }
+    else buildPackages;
+
   # Host packages produce artifacts for hostPlatform. Package definitions use
   # pkgs.buildPackages for generators, compilers, and other executable build
   # dependencies, and ordinary package arguments for host libraries.
   pkgs = import ./pkgs {
-    inherit lib stdenv buildPackages;
+    inherit lib stdenv buildPackages firmwarePackages;
   };
 
   # Auto-discovered module list.
@@ -264,6 +291,190 @@
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
+  qualificationPackageProbes = import ./qualification/package-probes {
+    inherit testing;
+  };
+  qualificationPackageNamesByPlatform = builtins.listToAttrs (
+    map (platform: {
+      name = platform;
+      value =
+        pkgs.platformSupport.publicationEligibleNames
+        platform
+        pkgs.allPackageNames;
+    })
+    pkgs.platformSupport.canonicalSystems
+  );
+  qualificationPackageNames =
+    pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
+  unknownQualificationPackageProbes =
+    builtins.filter (
+      name: !(builtins.elem name pkgs.allPackageNames)
+    )
+    (builtins.attrNames qualificationPackageProbes);
+  qualificationPackageProbesFor = packageNames:
+    lib.filterAttrs (name: _: builtins.elem name packageNames) qualificationPackageProbes;
+  qualificationPackageCoverageFor = packageNames: let
+    implementedPackages =
+      builtins.filter (
+        name: builtins.hasAttr name qualificationPackageProbes
+      )
+      packageNames;
+    missingPackages =
+      builtins.filter (
+        name: !(builtins.hasAttr name qualificationPackageProbes)
+      )
+      packageNames;
+  in {
+    complete = missingPackages == [];
+    implemented = builtins.length implementedPackages;
+    total = builtins.length packageNames;
+    inherit implementedPackages missingPackages;
+  };
+  qualificationPackageCoverage = qualificationPackageCoverageFor qualificationPackageNames;
+  qualificationPackageCoverageByPlatform =
+    lib.mapAttrs (
+      _: names: qualificationPackageCoverageFor names
+    )
+    qualificationPackageNamesByPlatform;
+  neverPublicationEligiblePackageNames =
+    builtins.filter (
+      name: !(builtins.elem name qualificationPackageNames)
+    )
+    pkgs.allPackageNames;
+  qualificationPackageCoverageReport = assert unknownQualificationPackageProbes == [];
+    qualificationPackageCoverage
+    // {
+      schema_version = "aos.release.package-probe-coverage/v1";
+      platforms = qualificationPackageCoverageByPlatform;
+      neverPublicationEligiblePackages = neverPublicationEligiblePackageNames;
+    };
+  releaseQualification = import ./qualification {
+    inherit lib;
+    packageNames = qualificationPackageNames;
+  };
+  qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
+  qualificationReportScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-${hostPlatform.system}-report";
+    identity = qualificationExecutorIdentity;
+    reportRoot = "/run/aos-release/qualification-reports/${hostPlatform.system}";
+  };
+  operatorRecoveryScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-operator-recovery";
+    identity = qualificationExecutorIdentity;
+    reportPath = "/run/aos-release/qualification-reports/operator-recovery.json";
+  };
+  productionRecoveryScenario = testing.mkQualificationReportScenario {
+    name = "aos-qualification-production-recovery";
+    identity = qualificationExecutorIdentity;
+    reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
+  };
+  qualificationPackageScenario = testing.mkQualificationPackageScenario {
+    name = "aos-qualification-${hostPlatform.system}-package-function";
+    identity = qualificationExecutorIdentity;
+    packageNames = qualificationPackageNamesByPlatform.${hostPlatform.system};
+    probes = qualificationPackageProbesFor (
+      qualificationPackageNamesByPlatform.${hostPlatform.system}
+    );
+    trustKeys = discoverSystems."aos-testing".config.aos.release.trustKeys;
+  };
+  containerLifecycleScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationContainerScenario {
+        name = "aos-qualification-${hostPlatform.system}-container-lifecycle";
+        identity = qualificationExecutorIdentity;
+      }
+    else null;
+  imageLifecycleScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationImageScenario {
+        name = "aos-qualification-${hostPlatform.system}-image-lifecycle";
+        identity = qualificationExecutorIdentity;
+      }
+    else null;
+  recoveryPackageScenario =
+    if hostPlatform.isLinux
+    then
+      testing.mkQualificationRecoveryPackageScenario {
+        name = "aos-qualification-${hostPlatform.system}-aos-recovery";
+        packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+        imageExecutable = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
+        systemVariant = "server";
+      }
+    else null;
+  k3sPackageScenarios = lib.optionalAttrs hostPlatform.isLinux (
+    builtins.listToAttrs (map (rule: let
+        name = "aos-qualification-${hostPlatform.system}-${rule.name}-fleet";
+        scenario = testing.mkQualificationK3sPackageScenario {
+          inherit name;
+          identity = qualificationExecutorIdentity;
+          packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+          systemVariant = rule.execution.system_variant;
+          topology = rule.execution.topology;
+        };
+      in {
+        name = "package-function/${rule.name}/${hostPlatform.system}";
+        value = "${scenario}/bin/${name}";
+      }) (builtins.filter (rule:
+        rule ? execution && rule.execution.kind == "k3s-fleet")
+      releaseQualification.package_rules))
+  );
+  qualificationTargetIds = map (target: target.id) (
+    builtins.filter (target: target.platform == hostPlatform.system) releaseQualification.targets
+  );
+  qualificationRequirementScenarioIds = map (requirement: requirement.id) (
+    builtins.filter (
+      requirement:
+        requirement.scope
+        == "packages"
+        || (
+          hostPlatform.system
+          == "x86_64-linux"
+          && requirement.scope == "release"
+          && requirement.phase != "build"
+        )
+    )
+    releaseQualification.requirements
+  );
+  qualificationClaimScenarioIds = map (claim: "claim-${claim.id}") (
+    builtins.filter (claim: builtins.elem claim.target qualificationTargetIds) releaseQualification.claims
+  );
+  qualificationScenarioIds = qualificationRequirementScenarioIds ++ qualificationClaimScenarioIds;
+  qualificationReportScenarios = builtins.listToAttrs (map (scenarioId: {
+      name = scenarioId;
+      value = "${qualificationReportScenario}/bin/aos-qualification-${hostPlatform.system}-report";
+    })
+    (builtins.filter (scenarioId: scenarioId != "package-function") qualificationScenarioIds));
+  qualificationAutomatedScenarios =
+    {
+      # Package cases must execute the staged-byte lifecycle and reviewed
+      # probe. Missing catalog entries fail inside this native scenario.
+      package-function = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+    }
+    // lib.optionalAttrs hostPlatform.isLinux {
+      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
+      "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
+    };
+  releaseQualificationExecutor = testing.mkQualificationExecutor {
+    name = "aos-qualification-${hostPlatform.system}";
+    platform = hostPlatform.system;
+    identity = qualificationExecutorIdentity;
+    scenarios =
+      qualificationReportScenarios
+      // qualificationAutomatedScenarios
+      // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+        operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
+        production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
+      };
+    caseScenarios =
+      k3sPackageScenarios
+      // lib.optionalAttrs hostPlatform.isLinux {
+        "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
+      };
+    workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
+    timeoutSeconds = 21600;
+  };
 
   prefixAttrs = prefix: attrs:
     builtins.listToAttrs (
@@ -1088,20 +1299,20 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkFleetTestFromFile packagesWithExpose containerImages containerDefinitions;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkFleetTestFromFile packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor;
+  packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
   releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
-  releaseQualification = import ./qualification {
-    inherit lib;
-    packageNames = pkgs.allPackageNames;
+  inherit releaseQualification;
+  releasePackageDerivations = pkgs.platformSupport.releaseDerivations {
+    system = hostPlatform.system;
+    packages = pkgs;
+    names = pkgs.allPackageNames;
+    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+    configurationSources = [./lib ./modules ./systems/server.nix];
   };
-  releasePackageDerivations =
-    pkgs.platformSupport.releaseDerivations
-    hostPlatform.system
-    pkgs
-    pkgs.allPackageNames;
 
   # Pure package-maintenance content. Git and local-clone identities are added
   # only by the local controller after strict canonical evaluation.
@@ -1114,7 +1325,15 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
-    qualification = import ./tests/qualification {inherit pkgs lib build fleet container;};
+    image-matrix = testing.mkImageMatrix {
+      systems = discoverSystems;
+      sourceIdentity = toString pkgs.aos.src;
+    };
+    qualification = import ./tests/qualification {
+      inherit pkgs lib build fleet container;
+      packageCoverage = qualificationPackageCoverageReport;
+      releaseExecutor = releaseQualificationExecutor;
+    };
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos;
@@ -1156,6 +1375,19 @@ in {
       ];
     };
     build = let
+      toolchain-boundaries = import ./tests/build/toolchain-boundaries.nix {
+        pkgs = buildPackages;
+        inherit buildPlatform;
+        # Linux qualification includes its architecture-transition tiers.
+        # Darwin uses the native build ladder and a separate hosted toolchain.
+        hostPlatform =
+          if hostPlatform.isLinux
+          then hostPlatform
+          else buildPlatform;
+      };
+      native-sandbox-boundary = import ./tests/build/native-sandbox-boundary.nix {
+        pkgs = buildPackages;
+      };
       bootstrap-seed =
         if buildPlatform.isLinux && buildPlatform.isx86_64
         then import ./tests/build/bootstrap-seed.nix {pkgs = buildPackages;}
@@ -1201,7 +1433,33 @@ in {
       linux-cross-runtime = import ./tests/build/linux-cross-runtime.nix {
         pkgs = buildPackages;
       };
+      linux-hosted-toolchain = import ./tests/build/linux-hosted-toolchain.nix {
+        pkgs = buildPackages;
+      };
+      linux-hosted-llvm = builtins.listToAttrs (map (version: {
+        name = "llvm-${version}";
+        value = import ./tests/build/linux-hosted-toolchain.nix {
+          pkgs = buildPackages;
+          llvmVersion = version;
+        };
+      }) ["17" "18" "19" "20" "21" "22"]);
+      linux-hosted-rust = builtins.listToAttrs (map (name: {
+        inherit name;
+        value = import ./tests/build/linux-hosted-toolchain.nix {
+          pkgs = buildPackages;
+          rustPackage = name;
+        };
+      }) ["rust-1_74" "rust"]);
+      linux-workerd = import ./tests/build/linux-workerd.nix {
+        pkgs = buildPackages;
+      };
       package-platform-support = import ./tests/build/package-platform-support.nix {
+        pkgs = buildPackages;
+      };
+      runtime-python-outputs = import ./tests/build/runtime-python-outputs.nix {
+        pkgs = buildPackages;
+      };
+      structured-attrs-export = import ./tests/build/structured-attrs-export.nix {
         pkgs = buildPackages;
       };
       external-image-assembly = import ./tests/build/external-image-assembly.nix {
@@ -1215,7 +1473,8 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke package-platform-support package-root-image sandbox-controller-service sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub systemd-verity vm-rootfs-adapter golden-image-budgets;
+        inherit toolchain-boundaries native-sandbox-boundary;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1227,8 +1486,10 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config package-platform-support package-root-image sandbox-controller-service sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub systemd-verity vm-rootfs-adapter]
+            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter]
             ++ builtins.attrValues hardening-probe
+            ++ builtins.attrValues linux-hosted-llvm
+            ++ builtins.attrValues linux-hosted-rust
             ++ builtins.attrValues golden-image-budgets;
           phases = [
             {
@@ -1297,6 +1558,7 @@ in {
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
+      evidence-platforms = import ./tests/containers/evidence-platforms.nix {inherit pkgs;};
       evidence = import ./tests/containers/evidence.nix {
         inherit pkgs lib;
         inherit (containerImages.aos.checks) evidence evidenceRepeat;
@@ -1336,6 +1598,7 @@ in {
           phase0
           eval
           oci-builders
+          evidence-platforms
           evidence
           runtime
           aos-runtime-closure

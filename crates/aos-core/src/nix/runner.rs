@@ -268,8 +268,7 @@ impl NixRunner {
             .collect())
     }
 
-    /// Evaluates an attribute of `default.nix` to JSON via
-    /// `nix-instantiate --eval --strict --json`.
+    /// Evaluates an attribute of `default.nix` to JSON without allowing IFD.
     ///
     /// # Errors
     ///
@@ -298,6 +297,9 @@ impl NixRunner {
             "--eval".to_string(),
             "--strict".to_string(),
             "--json".to_string(),
+            "--option".to_string(),
+            "allow-import-from-derivation".to_string(),
+            "false".to_string(),
             self.default_nix().to_string_lossy().to_string(),
             "-A".to_string(),
             attr.to_string(),

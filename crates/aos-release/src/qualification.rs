@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
 use crate::evidence::GateRequirement;
-use crate::plan::{ReleaseClass, ReleasePlanV1};
+use crate::plan::{
+    QUALIFICATION_SNAPSHOT_RELEASE_PREFIX, QUALIFICATION_SNAPSHOT_TAG_PREFIX, ReleaseClass,
+    ReleasePlanV1,
+};
 use crate::platform::Platform;
 
 pub mod capabilities;
@@ -110,6 +113,55 @@ pub enum PackageRole {
     SystemIntegrity,
 }
 
+/// Booted execution required to prove a package's functional behavior.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PackageExecution {
+    /// Exercises the package from recovery UKIs in one system image variant.
+    RecoveryImage {
+        /// Exact system image variant carrying the package.
+        system_variant: String,
+    },
+    /// Exercises authenticated K3s packages and the published OCI workload in a fleet.
+    K3sFleet {
+        /// Exact system image variant booted by both fleet members.
+        system_variant: String,
+        /// Server and worker roles whose package artifacts enter the case subjects.
+        topology: K3sTopology,
+    },
+}
+
+/// Supported K3s service arrangements for staged package qualification.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum K3sTopology {
+    /// Schedules workloads on a combined server and its separate worker.
+    CombinedWorker,
+    /// Runs an agentless control plane and schedules workloads on its worker.
+    ControlPlaneWorker,
+}
+
+impl K3sTopology {
+    /// Returns the complete package population exercised by this topology.
+    pub fn packages(self) -> [&'static str; 3] {
+        match self {
+            Self::CombinedWorker => ["k3s", "k3s-combined", "k3s-worker"],
+            Self::ControlPlaneWorker => ["k3s", "k3s-control-plane", "k3s-worker"],
+        }
+    }
+}
+
+impl PackageExecution {
+    /// Returns the system image variant required by this execution environment.
+    pub fn system_variant(&self) -> &str {
+        match self {
+            Self::RecoveryImage { system_variant } | Self::K3sFleet { system_variant, .. } => {
+                system_variant
+            }
+        }
+    }
+}
+
 /// Classification for one package in the complete discovered inventory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +172,9 @@ pub struct PackageRule {
     pub role: PackageRole,
     /// Requires dependencies to inherit the consuming root's obligations.
     pub inherit_dependency_obligations: bool,
+    /// Special execution environment required by this package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<PackageExecution>,
 }
 
 /// Shared requirement with applicability at one hold point.
@@ -248,6 +303,27 @@ impl QualificationContract {
                 .any(|rule| !rule.inherit_dependency_obligations)
         {
             bail!("qualification must classify packages and inherit dependency obligations");
+        }
+        for rule in &self.package_rules {
+            if let Some(execution) = &rule.execution {
+                if !current {
+                    bail!("archival contracts cannot select package execution environments");
+                }
+                require_identifier(
+                    execution.system_variant(),
+                    "package execution image variant",
+                )?;
+                if let PackageExecution::K3sFleet { topology, .. } = execution {
+                    if !topology.packages().contains(&rule.name.as_str()) {
+                        bail!("K3s fleet topology does not exercise package {}", rule.name);
+                    }
+                    for package in topology.packages() {
+                        if !self.package_rules.iter().any(|rule| rule.name == package) {
+                            bail!("K3s fleet lacks its companion package rule {package}");
+                        }
+                    }
+                }
+            }
         }
         for target in &self.targets {
             if !target.platform.supports_images() {
@@ -504,13 +580,31 @@ impl QualificationContract {
     /// blocked cells where the selected thresholds require completeness.
     pub fn validate_plan(&self, plan: &ReleasePlanV1) -> Result<()> {
         self.validate()?;
+        let snapshot_release_id =
+            format!("{QUALIFICATION_SNAPSHOT_RELEASE_PREFIX}{}", plan.version);
+        let snapshot_source_tag = format!("{QUALIFICATION_SNAPSHOT_TAG_PREFIX}{}", plan.version);
         match &plan.qualification_predecessor {
             Some(prior)
-                if prior.registry == plan.registry && prior.release_id != plan.release_id =>
+                if prior.registry == plan.registry
+                    && prior.release_id != plan.release_id
+                    && !plan
+                        .release_id
+                        .starts_with(QUALIFICATION_SNAPSHOT_RELEASE_PREFIX)
+                    && !plan
+                        .source
+                        .source_tag
+                        .starts_with(QUALIFICATION_SNAPSHOT_TAG_PREFIX) =>
             {
                 require_identifier(&prior.release_id, "qualification predecessor release")?;
             }
-            _ => bail!("server contract requires a distinct same-registry predecessor"),
+            None if plan.release_id == snapshot_release_id
+                && plan.source.source_tag == snapshot_source_tag
+                && plan.intended_channels.is_empty() => {}
+            _ => {
+                bail!(
+                    "server contract requires a distinct same-registry predecessor or an explicitly reserved non-public qualification snapshot"
+                )
+            }
         }
         if plan.gates != self.gates(&plan.registry, plan.release_class)?
             || plan.public_evidence_policy_digest != self.digest()?

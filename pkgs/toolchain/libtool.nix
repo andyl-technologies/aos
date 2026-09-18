@@ -7,7 +7,6 @@
 ##! `pkgs.erofs-utils`, whose snapshot tarball ships only
 ##! `configure.ac` and needs the full autotools bootstrap.
 {
-  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -23,8 +22,6 @@
   stdenv,
 }: let
   version = "2.6.2";
-  isCross = stdenv.isCross;
-  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "libtool";
@@ -107,15 +104,15 @@ in
             sed -i "1c #!${bash}/bin/bash" "$f"
           done
 
-          # Configure must execute native tools on the build machine, but its
-          # generated scripts record their absolute paths. Retarget those
-          # references to the corresponding host tools after installation.
+          # Configure must execute native tools on the Linux builder, but its
+          # generated scripts record their absolute paths. Retarget references
+          # that are present to the corresponding host-platform tools.
           retarget_tool_root() {
             nativeTool=$(command -v "$1")
             nativeRoot=$(dirname "$(dirname "$nativeTool")")
             targetRoot=$2
             [ "$nativeRoot" = "$targetRoot" ] && return
-            ${lib.optionalString isCross "{ "}grep -IrlZ -F "$nativeRoot" "$out" 2>/dev/null${lib.optionalString isCross " || [ \"$?\" -eq 1 ]; }"} \
+            { grep -IrlZ -F "$nativeRoot" "$out" 2>/dev/null || [ "$?" -eq 1 ]; } \
               | xargs -0 -r sed -i "s|$nativeRoot|$targetRoot|g"
           }
           retarget_tool_root m4 ${m4}
@@ -128,12 +125,12 @@ in
           retarget_tool_root gzip ${gzip}
 
           nativeBashRoot=$(dirname "$(dirname "$CONFIG_SHELL")")
-          ${lib.optionalString isCross "{ "}grep -IrlZ -F "$nativeBashRoot" "$out" 2>/dev/null${lib.optionalString isCross " || [ \"$?\" -eq 1 ]; }"} \
+          { grep -IrlZ -F "$nativeBashRoot" "$out" 2>/dev/null || [ "$?" -eq 1 ]; } \
             | xargs -0 -r sed -i "s|$nativeBashRoot|${bash}|g"
 
-          # A standalone cross-built libtool must select the compiler present
-          # on its host rather than retain the build-machine cross wrapper.
-          ${lib.optionalString isCross "{ "}grep -IrlZ -F "${stdenv.cc}/bin/" "$out" 2>/dev/null${lib.optionalString isCross " || [ \"$?\" -eq 1 ]; }"} \
+          # A cross-built libtool must select the compiler present on its host
+          # platform rather than retaining the Linux cross-wrapper executable.
+          { grep -IrlZ -F "${stdenv.cc}/bin/" "$out" 2>/dev/null || [ "$?" -eq 1 ]; } \
             | xargs -0 -r sed -i "s|${stdenv.cc}/bin/||g"
         '';
       }

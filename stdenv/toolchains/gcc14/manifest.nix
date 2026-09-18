@@ -58,7 +58,6 @@ in {
     '';
     configureScript = ''
       sed -i "s|'/bin/pwd'|'$PWD_CMD', '/bin/pwd'|" dist/PathTools/Cwd.pm
-      sed -i 's/getcwd()/getcwd() || "."/' dist/PathTools/Cwd.pm 2>/dev/null || true
 
       sed -i \
         -e "s|/usr/include/errno.h|${glibc.dev}/include/errno.h|g" \
@@ -89,11 +88,10 @@ in {
         -Ui_xlocale
     '';
     buildScript = ''
-      # Perl's generated module graph is not safe under parallel extension builds.
-      make -j1
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     meta = gnuMeta "Perl programming language 5.38.2" "https://www.perl.org/" "Artistic-1.0-Perl OR GPL-1.0-or-later";
   };
@@ -128,11 +126,11 @@ in {
       touch tp/Texinfo/Commands.pm
     '';
     buildScript = ''
-      make -k -j"$NIX_BUILD_CORES" ${autotoolsVars} || true
+      make SHELL="$CONFIG_SHELL" -k -j"$NIX_BUILD_CORES" ${autotoolsVars} || true
       test -f tp/texi2any || { echo "FATAL: texi2any not built"; exit 1; }
     '';
     installScript = ''
-      make install -k ${autotoolsVars} || true
+      make SHELL="$CONFIG_SHELL" install -k ${autotoolsVars} || true
 
       if [ ! -f "$out/bin/texi2any" ]; then
         mkdir -p "$out/bin"
@@ -397,9 +395,8 @@ in {
         "--without-bash-malloc"
         "--disable-nls"
       ];
-    # Bash's generated build helpers are not ordered for parallel consumers.
     buildScript = ''
-      make -j1 ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

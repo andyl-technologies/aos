@@ -33,7 +33,7 @@
 
   # `zpool status -x` prints a single healthy line and exits zero even when a
   # vdev is degraded, so health is read from the pool's own state property.
-  healthCheck = pkgs.writeShellScriptBin "aos-zfs-health" ''
+  healthCheck = ''
     set -uo pipefail
 
     PATH=${toolPath}''${PATH:+:$PATH}
@@ -84,7 +84,7 @@
 
   # Prometheus textfile format. Every series here is a leading indicator: they
   # move while the host still reports ample free memory and a healthy pool.
-  metricsSnapshot = pkgs.writeShellScriptBin "aos-zfs-metrics" ''
+  metricsSnapshot = ''
     set -euo pipefail
 
     PATH=${toolPath}''${PATH:+:$PATH}
@@ -203,24 +203,6 @@
       else "0"
     }"
   '';
-
-  # zed looks for zed.rc inside its zedlet directory, so the generated
-  # configuration is merged with the package's hooks into one directory rather
-  # than written next to them where zed would never read it.
-  zedletDirectory =
-    pkgs.runCommand "aos-zed.d" {
-      inherit zedConfiguration;
-      passAsFile = ["zedConfiguration"];
-    } ''
-      mkdir -p "$out"
-      for zedlet in ${zfs.package}/etc/zfs/zed.d/*; do
-        name=$(basename "$zedlet")
-        [ "$name" = zed.rc ] && continue
-        ln -s "$zedlet" "$out/$name"
-      done
-      cp "$zedConfigurationPath" "$out/zed.rc"
-      chmod 0444 "$out/zed.rc"
-    '';
 in {
   options.aos.services.zfsMaintenance = {
     enable = lib.mkOption {
@@ -354,9 +336,8 @@ in {
       }
     ];
 
-    # zed reads its hooks and its configuration from /etc/zfs/zed.d.
-    environment.etc = lib.mkIf cfg.eventDaemon {
-      "zfs/zed.d".source = zedletDirectory;
+    environment.etc."zfs/zed.rc" = lib.mkIf cfg.eventDaemon {
+      text = zedConfiguration;
     };
 
     systemd.services = lib.mkMerge [
@@ -370,9 +351,17 @@ in {
           # (`-F`) as upstream runs it. Losing the listener means losing every
           # subsequent device fault, so it restarts unconditionally.
           unitConfig.ConditionPathIsDirectory = "/sys/module/zfs";
+          # zed requires its configuration beside its hooks. Assemble that
+          # directory in /run so frozen host evaluation only retains inputs.
+          preStart = ''
+            ${pkgs.coreutils}/bin/rm -rf /run/aos-zed.d
+            ${pkgs.coreutils}/bin/mkdir -p /run/aos-zed.d
+            ${pkgs.coreutils}/bin/cp -a ${zfs.package}/etc/zfs/zed.d/. /run/aos-zed.d/
+            ${pkgs.coreutils}/bin/cp /etc/zfs/zed.rc /run/aos-zed.d/zed.rc
+          '';
           serviceConfig = {
             Type = "simple";
-            ExecStart = "${zfs.package}/sbin/zed -F";
+            ExecStart = "${zfs.package}/sbin/zed -F -d /run/aos-zed.d";
             Restart = "always";
             RestartSec = "5s";
             StateDirectory = "zed";
@@ -422,8 +411,8 @@ in {
           requires = ["zfs-import.service"];
           serviceConfig = {
             Type = "oneshot";
-            ExecStart = lib.getExe healthCheck;
           };
+          script = healthCheck;
         };
       })
 
@@ -434,9 +423,9 @@ in {
           requires = ["zfs-import.service"];
           serviceConfig = {
             Type = "oneshot";
-            ExecStart = lib.getExe metricsSnapshot;
             Nice = 19;
           };
+          script = metricsSnapshot;
         };
       })
     ];
@@ -501,7 +490,7 @@ in {
             name = "zfs-pool-healthy";
             description = "The pool reports itself online with no device errors";
             script = ''
-              vm.succeed("${lib.getExe healthCheck}")
+              vm.succeed("systemctl start aos-zfs-health.service")
             '';
           }
         ]

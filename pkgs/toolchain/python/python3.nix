@@ -60,29 +60,24 @@ in
         then [buildPackages.python3]
         else []
       );
-    runtimeDeps =
-      [
-        zlib
-        openssl
-        xz
-        # libffi is required for the _ctypes extension module — Python 3.13
-        # removed the bundled libffi and always uses the system one now.
-        # Without it `import ctypes` fails at runtime, breaking ukify and
-        # other systemd build-time scripts (elf2efi.py, generate-hwids-
-        # section.py) that need it.
-        libffi
-        sqlite
-        readline
-      ]
-      ++ (
-        if isDarwinCross
-        then [
-          bzip2
-          ncurses
-          zstd
-        ]
-        else []
-      );
+    runtimeDeps = [
+      # Standard-library extension modules remain part of the interpreter's
+      # public runtime and must retain every library they load.
+      bzip2
+      ncurses
+      zlib
+      openssl
+      xz
+      # libffi is required for the _ctypes extension module — Python 3.13
+      # removed the bundled libffi and always uses the system one now.
+      # Without it `import ctypes` fails at runtime, breaking ukify and
+      # other systemd build-time scripts (elf2efi.py, generate-hwids-
+      # section.py) that need it.
+      libffi
+      sqlite
+      readline
+      zstd
+    ];
     propagatedDeps = [];
 
     # CPython models PyTupleObject's variable-length ob_item storage as a
@@ -236,7 +231,6 @@ in
     checks = {
       testing,
       self,
-      pkgs,
     }: {
       import = testing.mkVMTest {
         name = "cross-cutting-python-import";
@@ -263,23 +257,25 @@ in
 
       chain = testing.mkVMTest {
         name = "cross-cutting-python-chain";
-        rootfsDeps = [
-          self
-          pkgs.sqlite
-          pkgs.zlib
-          pkgs.readline
-        ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export PATH="${self}/bin:$PATH"
-          export LD_LIBRARY_PATH="${self}/lib:${pkgs.sqlite}/lib:${pkgs.zlib}/lib:${pkgs.readline}/lib:$LD_LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${self}/lib:$LD_LIBRARY_PATH"
 
           echo "==> Testing python3 C extension modules"
 
           python3 -c "
+          import _bz2
+          import _curses
+          import _curses_panel
+          import _lzma
+          import _ssl
+          import _zstd
+          import ctypes
+          import readline
           import sqlite3
           import zlib
-          import readline
           print('sqlite3: connected to', sqlite3.sqlite_version)
           db = sqlite3.connect(':memory:')
           db.execute('CREATE TABLE t(x)')

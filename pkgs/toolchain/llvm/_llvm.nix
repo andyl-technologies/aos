@@ -41,29 +41,10 @@
   extraRuntimeDeps ? [],
   extraCmakeFlags ? [],
 }: let
-  isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
-  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   versionMatch = builtins.match "([0-9]+)\\..*" version;
   versionMajor = builtins.elemAt versionMatch 0;
   nativeLlvm = buildPackages."llvm-${versionMajor}";
-  linuxToolchainTriple =
-    if isLinuxCross
-    then stdenv.hostPlatform.config
-    else "x86_64-unknown-linux-gnu";
-  linuxCrossRuntimeToolchainArgs = builtins.concatStringsSep ";" [
-    "-DCMAKE_C_COMPILER=$PWD/native-tools/target-clang"
-    "-DCMAKE_CXX_COMPILER=$PWD/native-tools/target-clang++"
-    "-DCMAKE_ASM_COMPILER=$PWD/native-tools/target-clang"
-    "-DCMAKE_LINKER=${nativeLlvm}/bin/ld.lld"
-    "-DCMAKE_AR=${nativeLlvm}/bin/llvm-ar"
-    "-DCMAKE_RANLIB=${nativeLlvm}/bin/llvm-ranlib"
-    "-DCMAKE_NM=${nativeLlvm}/bin/llvm-nm"
-    "-DCMAKE_OBJCOPY=${nativeLlvm}/bin/llvm-objcopy"
-    "-DCMAKE_OBJDUMP=${nativeLlvm}/bin/llvm-objdump"
-    "-DCMAKE_STRIP=${nativeLlvm}/bin/llvm-strip"
-    "-DCMAKE_READELF=${nativeLlvm}/bin/llvm-readelf"
-  ];
   enabledRuntimes =
     if isDarwinCross
     then []
@@ -123,12 +104,12 @@ in
         name = "configure";
         script =
           (
-            if isCross
+            if stdenv.isCross
             then ''
               # LLVM always creates a nested NATIVE tool build when CMake is
-              # cross-compiling. Give it explicit build-machine compiler
-              # launchers; otherwise target hardening and search-path
-              # variables leak into the native compiler probes.
+              # cross-compiling.  Give it explicit Linux compiler launchers;
+              # otherwise target hardening, SDK, and search-path variables
+              # leak into the build-machine compiler probes.
               mkdir -p native-tools
               cat > native-tools/cc <<'AOS_NATIVE_CC'
               #!${buildPackages.bash}/bin/bash
@@ -179,6 +160,137 @@ in
             ''
             else ""
           )
+          + (
+            if versionMajor == "17" && stdenv.hostPlatform.isAarch64
+            then ''
+              # GCC's ACLE macro expands before Clang 17's nested token
+              # concatenation (llvm-project issue 78691). Suppress it only
+              # while expanding this token database, then restore it for
+              # consumers of the installed headers.
+              token_kinds=clang/include/clang/Basic/TokenKinds.def
+              sed -i '1i #pragma push_macro("__arm_streaming")\n#undef __arm_streaming' "$token_kinds"
+              printf '\n#pragma pop_macro("__arm_streaming")\n' >> "$token_kinds"
+            ''
+            else ""
+          )
+          + (
+            if builtins.elem versionMajor ["17" "18"] && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # GCC 14+ emits this exception ABI entry point. Backport the
+              # libc++abi implementation from llvm-project PR 95759 so the
+              # GCC-built runtime resolves its own termination calls.
+              abi_header=libcxxabi/include/cxxabi.h
+              test "$(grep -c '^// 2.5.4 Rethrowing Exceptions$' "$abi_header")" -eq 1
+              sed -i \
+                '/^\/\/ 2.5.4 Rethrowing Exceptions$/i // GNU extension: begins catching the exception before invoking terminate.\nextern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void __cxa_call_terminate(void*) throw();\n' \
+                "$abi_header"
+
+              abi_source=libcxxabi/src/cxa_exception.cpp
+              test "$(grep -c '^// Note:  exception_header may be masquerading' "$abi_source")" -eq 1
+              sed -i \
+                '/^\/\/ Note:  exception_header may be masquerading/i void __cxa_call_terminate(void* unwind_arg) throw() {\n  __cxa_begin_catch(unwind_arg);\n  std::terminate();\n}\n' \
+                "$abi_source"
+
+              # CMAKE_REQUIRED_FLAGS also reaches C library probes. GCC's
+              # C++ driver accepts -nostdlib++, but its C driver rejects it.
+              # Test both drivers before applying the option to shared checks.
+              runtime_config=runtimes/CMakeLists.txt
+              test "$(grep -c '^if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)$' "$runtime_config")" -eq 1
+              sed -i \
+                '/^if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)$/c\llvm_check_compiler_linker_flag(C "-nostdlib++" C_SUPPORTS_NOSTDLIBXX_FLAG)\nif (CXX_SUPPORTS_NOSTDLIBXX_FLAG AND C_SUPPORTS_NOSTDLIBXX_FLAG)' \
+                "$runtime_config"
+
+              # GCC exposes these builtins but cannot mangle them in dependent
+              # function signatures. Keep libc++'s portable trait fallback
+              # for GCC while retaining Clang's builtin implementation.
+              decay_header=libcxx/include/__type_traits/decay.h
+              test "$(grep -c '^#if __has_builtin(__decay)$' "$decay_header")" -eq 1
+              sed -i \
+                's/^#if __has_builtin(__decay)$/#if __has_builtin(__decay) \&\& !defined(_LIBCPP_COMPILER_GCC)/' \
+                "$decay_header"
+
+              pointer_header=libcxx/include/__type_traits/remove_pointer.h
+              test "$(grep -c '^#if .*__has_builtin(__remove_pointer)$' "$pointer_header")" -eq 1
+              sed -i \
+                '/^#if .*__has_builtin(__remove_pointer)$/s/$/ \&\& !defined(_LIBCPP_COMPILER_GCC)/' \
+                "$pointer_header"
+            ''
+            else ""
+          )
+          + (
+            if builtins.elem versionMajor ["19" "20" "21"] && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then
+              ''
+                # These releases already provide GCC's termination ABI and
+                # remove_pointer alias fix. Their shared C probes still inherit
+                # the C++-only flag; LLVM 22 restricts that flag to Clang.
+                runtime_config=runtimes/CMakeLists.txt
+                test "$(grep -c '^if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)$' "$runtime_config")" -eq 1
+                sed -i \
+                  '/^if (CXX_SUPPORTS_NOSTDLIBXX_FLAG)$/c\llvm_check_compiler_linker_flag(C "-nostdlib++" C_SUPPORTS_NOSTDLIBXX_FLAG)\nif (CXX_SUPPORTS_NOSTDLIBXX_FLAG AND C_SUPPORTS_NOSTDLIBXX_FLAG)' \
+                  "$runtime_config"
+              ''
+              + (
+                if builtins.elem versionMajor ["19" "20"]
+                then ''
+                  # LLVM 21 routes GCC's decay alias through the class trait.
+                  # Earlier headers need the portable fallback for mangling.
+                  decay_header=libcxx/include/__type_traits/decay.h
+                  test "$(grep -c '^#if __has_builtin(__decay)$' "$decay_header")" -eq 1
+                  sed -i \
+                    's/^#if __has_builtin(__decay)$/#if __has_builtin(__decay) \&\& !defined(_LIBCPP_COMPILER_GCC)/' \
+                    "$decay_header"
+                ''
+                else ""
+              )
+            else ""
+          )
+          + (
+            if builtins.elem versionMajor ["18" "19" "20"] && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # libunwind links with the C driver. Its C++ flag probe can
+              # succeed for GCC while the actual C link rejects -nostdlib++.
+              # Keep the existing explicit-library fallback when C rejects it.
+              unwind_checks=libunwind/cmake/config-ix.cmake
+              unwind_targets=libunwind/src/CMakeLists.txt
+              test "$(grep -c '^llvm_check_compiler_linker_flag(CXX "-nostdlib++" CXX_SUPPORTS_NOSTDLIBXX_FLAG)$' "$unwind_checks")" -eq 1
+              sed -i \
+                -e 's/CXX_SUPPORTS_NOSTDLIBXX_FLAG/C_SUPPORTS_NOSTDLIBXX_FLAG/g' \
+                -e 's/llvm_check_compiler_linker_flag(CXX "-nostdlib++"/llvm_check_compiler_linker_flag(C "-nostdlib++"/' \
+                "$unwind_checks" "$unwind_targets"
+            ''
+            else ""
+          )
+          + (
+            if builtins.elem versionMajor ["20" "21" "22"] && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # The PAC-with-PC helper copies the register context and may call
+              # memcpy. Finish that call before binding caller-saved x16/x17;
+              # otherwise GCC can lose the return address before authentication.
+              unwind_header=libunwind/src/DwarfInstructions.hpp
+              test "$(grep -Fc 'if (isReturnAddressSignedWithPC(addressSpace, registers, cfa, prolog)) {' "$unwind_header")" -eq 1
+              test "$(grep -Fc 'register unsigned long long x17 __asm("x17") = returnAddress;' "$unwind_header")" -eq 1
+              sed -i \
+                -e '/register unsigned long long x17 __asm("x17") = returnAddress;/i\        const bool signedWithPC = isReturnAddressSignedWithPC(addressSpace, registers, cfa, prolog);' \
+                -e 's/if (isReturnAddressSignedWithPC(addressSpace, registers, cfa, prolog)) {/if (signedWithPC) {/' \
+                "$unwind_header"
+            ''
+            else ""
+          )
+          + (
+            if versionMajor == "22" && stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # GCC supports the C23 spelling for complex binary128. Its
+              # __float128 alias cannot appear in this C++ typeof expression.
+              # Preserve the full type rather than disabling quad precision.
+              complex_header=libc/include/llvm-libc-types/cfloat128.h
+              test "$(grep -c '^typedef __typeof__(_Complex __float128) cfloat128;$' "$complex_header")" -eq 1
+              sed -i \
+                's/^typedef __typeof__(_Complex __float128) cfloat128;$/typedef _Complex _Float128 cfloat128;/' \
+                "$complex_header"
+            ''
+            else ""
+          )
           + ''
             ${
               if needsArc4randomFix
@@ -192,7 +304,9 @@ in
               else ""
             }
             ${
-              if enabledRuntimes != []
+              # Cross runtime projects inherit CMake's cross compiler through
+              # LLVMExternalProjectUtils; only native builds run the new Clang.
+              if enabledRuntimes != [] && !stdenv.isCross
               then ''
                 # Create clang config file so the just-built clang finds AOS
                 # GCC toolchain and libraries when building runtimes.
@@ -203,26 +317,9 @@ in
                 REAL_CC=$(cat "$BT/nix-support/orig-cc")
                 REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
                 REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
-                ${
-                  if isLinuxCross
-                  then ''
-                    set -- "$REAL_CC"/lib/gcc/${linuxToolchainTriple}/*
-                    if [ "$#" -ne 1 ] || [ ! -d "$1" ]; then
-                      echo "error: expected exactly one target GCC directory" >&2
-                      exit 1
-                    fi
-                    GCC_DIR=$1
-                    GCC_RUNTIME_DIR="$REAL_CC/${linuxToolchainTriple}/lib64"
-                    for runtimeLibrary in libgcc_s.so.1 libstdc++.so.6; do
-                      if [ ! -e "$GCC_RUNTIME_DIR/$runtimeLibrary" ]; then
-                        echo "error: missing target GCC runtime $runtimeLibrary" >&2
-                        exit 1
-                      fi
-                    done
-                  ''
-                  else ''GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)''
-                }
-                mkdir -p build/clang-cfg
+                GCC_DIR=$(echo "$REAL_CC"/lib/gcc/${stdenv.hostPlatform.config}/*)
+                CLANG_CONFIG_DIR="$out/etc/clang"
+                mkdir -p "$CLANG_CONFIG_DIR"
                 ${
                   if needsGccIteratorCompat
                   then ''
@@ -243,11 +340,7 @@ in
                   ''
                   else ""
                 }
-                ${
-                  if isLinuxCross
-                  then ''DL=$(cat "$BT/nix-support/dynamic-linker")''
-                  else ''DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)''
-                }
+                DL=$(cat "$BT/nix-support/dynamic-linker")
                 {
                   ${
                   if needsGccIteratorCompat
@@ -263,50 +356,17 @@ in
                   echo "-idirafter"
                   echo "$REAL_LIBC_DEV/include"
                   echo "-B$REAL_LIBC/lib"
+                  echo "-B$REAL_CC/bin"
                   echo "-B$GCC_DIR"
                   echo "-L$REAL_LIBC/lib"
                   echo "-L$REAL_CC/lib"
-                  echo "-L$REAL_CC/lib64"${
-                  if isLinuxCross
-                  then "\n                    echo \"-L$GCC_RUNTIME_DIR\""
-                  else ""
-                }
+                  echo "-L$REAL_CC/lib64"
+                  echo "-L$out/lib/${stdenv.hostPlatform.config}"
                   echo "-Wl,-dynamic-linker=$DL"
                   echo "-Wl,-rpath,$REAL_LIBC/lib"
-                  echo "-Wl,-rpath,$REAL_CC/lib"${
-                  if isLinuxCross
-                  then "\n                    echo \"-Wl,-rpath,$GCC_RUNTIME_DIR\"\n                    echo \"-fuse-ld=$out/bin/ld.lld\""
-                  else ""
-                }
-                } > build/clang-cfg/${linuxToolchainTriple}.cfg${
-                  if isLinuxCross
-                  then ''
-
-                    # A cross build cannot execute its newly-built target
-                    # clang. Use the matching native clang as a cross driver
-                    # for LLVM's runtime sub-builds; LLVM 22's libc++ requires
-                    # Clang builtins that are unavailable in GCC 14.
-                    TARGET_CLANG_CONFIG="$PWD/build/clang-cfg/${linuxToolchainTriple}.cfg"
-                    cat > native-tools/target-clang <<AOS_TARGET_CLANG
-                    #!${buildPackages.bash}/bin/bash
-                    exec ${nativeLlvm}/bin/clang \
-                      --target=${linuxToolchainTriple} \
-                      --config="$TARGET_CLANG_CONFIG" \
-                      -fuse-ld=${nativeLlvm}/bin/ld.lld \
-                      "\$@"
-                    AOS_TARGET_CLANG
-                    cat > native-tools/target-clang++ <<AOS_TARGET_CLANGXX
-                    #!${buildPackages.bash}/bin/bash
-                    exec ${nativeLlvm}/bin/clang++ \
-                      --target=${linuxToolchainTriple} \
-                      --config="$TARGET_CLANG_CONFIG" \
-                      -fuse-ld=${nativeLlvm}/bin/ld.lld \
-                      "\$@"
-                    AOS_TARGET_CLANGXX
-                    chmod +x native-tools/target-clang native-tools/target-clang++
-                  ''
-                  else ""
-                }
+                  echo "-Wl,-rpath,$REAL_CC/lib"
+                  echo "-Wl,-rpath,$out/lib/${stdenv.hostPlatform.config}"
+                } > "$CLANG_CONFIG_DIR/${stdenv.hostPlatform.config}.cfg"
               ''
               else ""
             }
@@ -321,7 +381,7 @@ in
             } \
               -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
               ${
-              if isCross
+              if stdenv.isCross
               then ''
                 -DLLVM_DEFAULT_TARGET_TRIPLE=${stdenv.hostPlatform.config} \
                 -DLLVM_HOST_TRIPLE=${stdenv.hostPlatform.config} \
@@ -354,19 +414,10 @@ in
               -DLLVM_INCLUDE_DOCS=OFF \
               -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
               ${
-              if isLinuxCross
-              then ''                -DRUNTIMES_CMAKE_ARGS="${linuxCrossRuntimeToolchainArgs}" \
-              ''
-              else ""
-            }${
-              if enabledRuntimes != []
+              if enabledRuntimes != [] && !stdenv.isCross
               then ''
                 -DDEFAULT_SYSROOT=/ \
-                -DCLANG_CONFIG_FILE_SYSTEM_DIR=${
-                  if isLinuxCross
-                  then "$out/etc/clang"
-                  else "$PWD/build/clang-cfg"
-                } \
+                -DCLANG_CONFIG_FILE_SYSTEM_DIR=$out/etc/clang \
               ''
               else ""
             } \
@@ -391,65 +442,99 @@ in
       }
       {
         name = "install";
-        script = ''
-          ninja -C build install
+        script =
+          ''
+            ninja -C build install
 
-          ${
-            if isLinuxCross
+          ''
+          + (
+            if enabledRuntimes != [] && stdenv.hostPlatform.isLinux
             then ''
-              # Install the target compiler's default configuration at the
-              # path compiled into Clang. It supplies the AOS target headers,
-              # startup objects, linker, dynamic loader, and runtime paths.
-              install -d "$out/etc/clang"
-              install -m 444 \
-                build/clang-cfg/${linuxToolchainTriple}.cfg \
-                "$out/etc/clang/${linuxToolchainTriple}.cfg"
-
-              installedConfig="$out/etc/clang/${linuxToolchainTriple}.cfg"
-              grep -Fx -- "-fuse-ld=$out/bin/ld.lld" "$installedConfig"
-              if grep -F '${nativeLlvm}' "$installedConfig" >/dev/null \
-                || grep -F "$PWD" "$installedConfig" >/dev/null; then
-                echo "installed Clang configuration retained a build-machine path" >&2
-                exit 1
-              fi
-            ''
-            else if isDarwinCross
-            then ''
-              # compiler-rt, libc++, libc++abi and libunwind were bootstrapped
-              # before this target LLVM so no Darwin executable has to run
-              # while cross-compiling.  Install that exact runtime surface as
-              # part of the complete Darwin LLVM toolchain.
-              cp -a ${stdenv.darwinRuntimes}/include/. "$out/include/"
-              cp -a ${stdenv.darwinRuntimes}/lib/. "$out/lib/"
-
-              # Installed llvm-config discovers its real prefix relative to
-              # argv[0], but retains the configured source and object roots as
-              # binary fallback strings. Normalize only the sandbox prefix
-              # with an equal-length replacement so Mach-O offsets stay valid
-              # and the target toolchain does not expose an ephemeral build
-              # directory.
-              stable_source=$(printf '%s\n' "$PWD" | sed 's|^/build|/.aos_|')
-              sed -i "s|$PWD|$stable_source|g" "$out/bin/llvm-config"
-
-              # LLVM and the copied runtime install some directories without
-              # owner write permission. The following scrub phase creates an
-              # adjacent temporary file for each Mach-O before atomically
-              # replacing it, so make this build output writable while it is
-              # still owned by the sandbox builder. Nix canonicalizes store
-              # permissions after the derivation completes.
-              chmod -R u+w "$out"
+              # libc++ depends on its sibling libc++abi, but the C toolchain's
+              # injected RUNPATH only names external dependencies. Each runtime
+              # must resolve siblings itself: a consumer's RUNPATH is not inherited
+              # when the dynamic loader follows indirect DT_NEEDED entries.
+              runtime_dir="$out/lib/${stdenv.hostPlatform.config}"
+              for runtime_library in \
+                "$runtime_dir"/libc++.so.* \
+                "$runtime_dir"/libc++abi.so.* \
+                "$runtime_dir"/libunwind.so.*; do
+                if [ ! -f "$runtime_library" ] || [ -L "$runtime_library" ]; then
+                  continue
+                fi
+                runtime_rpath=$(${buildPackages.patchelf}/bin/patchelf --print-rpath "$runtime_library")
+                ${buildPackages.patchelf}/bin/patchelf --set-rpath \
+                  "$runtime_dir''${runtime_rpath:+:$runtime_rpath}" "$runtime_library"
+              done
             ''
             else ""
-          }
+          )
+          + ''
+            ${
+              if isDarwinCross
+              then ''
+                # compiler-rt, libc++, libc++abi and libunwind were bootstrapped
+                # before this target LLVM so no Darwin executable has to run
+                # while cross-compiling.  Install that exact runtime surface as
+                # part of the complete Darwin LLVM toolchain.
+                cp -a ${stdenv.darwinRuntimes}/include/. "$out/include/"
+                cp -a ${stdenv.darwinRuntimes}/lib/. "$out/lib/"
 
-          # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
-          # Create backward-compat symlink for consumers expecting the old path
-          # (e.g. Rust's llvm-wrapper/PassWrapper.cpp).
-          if [ -f "$out/include/llvm/Plugins/PassPlugin.h" ] && \
-             [ ! -f "$out/include/llvm/Passes/PassPlugin.h" ]; then
-            ln -s ../Plugins/PassPlugin.h "$out/include/llvm/Passes/PassPlugin.h"
-          fi
-        '';
+                # Installed llvm-config discovers its real prefix relative to
+                # argv[0], but retains the configured source and object roots as
+                # binary fallback strings. Normalize only the sandbox prefix
+                # with an equal-length replacement so Mach-O offsets stay valid
+                # and the target toolchain does not expose an ephemeral build
+                # directory.
+                stable_source=$(printf '%s\n' "$PWD" | sed 's|^/build|/.aos_|')
+                sed -i "s|$PWD|$stable_source|g" "$out/bin/llvm-config"
+
+                # LLVM and the copied runtime install some directories without
+                # owner write permission. The following scrub phase creates an
+                # adjacent temporary file for each Mach-O before atomically
+                # replacing it, so make this build output writable while it is
+                # still owned by the sandbox builder. Nix canonicalizes store
+                # permissions after the derivation completes.
+                chmod -R u+w "$out"
+              ''
+              else ""
+            }
+
+            # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
+            # Create backward-compat symlink for consumers expecting the old path
+            # (e.g. Rust's llvm-wrapper/PassWrapper.cpp).
+            if [ -f "$out/include/llvm/Plugins/PassPlugin.h" ] && \
+               [ ! -f "$out/include/llvm/Passes/PassPlugin.h" ]; then
+              ln -s ../Plugins/PassPlugin.h "$out/include/llvm/Passes/PassPlugin.h"
+            fi
+
+            ${
+              if enabledRuntimes != [] && !stdenv.isCross
+              then ''
+                grep -Fq "$out/etc/clang" "$out/include/clang/Config/config.h"
+                if grep -Fq '/build/' "$out/include/clang/Config/config.h"; then
+                  echo "installed Clang configuration contains a build-directory path" >&2
+                  exit 1
+                fi
+
+                runtime_dir="$out/lib/${stdenv.hostPlatform.config}"
+                "${bootstrapTools}/bin/readelf" -d "$runtime_dir/libc++.so.1.0" \
+                  | grep -F "$runtime_dir" >/dev/null
+
+                printf 'int main(void) { return 0; }\n' > "$TMPDIR/clang-output-probe.c"
+                PATH="$out/bin" "$out/bin/clang" \
+                  "$TMPDIR/clang-output-probe.c" -o "$TMPDIR/clang-output-probe"
+                "$TMPDIR/clang-output-probe"
+
+                printf '#include <string>\nint main() { return std::string("aos") == "aos" ? 0 : 1; }\n' \
+                  > "$TMPDIR/clang-libcxx-probe.cc"
+                PATH="$out/bin" "$out/bin/clang++" -stdlib=libc++ \
+                  "$TMPDIR/clang-libcxx-probe.cc" -o "$TMPDIR/clang-libcxx-probe"
+                "$TMPDIR/clang-libcxx-probe"
+              ''
+              else ""
+            }
+          '';
       }
     ];
 

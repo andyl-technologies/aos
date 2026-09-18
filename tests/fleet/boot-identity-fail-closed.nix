@@ -1,10 +1,9 @@
 # Boot-identity guard negative test.
 #
-# The signed image tuple does not select recovery. Appending even a false
-# recovery selector is therefore unambiguously outside the supported normal
-# posture without changing systemd's initial target. The runtime identity guard
-# must reject it before the generated mapper unit can execute, select the
-# passive failure target, and leave root and /var untouched.
+# The signed image tuple already contains root=. Appending a recovery marker
+# is therefore unambiguously outside the supported normal posture. The
+# runtime identity guard must reject it before the generated mapper unit can
+# execute, select the passive failure target, and leave root and /var untouched.
 {
   lib,
   mkSystem,
@@ -13,7 +12,14 @@
   failClosedSystem = mkSystem [
     ../../systems/server.nix
     {
-      aos.boot.kernelParams = ["aos.recovery=0"];
+      # Keep PID1 on its normal target so the identity guard actually runs.
+      aos.boot.kernelParams = [
+        "aos.recovery=1"
+        # The image's final console is VGA; mirror journal events into the
+        # kernel log so the serial transcript observes the guard's result.
+        "systemd.journald.forward_to_kmsg=1"
+        "systemd.journald.max_level_kmsg=info"
+      ];
     }
   ];
   rootVerify = failClosedSystem.config.boot.initrd.systemd.services."aos-verity-root-verify";
@@ -26,7 +32,7 @@ in
   assert builtins.elem "initrd-fs.target" rootVerify.requiredBy;
   assert rootVerify.unitConfig.OnFailure == "aos-boot-identity-failure.target"; {
     name = "boot-identity-fail-closed";
-    timeout = 300;
+    timeout = 600;
     bootTimeout = 120;
 
     machines.target = {
@@ -43,11 +49,8 @@ in
         from pathlib import Path
 
         serial_log = Path(target.serial_log_path)
-        # First-boot provisioning is bounded by a 30-second repart attempt,
-        # a 15-second verification pass, udev settlement, and label discovery.
-        # The identity guard runs after that transaction so its generated
-        # verity unit observes the final device topology.
-        deadline = time.monotonic() + 180
+        # Allow firmware and hardened-kernel startup on a busy builder.
+        deadline = time.monotonic() + 300
         transcript = ""
 
         while time.monotonic() < deadline:

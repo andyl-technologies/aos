@@ -316,12 +316,12 @@
       cond =
         inventoryEtc."systemd/system/demo.service"
         == {
-          kind = "symlink";
+          kind = "store-symlink";
           target = "${inventoryPackage}/lib/systemd/system/demo.service";
         }
         && inventoryEtc."systemd/system/demo.service.d/overrides.conf".kind == "text"
-        && inventoryEtc."systemd/system/demo.service.d/10-package.conf".kind == "symlink"
-        && inventoryEtc."systemd/system/multi-user.target.wants/demo.service".kind == "symlink";
+        && inventoryEtc."systemd/system/demo.service.d/10-package.conf".kind == "store-symlink"
+        && inventoryEtc."systemd/system/multi-user.target.wants/demo.service".kind == "store-symlink";
       msg = "systemd-lib: package inventory/drop-in/.wants merge semantics changed";
     }
     {
@@ -355,7 +355,7 @@
       cond =
         upstreamEtc."systemd/system/default.target"
         == {
-          kind = "symlink";
+          kind = "store-symlink";
           target = "${upstreamPackage}/example/systemd/system/default.target";
         }
         && upstreamEtc."systemd/system/default.target.wants/base.service"

@@ -62,11 +62,19 @@
         ${buildStdenv.coreutils}/bin/cat > "$out/bin/cc" <<'CC_EOF'
         #!${shellPath}
         unset AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
+        export C_INCLUDE_PATH="''${AOS_BUILD_C_INCLUDE_PATH:-}"
+        export CPLUS_INCLUDE_PATH="''${AOS_BUILD_CPLUS_INCLUDE_PATH:-}"
+        export LIBRARY_PATH="''${AOS_BUILD_LIBRARY_PATH:-}"
+        export PKG_CONFIG_PATH="''${PKG_CONFIG_PATH_FOR_BUILD:-}"
         exec ${buildStdenv.cc}/bin/cc "$@"
         CC_EOF
         ${buildStdenv.coreutils}/bin/cat > "$out/bin/c++" <<'CXX_EOF'
         #!${shellPath}
         unset AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
+        export C_INCLUDE_PATH="''${AOS_BUILD_C_INCLUDE_PATH:-}"
+        export CPLUS_INCLUDE_PATH="''${AOS_BUILD_CPLUS_INCLUDE_PATH:-}"
+        export LIBRARY_PATH="''${AOS_BUILD_LIBRARY_PATH:-}"
+        export PKG_CONFIG_PATH="''${PKG_CONFIG_PATH_FOR_BUILD:-}"
         exec ${buildStdenv.cc}/bin/c++ "$@"
         CXX_EOF
         ${buildStdenv.coreutils}/bin/chmod 755 "$out/bin/cc" "$out/bin/c++"
@@ -162,7 +170,7 @@
   cargoTargetPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] hostPlatform.config);
   cargoTargetLinkerVariable = "CARGO_TARGET_${cargoTargetPrefix}_LINKER";
   cargoTargetArVariable = "CARGO_TARGET_${cargoTargetPrefix}_AR";
-  compilerRuntimeDirectory = "${toolchain.gcc}/${hostPlatform.config}/lib64";
+  compilerRuntimeDirectory = "${toolchain.gccRuntime}/lib";
   compilerRuntimeLdFlags = "-L${compilerRuntimeDirectory} -Wl,-rpath,${compilerRuntimeDirectory} -Wl,-rpath-link,${compilerRuntimeDirectory}";
   collectRuntimeClosure = deps: seen: let
     newDependencies =
@@ -273,6 +281,8 @@
       args
       // {
         buildDeps = [ccWrapper toolchain.binutils] ++ (args.buildDeps or []) ++ buildStdenv.initialPath;
+        dependencySearchDeps = (args.runtimeDeps or []) ++ (args.propagatedDeps or []);
+        buildDependencySearchDeps = (args.buildDeps or []) ++ buildStdenv.initialPath;
         system = schedulerSystem;
         inherit hostPlatform targetPlatform storeDir;
         buildExecutionSystem = buildPlatform.system;
@@ -324,7 +334,15 @@
         AOS_RUST_TARGET = hostPlatform.config;
         "${cargoTargetLinkerVariable}" = "${ccWrapper}/bin/cc";
         "${cargoTargetArVariable}" = "${ccWrapper}/bin/ar";
-        nukeRefsKeep = (args.nukeRefsKeep or []) ++ [toolchain.glibc toolchain.gcc];
+        nukeRefsKeep = (args.nukeRefsKeep or []) ++ [toolchain.glibc toolchain.gccRuntime];
+        # Target package outputs must never retain the scheduler-native cross
+        # compiler. The extracted runtime above is the only permitted GCC
+        # runtime path in a Linux cross-built closure.
+        # Reusable Cargo build state retains compiler paths in debug metadata;
+        # it is not a runtime package and must remain usable by later builds.
+        disallowedReferences =
+          (args.disallowedReferences or [])
+          ++ lib.optionals (!((args.passthru or {}).isCargoArtifacts or false)) [toolchain.gcc];
       }
     );
 
@@ -356,7 +374,7 @@ in {
     initialPath
     ;
   inherit (buildStdenv) fetchurl fetchgit bootstrap;
-  inherit (toolchain) gcc glibc binutils linuxHeaders;
+  inherit (toolchain) gcc gccRuntime glibc binutils linuxHeaders;
 
   cc = ccWrapper;
   shell = shellPath;

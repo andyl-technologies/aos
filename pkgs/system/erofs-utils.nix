@@ -15,15 +15,15 @@
   automake,
   libtool,
   m4,
-  stdenv,
   bash,
   gcc-libs,
   util-linux,
-  libselinux,
   lz4,
   xz,
   zlib,
   zstd,
+  lib,
+  stdenv,
 }: let
   # v1.8.x is the last stable line whose `lib/Makefile.am` keeps the
   # optional import and compression dependencies gated behind configure
@@ -33,16 +33,6 @@
   # composefs-generated EROFS image used by `system.build.etcMetadataImage`.
   # Bump when AOS needs those importer features.
   version = "1.9.4";
-  checkMkfsProgram =
-    if stdenv.isCross
-    then ".mkfs.erofs-unwrapped"
-    else "mkfs.erofs";
-  crossCheckRunner =
-    if !stdenv.isCross
-    then null
-    else if (stdenv.targetRunner or null) == null
-    then throw "erofs-utils: no runner for cross target '${stdenv.hostPlatform.system}'"
-    else "${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system}";
 in
   mkDerivation {
     pname = "erofs-utils";
@@ -66,9 +56,13 @@ in
       automake
       libtool
       m4
+      lz4
+      xz
+      zlib
+      zstd
     ];
-    runtimeDeps = [bash gcc-libs util-linux libselinux lz4 xz zlib zstd];
-    propagatedDeps = [util-linux libselinux lz4 xz zlib zstd];
+    runtimeDeps = [bash gcc-libs util-linux lz4 xz zlib zstd];
+    propagatedDeps = [util-linux lz4 xz zlib zstd];
 
     phases = [
       {
@@ -76,7 +70,6 @@ in
         script = ''
           tar xf $src
           cd erofs-utils-${version}
-          patch -p1 < ${./erofs-utils-dump-xattr.patch}
         '';
       }
       {
@@ -112,23 +105,22 @@ in
         # order, 16 MiB is a clean multiple of the 256 KiB pcluster so
         # boundaries don't shift the per-cluster compression, and `-T0 -U`
         # pin the remaining nondeterminism. Pulls in libpthread (glibc).
-        script = ''
-          # v1.8.10 overwrites pkg-config's liblzma flags with bare -llzma.
-          # Its configure script consumes these variables without declaring
-          # command-line options, so export them to keep cross links target-only.
-          export with_liblzma_incdir=${xz}/include
-          export with_liblzma_libdir=${xz}/lib
-
-          ./configure \
-            --prefix=$out \
-            --disable-fuse \
-            --enable-lz4 \
-            --enable-lzma \
-            --with-zlib=yes \
-            --with-libzstd=yes \
-            --with-selinux=yes \
-            --enable-multithreading
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Compression tools are also build inputs. Prefer the declared
+            # target libraries over their native pkg-config metadata.
+            export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" [util-linux lz4 xz zlib zstd]}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          ''
+          + ''
+            ./configure \
+              --prefix=$out \
+              --disable-fuse \
+              --enable-lz4 \
+              --enable-lzma \
+              --with-zlib=yes \
+              --with-libzstd=yes \
+              --enable-multithreading
+          '';
       }
       {
         name = "build";
@@ -157,45 +149,16 @@ in
       {
         name = "check";
         script = ''
-          run_check_target() {
-            ${
-            if stdenv.isCross
-            then ''
-              env -i \
-                ${crossCheckRunner} \
-                ${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} \
-                --library-path ${gcc-libs}/lib \
-                "$@"
-            ''
-            else ''
-              env -i "$@"
-            ''
-          }
-          }
-
-          # `--file-contexts` is compiled out unless configure found the
-          # target libselinux. Treat its absence as a packaging failure: the
-          # immutable root builders must never silently emit unlabeled EROFS
-          # inodes because an optional feature probe changed.
-          # erofs-utils 1.9.4 returns failure after printing help. Capture the
-          # output separately so pipefail does not mask a successful feature
-          # assertion with the command's informational exit status.
-          mkfs_help="$(run_check_target "$out/bin/${checkMkfsProgram}" --help 2>&1 || true)"
-          printf '%s\n' "$mkfs_help" | grep -F -- '--file-contexts=X'
-
-          dump_help="$(run_check_target "$out/bin/dump.erofs" --help 2>&1 || true)"
-          printf '%s\n' "$dump_help" | grep -F -- '--get-xattr=X'
-
           mkdir -p "$TMPDIR/erofs-smoke/root"
           dd if=/dev/zero of="$TMPDIR/erofs-smoke/root/worker-payload" \
             bs=1M count=17 status=none
           printf 'multithreaded erofs smoke test\n' > "$TMPDIR/erofs-smoke/root/payload"
-          run_check_target "$out/bin/${checkMkfsProgram}" --all-root -T0 \
+          env -i "$out/bin/mkfs.erofs" --all-root -T0 \
             -U bdfb6fc9-0000-4000-8000-000000000001 \
             --workers=1 -z zstd \
             "$TMPDIR/erofs-smoke/image-one-worker.erofs" \
             "$TMPDIR/erofs-smoke/root"
-          run_check_target "$out/bin/${checkMkfsProgram}" --all-root -T0 \
+          env -i "$out/bin/mkfs.erofs" --all-root -T0 \
             -U bdfb6fc9-0000-4000-8000-000000000001 \
             --workers=2 -z zstd \
             "$TMPDIR/erofs-smoke/image-two-workers.erofs" \
@@ -203,7 +166,7 @@ in
           cmp \
             "$TMPDIR/erofs-smoke/image-one-worker.erofs" \
             "$TMPDIR/erofs-smoke/image-two-workers.erofs"
-          run_check_target "$out/bin/fsck.erofs" \
+          "$out/bin/fsck.erofs" \
             --extract="$TMPDIR/erofs-smoke/extracted" \
             "$TMPDIR/erofs-smoke/image-two-workers.erofs" >/dev/null
           cmp \

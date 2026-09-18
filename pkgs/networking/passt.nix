@@ -2,8 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
-  stdenv,
 }: let
   version = "2026_07_28.f8df3f1";
 in
@@ -14,7 +14,7 @@ in
       urls = ["https://passt.top/passt/snapshot/passt-${version}.tar.gz"];
       hash = "sha256-Kz7/s9zR9rG0baOiQZwDdQjSS8OfkFE7u7Zg6OtlIOU=";
     };
-    buildDeps = [gnumake];
+    buildDeps = [gnumake buildPackages.glibc.bin];
     runtimeDeps = [];
     propagatedDeps = [];
     phases = [
@@ -30,7 +30,7 @@ in
         script = ''
           sed -i "1s|^#!.*|#!$CONFIG_SHELL|" seccomp.sh doc/demo.sh
           sed -i \
-            's|PAGE_SIZE=$(shell getconf PAGE_SIZE)|PAGE_SIZE=${toString stdenv.hostPlatform.pageSize}|' \
+            's|PAGE_SIZE=$(shell getconf PAGE_SIZE)|PAGE_SIZE=$(shell ${buildPackages.glibc.bin}/bin/getconf PAGE_SIZE)|' \
             Makefile
         '';
       }
@@ -42,9 +42,7 @@ in
         name = "install";
         script = ''
           make install prefix="$out" VERSION=${version}
-          if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
-            "$out/bin/passt" --version 2>&1 | grep -q '${version}'
-          fi
+          "$out/bin/passt" --version 2>&1 | grep -q '${version}'
           test -x "$out/bin/pasta"
           test -x "$out/bin/passt-repair"
         '';

@@ -1,10 +1,9 @@
 # Normal initrd emergency-mode negative test.
 #
-# The signed fixture selects systemd's emergency target directly. Production
-# initrds mask that target and its interactive service, so PID 1 must reject
-# the transaction without exposing sulogin, a login prompt, or an AOS debug
-# shell. The runtime transcript and rendered unit topology together prove the
-# failure is both fail-closed and noninteractive.
+# The fixture deliberately selects emergency.target as PID1's initial target.
+# Verity initrds mask both emergency and rescue targets as well as their shell
+# services. PID1 must reject both targets and freeze, proving the requested
+# failure path remains noninteractive before mounting the root or /var.
 {mkSystem, ...}: let
   failClosedSystem = mkSystem [
     ../../systems/server.nix
@@ -13,12 +12,11 @@
     }
   ];
 in
-  assert builtins.elem "emergency.target" failClosedSystem.config.boot.initrd.systemd.maskedUnits;
-  assert builtins.elem "rescue.target" failClosedSystem.config.boot.initrd.systemd.maskedUnits;
+  assert failClosedSystem.config.aos.security.verity.enable;
   assert builtins.elem "emergency.service" failClosedSystem.config.boot.initrd.systemd.maskedUnits;
   assert builtins.elem "rescue.service" failClosedSystem.config.boot.initrd.systemd.maskedUnits; {
     name = "initrd-emergency-fail-closed";
-    timeout = 300;
+    timeout = 600;
     bootTimeout = 120;
 
     machines.target = {
@@ -35,19 +33,25 @@ in
         from pathlib import Path
 
         serial_log = Path(target.serial_log_path)
-        deadline = time.monotonic() + 60
+        # Allow firmware and hardened-kernel startup on a busy builder.
+        deadline = time.monotonic() + 300
         transcript = ""
 
         while time.monotonic() < deadline:
             if serial_log.exists():
                 transcript = serial_log.read_text(errors="replace")
-                if "emergency.target" in transcript and "masked" in transcript:
+                if "Freezing execution." in transcript:
                     break
             time.sleep(1)
 
-        assert "emergency.target" in transcript, transcript[-8000:]
-        assert "masked" in transcript, transcript[-8000:]
+        assert "Unit emergency.target is masked." in transcript, transcript[-8000:]
+        assert "Unit rescue.target is masked." in transcript, transcript[-8000:]
+        assert "Freezing execution." in transcript, transcript[-8000:]
         assert "Reached target Emergency Mode" not in transcript, transcript[-8000:]
+        assert "Mounting /sysroot" not in transcript, transcript[-8000:]
+        assert "Mounted /sysroot" not in transcript, transcript[-8000:]
+        assert "Starting Mount /var Partition" not in transcript, transcript[-8000:]
+        assert "Encrypt and TPM2-seal /var" not in transcript, transcript[-8000:]
         assert "Switching root" not in transcript, transcript[-8000:]
         assert "Press Enter for maintenance" not in transcript, transcript[-8000:]
         assert "Give root password for maintenance" not in transcript, transcript[-8000:]

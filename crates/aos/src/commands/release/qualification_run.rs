@@ -9,15 +9,18 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
+use aos_release::artifact::ArtifactRecord;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{
-    GateResult, QUALIFICATION_EXECUTOR_REQUEST_V1, QUALIFICATION_EXECUTOR_RESPONSE_V1,
-    QUALIFICATION_REPORT_V1, QualificationExecutorRequestV1, QualificationExecutorResponseV1,
-    QualificationObjectV1, QualificationReportV1,
+    GateResult, QUALIFICATION_EXECUTOR_REQUEST_V1, QUALIFICATION_EXECUTOR_REQUEST_V3,
+    QUALIFICATION_EXECUTOR_RESPONSE_V1, QUALIFICATION_REPORT_V1, QualificationExecutorRequestV1,
+    QualificationExecutorResponseV1, QualificationObjectV1, QualificationReportV1,
+    QualificationRetainedBundleV1, QualificationRetainedObjectV1, QualificationTrustedKeyV1,
 };
 use aos_release::manifest::ManifestEnvelopeV1;
 use aos_release::platform::{MatrixCell, Platform};
+use aos_release::qualification_evidence::QualificationPredecessor;
 use aos_release::receipt::{
     HubEnvironment, PublicationReceiptV1, QualificationReceiptV1, RECEIPT_SIGNATURE_DOMAIN,
     SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1, verify_signed_receipt_with_key,
@@ -38,6 +41,14 @@ use super::{capture, hub_transition, verify};
 const STAGING_HUB: &str = "https://aos.staging.andyl.org";
 const MAX_EXECUTOR_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_EXECUTOR_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
+const MANIFEST_ENVELOPE_ID: &str = "control/release-manifest-envelope";
+
+struct RetainedPredecessor {
+    root: PathBuf,
+    manifest_bytes: Vec<u8>,
+    manifest: ManifestEnvelopeV1,
+    trusted_keys: Vec<TrustedEd25519Key>,
+}
 
 pub(super) async fn run(args: &ReleaseQualifyRunArgs, printer: &Printer) -> Result<()> {
     if args.output.exists() {
@@ -91,7 +102,7 @@ async fn run_attempt(
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
-    plan.require_current_qualification()?;
+    plan.require_publishable_qualification()?;
     let manifest: ManifestEnvelopeV1 =
         canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
 
@@ -148,60 +159,84 @@ async fn run_attempt(
     } else {
         Vec::new()
     };
-    let mut requests = Vec::new();
-    if plan.qualification.is_some() {
-        for case in cases.into_iter().flatten() {
-            let platform = case.platform.unwrap_or(Platform::X86_64Linux);
-            requests.push(QualificationExecutorRequestV1 {
-                schema_version: "aos.release.qualification-executor-request/v2".to_owned(),
-                registry: plan.registry.clone(),
-                release_id: plan.release_id.clone(),
-                staging_receipt_digest: staging_digest,
-                manifest_digest: summary.manifest_digest,
-                policy_id: case.requirement_id.clone(),
-                policy_digest: case.policy_digest,
-                platform,
-                subjects: case.subjects.clone(),
-                objects: public_objects(
-                    public_origin,
-                    &plan.registry,
-                    &manifest,
-                    &captured.manifest_bytes,
-                    &case.subjects,
-                )?,
-                nonce: executor_nonce(&args.executor_nonce, &case.id, platform),
-                qualification_case: Some(case),
-            });
+    let needs_predecessor = cases
+        .iter()
+        .flatten()
+        .any(|case| case.predecessor.is_some());
+    let predecessor = if args.report_input.is_none() {
+        match (needs_predecessor, &args.predecessor_bundle) {
+            (true, Some(path)) => Some(retained_predecessor(
+                path,
+                plan.qualification_predecessor
+                    .as_ref()
+                    .context("update case lacks its planned predecessor")?,
+                &manifest_keys,
+            )?),
+            (true, None) => bail!("image update qualification requires --predecessor-bundle"),
+            (false, Some(_)) => bail!("qualification phase has no predecessor update case"),
+            (false, None) => None,
         }
     } else {
-        for gate in &plan.gates {
-            for (platform, subjects) in &platform_subjects {
+        None
+    };
+    let mut requests = Vec::new();
+    if args.report_input.is_none() {
+        if plan.qualification.is_some() {
+            for case in cases.into_iter().flatten() {
+                let platform = case.platform.unwrap_or(Platform::X86_64Linux);
                 requests.push(QualificationExecutorRequestV1 {
-                    schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
-                    qualification_case: None,
+                    schema_version: QUALIFICATION_EXECUTOR_REQUEST_V3.to_owned(),
                     registry: plan.registry.clone(),
                     release_id: plan.release_id.clone(),
                     staging_receipt_digest: staging_digest,
                     manifest_digest: summary.manifest_digest,
-                    policy_id: gate.policy_id.clone(),
-                    policy_digest: gate.policy_digest,
-                    platform: *platform,
-                    subjects: subjects.clone(),
+                    policy_id: case.requirement_id.clone(),
+                    policy_digest: case.policy_digest,
+                    platform,
+                    subjects: case.subjects.clone(),
                     objects: public_objects(
                         public_origin,
                         &plan.registry,
                         &manifest,
                         &captured.manifest_bytes,
-                        subjects,
+                        &case.subjects,
                     )?,
-                    nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
+                    retained_predecessor: predecessor_bundle(predecessor.as_ref(), &case)?,
+                    nonce: executor_nonce(&args.executor_nonce, &case.id, platform),
+                    qualification_case: Some(case),
                 });
+            }
+        } else {
+            for gate in &plan.gates {
+                for (platform, subjects) in &platform_subjects {
+                    requests.push(QualificationExecutorRequestV1 {
+                        schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
+                        qualification_case: None,
+                        registry: plan.registry.clone(),
+                        release_id: plan.release_id.clone(),
+                        staging_receipt_digest: staging_digest,
+                        manifest_digest: summary.manifest_digest,
+                        policy_id: gate.policy_id.clone(),
+                        policy_digest: gate.policy_digest,
+                        platform: *platform,
+                        subjects: subjects.clone(),
+                        objects: public_objects(
+                            public_origin,
+                            &plan.registry,
+                            &manifest,
+                            &captured.manifest_bytes,
+                            subjects,
+                        )?,
+                        retained_predecessor: None,
+                        nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
+                    });
+                }
             }
         }
     }
     let mut evidence = Vec::new();
     let mut reports = BTreeMap::new();
-    for request in requests.into_iter().filter(|_| args.report_input.is_none()) {
+    for request in requests {
         request.validate()?;
         let executable = executors
             .get(&request.platform)
@@ -419,11 +454,15 @@ fn public_objects(
 ) -> Result<Vec<QualificationObjectV1>> {
     let base = url::Url::parse(&format!("{origin}/{registry}/"))?;
     let subjects = subjects.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let artifact_ids = related_artifact_ids(&manifest.payload.artifacts, &subjects)?;
+    if artifact_ids.contains(MANIFEST_ENVELOPE_ID) {
+        bail!("manifest artifact id collides with the qualification control object");
+    }
     let mut objects = manifest
         .payload
         .artifacts
         .iter()
-        .filter(|artifact| subjects.contains(artifact.id.as_str()))
+        .filter(|artifact| artifact_ids.contains(artifact.id.as_str()))
         .map(|artifact| {
             Ok(QualificationObjectV1 {
                 artifact_id: artifact.id.clone(),
@@ -437,11 +476,13 @@ fn public_objects(
         .iter()
         .map(|object| object.artifact_id.as_str())
         .collect::<BTreeSet<_>>();
-    if resolved != subjects {
-        bail!("qualification subjects do not resolve to the signed release artifacts");
+    if resolved.len() != artifact_ids.len()
+        || !artifact_ids.iter().all(|id| resolved.contains(id.as_str()))
+    {
+        bail!("qualification artifact graph does not resolve to the signed release artifacts");
     }
     objects.push(QualificationObjectV1 {
-        artifact_id: "control/release-manifest-envelope".to_owned(),
+        artifact_id: MANIFEST_ENVELOPE_ID.to_owned(),
         url: base
             .join(&format!(
                 "releases/{}/{}/release-manifest.json",
@@ -454,6 +495,146 @@ fn public_objects(
     });
     objects.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
     Ok(objects)
+}
+
+fn retained_predecessor(
+    path: &Path,
+    expected: &QualificationPredecessor,
+    trusted_keys: &[TrustedEd25519Key],
+) -> Result<RetainedPredecessor> {
+    if !path.is_absolute() {
+        bail!("qualification predecessor bundle path must be absolute");
+    }
+    let captured = capture::bundle(path)?;
+    let summary = aos_release::verify::verify_release(
+        &captured.plan_bytes,
+        &captured.manifest_bytes,
+        &captured.files,
+        trusted_keys,
+    )?;
+    let manifest: ManifestEnvelopeV1 =
+        canonical::from_slice(&captured.manifest_bytes, "predecessor release manifest")?;
+    if manifest.payload.registry != expected.registry
+        || summary.release_id != expected.release_id
+        || summary.manifest_digest != expected.manifest_digest
+    {
+        bail!("retained predecessor bundle differs from the frozen release plan");
+    }
+    Ok(RetainedPredecessor {
+        root: path.to_path_buf(),
+        manifest_bytes: captured.manifest_bytes,
+        manifest,
+        trusted_keys: trusted_keys.to_vec(),
+    })
+}
+
+fn predecessor_bundle(
+    retained: Option<&RetainedPredecessor>,
+    case: &aos_release::qualification_evidence::QualificationCase,
+) -> Result<Option<QualificationRetainedBundleV1>> {
+    let Some(expected) = case.predecessor.as_ref() else {
+        return Ok(None);
+    };
+    let retained = retained.context("qualification update case lacks a retained predecessor")?;
+    if retained.manifest.payload.registry != expected.registry
+        || retained.manifest.payload.release_id != expected.release_id
+        || retained.manifest.payload_digest != expected.manifest_digest
+    {
+        bail!("qualification case differs from the verified predecessor bundle");
+    }
+
+    let subjects = case
+        .subjects
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let artifact_ids = related_artifact_ids(&retained.manifest.payload.artifacts, &subjects)?;
+    if artifact_ids.contains(MANIFEST_ENVELOPE_ID) {
+        bail!("predecessor artifact id collides with the qualification control object");
+    }
+    let mut objects = retained
+        .manifest
+        .payload
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact_ids.contains(artifact.id.as_str()))
+        .map(|artifact| {
+            Ok(QualificationRetainedObjectV1 {
+                artifact_id: artifact.id.clone(),
+                source_path: retained
+                    .root
+                    .join(artifact.path.as_str())
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|_| anyhow::anyhow!("predecessor object path is not UTF-8"))?,
+                size_bytes: artifact.size_bytes,
+                sha256: artifact.sha256,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    objects.push(QualificationRetainedObjectV1 {
+        artifact_id: MANIFEST_ENVELOPE_ID.to_owned(),
+        source_path: retained
+            .root
+            .join("release-manifest.json")
+            .into_os_string()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("predecessor manifest path is not UTF-8"))?,
+        size_bytes: u64::try_from(retained.manifest_bytes.len())?,
+        sha256: Sha256Digest::of_bytes(&retained.manifest_bytes),
+    });
+    objects.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+    let mut trusted_keys = retained
+        .trusted_keys
+        .iter()
+        .map(|key| QualificationTrustedKeyV1 {
+            key_id: key.key_id.clone(),
+            public_key_hex: hex::encode(key.public_key),
+        })
+        .collect::<Vec<_>>();
+    trusted_keys.sort_by(|left, right| left.key_id.cmp(&right.key_id));
+    Ok(Some(QualificationRetainedBundleV1 {
+        bundle_path: retained
+            .root
+            .clone()
+            .into_os_string()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("predecessor bundle path is not UTF-8"))?,
+        objects,
+        trusted_keys,
+    }))
+}
+
+fn related_artifact_ids(
+    artifacts: &[ArtifactRecord],
+    subjects: &BTreeSet<&str>,
+) -> Result<BTreeSet<String>> {
+    let by_id = artifacts
+        .iter()
+        .map(|artifact| (artifact.id.as_str(), artifact))
+        .collect::<BTreeMap<_, _>>();
+    let mut pending = subjects
+        .iter()
+        .map(|subject| (*subject).to_owned())
+        .collect::<Vec<_>>();
+    let mut related = BTreeSet::new();
+
+    while let Some(id) = pending.pop() {
+        if !related.insert(id.clone()) {
+            continue;
+        }
+        let artifact = by_id
+            .get(id.as_str())
+            .with_context(|| format!("qualification subject or relationship {id} is absent"))?;
+        pending.extend(
+            artifact
+                .relationships
+                .iter()
+                .map(|relationship| relationship.target.clone()),
+        );
+    }
+
+    Ok(related)
 }
 
 pub(super) fn verify_executor_response(
@@ -841,6 +1022,57 @@ pub(super) fn report_filename(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_release::artifact::{
+        ArtifactKind, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
+    };
+
+    fn artifact(id: &str, targets: &[&str]) -> ArtifactRecord {
+        ArtifactRecord {
+            id: id.to_owned(),
+            kind: ArtifactKind::PackageNar,
+            platform: Some(Platform::X86_64Linux),
+            system_variant: None,
+            path: BundlePath::parse(format!("objects/{id}")).unwrap(),
+            size_bytes: 1,
+            sha256: Sha256Digest::of_bytes(id.as_bytes()),
+            media_type: "application/x-nix-nar".to_owned(),
+            compression: Compression::None,
+            derivation: None,
+            output: None,
+            store_path: None,
+            nar_hash: None,
+            relationships: targets
+                .iter()
+                .map(|target| ArtifactRelationship {
+                    relation: ArtifactRelation::Contains,
+                    target: (*target).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn qualification_objects_close_transitive_manifest_relationships() -> Result<()> {
+        let artifacts = [
+            artifact("package/root", &["package/dependency", "source/root"]),
+            artifact("package/dependency", &["narinfo/dependency"]),
+            artifact("narinfo/dependency", &[]),
+            artifact("source/root", &[]),
+            artifact("unrelated", &[]),
+        ];
+        let subjects = BTreeSet::from(["package/root"]);
+
+        assert_eq!(
+            related_artifact_ids(&artifacts, &subjects)?,
+            BTreeSet::from([
+                "narinfo/dependency".to_owned(),
+                "package/dependency".to_owned(),
+                "package/root".to_owned(),
+                "source/root".to_owned(),
+            ])
+        );
+        Ok(())
+    }
 
     #[test]
     fn platform_configuration_is_closed() -> Result<()> {

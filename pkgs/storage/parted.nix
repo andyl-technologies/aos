@@ -2,18 +2,21 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   gnumake,
   pkg-config,
   check,
   gettext,
   lvm2,
+  ncurses,
   readline,
   util-linux,
   dosfstools,
   e2fsprogs,
   perl,
   python3,
-  glibc-locales,
 }: let
   version = "3.7";
 in
@@ -32,8 +35,10 @@ in
       e2fsprogs
       perl
       python3
+      buildPackages.glibc-locales
     ];
-    runtimeDeps = [gettext lvm2 readline util-linux];
+    # The interactive CLI links ncurses directly alongside readline.
+    runtimeDeps = [gettext lvm2 ncurses readline util-linux];
     propagatedDeps = [util-linux];
     phases = [
       {
@@ -58,7 +63,13 @@ in
       }
       {
         name = "configure";
-        script = ''./configure $configureFlags --prefix="$out"'';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # The test executables run on the target, so their Check library
+            # must not come from the native build dependency splice.
+            export PKG_CONFIG_PATH=${check}/lib/pkgconfig:$PKG_CONFIG_PATH
+          ''
+          + ''./configure $configureFlags --prefix="$out"'';
       }
       {
         name = "build";
@@ -67,7 +78,7 @@ in
       {
         name = "check";
         script = ''
-          export LOCPATH=${glibc-locales}/lib/locale
+          export LOCPATH=${buildPackages.glibc-locales}/lib/locale
           export LC_ALL=C.UTF-8
           make check
         '';

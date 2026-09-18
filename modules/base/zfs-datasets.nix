@@ -280,7 +280,7 @@
     (lib.makeSearchPath "sbin" zfsTools)
   ];
 
-  realizeDatasets = pkgs.writeShellScriptBin "aos-zfs-datasets" ''
+  realizeDatasets = ''
     set -euo pipefail
 
     PATH=${zfsBin}''${PATH:+:$PATH}
@@ -324,7 +324,7 @@
 
   # Datasets that exist and are mounted but that no configuration declares are
   # drift: nothing manages their properties, their quotas, or their snapshots.
-  reportUndeclared = pkgs.writeShellScriptBin "aos-zfs-report-undeclared" ''
+  reportUndeclared = ''
     set -uo pipefail
 
     PATH=${zfsBin}''${PATH:+:$PATH}
@@ -492,9 +492,8 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      # Live in-place upgrades change declared properties without a reboot.
-      reloadTriggers = [realizeDatasets];
-      script = lib.getExe realizeDatasets;
+      # A changed script changes the unit and makes activation rerun it.
+      script = realizeDatasets;
     };
 
     systemd.services."aos-zfs-report-undeclared" = lib.mkIf cfg.reportUndeclaredDatasets {
@@ -506,7 +505,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      script = lib.getExe reportUndeclared;
+      script = reportUndeclared;
     };
 
     # One mount unit per declared dataset, so systemd orders them against each

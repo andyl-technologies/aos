@@ -64,8 +64,6 @@ in
     inherit pname;
     version = "1";
     src = null;
-    # Target package roots are contextual paths in facadeSpec, not executable
-    # host tools. Keeping them out of buildDeps preserves cross-build roles.
     buildDeps = [
       pkgs.bash
       pkgs.coreutils
@@ -75,6 +73,8 @@ in
       pkgs.tar
       referenceGraph
     ];
+    # These roots are inspected as payload, never executed by the builder.
+    inherit packageRoots;
 
     outputChecks.out = {};
     inherit facadeSpec;

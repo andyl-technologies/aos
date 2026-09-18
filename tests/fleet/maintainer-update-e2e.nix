@@ -132,46 +132,41 @@
     bash = builtins.unsafeDiscardStringContext "${pkgs.bash}";
     crossSystem = pkgs.stdenv.hostPlatform.system;
   };
-  mountedPackageDerivation =
-    builtins.unsafeDiscardStringContext hostFixture.pkgs.maintain-fixture.drvPath;
-  mountedSourceDerivation = builtins.unsafeDiscardStringContext (
-    (builtins.elemAt hostFixture.maintenanceInventory.units 0).components.main.sources.source.derivation
-  );
-  derivationRecord = name: derivationPath: let
-    contextualPath = builtins.appendContext derivationPath {
-      ${derivationPath} = {path = true;};
-    };
-  in
+
+  # Retain derivation files without realizing their intentionally unfetchable
+  # initial source, while preserving the context required for pure evaluation.
+  mountedPackageDerivation = builtins.unsafeDiscardOutputDependency hostFixture.pkgs.maintain-fixture.drvPath;
+  mountedSourceDerivation =
+    builtins.unsafeDiscardOutputDependency
+    (builtins.elemAt hostFixture.maintenanceInventory.units 0).components.main.sources.source.derivation;
+
+  derivationRecord = name: derivation:
     pkgs.mkDerivation {
       pname = name;
       version = "1";
       src = null;
-      DERIVATION_PATH = contextualPath;
+      buildDeps = [pkgs.coreutils];
       dontStrip = true;
       dontNukeRefs = true;
       phases = [
         {
-          name = "install";
+          name = "record";
           script = ''
-            mkdir -p "$out"
-            cp "$DERIVATION_PATH" "$out/record"
+            cp ${derivation} "$out/derivation"
           '';
         }
       ];
     };
-  packageDerivationRecordRoot =
-    derivationRecord "maintain-fixture-package-derivation-record" mountedPackageDerivation;
-  sourceDerivationRecordRoot =
-    derivationRecord "maintain-fixture-source-derivation-record" mountedSourceDerivation;
-  packageDerivationRecord = "${packageDerivationRecordRoot}/record";
-  sourceDerivationRecord = "${sourceDerivationRecordRoot}/record";
+
+  packageDerivationRecord = derivationRecord "maintain-fixture-package-derivation-record" mountedPackageDerivation;
+  sourceDerivationRecord = derivationRecord "maintain-fixture-source-derivation-record" mountedSourceDerivation;
 
   mountedClosure = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
       fixtureRepository
       maintainerToolBundle
-      packageDerivationRecordRoot
-      sourceDerivationRecordRoot
+      packageDerivationRecord
+      sourceDerivationRecord
     ];
     pname = "maintainer-update-e2e-closure-info";
   };
@@ -220,8 +215,8 @@ in {
       FIXTURE_REPOSITORY = "${fixtureRepository}"
       PACKAGE_DERIVATION = "${mountedPackageDerivation}"
       SOURCE_DERIVATION = "${mountedSourceDerivation}"
-      PACKAGE_DERIVATION_RECORD = "${packageDerivationRecord}"
-      SOURCE_DERIVATION_RECORD = "${sourceDerivationRecord}"
+      PACKAGE_DERIVATION_RECORD = "${packageDerivationRecord}/derivation"
+      SOURCE_DERIVATION_RECORD = "${sourceDerivationRecord}/derivation"
       REPOSITORY = "/var/lib/aos-maintainer/repository"
       STATE = "/var/lib/aos-maintainer/state"
       HOME = "/var/lib/aos-maintainer/home"

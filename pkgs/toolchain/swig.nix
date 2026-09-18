@@ -45,7 +45,9 @@ in
         name = "configure";
         script = ''
           ./autogen.sh
-          ./configure $configureFlags --prefix="$out"
+          # PCRE2 is a runtime library, so its config script is not on PATH.
+          PCRE2_CONFIG=${pcre2}/bin/pcre2-config \
+            ./configure $configureFlags --prefix="$out"
         '';
       }
       {

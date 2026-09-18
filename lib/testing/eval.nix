@@ -1359,8 +1359,15 @@
     mountFor = where: builtins.filter (mount: mount.where == where) mounts;
     varMount = mountFor "/var";
     services = zfsSystem.config.systemd.services;
+    artifacts = zfsSystem.config.aos.config._artifactSources;
   in
-    if builtins.length varMount != 1
+    if !(artifacts ? zfs-for-running-kernel)
+    then throw "the kernel-bound ZFS package must be retained as a frozen configuration artifact"
+    else if
+      builtins.toString zfsSystem.config.aos.filesystems.zfs.package
+      != builtins.toString artifacts.zfs-for-running-kernel
+    then throw "the active ZFS package must resolve through its frozen configuration artifact"
+    else if builtins.length varMount != 1
     then throw "each declared dataset must get exactly one generated mount unit"
     else if (builtins.head varMount).type != "zfs"
     then throw "declared dataset mounts must be ZFS mounts"

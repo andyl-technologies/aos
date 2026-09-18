@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
   autoconf,
   automake,
@@ -62,17 +64,23 @@ in
       }
       {
         name = "build";
-        script = ''
-          FREETYPE_CFLAGS="-I${freetype}/include/freetype2" \
-          FREETYPE_LIBS="-L${freetype}/lib -lfreetype" \
-          $CONFIG_SHELL ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --sysconfdir=$out/etc \
-            --localstatedir=$out/var \
-            --disable-docs
-          make -j$NIX_BUILD_CORES
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # The runtime-only configure probe has no cross fallback. AOS
+            # GCC/glibc provides C99 va_copy, including AArch64's va_list layout.
+            export ac_cv_va_copy=C99
+          ''
+          + ''
+            FREETYPE_CFLAGS="-I${freetype}/include/freetype2" \
+            FREETYPE_LIBS="-L${freetype}/lib -lfreetype" \
+            $CONFIG_SHELL ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --sysconfdir=$out/etc \
+              --localstatedir=$out/var \
+              --disable-docs
+            make -j$NIX_BUILD_CORES
+          '';
       }
       {
         name = "install";

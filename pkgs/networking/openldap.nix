@@ -18,6 +18,7 @@
 }: let
   version = "2.7.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   control = writeShellScriptBin "openldap-control" ''
     set -euo pipefail
     case "''${1:-}" in
@@ -198,67 +199,13 @@ in
               libtool
           ''
           else
-            (
-              if stdenv.isCross && stdenv.targetRunner != null
-              then ''
-                mkdir -p .aos-build-tools
-
-                # The native Libtool executable remains on PATH, while target
-                # OpenLDAP binaries must link the host libltdl. Explicit flags
-                # keep the native build dependency from winning -lltdl lookup.
-                CPPFLAGS="-I${libtool}/include''${CPPFLAGS:+ $CPPFLAGS}"
-                LDFLAGS="-L${libtool}/lib''${LDFLAGS:+ $LDFLAGS}"
-                export CPPFLAGS LDFLAGS
-
-                # Measure the two runtime properties that Autoconf cannot
-                # determine while crossing. The focused probes preserve
-                # OpenLDAP's upstream result semantics while rejecting setup,
-                # launch, crash, and timeout failures as indeterminate.
-                "$CC" ${../../tests/build/openldap-yielding-select-probe.c} \
-                  -pthread -o .aos-build-tools/yielding-select-probe
-                "$CC" ${../../tests/build/openldap-memcmp-probe.c} \
-                  -fno-builtin-memcmp \
-                  -o .aos-build-tools/memcmp-probe
-
-                set +e
-                timeout 30 ${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system} \
-                  .aos-build-tools/yielding-select-probe
-                yielding_select_status=$?
-                set -e
-
-                case "$yielding_select_status" in
-                  0) ol_cv_pthread_select_yields=no ;;
-                  2) ol_cv_pthread_select_yields=yes ;;
-                  *)
-                    echo "target yielding-select probe failed with status $yielding_select_status" >&2
-                    exit 1
-                    ;;
-                esac
-
-                set +e
-                timeout 30 ${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system} \
-                  .aos-build-tools/memcmp-probe
-                memcmp_status=$?
-                set -e
-
-                case "$memcmp_status" in
-                  0) ac_cv_func_memcmp_working=yes ;;
-                  1) ac_cv_func_memcmp_working=no ;;
-                  *)
-                    echo "target memcmp probe failed with status $memcmp_status" >&2
-                    exit 1
-                    ;;
-                esac
-
-                export ol_cv_pthread_select_yields ac_cv_func_memcmp_working
-              ''
-              else if stdenv.isCross
-              then ''
-                echo 'cross build cannot run target OpenLDAP probes' >&2
-                exit 1
-              ''
-              else ""
-            )
+            lib.optionalString isLinuxCross ''
+              # glibc's memcmp is conforming, and NPTL select blocks only the
+              # calling thread. Neither target runtime probe can run during
+              # cross configure; avoid selecting legacy replacements.
+              export ac_cv_func_memcmp_working=yes
+              export ol_cv_pthread_select_yields=yes
+            ''
             + ''
               ./configure \
                 $configureFlags \

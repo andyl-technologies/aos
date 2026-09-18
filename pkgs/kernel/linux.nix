@@ -8,6 +8,7 @@
   perl,
   bash,
   gawk,
+  patch,
   openssl,
   kmod,
   bison,
@@ -15,7 +16,6 @@
   rsync,
   elfutils,
   bc,
-  binutils,
   dwarves,
   patchelf,
   python3,
@@ -41,62 +41,24 @@
   kernelArch =
     archMap.${stdenv.system}
     or (throw "linux: unsupported system '${stdenv.system}'");
-
-  nativeHostPkgConfigPath = builtins.concatStringsSep ":" [
-    "${buildPackages.elfutils}/lib/pkgconfig"
-    "${buildPackages.openssl}/lib/pkgconfig"
-    "${buildPackages.xz}/lib/pkgconfig"
-    "${buildPackages.zlib}/lib/pkgconfig"
-    "${buildPackages.zstd}/lib/pkgconfig"
-  ];
-  nativeHostRuntimePath = builtins.concatStringsSep ":" [
-    "${buildPackages.bzip2}/lib"
-    "${buildPackages.elfutils}/lib"
-    "${buildPackages.gcc-libs}/lib"
-    "${buildPackages.openssl}/lib"
-    "${buildPackages.xz}/lib"
-    "${buildPackages.zlib}/lib"
-    "${buildPackages.zstd}/lib"
-  ];
-  nativeHostIncludeFlags = builtins.concatStringsSep " " [
-    "-I${buildPackages.elfutils}/include"
-    "-I${buildPackages.zlib}/include"
-  ];
-  nativeHostLibraryFlags = builtins.concatStringsSep " " [
-    "-L${buildPackages.elfutils}/lib"
-    "-L${buildPackages.gcc-libs}/lib"
-    "-L${buildPackages.openssl}/lib"
-    "-L${buildPackages.zlib}/lib"
-  ];
-  nativeHostElfMachine =
-    if stdenv.buildPlatform.isx86_64
-    then "Advanced Micro Devices X86-64"
-    else if stdenv.buildPlatform.isAarch64
-    then "AArch64"
-    else throw "linux: unsupported build platform '${stdenv.buildPlatform.system}'";
-
-  # Kbuild assigns bare tool names in its Makefile, which overrides exported
-  # environment variables. Pin both roles on the command line so target code
-  # never inherits a native tool and host helpers never inherit a target tool.
-  kernelMake = arguments: ''
-    make \
-      ARCH=${kernelArch.karch} \
-      CC=${stdenv.cc}/bin/cc \
-      LD=${stdenv.binutils}/bin/ld \
-      AR=${stdenv.binutils}/bin/ar \
-      NM=${stdenv.binutils}/bin/nm \
-      OBJCOPY=${stdenv.binutils}/bin/objcopy \
-      OBJDUMP=${stdenv.binutils}/bin/objdump \
-      READELF=${stdenv.binutils}/bin/readelf \
-      STRIP=${stdenv.binutils}/bin/strip \
-      HOSTCC="$kernelHostTools/cc" \
-      HOSTCXX="$kernelHostTools/c++" \
-      HOSTLD=${buildPackages.binutils}/bin/ld \
-      HOSTAR=${buildPackages.binutils}/bin/ar \
-      HOSTPKG_CONFIG="$kernelHostTools/pkg-config" \
-      HOSTCFLAGS="${nativeHostIncludeFlags}" \
-      HOSTLDFLAGS="-Wl,-rpath,${nativeHostRuntimePath}" \
-      ${builtins.concatStringsSep " \\\n      " arguments}
+  hostIncludePath = "${buildPackages.elfutils}/include:${buildPackages.openssl}/include:${buildPackages.zlib}/include";
+  hostLibraryPath = "${buildPackages.elfutils}/lib:${buildPackages.openssl}/lib:${buildPackages.zlib}/lib";
+  hostPkgConfigPath = "${buildPackages.elfutils}/lib/pkgconfig:${buildPackages.openssl}/lib/pkgconfig:${buildPackages.zlib}/lib/pkgconfig";
+  kernelMakeFlags = ''
+    ARCH=${kernelArch.karch} \
+    CC="$CC" \
+    LD="$LD" \
+    AR="$AR" \
+    NM="$NM" \
+    OBJCOPY="${stdenv.binutils}/bin/objcopy" \
+    OBJDUMP="${stdenv.binutils}/bin/objdump" \
+    READELF="${stdenv.binutils}/bin/readelf" \
+    STRIP="$STRIP" \
+    HOSTCC="env C_INCLUDE_PATH=${hostIncludePath} LIBRARY_PATH=${hostLibraryPath} ${buildPackages.cc}/bin/cc" \
+    HOSTCXX="env C_INCLUDE_PATH=${hostIncludePath} LIBRARY_PATH=${hostLibraryPath} ${buildPackages.cc}/bin/c++" \
+    HOSTLD="${buildPackages.binutils}/bin/ld" \
+    HOSTAR="${buildPackages.binutils}/bin/ar" \
+    HOSTPKG_CONFIG="env PKG_CONFIG_PATH=${hostPkgConfigPath} ${buildPackages.pkg-config}/bin/pkg-config" \
   '';
 in
   mkDerivation {
@@ -117,16 +79,13 @@ in
       perl
       bash
       gawk
+      patch
       openssl
       bison
       flex
       rsync
       elfutils
       bc
-      binutils
-      buildPackages.kmod
-      buildPackages.pkg-config
-      buildPackages.zlib
       dwarves
       patchelf
       python3
@@ -151,78 +110,22 @@ in
           cd linux-${linuxSource.version}
           for f in $(find . -type f -name '*.py'); do
             case "$(head -n 1 "$f")" in
-              '#!'*python*) sed -i "1s|.*|#!${python3}/bin/python3|" "$f" ;;
+              '#!'*python*) sed -i "1s|.*|#!${buildPackages.python3}/bin/python3|" "$f" ;;
             esac
           done
         '';
       }
       {
+        name = "patch";
+        script = ''
+          patch -p1 < ${./linux-gawk-array-argument.patch}
+        '';
+      }
+      {
         name = "configure";
         script = ''
-          # Native compiler and pkg-config wrappers remove the target search
-          # paths exported for kernel code before Kbuild creates host helpers.
-          kernelHostTools="$TMPDIR/aos-kernel-host-tools"
-          mkdir -p "$kernelHostTools"
-
-          cat > "$kernelHostTools/cc" <<'EOF'
-          #!${stdenv.shell}
-          set -eu
-          unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH NIX_LDFLAGS
-          exec ${buildPackages.stdenv.cc}/bin/cc ${nativeHostIncludeFlags} ${nativeHostLibraryFlags} "$@"
-          EOF
-
-          cat > "$kernelHostTools/c++" <<'EOF'
-          #!${stdenv.shell}
-          set -eu
-          unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH NIX_LDFLAGS
-          exec ${buildPackages.stdenv.cc}/bin/c++ ${nativeHostIncludeFlags} ${nativeHostLibraryFlags} "$@"
-          EOF
-
-          cat > "$kernelHostTools/pkg-config" <<'EOF'
-          #!${stdenv.shell}
-          set -eu
-          unset \
-            CPATH \
-            C_INCLUDE_PATH \
-            CPLUS_INCLUDE_PATH \
-            LIBRARY_PATH \
-            PKG_CONFIG_PATH \
-            PKG_CONFIG_SYSTEM_INCLUDE_PATH \
-            PKG_CONFIG_SYSTEM_LIBRARY_PATH \
-            PKG_CONFIG_SYSROOT_DIR
-          export PKG_CONFIG_LIBDIR=${nativeHostPkgConfigPath}
-          exec ${buildPackages.pkg-config}/bin/pkg-config "$@"
-          EOF
-
-          chmod 755 \
-            "$kernelHostTools/cc" \
-            "$kernelHostTools/c++" \
-            "$kernelHostTools/pkg-config"
-
-          # Reproduce the polluted cross environment that made pkg-config
-          # suppress an include flag, then prove the isolated flag is usable.
-          nativeCryptoCflags=$( \
-            C_INCLUDE_PATH=${buildPackages.openssl}/include \
-            LIBRARY_PATH=${buildPackages.openssl}/lib \
-            "$kernelHostTools/pkg-config" --cflags libcrypto
-          )
-          case " $nativeCryptoCflags " in
-            *" -I${buildPackages.openssl}/include "*) ;;
-            *)
-              echo "native pkg-config omitted the OpenSSL include path" >&2
-              exit 1
-              ;;
-          esac
-
-          cat > "$kernelHostTools/openssl-probe.c" <<'EOF'
-          #include <openssl/bio.h>
-          int main(void) { return BIO_TYPE_NONE; }
-          EOF
-          "$kernelHostTools/cc" $nativeCryptoCflags \
-            -fsyntax-only "$kernelHostTools/openssl-probe.c"
-
           # Start with a default config for the target architecture
-          ${kernelMake ["defconfig"]}
+          make ${kernelMakeFlags} defconfig
 
           # Merge our config fragments on top
           for frag in $configDir/*.config; do
@@ -255,7 +158,7 @@ in
           }
 
           # Finalize — fill in defaults for any new symbols
-          ${kernelMake ["olddefconfig"]}
+          make ${kernelMakeFlags} olddefconfig
 
           ${
             if enforceRequiredConfig
@@ -281,11 +184,12 @@ in
         name = "build";
         script = ''
           # sorttable (host tool) uses pthreads; glibc's pthread_exit needs
-          # libgcc_s.so.1 for stack unwinding at runtime.
-          export LD_LIBRARY_PATH="${nativeHostRuntimePath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          ${kernelMake ["-j$NIX_BUILD_CORES" kernelArch.target]}
+          # libgcc_s.so.1 for stack unwinding at runtime. Other generated host
+          # tools load libelf, OpenSSL, and zlib while producing the image.
+          export LD_LIBRARY_PATH="${buildPackages.gcc-libs}/lib:${hostLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          make -j$NIX_BUILD_CORES ${kernelMakeFlags} ${kernelArch.target}
           if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
-            ${kernelMake ["-j$NIX_BUILD_CORES" "modules"]}
+            make -j$NIX_BUILD_CORES ${kernelMakeFlags} modules
           fi
         '';
       }
@@ -324,27 +228,43 @@ in
           cp -a . "$kernel_build/"
           rm -f "$kernel_build/${kernelArch.imgPath}"
 
+          # Generated command metadata, object debugging records, and vmlinux
+          # diagnostics can name the scheduler's cross compiler. Replace only
+          # its fixed-size store hash so binary offsets and every permitted
+          # runtime path stay intact.
+          cross_compiler=${stdenv.cc.cc}
+          cross_compiler_hash=''${cross_compiler#/nix/store/}
+          cross_compiler_hash=''${cross_compiler_hash%%-*}
+          scrubbed_hash=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+          reference_files="$TMPDIR/cross-compiler-reference-files"
+          reference_scan_status=0
+          find "$kernel_build" "$vmlinux" -type f \
+            -exec grep -a -l -F "$cross_compiler" {} + \
+            > "$reference_files" || reference_scan_status=$?
+          if [ "$reference_scan_status" -gt 1 ]; then
+            echo "failed to scan the kernel build tree for cross-compiler references" >&2
+            exit "$reference_scan_status"
+          fi
+          while read -r generated_file; do
+            sed -i "s|$cross_compiler_hash|$scrubbed_hash|g" "$generated_file"
+          done < "$reference_files"
+
           # Kbuild's host helpers are part of the external-module interface.
-          # Append their native library closure without replacing compiler- or
-          # package-provided RPATH entries that another helper may require.
+          # Give helpers that use libelf an immutable runtime search path so
+          # downstream module builds do not depend on ambient host libraries.
           find "$kernel_build/tools" "$kernel_build/scripts" -type f -perm -0100 | while read -r helper; do
-            helperMachine=$(LC_ALL=C ${buildPackages.binutils}/bin/readelf -h "$helper" 2>/dev/null \
-              | sed -n 's/^  Machine:[[:space:]]*//p' || true)
-            if patchelf --print-interpreter "$helper" >/dev/null 2>&1 \
-              && [ "$helperMachine" = "${nativeHostElfMachine}" ]; then
-              patchelf --add-rpath ${nativeHostRuntimePath} "$helper"
+            if patchelf --print-needed "$helper" 2>/dev/null | grep -qx libelf.so.1; then
+              patchelf --set-rpath ${buildPackages.elfutils}/lib "$helper"
             fi
           done
 
           # Install modules only when the final config supports loadable
           # modules. Strip their DWARF; BTF stays in the kernel image.
           if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
-            ${kernelMake [
-            "modules_install"
-            "INSTALL_MOD_PATH=$out"
-            "INSTALL_MOD_STRIP=1"
-            "DEPMOD=${buildPackages.kmod}/sbin/depmod"
-          ]}
+            make modules_install \
+              ${kernelMakeFlags}INSTALL_MOD_PATH=$out \
+              INSTALL_MOD_STRIP=1 \
+              DEPMOD=${buildPackages.kmod}/sbin/depmod
           fi
 
           # External-module builders consume the explicit `dev` output. Keep

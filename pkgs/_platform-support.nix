@@ -360,6 +360,7 @@ let
     "aos-agent-rpc"
     "aos-hub"
     "aos-hub-cloudflare"
+    "aos-release-signer"
     "aos-test-driver"
     "aos-vm"
     "chrony"
@@ -568,6 +569,7 @@ let
     "parallel"
     "passt"
     "pciutils"
+    "pe-tools"
     "pm-utils"
     "polkit"
     "policycoreutils"
@@ -587,6 +589,7 @@ let
     "strace"
     "sudo"
     "systemd"
+    "systemd-measure"
     "tailscale"
     "tmux"
     "util-linux"
@@ -743,17 +746,32 @@ let
     "emulation/_qemu-aarch64-linux-user.nix" = "linux-only-build-helper";
     "emulation/qemu-patches/_series.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
+    "kubernetes/_k3s-addon-entrypoints.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-addon-images.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-addon-programs.nix" = "linux-only-build-helper";
     "kubernetes/_k3s-common.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-dashboard-tools.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-dashboard.nix" = "linux-only-build-helper";
     "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-helm-programs.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-helm-sources.nix" = "linux-only-source";
+    "kubernetes/_k3s-pause-image.nix" = "linux-only-build-helper";
+    "kubernetes/_k3s-traefik.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
     "storage/_postgresql-cross.nix" = "cross-build-helper";
     "toolchain/_bazel.nix" = "native-build-helper";
+    "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
+    "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
+    "toolchain/_linux-hosted-gcc.nix" = "cross-build-helper";
+    "toolchain/_linux-hosted-glibc.nix" = "cross-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
+    "toolchain/go/_go-linux-cross.nix" = "cross-build-helper";
     "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";
     "toolchain/java/_openjdk-bootstrap.nix" = "native-build-helper";
     "toolchain/llvm/_llvm.nix" = "cross-build-helper";
-    "toolchain/rust/_current.nix" = "target-independent-source";
+    "toolchain/rust/_current.nix" = "mixed-source";
+    "toolchain/rust/_rust-linux-hosted.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
@@ -784,6 +802,14 @@ let
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-dashboard/README.md" = "linux-only-source";
+    "kubernetes/_k3s-dashboard/pnpm-lock.yaml" = "linux-only-source";
+    "kubernetes/_k3s-dashboard/remove-precompiled.py" = "linux-only-build-helper";
+    "kubernetes/_k3s-helm-locks/README.md" = "linux-only-source";
+    "kubernetes/_k3s-helm-locks/mapkubeapis/go.mod" = "linux-only-source";
+    "kubernetes/_k3s-helm-locks/mapkubeapis/go.sum" = "linux-only-source";
+    "kubernetes/_k3s-helm-locks/set-status/go.mod" = "linux-only-source";
+    "kubernetes/_k3s-helm-locks/set-status/go.sum" = "linux-only-source";
     "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
     "networking/_envoy-config/module.nix" = "linux-only-config-source";
     "networking/_envoy-config/render.nix" = "linux-only-config-source";
@@ -894,12 +920,35 @@ in rec {
     if eligible
     then {
       state = "eligible";
-      inherit (entry) disposition wave blockers;
+      inherit (entry) disposition wave;
+      # The inventory blockers track the Linux-hosted Darwin cross-build
+      # roadmap. Linux realizations and public runtime qualification are
+      # separate release gates, so these reasons must not block Linux planning.
+      blockers =
+        if isDarwin system
+        then entry.blockers
+        else [];
     }
     else {
       state = "not-applicable";
       inherit rule reason;
     };
+
+  publicationEligibleNames = system: names:
+    builtins.filter (
+      name: (publicationDecision system name).state == "eligible"
+    )
+    names;
+
+  publicationEligibleNamesAny = names:
+    builtins.filter (
+      name:
+        builtins.any (
+          system: (publicationDecision system name).state == "eligible"
+        )
+        canonicalSystems
+    )
+    names;
 
   releaseInventory = names: {
     schema_version = "aos.release.package-inventory/v1";
@@ -917,23 +966,73 @@ in rec {
       names;
   };
 
-  releaseDerivations = system: packages: names: {
+  releaseDerivations = {
+    system,
+    packages,
+    names,
+    configurationBaseLib ? null,
+    configurationSources ? [],
+  }: {
     schema_version = "aos.release.derivation-inventory/v1";
     platform = system;
     packages = map (
       name: let
         package = packages.${name};
+        selectedOutput = package.outputName or "out";
+        hasConfiguration = selectedOutput == "out" && package ? config;
+        artifactPrefix = "package/${name}/${system}";
+        publishedOutputs =
+          if selectedOutput == "out"
+          then package.outputs or ["out"]
+          else [selectedOutput];
+        normalizeSource = source: let
+          sourcePath = toString source;
+          storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
+        in
+          if storePath != null
+          then builtins.head storePath
+          # Checked-in subdirectories are not store roots during local
+          # evaluation. Capture each as an immutable root so the release plan
+          # can retain the same source evidence as container publication.
+          else if builtins.isPath source
+          then
+            builtins.path {
+              path = source;
+              name = builtins.baseNameOf sourcePath;
+            }
+          else source;
+        # Generated packages and language builders declare every source bundle
+        # through this passthru contract. Ordinary packages retain their src.
+        declaredSources =
+          if package ? passthru && package.passthru ? evidenceSources
+          then package.passthru.evidenceSources
+          else if !(package ? src) || package.src == null
+          then []
+          else if builtins.isList package.src
+          then package.src
+          else if toString package.src == ""
+          then []
+          else [package.src];
+        sourcePaths =
+          map (
+            source:
+              builtins.unsafeDiscardStringContext (toString (normalizeSource source))
+          )
+          (declaredSources
+            ++ (
+              if hasConfiguration
+              then configurationSources
+              else []
+            ));
       in {
         inherit name;
-        source_store_paths = let
-          source =
-            if package ? src
-            then builtins.unsafeDiscardStringContext (toString package.src)
-            else "";
-        in
-          if builtins.substring 0 11 source == "/nix/store/"
-          then [source]
-          else [];
+        source_store_paths = builtins.attrNames (builtins.listToAttrs (
+          map (source: {
+            name = source;
+            value = true;
+          })
+          sourcePaths
+        ));
         publication = let
           license = package.meta.license or null;
           licenseExpression =
@@ -952,12 +1051,50 @@ in rec {
             license_expression = licenseExpression;
           };
         derivation = builtins.unsafeDiscardStringContext package.drvPath;
-        outputs = map (output: {
-          name = output;
-          store_path = builtins.unsafeDiscardStringContext (toString package.${output});
-        }) (package.outputs or ["out"]);
+        outputs =
+          (map (output: {
+              # A public alias of one non-default derivation output is itself a
+              # single-output package root. Normalize that selected root to `out`
+              # so package qualification cannot silently exercise a sibling output.
+              name =
+                if selectedOutput == "out"
+                then output
+                else "out";
+              store_path = builtins.unsafeDiscardStringContext (toString package.${output});
+            })
+            publishedOutputs)
+          ++ (
+            if hasConfiguration
+            then
+              assert configurationBaseLib != null; [
+                {
+                  name = "config";
+                  derivation = builtins.unsafeDiscardStringContext package.config.drvPath;
+                  output = package.config.outputName or "config";
+                  store_path = builtins.unsafeDiscardStringContext (toString package.config);
+                }
+                {
+                  name = "configuration-base";
+                  derivation = builtins.unsafeDiscardStringContext configurationBaseLib.drvPath;
+                  output = configurationBaseLib.outputName or "out";
+                  store_path = builtins.unsafeDiscardStringContext (toString configurationBaseLib);
+                }
+              ]
+            else []
+          );
+        configuration =
+          if hasConfiguration
+          then {
+            module_artifact = "${artifactPrefix}/config";
+            evaluation_base_artifact = "${artifactPrefix}/configuration-base";
+            dependency_outputs =
+              builtins.mapAttrs
+              (_: output: builtins.unsafeDiscardStringContext (toString output))
+              (package.configModuleDependencies or {});
+          }
+          else null;
       }
-    ) (builtins.filter (name: (publicationDecision system name).state == "eligible") names);
+    ) (publicationEligibleNames system names);
   };
 
   publicationMatrix = names:

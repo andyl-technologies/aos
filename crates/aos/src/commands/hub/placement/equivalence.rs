@@ -26,7 +26,7 @@ pub(in crate::commands::hub) async fn placement_equivalence(
             surface,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListPlacementEquivalencesResponse>(
                 printer,
                 &client,
@@ -48,7 +48,7 @@ pub(in crate::commands::hub) async fn placement_equivalence(
             if_b_version,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,

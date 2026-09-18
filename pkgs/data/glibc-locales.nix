@@ -2,26 +2,27 @@
 {
   mkDerivation,
   buildPackages,
-  glibc,
 }: let
-  version = glibc.version;
+  version = buildPackages.glibc.version;
 in
   mkDerivation {
     pname = "glibc-locales";
     inherit version;
 
+    # localedef is a build-time generator; the emitted unarchived locale tree
+    # is data consumed by the target libc.
     buildDeps = [buildPackages.glibc.bin];
     runtimeDeps = [];
     propagatedDeps = [];
+
+    passthru.evidenceSources = buildPackages.glibc.passthru.evidenceSources;
 
     phases = [
       {
         name = "install";
         script = ''
           mkdir -p "$out/lib/locale"
-          # localedef executes on the build host; its matching i18n source data
-          # comes from the target libc whose locale files this output supplies.
-          I18NPATH="${glibc.bin}/share/i18n" \
+          I18NPATH="${buildPackages.glibc.bin}/share/i18n" \
             "${buildPackages.glibc.bin}/bin/localedef" \
               --no-archive \
               --inputfile=C \

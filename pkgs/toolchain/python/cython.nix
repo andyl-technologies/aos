@@ -49,11 +49,16 @@ in
           cp -r pyximport $SITE/
           cp cython.py $SITE/
 
-          # Install CLI scripts
+          # Each console script resolves its own modules without requiring
+          # an activated Python profile or caller-provided PYTHONPATH.
           for script in cython cythonize cygdb; do
             if [ -f bin/$script ]; then
-              install -m 755 bin/$script $out/bin/$script
-              sed -i "1s|.*|#!${python3}/bin/python3|" $out/bin/$script
+              {
+                printf '#!%s/bin/python3\n' ${python3}
+                printf 'import sys\nsys.path.insert(0, "%s")\n' "$SITE"
+                tail -n +2 "bin/$script"
+              } > "$out/bin/$script"
+              chmod +x "$out/bin/$script"
             fi
           done
 

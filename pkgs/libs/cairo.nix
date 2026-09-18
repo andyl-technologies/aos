@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   meson,
   ninja,
   pkg-config,
@@ -48,30 +50,36 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export PKG_CONFIG_PATH=${fontconfig}/lib/pkgconfig:${freetype}/lib/pkgconfig:${expat}/lib/pkgconfig:${libpng}/lib/pkgconfig:${zlib}/lib/pkgconfig:${glib.dev}/lib/pkgconfig:${libffi}/lib/pkgconfig:${pcre2}/lib/pkgconfig:${pixman}/lib/pkgconfig:$PKG_CONFIG_PATH
-          meson setup build \
-            $mesonFlags \
-            --prefix="$out" \
-            --buildtype=release \
-            -Dfontconfig=enabled \
-            -Dfreetype=enabled \
-            -Dpng=enabled \
-            -Dtee=enabled \
-            -Dzlib=enabled \
-            -Dlzo=enabled \
-            -Dglib=enabled \
-            -Dxcb=disabled \
-            -Dxlib=disabled \
-            -Dxlib-xcb=disabled \
-            -Dquartz=disabled \
-            -Ddwrite=disabled \
-            -Dgtk2-utils=disabled \
-            -Dspectre=disabled \
-            -Dsymbol-lookup=disabled \
-            -Dtests=disabled \
-            -Dgtk_doc=true
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # GLib's unversioned linker names live in its target dev output;
+            # build dependencies otherwise provide the native headers/tools.
+            export LDFLAGS="-L${glib.dev}/lib $NIX_LDFLAGS ''${LDFLAGS:-}"
+          ''
+          + ''
+            export PKG_CONFIG_PATH=${fontconfig}/lib/pkgconfig:${freetype}/lib/pkgconfig:${expat}/lib/pkgconfig:${libpng}/lib/pkgconfig:${zlib}/lib/pkgconfig:${glib.dev}/lib/pkgconfig:${libffi}/lib/pkgconfig:${pcre2}/lib/pkgconfig:${pixman}/lib/pkgconfig:$PKG_CONFIG_PATH
+            meson setup build \
+              $mesonFlags \
+              --prefix="$out" \
+              --buildtype=release \
+              -Dfontconfig=enabled \
+              -Dfreetype=enabled \
+              -Dpng=enabled \
+              -Dtee=enabled \
+              -Dzlib=enabled \
+              -Dlzo=enabled \
+              -Dglib=enabled \
+              -Dxcb=disabled \
+              -Dxlib=disabled \
+              -Dxlib-xcb=disabled \
+              -Dquartz=disabled \
+              -Ddwrite=disabled \
+              -Dgtk2-utils=disabled \
+              -Dspectre=disabled \
+              -Dsymbol-lookup=disabled \
+              -Dtests=disabled \
+              -Dgtk_doc=true
+          '';
       }
       {
         name = "build";
