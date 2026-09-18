@@ -269,9 +269,10 @@
         ];
       };
       dependencies = {
-        after = [(resultOf "host-key-storage" "resource")];
+        prerequisites = [(resultOf "host-key-storage" "resource")];
+        after = [];
         before = [];
-        requires = [(resultOf "host-key-storage" "resource")];
+        requires = [];
         wants = [];
       };
       readiness = {
@@ -336,16 +337,16 @@
           (resultOf "aos-ssh-ready-lifecycle" "resource")
         ];
         before = [];
-        requires = [
-          (resultOf "sshd-keygen-lifecycle" "resource")
-          (resultOf "sshd-config" "resource")
-          (resultOf "privilege-separation-directory" "resource")
-        ];
+        requires = [(resultOf "sshd-keygen-lifecycle" "resource")];
         wants = [
           (resultOf "network-readiness" "resource")
           (resultOf "aos-ssh-ready-lifecycle" "resource")
         ];
-        prerequisites = [(resultOf "authorized-keys-directory" "resource")];
+        prerequisites = [
+          (resultOf "authorized-keys-directory" "resource")
+          (resultOf "privilege-separation-directory" "resource")
+          (resultOf "sshd-config" "resource")
+        ];
       };
       supervision = {
         startup_protocol = "notification";

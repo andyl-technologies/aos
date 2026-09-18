@@ -28,22 +28,8 @@
             "selected package '${package.pname or package.name or "<unnamed>"}' has no package module locator"
         ))
       packages;
-    grouped =
-      builtins.groupBy
-      (package: package.contract.value.package.name)
-      candidates;
-    conflicting =
-      builtins.filter
-      (name:
-        builtins.length (lib.unique (builtins.map
-          (package: builtins.toJSON package.contract.value)
-          grouped.${name}))
-        != 1)
-      (builtins.attrNames grouped);
   in
-    if conflicting != []
-    then throw "selected package identities have conflicting authenticated contracts: ${builtins.concatStringsSep ", " conflicting}"
-    else builtins.map (name: builtins.head grouped.${name}) (builtins.attrNames grouped);
+    lib.abilities.canonicalizeAuthenticatedPackages candidates;
 
   hostSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.environment.systemPackages;
   initrdSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.aos.boot.initrd.packageRoots;

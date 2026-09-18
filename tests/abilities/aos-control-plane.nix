@@ -132,6 +132,28 @@
   composed = evaluate composedSelection;
   completeSelection = mergeSelection composedSelection (select composed.config.aos.abilities);
   complete = evaluate completeSelection;
+  initrd = lib.evalModules {
+    inherit lib;
+    modules = [
+      lib.abilities.module
+      {
+        config = {
+          aos.abilities.environment = {
+            authority = "test";
+            key = "aos-control-plane-initrd";
+            stage = "initrd";
+          };
+          aos.config.unitGraph.enable = true;
+        };
+      }
+    ];
+    packageModules = [
+      {
+        name = "aos";
+        module = ../../pkgs/tools/aos/_abilities/control-plane/module.nix;
+      }
+    ];
+  };
   abilities = complete.config.aos.abilities;
   resources = builtins.attrValues abilities.desiredResources;
   realizedUnitName = resource: let
@@ -148,6 +170,7 @@
   ];
 in
   assert builtins.length (builtins.attrNames initial.config.aos.abilities.requests) > 0;
+  assert initrd.config.aos.abilities.requests == {};
   assert builtins.length (builtins.attrNames abilities.bindings) > 0;
   assert abilities.compositionPendingRequests == {};
   assert builtins.length resources > 0;

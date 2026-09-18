@@ -166,6 +166,7 @@ in {
           artifact = moduleArtifact;
           path = "registration-provider.nix";
         };
+        compositionType = aggregateRequest;
         desiredType = realization;
         requiredFeatures = [];
       };

@@ -370,6 +370,8 @@ in {
         {instances.${consumerInstance} = {};}
         (serviceManagement.splitContribution localFilesystems).configured
         (serviceManagement.splitContribution multiUser).configured
+        (serviceManagement.splitContribution espReady).configured
+        (serviceManagement.splitContribution imageBootCommitted).configured
         (serviceManagement.splitContribution mountEsp).configured
         (serviceManagement.splitContribution syncEsps).configured
       ];

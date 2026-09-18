@@ -40,7 +40,10 @@
       contribution.configured
     ];
   };
-  evaluate = bindings:
+  evaluate = {
+    bindings,
+    abilityResolution ? {},
+  }:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -66,24 +69,28 @@
       ];
       selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
-        inherit pkgs;
+        inherit pkgs abilityResolution;
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
         };
       };
     };
-  pending = evaluate baseBindings;
+  pending = evaluate {bindings = baseBindings;};
   child = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
-  resolved = evaluate (baseBindings
-    // {
-      "test:watchdog-effects" = {
-        request = child.request;
-        implementation = "systemd:systemd-manager-watchdog-effects";
-        providerInstance = "systemd:manager";
-        slot = child.slot;
+  resolved = evaluate {
+    bindings =
+      baseBindings
+      // {
+        "test:watchdog-effects" = {
+          request = child.request;
+          implementation = "systemd:systemd-manager-watchdog-effects";
+          providerInstance = "systemd:manager";
+          slot = child.slot;
+        };
       };
-    });
+    abilityResolution.requests.${child.request} = child.declaration;
+  };
   abilities = resolved.config.aos.abilities;
   resource = builtins.head (builtins.attrValues abilities.desiredResources);
   controller = abilities.implementations.${controllerName};

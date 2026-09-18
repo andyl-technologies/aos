@@ -212,7 +212,7 @@
       then null
       else lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
   in
-      package
+    (builtins.removeAttrs package ["abilities" "module"])
       // {
         pname = packageName;
         inherit version;
@@ -489,6 +489,7 @@
               meta = drv.meta or {};
             }
             // lib.optionalAttrs (args ? version) {inherit (args) version;}
+            // abilityAttrs
             // platformAttrs
           );
       }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)

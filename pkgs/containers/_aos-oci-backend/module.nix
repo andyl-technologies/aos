@@ -31,14 +31,16 @@
     && selectedBinding.implementation.value.provide != null;
 
   packageProjectionsFor = packages:
-    builtins.map lib.abilities.authenticatedPackageProjectionFor (builtins.filter
+    builtins.map
+    lib.abilities.authenticatedPackageProjectionFor
+    (lib.abilities.canonicalizeAuthenticatedPackages (builtins.filter
       (package:
         builtins.isAttrs package
         && package ? abilities
         && package ? contract
         && package ? module
         && package.contract.value.package_module != null)
-      packages);
+      packages));
   platformFor = targetPlatform:
     if targetPlatform.os == "linux" && targetPlatform.cpu == "x86_64"
     then {

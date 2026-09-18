@@ -394,6 +394,14 @@
   };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = pkgs.ability-package-smoke.contract.selectors;
+  multiOutputAbilityPackage = pkgs.mkDerivation {
+    pname = "multi-output-ability-package";
+    version = "0";
+    src = null;
+    outputs = ["out" "runtime"];
+    phases = [];
+    abilities = ../build/fixtures/ability-module-directory;
+  };
   reservedAbilityOutputRejected = output:
     !(builtins.tryEval ((pkgs.mkDerivation {
         pname = "ability-output-collision";
@@ -476,6 +484,17 @@ in
   assert reservedAbilityOutputRejected "abilities";
   assert reservedAbilityOutputRejected "module";
   assert inlineAbilitiesRejected;
+  assert multiOutputAbilityPackage.runtime.contract == multiOutputAbilityPackage.contract;
+  assert multiOutputAbilityPackage.runtime.abilities == multiOutputAbilityPackage.abilities;
+  assert multiOutputAbilityPackage.runtime.module == multiOutputAbilityPackage.module;
+  assert builtins.length (lib.abilities.canonicalizeAuthenticatedPackages [
+    multiOutputAbilityPackage
+    multiOutputAbilityPackage.runtime
+  ])
+  == 1;
+  assert !(pkgs.dnsutils ? abilities);
+  assert !(pkgs.dnsutils ? module);
+  assert pkgs.dnsutils.contract.value.package_module == null;
   assert canonicalInterface == expectedInterface;
   assert canonicalPackageStoreReadView == expectedPackageStoreReadView;
   assert interfaceDocument.schema == "aos.ability.interface/v1";

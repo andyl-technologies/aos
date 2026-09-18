@@ -329,6 +329,35 @@ args @ {lib, ...}: let
   controlledResource = builtins.head (builtins.filter (resource: resource.controller != null) resolved);
   publishedResource = builtins.head (builtins.filter (resource: resource.controller == null) resolved);
   networkOutput = abilities.compositionOutputs."consumer:network".resource;
+  resolvedTopLevelReference = evaluate {
+    providerAdditions = [
+      {
+        config.aos.abilities.implementations.service-lifecycle = {
+          desiredType = lib.abilities.types.record {
+            fields = {
+              backend = lib.abilities.types.enum ["fixture"];
+              dependency = lib.abilities.types.resourceReference;
+              marker = lib.abilities.types.boolean;
+            };
+          };
+          compose = context: {
+            requests = {};
+            outputs = builtins.mapAttrs (_: _: {marker = true;}) context.requests;
+            realizations =
+              builtins.mapAttrs (_: _: {
+                backend = "fixture";
+                dependency = lib.abilities.resultOf "consumer:network" "resource";
+                marker = lib.abilities.resultOf "consumer:lifecycle" "marker";
+              })
+              context.resources;
+          };
+        };
+      }
+    ];
+  };
+  resolvedTopLevelDesired =
+    builtins.head
+    (builtins.attrValues resolvedTopLevelReference.config.aos.abilities.desiredResources);
   observerSelection = evaluate {
     roundAdditions = [
       {
@@ -639,6 +668,9 @@ in
     assert networkOutput.lifetime == "instance";
     assert networkOutput.value.resource.provider == abilities.instanceIdentities."provider:manager";
     assert networkOutput.value.resource.key == "network-online";
+    assert resolvedTopLevelDesired.realization.dependency.interface == networkOutput.value.interface;
+    assert resolvedTopLevelDesired.realization.dependency.resource == networkOutput.value.resource;
+    assert resolvedTopLevelDesired.realization.marker;
     assert observerSelection.config.aos.abilities.resolvedExecutionObserver
     == {
       request = "consumer:lifecycle";

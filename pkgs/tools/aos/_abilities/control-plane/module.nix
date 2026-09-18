@@ -9,6 +9,10 @@
 }: let
   cfg = config.aos.config.unitGraph;
   abilityTypes = lib.abilities.types;
+  hostStage =
+    config.aos.abilities.environment
+    != null
+    && config.aos.abilities.environment.stage == "host";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
@@ -269,7 +273,7 @@ in {
 
   config = lib.mkMerge [
     {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
-    (lib.mkIf (cfg.enable && config.aos.abilities.environment != null) {
+    (lib.mkIf (cfg.enable && hostStage) {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
         ++ builtins.map (entry: entry.configured) contributions

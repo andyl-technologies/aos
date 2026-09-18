@@ -126,32 +126,6 @@
 
   initrdAbilityGraph = config.system.build.initrdAbilityGraph;
   handoffInterface = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
-  abilityTypes = lib.abilities.types;
-  handoffResourceType = abilityTypes.record {
-    fields = {
-      resource = abilityTypes.resourceId;
-      kind = abilityTypes.qualifiedName;
-      lifetime = abilityTypes.lifetime;
-      value = handoffInterface.requestType;
-      controller = abilityTypes.declarationKey;
-      realization = handoffInterface.realizationType;
-    };
-  };
-  handoffSelectionType = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.boot.preparation-handoff-selection/v1"];
-      binding = abilityTypes.record {
-        fields = {
-          name = abilityTypes.declarationKey;
-          request = abilityTypes.declarationKey;
-          implementation = abilityTypes.declarationKey;
-          providerInstance = abilityTypes.declarationKey;
-          slot = abilityTypes.localKey;
-        };
-      };
-      resource = handoffResourceType;
-    };
-  };
   handoffResources =
     if initrdAbilityGraph == null
     then []
@@ -185,7 +159,11 @@
     };
 in {
   options.aos.boot.preparationHandoff = lib.mkOption {
-    type = lib.types.nullOr handoffSelectionType;
+    # The final ability fixed point has already checked the resource value
+    # against the interface and its realization against the selected
+    # implementation. A second structural type here would duplicate those
+    # declarations and reject implementation-specific realizations.
+    type = lib.types.nullOr (lib.types.uniq lib.types.attrs);
     readOnly = true;
     internal = true;
     description = ''
