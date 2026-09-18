@@ -272,7 +272,14 @@ in
   };
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
-  assert builtins.all (target: builtins.length target.environment.layers == 2) contract.targets;
+  assert builtins.all (target:
+    builtins.length target.environment.layers
+    == (
+      if target.id == "container-aarch64-linux"
+      then 3
+      else 2
+    ))
+  contract.targets;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
   assert executor.passthru.qualification.platform == "x86_64-linux";
   assert executor.passthru.qualification.caseScenarios == {};
@@ -319,7 +326,13 @@ in
     ]
   );
   assert builtins.match ".*/aos-qualification-${platform}-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
-  assert builtins.match ".*/aos-qualification-${platform}-container-lifecycle" releaseExecutor.passthru.qualification.scenarios."claim-container-${platform}-functional" != null;
+  assert builtins.match (
+    if platform == "aarch64-linux"
+    then ".*/aos-qualification-${platform}-report"
+    else ".*/aos-qualification-${platform}-container-lifecycle"
+  )
+  releaseExecutor.passthru.qualification.scenarios."claim-container-${platform}-functional"
+  != null;
   assert builtins.match ".*/aos-qualification-${platform}-image-lifecycle" releaseExecutor.passthru.qualification.scenarios."claim-disk-${platform}-functional" != null;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
   == [
