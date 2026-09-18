@@ -20,14 +20,152 @@ mod contract;
 
 pub use contract::contract;
 
-/// Loads the smallest matrix fixture that exercises cross-adapter references.
+/// Builds the smallest matrix fixture that exercises cross-adapter references.
 ///
 /// Two adapters make ordering, duplicate-reference, and cross-cell replay tests
-/// meaningful. One shared scenario keeps the fixture explicit and avoids
-/// reconstructing Nix-owned matrix expansion in Rust.
+/// meaningful. The qualification contract and focused matrix tests share this
+/// constructor so the synthetic matrix is authored only once.
 pub(crate) fn native_adapter_matrix_spec() -> NativeAdapterMatrixSpec {
-    serde_json::from_str(include_str!("native-adapter-matrix-v1.json"))
-        .expect("the explicit native adapter matrix fixture is valid")
+    let applicability = json!({
+        "required_resource_lifetimes": [],
+        "requires_state_format": false,
+    });
+    let disposition = json!({
+        "kind": "exact",
+        "value": "rejected-before-acquisition",
+    });
+    let postcondition_names = [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+    ];
+    let postcondition_kinds = BTreeMap::from([
+        ("at-most-one-resource-owner", "ownership-inventory"),
+        ("dependent-effects-not-executed", "dependency-barrier"),
+        ("durable-attempt-state-classified", "journal-timeline"),
+        ("foreign-resources-unchanged", "foreign-resource-snapshot"),
+    ]);
+    let postconditions = postcondition_kinds
+        .iter()
+        .map(|(name, evidence_kind)| {
+            json!({
+                "evidence_kind": evidence_kind,
+                "name": name,
+            })
+        })
+        .collect::<Vec<_>>();
+    let adapters = [("fixture-a", 'a'), ("fixture-z", 'c')].map(|(name, digest_character)| {
+        let descriptor = format!("sha256:{}", digest_character.to_string().repeat(64));
+        json!({
+            "adapter": name,
+            "conformance_families": ["durability-recovery"],
+            "interface_abi": 1,
+            "interface_descriptor": descriptor,
+            "interface_name": format!("aos.{name}-effects"),
+            "methods": [{
+                "required_target_access": "exclusive-write",
+                "method": "apply",
+            }],
+            "observation_kind": "fixture-observation",
+            "provider_contract": {
+                "lifecycle": {"persistent_delete_method": null},
+                "resource_lifetimes": ["persistent"],
+                "state_format": format!("sha256:{}", "b".repeat(64)),
+            },
+            "provider_implementation": {
+                "contract": format!(
+                    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-abilities"
+                ),
+                "implementation": format!("{name}-implementation"),
+                "observer": {
+                    "artifact": {
+                        "path": format!(
+                            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-observer"
+                        ),
+                        "selector": {
+                            "_type": "aos-package-output-selector",
+                            "output": "out",
+                            "package": format!("{name}-observer"),
+                        },
+                    },
+                    "entry_point": "bin/fixture-observer",
+                    "arguments": {"kind": "record"},
+                    "result": {"kind": "record"},
+                },
+            },
+            "scope": "host-resource",
+        })
+    });
+    let cells = adapters
+        .iter()
+        .map(|adapter| {
+            let name = adapter["adapter"]
+                .as_str()
+                .expect("synthetic adapter name is a string");
+            let interface = adapter["interface_name"]
+                .as_str()
+                .expect("synthetic interface name is a string");
+            json!({
+                "id": format!(
+                    "{name}/{interface}/abi-1/apply/interrupt-before-acquisition"
+                ),
+                "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+                "adapter": name,
+                "interface": {
+                    "name": interface,
+                    "abi": 1,
+                    "descriptor": adapter["interface_descriptor"],
+                },
+                "method": "apply",
+                "required_target_access": "exclusive-write",
+                "scope": "host-resource",
+                "boundary": "before-acquisition",
+                "failure": "injected-interruption",
+                "predecessor": "same",
+                "candidate": "same",
+                "disposition": disposition,
+                "applicability": applicability,
+                "postconditions": postcondition_names,
+                "postcondition_kinds": postcondition_kinds,
+                "invalidated_by": ["subject", "policy", "executor", "environment"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let applicable_cell_ids = cells
+        .iter()
+        .map(|cell| cell["id"].clone())
+        .collect::<Vec<_>>();
+    let scenario = json!({
+        "applicability": applicability,
+        "boundary": "before-acquisition",
+        "candidate": "same",
+        "disposition": disposition,
+        "failure": "injected-interruption",
+        "family": "durability-recovery",
+        "id": "interrupt-before-acquisition",
+        "postconditions": postconditions,
+        "predecessor": "same",
+    });
+    let value = json!({
+        "schema": "aos.qualification.native-adapter-matrix-spec/v1",
+        "surface": {
+            "adapters": adapters,
+            "families": ["durability-recovery"],
+            "invalidation_dimensions": ["subject", "policy", "executor", "environment"],
+            "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+            "scenarios": [scenario],
+            "schema": "aos.qualification.native-adapter-surface/v1",
+        },
+        "cells": cells,
+        "applicability": {
+            "schema": "aos.qualification.native-adapter-matrix-applicability/v1",
+            "applicable_cell_ids": applicable_cell_ids,
+            "inapplicable_cells": [],
+        },
+    });
+
+    serde_json::from_value(value).expect("the synthetic native adapter matrix is valid")
 }
 
 pub fn metadata() -> Result<Value> {
