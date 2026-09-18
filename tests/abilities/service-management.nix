@@ -324,11 +324,6 @@
     consumerInstance = "consumer";
     declaration = templateInstanceService;
   };
-  expandedSystemTemplateInstance = serviceManagement.forService {
-    inherit serviceTypes;
-    consumerInstance = "system:workers";
-    declaration = templateInstanceService;
-  };
   invalidTemplateInstanceSource = builtins.tryEval (builtins.deepSeq (serviceManagement.instanceOf {
       inherit serviceTypes;
       template = minimalService;
@@ -542,28 +537,6 @@
         enabled = false;
       };
   };
-  systemOwnedService = serviceManagement.forService {
-    inherit serviceTypes;
-    consumerInstance = "system:bind";
-    declaration =
-      minimalService
-      // {
-        lifecycle =
-          minimalService.lifecycle
-          // {
-            start = [
-              {
-                executable =
-                  command.executable
-                  // {
-                    arguments = [(resultOf "configuration" "planned-path")];
-                  };
-                ignore_failure = false;
-              }
-            ];
-          };
-      };
-  };
   scheduledActivation = {
     name = "periodic";
     enabled = true;
@@ -659,7 +632,7 @@
   };
   unboundedResourceLimit.kind = "unbounded";
   namedCredentialResolution = serviceManagement.forProducer {
-    consumerInstance = "system:registry-hub";
+    consumerInstance = "registry-hub";
     key = "credential-source";
     interface = interfaces.namedCredential;
     parameters = {
@@ -668,7 +641,7 @@
     };
   };
   namedCredentialDelivery = serviceManagement.forProducer {
-    consumerInstance = "system:registry-hub";
+    consumerInstance = "registry-hub";
     key = "credential-delivery";
     interface = interfaces.credentialDelivery;
     parameters = {
@@ -678,7 +651,7 @@
     };
   };
   credentialReferences = serviceManagement.forCredentialReferences {
-    consumerInstance = "system:registry-hub";
+    consumerInstance = "registry-hub";
     references = [
       {
         key = "signing-key";
@@ -736,11 +709,6 @@
     consumerInstance = "consumer";
     interface = interfaces.credentialDelivery;
     producers = [];
-  };
-  systemCredentialBatch = serviceManagement.forProducers {
-    consumerInstance = "system:secrets";
-    interface = interfaces.credentialDelivery;
-    producers = credentialProducers;
   };
   principalResolution = {
     name = "service-user";
@@ -1206,8 +1174,6 @@ in
   == ["worker-blue-instantiation" "worker-blue-lifecycle"];
   assert expandedTemplateInstance.requests.worker-blue-instantiation.parameters.selection
   == templateInstanceService.instantiation;
-  assert expandedSystemTemplateInstance.requests."system:worker-blue-instantiation".parameters.selection.template_resource.request
-  == "system:main-template_definition";
   assert expandedTemplateInstance.requirementTemplates.worker-blue-service-lifecycle.guarantees
   == ["core:service-template-exact-reuse"];
   assert interfaces.lifecycle.guarantees
@@ -1243,16 +1209,6 @@ in
     "main-watchdog"
   ];
   assert expandedDisabledSubservice.requests.administration-lifecycle.parameters.enabled == false;
-  assert systemOwnedService.requests."system:main-lifecycle".consumer == "system:bind";
-  assert systemOwnedService.requests."system:main-lifecycle".requirement == "system:main-service-lifecycle";
-  assert (builtins.head systemOwnedService.requests."system:main-lifecycle".parameters.start).executable.arguments
-  == [
-    {
-      _type = "aos-request-output-reference";
-      request = "system:configuration";
-      output = "planned-path";
-    }
-  ];
   assert expandedExtended.requests.main-lifecycle.parameters.start_timeout_unbounded;
   assert expandedExtended.requests.main-dependencies.parameters.prerequisites
   == [(resultOf "dependency" "resource")];
@@ -1449,37 +1405,34 @@ in
   assert builtins.length (builtins.attrNames credentialBatch.requests) == 6;
   assert builtins.attrNames emptyCredentialBatch.requirementTemplates == ["credential-delivery"];
   assert emptyCredentialBatch.requests == {};
-  assert builtins.attrNames systemCredentialBatch.requirementTemplates == ["system:credential-delivery"];
-  assert builtins.length (builtins.attrNames systemCredentialBatch.requests) == 6;
-  assert systemCredentialBatch.requests."system:credential-0".consumer == "system:secrets";
-  assert namedCredentialResolution.requests."system:credential-source".parameters
+  assert namedCredentialResolution.requests.credential-source.parameters
   == {
     name = "hub-jwt";
     scope = "system";
   };
-  assert namedCredentialDelivery.requests."system:credential-delivery".parameters.source
+  assert namedCredentialDelivery.requests.credential-delivery.parameters.source
   == {
     _type = "aos-request-output-reference";
-    request = "system:credential-source";
+    request = "credential-source";
     output = "resource";
   };
   assert builtins.attrNames credentialReferences.requests
   == [
-    "system:signing-key"
-    "system:signing-key-source"
-    "system:tls-certificate"
+    "signing-key"
+    "signing-key-source"
+    "tls-certificate"
   ];
-  assert credentialReferences.requests."system:signing-key".parameters
+  assert credentialReferences.requests.signing-key.parameters
   == {
     name = "signing-key";
     source = {
       _type = "aos-request-output-reference";
-      request = "system:signing-key-source";
+      request = "signing-key-source";
       output = "resource";
     };
     encrypted = true;
   };
-  assert credentialReferences.requests."system:tls-certificate".parameters
+  assert credentialReferences.requests.tls-certificate.parameters
   == {
     name = "certificate";
     source = (builtins.head credentialProducers).parameters.source;
