@@ -1,0 +1,47 @@
+[package]
+name = "aos-sandbox-storage"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "aos-sandbox-zfs-worker"
+path = "src/bin/aos-sandbox-zfs-worker.rs"
+
+[[bin]]
+name = "aos-sandbox-workspace-pin-worker"
+path = "src/bin/aos-sandbox-workspace-pin-worker.rs"
+
+[[bin]]
+name = "aos-sandbox-workspace-pin-observer"
+path = "src/bin/aos-sandbox-workspace-pin-observer.rs"
+
+[[bin]]
+name = "aos-storaged"
+path = "src/bin/aos-storaged.rs"
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
+[dependencies]
+aos-proto.workspace = true
+aos-sandbox.workspace = true
+aos-sandbox-broker.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
+buffa.workspace = true
+hmac.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "rand", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

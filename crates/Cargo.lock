@@ -168,10 +168,12 @@ dependencies = [
  "aos-oci-types",
  "aos-package",
  "aos-profile",
+ "aos-proto",
  "aos-proto-types",
  "aos-registry-surface",
  "aos-release",
  "aos-remote",
+ "aos-sandbox",
  "aos-server",
  "async-trait",
  "atty",
@@ -179,6 +181,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "clap_complete",
+ "connectrpc",
  "console",
  "crossterm",
  "ed25519-dalek",
@@ -186,6 +189,7 @@ dependencies = [
  "futures-util",
  "glob",
  "hex",
+ "http 1.4.1",
  "humantime",
  "hyper-util",
  "ignore",
@@ -302,6 +306,55 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-filesystem-fuse"
+version = "0.1.0"
+dependencies = [
+ "aos-filesystem-view",
+ "aos-sandbox",
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-broker-session-security",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "ed25519-dalek",
+ "libc",
+ "pkg-config",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-filesystem-fuse-kernel-worker"
+version = "0.0.0"
+dependencies = [
+ "aos-filesystem-fuse",
+ "aos-filesystem-view",
+ "aos-sandbox-core",
+ "libc",
+]
+
+[[package]]
+name = "aos-filesystem-fuse-link-consumer"
+version = "0.0.0"
+dependencies = [
+ "aos-filesystem-fuse",
+]
+
+[[package]]
+name = "aos-filesystem-view"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-broker-session-security",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "ed25519-dalek",
+ "libc",
+ "rustix 1.1.4",
  "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
@@ -762,6 +815,358 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-agent",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-ownership-protocol",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-protocol",
+ "axum",
+ "buffa",
+ "connectrpc",
+ "ed25519-dalek",
+ "futures",
+ "rand 0.9.4",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "aos-sandbox-agent"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-core",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-broker"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox",
+ "aos-sandbox-core",
+ "aos-sandbox-protocol",
+ "ed25519-dalek",
+ "hex",
+ "hmac 0.12.1",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-broker-session-protocol"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-core",
+ "buffa",
+ "ed25519-dalek",
+ "hex",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-broker-session-security"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-core",
+ "aos-sandbox-host",
+ "aos-sandbox-linux",
+ "aos-sandbox-mount",
+ "aos-sandbox-network",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider",
+ "aos-sandbox-source-provider-protocol",
+ "aos-sandbox-source-provider-security",
+ "aos-sandbox-storage",
+ "buffa",
+ "ed25519-dalek",
+ "hex",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-core"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "aos-sandbox-guardian"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "ed25519-dalek",
+ "hex",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-host"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-agent",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-guardian",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-systemd",
+ "async-trait",
+ "buffa",
+ "ed25519-dalek",
+ "rand 0.9.4",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "aos-sandbox-linux"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustix 1.1.4",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-mount"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider",
+ "aos-sandbox-source-provider-protocol",
+ "aos-sandbox-source-provider-security",
+ "buffa",
+ "ed25519-dalek",
+ "hex",
+ "libc",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-network"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "base64 0.22.1",
+ "buffa",
+ "ed25519-dalek",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "aos-sandbox-network-protected-store-fixture"
+version = "0.0.0"
+dependencies = [
+ "aos-sandbox-network",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-sandbox-network-systemd-custody-fixture"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-network",
+ "aos-sandbox-protocol",
+ "buffa",
+ "ed25519-dalek",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "aos-sandbox-ownership-protocol"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-protocol"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-core",
+ "aos-sandbox-source-provider-protocol",
+ "buffa",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-service-journal-probe"
+version = "0.0.0"
+dependencies = [
+ "aos-sandbox",
+]
+
+[[package]]
+name = "aos-sandbox-source-provider"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-source-provider-ledger",
+ "aos-sandbox-source-provider-protocol",
+ "aos-sandbox-source-provider-security",
+ "ed25519-dalek",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-source-provider-ledger"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "aos-sandbox-source-provider-protocol",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "aos-sandbox-source-provider-protocol"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "ed25519-dalek",
+ "hex",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-source-provider-security"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-ledger",
+ "aos-sandbox-source-provider-protocol",
+ "ed25519-dalek",
+ "hmac 0.12.1",
+ "libc",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-storage"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "buffa",
+ "ed25519-dalek",
+ "hmac 0.12.1",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-verity-backing-probe"
+version = "0.0.0"
+dependencies = [
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "libc",
+ "rustix 1.1.4",
+]
+
+[[package]]
 name = "aos-server"
 version = "0.1.0"
 dependencies = [
@@ -811,8 +1216,13 @@ name = "aos-systemd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-sandbox-linux",
  "futures-util",
+ "libc",
+ "rustix 1.1.4",
  "serde",
+ "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

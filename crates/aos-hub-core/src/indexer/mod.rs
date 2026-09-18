@@ -3715,7 +3715,9 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         let artifacts = release_snapshot_artifacts(&[package]);
 
         assert_eq!(artifacts.len(), 3);
-        assert!(artifacts.iter().all(|entry| entry.artifact_kind == "output"));
+        assert!(artifacts
+            .iter()
+            .all(|entry| entry.artifact_kind == "output"));
         assert_eq!(
             artifacts
                 .iter()

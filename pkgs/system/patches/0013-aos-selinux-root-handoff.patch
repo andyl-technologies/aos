@@ -1,0 +1,344 @@
+diff --git a/src/core/main.c b/src/core/main.c
+index 782168e56d..ef57f0e4c1 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -2,10 +2,14 @@
+ 
+ #include <fcntl.h>
++#include <linux/magic.h>
+ #include <linux/oom.h>
+ #include <linux/vt.h>
+ #include <stdlib.h>
+ #include <sys/mount.h>
+ #include <sys/prctl.h>
++#include <sys/statfs.h>
++#include <sys/statvfs.h>
+ #include <sys/utsname.h>
++#include <sys/xattr.h>
+ #include <unistd.h>
+ 
+ #if HAVE_VALGRIND_VALGRIND_H
+@@ -47,6 +51,7 @@
+ #include "fileio.h"
+ #include "format-table.h"
+ #include "format-util.h"
++#include "fstab-util.h"
+ #include "glyph-util.h"
+ #include "hash-funcs.h"
+ #include "hashmap.h"
+@@ -135,5 +135,9 @@ static ShowStatus arg_show_status;
+ static StatusUnitFormat arg_status_unit_format;
+ static bool arg_switched_root;
++static unsigned arg_aos_root_handoff_count;
++static bool arg_aos_root_handoff_malformed;
++static int arg_aos_root_handoff_fd = -EBADF;
++#define AOS_ROOT_HANDOFF_PATH "/usr/lib/systemd/aos-selinux-root-handoff"
+ static PagerFlags arg_pager_flags;
+ static bool arg_service_watchdogs;
+ static UnitDefaults arg_defaults;
+@@ -278,7 +281,12 @@ static int parse_proc_cmdline_item(const char *key, const char *value, void *data
+ 
+         assert(key);
+ 
+-        if (STR_IN_SET(key, "systemd.unit", "rd.systemd.unit")) {
++        if (streq(key, "aos.selinux.root_handoff")) {
++                arg_aos_root_handoff_count++;
++                if (!streq_ptr(value, "1"))
++                        arg_aos_root_handoff_malformed = true;
++
++        } else if (STR_IN_SET(key, "systemd.unit", "rd.systemd.unit")) {
+ 
+                 if (proc_cmdline_value_missing(key, value))
+                         return 0;
+@@ -1960,5 +1969,133 @@ static void reduce_vt(ManagerObjective objective) {
+         }
+ }
++
++static int aos_open_root_handoff_guard(const char *root) {
++        static const char expected_context[] = "system_u:object_r:init_exec_t";
++        struct stat guard_status, lower_status, mapper_status, root_status, source_status;
++        struct statfs filesystem_status;
++        struct statvfs lower_mount_status, mount_status;
++        char context[sizeof(expected_context)];
++        _cleanup_free_ char *filesystem_type = NULL, *mount_options = NULL, *mount_source = NULL;
++        _cleanup_close_ int guard_fd = -EBADF, lower_fd = -EBADF, root_fd = -EBADF;
++        int r;
++        ssize_t context_size;
++
++        guard_fd = chase_and_open(
++                        AOS_ROOT_HANDOFF_PATH,
++                        root,
++                        (root ? CHASE_PREFIX_ROOT : 0) |
++                        CHASE_PROHIBIT_SYMLINKS |
++                        CHASE_NO_AUTOFS |
++                        CHASE_MUST_BE_REGULAR,
++                        O_RDONLY | O_CLOEXEC | O_NOCTTY,
++                        /* ret_path= */ NULL);
++        if (guard_fd < 0)
++                return log_error_errno(guard_fd, "Cannot open authenticated AOS root-handoff guard: %m");
++
++        root_fd = chase_and_open(
++                        "/",
++                        root,
++                        (root ? CHASE_PREFIX_ROOT : 0) |
++                        CHASE_PROHIBIT_SYMLINKS |
++                        CHASE_NO_AUTOFS |
++                        CHASE_MUST_BE_DIRECTORY,
++                        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOCTTY,
++                        /* ret_path= */ NULL);
++        if (root_fd < 0)
++                return log_error_errno(root_fd, "Cannot open AOS handoff root: %m");
++        lower_fd = chase_and_open(
++                        "/nix.lower",
++                        root,
++                        (root ? CHASE_PREFIX_ROOT : 0) |
++                        CHASE_PROHIBIT_SYMLINKS |
++                        CHASE_NO_AUTOFS |
++                        CHASE_MUST_BE_DIRECTORY,
++                        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOCTTY,
++                        /* ret_path= */ NULL);
++        if (lower_fd < 0)
++                return log_error_errno(lower_fd, "Cannot open AOS physical lower store root: %m");
++        r = path_get_mount_info(root ?: "/", &filesystem_type, &mount_options, &mount_source);
++        if (r < 0)
++                return log_error_errno(r, "Cannot inspect AOS handoff root mount: %m");
++        if (!streq_ptr(filesystem_type, "erofs") ||
++            isempty(mount_source) ||
++            stat(mount_source, &source_status) < 0 ||
++            stat("/dev/mapper/root", &mapper_status) < 0 ||
++            !S_ISBLK(source_status.st_mode) ||
++            !S_ISBLK(mapper_status.st_mode) ||
++            source_status.st_rdev != mapper_status.st_rdev ||
++            !fstab_test_yes_no_option(mount_options, "ro\0rw\0") ||
++            !fstab_test_yes_no_option(mount_options, "nodev\0dev\0"))
++                return log_error_errno(
++                                SYNTHETIC_ERRNO(EPERM),
++                                "AOS handoff root is not the read-only nodev /dev/mapper/root EROFS mount.");
++
++        if (fstat(guard_fd, &guard_status) < 0 ||
++            fstat(root_fd, &root_status) < 0 ||
++            fstat(lower_fd, &lower_status) < 0)
++                return log_error_errno(errno, "Cannot inspect AOS root-handoff guard: %m");
++        if (guard_status.st_uid != 0 || guard_status.st_gid != 0 ||
++            (guard_status.st_mode & 07777) != 0555 ||
++            guard_status.st_dev != root_status.st_dev ||
++            lower_status.st_dev != root_status.st_dev)
++                return log_error_errno(
++                                SYNTHETIC_ERRNO(EPERM),
++                                "AOS root-handoff guard has untrusted ownership, mode, or filesystem identity.");
++        if (fstatfs(guard_fd, &filesystem_status) < 0 ||
++            fstatvfs(guard_fd, &mount_status) < 0 ||
++            fstatvfs(lower_fd, &lower_mount_status) < 0)
++                return log_error_errno(errno, "Cannot inspect AOS root-handoff filesystem: %m");
++        if (filesystem_status.f_type != EROFS_SUPER_MAGIC_V1 ||
++            !FLAGS_SET(mount_status.f_flag, ST_RDONLY | ST_NODEV) ||
++            !FLAGS_SET(lower_mount_status.f_flag, ST_RDONLY | ST_NODEV))
++                return log_error_errno(
++                                SYNTHETIC_ERRNO(EPERM),
++                                "AOS root-handoff guard and lower store are not on the authenticated read-only nodev EROFS root.");
++
++        context_size = fgetxattr(guard_fd, "security.selinux", context, sizeof(context));
++        if (!IN_SET(context_size, (ssize_t) sizeof(expected_context) - 1, (ssize_t) sizeof(expected_context)) ||
++            memcmp(context, expected_context, sizeof(expected_context) - 1) != 0 ||
++            (context_size == (ssize_t) sizeof(expected_context) && context[sizeof(expected_context) - 1] != 0))
++                return log_error_errno(
++                                SYNTHETIC_ERRNO(EPERM),
++                                "AOS root-handoff guard has the wrong SELinux label.");
++
++        return TAKE_FD(guard_fd);
++}
++
++static int aos_prepare_root_handoff(
++                ManagerObjective objective,
++                const char *switch_root_dir,
++                const char *switch_root_init) {
++        int fd;
++
++        if (arg_aos_root_handoff_count == 0)
++                return 0;
++
++        arg_crash_action = CRASH_FREEZE;
++        if (arg_aos_root_handoff_count != 1 || arg_aos_root_handoff_malformed)
++                return log_error_errno(
++                                SYNTHETIC_ERRNO(EINVAL),
++                                "Malformed authenticated AOS root-handoff contract.");
++        if (objective == MANAGER_SOFT_REBOOT)
++                return log_error_errno(
++                                SYNTHETIC_ERRNO(EPERM),
++                                "AOS protected root handoff forbids soft reboot.");
++        if (objective == MANAGER_SWITCH_ROOT &&
++            (!streq_ptr(switch_root_dir, "/sysroot") || switch_root_init))
++                return log_error_errno(
++                                SYNTHETIC_ERRNO(EPERM),
++                                "AOS protected root handoff requires /sysroot and forbids a custom init.");
++
++        fd = aos_open_root_handoff_guard(
++                        objective == MANAGER_SWITCH_ROOT ? switch_root_dir : NULL);
++        if (fd < 0)
++                return fd;
++
++        arg_aos_root_handoff_fd = safe_close(arg_aos_root_handoff_fd);
++        arg_aos_root_handoff_fd = fd;
++        return 0;
++}
+ 
+ static int do_reexecute(
+                 ManagerObjective objective,
+@@ -1977,7 +2044,8 @@ static int do_reexecute(
+                 const char **ret_error_message) {
+ 
+         size_t i, args_size;
+-        const char **args;
++        const char **args, *aos_handoff_mode = NULL;
++        _cleanup_close_ int aos_handoff_fd = -EBADF;
+         int r;
+ 
+         assert(IN_SET(objective, MANAGER_REEXECUTE, MANAGER_SWITCH_ROOT, MANAGER_SOFT_REBOOT));
+@@ -1991,6 +2000,17 @@ static int do_reexecute(
+          * doesn't get rebooted while we do that. */
+         watchdog_close(/* disarm= */ true);
+ 
++        if (arg_aos_root_handoff_count > 0) {
++                arg_crash_action = CRASH_FREEZE;
++                aos_handoff_fd = TAKE_FD(arg_aos_root_handoff_fd);
++                if (aos_handoff_fd < 0) {
++                        *ret_error_message = "Authenticated AOS root-handoff guard was not prepared";
++                        return log_error_errno(SYNTHETIC_ERRNO(EBADF), "%s", *ret_error_message);
++                }
++                aos_handoff_mode = objective == MANAGER_SWITCH_ROOT ?
++                        "--aos-root-handoff=switch-root" : "--aos-root-handoff=reexec";
++        }
++
+         if (!switch_root_dir && objective == MANAGER_SOFT_REBOOT) {
+                 /* If no switch root dir is specified, then check if /run/nextroot/ qualifies and use that */
+                 r = path_is_os_tree("/run/nextroot");
+@@ -2038,7 +2080,11 @@ static int do_reexecute(
+                                 /* old_root_after= */ NULL,
+                                 /* flags= */ (objective == MANAGER_SWITCH_ROOT ? SWITCH_ROOT_DESTROY_OLD_ROOT : 0) |
+                                              (objective == MANAGER_SOFT_REBOOT ? 0 : SWITCH_ROOT_RECURSIVE_RUN));
+-                if (r < 0)
++                if (r < 0 && aos_handoff_mode) {
++                        *ret_error_message = "AOS protected switch-root failed";
++                        return log_error_errno(r, "%s: %m", *ret_error_message);
++                }
++                if (r < 0)
+                         log_error_errno(r, "Failed to switch root, trying to continue: %m");
+         }
+ 
+@@ -2047,7 +2094,12 @@ static int do_reexecute(
+         if (r < 0)
+                 log_warning_errno(r, "Failed to apply the starting ambient set, ignoring: %m");
+ 
+-        args_size = argc + 5;
++        if (r < 0 && aos_handoff_mode) {
++                *ret_error_message = "AOS protected root handoff could not restore ambient capabilities";
++                return log_error_errno(r, "%s: %m", *ret_error_message);
++        }
++
++        args_size = argc + 6;
+         args = newa(const char*, args_size);
+ 
+         if (!switch_root_init) {
+@@ -2061,7 +2112,8 @@ static int do_reexecute(
+ 
+                 xsprintf(sfd, "--deserialize=%i", fileno(arg_serialization));
+ 
+-                i = 1;         /* Leave args[0] empty for now. */
++                i = aos_handoff_mode ? 2 : 1; /* Leave argv[0] and the optional guard mode empty. */
++                args[1] = aos_handoff_mode;
+ 
+                 /* Put our stuff first to make sure it always gets parsed in case
+                  * we get weird stuff from the kernel cmdline (like --) */
+@@ -2085,6 +2137,18 @@ static int do_reexecute(
+                  */
+                 valgrind_summary_hack();
+ 
++                if (aos_handoff_mode) {
++                        args[0] = AOS_ROOT_HANDOFF_PATH;
++                        (void) execveat(
++                                        aos_handoff_fd,
++                                        "",
++                                        (char* const*) args,
++                                        environ,
++                                        AT_EMPTY_PATH);
++                        *ret_error_message = "Failed to execute authenticated AOS root-handoff guard";
++                        return log_error_errno(errno, "%s: %m", *ret_error_message);
++                }
++
+                 args[0] = SYSTEMD_BINARY_PATH;
+                 (void) execv(args[0], (char* const*) args);
+ 
+@@ -2236,5 +2300,11 @@ static int invoke_main_loop(
+                 case MANAGER_REEXECUTE:
+ 
++                        r = aos_prepare_root_handoff(objective, NULL, NULL);
++                        if (r < 0) {
++                                *ret_error_message = "Failed to prepare authenticated AOS daemon reexec";
++                                return r;
++                        }
++
+                         manager_send_reloading(m); /* From the perspective of the manager calling us this is
+                                                     * pretty much the same as a reload */
+ 
+@@ -2252,6 +2323,15 @@ static int invoke_main_loop(
+ 
+                 case MANAGER_SWITCH_ROOT:
+ 
++                        r = aos_prepare_root_handoff(
++                                        objective,
++                                        m->switch_root,
++                                        m->switch_root_init);
++                        if (r < 0) {
++                                *ret_error_message = "Failed to prepare authenticated AOS switch-root";
++                                return r;
++                        }
++
+                         manager_send_reloading(m); /* From the perspective of the manager calling us this is
+                                                     * pretty much the same as a reload */
+ 
+@@ -2281,6 +2361,12 @@ static int invoke_main_loop(
+                         return objective;
+ 
+                 case MANAGER_SOFT_REBOOT:
++                        r = aos_prepare_root_handoff(objective, m->switch_root, NULL);
++                        if (r < 0) {
++                                *ret_error_message = "AOS protected root handoff rejected soft reboot";
++                                return r;
++                        }
++
+                         manager_send_reloading(m);
+                         manager_set_switching_root(m, true);
+ 
+@@ -2766,6 +2828,8 @@ static void reset_arguments(void) {
+         arg_show_status = _SHOW_STATUS_INVALID;
+         arg_status_unit_format = STATUS_UNIT_FORMAT_DEFAULT;
+         arg_switched_root = false;
++        arg_aos_root_handoff_count = 0;
++        arg_aos_root_handoff_malformed = false;
+         arg_pager_flags = 0;
+         arg_service_watchdogs = true;
+ 
+@@ -2844,6 +2908,11 @@ static int parse_configuration(const struct rlimit *saved_rlimit_nofile,
+                 if (r < 0)
+                         log_warning_errno(r, "Failed to parse kernel command line, ignoring: %m");
+         }
++        if (arg_aos_root_handoff_count > 0 &&
++            (arg_aos_root_handoff_count != 1 || arg_aos_root_handoff_malformed))
++                return arg_crash_action = CRASH_FREEZE, log_error_errno(
++                                SYNTHETIC_ERRNO(EINVAL),
++                                "Kernel command line must contain exactly one aos.selinux.root_handoff=1 parameter.");
+ 
+         /* Initialize the show status setting if it hasn't been explicitly set yet */
+         if (arg_show_status == _SHOW_STATUS_INVALID)
+@@ -3229,6 +3299,10 @@ static int main(int argc, char *argv[]) {
+         (void) ignore_signals(SIGNALS_IGNORE);
+ 
+-        (void) parse_configuration(&saved_rlimit_nofile, &saved_rlimit_memlock);
++        r = parse_configuration(&saved_rlimit_nofile, &saved_rlimit_memlock);
++        if (r < 0) {
++                error_message = "Failed to parse authenticated kernel command line";
++                goto finish;
++        }
+ 
+         r = parse_argv(argc, argv);
+         if (r < 0) {

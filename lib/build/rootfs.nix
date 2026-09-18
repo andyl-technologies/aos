@@ -88,6 +88,18 @@
 }: let
   toplevel = system.config.system.build.toplevel;
   kernel = system.config.system.build.kernel;
+  immutableSelinuxPolicy = system.config.system.build.immutableSelinuxPolicy;
+  labelImmutableRoot = fsType == "erofs" && immutableSelinuxPolicy != null;
+  immutableStage0 = lib.attrByPath ["aos" "boot" "initrd" "stage0"] null system.config;
+  rootHandoff = labelImmutableRoot && immutableStage0 != null;
+  policySupport = ../../pkgs/security/_aos-selinux-production-policy;
+  policyRoot =
+    if immutableSelinuxPolicy == null
+    then null
+    else "${immutableSelinuxPolicy}/etc/selinux/aos";
+  nativeLibselinux = pkgs.buildPackages.libselinux;
+  nativePatchelf = pkgs.buildPackages.patchelf;
+  nativePython = pkgs.buildPackages.python3;
 
   # Deterministic dm-verity salt + superblock UUID, derived from the image
   # identity (mirrors lib/build/package-root-image.nix's pinned-salt/uuid
@@ -112,7 +124,13 @@
   # duplicate the payload and can pull kernel SDKs into the immutable image.
   # Callers compose capability roots with harness roots; both may retain the
   # same output. Form their union before the strict reference-graph boundary.
-  allClosures = lib.unique (map builtins.toString ([toplevel kernel] ++ extraClosures));
+  allClosures = lib.unique (
+    map builtins.toString (
+      [toplevel kernel]
+      ++ lib.optionals rootHandoff [immutableStage0]
+      ++ extraClosures
+    )
+  );
 
   regInfo = import ./closure-info.nix {inherit pkgs lib;} {
     rootPaths = allClosures;
@@ -181,6 +199,11 @@ in
           pkgs.openssl
           pkgs.gawk
           pkgs.grep
+        ]
+        ++ lib.optionals labelImmutableRoot [
+          nativeLibselinux
+          nativePatchelf
+          nativePython
         ];
 
       exportReferencesGraph = closureGraph;
@@ -197,6 +220,10 @@ in
       # so the ln -sfn targets resolve to the package directory, not
       # to the already-executable path.
       AOS_BASH = toString pkgs.bash;
+      AOS_SELINUX_STAGE0 =
+        if rootHandoff
+        then toString immutableStage0
+        else "";
 
       phases =
         [
@@ -255,7 +282,6 @@ in
               chmod 0700 rootfs/root/.config
               chmod 0755 rootfs/root/.config/apm
               chmod 0755 rootfs/root/.config/apm/registries.d
-              mkdir -p rootfs/run/current-system
 
               # ── 2. Copy the closure into /nix/store ─────────────────────────
               total=$(wc -l < store-paths)
@@ -302,6 +328,24 @@ in
               ln -sfn "$AOS_BASH/bin/sh" rootfs/usr/bin/sh
               ln -sfn "$COREUTILS/bin/env" rootfs/usr/bin/env
 
+              ${lib.optionalString rootHandoff ''
+                # The warm switch-root guard must be a direct EROFS inode. A
+                # symlink here would make the handoff depend on overlay path
+                # resolution before the guard has pinned the runtime closure.
+                install -m 0555 \
+                  "rootfs/nix.lower''${AOS_SELINUX_STAGE0#/nix}/bin/aos-selinux-stage0" \
+                  rootfs/usr/lib/systemd/aos-selinux-root-handoff
+                cmp \
+                  "$AOS_SELINUX_STAGE0/bin/aos-selinux-stage0" \
+                  rootfs/usr/lib/systemd/aos-selinux-root-handoff
+
+                # glibc consults this path before starting PID 1. The guard
+                # pins this authenticated empty inode over the runtime /etc
+                # view before executing the dynamic systemd binary.
+                : > rootfs/usr/lib/systemd/aos-empty-ld-so-preload
+                chmod 0444 rootfs/usr/lib/systemd/aos-empty-ld-so-preload
+              ''}
+
               # ── 4. Kernel modules ───────────────────────────────────────────
               # kmod looks up modules at /lib/modules/$(uname -r); the
               # /lib → usr/lib symlink makes this resolve to usr/lib/modules.
@@ -340,7 +384,7 @@ in
               cp -a "$SYSTEMD_PRESETS"/. rootfs/usr/lib/systemd/system-preset/
 
               # ── 7. /run/current-system → toplevel ───────────────────────────
-              ln -sfn "$TOPLEVEL" rootfs/run/current-system
+              ln -sfnT "$TOPLEVEL" rootfs/run/current-system
 
               # ── 8. /aos-toplevel seed pointer ──────────────────────────────
               # First-boot bootstrap: aos-seed-profiles.service reads this
@@ -371,6 +415,47 @@ in
 
               # ── 11. Caller-supplied postPopulate hook ──────────────────────
               ${postPopulate}
+
+              ${lib.optionalString labelImmutableRoot ''
+                # Derive labels only after every caller-supplied inode exists.
+                # The staged closure lives at /nix.lower/store, while ELF
+                # interpreters retain their runtime /nix/store names.
+                physical_systemd="rootfs/nix.lower''${SYSTEMD#/nix}/lib/systemd/systemd"
+                systemd_interpreter=$(
+                  ${nativePatchelf}/bin/patchelf --print-interpreter \
+                    "$physical_systemd"
+                )
+                case "$systemd_interpreter" in
+                  /nix/store/*) ;;
+                  *)
+                    echo "rootfs-builder: systemd has a non-store ELF interpreter" >&2
+                    exit 1
+                    ;;
+                esac
+                physical_interpreter="/nix.lower''${systemd_interpreter#/nix}"
+                if [ ! -f "rootfs$physical_interpreter" ]; then
+                  echo "rootfs-builder: staged systemd interpreter is absent" >&2
+                  exit 1
+                fi
+                printf '%s\n' "$physical_interpreter" > rootfs-selinux-loader-path
+
+                ${nativePython}/bin/python3 -B ${policySupport}/context_plan.py \
+                  --root rootfs \
+                  --file-contexts ${policyRoot}/contexts/files/file_contexts \
+                  --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+                  --dynamic-loader "$physical_interpreter" \
+                  --output-file-contexts rootfs-file-contexts \
+                  --output-map rootfs-selinux-contexts.json
+                ${nativeLibselinux}/sbin/sefcontext_compile \
+                  -p ${policyRoot}/policy/policy.33 \
+                  -o rootfs-file-contexts.bin \
+                  rootfs-file-contexts
+                ${nativePython}/bin/python3 -B \
+                  ${policySupport}/verify_context_lookups.py \
+                  --file-contexts rootfs-file-contexts \
+                  --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+                  --expected rootfs-selinux-contexts.json
+              ''}
             '';
           }
           {
@@ -419,7 +504,8 @@ in
                 # mkfs prints "libgcc_s.so.1 must be installed for pthread_exit
                 # to work" and risks aborting a worker.
                 export LD_LIBRARY_PATH="${pkgs.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-                mkfs.erofs --all-root -T0 \
+                mkfs.erofs --all-root ${lib.optionalString labelImmutableRoot "--file-contexts=rootfs-file-contexts"} \
+                  -T0 \
                   -U bdfb6fc9-0000-4000-8000-000000000001 \
                   --workers="$NIX_BUILD_CORES" \
                   -z zstd,level=${toString erofsCompressionLevel} \
@@ -427,6 +513,13 @@ in
                   -Eztailpacking \
                   -L ${label} root.img rootfs
                 fsck.erofs root.img >/dev/null
+                ${lib.optionalString labelImmutableRoot ''
+                  ${nativePython}/bin/python3 -B \
+                    ${policySupport}/verify_erofs_contexts.py \
+                    --dump-erofs ${pkgs.erofs-utils}/bin/dump.erofs \
+                    --image root.img \
+                    --expected rootfs-selinux-contexts.json
+                ''}
                 final_bytes=$(stat -c %s root.img)
                 echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 256K cluster, ztailpacking)"
                 echo "$final_bytes" > rootfs-size-bytes
@@ -553,6 +646,12 @@ in
                 mv root.roothash $out/root.roothash
                 mv root.roothash.p7s $out/root.roothash.p7s
                 mv root-verity-size-bytes $out/root-verity-size-bytes
+              ''
+              + lib.optionalString labelImmutableRoot ''
+                mv rootfs-file-contexts $out/rootfs-file-contexts
+                mv rootfs-file-contexts.bin $out/rootfs-file-contexts.bin
+                mv rootfs-selinux-loader-path $out/rootfs-selinux-loader-path
+                mv rootfs-selinux-contexts.json $out/rootfs-selinux-contexts.json
               '';
           }
         ];

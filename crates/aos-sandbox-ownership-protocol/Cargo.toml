@@ -1,0 +1,13 @@
+[package]
+name = "aos-sandbox-ownership-protocol"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-sandbox-core.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

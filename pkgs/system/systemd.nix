@@ -21,6 +21,8 @@
   getent,
   libcap,
   libxcrypt,
+  gcc-libs,
+  libidn2,
   pcre2,
   audit,
   libselinux,
@@ -56,6 +58,10 @@
     openssl
     libcap
     libxcrypt
+    # glibc loads these by SONAME for unwinding and IDN name-service paths.
+    # Keep the providers in PID 1's authenticated runtime closure explicitly.
+    gcc-libs
+    libidn2
     audit
     libselinux
     libsepol
@@ -105,12 +111,33 @@ in
     #          rejects the dm-verity signed-key activation.
     #   0006 — Keep an embedded signed UKI command line authoritative over
     #          addon and SMBIOS fragments that run before initrd validation.
+    #   0007 — Add the closed AOS payload seccomp profile to nspawn and install
+    #          it after container setup, immediately before payload execution.
+    #   0008 — Consume a named supervisor-only root descriptor without
+    #          reopening its pathname or forwarding it to the payload.
+    #   0009 — Test fail-closed shutdown-intent state for retained-supervisor
+    #          reboot support. Runtime integration is a separate step.
+    #   0010 — Authenticate per-boot shutdown intent and reset the empty payload
+    #          cgroup while retaining the AOS supervisor and unit invocation.
+    #   0011 — Install a broker-owned attachment anchor from an exact named
+    #          descriptor with the target idmap and hard read-only attributes.
+    #   0012 — Reserve unit-reference lifetime control to root so an
+    #          unprivileged client cannot prevent exact terminal collection.
+    #   0013 — Route authenticated switch-root and daemon-reexec operations
+    #          through the immutable AOS SELinux guard without init fallback.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
       ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
       ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
       ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch
+      ./patches/0007-nspawn-aos-payload-seccomp-profile.patch
+      ./patches/0008-nspawn-owned-root-descriptor.patch
+      ./patches/0009-nspawn-shutdown-intent-state.patch
+      ./patches/0010-nspawn-retained-supervisor-reboot.patch
+      ./patches/0011-nspawn-attachment-anchor-descriptor.patch
+      ./patches/0012-restrict-unit-reference-methods.patch
+      ./patches/0013-aos-selinux-root-handoff.patch
     ];
 
     buildDeps = [

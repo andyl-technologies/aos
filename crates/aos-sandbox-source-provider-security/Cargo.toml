@@ -1,0 +1,27 @@
+[package]
+name = "aos-sandbox-source-provider-security"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
+[dependencies]
+aos-sandbox.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+aos-sandbox-source-provider-ledger.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+hmac.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["fs", "process", "rand", "time"] }
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,2084 @@
+//! Protected Network namespace catalog and authoritative inventory producer.
+//!
+//! The catalog accepts only exact committed preparation results paired with
+//! their retained portable assignments. Each current-boot publication is
+//! checked against the fixed typed namespace pin before it enters a separate
+//! append-only journal. Every row uses canonical format 1:
+//!
+//! ```text
+//! {"version":1,"record":{...}}
+//! ```
+//!
+//! Rows from earlier Linux boots remain durable collision evidence but do not
+//! enter inventory. Lifecycle updates require an exact prior resource digest,
+//! exact physical identity, and a fresh helper-observed kernel postcondition.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+#[cfg(test)]
+use std::os::fd::AsFd as _;
+use std::os::fd::OwnedFd;
+#[cfg(test)]
+use std::os::unix::fs::MetadataExt as _;
+use std::path::Path;
+
+use aos_proto::aos::sandbox::local::v1::{
+    AssignmentFence, BrokerError, BrokerErrorCode, InventoryNetworkResourcesResponse,
+    InventoryNetworksResponse, NetworkNamespaceInventoryRecord, NetworkResult, NetworkState,
+};
+use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
+use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::path::BeneathRoot;
+use aos_sandbox_linux::pidfd::{NamespaceIdentity, NamespaceKind};
+use aos_sandbox_protocol::{
+    MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS, MAXIMUM_RESPONSE_BYTES,
+    decode_network_resource_inventory_response,
+};
+use buffa::{Enumeration as _, Message as _};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+use crate::{
+    CommittedNetworkResultV1, NetworkCatalogBindingV1, NetworkNamespaceCustodyRequirementV1,
+    ResolvedNetworkPreparationV1,
+};
+
+mod checkpoint;
+mod lifecycle;
+#[doc(hidden)]
+pub use checkpoint::{
+    BrokerNetworkInventoryAvailableObservationV1, BrokerNetworkInventoryCheckpointErrorV1,
+    BrokerNetworkInventoryObservationDispositionV1, BrokerNetworkInventoryOutcomeCauseV1,
+    BrokerNetworkInventoryOutcomeReceiptV1, BrokerNetworkInventoryReservationDispositionV1,
+    BrokerNetworkInventoryReservationV1, BrokerNetworkInventoryUnavailableObservationV1,
+};
+pub(crate) use lifecycle::NetworkNamespaceLifecycleAuthorityV1;
+pub use lifecycle::{
+    NetworkNamespaceIdentityV1, NetworkNamespaceLifecycleActionV1,
+    NetworkNamespaceLifecycleObservationV1, NetworkNamespaceLifecycleOutcomeV1,
+    NetworkNamespaceLifecycleTransitionV1, NetworkNamespaceObservedStateKindV1,
+    NetworkNamespaceObservedStateV1,
+};
+
+const NAMESPACE_JOURNAL_FILE: &str = "network-namespaces.journal";
+const NAMESPACE_PIN_ROOT: &str = "/run/aos/sandbox-pins/netns";
+const HEAD_KEY: &[u8] = b"aos.network.namespace.head.v1\0";
+const RECORD_KEY_PREFIX: &[u8] = b"aos.network.namespace.v1\0";
+const HEAD_FORMAT_VERSION: u16 = 1;
+const RECORD_FORMAT_VERSION: u16 = 1;
+const RESOURCE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.namespace-resource.v1\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.network.namespace-transaction.v1\0";
+const MAXIMUM_RECORD_BYTES: usize = 16 * 1024;
+const MAXIMUM_JOURNAL_RECORD_BYTES: usize = 15_729_100;
+const MAXIMUM_JOURNAL_TRANSACTION_BYTES: usize = 16_778_233;
+const MAXIMUM_MATERIALIZED_BYTES: usize = 286_163_970;
+const MAXIMUM_MATERIALIZED_RECORDS: usize = 16_388;
+
+/// Reports protected namespace-catalog validation or publication failure.
+#[derive(Debug, thiserror::Error)]
+pub enum NetworkNamespaceCatalogError {
+    /// The protected journal failed validation, locking, or publication.
+    #[error("network namespace journal failure: {0}")]
+    Journal(#[from] aos_sandbox::JournalError),
+    /// Trusted inputs do not describe one exact current namespace.
+    #[error("network namespace publication input is incomplete or inconsistent")]
+    InvalidCandidate,
+    /// Durable catalog bytes violate the closed record schema.
+    #[error("network namespace catalog record is corrupt")]
+    CorruptRecord,
+    /// A retained request, assignment, handle, or physical identity conflicts.
+    #[error("network namespace catalog identity conflicts with retained state")]
+    IdentityConflict,
+    /// A lifecycle operation is stale or invalid for the current resource state.
+    #[error("network namespace lifecycle transition conflicts with retained state")]
+    LifecycleConflict,
+    /// The bounded namespace catalog has no remaining publication slots.
+    #[error("network namespace catalog is exhausted")]
+    ResourceExhausted,
+    /// The fixed namespace pin is absent, redirected, mistyped, or replaced.
+    #[error("network namespace pin validation failed: {0}")]
+    NamespacePin(String),
+    /// An internally encoded inventory violated its public wire contract.
+    #[error("network namespace inventory encoding is invalid")]
+    InvalidInventory,
+}
+
+/// Carries an exact committed default-drop namespace and portable assignment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkNamespacePublicationV1 {
+    request_id: [u8; 16],
+    preparation: NetworkCatalogBindingV1,
+    network_handle: [u8; 32],
+    assignment: BrokerAssignment,
+    kernel_boot_id: [u8; 16],
+    namespace_device: u64,
+    namespace_inode: u64,
+    kernel_plan_digest: ObjectDigest,
+    result_digest: ObjectDigest,
+}
+
+impl NetworkNamespacePublicationV1 {
+    pub(crate) fn from_committed(
+        result: CommittedNetworkResultV1,
+        resolution: &ResolvedNetworkPreparationV1,
+        assignment: BrokerAssignment,
+    ) -> Result<Self, NetworkNamespaceCatalogError> {
+        if result.request_id() == [0; 16]
+            || result.network_handle() != *resolution.reserved_network_handle()
+            || result.preparation() != resolution.binding()
+            || result.kernel_boot_id() == [0; 16]
+            || result.namespace_device() == 0
+            || result.namespace_inode() == 0
+            || result.kernel_plan_digest().as_bytes() == &[0; 32]
+            || result.result_digest().as_bytes() == &[0; 32]
+        {
+            return Err(NetworkNamespaceCatalogError::InvalidCandidate);
+        }
+
+        Ok(Self {
+            request_id: result.request_id(),
+            preparation: result.preparation(),
+            network_handle: result.network_handle(),
+            assignment,
+            kernel_boot_id: result.kernel_boot_id(),
+            namespace_device: result.namespace_device(),
+            namespace_inode: result.namespace_inode(),
+            kernel_plan_digest: result.kernel_plan_digest(),
+            result_digest: result.result_digest(),
+        })
+    }
+}
+
+/// Classifies publication of one exact committed namespace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetworkNamespaceCatalogOutcomeV1 {
+    /// A new current default-drop namespace became authoritative.
+    Published,
+    /// The exact current publication was already durable.
+    Replay,
+}
+
+/// Owns the durable namespace table and fixed namespace-pin resolution root.
+pub struct NetworkNamespaceCatalogV1 {
+    journal: Journal,
+    pin_root: PinRoot,
+    kernel_boot_id: [u8; 16],
+    broker_instance_id: [u8; 16],
+    generation: u64,
+    records: BTreeMap<[u8; 32], NamespaceRecordV1>,
+    checkpoint_head: Option<checkpoint::InventoryBsaCheckpointHeadV2>,
+}
+
+impl NetworkNamespaceCatalogV1 {
+    /// Opens protected state and the fixed root-owned namespace pin root.
+    ///
+    /// Empty state receives a durable generation-one head. Every retained
+    /// current-boot row must reproduce a live Network `nsfs` descriptor before
+    /// the catalog becomes available.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] for unsafe filesystem state,
+    /// journal failure, corrupt retained identity, or a missing, changed, or
+    /// incorrectly typed current-boot pin.
+    pub fn open_root_owned(state_directory: &Path) -> Result<Self, NetworkNamespaceCatalogError> {
+        let (journal, _) = Journal::open_protected_at(
+            state_directory,
+            NAMESPACE_JOURNAL_FILE,
+            namespace_journal_limits(),
+        )?;
+        let pin_root = PinRoot::open_kernel(Path::new(NAMESPACE_PIN_ROOT), 0)?;
+        let kernel_boot_id = KernelBootId::current()
+            .map_err(|error| NetworkNamespaceCatalogError::NamespacePin(error.to_string()))?
+            .into_bytes();
+        let broker_instance_id = broker_instance_id()?;
+
+        Self::recover(journal, pin_root, kernel_boot_id, broker_instance_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_test(
+        state_directory: &Path,
+        pin_directory: &Path,
+        kernel_boot_id: [u8; 16],
+        broker_instance_id: [u8; 16],
+    ) -> Result<Self, NetworkNamespaceCatalogError> {
+        let (journal, _) = Journal::open(
+            state_directory.join(NAMESPACE_JOURNAL_FILE),
+            namespace_journal_limits(),
+        )?;
+        let owner = fs::symlink_metadata(pin_directory)
+            .map_err(|error| NetworkNamespaceCatalogError::NamespacePin(error.to_string()))?
+            .uid();
+        let pin_root = PinRoot::open_filesystem(pin_directory, owner)?;
+
+        Self::recover(journal, pin_root, kernel_boot_id, broker_instance_id)
+    }
+
+    fn recover(
+        mut journal: Journal,
+        pin_root: PinRoot,
+        kernel_boot_id: [u8; 16],
+        broker_instance_id: [u8; 16],
+    ) -> Result<Self, NetworkNamespaceCatalogError> {
+        if kernel_boot_id == [0; 16] || broker_instance_id == [0; 16] {
+            return Err(NetworkNamespaceCatalogError::InvalidCandidate);
+        }
+
+        let mut head = None;
+        let mut records = BTreeMap::new();
+        for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
+            if key == HEAD_KEY {
+                if head.replace(decode_head(value)?).is_some() {
+                    return Err(NetworkNamespaceCatalogError::CorruptRecord);
+                }
+                continue;
+            }
+            if checkpoint::is_key(key) {
+                continue;
+            }
+
+            let handle = decode_record_key(key)?;
+            let record = decode_record(value)?;
+            if record.network_handle != handle || records.insert(handle, record).is_some() {
+                return Err(NetworkNamespaceCatalogError::CorruptRecord);
+            }
+        }
+
+        let checkpoint_head = checkpoint::recover(&journal)
+            .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
+        let generation = match head {
+            Some(head) => {
+                let expected = records
+                    .values()
+                    .map(|record| record.catalog_generation)
+                    .max()
+                    .unwrap_or(1);
+                if head.generation != expected {
+                    return Err(NetworkNamespaceCatalogError::CorruptRecord);
+                }
+                head.generation
+            }
+            None if records.is_empty() && checkpoint_head.is_none() => {
+                initialize_head(&mut journal)?
+            }
+            None => return Err(NetworkNamespaceCatalogError::CorruptRecord),
+        };
+
+        validate_record_set(&records)?;
+        for record in records.values() {
+            if matches!(record.lifecycle, NamespaceLifecycleV1::Retired) {
+                pin_root.ensure_absent(&record.network_handle)?;
+            } else if record.kernel_boot_id == kernel_boot_id {
+                pin_root.verify_record(record)?;
+            }
+        }
+
+        Ok(Self {
+            journal,
+            pin_root,
+            kernel_boot_id,
+            broker_instance_id,
+            generation,
+            records,
+            checkpoint_head,
+        })
+    }
+
+    /// Returns the cached namespace-catalog generation for diagnostics.
+    ///
+    /// This compatibility accessor does not establish authority after an
+    /// ambiguous journal failure. Authority consumers use
+    /// [`Self::checked_generation`] or another fallible catalog projection.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the current generation only while the journal remains healthy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] after an ambiguous durable
+    /// mutation has poisoned the catalog journal.
+    pub fn checked_generation(&self) -> Result<u64, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+        Ok(self.generation)
+    }
+
+    /// Projects exact current-boot namespace custody required at process restart.
+    ///
+    /// Every non-retired row is physically revalidated through its fixed pin.
+    /// The returned requirements are strictly ordered by Network handle for
+    /// exact comparison with systemd's restored descriptor store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] when journal state is unhealthy,
+    /// a current pin is missing or changed, or a retained row cannot form a
+    /// valid custody requirement.
+    pub fn current_custody_requirements(
+        &self,
+    ) -> Result<Vec<NetworkNamespaceCustodyRequirementV1>, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+
+        self.records
+            .values()
+            .filter(|record| {
+                record.kernel_boot_id == self.kernel_boot_id
+                    && !matches!(record.lifecycle, NamespaceLifecycleV1::Retired)
+            })
+            .map(|record| {
+                self.pin_root.verify_record(record)?;
+                NetworkNamespaceCustodyRequirementV1::new(
+                    record.network_handle,
+                    NamespaceIdentity {
+                        device: record.namespace_device,
+                        inode: record.namespace_inode,
+                    },
+                )
+                .map_err(|_| NetworkNamespaceCatalogError::InvalidCandidate)
+            })
+            .collect()
+    }
+
+    /// Returns one physically revalidated current namespace identity.
+    ///
+    /// This is an authorization-bearing projection of the protected lifecycle
+    /// catalog, not a shape-only identity constructor. The row must be live in
+    /// the current boot and its fixed pin must still resolve to the recorded
+    /// Network namespace device and inode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] if the handle is absent or
+    /// retired, the row belongs to another boot, or its protected pin is
+    /// missing, mistyped, or physically different.
+    pub fn current_namespace_identity(
+        &self,
+        network_handle: [u8; 32],
+    ) -> Result<NetworkNamespaceIdentityV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+        if record.kernel_boot_id != self.kernel_boot_id
+            || matches!(record.lifecycle, NamespaceLifecycleV1::Retired)
+        {
+            return Err(NetworkNamespaceCatalogError::LifecycleConflict);
+        }
+        let pin = self.pin_root.observe(&network_handle)?;
+        if (pin.device, pin.inode) != (record.namespace_device, record.namespace_inode) {
+            return Err(NetworkNamespaceCatalogError::NamespacePin(
+                "pin device/inode identity disagrees with protected lifecycle state".to_owned(),
+            ));
+        }
+
+        NetworkNamespaceIdentityV1::new(
+            network_handle,
+            record.kernel_boot_id,
+            record.namespace_device,
+            record.namespace_inode,
+        )
+    }
+
+    /// Returns the protected current lifecycle state for one live namespace.
+    ///
+    /// The namespace pin is physically revalidated before lifecycle state is
+    /// projected. Armed and fenced rows return the exact retained lease tuple;
+    /// a retired or stale-boot row is never a current state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] if the handle is absent,
+    /// retired, belongs to another boot, or its protected pin has changed.
+    pub fn current_namespace_observed_state(
+        &self,
+        network_handle: [u8; 32],
+    ) -> Result<NetworkNamespaceObservedStateV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+        self.current_namespace_identity(network_handle)?;
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+
+        project_observed_state(record)
+    }
+
+    /// Authorizes an observation plan against one exact current catalog row.
+    ///
+    /// The fixed namespace pin is physically revalidated and the retained
+    /// assignment must exactly match the plan assignment before either the
+    /// identity or lifecycle projection is returned.
+    pub(crate) fn authorize_current_observation(
+        &self,
+        network_handle: [u8; 32],
+        assignment: BrokerAssignment,
+    ) -> Result<
+        (NetworkNamespaceIdentityV1, NetworkNamespaceObservedStateV1),
+        NetworkNamespaceCatalogError,
+    > {
+        self.journal.ensure_healthy()?;
+        let identity = self.current_namespace_identity(network_handle)?;
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+        if record.assignment != AssignmentWire::from(assignment) {
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+
+        Ok((identity, project_observed_state(record)?))
+    }
+
+    /// Projects the exact protected row used for lifecycle admission.
+    ///
+    /// The retained assignment and preparation binding must match the
+    /// controller-authenticated preparation. The fixed pin is physically
+    /// revalidated before any catalog digest or lease high-water is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] when the handle is not a live
+    /// current-boot row, its pin changed, or either retained binding differs.
+    pub(crate) fn authorize_current_lifecycle(
+        &self,
+        network_handle: [u8; 32],
+        assignment: BrokerAssignment,
+        preparation: NetworkCatalogBindingV1,
+    ) -> Result<NetworkNamespaceLifecycleAuthorityV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+        let identity = self.current_namespace_identity(network_handle)?;
+        let record = self
+            .records
+            .get(&network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+        if record.assignment != AssignmentWire::from(assignment)
+            || record.preparation != CatalogBindingWire::from(preparation)
+        {
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+
+        Ok(NetworkNamespaceLifecycleAuthorityV1 {
+            identity,
+            observed_state: project_observed_state(record)?,
+            resource_digest: ObjectDigest::from_bytes(record.resource_digest),
+            kernel_plan_digest: ObjectDigest::from_bytes(record.kernel_plan_digest),
+            highest_lease_generation: record.highest_lease_generation,
+            highest_lease_digest: ObjectDigest::from_bytes(record.highest_lease_digest),
+        })
+    }
+
+    /// Publishes an exact committed namespace after reopening its fixed pin.
+    ///
+    /// Only current-boot default-drop creation results are accepted. A stale
+    /// committed result cannot refresh a row into a later boot; that requires a
+    /// new typed observation from a future lifecycle helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] when the result is stale, its
+    /// pin is missing, mistyped, or physically different, a retained identity
+    /// conflicts, generation overflows, or durable publication fails.
+    pub fn publish(
+        &mut self,
+        publication: NetworkNamespacePublicationV1,
+    ) -> Result<NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+        if publication.kernel_boot_id != self.kernel_boot_id {
+            return Err(NetworkNamespaceCatalogError::InvalidCandidate);
+        }
+        let pin = self.pin_root.observe(&publication.network_handle)?;
+        if (pin.device, pin.inode) != (publication.namespace_device, publication.namespace_inode) {
+            return Err(NetworkNamespaceCatalogError::NamespacePin(
+                "pin device/inode identity disagrees with committed result".to_owned(),
+            ));
+        }
+
+        if let Some(existing) = self.records.get(&publication.network_handle) {
+            if existing.matches_publication(&publication) {
+                return Ok(NetworkNamespaceCatalogOutcomeV1::Replay);
+            }
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+
+        let assignment = AssignmentWire::from(publication.assignment);
+        if self.records.values().any(|record| {
+            record.request_id == publication.request_id
+                || record.assignment.assignment_pair() == assignment.assignment_pair()
+                || (record.kernel_boot_id == self.kernel_boot_id
+                    && (record.namespace_device, record.namespace_inode) == (pin.device, pin.inode))
+        }) {
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+        if self.records.len() >= MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS {
+            return Err(NetworkNamespaceCatalogError::ResourceExhausted);
+        }
+
+        let catalog_generation = next_generation(self.generation)?;
+        let mut record = NamespaceRecordV1 {
+            catalog_generation,
+            request_id: publication.request_id,
+            preparation: CatalogBindingWire::from(publication.preparation),
+            creation_result_digest: *publication.result_digest.as_bytes(),
+            kernel_plan_digest: *publication.kernel_plan_digest.as_bytes(),
+            network_handle: publication.network_handle,
+            assignment,
+            kernel_boot_id: publication.kernel_boot_id,
+            namespace_device: publication.namespace_device,
+            namespace_inode: publication.namespace_inode,
+            lifecycle: NamespaceLifecycleV1::DefaultDrop,
+            lease_generation: 0,
+            fail_stop_boottime_nanoseconds: 0,
+            highest_lease_generation: 0,
+            highest_lease_digest: [0; 32],
+            current_observation_digest: *publication.result_digest.as_bytes(),
+            last_transition_request_id: [0; 16],
+            last_transition_digest: [0; 32],
+            resource_digest: [0; 32],
+        };
+        record.refresh_digest()?;
+        record.validate()?;
+        self.commit(record)?;
+
+        Ok(NetworkNamespaceCatalogOutcomeV1::Published)
+    }
+
+    /// Encodes one complete, current-boot, physically revalidated inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] when retained state conflicts,
+    /// a current pin changed or is no longer a Network namespace, or the
+    /// encoded protobuf violates the bounded authoritative-inventory contract.
+    pub fn inventory_resources(&self) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+        validate_record_set(&self.records)?;
+        for record in self
+            .records
+            .values()
+            .filter(|record| matches!(record.lifecycle, NamespaceLifecycleV1::Retired))
+        {
+            self.pin_root.ensure_absent(&record.network_handle)?;
+        }
+        let mut networks = Vec::new();
+        for record in self.records.values().filter(|record| {
+            record.kernel_boot_id == self.kernel_boot_id
+                && !matches!(record.lifecycle, NamespaceLifecycleV1::Retired)
+        }) {
+            self.pin_root.verify_record(record)?;
+            networks.push(record.inventory_record());
+        }
+
+        let response = InventoryNetworkResourcesResponse {
+            kernel_boot_id: self.kernel_boot_id.to_vec(),
+            journal_sequence: self.journal.snapshot_sequence(),
+            catalog_generation: self.generation,
+            networks,
+            broker_instance_id: self.broker_instance_id.to_vec(),
+            ..Default::default()
+        };
+        let bytes = response.encode_to_vec();
+        decode_network_resource_inventory_response(&bytes, MAXIMUM_RESPONSE_BYTES)
+            .map_err(|_| NetworkNamespaceCatalogError::InvalidInventory)?;
+
+        Ok(bytes)
+    }
+
+    /// Encodes the legacy logical inventory as a projection of the same protected catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] when physical catalog validation
+    /// fails or its projection violates the closed legacy response profile.
+    pub fn inventory_networks(&self) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+        let current = self.inventory_resources()?;
+        let authoritative = InventoryNetworkResourcesResponse::decode_from_slice(&current)
+            .map_err(|_| NetworkNamespaceCatalogError::InvalidInventory)?;
+        let networks = authoritative
+            .networks
+            .into_iter()
+            .map(|record| {
+                let state = record
+                    .state
+                    .as_known()
+                    .ok_or(NetworkNamespaceCatalogError::InvalidInventory)?;
+                let error = (state == NetworkState::NETWORK_STATE_FAILED).then(|| BrokerError {
+                    code: BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE.into(),
+                    safe_message: "network resource is failed".to_owned(),
+                    retryable: true,
+                    ..Default::default()
+                });
+                Ok(NetworkResult {
+                    network_handle: record.network_handle,
+                    state: state.into(),
+                    lease_generation: record.lease_generation,
+                    error: error.into(),
+                    ..Default::default()
+                })
+            })
+            .collect::<Result<Vec<_>, NetworkNamespaceCatalogError>>()?;
+        let bytes = InventoryNetworksResponse {
+            networks,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        if bytes.len() > MAXIMUM_RESPONSE_BYTES as usize {
+            return Err(NetworkNamespaceCatalogError::InvalidInventory);
+        }
+        Ok(bytes)
+    }
+
+    fn commit(&mut self, record: NamespaceRecordV1) -> Result<(), NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+        let head = CatalogHeadV1 {
+            generation: record.catalog_generation,
+        };
+        let transaction = JournalTransaction::new(
+            transaction_id(record.request_id, record.catalog_generation),
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::NetworkResourceInventory,
+                    HEAD_KEY.to_vec(),
+                    encode_head(&head)?,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::NetworkResourceInventory,
+                    record_key(&record.network_handle),
+                    encode_record(&record)?,
+                ),
+            ],
+        )?;
+        self.journal.commit(&transaction)?;
+        self.generation = record.catalog_generation;
+        self.records.insert(record.network_handle, record);
+
+        Ok(())
+    }
+}
+
+enum PinRoot {
+    Kernel(BeneathRoot),
+    #[cfg(test)]
+    Filesystem {
+        descriptor: OwnedFd,
+        expected_owner: u32,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct PinIdentity {
+    device: u64,
+    inode: u64,
+}
+
+impl PinRoot {
+    fn open_kernel(path: &Path, expected_owner: u32) -> Result<Self, NetworkNamespaceCatalogError> {
+        let descriptor = open_pin_root(path, expected_owner)?;
+        let root = BeneathRoot::from_owned(descriptor)
+            .map_err(|error| NetworkNamespaceCatalogError::NamespacePin(error.to_string()))?;
+        Ok(Self::Kernel(root))
+    }
+
+    #[cfg(test)]
+    fn open_filesystem(
+        path: &Path,
+        expected_owner: u32,
+    ) -> Result<Self, NetworkNamespaceCatalogError> {
+        let descriptor = open_pin_root(path, expected_owner)?;
+        Ok(Self::Filesystem {
+            descriptor,
+            expected_owner,
+        })
+    }
+
+    fn observe(&self, handle: &[u8; 32]) -> Result<PinIdentity, NetworkNamespaceCatalogError> {
+        let component = encode_hex(handle);
+        match self {
+            Self::Kernel(root) => {
+                let namespace = root
+                    .open_namespace(Path::new(&component), NamespaceKind::Network)
+                    .map_err(|error| {
+                        NetworkNamespaceCatalogError::NamespacePin(error.to_string())
+                    })?;
+                let identity = namespace.identity();
+                if identity.device == 0 || identity.inode == 0 {
+                    return Err(NetworkNamespaceCatalogError::NamespacePin(
+                        "namespace pin has a reserved physical identity".to_owned(),
+                    ));
+                }
+                Ok(PinIdentity {
+                    device: identity.device,
+                    inode: identity.inode,
+                })
+            }
+            #[cfg(test)]
+            Self::Filesystem {
+                descriptor,
+                expected_owner,
+            } => {
+                let pin = rustix::fs::openat(
+                    descriptor.as_fd(),
+                    component,
+                    rustix::fs::OFlags::PATH
+                        | rustix::fs::OFlags::NOFOLLOW
+                        | rustix::fs::OFlags::CLOEXEC,
+                    rustix::fs::Mode::empty(),
+                )
+                .map_err(pin_error)?;
+                let metadata = rustix::fs::fstat(&pin).map_err(pin_error)?;
+                if rustix::fs::FileType::from_raw_mode(metadata.st_mode)
+                    != rustix::fs::FileType::RegularFile
+                    || metadata.st_uid != *expected_owner
+                    || metadata.st_mode & 0o022 != 0
+                    || metadata.st_dev == 0
+                    || metadata.st_ino == 0
+                {
+                    return Err(NetworkNamespaceCatalogError::NamespacePin(
+                        "test pin is not the required owned regular file".to_owned(),
+                    ));
+                }
+                Ok(PinIdentity {
+                    device: metadata.st_dev,
+                    inode: metadata.st_ino,
+                })
+            }
+        }
+    }
+
+    fn verify_record(
+        &self,
+        record: &NamespaceRecordV1,
+    ) -> Result<(), NetworkNamespaceCatalogError> {
+        let pin = self.observe(&record.network_handle)?;
+        if (pin.device, pin.inode) != (record.namespace_device, record.namespace_inode) {
+            return Err(NetworkNamespaceCatalogError::NamespacePin(
+                "namespace pin device/inode identity changed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_absent(&self, handle: &[u8; 32]) -> Result<(), NetworkNamespaceCatalogError> {
+        let component = encode_hex(handle);
+        let root = match self {
+            Self::Kernel(root) => root.as_fd(),
+            #[cfg(test)]
+            Self::Filesystem { descriptor, .. } => descriptor.as_fd(),
+        };
+        match rustix::fs::statat(root, component, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+            Err(rustix::io::Errno::NOENT) => Ok(()),
+            Ok(_) => Err(NetworkNamespaceCatalogError::NamespacePin(
+                "retired namespace pin unexpectedly exists".to_owned(),
+            )),
+            Err(error) => Err(pin_error(error)),
+        }
+    }
+}
+
+fn open_pin_root(
+    path: &Path,
+    expected_owner: u32,
+) -> Result<OwnedFd, NetworkNamespaceCatalogError> {
+    let descriptor = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::PATH
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(pin_error)?;
+    let metadata = rustix::fs::fstat(&descriptor).map_err(pin_error)?;
+    if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::Directory
+        || metadata.st_uid != expected_owner
+        || metadata.st_mode & 0o022 != 0
+    {
+        return Err(NetworkNamespaceCatalogError::NamespacePin(
+            "pin root is not an owner-controlled real directory".to_owned(),
+        ));
+    }
+    Ok(descriptor)
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogHeadV1 {
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogBindingWire {
+    generation: u64,
+    digest: [u8; 32],
+}
+
+impl CatalogBindingWire {
+    fn validate(self) -> Result<(), NetworkNamespaceCatalogError> {
+        if self.generation == 0 || self.digest == [0; 32] {
+            Err(NetworkNamespaceCatalogError::CorruptRecord)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl From<NetworkCatalogBindingV1> for CatalogBindingWire {
+    fn from(value: NetworkCatalogBindingV1) -> Self {
+        Self {
+            generation: value.generation(),
+            digest: *value.digest().as_bytes(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AssignmentWire {
+    sandbox_id: [u8; 16],
+    incarnation_id: [u8; 16],
+    assignment_epoch: u64,
+    desired_generation: u64,
+    assignment_digest: [u8; 32],
+}
+
+impl AssignmentWire {
+    const fn assignment_pair(self) -> ([u8; 16], [u8; 16]) {
+        (self.sandbox_id, self.incarnation_id)
+    }
+
+    fn validate(self) -> Result<(), NetworkNamespaceCatalogError> {
+        if self.sandbox_id == [0; 16]
+            || self.incarnation_id == [0; 16]
+            || self.assignment_epoch == 0
+            || self.desired_generation == 0
+            || self.assignment_digest == [0; 32]
+        {
+            Err(NetworkNamespaceCatalogError::CorruptRecord)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn proto(self) -> AssignmentFence {
+        AssignmentFence {
+            sandbox_id: self.sandbox_id.to_vec(),
+            incarnation_id: self.incarnation_id.to_vec(),
+            assignment_epoch: self.assignment_epoch,
+            desired_generation: self.desired_generation,
+            assignment_digest: self.assignment_digest.to_vec(),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<BrokerAssignment> for AssignmentWire {
+    fn from(value: BrokerAssignment) -> Self {
+        Self {
+            sandbox_id: *value.sandbox().as_bytes(),
+            incarnation_id: *value.incarnation().as_bytes(),
+            assignment_epoch: value.epoch().get(),
+            desired_generation: value.desired_generation().get(),
+            assignment_digest: *value.digest().as_bytes(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NamespaceLifecycleV1 {
+    DefaultDrop,
+    Armed,
+    Fenced,
+    Retired,
+}
+
+fn project_observed_state(
+    record: &NamespaceRecordV1,
+) -> Result<NetworkNamespaceObservedStateV1, NetworkNamespaceCatalogError> {
+    match record.lifecycle {
+        NamespaceLifecycleV1::DefaultDrop => Ok(NetworkNamespaceObservedStateV1::default_drop()),
+        NamespaceLifecycleV1::Armed => NetworkNamespaceObservedStateV1::armed(
+            ObjectDigest::from_bytes(record.highest_lease_digest),
+            record.lease_generation,
+            record.fail_stop_boottime_nanoseconds,
+        ),
+        NamespaceLifecycleV1::Fenced => NetworkNamespaceObservedStateV1::fenced(
+            ObjectDigest::from_bytes(record.highest_lease_digest),
+            record.lease_generation,
+            record.fail_stop_boottime_nanoseconds,
+        ),
+        NamespaceLifecycleV1::Retired => Err(NetworkNamespaceCatalogError::LifecycleConflict),
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NamespaceRecordV1 {
+    catalog_generation: u64,
+    request_id: [u8; 16],
+    preparation: CatalogBindingWire,
+    creation_result_digest: [u8; 32],
+    kernel_plan_digest: [u8; 32],
+    network_handle: [u8; 32],
+    assignment: AssignmentWire,
+    kernel_boot_id: [u8; 16],
+    namespace_device: u64,
+    namespace_inode: u64,
+    lifecycle: NamespaceLifecycleV1,
+    lease_generation: u64,
+    fail_stop_boottime_nanoseconds: u64,
+    highest_lease_generation: u64,
+    highest_lease_digest: [u8; 32],
+    current_observation_digest: [u8; 32],
+    last_transition_request_id: [u8; 16],
+    last_transition_digest: [u8; 32],
+    resource_digest: [u8; 32],
+}
+
+impl NamespaceRecordV1 {
+    fn validate(&self) -> Result<(), NetworkNamespaceCatalogError> {
+        if self.catalog_generation < 2
+            || self.request_id == [0; 16]
+            || self.creation_result_digest == [0; 32]
+            || self.kernel_plan_digest == [0; 32]
+            || self.network_handle == [0; 32]
+            || self.kernel_boot_id == [0; 16]
+            || self.namespace_device == 0
+            || self.namespace_inode == 0
+            || self.current_observation_digest == [0; 32]
+            || self.resource_digest == [0; 32]
+        {
+            return Err(NetworkNamespaceCatalogError::CorruptRecord);
+        }
+        self.preparation.validate()?;
+        self.assignment.validate()?;
+        self.validate_lifecycle()?;
+        if self.compute_digest()? != self.resource_digest {
+            return Err(NetworkNamespaceCatalogError::CorruptRecord);
+        }
+        Ok(())
+    }
+
+    fn validate_lifecycle(&self) -> Result<(), NetworkNamespaceCatalogError> {
+        let high_water_valid = match self.highest_lease_generation {
+            0 => self.highest_lease_digest == [0; 32],
+            _ => self.highest_lease_digest != [0; 32],
+        };
+        let transition_valid = if self.last_transition_request_id == [0; 16] {
+            self.last_transition_digest == [0; 32]
+                && self.current_observation_digest == self.creation_result_digest
+                && matches!(self.lifecycle, NamespaceLifecycleV1::DefaultDrop)
+                && self.highest_lease_generation == 0
+        } else {
+            self.last_transition_digest != [0; 32]
+        };
+        let active_lease_valid = match self.lifecycle {
+            NamespaceLifecycleV1::DefaultDrop | NamespaceLifecycleV1::Retired => {
+                self.lease_generation == 0 && self.fail_stop_boottime_nanoseconds == 0
+            }
+            NamespaceLifecycleV1::Armed | NamespaceLifecycleV1::Fenced => {
+                self.lease_generation != 0
+                    && self.fail_stop_boottime_nanoseconds != 0
+                    && self.lease_generation == self.highest_lease_generation
+            }
+        };
+        if !high_water_valid || !transition_valid || !active_lease_valid {
+            return Err(NetworkNamespaceCatalogError::CorruptRecord);
+        }
+
+        Ok(())
+    }
+
+    fn refresh_digest(&mut self) -> Result<(), NetworkNamespaceCatalogError> {
+        self.resource_digest = [0; 32];
+        self.resource_digest = self.compute_digest()?;
+        Ok(())
+    }
+
+    fn compute_digest(&self) -> Result<[u8; 32], NetworkNamespaceCatalogError> {
+        let mut preimage = self.clone();
+        preimage.resource_digest = [0; 32];
+        let bytes = serde_json::to_vec(&preimage)
+            .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
+        let mut digest = Sha256::new();
+        digest.update(RESOURCE_DIGEST_DOMAIN);
+        digest.update(bytes);
+        Ok(digest.finalize().into())
+    }
+
+    fn matches_publication(&self, publication: &NetworkNamespacePublicationV1) -> bool {
+        self.request_id == publication.request_id
+            && self.preparation == CatalogBindingWire::from(publication.preparation)
+            && self.creation_result_digest == *publication.result_digest.as_bytes()
+            && self.kernel_plan_digest == *publication.kernel_plan_digest.as_bytes()
+            && self.network_handle == publication.network_handle
+            && self.assignment == AssignmentWire::from(publication.assignment)
+            && self.kernel_boot_id == publication.kernel_boot_id
+            && self.namespace_device == publication.namespace_device
+            && self.namespace_inode == publication.namespace_inode
+            && matches!(self.lifecycle, NamespaceLifecycleV1::DefaultDrop)
+            && self.lease_generation == 0
+            && self.fail_stop_boottime_nanoseconds == 0
+            && self.highest_lease_generation == 0
+            && self.highest_lease_digest == [0; 32]
+            && self.current_observation_digest == self.creation_result_digest
+            && self.last_transition_request_id == [0; 16]
+            && self.last_transition_digest == [0; 32]
+    }
+
+    fn inventory_record(&self) -> NetworkNamespaceInventoryRecord {
+        NetworkNamespaceInventoryRecord {
+            network_handle: self.network_handle.to_vec(),
+            fence: Some(self.assignment.proto()).into(),
+            resource_kernel_boot_id: self.kernel_boot_id.to_vec(),
+            namespace_device: self.namespace_device,
+            namespace_inode: self.namespace_inode,
+            state: self.inventory_state().into(),
+            lease_generation: self.lease_generation,
+            fail_stop_boottime_nanoseconds: self.fail_stop_boottime_nanoseconds,
+            resource_digest: self.resource_digest.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    const fn inventory_state(&self) -> NetworkState {
+        match self.lifecycle {
+            NamespaceLifecycleV1::DefaultDrop => NetworkState::NETWORK_STATE_DEFAULT_DROP,
+            NamespaceLifecycleV1::Armed => NetworkState::NETWORK_STATE_ARMED,
+            NamespaceLifecycleV1::Fenced => NetworkState::NETWORK_STATE_FENCED,
+            NamespaceLifecycleV1::Retired => NetworkState::NETWORK_STATE_ABSENT,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HeadEnvelopeV1 {
+    version: u16,
+    head: CatalogHeadV1,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecordEnvelopeV1 {
+    version: u16,
+    record: NamespaceRecordV1,
+}
+
+fn initialize_head(journal: &mut Journal) -> Result<u64, NetworkNamespaceCatalogError> {
+    let head = CatalogHeadV1 { generation: 1 };
+    let transaction = JournalTransaction::new(
+        genesis_transaction_id(),
+        vec![JournalRecord::put(
+            RecordNamespace::NetworkResourceInventory,
+            HEAD_KEY.to_vec(),
+            encode_head(&head)?,
+        )],
+    )?;
+    journal.commit(&transaction)?;
+    Ok(head.generation)
+}
+
+fn encode_head(head: &CatalogHeadV1) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+    serde_json::to_vec(&HeadEnvelopeV1 {
+        version: HEAD_FORMAT_VERSION,
+        head: head.clone(),
+    })
+    .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)
+}
+
+fn decode_head(bytes: &[u8]) -> Result<CatalogHeadV1, NetworkNamespaceCatalogError> {
+    if bytes.is_empty() || bytes.len() > MAXIMUM_RECORD_BYTES {
+        return Err(NetworkNamespaceCatalogError::CorruptRecord);
+    }
+    let envelope: HeadEnvelopeV1 =
+        serde_json::from_slice(bytes).map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
+    if envelope.version != HEAD_FORMAT_VERSION || encode_head(&envelope.head)? != bytes {
+        return Err(NetworkNamespaceCatalogError::CorruptRecord);
+    }
+    Ok(envelope.head)
+}
+
+fn encode_record(record: &NamespaceRecordV1) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+    let bytes = serde_json::to_vec(&RecordEnvelopeV1 {
+        version: RECORD_FORMAT_VERSION,
+        record: record.clone(),
+    })
+    .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
+    if bytes.len() > MAXIMUM_RECORD_BYTES {
+        return Err(NetworkNamespaceCatalogError::CorruptRecord);
+    }
+    Ok(bytes)
+}
+
+fn decode_record(bytes: &[u8]) -> Result<NamespaceRecordV1, NetworkNamespaceCatalogError> {
+    if bytes.is_empty() || bytes.len() > MAXIMUM_RECORD_BYTES {
+        return Err(NetworkNamespaceCatalogError::CorruptRecord);
+    }
+    let envelope: RecordEnvelopeV1 =
+        serde_json::from_slice(bytes).map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
+    if envelope.version != RECORD_FORMAT_VERSION || encode_record(&envelope.record)? != bytes {
+        return Err(NetworkNamespaceCatalogError::CorruptRecord);
+    }
+    envelope.record.validate()?;
+    Ok(envelope.record)
+}
+
+fn validate_record_set(
+    records: &BTreeMap<[u8; 32], NamespaceRecordV1>,
+) -> Result<(), NetworkNamespaceCatalogError> {
+    if records.len() > MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS {
+        return Err(NetworkNamespaceCatalogError::CorruptRecord);
+    }
+
+    let mut requests = BTreeSet::new();
+    let mut assignments = BTreeSet::new();
+    let mut physical_namespaces = BTreeSet::new();
+    for (handle, record) in records {
+        record.validate()?;
+        if handle != &record.network_handle
+            || !requests.insert(record.request_id)
+            || (record.last_transition_request_id != [0; 16]
+                && !requests.insert(record.last_transition_request_id))
+            || !assignments.insert(record.assignment.assignment_pair())
+            || !physical_namespaces.insert((
+                record.kernel_boot_id,
+                record.namespace_device,
+                record.namespace_inode,
+            ))
+        {
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+    }
+    Ok(())
+}
+
+fn record_key(handle: &[u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(RECORD_KEY_PREFIX.len() + handle.len());
+    key.extend_from_slice(RECORD_KEY_PREFIX);
+    key.extend_from_slice(handle);
+    key
+}
+
+fn decode_record_key(key: &[u8]) -> Result<[u8; 32], NetworkNamespaceCatalogError> {
+    key.strip_prefix(RECORD_KEY_PREFIX)
+        .and_then(|bytes| bytes.try_into().ok())
+        .filter(|handle: &[u8; 32]| *handle != [0; 32])
+        .ok_or(NetworkNamespaceCatalogError::CorruptRecord)
+}
+
+fn next_generation(generation: u64) -> Result<u64, NetworkNamespaceCatalogError> {
+    generation
+        .checked_add(1)
+        .ok_or(NetworkNamespaceCatalogError::CorruptRecord)
+}
+
+fn transaction_id(request_id: [u8; 16], generation: u64) -> [u8; 16] {
+    transaction_digest(&[&request_id, &generation.to_be_bytes()])
+}
+
+fn genesis_transaction_id() -> [u8; 16] {
+    transaction_digest(&[b"genesis"])
+}
+
+fn transaction_digest(parts: &[&[u8]]) -> [u8; 16] {
+    let mut digest = Sha256::new();
+    digest.update(TRANSACTION_DOMAIN);
+    for part in parts {
+        digest.update(part);
+    }
+    let digest: [u8; 32] = digest.finalize().into();
+    let mut transaction_id = [0; 16];
+    transaction_id.copy_from_slice(&digest[..16]);
+    if transaction_id == [0; 16] {
+        transaction_id[15] = 1;
+    }
+    transaction_id
+}
+
+fn broker_instance_id() -> Result<[u8; 16], NetworkNamespaceCatalogError> {
+    let bytes = fs::read("/proc/sys/kernel/random/uuid")
+        .map_err(|error| NetworkNamespaceCatalogError::NamespacePin(error.to_string()))?;
+    KernelBootId::parse(&bytes)
+        .map(KernelBootId::into_bytes)
+        .map_err(|error| NetworkNamespaceCatalogError::NamespacePin(error.to_string()))
+}
+
+fn pin_error(error: rustix::io::Errno) -> NetworkNamespaceCatalogError {
+    NetworkNamespaceCatalogError::NamespacePin(error.to_string())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+const fn namespace_journal_limits() -> JournalLimits {
+    JournalLimits {
+        maximum_journal_bytes: 512 * 1024 * 1024,
+        // The largest operation is the 37-byte outcome key, its 15,729,056-byte
+        // value, and the journal record codec's seven bytes of framing.
+        maximum_record_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
+        maximum_key_bytes: 128,
+        maximum_records_per_transaction: 3,
+        // Both exact AOSNIH02 reserve and completion transactions fit this cap.
+        maximum_transaction_bytes: MAXIMUM_JOURNAL_TRANSACTION_BYTES,
+        maximum_transactions: 65_536,
+        // 16,384 bounded catalog rows, its head, and three owner records,
+        // including every materialized key byte but excluding frame overhead.
+        maximum_materialized_bytes: MAXIMUM_MATERIALIZED_BYTES,
+        maximum_materialized_records: MAXIMUM_MATERIALIZED_RECORDS,
+    }
+}
+
+const _: () = assert!(MAXIMUM_RECORD_BYTES == 16_384);
+const _: () = assert!(MAXIMUM_JOURNAL_RECORD_BYTES == 15_729_100);
+const _: () = assert!(MAXIMUM_JOURNAL_TRANSACTION_BYTES == 16_778_233);
+const _: () = assert!(MAXIMUM_MATERIALIZED_BYTES == 286_163_970);
+const _: () =
+    assert!(MAXIMUM_MATERIALIZED_RECORDS == MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS + 4);
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::path::PathBuf;
+
+    use aos_sandbox_core::{AssignmentEpoch, DesiredGeneration, IncarnationId, SandboxId};
+    use aos_sandbox_protocol::{ValidatedNetworkInventory, ValidatedNetworkNamespace};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    struct Fixture {
+        _directory: TempDir,
+        state_directory: PathBuf,
+        pin_directory: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let directory = TempDir::new().unwrap();
+            let state_directory = directory.path().join("state");
+            let pin_directory = directory.path().join("pins");
+            fs::create_dir(&state_directory).unwrap();
+            fs::create_dir(&pin_directory).unwrap();
+            Self {
+                _directory: directory,
+                state_directory,
+                pin_directory,
+            }
+        }
+
+        fn open(
+            &self,
+            kernel_boot_id: [u8; 16],
+        ) -> Result<NetworkNamespaceCatalogV1, NetworkNamespaceCatalogError> {
+            NetworkNamespaceCatalogV1::open_for_test(
+                &self.state_directory,
+                &self.pin_directory,
+                kernel_boot_id,
+                [91; 16],
+            )
+        }
+
+        fn pin_path(&self, handle: u8) -> PathBuf {
+            self.pin_directory.join(encode_hex(&[handle; 32]))
+        }
+
+        fn create_pin(&self, handle: u8) {
+            fs::File::create(self.pin_path(handle)).unwrap();
+        }
+
+        fn publication(
+            &self,
+            handle: u8,
+            assignment_marker: u8,
+            kernel_boot_id: [u8; 16],
+        ) -> NetworkNamespacePublicationV1 {
+            let metadata = fs::metadata(self.pin_path(handle)).unwrap();
+            NetworkNamespacePublicationV1 {
+                request_id: [handle.wrapping_add(10); 16],
+                preparation: ResolvedNetworkPreparationV1::new(
+                    u64::from(handle) + 10,
+                    [handle; 32],
+                    ObjectDigest::from_bytes([handle.wrapping_add(20); 32]),
+                    Vec::new(),
+                )
+                .unwrap()
+                .binding(),
+                network_handle: [handle; 32],
+                assignment: assignment(assignment_marker),
+                kernel_boot_id,
+                namespace_device: metadata.dev(),
+                namespace_inode: metadata.ino(),
+                kernel_plan_digest: ObjectDigest::from_bytes([handle.wrapping_add(25); 32]),
+                result_digest: ObjectDigest::from_bytes([handle.wrapping_add(30); 32]),
+            }
+        }
+    }
+
+    fn assignment(marker: u8) -> BrokerAssignment {
+        BrokerAssignment::new(
+            SandboxId::from_bytes([marker; 16]),
+            IncarnationId::from_bytes([marker.wrapping_add(1); 16]),
+            AssignmentEpoch::new(u64::from(marker) + 1),
+            DesiredGeneration::new(u64::from(marker) + 2),
+            ObjectDigest::from_bytes([marker.wrapping_add(2); 32]),
+        )
+        .unwrap()
+    }
+
+    fn inventory(catalog: &NetworkNamespaceCatalogV1) -> ValidatedNetworkInventory {
+        decode_network_resource_inventory_response(
+            &catalog.inventory_resources().unwrap(),
+            MAXIMUM_RESPONSE_BYTES,
+        )
+        .unwrap()
+    }
+
+    fn network(catalog: &NetworkNamespaceCatalogV1, handle: u8) -> ValidatedNetworkNamespace {
+        inventory(catalog)
+            .networks()
+            .iter()
+            .find(|network| network.network_handle() == &[handle; 32])
+            .cloned()
+            .unwrap()
+    }
+
+    fn lifecycle_observation(
+        catalog: &NetworkNamespaceCatalogV1,
+        handle: u8,
+        request_marker: u8,
+        observation_marker: u8,
+        observed_state: NetworkNamespaceObservedStateV1,
+    ) -> NetworkNamespaceLifecycleObservationV1 {
+        let current = network(catalog, handle);
+        let identity = NetworkNamespaceIdentityV1::new(
+            *current.network_handle(),
+            *current.resource_kernel_boot_id(),
+            current.namespace_device(),
+            current.namespace_inode(),
+        )
+        .unwrap();
+
+        NetworkNamespaceLifecycleObservationV1::new(
+            [request_marker; 16],
+            ObjectDigest::from_bytes(*current.resource_digest()),
+            identity,
+            observed_state,
+            ObjectDigest::from_bytes([observation_marker; 32]),
+        )
+        .unwrap()
+    }
+
+    fn armed_observation(
+        catalog: &NetworkNamespaceCatalogV1,
+        handle: u8,
+        request_marker: u8,
+        observation_marker: u8,
+        lease_marker: u8,
+        lease_generation: u64,
+        fail_stop_boottime_nanoseconds: u64,
+    ) -> NetworkNamespaceLifecycleObservationV1 {
+        let observed_state = NetworkNamespaceObservedStateV1::armed(
+            ObjectDigest::from_bytes([lease_marker; 32]),
+            lease_generation,
+            fail_stop_boottime_nanoseconds,
+        )
+        .unwrap();
+
+        lifecycle_observation(
+            catalog,
+            handle,
+            request_marker,
+            observation_marker,
+            observed_state,
+        )
+    }
+
+    #[test]
+    fn initializes_publishes_replays_and_recovers_exact_inventory() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        let publication = fixture.publication(1, 1, [81; 16]);
+
+        assert_eq!(catalog.generation(), 1);
+        assert!(inventory(&catalog).networks().is_empty());
+        assert_eq!(
+            catalog.publish(publication).unwrap(),
+            NetworkNamespaceCatalogOutcomeV1::Published
+        );
+        assert_eq!(
+            catalog.publish(publication).unwrap(),
+            NetworkNamespaceCatalogOutcomeV1::Replay
+        );
+
+        let snapshot = inventory(&catalog);
+        assert_eq!(snapshot.kernel_boot_id(), &[81; 16]);
+        assert_eq!(snapshot.broker_instance_id(), &[91; 16]);
+        assert_eq!(snapshot.catalog_generation(), 2);
+        assert_eq!(snapshot.networks().len(), 1);
+        let network = &snapshot.networks()[0];
+        assert_eq!(network.network_handle(), &[1; 32]);
+        assert_eq!(network.fence().sandbox_id(), &[1; 16]);
+        assert_eq!(
+            network.namespace_path(),
+            format!("{NAMESPACE_PIN_ROOT}/{}", encode_hex(&[1; 32]))
+        );
+        assert_eq!(network.state(), NetworkState::NETWORK_STATE_DEFAULT_DROP);
+        assert_eq!(network.lease_generation(), 0);
+
+        let mut substituted = publication;
+        substituted.result_digest = ObjectDigest::from_bytes([99; 32]);
+        assert!(matches!(
+            catalog.publish(substituted),
+            Err(NetworkNamespaceCatalogError::IdentityConflict)
+        ));
+
+        drop(catalog);
+        let recovered = fixture.open([81; 16]).unwrap();
+        assert_eq!(inventory(&recovered), snapshot);
+    }
+
+    #[test]
+    fn head_and_record_decoders_reject_every_non_v1_version() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+        drop(catalog);
+
+        let (journal, _) = Journal::open(
+            fixture.state_directory.join(NAMESPACE_JOURNAL_FILE),
+            namespace_journal_limits(),
+        )
+        .unwrap();
+        let head = journal
+            .get(RecordNamespace::NetworkResourceInventory, HEAD_KEY)
+            .unwrap();
+        let record = journal
+            .get(
+                RecordNamespace::NetworkResourceInventory,
+                &record_key(&[1; 32]),
+            )
+            .unwrap();
+
+        let canonical_head = String::from_utf8(head.to_vec()).unwrap();
+        let canonical_record = String::from_utf8(record.to_vec()).unwrap();
+        for version in [0, 2] {
+            let unknown_head = canonical_head
+                .replacen("\"version\":1", &format!("\"version\":{version}"), 1)
+                .into_bytes();
+            let unknown_record = canonical_record
+                .replacen("\"version\":1", &format!("\"version\":{version}"), 1)
+                .into_bytes();
+
+            assert!(matches!(
+                decode_head(&unknown_head),
+                Err(NetworkNamespaceCatalogError::CorruptRecord)
+            ));
+            assert!(matches!(
+                decode_record(&unknown_record),
+                Err(NetworkNamespaceCatalogError::CorruptRecord)
+            ));
+        }
+    }
+
+    #[test]
+    fn current_identity_requires_live_current_boot_catalog_and_exact_pin() {
+        let fixture = Fixture::new();
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        assert!(matches!(
+            catalog.current_namespace_identity([1; 32]),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+
+        fixture.create_pin(1);
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+        let identity = catalog.current_namespace_identity([1; 32]).unwrap();
+        assert_eq!(identity.network_handle(), [1; 32]);
+        assert_eq!(identity.kernel_boot_id(), [81; 16]);
+
+        fs::remove_file(fixture.pin_path(1)).unwrap();
+        fixture.create_pin(1);
+        assert!(matches!(
+            catalog.current_namespace_identity([1; 32]),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+
+        let stale_fixture = Fixture::new();
+        stale_fixture.create_pin(2);
+        let mut stale = stale_fixture.open([81; 16]).unwrap();
+        stale
+            .publish(stale_fixture.publication(2, 2, [81; 16]))
+            .unwrap();
+        drop(stale);
+        fs::remove_file(stale_fixture.pin_path(2)).unwrap();
+        let stale = stale_fixture.open([82; 16]).unwrap();
+        assert!(matches!(
+            stale.current_namespace_identity([2; 32]),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+
+        let retired_fixture = Fixture::new();
+        retired_fixture.create_pin(3);
+        let mut retired = retired_fixture.open([81; 16]).unwrap();
+        retired
+            .publish(retired_fixture.publication(3, 3, [81; 16]))
+            .unwrap();
+        let destruction = lifecycle_observation(
+            &retired,
+            3,
+            93,
+            94,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
+        fs::remove_file(retired_fixture.pin_path(3)).unwrap();
+        retired
+            .apply_lifecycle_transition(
+                NetworkNamespaceLifecycleTransitionV1::destroy(destruction).unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            retired.current_namespace_identity([3; 32]),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+    }
+
+    #[test]
+    fn observation_authority_requires_the_exact_retained_assignment() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 7, [81; 16]))
+            .unwrap();
+
+        assert!(
+            catalog
+                .authorize_current_observation([1; 32], assignment(7))
+                .is_ok()
+        );
+        assert!(matches!(
+            catalog.authorize_current_observation([1; 32], assignment(8)),
+            Err(NetworkNamespaceCatalogError::IdentityConflict)
+        ));
+    }
+
+    #[test]
+    fn stale_boot_rows_are_retained_but_omitted_without_refresh() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+        drop(catalog);
+
+        fs::remove_file(fixture.pin_path(1)).unwrap();
+        let mut current_boot = fixture.open([82; 16]).unwrap();
+        assert_eq!(current_boot.generation(), 2);
+        assert!(inventory(&current_boot).networks().is_empty());
+
+        fixture.create_pin(1);
+        assert!(matches!(
+            current_boot.publish(fixture.publication(1, 1, [81; 16])),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+    }
+
+    #[test]
+    fn lifecycle_advances_lease_fences_and_permanent_retirement() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+
+        let arm = NetworkNamespaceLifecycleTransitionV1::arm(
+            armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000),
+            ObjectDigest::from_bytes([61; 32]),
+            7,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(
+            catalog.apply_lifecycle_transition(arm).unwrap(),
+            NetworkNamespaceLifecycleOutcomeV1::Applied
+        );
+        assert_eq!(
+            catalog.apply_lifecycle_transition(arm).unwrap(),
+            NetworkNamespaceLifecycleOutcomeV1::Replay
+        );
+        let armed = network(&catalog, 1);
+        assert_eq!(armed.state(), NetworkState::NETWORK_STATE_ARMED);
+        assert_eq!(armed.lease_generation(), 7);
+        assert_eq!(armed.fail_stop_boottime_nanoseconds(), 1_000);
+
+        let renew = NetworkNamespaceLifecycleTransitionV1::renew(
+            armed_observation(&catalog, 1, 42, 52, 62, 8, 2_000),
+            ObjectDigest::from_bytes([62; 32]),
+            8,
+            2_000,
+        )
+        .unwrap();
+        catalog.apply_lifecycle_transition(renew).unwrap();
+        let renewed = network(&catalog, 1);
+        assert_eq!(renewed.state(), NetworkState::NETWORK_STATE_ARMED);
+        assert_eq!(renewed.lease_generation(), 8);
+        assert_eq!(renewed.fail_stop_boottime_nanoseconds(), 2_000);
+
+        let fenced_state =
+            NetworkNamespaceObservedStateV1::fenced(ObjectDigest::from_bytes([62; 32]), 8, 2_000)
+                .unwrap();
+        let fence = NetworkNamespaceLifecycleTransitionV1::fence(lifecycle_observation(
+            &catalog,
+            1,
+            43,
+            53,
+            fenced_state,
+        ))
+        .unwrap();
+        catalog.apply_lifecycle_transition(fence).unwrap();
+        let fenced = network(&catalog, 1);
+        assert_eq!(fenced.state(), NetworkState::NETWORK_STATE_FENCED);
+        assert_eq!(fenced.lease_generation(), 8);
+        assert_eq!(fenced.fail_stop_boottime_nanoseconds(), 2_000);
+
+        let disarm = NetworkNamespaceLifecycleTransitionV1::disarm(lifecycle_observation(
+            &catalog,
+            1,
+            44,
+            54,
+            NetworkNamespaceObservedStateV1::default_drop(),
+        ))
+        .unwrap();
+        catalog.apply_lifecycle_transition(disarm).unwrap();
+        let default_drop = network(&catalog, 1);
+        assert_eq!(
+            default_drop.state(),
+            NetworkState::NETWORK_STATE_DEFAULT_DROP
+        );
+        assert_eq!(default_drop.lease_generation(), 0);
+        assert_eq!(default_drop.fail_stop_boottime_nanoseconds(), 0);
+
+        let stale_arm = NetworkNamespaceLifecycleTransitionV1::arm(
+            armed_observation(&catalog, 1, 45, 55, 63, 8, 3_000),
+            ObjectDigest::from_bytes([63; 32]),
+            8,
+            3_000,
+        )
+        .unwrap();
+        assert!(matches!(
+            catalog.apply_lifecycle_transition(stale_arm),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+
+        let destroy_observation = lifecycle_observation(
+            &catalog,
+            1,
+            46,
+            56,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
+        fs::remove_file(fixture.pin_path(1)).unwrap();
+        let destroy = NetworkNamespaceLifecycleTransitionV1::destroy(destroy_observation).unwrap();
+        assert_eq!(
+            catalog.apply_lifecycle_transition(destroy).unwrap(),
+            NetworkNamespaceLifecycleOutcomeV1::Applied
+        );
+        assert_eq!(
+            catalog.apply_lifecycle_transition(destroy).unwrap(),
+            NetworkNamespaceLifecycleOutcomeV1::Replay
+        );
+        assert!(inventory(&catalog).networks().is_empty());
+
+        drop(catalog);
+        let recovered = fixture.open([81; 16]).unwrap();
+        assert!(inventory(&recovered).networks().is_empty());
+        drop(recovered);
+
+        fixture.create_pin(1);
+        assert!(matches!(
+            fixture.open([81; 16]),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+    }
+
+    #[test]
+    fn lifecycle_observations_bind_actions_and_exact_lease_state() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+
+        let lease_digest = ObjectDigest::from_bytes([61; 32]);
+        assert!(matches!(
+            NetworkNamespaceObservedStateV1::armed(ObjectDigest::from_bytes([0; 32]), 7, 1_000),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            NetworkNamespaceObservedStateV1::armed(lease_digest, 0, 1_000),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            NetworkNamespaceObservedStateV1::fenced(lease_digest, 7, 0),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+
+        let default_drop = lifecycle_observation(
+            &catalog,
+            1,
+            41,
+            51,
+            NetworkNamespaceObservedStateV1::default_drop(),
+        );
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::arm(default_drop, lease_digest, 7, 1_000),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+
+        let wrong_lease = armed_observation(&catalog, 1, 42, 52, 62, 7, 1_000);
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::arm(wrong_lease, lease_digest, 7, 1_000),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+
+        let absent = lifecycle_observation(
+            &catalog,
+            1,
+            43,
+            53,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::disarm(absent),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::fence(absent),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+        assert!(matches!(
+            NetworkNamespaceLifecycleTransitionV1::destroy(default_drop),
+            Err(NetworkNamespaceCatalogError::InvalidCandidate)
+        ));
+
+        let armed_state = NetworkNamespaceObservedStateV1::armed(lease_digest, 7, 1_000).unwrap();
+        assert_eq!(
+            armed_state.kind(),
+            NetworkNamespaceObservedStateKindV1::Armed
+        );
+        assert_eq!(armed_state.lease(), Some((lease_digest, 7, 1_000)));
+
+        let arm = NetworkNamespaceLifecycleTransitionV1::arm(
+            armed_observation(&catalog, 1, 44, 54, 61, 7, 1_000),
+            lease_digest,
+            7,
+            1_000,
+        )
+        .unwrap();
+        catalog.apply_lifecycle_transition(arm).unwrap();
+
+        let wrong_fenced_state =
+            NetworkNamespaceObservedStateV1::fenced(ObjectDigest::from_bytes([62; 32]), 7, 1_000)
+                .unwrap();
+        let wrong_fence = NetworkNamespaceLifecycleTransitionV1::fence(lifecycle_observation(
+            &catalog,
+            1,
+            45,
+            55,
+            wrong_fenced_state,
+        ))
+        .unwrap();
+        assert!(matches!(
+            catalog.apply_lifecycle_transition(wrong_fence),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+    }
+
+    #[test]
+    fn lifecycle_rejects_stale_cas_illegal_order_and_request_reuse() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        fixture.create_pin(2);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+        catalog
+            .publish(fixture.publication(2, 2, [81; 16]))
+            .unwrap();
+
+        let stale = NetworkNamespaceLifecycleTransitionV1::arm(
+            armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000),
+            ObjectDigest::from_bytes([61; 32]),
+            7,
+            1_000,
+        )
+        .unwrap();
+        let renew_before_arm = NetworkNamespaceLifecycleTransitionV1::renew(
+            armed_observation(&catalog, 1, 42, 52, 62, 8, 2_000),
+            ObjectDigest::from_bytes([62; 32]),
+            8,
+            2_000,
+        )
+        .unwrap();
+        assert!(matches!(
+            catalog.apply_lifecycle_transition(renew_before_arm),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+
+        let arm = NetworkNamespaceLifecycleTransitionV1::arm(
+            armed_observation(&catalog, 1, 43, 53, 63, 9, 3_000),
+            ObjectDigest::from_bytes([63; 32]),
+            9,
+            3_000,
+        )
+        .unwrap();
+        catalog.apply_lifecycle_transition(arm).unwrap();
+        assert!(matches!(
+            catalog.apply_lifecycle_transition(stale),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+
+        let reused_request = NetworkNamespaceLifecycleTransitionV1::arm(
+            armed_observation(&catalog, 2, 43, 54, 64, 10, 4_000),
+            ObjectDigest::from_bytes([64; 32]),
+            10,
+            4_000,
+        )
+        .unwrap();
+        assert!(matches!(
+            catalog.apply_lifecycle_transition(reused_request),
+            Err(NetworkNamespaceCatalogError::IdentityConflict)
+        ));
+
+        let mut impossible = catalog.records.get(&[1; 32]).unwrap().clone();
+        impossible.highest_lease_generation = 0;
+        impossible.highest_lease_digest = [0; 32];
+        impossible.refresh_digest().unwrap();
+        assert!(matches!(
+            impossible.validate(),
+            Err(NetworkNamespaceCatalogError::CorruptRecord)
+        ));
+    }
+
+    #[test]
+    fn lifecycle_requires_current_typed_pin_except_for_verified_retirement() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+        let stale_arm_observation = armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000);
+        let stale_destroy_observation = lifecycle_observation(
+            &catalog,
+            1,
+            42,
+            52,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
+        drop(catalog);
+
+        fs::remove_file(fixture.pin_path(1)).unwrap();
+        let mut later_boot = fixture.open([82; 16]).unwrap();
+        let stale_arm = NetworkNamespaceLifecycleTransitionV1::arm(
+            stale_arm_observation,
+            ObjectDigest::from_bytes([61; 32]),
+            7,
+            1_000,
+        )
+        .unwrap();
+        assert!(matches!(
+            later_boot.apply_lifecycle_transition(stale_arm),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+
+        let stale_destroy =
+            NetworkNamespaceLifecycleTransitionV1::destroy(stale_destroy_observation).unwrap();
+        later_boot
+            .apply_lifecycle_transition(stale_destroy)
+            .unwrap();
+        assert!(inventory(&later_boot).networks().is_empty());
+
+        let live_fixture = Fixture::new();
+        live_fixture.create_pin(2);
+        let mut live = live_fixture.open([81; 16]).unwrap();
+        live.publish(live_fixture.publication(2, 2, [81; 16]))
+            .unwrap();
+        let arm_observation = armed_observation(&live, 2, 42, 52, 62, 8, 2_000);
+        fs::remove_file(live_fixture.pin_path(2)).unwrap();
+        let arm = NetworkNamespaceLifecycleTransitionV1::arm(
+            arm_observation,
+            ObjectDigest::from_bytes([62; 32]),
+            8,
+            2_000,
+        )
+        .unwrap();
+        assert!(matches!(
+            live.apply_lifecycle_transition(arm),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+    }
+
+    #[test]
+    fn same_boot_armed_namespace_cannot_be_retired() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+
+        let arm = NetworkNamespaceLifecycleTransitionV1::arm(
+            armed_observation(&catalog, 1, 41, 51, 61, 7, 1_000),
+            ObjectDigest::from_bytes([61; 32]),
+            7,
+            1_000,
+        )
+        .unwrap();
+        catalog.apply_lifecycle_transition(arm).unwrap();
+
+        let destroy_observation = lifecycle_observation(
+            &catalog,
+            1,
+            42,
+            52,
+            NetworkNamespaceObservedStateV1::absent(),
+        );
+        fs::remove_file(fixture.pin_path(1)).unwrap();
+        let destroy = NetworkNamespaceLifecycleTransitionV1::destroy(destroy_observation).unwrap();
+        assert!(matches!(
+            catalog.apply_lifecycle_transition(destroy),
+            Err(NetworkNamespaceCatalogError::LifecycleConflict)
+        ));
+    }
+
+    #[test]
+    fn changed_pin_and_committed_identity_mismatch_fail_closed() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        let publication = fixture.publication(1, 1, [81; 16]);
+        catalog.publish(publication).unwrap();
+
+        let original = fixture.pin_directory.join("original-pin");
+        fs::rename(fixture.pin_path(1), original).unwrap();
+        fixture.create_pin(1);
+        assert!(matches!(
+            catalog.inventory_resources(),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+        drop(catalog);
+        assert!(matches!(
+            fixture.open([81; 16]),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+
+        let second = Fixture::new();
+        second.create_pin(2);
+        let mut catalog = second.open([81; 16]).unwrap();
+        let mut mismatched = second.publication(2, 2, [81; 16]);
+        mismatched.namespace_inode = mismatched.namespace_inode.wrapping_add(1);
+        assert!(matches!(
+            catalog.publish(mismatched),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+    }
+
+    #[test]
+    fn retained_assignment_and_physical_identity_cannot_be_rebound() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        fs::hard_link(fixture.pin_path(1), fixture.pin_path(2)).unwrap();
+        fixture.create_pin(3);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog
+            .publish(fixture.publication(1, 1, [81; 16]))
+            .unwrap();
+
+        assert!(matches!(
+            catalog.publish(fixture.publication(2, 2, [81; 16])),
+            Err(NetworkNamespaceCatalogError::IdentityConflict)
+        ));
+        assert!(matches!(
+            catalog.publish(fixture.publication(3, 1, [81; 16])),
+            Err(NetworkNamespaceCatalogError::IdentityConflict)
+        ));
+    }
+
+    #[test]
+    fn production_pin_observer_rejects_an_ordinary_file() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let owner = fs::symlink_metadata(&fixture.pin_directory).unwrap().uid();
+        let root = PinRoot::open_kernel(&fixture.pin_directory, owner).unwrap();
+
+        assert!(matches!(
+            root.observe(&[1; 32]),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+    }
+
+    #[test]
+    fn catalog_head_and_pin_root_protection_fail_closed() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = Fixture::new();
+        let (mut journal, _) = Journal::open(
+            fixture.state_directory.join(NAMESPACE_JOURNAL_FILE),
+            namespace_journal_limits(),
+        )
+        .unwrap();
+        let head = CatalogHeadV1 { generation: 2 };
+        let transaction = JournalTransaction::new(
+            [71; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::NetworkResourceInventory,
+                HEAD_KEY.to_vec(),
+                encode_head(&head).unwrap(),
+            )],
+        )
+        .unwrap();
+        journal.commit(&transaction).unwrap();
+        drop(journal);
+
+        assert!(matches!(
+            fixture.open([81; 16]),
+            Err(NetworkNamespaceCatalogError::CorruptRecord)
+        ));
+
+        let unsafe_root = Fixture::new();
+        fs::set_permissions(
+            &unsafe_root.pin_directory,
+            fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        assert!(matches!(
+            unsafe_root.open([81; 16]),
+            Err(NetworkNamespaceCatalogError::NamespacePin(_))
+        ));
+    }
+}

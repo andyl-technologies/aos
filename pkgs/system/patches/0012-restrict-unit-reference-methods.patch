@@ -1,0 +1,34 @@
+diff --git a/src/core/org.freedesktop.systemd1.conf b/src/core/org.freedesktop.systemd1.conf
+index 82c406bc68..245cd9681f 100644
+--- a/src/core/org.freedesktop.systemd1.conf
++++ b/src/core/org.freedesktop.systemd1.conf
+@@ -262,14 +262,6 @@
+                        send_interface="org.freedesktop.systemd1.Manager"
+                        send_member="SetUnitProperties"/>
+ 
+-                <allow send_destination="org.freedesktop.systemd1"
+-                       send_interface="org.freedesktop.systemd1.Manager"
+-                       send_member="RefUnit"/>
+-
+-                <allow send_destination="org.freedesktop.systemd1"
+-                       send_interface="org.freedesktop.systemd1.Manager"
+-                       send_member="UnrefUnit"/>
+-
+                 <allow send_destination="org.freedesktop.systemd1"
+                        send_interface="org.freedesktop.systemd1.Manager"
+                        send_member="StartTransientUnit"/>
+@@ -442,14 +434,6 @@
+                        send_interface="org.freedesktop.systemd1.Unit"
+                        send_member="SetProperties"/>
+ 
+-                <allow send_destination="org.freedesktop.systemd1"
+-                       send_interface="org.freedesktop.systemd1.Unit"
+-                       send_member="Ref"/>
+-
+-                <allow send_destination="org.freedesktop.systemd1"
+-                       send_interface="org.freedesktop.systemd1.Unit"
+-                       send_member="Unref"/>
+-
+                 <!-- Managed via polkit or other criteria: org.freedesktop.systemd1.Service interface -->
+ 
+                 <allow send_destination="org.freedesktop.systemd1"

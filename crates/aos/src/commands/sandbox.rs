@@ -1,0 +1,170 @@
+//! CLI routing for `aos sandbox`.
+
+use std::io::Write as _;
+use std::path::Path;
+use std::time::Duration;
+
+use anyhow::{Context as _, Result};
+use aos_proto::aos::sandbox::v1::DiscoveryServiceClient;
+use aos_sandbox::cli_model::{
+    CheckedProtoJsonV1, CheckedPublicFeatureRegistryV1, DormantCompletionShellV1,
+    DormantPublicApiAuthorizationV1, DormantPublicApiClientV1, DormantPublicApiWireTransportV1,
+    DormantSandboxCommandExecutorV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
+    DormantSandboxRoutingErrorV1, DormantValidatedRequestSinkV1, EstablishedProtoJson,
+};
+use aos_sandbox::controller_query::CheckedNodeCapabilitiesV1;
+use clap_complete::Shell;
+use connectrpc::Protocol;
+use connectrpc::client::{ClientConfig, Http2Connection, SharedHttp2Connection};
+use http::Uri;
+
+use crate::cli::Cli;
+use crate::cli::sandbox::SandboxArgs;
+
+const NODE_DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAXIMUM_DISCOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Builds and routes one parsed sandbox request.
+///
+/// Completion generation stays local. Read-only discovery uses the protected
+/// controller socket; request families whose authenticated production
+/// transport is not active continue to fail closed.
+///
+/// # Errors
+///
+/// Returns an error when semantic validation, controller connection, response
+/// validation, rendering, or a deliberately unavailable route fails.
+pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
+    let output = if args.json_lines {
+        DormantSandboxOutputV1::JsonLines
+    } else if cli.json {
+        DormantSandboxOutputV1::Json
+    } else {
+        DormantSandboxOutputV1::Human
+    };
+    let request = crate::cli::sandbox::routed_request(args, output)?;
+    if let DormantSandboxRequestKindV1::Completions(shell) = request.kind() {
+        crate::commands::completions::run(completion_shell(*shell));
+        return Ok(());
+    }
+
+    match request.kind() {
+        DormantSandboxRequestKindV1::CapabilitiesPublicApi(request_message) => {
+            let client = discovery_client(Path::new(NODE_DIAGNOSTIC_SOCKET)).await?;
+            let response = client
+                .get_public_feature_registry(request_message.clone())
+                .await
+                .context("controller rejected public feature discovery")?
+                .into_owned();
+            let registry = response
+                .registry
+                .into_option()
+                .ok_or_else(|| anyhow::anyhow!("controller omitted the public feature registry"))?;
+            let checked = CheckedPublicFeatureRegistryV1::try_from(registry)
+                .context("controller returned an invalid public feature registry")?;
+            render_checked(output, &checked)?;
+            return Ok(());
+        }
+        DormantSandboxRequestKindV1::CapabilitiesNode(request_message) => {
+            let client = discovery_client(Path::new(NODE_DIAGNOSTIC_SOCKET)).await?;
+            let response = client
+                .get_node_capabilities(request_message.clone())
+                .await
+                .context("controller rejected node capability discovery")?
+                .into_owned();
+            let capabilities = response
+                .capabilities
+                .into_option()
+                .ok_or_else(|| anyhow::anyhow!("controller omitted node capabilities"))?;
+            let checked = CheckedNodeCapabilitiesV1::try_from(capabilities)
+                .context("controller returned invalid node capabilities")?;
+            render_checked(output, &checked)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let mut executor = DormantSandboxCommandExecutorV1::new(DormantValidatedRequestSinkV1);
+    let _deferred = executor.execute(request)?;
+    Err(DormantSandboxRoutingErrorV1::TransportRejected.into())
+}
+
+async fn discovery_client(socket: &Path) -> Result<DiscoveryServiceClient<SharedHttp2Connection>> {
+    let authority: Uri = "http://localhost"
+        .parse()
+        .context("invalid built-in controller authority")?;
+    let connection = Http2Connection::connect_unix(socket, authority.clone())
+        .await
+        .with_context(|| format!("cannot connect to controller socket {}", socket.display()))?
+        .shared(8);
+    let config = ClientConfig::new(authority)
+        .protocol(Protocol::Grpc)
+        .default_timeout(DISCOVERY_TIMEOUT)
+        .default_max_message_size(MAXIMUM_DISCOVERY_RESPONSE_BYTES);
+
+    Ok(DiscoveryServiceClient::new(connection, config))
+}
+
+fn render_checked<T>(output: DormantSandboxOutputV1, checked: &T) -> Result<()>
+where
+    T: EstablishedProtoJson,
+{
+    let rendered = CheckedProtoJsonV1::render(checked)
+        .context("controller response could not be rendered safely")?;
+    let output_record = match output {
+        DormantSandboxOutputV1::Human => {
+            let value: serde_json::Value = serde_json::from_str(rendered.as_str())
+                .context("controller response was not valid JSON")?;
+            serde_json::to_string_pretty(&value)?
+        }
+        DormantSandboxOutputV1::Json | DormantSandboxOutputV1::JsonLines => {
+            rendered.as_str().to_owned()
+        }
+    };
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    writeln!(stdout, "{output_record}").context("could not write sandbox response")?;
+    Ok(())
+}
+
+const fn completion_shell(shell: DormantCompletionShellV1) -> Shell {
+    match shell {
+        DormantCompletionShellV1::Bash => Shell::Bash,
+        DormantCompletionShellV1::Fish => Shell::Fish,
+        DormantCompletionShellV1::Zsh => Shell::Zsh,
+    }
+}
+
+/// Executes parsed CLI input through an explicitly supplied public API transport.
+///
+/// This source-only composition is not selected by [`run`]. The caller must
+/// obtain authorization from an authenticated client session and choose the
+/// endpoint transport explicitly.
+///
+/// # Errors
+///
+/// Returns an error when parsing, semantic validation, authorization handoff,
+/// exact route selection, or the supplied transport fails.
+pub fn run_with_public_api_transport<T>(
+    cli: &Cli,
+    args: &SandboxArgs,
+    authorization: DormantPublicApiAuthorizationV1,
+    transport: T,
+) -> Result<T::Output>
+where
+    T: DormantPublicApiWireTransportV1,
+{
+    let output = if args.json_lines {
+        DormantSandboxOutputV1::JsonLines
+    } else if cli.json {
+        DormantSandboxOutputV1::Json
+    } else {
+        DormantSandboxOutputV1::Human
+    };
+    let request =
+        crate::cli::sandbox::routed_request_with_authorization(args, output, authorization)?;
+    let client = DormantPublicApiClientV1::new(transport);
+    let mut executor = DormantSandboxCommandExecutorV1::new(client);
+    Ok(executor.execute(request)?)
+}

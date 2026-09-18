@@ -1,0 +1,2454 @@
+//! Private Linux 6.18 UAPI and syscall shims.
+//!
+//! This is the only module in the crate that contains `unsafe`. Each call
+//! converts successful descriptor returns immediately into [`OwnedFd`] and
+//! borrows every input for the complete syscall duration.
+
+use std::ffi::{CStr, CString};
+use std::mem::{MaybeUninit, size_of};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
+
+use crate::{Error, Result};
+
+// Linux 6.18 `include/linux/socket.h`. glibc versions older than 2.39 do not
+// publish these constants even when the running kernel implements the ABI.
+pub(crate) const SO_PASSPIDFD: libc::c_int = 76;
+pub(crate) const SCM_PIDFD: libc::c_int = 0x04;
+pub(crate) const SO_PEERPIDFD: libc::c_int = 77;
+pub(crate) const SO_COOKIE: libc::c_int = 57;
+
+const SEQPACKET_CONTROL_BYTES: usize = 512;
+
+/// One control message returned by the kernel with all descriptor ownership
+/// transferred out of the raw message buffer.
+#[derive(Debug)]
+pub(crate) enum RawAncillary {
+    Credentials(libc::ucred),
+    PidFd(OwnedFd),
+    Rights(Vec<OwnedFd>),
+    Unknown { level: i32, kind: i32 },
+    Malformed(Vec<OwnedFd>),
+}
+
+#[derive(Debug)]
+pub(crate) struct RawSeqpacketMessage {
+    pub(crate) bytes: usize,
+    pub(crate) flags: i32,
+    pub(crate) ancillary: Vec<RawAncillary>,
+}
+
+/// One bounded rtnetlink datagram and its kernel-address metadata.
+#[derive(Debug)]
+pub(crate) struct RawRtnetlinkResponse {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) flags: i32,
+    pub(crate) sender_pid: u32,
+    pub(crate) sender_groups: u32,
+    pub(crate) port_id: u32,
+}
+
+pub(crate) fn rtnetlink_exchange(
+    request: &[u8],
+    maximum_response_bytes: usize,
+    timeout_nanoseconds: u64,
+) -> Result<RawRtnetlinkResponse> {
+    if request.is_empty() || maximum_response_bytes == 0 || timeout_nanoseconds == 0 {
+        return Err(Error::invalid(
+            "rtnetlink exchange",
+            "request and response ceiling must be nonzero",
+        ));
+    }
+    // SAFETY: arguments are fixed Linux socket-domain constants. A successful
+    // return is immediately adopted as the sole OwnedFd owner.
+    let raw_fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            libc::NETLINK_ROUTE,
+        )
+    };
+    let fd = fd_result(raw_fd.into(), "socket(NETLINK_ROUTE)")?;
+
+    // SAFETY: all-zero is a valid sockaddr_nl base value.
+    let mut local = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
+    local.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    // SAFETY: local names initialized sockaddr_nl storage for the exact length.
+    let bound = unsafe {
+        libc::bind(
+            fd.as_raw_fd(),
+            (&raw const local).cast::<libc::sockaddr>(),
+            size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    unit_result(bound.into(), "bind(NETLINK_ROUTE)")?;
+
+    let mut local_length = size_of::<libc::sockaddr_nl>() as libc::socklen_t;
+    // SAFETY: local and its length name writable initialized storage.
+    let named = unsafe {
+        libc::getsockname(
+            fd.as_raw_fd(),
+            (&raw mut local).cast::<libc::sockaddr>(),
+            &raw mut local_length,
+        )
+    };
+    unit_result(named.into(), "getsockname(NETLINK_ROUTE)")?;
+    if local_length as usize != size_of::<libc::sockaddr_nl>()
+        || local.nl_family != libc::AF_NETLINK as libc::sa_family_t
+        || local.nl_pid == 0
+        || local.nl_groups != 0
+    {
+        return Err(Error::MalformedKernelResponse {
+            object: "NETLINK_ROUTE socket name",
+            message: "bound port identity is invalid".to_owned(),
+        });
+    }
+    let deadline = boottime_nanoseconds()?
+        .checked_add(timeout_nanoseconds)
+        .ok_or_else(|| Error::invalid("rtnetlink exchange", "deadline overflow"))?;
+
+    // SAFETY: all-zero is a valid sockaddr_nl base value; family selects the
+    // kernel and zero PID/groups address only that kernel endpoint.
+    let mut kernel = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
+    kernel.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    let sent = loop {
+        ensure_before_deadline(deadline, "send RTM_GETNSID")?;
+        // SAFETY: request remains readable for the call and kernel has the
+        // exact initialized sockaddr_nl layout.
+        let sent = unsafe {
+            libc::sendto(
+                fd.as_raw_fd(),
+                request.as_ptr().cast(),
+                request.len(),
+                libc::MSG_NOSIGNAL,
+                (&raw const kernel).cast::<libc::sockaddr>(),
+                size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if sent >= 0 {
+            break sent;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EAGAIN) => wait_until(fd.as_fd(), libc::POLLOUT, deadline)?,
+            Some(libc::EINTR) => ensure_before_deadline(deadline, "send RTM_GETNSID")?,
+            _ => return Err(Error::syscall("sendto(RTM_GETNSID)")),
+        }
+    };
+    ensure_before_deadline(deadline, "send RTM_GETNSID")?;
+    if sent as usize != request.len() {
+        return Err(Error::MalformedKernelResponse {
+            object: "RTM_GETNSID",
+            message: "request send was incomplete".to_owned(),
+        });
+    }
+
+    let mut bytes = vec![0_u8; maximum_response_bytes];
+    // SAFETY: all-zero is a valid sockaddr_nl base value.
+    let mut sender = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
+    let mut iov = libc::iovec {
+        iov_base: bytes.as_mut_ptr().cast(),
+        iov_len: bytes.len(),
+    };
+    let mut message = libc::msghdr {
+        msg_name: (&raw mut sender).cast(),
+        msg_namelen: size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        msg_iov: &raw mut iov,
+        msg_iovlen: 1,
+        msg_control: std::ptr::null_mut(),
+        msg_controllen: 0,
+        msg_flags: 0,
+    };
+    let received = loop {
+        ensure_before_deadline(deadline, "receive RTM_GETNSID")?;
+        // SAFETY: message points to live writable address and payload storage.
+        let received = unsafe { libc::recvmsg(fd.as_raw_fd(), &raw mut message, 0) };
+        if received >= 0 {
+            break received;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EAGAIN) => wait_until(fd.as_fd(), libc::POLLIN, deadline)?,
+            Some(libc::EINTR) => ensure_before_deadline(deadline, "receive RTM_GETNSID")?,
+            _ => return Err(Error::syscall("recvmsg(RTM_GETNSID)")),
+        }
+    };
+    ensure_before_deadline(deadline, "receive RTM_GETNSID")?;
+    if message.msg_namelen as usize != size_of::<libc::sockaddr_nl>()
+        || sender.nl_family != libc::AF_NETLINK as libc::sa_family_t
+    {
+        return Err(Error::MalformedKernelResponse {
+            object: "RTM_GETNSID",
+            message: "sender address is malformed".to_owned(),
+        });
+    }
+    let received = usize::try_from(received).map_err(|_| Error::MalformedKernelResponse {
+        object: "RTM_GETNSID",
+        message: "response length is negative".to_owned(),
+    })?;
+    bytes.truncate(received.min(bytes.len()));
+
+    Ok(RawRtnetlinkResponse {
+        bytes,
+        flags: message.msg_flags,
+        sender_pid: sender.nl_pid,
+        sender_groups: sender.nl_groups,
+        port_id: local.nl_pid,
+    })
+}
+
+pub(crate) fn disable_process_dumpability() -> Result<()> {
+    // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
+    let changed = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    unit_result(changed.into(), "prctl(PR_SET_DUMPABLE)")?;
+    // SAFETY: PR_GET_DUMPABLE consumes no optional pointer arguments.
+    let observed = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+    if observed < 0 {
+        return Err(Error::syscall("prctl(PR_GET_DUMPABLE)"));
+    }
+    if observed != 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "process dumpability",
+            message: "process remained dumpable".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn wait_until(fd: BorrowedFd<'_>, events: i16, deadline: u64) -> Result<()> {
+    loop {
+        let now = boottime_nanoseconds()?;
+        let remaining = deadline.checked_sub(now).ok_or(Error::DeadlineExceeded {
+            operation: "RTM_GETNSID exchange",
+        })?;
+        if remaining == 0 {
+            return Err(Error::DeadlineExceeded {
+                operation: "RTM_GETNSID exchange",
+            });
+        }
+        let timeout = libc::timespec {
+            tv_sec: (remaining / 1_000_000_000) as libc::time_t,
+            tv_nsec: (remaining % 1_000_000_000) as libc::c_long,
+        };
+        let mut poll_fd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events,
+            revents: 0,
+        };
+        // SAFETY: poll_fd and timeout are initialized and borrowed only for the
+        // call. A null signal mask preserves the calling process mask.
+        let ready =
+            unsafe { libc::ppoll(&raw mut poll_fd, 1, &raw const timeout, std::ptr::null()) };
+        if ready > 0 {
+            if poll_fd.revents & events != 0 {
+                return Ok(());
+            }
+            return Err(Error::MalformedKernelResponse {
+                object: "RTM_GETNSID poll",
+                message: format!("unexpected readiness flags {:#x}", poll_fd.revents),
+            });
+        }
+        if ready == 0 {
+            return Err(Error::DeadlineExceeded {
+                operation: "RTM_GETNSID exchange",
+            });
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return Err(Error::syscall("ppoll(RTM_GETNSID)"));
+        }
+    }
+}
+
+fn ensure_before_deadline(deadline: u64, operation: &'static str) -> Result<()> {
+    ensure_timestamp_before_deadline(boottime_nanoseconds()?, deadline, operation)
+}
+
+fn ensure_timestamp_before_deadline(
+    observed: u64,
+    deadline: u64,
+    operation: &'static str,
+) -> Result<()> {
+    if observed < deadline {
+        Ok(())
+    } else {
+        Err(Error::DeadlineExceeded { operation })
+    }
+}
+
+pub(crate) fn boottime_nanoseconds() -> Result<u64> {
+    let mut time = MaybeUninit::<libc::timespec>::uninit();
+    // SAFETY: time names writable output storage for CLOCK_BOOTTIME.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, time.as_mut_ptr()) };
+    unit_result(result.into(), "clock_gettime(CLOCK_BOOTTIME)")?;
+    // SAFETY: successful clock_gettime initialized the complete value.
+    let time = unsafe { time.assume_init() };
+    let seconds = u64::try_from(time.tv_sec).map_err(|_| Error::MalformedKernelResponse {
+        object: "CLOCK_BOOTTIME",
+        message: "seconds are negative".to_owned(),
+    })?;
+    let nanoseconds = u64::try_from(time.tv_nsec).map_err(|_| Error::MalformedKernelResponse {
+        object: "CLOCK_BOOTTIME",
+        message: "nanoseconds are negative".to_owned(),
+    })?;
+    if nanoseconds >= 1_000_000_000 {
+        return Err(Error::MalformedKernelResponse {
+            object: "CLOCK_BOOTTIME",
+            message: "nanoseconds are out of range".to_owned(),
+        });
+    }
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or_else(|| Error::MalformedKernelResponse {
+            object: "CLOCK_BOOTTIME",
+            message: "value overflowed u64".to_owned(),
+        })
+}
+
+pub(crate) fn validate_child_reaping_disposition() -> Result<()> {
+    let mut action = MaybeUninit::<libc::sigaction>::uninit();
+    // SAFETY: a null second argument queries the process-wide disposition and
+    // the third argument names writable output storage.
+    let result = unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), action.as_mut_ptr()) };
+    unit_result(result.into(), "inspect SIGCHLD disposition")?;
+    // SAFETY: successful sigaction above initialized the complete value.
+    let action = unsafe { action.assume_init() };
+    if action.sa_sigaction != libc::SIG_DFL || action.sa_flags & libc::SA_NOCLDWAIT != 0 {
+        return Err(Error::invalid(
+            "fixed process reaping ownership",
+            "requires default SIGCHLD disposition without SA_NOCLDWAIT",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn posix_spawn_fixed(
+    executable: &CStr,
+    argument_zero: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
+) -> Result<rustix::process::Pid> {
+    let mut action_storage = MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
+    // SAFETY: the pointer names writable uninitialized action storage.
+    check_posix(
+        unsafe { libc::posix_spawn_file_actions_init(action_storage.as_mut_ptr()) },
+        "initialize fixed process file actions",
+    )?;
+    // SAFETY: successful initialization above produced the value.
+    let mut actions = unsafe { action_storage.assume_init() };
+    if let Err(error) = configure_fixed_actions(&mut actions, stdin, stdout, stderr, inherited) {
+        destroy_fixed_actions(&mut actions);
+        return Err(error);
+    }
+
+    let mut attribute_storage = MaybeUninit::<libc::posix_spawnattr_t>::uninit();
+    // SAFETY: the pointer names writable uninitialized attribute storage.
+    let initialized = unsafe { libc::posix_spawnattr_init(attribute_storage.as_mut_ptr()) };
+    if let Err(error) = check_posix(initialized, "initialize fixed process attributes") {
+        destroy_fixed_actions(&mut actions);
+        return Err(error);
+    }
+    // SAFETY: successful initialization above produced the value.
+    let mut attributes = unsafe { attribute_storage.assume_init() };
+    if let Err(error) = configure_fixed_attributes(&mut attributes) {
+        destroy_fixed_attributes(&mut attributes);
+        destroy_fixed_actions(&mut actions);
+        return Err(error);
+    }
+
+    let mut argument_pointers = Vec::with_capacity(arguments.len() + 2);
+    argument_pointers.push(argument_zero.as_ptr().cast_mut());
+    argument_pointers.extend(
+        arguments
+            .iter()
+            .map(|argument| argument.as_ptr().cast_mut()),
+    );
+    argument_pointers.push(std::ptr::null_mut());
+    let environment = [std::ptr::null_mut::<libc::c_char>()];
+    let mut raw_pid = 0;
+    // SAFETY: strings and pointer arrays remain live through the call; actions
+    // and attributes are initialized; argv/envp are terminated; and raw_pid
+    // names writable output. libc never returns child-side Rust execution.
+    let result = unsafe {
+        libc::posix_spawn(
+            &raw mut raw_pid,
+            executable.as_ptr(),
+            &raw const actions,
+            &raw const attributes,
+            argument_pointers.as_ptr(),
+            environment.as_ptr(),
+        )
+    };
+    destroy_fixed_attributes(&mut attributes);
+    destroy_fixed_actions(&mut actions);
+    check_posix(result, "spawn fixed process")?;
+
+    let mut guard = RawSpawnedChildGuard::new(raw_pid);
+    let pid = rustix::process::Pid::from_raw(raw_pid).ok_or_else(|| {
+        Error::invalid(
+            "fixed process PID",
+            "successful posix_spawn returned a nonpositive PID",
+        )
+    })?;
+    guard.disarm();
+    Ok(pid)
+}
+
+const FIXED_EXEC_ERROR_FD: libc::c_int = 7;
+const FIXED_DUPLICATE_MINIMUM: libc::c_int = 64;
+const SECURE_NOROOT_AND_NO_SETUID_FIXUP_LOCKED: libc::c_int = 0x0f;
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+#[repr(C)]
+struct RawCapabilityHeader {
+    version: u32,
+    pid: libc::c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawCapabilityData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+/// Forks one fixed descriptor-backed executable after removing child authority.
+///
+/// The exactly single-threaded caller has already duplicated every source
+/// descriptor above the destination range. The child performs only raw,
+/// async-signal-safe syscalls: it creates a process group, maps FDs 0 onward,
+/// closes every unassigned descriptor, enables no-new-privileges, clears all
+/// active capability sets, and executes the retained file with `execveat(2)`.
+/// It deliberately preserves the caller's bounding set for role-specific
+/// entry validation because the minimized caller may no longer have SETPCAP.
+pub(crate) fn fork_execveat_fixed_without_authority(
+    executable: BorrowedFd<'_>,
+    argument_zero: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
+) -> Result<rustix::process::Pid> {
+    // Locked NOROOT and NO_SETUID_FIXUP are what prevent UID 0 from regaining
+    // a permitted set when the dynamic loader is entered after capset(2).
+    // SAFETY: PR_GET_SECUREBITS consumes scalar arguments only.
+    let securebits = unsafe { libc::prctl(libc::PR_GET_SECUREBITS, 0, 0, 0, 0) };
+    if securebits < 0 {
+        return Err(Error::syscall("prctl(PR_GET_SECUREBITS)"));
+    }
+    // SAFETY: geteuid observes process credentials without pointer arguments.
+    validate_descriptor_exec_securebits(unsafe { libc::geteuid() }, securebits)?;
+
+    let mut argument_pointers = Vec::with_capacity(arguments.len() + 2);
+    argument_pointers.push(argument_zero.as_ptr().cast_mut());
+    argument_pointers.extend(
+        arguments
+            .iter()
+            .map(|argument| argument.as_ptr().cast_mut()),
+    );
+    argument_pointers.push(std::ptr::null_mut());
+    let environment = [std::ptr::null_mut::<libc::c_char>()];
+
+    let mut raw_pipe = [-1; 2];
+    // SAFETY: raw_pipe names writable storage for exactly two descriptors.
+    unit_result(
+        unsafe { libc::pipe2(raw_pipe.as_mut_ptr(), libc::O_CLOEXEC) }.into(),
+        "pipe2(fixed descriptor exec status)",
+    )?;
+    // SAFETY: both successful pipe descriptors have unique ownership here.
+    let raw_error_read = unsafe { OwnedFd::from_raw_fd(raw_pipe[0]) };
+    // SAFETY: as above, the second descriptor is independently owned.
+    let raw_error_write = unsafe { OwnedFd::from_raw_fd(raw_pipe[1]) };
+    let error_read = duplicate_raw_high(raw_error_read.as_fd(), "duplicate exec status reader")?;
+    let error_write = duplicate_raw_high(raw_error_write.as_fd(), "duplicate exec status writer")?;
+    drop(raw_error_read);
+    drop(raw_error_write);
+
+    let child = FixedExecveatChild {
+        executable,
+        arguments: argument_pointers.as_ptr(),
+        environment: environment.as_ptr(),
+        stdin,
+        stdout,
+        stderr,
+        inherited,
+        error_write: error_write.as_fd(),
+    };
+
+    // SAFETY: the caller proved it is single-threaded immediately before this
+    // call. Every child-side operation below is a raw async-signal-safe syscall
+    // over storage and pointers prepared before fork.
+    let raw_pid = unsafe { libc::fork() };
+    if raw_pid < 0 {
+        return Err(Error::syscall("fork fixed descriptor process"));
+    }
+    if raw_pid == 0 {
+        // This branch never returns to Rust. It uses only scalar raw
+        // syscalls and preallocated argv/env storage, then execs or calls _exit.
+        child.exec()
+    }
+
+    drop(error_write);
+    let mut guard = RawSpawnedChildGuard::new(raw_pid);
+    receive_exec_status(error_read.as_fd())?;
+    let pid = rustix::process::Pid::from_raw(raw_pid).ok_or_else(|| {
+        Error::invalid(
+            "fixed process PID",
+            "successful fork returned a nonpositive PID",
+        )
+    })?;
+    guard.disarm();
+    Ok(pid)
+}
+
+fn validate_descriptor_exec_securebits(
+    effective_uid: libc::uid_t,
+    securebits: libc::c_int,
+) -> Result<()> {
+    if effective_uid == 0 && securebits != SECURE_NOROOT_AND_NO_SETUID_FIXUP_LOCKED {
+        return Err(Error::invalid(
+            "fixed descriptor process securebits",
+            "UID 0 requires locked noroot and no-setuid-fixup",
+        ));
+    }
+    Ok(())
+}
+
+fn duplicate_raw_high(descriptor: BorrowedFd<'_>, operation: &'static str) -> Result<OwnedFd> {
+    // SAFETY: fcntl borrows the source and success returns a new descriptor.
+    let duplicated = unsafe {
+        libc::fcntl(
+            descriptor.as_raw_fd(),
+            libc::F_DUPFD_CLOEXEC,
+            FIXED_DUPLICATE_MINIMUM,
+        )
+    };
+    fd_result(duplicated.into(), operation)
+}
+
+struct FixedExecveatChild<'a> {
+    executable: BorrowedFd<'a>,
+    arguments: *const *mut libc::c_char,
+    environment: *const *mut libc::c_char,
+    stdin: BorrowedFd<'a>,
+    stdout: BorrowedFd<'a>,
+    stderr: BorrowedFd<'a>,
+    inherited: &'a [BorrowedFd<'a>],
+    error_write: BorrowedFd<'a>,
+}
+
+impl FixedExecveatChild<'_> {
+    fn exec(self) -> ! {
+        let error_source = self.error_write.as_raw_fd();
+        // SAFETY: the source is a live high-numbered descriptor and FD 7 is
+        // reserved exclusively for this close-on-exec error channel.
+        if unsafe { libc::dup3(error_source, FIXED_EXEC_ERROR_FD, libc::O_CLOEXEC) } < 0 {
+            child_exec_failure(error_source)
+        }
+        // SAFETY: scalar zero arguments create a group led by this child.
+        if unsafe { libc::setpgid(0, 0) } != 0 {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+
+        for (source, target) in [(self.stdin, 0), (self.stdout, 1), (self.stderr, 2)] {
+            // SAFETY: every borrowed source remains live through exec and each
+            // target is one fixed standard descriptor.
+            if unsafe { libc::dup2(source.as_raw_fd(), target) } < 0 {
+                child_exec_failure(FIXED_EXEC_ERROR_FD)
+            }
+        }
+        for (index, source) in self.inherited.iter().enumerate() {
+            let target = index as libc::c_int + 3;
+            // SAFETY: sources were duplicated above the target range before fork;
+            // the validated role ceiling keeps targets within FDs 3 through 5.
+            if unsafe { libc::dup2(source.as_raw_fd(), target) } < 0 {
+                child_exec_failure(FIXED_EXEC_ERROR_FD)
+            }
+        }
+        let executable_target = self.inherited.len() as libc::c_int + 3;
+        // SAFETY: the retained executable source is live and high-numbered; the
+        // validated role ceiling reserves the next target at or below FD 6.
+        if unsafe { libc::dup2(self.executable.as_raw_fd(), executable_target) } < 0 {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+
+        // SAFETY: close_range consumes only scalar bounds. These ranges leave
+        // exactly the mapped table and error FD 7 open.
+        if executable_target < FIXED_EXEC_ERROR_FD - 1
+            && unsafe {
+                libc::syscall(
+                    libc::SYS_close_range,
+                    executable_target + 1,
+                    FIXED_EXEC_ERROR_FD - 1,
+                    0,
+                )
+            } != 0
+        {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+        // SAFETY: the scalar range begins above the reserved error descriptor.
+        if unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                FIXED_EXEC_ERROR_FD + 1,
+                libc::c_uint::MAX,
+                0,
+            )
+        } != 0
+        {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+
+        // SAFETY: both prctl operations consume scalar arguments and only reduce
+        // the current child's privilege transition surface.
+        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0
+            || unsafe {
+                libc::prctl(
+                    libc::PR_CAP_AMBIENT,
+                    libc::PR_CAP_AMBIENT_CLEAR_ALL,
+                    0,
+                    0,
+                    0,
+                )
+            } != 0
+        {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+        let header = RawCapabilityHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let data = [RawCapabilityData {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
+        // SAFETY: header and both data words have the Linux V3 layout and remain
+        // readable for this call, which clears only the current child's sets.
+        if unsafe { libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) } != 0 {
+            child_exec_failure(FIXED_EXEC_ERROR_FD)
+        }
+
+        // SAFETY: FD `executable_target` names the retained regular file; the
+        // empty path selects AT_EMPTY_PATH; argv/envp are preallocated, live, and
+        // NUL-terminated pointer arrays. Success replaces this process image.
+        unsafe {
+            libc::syscall(
+                libc::SYS_execveat,
+                executable_target,
+                c"".as_ptr(),
+                self.arguments,
+                self.environment,
+                libc::AT_EMPTY_PATH,
+            )
+        };
+        child_exec_failure(FIXED_EXEC_ERROR_FD)
+    }
+}
+
+fn child_exec_failure(error_descriptor: libc::c_int) -> ! {
+    // Capture errno before write(2) can replace it. A four-byte write to a pipe
+    // is atomic and the parent treats every other shape as malformed failure.
+    // SAFETY: libc exposes thread-local errno storage for this live child.
+    let error = unsafe { *libc::__errno_location() };
+    let bytes = error.to_ne_bytes();
+    // SAFETY: the error FD is live and bytes is readable for one atomic record.
+    let _ = unsafe { libc::write(error_descriptor, bytes.as_ptr().cast(), bytes.len()) };
+    // SAFETY: the fork child must never unwind through inherited Rust frames.
+    unsafe { libc::_exit(127) }
+}
+
+fn receive_exec_status(descriptor: BorrowedFd<'_>) -> Result<()> {
+    let mut bytes = [0_u8; size_of::<libc::c_int>()];
+    let mut offset = 0;
+    loop {
+        // SAFETY: the remaining slice is writable for the supplied byte count.
+        let count = unsafe {
+            libc::read(
+                descriptor.as_raw_fd(),
+                bytes[offset..].as_mut_ptr().cast(),
+                bytes.len() - offset,
+            )
+        };
+        if count == 0 {
+            break;
+        }
+        if count < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(Error::syscall("read fixed descriptor exec status"));
+        }
+        offset += usize::try_from(count).map_err(|_| Error::MalformedKernelResponse {
+            object: "fixed descriptor exec status",
+            message: "negative status length".to_owned(),
+        })?;
+        if offset == bytes.len() {
+            let error = libc::c_int::from_ne_bytes(bytes);
+            return Err(Error::Syscall {
+                operation: "execveat fixed descriptor process",
+                source: std::io::Error::from_raw_os_error(error),
+            });
+        }
+    }
+    if offset == 0 {
+        Ok(())
+    } else {
+        Err(Error::MalformedKernelResponse {
+            object: "fixed descriptor exec status",
+            message: "child returned a partial error record".to_owned(),
+        })
+    }
+}
+
+fn configure_fixed_actions(
+    actions: &mut libc::posix_spawn_file_actions_t,
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
+) -> Result<()> {
+    for (source, target) in [(stdin, 0), (stdout, 1), (stderr, 2)] {
+        // SAFETY: actions is initialized and sources remain borrowed until spawn.
+        check_posix(
+            unsafe { libc::posix_spawn_file_actions_adddup2(actions, source.as_raw_fd(), target) },
+            "map fixed process standard descriptor",
+        )?;
+    }
+    for (index, source) in inherited.iter().enumerate() {
+        let target = libc::c_int::try_from(index + 3)
+            .map_err(|_| Error::invalid("fixed process descriptor", "target overflowed"))?;
+        // SAFETY: actions is initialized and sources remain borrowed until spawn.
+        check_posix(
+            unsafe { libc::posix_spawn_file_actions_adddup2(actions, source.as_raw_fd(), target) },
+            "map inherited fixed process descriptor",
+        )?;
+    }
+    let close_from = libc::c_int::try_from(inherited.len() + 3)
+        .map_err(|_| Error::invalid("fixed process descriptor", "close range overflowed"))?;
+    // SAFETY: actions is initialized. AOS glibc supplies this GNU extension.
+    check_posix(
+        unsafe { libc::posix_spawn_file_actions_addclosefrom_np(actions, close_from) },
+        "close inherited fixed process descriptors",
+    )
+}
+
+fn configure_fixed_attributes(attributes: &mut libc::posix_spawnattr_t) -> Result<()> {
+    // A zero pgroup requests a new process group whose ID is the child's PID.
+    // SAFETY: attributes is initialized and exclusively borrowed.
+    check_posix(
+        unsafe { libc::posix_spawnattr_setpgroup(attributes, 0) },
+        "set fixed process group",
+    )?;
+    // SAFETY: attributes is initialized and the flag is supported by glibc.
+    check_posix(
+        unsafe {
+            libc::posix_spawnattr_setflags(attributes, libc::POSIX_SPAWN_SETPGROUP as libc::c_short)
+        },
+        "enable fixed process group",
+    )
+}
+
+fn destroy_fixed_actions(actions: &mut libc::posix_spawn_file_actions_t) {
+    // SAFETY: callers invoke this exactly once after successful initialization.
+    let _ = unsafe { libc::posix_spawn_file_actions_destroy(actions) };
+}
+
+fn destroy_fixed_attributes(attributes: &mut libc::posix_spawnattr_t) {
+    // SAFETY: callers invoke this exactly once after successful initialization.
+    let _ = unsafe { libc::posix_spawnattr_destroy(attributes) };
+}
+
+fn check_posix(result: libc::c_int, operation: &'static str) -> Result<()> {
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(Error::Syscall {
+            operation,
+            source: std::io::Error::from_raw_os_error(result),
+        })
+    }
+}
+
+struct RawSpawnedChildGuard {
+    pid: libc::pid_t,
+    armed: bool,
+}
+
+impl RawSpawnedChildGuard {
+    const fn new(pid: libc::pid_t) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RawSpawnedChildGuard {
+    fn drop(&mut self) {
+        if !self.armed || self.pid <= 0 {
+            return;
+        }
+        // The child was created as a new process group and remains unreaped,
+        // so its PID/process-group ID cannot yet have been recycled.
+        // SAFETY: negative positive-child PID selects exactly that group.
+        let _ = unsafe { libc::kill(-self.pid, libc::SIGKILL) };
+        let mut status = 0;
+        loop {
+            // SAFETY: status is writable and pid is the successful spawn result.
+            let result = unsafe { libc::waitpid(self.pid, &raw mut status, 0) };
+            if result == self.pid
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+            {
+                break;
+            }
+        }
+    }
+}
+
+pub(crate) const RESOLVE_NO_XDEV: u64 = 0x01;
+pub(crate) const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+pub(crate) const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+pub(crate) const RESOLVE_BENEATH: u64 = 0x08;
+
+pub(crate) const REQUIRED_IMMUTABLE_SEALS: libc::c_int =
+    libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+
+pub(crate) struct VerityMeasurement {
+    pub(crate) algorithm: u16,
+    pub(crate) length: usize,
+    pub(crate) digest: [u8; 64],
+}
+
+#[repr(C)]
+struct RawVerityDigest {
+    algorithm: u16,
+    digest_size: u16,
+    digest: [u8; 64],
+}
+
+#[repr(C)]
+struct RawVerityEnableArg {
+    version: u32,
+    hash_algorithm: u32,
+    block_size: u32,
+    salt_size: u32,
+    salt_ptr: u64,
+    signature_size: u32,
+    reserved1: u32,
+    signature_ptr: u64,
+    reserved2: [u64; 11],
+}
+
+pub(crate) const OPEN_TREE_CLONE: u32 = 1;
+pub(crate) const OPEN_TREE_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
+pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
+pub(crate) const AT_RECURSIVE: u32 = 0x8000;
+pub(crate) const RENAME_NOREPLACE: u32 = 1;
+pub(crate) const STATX_MNT_ID_UNIQUE: u32 = 0x0000_4000;
+pub(crate) const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x0000_0004;
+pub(crate) const MOVE_MOUNT_T_EMPTY_PATH: u32 = 0x0000_0040;
+pub(crate) const MOVE_MOUNT_BENEATH: u32 = 0x0000_0200;
+pub(crate) const FSOPEN_CLOEXEC: u32 = 1;
+pub(crate) const FSMOUNT_CLOEXEC: u32 = 1;
+
+pub(crate) const FSCONFIG_SET_FLAG: u32 = 0;
+pub(crate) const FSCONFIG_SET_STRING: u32 = 1;
+pub(crate) const FSCONFIG_SET_FD: u32 = 5;
+pub(crate) const FSCONFIG_CMD_CREATE: u32 = 6;
+
+pub(crate) const MOUNT_ATTR_RDONLY: u64 = 0x0000_0001;
+pub(crate) const MOUNT_ATTR_NOSUID: u64 = 0x0000_0002;
+pub(crate) const MOUNT_ATTR_NODEV: u64 = 0x0000_0004;
+pub(crate) const MOUNT_ATTR_NOEXEC: u64 = 0x0000_0008;
+pub(crate) const MOUNT_ATTR_NOATIME: u64 = 0x0000_0010;
+pub(crate) const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
+
+pub(crate) const STATMOUNT_SB_BASIC: u64 = 0x0000_0001;
+pub(crate) const STATMOUNT_MNT_BASIC: u64 = 0x0000_0002;
+pub(crate) const STATMOUNT_MNT_ROOT: u64 = 0x0000_0008;
+pub(crate) const STATMOUNT_MNT_POINT: u64 = 0x0000_0010;
+pub(crate) const STATMOUNT_FS_TYPE: u64 = 0x0000_0020;
+pub(crate) const STATMOUNT_MNT_NS_ID: u64 = 0x0000_0040;
+pub(crate) const STATMOUNT_SB_SOURCE: u64 = 0x0000_0200;
+pub(crate) const STATMOUNT_SUPPORTED_MASK: u64 = 0x0000_1000;
+pub(crate) const STATMOUNT_MNT_UIDMAP: u64 = 0x0000_2000;
+pub(crate) const STATMOUNT_MNT_GIDMAP: u64 = 0x0000_4000;
+pub(crate) const LSMT_ROOT: u64 = u64::MAX;
+pub(crate) const LISTMOUNT_REVERSE: u32 = 1 << 0;
+
+const NSFS_MAGIC: libc::c_long = 0x6e73_6673;
+const NS_GET_NSTYPE: libc::c_ulong = 0xb703;
+// Linux 6.18 `FS_IOC_MEASURE_VERITY`: _IOWR('f', 134, struct fsverity_digest).
+const FS_IOC_MEASURE_VERITY: libc::c_ulong = 0xc004_6686;
+// Linux 6.18 `FS_IOC_ENABLE_VERITY`: _IOW('f', 133, struct fsverity_enable_arg).
+const FS_IOC_ENABLE_VERITY: libc::c_ulong = 0x4080_6685;
+const PIDFD_GET_MNT_NAMESPACE: libc::c_ulong = 0xff03;
+const PIDFD_GET_NET_NAMESPACE: libc::c_ulong = 0xff04;
+const PIDFD_GET_PID_NAMESPACE: libc::c_ulong = 0xff05;
+const PIDFD_GET_USER_NAMESPACE: libc::c_ulong = 0xff09;
+const PIDFD_GET_UTS_NAMESPACE: libc::c_ulong = 0xff0a;
+const PIDFD_GET_INFO: libc::c_ulong = 0xc048_ff0b;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const SYS_STATMOUNT: libc::c_long = 457;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const SYS_LISTMOUNT: libc::c_long = 458;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const SYS_OPEN_TREE_ATTR: libc::c_long = 467;
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("aos-sandbox-linux currently supports x86_64 and aarch64");
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct OpenHow {
+    pub(crate) flags: u64,
+    pub(crate) mode: u64,
+    pub(crate) resolve: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RawMountAttr {
+    pub(crate) attr_set: u64,
+    pub(crate) attr_clr: u64,
+    pub(crate) propagation: u64,
+    pub(crate) userns_fd: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RawPidfdInfo {
+    pub(crate) mask: u64,
+    pub(crate) cgroup_id: u64,
+    pub(crate) pid: u32,
+    pub(crate) tgid: u32,
+    pub(crate) ppid: u32,
+    pub(crate) ruid: u32,
+    pub(crate) rgid: u32,
+    pub(crate) euid: u32,
+    pub(crate) egid: u32,
+    pub(crate) suid: u32,
+    pub(crate) sgid: u32,
+    pub(crate) fsuid: u32,
+    pub(crate) fsgid: u32,
+    pub(crate) exit_code: i32,
+    pub(crate) coredump_mask: u32,
+    pub(crate) spare: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct MountIdRequest {
+    pub(crate) size: u32,
+    pub(crate) mount_namespace_fd: u32,
+    pub(crate) mount_id: u64,
+    pub(crate) parameter: u64,
+    pub(crate) mount_namespace_id: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct RawStatMount {
+    pub(crate) size: u32,
+    pub(crate) mount_options: u32,
+    pub(crate) mask: u64,
+    pub(crate) device_major: u32,
+    pub(crate) device_minor: u32,
+    pub(crate) superblock_magic: u64,
+    pub(crate) superblock_flags: u32,
+    pub(crate) filesystem_type: u32,
+    pub(crate) mount_id: u64,
+    pub(crate) parent_mount_id: u64,
+    pub(crate) old_mount_id: u32,
+    pub(crate) old_parent_mount_id: u32,
+    pub(crate) mount_attributes: u64,
+    pub(crate) propagation: u64,
+    pub(crate) peer_group: u64,
+    pub(crate) master: u64,
+    pub(crate) propagate_from: u64,
+    pub(crate) mount_root: u32,
+    pub(crate) mount_point: u32,
+    pub(crate) mount_namespace_id: u64,
+    pub(crate) filesystem_subtype: u32,
+    pub(crate) superblock_source: u32,
+    pub(crate) option_count: u32,
+    pub(crate) option_array: u32,
+    pub(crate) security_option_count: u32,
+    pub(crate) security_option_array: u32,
+    pub(crate) supported_mask: u64,
+    pub(crate) uid_map_count: u32,
+    pub(crate) uid_map: u32,
+    pub(crate) gid_map_count: u32,
+    pub(crate) gid_map: u32,
+    pub(crate) spare: [u64; 43],
+}
+
+impl Default for RawStatMount {
+    fn default() -> Self {
+        // The UAPI requires every reserved field and the output size to start
+        // at zero. All-zero is a valid bit pattern for this integer-only C
+        // structure.
+        // SAFETY: `RawStatMount` contains only integer scalars and arrays.
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+const STAT_STRING_BYTES: usize = 16 * 1024;
+
+#[repr(C)]
+pub(crate) struct StatMountBuffer {
+    pub(crate) header: RawStatMount,
+    pub(crate) strings: [u8; STAT_STRING_BYTES],
+}
+
+impl StatMountBuffer {
+    fn zeroed() -> Box<Self> {
+        // The kernel treats this as an output byte buffer. Zeroing also
+        // guarantees reserved UAPI fields are initialized as required.
+        // SAFETY: both fields accept the all-zero bit pattern.
+        Box::new(unsafe { std::mem::zeroed() })
+    }
+}
+
+pub(crate) fn pidfd_open(pid: u32) -> Result<OwnedFd> {
+    // SAFETY: `pidfd_open` receives scalar arguments and returns a new fd.
+    let result = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0_u32) };
+    fd_result(result, "pidfd_open")
+}
+
+#[cfg(all(test, feature = "kernel-tests"))]
+pub(crate) fn pidfd_send_signal_zero_for_test(pidfd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: the borrowed fd remains live for the call; signal 0 has no
+    // side-effect and the siginfo pointer is intentionally null.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            0,
+            std::ptr::null::<libc::siginfo_t>(),
+            0_u32,
+        )
+    };
+    unit_result(result, "pidfd_send_signal")
+}
+
+pub(crate) fn pidfd_getfd(pidfd: BorrowedFd<'_>, target: RawFd) -> Result<OwnedFd> {
+    // SAFETY: the pidfd remains borrowed for the call; the returned descriptor
+    // is new and immediately transferred to `OwnedFd`.
+    let result = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd.as_raw_fd(), target, 0_u32) };
+    fd_result(result, "pidfd_getfd")
+}
+
+pub(crate) fn pidfd_info(pidfd: BorrowedFd<'_>) -> Result<RawPidfdInfo> {
+    let mut info = RawPidfdInfo {
+        mask: 0x7,
+        ..RawPidfdInfo::default()
+    };
+    // SAFETY: `info` is a live, correctly-sized writable C structure and the
+    // pidfd borrow spans the ioctl.
+    let result = unsafe { libc::ioctl(pidfd.as_raw_fd(), PIDFD_GET_INFO, &mut info) };
+    if result < 0 {
+        return Err(Error::syscall("PIDFD_GET_INFO"));
+    }
+    Ok(info)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum NamespaceIoctl {
+    Mount,
+    Network,
+    Pid,
+    User,
+    Uts,
+}
+
+pub(crate) fn pidfd_namespace(pidfd: BorrowedFd<'_>, namespace: NamespaceIoctl) -> Result<OwnedFd> {
+    let request = match namespace {
+        NamespaceIoctl::Mount => PIDFD_GET_MNT_NAMESPACE,
+        NamespaceIoctl::Network => PIDFD_GET_NET_NAMESPACE,
+        NamespaceIoctl::Pid => PIDFD_GET_PID_NAMESPACE,
+        NamespaceIoctl::User => PIDFD_GET_USER_NAMESPACE,
+        NamespaceIoctl::Uts => PIDFD_GET_UTS_NAMESPACE,
+    };
+    // SAFETY: pidfs requires an explicit zero scalar argument for these `_IO`
+    // requests. The call borrows the pidfd and returns a new close-on-exec fd.
+    let result = unsafe { libc::ioctl(pidfd.as_raw_fd(), request, 0 as libc::c_ulong) };
+    fd_result(libc::c_long::from(result), "pidfd namespace ioctl")
+}
+
+pub(crate) fn is_namespace(fd: BorrowedFd<'_>) -> Result<bool> {
+    Ok(filesystem_type(fd)? == NSFS_MAGIC)
+}
+
+pub(crate) fn filesystem_type(fd: BorrowedFd<'_>) -> Result<libc::c_long> {
+    // SAFETY: `statfs` is fully initialized by `fstatfs`; the fd borrow spans
+    // the call and the pointer is writable and correctly aligned.
+    let mut statfs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: described above.
+    let result = unsafe { libc::fstatfs(fd.as_raw_fd(), std::ptr::addr_of_mut!(statfs)) };
+    if result < 0 {
+        return Err(Error::syscall("fstatfs"));
+    }
+    Ok(statfs.f_type)
+}
+
+pub(crate) fn namespace_type(fd: BorrowedFd<'_>) -> Result<i32> {
+    // SAFETY: `NS_GET_NSTYPE` takes no pointer argument and only observes the
+    // namespace descriptor borrowed for the duration of the ioctl.
+    let result = unsafe { libc::ioctl(fd.as_raw_fd(), NS_GET_NSTYPE, 0 as libc::c_ulong) };
+    if result < 0 {
+        return Err(Error::syscall("NS_GET_NSTYPE"));
+    }
+    Ok(result)
+}
+
+pub(crate) fn setns(fd: BorrowedFd<'_>, namespace_type: i32) -> Result<()> {
+    // SAFETY: the descriptor remains borrowed for the call and the namespace
+    // type is obtained from the closed `NamespaceKind` enum. Process-level
+    // single-threading is enforced by the public token required by the caller.
+    let result = unsafe { libc::setns(fd.as_raw_fd(), namespace_type) };
+    if result < 0 {
+        Err(Error::syscall("setns"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn fchdir(fd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: the descriptor remains borrowed for the complete libc call.
+    let result = unsafe { libc::fchdir(fd.as_raw_fd()) };
+    unit_result(result.into(), "fchdir")
+}
+
+pub(crate) fn chroot_dot() -> Result<()> {
+    // SAFETY: the static C string is NUL terminated and valid for the call.
+    let result = unsafe { libc::chroot(c".".as_ptr()) };
+    unit_result(result.into(), "chroot")
+}
+
+pub(crate) fn chdir_root() -> Result<()> {
+    // SAFETY: the static C string is NUL terminated and valid for the call.
+    let result = unsafe { libc::chdir(c"/".as_ptr()) };
+    unit_result(result.into(), "chdir")
+}
+
+pub(crate) fn umount_detach(path: &CStr) -> Result<()> {
+    // SAFETY: the path remains a live NUL-terminated C string for the call.
+    let result = unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH | libc::UMOUNT_NOFOLLOW) };
+    unit_result(result.into(), "umount2")
+}
+
+pub(crate) fn fstat(fd: BorrowedFd<'_>) -> Result<libc::stat> {
+    // SAFETY: `stat` is an output structure with an all-zero valid bit pattern.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: the fd borrow and writable output live for the complete call.
+    let result = unsafe { libc::fstat(fd.as_raw_fd(), std::ptr::addr_of_mut!(stat)) };
+    if result < 0 {
+        return Err(Error::syscall("fstat"));
+    }
+    Ok(stat)
+}
+
+pub(crate) fn get_seals(fd: BorrowedFd<'_>) -> Result<libc::c_int> {
+    // SAFETY: `F_GET_SEALS` only observes the file description borrowed for
+    // the duration of this call and takes no pointer argument.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+    if result < 0 {
+        Err(Error::syscall("fcntl(F_GET_SEALS)"))
+    } else {
+        Ok(result)
+    }
+}
+
+pub(crate) fn get_status_flags(fd: BorrowedFd<'_>) -> Result<libc::c_int> {
+    // SAFETY: `F_GETFL` only observes the borrowed file description.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if result < 0 {
+        Err(Error::syscall("fcntl(F_GETFL)"))
+    } else {
+        Ok(result)
+    }
+}
+
+pub(crate) fn measure_verity(fd: BorrowedFd<'_>) -> Result<VerityMeasurement> {
+    let mut measurement = RawVerityDigest {
+        algorithm: 0,
+        digest_size: 64,
+        digest: [0; 64],
+    };
+    // SAFETY: the borrowed descriptor and writable fixed-capacity response
+    // remain live for the ioctl. `digest_size` advertises the exact tail
+    // capacity following the Linux `fsverity_digest` header.
+    let result = unsafe {
+        libc::ioctl(
+            fd.as_raw_fd(),
+            FS_IOC_MEASURE_VERITY,
+            std::ptr::addr_of_mut!(measurement),
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("ioctl(FS_IOC_MEASURE_VERITY)"));
+    }
+    if result != 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "fs-verity measurement",
+            message: "ioctl returned a positive success value".to_string(),
+        });
+    }
+    let length = usize::from(measurement.digest_size);
+    if length > measurement.digest.len() {
+        return Err(Error::MalformedKernelResponse {
+            object: "fs-verity measurement",
+            message: "kernel returned an oversized digest".to_string(),
+        });
+    }
+    Ok(VerityMeasurement {
+        algorithm: measurement.algorithm,
+        length,
+        digest: measurement.digest,
+    })
+}
+
+pub(crate) fn enable_verity_sha256_4096(fd: BorrowedFd<'_>) -> Result<()> {
+    let argument = RawVerityEnableArg {
+        version: 1,
+        hash_algorithm: 1,
+        block_size: 4096,
+        salt_size: 0,
+        salt_ptr: 0,
+        signature_size: 0,
+        reserved1: 0,
+        signature_ptr: 0,
+        reserved2: [0; 11],
+    };
+    // SAFETY: the fixed-layout argument remains borrowed for the complete
+    // ioctl. All optional pointer/length pairs and reserved fields are zero.
+    let result = unsafe {
+        libc::ioctl(
+            fd.as_raw_fd(),
+            FS_IOC_ENABLE_VERITY,
+            std::ptr::addr_of!(argument),
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("ioctl(FS_IOC_ENABLE_VERITY)"));
+    }
+    if result != 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "fs-verity enable",
+            message: "ioctl returned a positive success value".to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn fsync(fd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: `fsync` only observes and synchronizes the borrowed file
+    // description for the duration of the call.
+    let result = unsafe { libc::fsync(fd.as_raw_fd()) };
+    if result < 0 {
+        Err(Error::syscall("fsync"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn effective_uid() -> u32 {
+    // SAFETY: `geteuid` has no pointer arguments or process-state mutation.
+    unsafe { libc::geteuid() }
+}
+
+pub(crate) fn renameat2(
+    old_directory: BorrowedFd<'_>,
+    old_name: &CStr,
+    new_directory: BorrowedFd<'_>,
+    new_name: &CStr,
+    flags: u32,
+) -> Result<()> {
+    // SAFETY: both NUL-terminated names and borrowed directory descriptors
+    // remain valid for the complete syscall. The caller supplies a vendored,
+    // validated flag set.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            old_directory.as_raw_fd(),
+            old_name.as_ptr(),
+            new_directory.as_raw_fd(),
+            new_name.as_ptr(),
+            flags,
+        )
+    };
+    unit_result(result, "renameat2")
+}
+
+pub(crate) fn map_readonly_shared(fd: BorrowedFd<'_>, length: usize) -> Result<*mut libc::c_void> {
+    // SAFETY: the descriptor remains borrowed for the call, the nonzero
+    // length is admitted by the caller, and a null address asks the kernel to
+    // choose a fresh range. The returned range is owned by the caller.
+    let address = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            length,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            fd.as_raw_fd(),
+            0,
+        )
+    };
+    if address == libc::MAP_FAILED {
+        Err(Error::syscall("mmap(read-only shared immutable file)"))
+    } else {
+        Ok(address)
+    }
+}
+
+pub(crate) fn unmap(address: *mut libc::c_void, length: usize) {
+    // SAFETY: callers pass the exact address and length returned by
+    // `map_readonly_shared` and invoke this exactly once during drop.
+    let _ = unsafe { libc::munmap(address, length) };
+}
+
+pub(crate) fn statx_unique_mount_id(fd: BorrowedFd<'_>) -> Result<u64> {
+    // `STATX_MNT_ID_UNIQUE` was added in Linux 6.8. Unlike `STATX_MNT_ID`,
+    // the returned identifier is not reused during the running kernel's
+    // lifetime and is therefore suitable for statmount requests and durable
+    // broker observations.
+    // SAFETY: `statx` is an output structure with an all-zero valid bit
+    // pattern. The descriptor borrow and writable output span the syscall,
+    // and the static empty pathname is NUL terminated.
+    let mut statx: libc::statx = unsafe { std::mem::zeroed() };
+    // SAFETY: described above. `AT_EMPTY_PATH` directs the kernel to inspect
+    // the object pinned by `fd`, avoiding pathname re-resolution.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            fd.as_raw_fd(),
+            c"".as_ptr(),
+            AT_EMPTY_PATH,
+            STATX_MNT_ID_UNIQUE,
+            std::ptr::addr_of_mut!(statx),
+        )
+    };
+    unit_result(result, "statx(STATX_MNT_ID_UNIQUE)")?;
+    if statx.stx_mask & STATX_MNT_ID_UNIQUE != STATX_MNT_ID_UNIQUE {
+        return Err(Error::MalformedKernelResponse {
+            object: "statx",
+            message: "kernel omitted STATX_MNT_ID_UNIQUE".to_string(),
+        });
+    }
+    Ok(statx.stx_mnt_id)
+}
+
+pub(crate) fn ensure_cloexec(fd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: `F_GETFD` and `F_SETFD` operate only on the borrowed descriptor
+    // and do not dereference an argument pointer.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        return Err(Error::syscall("fcntl(F_GETFD)"));
+    }
+    // SAFETY: as above; the scalar flag value preserves all existing bits.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if result < 0 {
+        return Err(Error::syscall("fcntl(F_SETFD)"));
+    }
+    Ok(())
+}
+
+pub(crate) fn openat2(directory: BorrowedFd<'_>, path: &CStr, how: &OpenHow) -> Result<OwnedFd> {
+    // SAFETY: the directory, C string, and immutable `open_how` all remain
+    // live for the syscall; a successful return is a newly-owned fd.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            directory.as_raw_fd(),
+            path.as_ptr(),
+            how,
+            size_of::<OpenHow>(),
+        )
+    };
+    fd_result(result, "openat2")
+}
+
+pub(crate) fn open_tree(path: BorrowedFd<'_>, recursive: bool) -> Result<OwnedFd> {
+    let flags = OPEN_TREE_CLONE
+        | OPEN_TREE_CLOEXEC
+        | AT_EMPTY_PATH
+        | if recursive { AT_RECURSIVE } else { 0 };
+    // SAFETY: the source descriptor remains borrowed, the empty C string is
+    // static, and a successful result is a new detached mount fd.
+    let result =
+        unsafe { libc::syscall(libc::SYS_open_tree, path.as_raw_fd(), c"".as_ptr(), flags) };
+    fd_result(result, "open_tree")
+}
+
+pub(crate) fn open_tree_attr(
+    path: BorrowedFd<'_>,
+    recursive: bool,
+    attributes: &RawMountAttr,
+) -> Result<OwnedFd> {
+    let flags = OPEN_TREE_CLONE
+        | OPEN_TREE_CLOEXEC
+        | AT_EMPTY_PATH
+        | if recursive { AT_RECURSIVE } else { 0 };
+    // SAFETY: all pointers and descriptor borrows remain valid for the call;
+    // the successful result is a newly-owned detached mount descriptor.
+    let result = unsafe {
+        libc::syscall(
+            SYS_OPEN_TREE_ATTR,
+            path.as_raw_fd(),
+            c"".as_ptr(),
+            flags,
+            attributes,
+            size_of::<RawMountAttr>(),
+        )
+    };
+    fd_result(result, "open_tree_attr")
+}
+
+pub(crate) fn mount_setattr(
+    mount: BorrowedFd<'_>,
+    recursive: bool,
+    attributes: &RawMountAttr,
+) -> Result<()> {
+    let flags = AT_EMPTY_PATH | if recursive { AT_RECURSIVE } else { 0 };
+    // SAFETY: all borrowed inputs remain live and the attribute structure has
+    // the exact version-0 UAPI layout.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            mount.as_raw_fd(),
+            c"".as_ptr(),
+            flags,
+            attributes,
+            size_of::<RawMountAttr>(),
+        )
+    };
+    unit_result(result, "mount_setattr")
+}
+
+pub(crate) fn move_mount(
+    source: BorrowedFd<'_>,
+    target: BorrowedFd<'_>,
+    beneath: bool,
+) -> Result<()> {
+    // SAFETY: both descriptors and both static empty strings remain valid for
+    // the syscall. The flags request descriptor-only source and destination.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            source.as_raw_fd(),
+            c"".as_ptr(),
+            target.as_raw_fd(),
+            c"".as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH
+                | MOVE_MOUNT_T_EMPTY_PATH
+                | if beneath { MOVE_MOUNT_BENEATH } else { 0 },
+        )
+    };
+    unit_result(result, "move_mount")
+}
+
+pub(crate) fn fsopen(filesystem: &CStr) -> Result<OwnedFd> {
+    // SAFETY: the filesystem name is a live C string and the result is a new
+    // filesystem-context descriptor.
+    let result = unsafe { libc::syscall(libc::SYS_fsopen, filesystem.as_ptr(), FSOPEN_CLOEXEC) };
+    fd_result(result, "fsopen")
+}
+
+pub(crate) fn fsconfig(
+    context: BorrowedFd<'_>,
+    command: u32,
+    key: Option<&CStr>,
+    value: Option<&CStr>,
+    auxiliary: RawFd,
+) -> Result<()> {
+    // SAFETY: the context and optional strings remain borrowed for the call;
+    // commands determine whether each nullable pointer and scalar are read.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_fsconfig,
+            context.as_raw_fd(),
+            command,
+            key.map_or(std::ptr::null(), CStr::as_ptr),
+            value.map_or(std::ptr::null(), CStr::as_ptr),
+            auxiliary,
+        )
+    };
+    unit_result(result, "fsconfig")
+}
+
+pub(crate) fn fsmount(context: BorrowedFd<'_>) -> Result<OwnedFd> {
+    // SAFETY: the context is borrowed for the call and success returns a new
+    // detached mount descriptor.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_fsmount,
+            context.as_raw_fd(),
+            FSMOUNT_CLOEXEC,
+            0_u32,
+        )
+    };
+    fd_result(result, "fsmount")
+}
+
+pub(crate) fn statmount(request: &MountIdRequest) -> Result<Box<StatMountBuffer>> {
+    let mut output = StatMountBuffer::zeroed();
+    // SAFETY: request is immutable and live; output is a writable contiguous
+    // buffer whose prefix exactly matches `struct statmount` version 0.
+    let result = unsafe {
+        libc::syscall(
+            SYS_STATMOUNT,
+            request,
+            std::ptr::from_mut(output.as_mut()),
+            size_of::<StatMountBuffer>(),
+            0_u32,
+        )
+    };
+    unit_result(result, "statmount")?;
+    Ok(output)
+}
+
+pub(crate) fn listmount(request: &MountIdRequest, output: &mut [u64], flags: u32) -> Result<usize> {
+    // SAFETY: request is immutable and live; the mutable slice supplies its
+    // exact element count and remains exclusively borrowed for the call.
+    let result = unsafe {
+        libc::syscall(
+            SYS_LISTMOUNT,
+            request,
+            output.as_mut_ptr(),
+            output.len(),
+            flags,
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("listmount"));
+    }
+    usize::try_from(result).map_err(|_| Error::MalformedKernelResponse {
+        object: "listmount",
+        message: "negative or oversized result count".to_string(),
+    })
+}
+
+pub(crate) fn prepare_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
+    validate_connected_seqpacket(fd)?;
+    ensure_cloexec(fd)?;
+    ensure_nonblocking(fd)
+}
+
+pub(crate) fn validate_connected_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
+    let socket_type = socket_integer_option(fd, libc::SO_TYPE, "getsockopt(SO_TYPE)")?;
+    if socket_type != libc::SOCK_SEQPACKET {
+        return Err(Error::WrongDescriptorType {
+            expected: "Unix SOCK_SEQPACKET socket",
+        });
+    }
+    let domain = socket_integer_option(fd, libc::SO_DOMAIN, "getsockopt(SO_DOMAIN)")?;
+    if domain != libc::AF_UNIX {
+        return Err(Error::WrongDescriptorType {
+            expected: "Unix SOCK_SEQPACKET socket",
+        });
+    }
+    let accepts_connections =
+        socket_integer_option(fd, libc::SO_ACCEPTCONN, "getsockopt(SO_ACCEPTCONN)")?;
+    if accepts_connections != 0 {
+        return Err(Error::WrongDescriptorType {
+            expected: "connected Unix SOCK_SEQPACKET socket, not a listener",
+        });
+    }
+    require_connected_unix_peer(fd)
+}
+
+pub(crate) fn validate_connected_unix_stream(fd: BorrowedFd<'_>) -> Result<()> {
+    let socket_type = socket_integer_option(fd, libc::SO_TYPE, "getsockopt(SO_TYPE)")?;
+    if socket_type != libc::SOCK_STREAM {
+        return Err(Error::WrongDescriptorType {
+            expected: "Unix SOCK_STREAM socket",
+        });
+    }
+    let domain = socket_integer_option(fd, libc::SO_DOMAIN, "getsockopt(SO_DOMAIN)")?;
+    if domain != libc::AF_UNIX {
+        return Err(Error::WrongDescriptorType {
+            expected: "Unix SOCK_STREAM socket",
+        });
+    }
+    let accepts_connections =
+        socket_integer_option(fd, libc::SO_ACCEPTCONN, "getsockopt(SO_ACCEPTCONN)")?;
+    if accepts_connections != 0 {
+        return Err(Error::WrongDescriptorType {
+            expected: "connected Unix SOCK_STREAM socket, not a listener",
+        });
+    }
+    require_connected_unix_stream_peer(fd)
+}
+
+fn ensure_nonblocking(fd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: F_GETFL observes the borrowed descriptor and takes no pointer.
+    let current = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if current < 0 {
+        return Err(Error::syscall("fcntl(F_GETFL)"));
+    }
+    // SAFETY: F_SETFL consumes the scalar flags while the descriptor is live.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, current | libc::O_NONBLOCK) };
+    unit_result(result.into(), "fcntl(F_SETFL, O_NONBLOCK)")
+}
+
+pub(crate) fn prepare_record_subject_listener(fd: BorrowedFd<'_>) -> Result<()> {
+    if socket_integer_option(fd, libc::SO_TYPE, "getsockopt(SO_TYPE)")? != libc::SOCK_SEQPACKET
+        || socket_integer_option(fd, libc::SO_DOMAIN, "getsockopt(SO_DOMAIN)")? != libc::AF_UNIX
+        || socket_integer_option(fd, libc::SO_ACCEPTCONN, "getsockopt(SO_ACCEPTCONN)")? != 1
+    {
+        return Err(Error::WrongDescriptorType {
+            expected: "listening Unix SOCK_SEQPACKET socket",
+        });
+    }
+    require_seqpacket_identity(fd)?;
+    ensure_cloexec(fd)?;
+    ensure_nonblocking(fd)
+}
+
+pub(crate) fn require_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
+    if socket_integer_option(fd, libc::SO_PASSCRED, "getsockopt(SO_PASSCRED)")? != 1
+        || socket_integer_option(fd, SO_PASSPIDFD, "getsockopt(SO_PASSPIDFD)")? != 1
+    {
+        return Err(Error::invalid(
+            "record subject options",
+            "SO_PASSCRED and SO_PASSPIDFD must already be enabled",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn accept_record_subject_socket(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
+    // SAFETY: the listener remains borrowed; null address pointers request no
+    // peer-address output. Success returns a fresh descriptor, immediately owned.
+    let result = unsafe {
+        libc::accept4(
+            fd.as_raw_fd(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+        )
+    };
+    fd_result(result.into(), "accept4(SOCK_SEQPACKET)")
+}
+
+fn require_connected_unix_peer(fd: BorrowedFd<'_>) -> Result<()> {
+    require_connected_unix_peer_with_labels(
+        fd,
+        "getpeername(SOCK_SEQPACKET)",
+        "SOCK_SEQPACKET peer address",
+    )
+}
+
+fn require_connected_unix_stream_peer(fd: BorrowedFd<'_>) -> Result<()> {
+    require_connected_unix_peer_with_labels(
+        fd,
+        "getpeername(SOCK_STREAM)",
+        "SOCK_STREAM peer address",
+    )
+}
+
+fn require_connected_unix_peer_with_labels(
+    fd: BorrowedFd<'_>,
+    operation: &'static str,
+    object: &'static str,
+) -> Result<()> {
+    // All-zero is valid for sockaddr_storage and lets the kernel fill the
+    // peer address without relying on a pathname representation.
+    // SAFETY: sockaddr_storage is a plain C output structure.
+    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut length = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    // SAFETY: the address and length are writable and live for the call. A
+    // successful getpeername positively establishes connected socket state.
+    let result = unsafe {
+        libc::getpeername(
+            fd.as_raw_fd(),
+            std::ptr::addr_of_mut!(address).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), operation)?;
+    if usize::try_from(length).unwrap_or(0) < size_of::<libc::sa_family_t>()
+        || i32::from(address.ss_family) != libc::AF_UNIX
+    {
+        return Err(Error::MalformedKernelResponse {
+            object,
+            message: "getpeername returned a missing or non-Unix peer".to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn socket_cookie(fd: BorrowedFd<'_>) -> Result<u64> {
+    let mut cookie = 0_u64;
+    let mut length = size_of::<u64>() as libc::socklen_t;
+    // SAFETY: the output integer and length remain writable and live for the
+    // call, and the socket descriptor remains borrowed throughout.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_COOKIE,
+            std::ptr::addr_of_mut!(cookie).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), "getsockopt(SO_COOKIE)")?;
+    if length as usize != size_of::<u64>() {
+        return Err(Error::MalformedKernelResponse {
+            object: "SO_COOKIE",
+            message: "kernel returned an unexpected cookie length".to_string(),
+        });
+    }
+    Ok(cookie)
+}
+
+fn socket_integer_option(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<i32> {
+    let mut value = 0_i32;
+    let mut length = size_of::<i32>() as libc::socklen_t;
+    // SAFETY: the output integer and its length are writable and live for the
+    // call, and the descriptor borrow spans the call.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            option,
+            std::ptr::addr_of_mut!(value).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), operation)?;
+    if length as usize != size_of::<i32>() {
+        return Err(Error::MalformedKernelResponse {
+            object: "socket option",
+            message: format!("{operation} returned an unexpected length"),
+        });
+    }
+    Ok(value)
+}
+
+pub(crate) fn enable_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
+    set_socket_bool(fd, libc::SO_PASSCRED, "setsockopt(SO_PASSCRED)")?;
+    set_socket_bool(fd, SO_PASSPIDFD, "setsockopt(SO_PASSPIDFD)")
+}
+
+pub(crate) fn peer_credentials(fd: BorrowedFd<'_>) -> Result<libc::ucred> {
+    // All-zero is valid for this integer-only output structure.
+    // SAFETY: `ucred` contains only integer scalars.
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: the output structure and length remain writable and live for
+    // the call, and the connected socket descriptor is borrowed.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(credentials).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), "getsockopt(SO_PEERCRED)")?;
+    if length as usize != size_of::<libc::ucred>() {
+        return Err(Error::MalformedKernelResponse {
+            object: "SO_PEERCRED",
+            message: "kernel returned an unexpected credential length".to_string(),
+        });
+    }
+    Ok(credentials)
+}
+
+pub(crate) fn peer_pidfd(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
+    let mut peer_fd = -1_i32;
+    let mut length = size_of::<RawFd>() as libc::socklen_t;
+    // SAFETY: the output integer and length remain writable and live for the
+    // call. On success Linux installs a new pidfd in `peer_fd`.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_PEERPIDFD,
+            std::ptr::addr_of_mut!(peer_fd).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    unit_result(result.into(), "getsockopt(SO_PEERPIDFD)")?;
+    if peer_fd < 0 {
+        return Err(Error::MalformedKernelResponse {
+            object: "SO_PEERPIDFD",
+            message: "kernel returned a negative descriptor".to_string(),
+        });
+    }
+    // Adopt before validating the returned length so every successful kernel
+    // installation is owned and closed on all later error paths.
+    // SAFETY: SO_PEERPIDFD returned a fresh descriptor in this process, and
+    // ownership has not been transferred elsewhere.
+    let peer_fd = unsafe { OwnedFd::from_raw_fd(peer_fd) };
+    ensure_cloexec(peer_fd.as_fd())?;
+    if length as usize != size_of::<RawFd>() {
+        return Err(Error::MalformedKernelResponse {
+            object: "SO_PEERPIDFD",
+            message: "kernel returned an unexpected descriptor length".to_string(),
+        });
+    }
+    Ok(peer_fd)
+}
+
+fn set_socket_bool(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<()> {
+    let enabled = 1_i32;
+    // SAFETY: the scalar option value remains live and correctly sized for
+    // the complete call; the socket descriptor is borrowed.
+    let result = unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            option,
+            std::ptr::addr_of!(enabled).cast(),
+            size_of::<i32>() as libc::socklen_t,
+        )
+    };
+    unit_result(result.into(), operation)
+}
+
+pub(crate) fn send_seqpacket(fd: BorrowedFd<'_>, payload: &[u8]) -> Result<usize> {
+    // SAFETY: the byte slice remains readable and the descriptor remains
+    // borrowed for the complete nonblocking send.
+    let result = unsafe {
+        libc::send(
+            fd.as_raw_fd(),
+            payload.as_ptr().cast(),
+            payload.len(),
+            libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("send(SOCK_SEQPACKET)"));
+    }
+    usize::try_from(result).map_err(|_| Error::MalformedKernelResponse {
+        object: "SOCK_SEQPACKET send",
+        message: "kernel returned a negative or oversized byte count".to_string(),
+    })
+}
+
+pub(crate) fn recv_seqpacket(
+    fd: BorrowedFd<'_>,
+    payload: &mut [u8],
+    flags: i32,
+) -> Result<RawSeqpacketMessage> {
+    let mut byte = 0_u8;
+    let (payload_pointer, payload_length) = if payload.is_empty() {
+        (std::ptr::addr_of_mut!(byte).cast(), 0)
+    } else {
+        (payload.as_mut_ptr().cast(), payload.len())
+    };
+    let mut vector = libc::iovec {
+        iov_base: payload_pointer,
+        iov_len: payload_length,
+    };
+    let mut control = [0_usize; SEQPACKET_CONTROL_BYTES / size_of::<usize>()];
+    // The all-zero bit pattern is the required initial state for `msghdr`.
+    // SAFETY: `msghdr` contains only pointers and integer fields for which
+    // null/zero is valid.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = std::ptr::addr_of_mut!(vector);
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = SEQPACKET_CONTROL_BYTES;
+
+    // SAFETY: every pointer in `message` targets live writable storage for
+    // the call. The kernel initializes returned payload/control lengths and
+    // flags. MSG_CMSG_CLOEXEC closes the exec race before fd adoption.
+    let result = unsafe {
+        libc::recvmsg(
+            fd.as_raw_fd(),
+            std::ptr::addr_of_mut!(message),
+            flags | libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC,
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("recvmsg(SOCK_SEQPACKET)"));
+    }
+    let bytes = usize::try_from(result).map_err(|_| Error::MalformedKernelResponse {
+        object: "SOCK_SEQPACKET receive",
+        message: "kernel returned a negative or oversized byte count".to_string(),
+    })?;
+    let ancillary = decode_control(&control, message.msg_controllen)?;
+    Ok(RawSeqpacketMessage {
+        bytes,
+        flags: message.msg_flags,
+        ancillary,
+    })
+}
+
+fn decode_control(control: &[usize], used: usize) -> Result<Vec<RawAncillary>> {
+    if used > std::mem::size_of_val(control) {
+        return Err(Error::MalformedKernelResponse {
+            object: "SOCK_SEQPACKET ancillary data",
+            message: "kernel returned an oversized control length".to_string(),
+        });
+    }
+    let bytes = control.as_ptr().cast::<u8>();
+    let header_size = size_of::<libc::cmsghdr>();
+    let data_offset = cmsg_align(header_size);
+    let mut offset = 0;
+    let mut output = Vec::new();
+    while offset + header_size <= used {
+        // SAFETY: bounds above cover a complete header. `read_unaligned`
+        // avoids assuming stronger alignment for subsequent headers.
+        let header = unsafe { std::ptr::read_unaligned(bytes.add(offset).cast::<libc::cmsghdr>()) };
+        let length = header.cmsg_len;
+        if length < data_offset || length > used - offset {
+            return Err(Error::MalformedKernelResponse {
+                object: "SOCK_SEQPACKET ancillary data",
+                message: "invalid cmsghdr length".to_string(),
+            });
+        }
+        let payload_length = length - data_offset;
+        // SAFETY: the checked cmsg length covers the payload range.
+        let payload =
+            unsafe { std::slice::from_raw_parts(bytes.add(offset + data_offset), payload_length) };
+        output.push(decode_cmsg(header.cmsg_level, header.cmsg_type, payload));
+        offset = offset.saturating_add(cmsg_align(length));
+    }
+    Ok(output)
+}
+
+fn decode_cmsg(level: i32, kind: i32, payload: &[u8]) -> RawAncillary {
+    if level != libc::SOL_SOCKET {
+        return RawAncillary::Unknown { level, kind };
+    }
+    if kind == libc::SCM_CREDENTIALS && payload.len() == size_of::<libc::ucred>() {
+        // SAFETY: the exact length was checked and unaligned reads are valid.
+        return RawAncillary::Credentials(unsafe {
+            std::ptr::read_unaligned(payload.as_ptr().cast::<libc::ucred>())
+        });
+    }
+    if kind == libc::SCM_RIGHTS || kind == SCM_PIDFD {
+        let descriptors = adopt_descriptors(payload);
+        if kind == SCM_PIDFD && payload.len() == size_of::<RawFd>() && descriptors.len() == 1 {
+            let mut descriptors = descriptors;
+            return match descriptors.pop() {
+                Some(fd) => RawAncillary::PidFd(fd),
+                None => RawAncillary::Malformed(descriptors),
+            };
+        }
+        return if kind == libc::SCM_RIGHTS && payload.len().is_multiple_of(size_of::<RawFd>()) {
+            RawAncillary::Rights(descriptors)
+        } else {
+            RawAncillary::Malformed(descriptors)
+        };
+    }
+    RawAncillary::Unknown { level, kind }
+}
+
+fn adopt_descriptors(payload: &[u8]) -> Vec<OwnedFd> {
+    payload
+        .chunks_exact(size_of::<RawFd>())
+        .filter_map(|bytes| {
+            // SAFETY: a complete native fd integer is present. recvmsg
+            // installed each non-negative descriptor into this process and
+            // ownership has not otherwise been transferred.
+            let raw = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<RawFd>()) };
+            (raw >= 0).then(|| unsafe { OwnedFd::from_raw_fd(raw) })
+        })
+        .collect()
+}
+
+const fn cmsg_align(length: usize) -> usize {
+    let alignment = size_of::<usize>();
+    (length + alignment - 1) & !(alignment - 1)
+}
+
+pub(crate) fn seqpacket_pair() -> Result<(OwnedFd, OwnedFd)> {
+    seqpacket_pair_with_flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
+}
+
+pub(crate) fn seqpacket_pair_with_flags(flags: i32) -> Result<(OwnedFd, OwnedFd)> {
+    let mut descriptors = [-1; 2];
+    // SAFETY: the output array contains space for exactly two descriptors;
+    // success transfers both newly-created descriptors to this process.
+    let result = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | flags,
+            0,
+            descriptors.as_mut_ptr(),
+        )
+    };
+    unit_result(result.into(), "socketpair(SOCK_SEQPACKET)")?;
+    // SAFETY: socketpair returned two distinct fresh descriptors.
+    Ok(unsafe {
+        (
+            OwnedFd::from_raw_fd(descriptors[0]),
+            OwnedFd::from_raw_fd(descriptors[1]),
+        )
+    })
+}
+
+pub(crate) fn unconnected_seqpacket() -> Result<OwnedFd> {
+    // SAFETY: socket returns one fresh descriptor on success.
+    let result = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    fd_result(result.into(), "socket(SOCK_SEQPACKET)")
+}
+
+pub(crate) fn connect_seqpacket(path: &Path) -> Result<OwnedFd> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() || bytes.contains(&0) {
+        return Err(Error::invalid(
+            "sequenced-packet connection path",
+            "must be nonempty and contain no NUL byte",
+        ));
+    }
+    // Filesystem addresses require a trailing NUL inside `sun_path`.
+    if bytes.len()
+        >= size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path)
+    {
+        return Err(Error::invalid(
+            "sequenced-packet connection path",
+            "exceeds the Unix socket pathname limit",
+        ));
+    }
+
+    let socket = unconnected_seqpacket()?;
+    enable_seqpacket_identity(socket.as_fd())?;
+
+    // All-zero initializes the pathname terminator after the copied bytes.
+    // SAFETY: every field of `sockaddr_un` admits the all-zero bit pattern.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
+        *destination = *source as libc::c_char;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    // A nonblocking Unix-domain connect normally completes synchronously. An
+    // incomplete result is rejected; callers never exchange records on a
+    // connection whose completion or peer identity remains uncertain.
+    // SAFETY: the address covers initialized family/path bytes, including the
+    // trailing NUL, and the fresh socket remains live throughout the call.
+    let result = unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    unit_result(result.into(), "connect(record-subject SOCK_SEQPACKET)")?;
+    Ok(socket)
+}
+
+pub(crate) fn unix_socket_local_filesystem_path(fd: BorrowedFd<'_>) -> Result<Vec<u8>> {
+    // SAFETY: every field of sockaddr_un admits the all-zero bit pattern.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // SAFETY: address and length name writable storage for the borrowed socket.
+    let result = unsafe {
+        libc::getsockname(
+            fd.as_raw_fd(),
+            (&raw mut address).cast::<libc::sockaddr>(),
+            &raw mut length,
+        )
+    };
+    unit_result(result.into(), "getsockname(Unix socket)")?;
+
+    let path_offset = std::mem::offset_of!(libc::sockaddr_un, sun_path);
+    let length = length as usize;
+    if address.sun_family != libc::AF_UNIX as libc::sa_family_t
+        || length <= path_offset + 1
+        || length > size_of::<libc::sockaddr_un>()
+    {
+        return Err(Error::MalformedKernelResponse {
+            object: "Unix socket local address",
+            message: "address has an invalid family or length".to_owned(),
+        });
+    }
+    let path_length = length - path_offset;
+    let path = &address.sun_path[..path_length];
+    if path[0] == 0 || *path.last().unwrap_or(&1) != 0 || path[..path.len() - 1].contains(&0) {
+        return Err(Error::MalformedKernelResponse {
+            object: "Unix socket local address",
+            message: "address is not one NUL-terminated filesystem path".to_owned(),
+        });
+    }
+    Ok(path[..path.len() - 1]
+        .iter()
+        .map(|byte| *byte as u8)
+        .collect())
+}
+
+pub(crate) fn bind_record_subject_listener(path: &Path, backlog: u32) -> Result<OwnedFd> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() || !path.is_absolute() {
+        return Err(Error::invalid(
+            "record subject listener path",
+            "must be a nonempty absolute filesystem path",
+        ));
+    }
+    if bytes.contains(&0) {
+        return Err(Error::invalid(
+            "record subject listener path",
+            "must not contain a NUL byte",
+        ));
+    }
+    // Filesystem addresses require a trailing NUL inside `sun_path`.
+    if bytes.len()
+        >= size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path)
+    {
+        return Err(Error::invalid(
+            "record subject listener path",
+            "exceeds the Unix socket pathname limit",
+        ));
+    }
+    if !(1..=4096).contains(&backlog) {
+        return Err(Error::invalid(
+            "record subject listener backlog",
+            "must be within 1..=4096",
+        ));
+    }
+
+    let socket = unconnected_seqpacket()?;
+    enable_seqpacket_identity(socket.as_fd())?;
+
+    // All-zero initializes the pathname terminator after the copied bytes.
+    // SAFETY: every field of `sockaddr_un` admits the all-zero bit pattern.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
+        *destination = *source as libc::c_char;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    // SAFETY: the address length covers the initialized family, pathname, and
+    // trailing NUL; the owned socket remains live throughout the call.
+    let result = unsafe {
+        libc::bind(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    unit_result(result.into(), "bind(record-subject SOCK_SEQPACKET)")?;
+    // SAFETY: `listen` consumes only the live descriptor and validated scalar backlog.
+    let result = unsafe { libc::listen(socket.as_raw_fd(), backlog as libc::c_int) };
+    unit_result(result.into(), "listen(record-subject SOCK_SEQPACKET)")?;
+    Ok(socket)
+}
+
+#[cfg(test)]
+pub(crate) fn seqpacket_listener() -> Result<OwnedFd> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_NAME: AtomicU64 = AtomicU64::new(0);
+
+    let socket = unconnected_seqpacket()?;
+    // All-zero makes sun_path[0] the abstract-namespace marker.
+    // SAFETY: sockaddr_un is a plain C structure accepting all-zero bytes.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let name = format!(
+        "aos-seqpacket-{}-{}",
+        std::process::id(),
+        NEXT_NAME.fetch_add(1, Ordering::Relaxed)
+    );
+    if name.len() + 1 > address.sun_path.len() {
+        return Err(Error::invalid(
+            "abstract socket name",
+            "test name is too long",
+        ));
+    }
+    for (destination, source) in address.sun_path[1..].iter_mut().zip(name.bytes()) {
+        *destination = source as libc::c_char;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
+    // SAFETY: the address length covers the family, abstract marker, and
+    // initialized name bytes; the socket remains borrowed for the call.
+    let result = unsafe {
+        libc::bind(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    unit_result(result.into(), "bind(abstract SOCK_SEQPACKET)")?;
+    // SAFETY: listen consumes only a descriptor and scalar backlog.
+    let result = unsafe { libc::listen(socket.as_raw_fd(), 1) };
+    unit_result(result.into(), "listen(SOCK_SEQPACKET)")?;
+    Ok(socket)
+}
+
+#[cfg(test)]
+pub(crate) fn connect_seqpacket_listener(listener: BorrowedFd<'_>) -> Result<OwnedFd> {
+    let socket = unconnected_seqpacket()?;
+    // SAFETY: every field of sockaddr_un admits the all-zero bit pattern.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // SAFETY: the writable buffer and its initialized capacity remain live
+    // throughout getsockname; the listener descriptor remains borrowed.
+    let result = unsafe {
+        libc::getsockname(
+            listener.as_raw_fd(),
+            std::ptr::addr_of_mut!(address).cast(),
+            &mut length,
+        )
+    };
+    unit_result(result.into(), "getsockname(test listener)")?;
+    if length as usize > size_of::<libc::sockaddr_un>() {
+        return Err(Error::invalid(
+            "test listener address",
+            "oversized kernel address",
+        ));
+    }
+    // SAFETY: the initialized address bytes cover the kernel-returned length;
+    // the fresh socket and address both remain live during connect.
+    let result = unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            length,
+        )
+    };
+    unit_result(result.into(), "connect(test SOCK_SEQPACKET)")?;
+    Ok(socket)
+}
+
+#[cfg(test)]
+pub(crate) fn enable_test_socket_option(fd: BorrowedFd<'_>, option: i32) -> Result<()> {
+    set_socket_bool(fd, option, "setsockopt(test identity option)")
+}
+
+#[cfg(test)]
+pub(crate) fn send_seqpacket_rights(
+    socket: BorrowedFd<'_>,
+    payload: &[u8],
+    descriptors: &[BorrowedFd<'_>],
+) -> Result<()> {
+    let raw: Vec<RawFd> = descriptors.iter().map(AsRawFd::as_raw_fd).collect();
+    let data_bytes = std::mem::size_of_val(raw.as_slice());
+    let control_bytes = cmsg_align(size_of::<libc::cmsghdr>()) + cmsg_align(data_bytes);
+    let mut control = vec![0_usize; control_bytes.div_ceil(size_of::<usize>())];
+    let mut vector = libc::iovec {
+        iov_base: payload.as_ptr().cast_mut().cast(),
+        iov_len: payload.len(),
+    };
+    // SAFETY: all-zero initializes optional msghdr pointers and lengths.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = std::ptr::addr_of_mut!(vector);
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control_bytes;
+    // SAFETY: the aligned control allocation covers the header and payload;
+    // both remain live for sendmsg and contain borrowed descriptor integers.
+    unsafe {
+        let header = message.msg_control.cast::<libc::cmsghdr>();
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = cmsg_align(size_of::<libc::cmsghdr>()) + data_bytes;
+        std::ptr::copy_nonoverlapping(
+            raw.as_ptr().cast::<u8>(),
+            message
+                .msg_control
+                .cast::<u8>()
+                .add(cmsg_align(size_of::<libc::cmsghdr>())),
+            data_bytes,
+        );
+    }
+    // SAFETY: the fully initialized message borrows all referenced storage for
+    // the duration of this nonblocking call.
+    let result = unsafe {
+        libc::sendmsg(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(message),
+            libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+        )
+    };
+    if result < 0 {
+        Err(Error::syscall("sendmsg(SCM_RIGHTS)"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn is_cloexec(fd: BorrowedFd<'_>) -> Result<bool> {
+    // SAFETY: F_GETFD only observes a descriptor borrowed for the call.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        Err(Error::syscall("fcntl(F_GETFD)"))
+    } else {
+        Ok(flags & libc::FD_CLOEXEC != 0)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_cloexec_for_test(fd: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: F_GETFD and F_SETFD operate only on the borrowed descriptor.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        return Err(Error::syscall("fcntl(F_GETFD)"));
+    }
+    // SAFETY: the scalar flag value preserves every bit except FD_CLOEXEC.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
+    unit_result(result.into(), "fcntl(F_SETFD)")
+}
+
+#[cfg(test)]
+pub(crate) fn enable_socket_passcred_for_test(fd: BorrowedFd<'_>) -> Result<()> {
+    set_socket_bool(fd, libc::SO_PASSCRED, "setsockopt(SO_PASSCRED)")
+}
+
+#[cfg(test)]
+pub(crate) fn socket_passcred_for_test(fd: BorrowedFd<'_>) -> Result<bool> {
+    Ok(socket_integer_option(fd, libc::SO_PASSCRED, "getsockopt(SO_PASSCRED)")? != 0)
+}
+
+#[cfg(test)]
+pub(crate) fn raw_fd_is_open(fd: RawFd) -> bool {
+    // SAFETY: F_GETFD only observes the integer descriptor table entry.
+    let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    result >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
+}
+
+pub(crate) fn duplicate_at_least(fd: BorrowedFd<'_>, minimum: RawFd) -> Result<OwnedFd> {
+    // SAFETY: F_DUPFD_CLOEXEC borrows the source and returns a fresh owned fd.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, minimum) };
+    fd_result(result.into(), "fcntl(F_DUPFD_CLOEXEC)")
+}
+
+#[cfg(test)]
+pub(crate) fn create_sealable_memfd() -> Result<OwnedFd> {
+    // SAFETY: the static name is NUL terminated and successful memfd_create
+    // returns a fresh descriptor.
+    let result = unsafe {
+        libc::memfd_create(
+            c"aos-index-test".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    fd_result(result.into(), "memfd_create")
+}
+
+#[cfg(test)]
+pub(crate) fn add_seals(fd: BorrowedFd<'_>, seals: libc::c_int) -> Result<()> {
+    // SAFETY: F_ADD_SEALS consumes only the scalar mask and borrowed fd.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+    unit_result(result.into(), "fcntl(F_ADD_SEALS)")
+}
+
+fn fd_result(result: libc::c_long, operation: &'static str) -> Result<OwnedFd> {
+    if result < 0 {
+        return Err(Error::syscall(operation));
+    }
+    let raw = RawFd::try_from(result).map_err(|_| Error::MalformedKernelResponse {
+        object: "file descriptor",
+        message: format!("{operation} returned an out-of-range descriptor"),
+    })?;
+    // SAFETY: each caller invokes a syscall documented to return a fresh fd on
+    // success, and ownership has not been transferred elsewhere.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    ensure_cloexec(fd.as_fd())?;
+    Ok(fd)
+}
+
+fn unit_result(result: libc::c_long, operation: &'static str) -> Result<()> {
+    if result < 0 {
+        Err(Error::syscall(operation))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vendored_uapi_layouts_match_linux_6_18() {
+        assert_eq!(size_of::<OpenHow>(), 24);
+        assert_eq!(size_of::<RawMountAttr>(), 32);
+        assert_eq!(size_of::<RawPidfdInfo>(), 72);
+        assert_eq!(size_of::<MountIdRequest>(), 32);
+        assert_eq!(size_of::<RawStatMount>(), 512);
+        assert_eq!(size_of::<StatMountBuffer>(), 512 + STAT_STRING_BYTES);
+        assert_eq!(std::mem::offset_of!(RawVerityDigest, digest), 4);
+        assert_eq!(size_of::<RawVerityDigest>(), 68);
+        assert_eq!(size_of::<RawVerityEnableArg>(), 128);
+        assert_eq!(FS_IOC_MEASURE_VERITY, 0xc004_6686);
+        assert_eq!(FS_IOC_ENABLE_VERITY, 0x4080_6685);
+        assert_eq!(RENAME_NOREPLACE, 1);
+    }
+
+    #[test]
+    fn vendored_syscall_numbers_match_supported_architectures() {
+        assert_eq!(SYS_STATMOUNT, 457);
+        assert_eq!(SYS_LISTMOUNT, 458);
+        assert_eq!(SYS_OPEN_TREE_ATTR, 467);
+    }
+
+    #[test]
+    fn vendored_socket_options_match_linux_6_18() {
+        assert_eq!(SO_COOKIE, 57);
+        assert_eq!(SO_PASSPIDFD, 76);
+        assert_eq!(SO_PEERPIDFD, 77);
+        assert_eq!(SCM_PIDFD, 0x04);
+    }
+
+    #[test]
+    fn uid_zero_descriptor_exec_requires_locked_root_semantics() {
+        assert!(
+            validate_descriptor_exec_securebits(0, SECURE_NOROOT_AND_NO_SETUID_FIXUP_LOCKED)
+                .is_ok()
+        );
+        for incomplete in [0, 0x03, 0x0c, 0x07, 0x0e] {
+            assert!(validate_descriptor_exec_securebits(0, incomplete).is_err());
+        }
+        assert!(validate_descriptor_exec_securebits(1000, 0).is_ok());
+    }
+
+    #[test]
+    fn rtnetlink_wait_fails_when_no_response_arrives_by_deadline() {
+        let (receiver, _sender) =
+            rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        let deadline = boottime_nanoseconds().unwrap() + 1_000_000;
+
+        assert!(matches!(
+            wait_until(receiver.as_fd(), libc::POLLIN, deadline),
+            Err(Error::DeadlineExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn rtnetlink_wait_rejects_ready_data_after_the_deadline() {
+        let (receiver, sender) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        rustix::io::write(&sender, b"x").unwrap();
+        let deadline = boottime_nanoseconds().unwrap();
+
+        assert!(matches!(
+            wait_until(receiver.as_fd(), libc::POLLIN, deadline),
+            Err(Error::DeadlineExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn completed_rtnetlink_io_is_rejected_at_or_after_deadline() {
+        assert!(ensure_timestamp_before_deadline(99, 100, "test").is_ok());
+        assert!(matches!(
+            ensure_timestamp_before_deadline(100, 100, "test"),
+            Err(Error::DeadlineExceeded { .. })
+        ));
+        assert!(matches!(
+            ensure_timestamp_before_deadline(101, 100, "test"),
+            Err(Error::DeadlineExceeded { .. })
+        ));
+    }
+}

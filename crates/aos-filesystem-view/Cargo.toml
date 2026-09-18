@@ -1,0 +1,31 @@
+[package]
+name = "aos-filesystem-view"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+test-fixtures = []
+
+[dependencies]
+aos-sandbox-core.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aos-sandbox-linux.workspace = true
+aos-sandbox-broker-session-protocol.workspace = true
+aos-sandbox-broker-session-security.workspace = true
+ed25519-dalek.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["fs", "process", "time"] }
+
+[[test]]
+name = "semantic_no_alloc"
+path = "tests/semantic_no_alloc.rs"
+harness = false
+required-features = ["test-fixtures"]
+
+[lints]
+workspace = true

@@ -3,10 +3,35 @@
 
 mod common;
 
+use std::os::fd::AsFd as _;
 use std::time::Duration;
 
-use aos_systemd::{Error, JobResult};
+use aos_systemd::{
+    Error, JobResult, ListUnitsEntry, SandboxDescriptorPath, SandboxDiscoveryOutcome,
+    SandboxNspawnCommand, SandboxResolvedPaths, SandboxResources, SandboxUnitName, SandboxUnitSpec,
+};
+#[cfg(feature = "exact-unit-test-util")]
+use aos_systemd::{
+    ExactStartError, ExactStopError, ExactStopOutcome, ExactUnitRole, ExactUnitTarget,
+    PostUnrefUnitObservation,
+};
 use common::Harness;
+use zbus::zvariant::OwnedObjectPath;
+
+fn discovery_entry(name: &str, path: &str) -> ListUnitsEntry {
+    ListUnitsEntry {
+        name: name.to_owned(),
+        description: "sandbox".to_owned(),
+        load_state: "loaded".to_owned(),
+        active_state: "active".to_owned(),
+        sub_state: "running".to_owned(),
+        followed: String::new(),
+        object_path: OwnedObjectPath::try_from(path).unwrap(),
+        job_id: 0,
+        job_type: String::new(),
+        job_object_path: OwnedObjectPath::try_from("/").unwrap(),
+    }
+}
 
 /// Cap every client await so a logic bug surfaces as a fast failure rather
 /// than a hung test.
@@ -210,4 +235,775 @@ async fn reset_failed_calls_through() {
     let h = Harness::new().await;
     with_timeout(h.client.reset_failed()).await.unwrap();
     assert!(h.calls().contains(&"reset_failed".to_string()));
+}
+
+#[tokio::test]
+async fn transient_sandbox_uses_typed_exact_transport() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([0x42; 16]);
+    let resources = SandboxResources::new(512, 1024, 64, 100).unwrap();
+    let executable = std::fs::File::open("/proc/self/exe").unwrap();
+    let root = std::fs::File::open("/").unwrap();
+    let network = std::fs::File::open("/proc/self/ns/net").unwrap();
+    let spec = SandboxUnitSpec::new_nspawn_bound(
+        name.clone(),
+        SandboxNspawnCommand::private_user_descriptor_v1(
+            SandboxDescriptorPath::for_current_process(executable.as_fd()).unwrap(),
+            [0x42; 16],
+            65_536,
+            65_536,
+        )
+        .unwrap(),
+        SandboxResolvedPaths::from_descriptors(
+            SandboxDescriptorPath::for_current_process(root.as_fd()).unwrap(),
+            SandboxDescriptorPath::for_current_process(network.as_fd()).unwrap(),
+        ),
+        resources,
+        [0x52; 32],
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+
+    let outcome = with_timeout(h.client.start_sandbox_unit(&spec))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, JobResult::Done);
+
+    let request = h.state.transient_request.lock().unwrap().clone().unwrap();
+    assert_eq!(request.0, name.as_str());
+    assert_eq!(request.1, "fail");
+    assert!(request.2.contains(&("ExecStart".into(), "a(sasb)".into())));
+    assert!(request.2.contains(&("BindsTo".into(), "as".into())));
+    assert!(request.2.contains(&("MemoryMax".into(), "t".into())));
+
+    let mut guard = || Err::<(), _>("expired");
+    let guarded = h.client.start_sandbox_unit_guarded(&spec, &mut guard).await;
+    assert!(matches!(
+        guarded,
+        Err(aos_systemd::ExactStartError::Guard("expired"))
+    ));
+    assert_eq!(
+        h.calls()
+            .iter()
+            .filter(|call| call.as_str() == "start_transient_unit")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn sandbox_freeze_and_thaw_use_manager_methods() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([7; 16]);
+    with_timeout(h.client.freeze_sandbox_unit(&name))
+        .await
+        .unwrap();
+    with_timeout(h.client.thaw_sandbox_unit(&name))
+        .await
+        .unwrap();
+
+    let calls = h.calls();
+    assert!(calls.contains(&"freeze_unit".to_string()));
+    assert!(calls.contains(&"thaw_unit".to_string()));
+}
+
+#[tokio::test]
+async fn sandbox_stop_and_kill_remain_typed() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([9; 16]);
+    let outcome = with_timeout(h.client.stop_sandbox_unit(&name))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, JobResult::Done);
+    with_timeout(h.client.kill_sandbox_unit(&name))
+        .await
+        .unwrap();
+
+    let calls = h.calls();
+    assert!(calls.contains(&"stop_unit".to_string()));
+    assert!(calls.contains(&"kill_unit".to_string()));
+}
+
+#[tokio::test]
+async fn sandbox_observation_reads_typed_live_properties() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([7; 16]);
+    let observation = with_timeout(h.client.observe_sandbox_unit(&name))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(observation.active_state, "active");
+    assert_eq!(observation.sub_state, "running");
+    assert_eq!(observation.supervisor_pid.unwrap().get(), 4242);
+    assert_eq!(observation.invocation_id, Some([9; 16]));
+    assert_eq!(
+        observation.cgroup.unwrap().as_str(),
+        format!("/aos.slice/aos-sandboxes.slice/{}", name.as_str())
+    );
+}
+
+#[cfg(feature = "exact-unit-test-util")]
+mod exact_unit {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    use common::ExactHarness;
+
+    fn bound_spec(name: SandboxUnitName, binding: [u8; 32]) -> SandboxUnitSpec {
+        let executable = std::fs::File::open("/proc/self/exe").unwrap();
+        let root = std::fs::File::open("/").unwrap();
+        let network = std::fs::File::open("/proc/self/ns/net").unwrap();
+        SandboxUnitSpec::new_nspawn_bound(
+            name,
+            SandboxNspawnCommand::private_user_descriptor_v1(
+                SandboxDescriptorPath::for_current_process(executable.as_fd()).unwrap(),
+                [0x42; 16],
+                65_536,
+                65_536,
+            )
+            .unwrap(),
+            SandboxResolvedPaths::from_descriptors(
+                SandboxDescriptorPath::for_current_process(root.as_fd()).unwrap(),
+                SandboxDescriptorPath::for_current_process(network.as_fd()).unwrap(),
+            ),
+            SandboxResources::new(512, 1024, 64, 100).unwrap(),
+            binding,
+            Duration::from_secs(30),
+            Duration::from_secs(10),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn payload_start_holds_and_rechecks_the_exact_guardian() {
+        let exact = ExactHarness::new().await;
+        let name = SandboxUnitName::from_incarnation([0x42; 16]);
+        let binding = [0x24; 32];
+        exact.set_environment(vec![format!(
+            "AOS_GUARDIAN_LAUNCH_BINDING={}",
+            "24".repeat(32)
+        )]);
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let mut kill_at_guard = || {
+            assert_eq!(state.reference_balance.load(Ordering::SeqCst), 1);
+            assert!(
+                !state
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .contains(&"start_transient_unit".to_owned())
+            );
+            *state.active_state.lock().unwrap() = "inactive".to_owned();
+            *state.sub_state.lock().unwrap() = "dead".to_owned();
+            state.main_pid.store(0, Ordering::SeqCst);
+            Ok::<_, &'static str>(())
+        };
+
+        let result = with_timeout(exact.client.start_payload_guarded(
+            &bound_spec(name, binding),
+            ExactUnitTarget::new(binding, [9; 16]).unwrap(),
+            &mut kill_at_guard,
+        ))
+        .await;
+
+        assert!(matches!(result, Err(ExactStartError::Systemd(_))));
+        assert_eq!(state.reference_balance.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            state
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.as_str() == "start_transient_unit")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_holds_identity_through_quiescence_then_balances_reference() {
+        let exact = ExactHarness::new().await;
+        let name = SandboxUnitName::from_incarnation([0x15; 16]);
+        let binding = [0x25; 32];
+        exact.set_environment(vec![format!(
+            "AOS_SANDBOX_LAUNCH_BINDING={}",
+            "25".repeat(32)
+        )]);
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let mut quiescence = |observation: &aos_systemd::ExactUnitObservation| {
+            assert!(observation.is_intermediate_terminal());
+            assert_eq!(
+                state
+                    .reference_balance
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            Ok::<_, &'static str>(true)
+        };
+
+        let outcome = with_timeout(exact.client.stop_exact_unit(
+            &name,
+            ExactUnitRole::Payload,
+            ExactUnitTarget::new(binding, [9; 16]).unwrap(),
+            &mut quiescence,
+        ))
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, ExactStopOutcome::AwaitingAbsence(_)));
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            state.calls.lock().unwrap().as_slice(),
+            [
+                "subscribe",
+                "get_unit",
+                "ref_unit",
+                "get_unit",
+                "stop_unit",
+                "unref_unit",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_releases_reference_on_foreign_and_quiescence_error() {
+        let exact = ExactHarness::new().await;
+        let name = SandboxUnitName::from_incarnation([0x16; 16]);
+        exact.set_environment(vec![format!(
+            "AOS_SANDBOX_LAUNCH_BINDING={}",
+            "26".repeat(32)
+        )]);
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let mut unused =
+            |_observation: &aos_systemd::ExactUnitObservation| -> Result<bool, &'static str> {
+                panic!("foreign unit must not reach quiescence check")
+            };
+        let outcome = exact
+            .client
+            .stop_exact_unit(
+                &name,
+                ExactUnitRole::Payload,
+                ExactUnitTarget::new([0x27; 32], [9; 16]).unwrap(),
+                &mut unused,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ExactStopOutcome::Foreign(_)));
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+
+        let exact = ExactHarness::new().await;
+        exact.set_environment(vec![format!(
+            "AOS_SANDBOX_LAUNCH_BINDING={}",
+            "28".repeat(32)
+        )]);
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let mut indeterminate =
+            |_observation: &aos_systemd::ExactUnitObservation| Err::<bool, _>("cgroup read failed");
+        let result = exact
+            .client
+            .stop_exact_unit(
+                &name,
+                ExactUnitRole::Payload,
+                ExactUnitTarget::new([0x28; 32], [9; 16]).unwrap(),
+                &mut indeterminate,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(ExactStopError::Quiescence("cgroup read failed"))
+        ));
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_shutdown_covers_ambiguous_ref_and_unref_replies() {
+        let exact = ExactHarness::new().await;
+        exact.hold_ref_reply();
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let task = tokio::spawn(async move {
+            exact
+                .client
+                .observe_exact_unit(
+                    &SandboxUnitName::from_incarnation([0x17; 16]),
+                    ExactUnitRole::Payload,
+                )
+                .await
+        });
+        wait_until(|| state.calls.lock().unwrap().contains(&"ref_unit".to_owned())).await;
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        task.abort();
+        let _ = task.await;
+        state.wait_for_disconnect().await;
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+
+        let exact = ExactHarness::new().await;
+        exact.hold_unref_reply();
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let task = tokio::spawn(async move {
+            exact
+                .client
+                .observe_exact_unit(
+                    &SandboxUnitName::from_incarnation([0x18; 16]),
+                    ExactUnitRole::Payload,
+                )
+                .await
+        });
+        wait_until(|| {
+            state
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"unref_unit".to_owned())
+        })
+        .await;
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        task.abort();
+        let _ = task.await;
+        state.wait_for_disconnect().await;
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_shutdown_releases_reference_during_job_wait() {
+        let exact = ExactHarness::new().await;
+        let name = SandboxUnitName::from_incarnation([0x1b; 16]);
+        exact.set_environment(vec![format!(
+            "AOS_SANDBOX_LAUNCH_BINDING={}",
+            "2c".repeat(32)
+        )]);
+        exact.suppress_job_emission();
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let task = tokio::spawn(async move {
+            let mut unused =
+                |_observation: &aos_systemd::ExactUnitObservation| -> Result<bool, &'static str> {
+                    panic!("an in-flight job must not reach quiescence")
+                };
+            exact
+                .client
+                .stop_exact_unit(
+                    &name,
+                    ExactUnitRole::Payload,
+                    ExactUnitTarget::new([0x2c; 32], [9; 16]).unwrap(),
+                    &mut unused,
+                )
+                .await
+        });
+        wait_until(|| {
+            state
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"stop_unit".to_owned())
+        })
+        .await;
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        task.abort();
+        let _ = task.await;
+        state.wait_for_disconnect().await;
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn observation_and_job_failures_still_balance_reference() {
+        let exact = ExactHarness::new().await;
+        let name = SandboxUnitName::from_incarnation([0x19; 16]);
+        exact.set_environment(vec![
+            format!("AOS_SANDBOX_LAUNCH_BINDING={}", "29".repeat(32)),
+            format!("AOS_SANDBOX_LAUNCH_BINDING={}", "29".repeat(32)),
+        ]);
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        assert!(
+            exact
+                .client
+                .observe_exact_unit(&name, ExactUnitRole::Payload)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+
+        let exact = ExactHarness::new().await;
+        exact.set_next_result("failed");
+        exact.set_environment(vec![format!(
+            "AOS_SANDBOX_LAUNCH_BINDING={}",
+            "2a".repeat(32)
+        )]);
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        let mut unused =
+            |_observation: &aos_systemd::ExactUnitObservation| -> Result<bool, &'static str> {
+                panic!("failed job must not reach quiescence check")
+            };
+        let outcome = exact
+            .client
+            .stop_exact_unit(
+                &name,
+                ExactUnitRole::Payload,
+                ExactUnitTarget::new([0x2a; 32], [9; 16]).unwrap(),
+                &mut unused,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, ExactStopOutcome::JobFailed(JobResult::Failed));
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn post_unref_observation_does_not_prolong_a_retained_terminal_unit() {
+        let exact = ExactHarness::new().await;
+        let name = SandboxUnitName::from_incarnation([0x1a; 16]);
+        exact.set_environment(vec![format!(
+            "AOS_SANDBOX_LAUNCH_BINDING={}",
+            "2b".repeat(32)
+        )]);
+        *exact.state.active_state.lock().unwrap() = "inactive".to_owned();
+        *exact.state.sub_state.lock().unwrap() = "dead".to_owned();
+        exact
+            .state
+            .main_pid
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+
+        let observation = exact
+            .client
+            .observe_after_unref(&name, ExactUnitRole::Payload)
+            .await
+            .unwrap();
+        assert!(matches!(
+            observation,
+            PostUnrefUnitObservation::Present(ref present)
+                if present.is_intermediate_terminal()
+        ));
+        assert_eq!(
+            state
+                .reference_balance
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(!state.calls.lock().unwrap().contains(&"ref_unit".to_owned()));
+
+        let exact = ExactHarness::new().await;
+        exact.set_unit_missing();
+        let state = exact.state.clone();
+        let _server = exact.server_conn;
+        assert_eq!(
+            exact
+                .client
+                .observe_after_unref(&name, ExactUnitRole::Payload)
+                .await
+                .unwrap(),
+            PostUnrefUnitObservation::Absent
+        );
+        assert_eq!(
+            state.calls.lock().unwrap().as_slice(),
+            ["subscribe", "get_unit"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn sandbox_discovery_returns_stable_complete_snapshot_and_quarantine_evidence() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([7; 16]);
+    h.set_discovery_units(vec![discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    )]);
+
+    let outcome = with_timeout(h.client.discover_sandbox_units())
+        .await
+        .unwrap();
+    let SandboxDiscoveryOutcome::Complete(snapshot) = outcome else {
+        panic!("stable fake response was not complete");
+    };
+    assert_eq!(snapshot.units.len(), 1);
+    assert_eq!(snapshot.units[0].unit, name);
+    let comparison = snapshot.compare_expected(&[]).unwrap();
+    assert_eq!(comparison.quarantine.len(), 1);
+    assert!(comparison.matched.is_empty());
+}
+
+#[tokio::test]
+async fn sandbox_discovery_quarantines_prefix_lookalike() {
+    let h = Harness::new().await;
+    let entry = discovery_entry(
+        "aos-sandbox-not-an-incarnation.service",
+        "/org/freedesktop/systemd1/unit/lookalike",
+    );
+    h.set_discovery_units(vec![entry.clone()]);
+    let outcome = with_timeout(h.client.discover_sandbox_units())
+        .await
+        .unwrap();
+    let SandboxDiscoveryOutcome::Complete(snapshot) = outcome else {
+        panic!("stable lookalike evidence was not complete");
+    };
+    assert!(snapshot.units.is_empty());
+    assert_eq!(snapshot.conflicts.len(), 1);
+    assert_eq!(
+        snapshot.conflicts[0].object_path,
+        "/org/freedesktop/systemd1/unit/lookalike"
+    );
+
+    let mut with_job = entry;
+    with_job.job_id = 17;
+    with_job.job_type = "start".to_owned();
+    with_job.job_object_path = OwnedObjectPath::try_from("/job/17").unwrap();
+    h.set_discovery_units(vec![with_job]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_detects_changed_lookalike_row_between_passes() {
+    let h = Harness::new().await;
+    let name = "aos-sandbox-not-an-incarnation.service";
+    let first = discovery_entry(name, "/org/freedesktop/systemd1/unit/lookalike_1");
+    let mut second = discovery_entry(name, "/org/freedesktop/systemd1/unit/lookalike_2");
+    second.description = "changed".to_owned();
+    second.active_state = "inactive".to_owned();
+    h.set_discovery_sequence(vec![first], vec![second]);
+
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_rejects_duplicate_and_path_substitution() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([8; 16]);
+    let entry = discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    );
+    h.set_discovery_units(vec![entry.clone(), entry]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    h.set_discovery_units(vec![discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/substituted",
+    )]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    let other = SandboxUnitName::from_incarnation([10; 16]);
+    h.set_discovery_units(vec![
+        discovery_entry(
+            name.as_str(),
+            "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+        ),
+        discovery_entry(
+            other.as_str(),
+            "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+        ),
+    ]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_rejects_unit_id_and_filter_substitution() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([11; 16]);
+    h.set_discovery_units(vec![discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    )]);
+    h.set_unit_id_override("aos-sandbox-00000000000000000000000000000000.service");
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    h.set_discovery_units(vec![discovery_entry(
+        "sshd.service",
+        "/org/freedesktop/systemd1/unit/sshd",
+    )]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_rejects_list_property_substitution_and_unit_ceiling() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([9; 16]);
+    let mut entry = discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    );
+    entry.active_state = "inactive".to_owned();
+    h.set_discovery_units(vec![entry.clone()]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    entry.active_state = "active".to_owned();
+    entry.followed = "alias-target.service".to_owned();
+    h.set_discovery_units(vec![entry.clone()]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    entry.followed.clear();
+    entry.job_id = 17;
+    entry.job_type = "start".to_owned();
+    entry.job_object_path = OwnedObjectPath::try_from("/job/17").unwrap();
+    h.set_discovery_units(vec![entry.clone()]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    h.set_discovery_units(vec![entry; 1025]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+
+    let mut oversized = discovery_entry(
+        name.as_str(),
+        "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+    );
+    oversized.description = "x".repeat(4097);
+    h.set_discovery_units(vec![oversized]);
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_is_indeterminate_during_daemon_reload() {
+    let h = Harness::new().await;
+    h.emit_reloading(true).await;
+    wait_until(|| h.client.is_reloading()).await;
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
+    assert!(!h.calls().contains(&"list_units_by_patterns".to_owned()));
+}
+
+#[tokio::test]
+async fn sandbox_discovery_is_indeterminate_when_membership_changes_between_passes() {
+    let h = Harness::new().await;
+    let name = SandboxUnitName::from_incarnation([12; 16]);
+    h.set_discovery_sequence(
+        Vec::new(),
+        vec![discovery_entry(
+            name.as_str(),
+            "/org/freedesktop/systemd1/unit/aos_2dsandbox",
+        )],
+    );
+    assert!(matches!(
+        with_timeout(h.client.discover_sandbox_units())
+            .await
+            .unwrap(),
+        SandboxDiscoveryOutcome::Indeterminate(_)
+    ));
 }

@@ -1,0 +1,888 @@
+//! Protected lifecycle inventory queries over live broker sessions.
+//!
+//! The concrete owners issue fresh Host, Storage, Mount, or Network inventory requests through
+//! the repository-owned authenticated post-handshake exchange. No callback,
+//! request identifier, sequence, packet, signer, or trust policy is supplied
+//! by the caller.
+
+use aos_proto::aos::sandbox::local::v1::{
+    Audience, BrokerMethod, BrokerRequestEnvelope, InventoryMountsRequest,
+    InventoryNetworksRequest, InventoryRuntimeRequest, InventoryStorageRequest, RequestHeader,
+};
+use aos_sandbox::lifecycle::{
+    CurrentLifecycleBootInventoryV1, LifecycleAtomicDatasetSnapshotPlanV1,
+    LifecycleAuthenticatedAtomicStorageSuccessorV1,
+    LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+    LifecycleAuthenticatedBrokerDomainInventorySuccessorV1, LifecycleAuthenticatedBrokerEffectV1,
+    LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
+    LifecycleAuthenticatedRuntimeInventorySuccessorV1,
+    LifecycleAuthenticatedStorageInventoryBootstrapV1,
+    LifecycleAuthenticatedStorageInventorySuccessorV1, LifecycleAuthenticatedStorageReadbackV1,
+    LifecycleBootBootstrapEndpointV1, LifecycleBootInventoryBootstrapChallengeV1,
+    LifecyclePhase6ErrorV1,
+};
+use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
+use buffa::Message as _;
+
+use crate::{
+    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
+    DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
+    DormantBrokerResponseProgressV1, DormantOutstandingBrokerRequestV1,
+    DormantPreparedBrokerRequestV1, DormantUnconfirmedBrokerRequestV1,
+    ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
+    ProtectedBrokerOutcomeCurrentnessOwnerV1, ProtectedBrokerRequestCommitRecoveryV1,
+    ProtectedBrokerSessionInitializationRecoveryV1,
+};
+
+#[derive(Clone, Copy)]
+enum LifecycleInventoryMethodV1 {
+    Host,
+    Mount,
+    Network,
+    Storage,
+}
+
+impl LifecycleInventoryMethodV1 {
+    const fn method(self) -> BrokerMethod {
+        match self {
+            Self::Host => BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+            Self::Mount => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+            Self::Network => BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+            Self::Storage => BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+        }
+    }
+
+    fn envelope(self, coordinates: DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope {
+        let version = coordinates.protocol_version();
+        let header = Some(RequestHeader {
+            protocol_major: version.major().into(),
+            protocol_minor: version.minor().into(),
+            request_id: coordinates.request_id().to_vec(),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: coordinates.deadline_boottime_nanoseconds(),
+            maximum_response_bytes: coordinates.maximum_response_bytes(),
+            ..Default::default()
+        })
+        .into();
+        let body = match self {
+            Self::Host => InventoryRuntimeRequest {
+                header,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            Self::Mount => InventoryMountsRequest {
+                header,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            Self::Network => InventoryNetworksRequest {
+                header,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            Self::Storage => InventoryStorageRequest {
+                header,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        };
+        BrokerRequestEnvelope {
+            method: self.method().into(),
+            body,
+            ..Default::default()
+        }
+    }
+}
+
+fn endpoint_for_inventory_method(
+    method: LifecycleInventoryMethodV1,
+) -> Result<LifecycleBootBootstrapEndpointV1, LifecyclePhase6ErrorV1> {
+    match method {
+        LifecycleInventoryMethodV1::Mount => Ok(LifecycleBootBootstrapEndpointV1::Mount),
+        LifecycleInventoryMethodV1::Network => Ok(LifecycleBootBootstrapEndpointV1::Network),
+        LifecycleInventoryMethodV1::Host | LifecycleInventoryMethodV1::Storage => {
+            Err(LifecyclePhase6ErrorV1::InvalidInput)
+        }
+    }
+}
+
+fn current_domain_inventory_pair(
+    inventory: &mut DormantLifecycleInventorySessionV1,
+    method: LifecycleInventoryMethodV1,
+    challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+    boot: &CurrentLifecycleBootInventoryV1<'_>,
+) -> Result<LifecycleAuthenticatedBrokerDomainInventorySuccessorV1, LifecyclePhase6ErrorV1> {
+    let endpoint = endpoint_for_inventory_method(method)?;
+    let boot_before = KernelBootId::current()
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+        .into_bytes();
+    let (initial, _) = inventory.query_complete(method)?;
+    let (current, currentness) = inventory.query_complete(method)?;
+    inventory.recheck(currentness)?;
+    let message = challenge.endpoint_signing_message(endpoint, &initial, &current)?;
+    let signature = inventory
+        .session
+        .sign_lifecycle_bootstrap_attestation(&message)
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+    let boot_after = KernelBootId::current()
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+        .into_bytes();
+    if boot_before != boot_after {
+        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+    }
+    LifecycleAuthenticatedBrokerDomainInventorySuccessorV1::from_fixed_endpoint_attestation(
+        challenge, boot, endpoint, &initial, &current, signature,
+    )
+}
+
+fn bootstrap_domain_inventory_pair(
+    inventory: &mut DormantLifecycleInventorySessionV1,
+    method: LifecycleInventoryMethodV1,
+    challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+) -> Result<LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1, LifecyclePhase6ErrorV1> {
+    let endpoint = endpoint_for_inventory_method(method)?;
+    let boot_before = KernelBootId::current()
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+        .into_bytes();
+    if boot_before != challenge.host_boot() {
+        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+    }
+    let (initial, _) = inventory.query_complete(method)?;
+    let (current, currentness) = inventory.query_complete(method)?;
+    inventory.recheck(currentness)?;
+    let message = challenge.endpoint_signing_message(endpoint, &initial, &current)?;
+    let signature = inventory
+        .session
+        .sign_lifecycle_bootstrap_attestation(&message)
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+    let boot_after = KernelBootId::current()
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+        .into_bytes();
+    if boot_before != boot_after {
+        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+    }
+    LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1::from_fixed_endpoint_attestation(
+        challenge, endpoint, &initial, &current, signature,
+    )
+}
+
+macro_rules! domain_inventory_owner {
+    ($name:ident, $method:expr, $label:literal) => {
+        #[doc = concat!("Owns a live authenticated ", $label, " inventory endpoint.")]
+        #[must_use = "retain the protected endpoint through lifecycle currentness joins"]
+        pub struct $name(DormantLifecycleInventorySessionV1);
+
+        impl $name {
+            /// Couples a completed fixed-custody session to lifecycle queries.
+            #[must_use]
+            pub fn from_protected_session(session: DormantAuthenticatedBrokerSessionV1) -> Self {
+                Self(DormantLifecycleInventorySessionV1 {
+                    session,
+                    pending: None,
+                })
+            }
+
+            /// Resumes retained inventory transport or durable commit custody.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error for fatal transport or changed protected authority.
+            pub fn resume_pending_inventory_query(
+                &mut self,
+            ) -> Result<Option<DormantLifecycleInventoryQueryProgressV1>, LifecyclePhase6ErrorV1>
+            {
+                self.0.resume_pending()
+            }
+
+            /// Issues and authenticates an adjacent inventory pair for a live boot root.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error unless both queries and the fixed endpoint remain current.
+            pub fn current_inventory_pair(
+                &mut self,
+                challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+                boot: &CurrentLifecycleBootInventoryV1<'_>,
+            ) -> Result<
+                LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
+                LifecyclePhase6ErrorV1,
+            > {
+                current_domain_inventory_pair(&mut self.0, $method, challenge, boot)
+            }
+
+            /// Issues and authenticates an adjacent inventory pair for boot genesis.
+            ///
+            /// # Errors
+            ///
+            /// Returns an error unless both queries and the fixed endpoint remain current.
+            pub fn bootstrap_inventory_pair(
+                &mut self,
+                challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+            ) -> Result<
+                LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+                LifecyclePhase6ErrorV1,
+            > {
+                bootstrap_domain_inventory_pair(&mut self.0, $method, challenge)
+            }
+        }
+    };
+}
+
+domain_inventory_owner!(
+    DormantMountLifecycleInventoryOwnerV1,
+    LifecycleInventoryMethodV1::Mount,
+    "Mount"
+);
+domain_inventory_owner!(
+    DormantNetworkLifecycleInventoryOwnerV1,
+    LifecycleInventoryMethodV1::Network,
+    "Network"
+);
+
+/// Retains an exact lifecycle inventory exchange at its resumable boundary.
+#[must_use = "resume the exact exchange or retain its protected custody"]
+pub struct DormantLifecycleInventoryQueryRecoveryV1 {
+    method: LifecycleInventoryMethodV1,
+    stage: DormantLifecycleInventoryQueryStageV1,
+}
+
+enum DormantLifecycleInventoryQueryStageV1 {
+    Initialization {
+        recovery: ProtectedBrokerSessionInitializationRecoveryV1,
+        request: DormantUnconfirmedBrokerRequestV1,
+    },
+    Successor {
+        recovery: ProtectedBrokerRequestCommitRecoveryV1,
+        request: DormantUnconfirmedBrokerRequestV1,
+    },
+    Send(DormantPreparedBrokerRequestV1),
+    Receive(DormantOutstandingBrokerRequestV1),
+    Commit(ProtectedBrokerOutcomeCommitRecoveryV1),
+}
+
+/// Reports completion or exact resumable custody for one inventory exchange.
+#[must_use = "consume the complete observation or resume protected custody"]
+pub enum DormantLifecycleInventoryQueryProgressV1 {
+    /// The signed inventory and move-only terminal currentness are available.
+    Complete {
+        outcome: AuthenticatedBrokerMethodOutcomeV1,
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    },
+    /// Transport backpressure or durable ambiguity retained the exact exchange.
+    RecoveryRequired(DormantLifecycleInventoryQueryRecoveryV1),
+}
+
+struct DormantLifecycleInventorySessionV1 {
+    session: DormantAuthenticatedBrokerSessionV1,
+    pending: Option<DormantLifecycleInventoryQueryRecoveryV1>,
+}
+
+impl DormantLifecycleInventorySessionV1 {
+    fn query(
+        &mut self,
+        method: LifecycleInventoryMethodV1,
+    ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
+        let prepared = self
+            .session
+            .prepare_authenticated_request(method.method(), |coordinates| {
+                method.envelope(coordinates)
+            })
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let prepared = match prepared {
+            DormantBrokerRequestPreparationV1::Prepared(prepared) => prepared,
+            DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
+                recovery,
+                request,
+                ..
+            } => {
+                return Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                    DormantLifecycleInventoryQueryRecoveryV1 {
+                        method,
+                        stage: DormantLifecycleInventoryQueryStageV1::Initialization {
+                            recovery,
+                            request,
+                        },
+                    },
+                ));
+            }
+            DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
+                recovery,
+                request,
+                ..
+            } => {
+                return Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                    DormantLifecycleInventoryQueryRecoveryV1 {
+                        method,
+                        stage: DormantLifecycleInventoryQueryStageV1::Successor {
+                            recovery,
+                            request,
+                        },
+                    },
+                ));
+            }
+        };
+        self.send_query(method, prepared)
+    }
+
+    fn send_query(
+        &mut self,
+        method: LifecycleInventoryMethodV1,
+        prepared: DormantPreparedBrokerRequestV1,
+    ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
+        match self
+            .session
+            .send_authenticated_request(prepared)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+        {
+            DormantBrokerRequestSendProgressV1::Pending(prepared) => {
+                Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                    DormantLifecycleInventoryQueryRecoveryV1 {
+                        method,
+                        stage: DormantLifecycleInventoryQueryStageV1::Send(prepared),
+                    },
+                ))
+            }
+            DormantBrokerRequestSendProgressV1::Sent(outstanding) => {
+                self.receive_query(method, outstanding)
+            }
+        }
+    }
+
+    fn receive_query(
+        &mut self,
+        method: LifecycleInventoryMethodV1,
+        outstanding: DormantOutstandingBrokerRequestV1,
+    ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
+        match self
+            .session
+            .receive_authenticated_response(outstanding)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+        {
+            DormantBrokerResponseProgressV1::Pending(outstanding) => {
+                Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                    DormantLifecycleInventoryQueryRecoveryV1 {
+                        method,
+                        stage: DormantLifecycleInventoryQueryStageV1::Receive(outstanding),
+                    },
+                ))
+            }
+            DormantBrokerResponseProgressV1::Committed(
+                ProtectedBrokerOutcomeCommitResultV1::Committed(committed),
+            ) => {
+                let (outcome, currentness) = committed.into_outcome_and_currentness();
+                Ok(DormantLifecycleInventoryQueryProgressV1::Complete {
+                    outcome,
+                    currentness,
+                })
+            }
+            DormantBrokerResponseProgressV1::Committed(
+                ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { recovery, .. },
+            ) => Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                DormantLifecycleInventoryQueryRecoveryV1 {
+                    method,
+                    stage: DormantLifecycleInventoryQueryStageV1::Commit(recovery),
+                },
+            )),
+        }
+    }
+
+    fn resume_query(
+        &mut self,
+        recovery: DormantLifecycleInventoryQueryRecoveryV1,
+    ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
+        let method = recovery.method;
+        match recovery.stage {
+            DormantLifecycleInventoryQueryStageV1::Initialization { recovery, request } => {
+                match self
+                    .session
+                    .recover_prepared_initialization(recovery, request)
+                {
+                    DormantBrokerRequestPreparationV1::Prepared(prepared) => {
+                        self.send_query(method, prepared)
+                    }
+                    DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
+                        recovery,
+                        request,
+                        ..
+                    } => Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                        DormantLifecycleInventoryQueryRecoveryV1 {
+                            method,
+                            stage: DormantLifecycleInventoryQueryStageV1::Initialization {
+                                recovery,
+                                request,
+                            },
+                        },
+                    )),
+                    DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired { .. } => {
+                        Err(LifecyclePhase6ErrorV1::StaleAuthority)
+                    }
+                }
+            }
+            DormantLifecycleInventoryQueryStageV1::Successor { recovery, request } => {
+                match self.session.recover_prepared_successor(recovery, request) {
+                    DormantBrokerRequestPreparationV1::Prepared(prepared) => {
+                        self.send_query(method, prepared)
+                    }
+                    DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
+                        recovery,
+                        request,
+                        ..
+                    } => Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                        DormantLifecycleInventoryQueryRecoveryV1 {
+                            method,
+                            stage: DormantLifecycleInventoryQueryStageV1::Successor {
+                                recovery,
+                                request,
+                            },
+                        },
+                    )),
+                    DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
+                        ..
+                    } => Err(LifecyclePhase6ErrorV1::StaleAuthority),
+                }
+            }
+            DormantLifecycleInventoryQueryStageV1::Send(prepared) => {
+                self.send_query(method, prepared)
+            }
+            DormantLifecycleInventoryQueryStageV1::Receive(outstanding) => {
+                self.receive_query(method, outstanding)
+            }
+            DormantLifecycleInventoryQueryStageV1::Commit(recovery) => {
+                match self.session.recover_broker_outcome_commit(recovery) {
+                    ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => {
+                        let (outcome, currentness) = committed.into_outcome_and_currentness();
+                        Ok(DormantLifecycleInventoryQueryProgressV1::Complete {
+                            outcome,
+                            currentness,
+                        })
+                    }
+                    ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { recovery, .. } => {
+                        Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                            DormantLifecycleInventoryQueryRecoveryV1 {
+                                method,
+                                stage: DormantLifecycleInventoryQueryStageV1::Commit(recovery),
+                            },
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    fn recheck(
+        &mut self,
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        let mut current = self
+            .session
+            .revalidate_broker_outcome(currentness)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        current
+            .revalidate()
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)
+    }
+
+    fn query_complete(
+        &mut self,
+        method: LifecycleInventoryMethodV1,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        if self.pending.is_some() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        match self.query(method)? {
+            DormantLifecycleInventoryQueryProgressV1::Complete {
+                outcome,
+                currentness,
+            } => Ok((outcome, currentness)),
+            DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(recovery) => {
+                self.pending = Some(recovery);
+                Err(LifecyclePhase6ErrorV1::StaleAuthority)
+            }
+        }
+    }
+
+    fn resume_pending(
+        &mut self,
+    ) -> Result<Option<DormantLifecycleInventoryQueryProgressV1>, LifecyclePhase6ErrorV1> {
+        let Some(recovery) = self.pending.take() else {
+            return Ok(None);
+        };
+        let progress = self.resume_query(recovery)?;
+        if let DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(recovery) = progress {
+            self.pending = Some(recovery);
+            return Ok(None);
+        }
+        Ok(Some(progress))
+    }
+}
+
+/// Owns a live authenticated Host inventory endpoint.
+#[must_use = "retain the protected Host endpoint through the final boot recheck"]
+pub struct DormantHostRuntimeInventoryOwnerV1(DormantLifecycleInventorySessionV1);
+
+impl DormantHostRuntimeInventoryOwnerV1 {
+    /// Couples a completed fixed-custody session to Host lifecycle queries.
+    #[must_use]
+    pub fn from_protected_session(session: DormantAuthenticatedBrokerSessionV1) -> Self {
+        Self(DormantLifecycleInventorySessionV1 {
+            session,
+            pending: None,
+        })
+    }
+
+    /// Resumes a retained Host inventory exchange without rebuilding its request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for fatal transport or changed protected authority.
+    pub fn resume_pending_inventory_query(
+        &mut self,
+    ) -> Result<Option<DormantLifecycleInventoryQueryProgressV1>, LifecyclePhase6ErrorV1> {
+        self.0.resume_pending()
+    }
+
+    /// Issues two exact adjacent Host inventory exchanges under one kernel boot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] for transport backpressure, protected
+    /// recovery, boot rollover, or any non-adjacent or changed inventory.
+    pub fn current_inventory_pair(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        boot: &CurrentLifecycleBootInventoryV1<'_>,
+    ) -> Result<LifecycleAuthenticatedRuntimeInventorySuccessorV1, LifecyclePhase6ErrorV1> {
+        let boot_before = KernelBootId::current()
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        let (initial, _) = self.0.query_complete(LifecycleInventoryMethodV1::Host)?;
+        let (current, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Host)?;
+        let boot_after = KernelBootId::current()
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != boot_after {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        self.0.recheck(currentness)?;
+        let message = challenge.endpoint_signing_message(
+            LifecycleBootBootstrapEndpointV1::Host,
+            &initial,
+            &current,
+        )?;
+        let signature = self
+            .0
+            .session
+            .sign_lifecycle_bootstrap_attestation(&message)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        LifecycleAuthenticatedRuntimeInventorySuccessorV1::from_fixed_endpoint_attestation(
+            challenge, boot, &initial, &current, boot_after, signature,
+        )
+    }
+
+    /// Issues and challenge-authenticates the Host pair for first-root publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless both exchanges and the exact
+    /// terminal head remain current while the fixed client-record key signs
+    /// the lifecycle owner's one-shot challenge.
+    pub fn bootstrap_inventory_pair(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+    ) -> Result<LifecycleAuthenticatedRuntimeInventoryBootstrapV1, LifecyclePhase6ErrorV1> {
+        let boot_before = KernelBootId::current()
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != challenge.host_boot() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let (initial, _) = self.0.query_complete(LifecycleInventoryMethodV1::Host)?;
+        let (current, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Host)?;
+        self.0.recheck(currentness)?;
+        let message = challenge.endpoint_signing_message(
+            LifecycleBootBootstrapEndpointV1::Host,
+            &initial,
+            &current,
+        )?;
+        let signature = self
+            .0
+            .session
+            .sign_lifecycle_bootstrap_attestation(&message)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let boot_after = KernelBootId::current()
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != boot_after {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        LifecycleAuthenticatedRuntimeInventoryBootstrapV1::from_fixed_endpoint_attestation(
+            challenge, &initial, &current, signature,
+        )
+    }
+}
+
+/// Owns a live authenticated Storage inventory endpoint.
+#[must_use = "retain the protected Storage endpoint through lifecycle currentness joins"]
+pub struct DormantStorageLifecycleInventoryOwnerV1(DormantLifecycleInventorySessionV1);
+
+/// Retains the exact protected Storage inventory immediately before a group effect.
+#[must_use = "the predecessor must be consumed by the matching post-effect query"]
+pub struct DormantAtomicStorageInventoryPredecessorV1 {
+    outcome: AuthenticatedBrokerMethodOutcomeV1,
+}
+
+/// Retains both sides of a post-atomic Storage inventory ambiguity.
+#[must_use = "resume the exact post-effect query with its protected predecessor"]
+pub struct DormantAtomicStorageInventoryFinishRecoveryV1 {
+    previous: DormantAtomicStorageInventoryPredecessorV1,
+    query: DormantLifecycleInventoryQueryRecoveryV1,
+}
+
+/// Reports a completed atomic Storage join or its exact resumable custody.
+#[must_use = "consume the successor or retain and resume protected custody"]
+pub enum DormantAtomicStorageInventoryFinishProgressV1 {
+    /// The authenticated predecessor/successor join completed.
+    Complete(LifecycleAuthenticatedAtomicStorageSuccessorV1),
+    /// The post-effect query remains ambiguous without losing its predecessor.
+    RecoveryRequired(DormantAtomicStorageInventoryFinishRecoveryV1),
+}
+
+impl DormantStorageLifecycleInventoryOwnerV1 {
+    /// Couples a completed fixed-custody session to Storage lifecycle queries.
+    #[must_use]
+    pub fn from_protected_session(session: DormantAuthenticatedBrokerSessionV1) -> Self {
+        Self(DormantLifecycleInventorySessionV1 {
+            session,
+            pending: None,
+        })
+    }
+
+    /// Resumes a retained Storage inventory exchange without rebuilding its request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for fatal transport or changed protected authority.
+    pub fn resume_pending_inventory_query(
+        &mut self,
+    ) -> Result<Option<DormantLifecycleInventoryQueryProgressV1>, LifecyclePhase6ErrorV1> {
+        self.0.resume_pending()
+    }
+
+    /// Issues two exact adjacent complete Storage inventory exchanges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] for transport backpressure, protected
+    /// recovery, or any non-adjacent or changed five-family inventory.
+    pub fn current_inventory_pair(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        boot: &CurrentLifecycleBootInventoryV1<'_>,
+    ) -> Result<LifecycleAuthenticatedStorageInventorySuccessorV1, LifecyclePhase6ErrorV1> {
+        let (initial, _) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
+        let (current, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
+        self.0.recheck(currentness)?;
+        let message = challenge.endpoint_signing_message(
+            LifecycleBootBootstrapEndpointV1::Storage,
+            &initial,
+            &current,
+        )?;
+        let signature = self
+            .0
+            .session
+            .sign_lifecycle_bootstrap_attestation(&message)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        LifecycleAuthenticatedStorageInventorySuccessorV1::from_fixed_endpoint_attestation(
+            challenge, boot, &initial, &current, signature,
+        )
+    }
+
+    /// Issues and challenge-authenticates the Storage pair for first-root publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless both complete inventory
+    /// exchanges and the terminal head remain current through fixed-key signing.
+    pub fn bootstrap_inventory_pair(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+    ) -> Result<LifecycleAuthenticatedStorageInventoryBootstrapV1, LifecyclePhase6ErrorV1> {
+        let (initial, _) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
+        let (current, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
+        self.0.recheck(currentness)?;
+        let message = challenge.endpoint_signing_message(
+            LifecycleBootBootstrapEndpointV1::Storage,
+            &initial,
+            &current,
+        )?;
+        let signature = self
+            .0
+            .session
+            .sign_lifecycle_bootstrap_attestation(&message)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        LifecycleAuthenticatedStorageInventoryBootstrapV1::from_fixed_endpoint_attestation(
+            challenge, &initial, &current, signature,
+        )
+    }
+
+    /// Issues one immediate complete Storage readback after an Apply exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the protected session commits
+    /// a canonical complete five-family Storage inventory outcome.
+    pub fn current_post_effect_readback(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        effect: &LifecycleAuthenticatedBrokerEffectV1,
+        apply: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<LifecycleAuthenticatedStorageReadbackV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
+        self.0.recheck(currentness)?;
+        let message = challenge.storage_effect_signing_message(apply, &outcome)?;
+        let signature = self
+            .0
+            .session
+            .sign_lifecycle_bootstrap_attestation(&message)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        LifecycleAuthenticatedStorageReadbackV1::from_fixed_endpoint_attestation(
+            challenge, effect, apply, &outcome, signature,
+        )
+    }
+
+    /// Captures the protected complete Storage predecessor before an atomic group.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless a fresh complete inventory is
+    /// committed and remains the live session head.
+    pub fn begin_atomic_snapshot_inventory(
+        &mut self,
+    ) -> Result<DormantAtomicStorageInventoryPredecessorV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
+        self.0.recheck(currentness)?;
+        Ok(DormantAtomicStorageInventoryPredecessorV1 { outcome })
+    }
+
+    /// Captures and verifies the exact adjacent post-group Storage inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the predecessor belongs to
+    /// this live session and the successor proves every committed plan member.
+    pub fn finish_atomic_snapshot_inventory(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        boot: &CurrentLifecycleBootInventoryV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        program: aos_sandbox_core::ObjectDigest,
+        observation: aos_sandbox_core::ObjectDigest,
+        previous: DormantAtomicStorageInventoryPredecessorV1,
+    ) -> Result<DormantAtomicStorageInventoryFinishProgressV1, LifecyclePhase6ErrorV1> {
+        if self.0.pending.is_some() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        match self.0.query(LifecycleInventoryMethodV1::Storage)? {
+            DormantLifecycleInventoryQueryProgressV1::Complete {
+                outcome,
+                currentness,
+            } => self.complete_atomic_snapshot_inventory(
+                challenge,
+                boot,
+                plan,
+                program,
+                observation,
+                previous,
+                outcome,
+                currentness,
+            ),
+            DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(query) => Ok(
+                DormantAtomicStorageInventoryFinishProgressV1::RecoveryRequired(
+                    DormantAtomicStorageInventoryFinishRecoveryV1 { previous, query },
+                ),
+            ),
+        }
+    }
+
+    /// Resumes an ambiguous post-atomic Storage query without rebuilding either side.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] for fatal transport, changed protected
+    /// authority, or an invalid predecessor/successor transition.
+    pub fn resume_atomic_snapshot_inventory(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        boot: &CurrentLifecycleBootInventoryV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        program: aos_sandbox_core::ObjectDigest,
+        observation: aos_sandbox_core::ObjectDigest,
+        recovery: DormantAtomicStorageInventoryFinishRecoveryV1,
+    ) -> Result<DormantAtomicStorageInventoryFinishProgressV1, LifecyclePhase6ErrorV1> {
+        match self.0.resume_query(recovery.query)? {
+            DormantLifecycleInventoryQueryProgressV1::Complete {
+                outcome,
+                currentness,
+            } => self.complete_atomic_snapshot_inventory(
+                challenge,
+                boot,
+                plan,
+                program,
+                observation,
+                recovery.previous,
+                outcome,
+                currentness,
+            ),
+            DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(query) => Ok(
+                DormantAtomicStorageInventoryFinishProgressV1::RecoveryRequired(
+                    DormantAtomicStorageInventoryFinishRecoveryV1 {
+                        previous: recovery.previous,
+                        query,
+                    },
+                ),
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn complete_atomic_snapshot_inventory(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        boot: &CurrentLifecycleBootInventoryV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        program: aos_sandbox_core::ObjectDigest,
+        observation: aos_sandbox_core::ObjectDigest,
+        previous: DormantAtomicStorageInventoryPredecessorV1,
+        current: AuthenticatedBrokerMethodOutcomeV1,
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<DormantAtomicStorageInventoryFinishProgressV1, LifecyclePhase6ErrorV1> {
+        self.0.recheck(currentness)?;
+        let message = challenge.storage_transition_signing_message(&previous.outcome, &current)?;
+        let signature = self
+            .0
+            .session
+            .sign_lifecycle_bootstrap_attestation(&message)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let successor =
+            LifecycleAuthenticatedAtomicStorageSuccessorV1::from_fixed_endpoint_attestation(
+                challenge,
+                boot,
+                plan,
+                program,
+                observation,
+                &previous.outcome,
+                &current,
+                signature,
+            )?;
+        Ok(DormantAtomicStorageInventoryFinishProgressV1::Complete(
+            successor,
+        ))
+    }
+}

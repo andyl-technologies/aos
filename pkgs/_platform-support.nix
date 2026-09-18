@@ -122,6 +122,7 @@ let
   # to execute during their build.
   targetWave2 = [
     "acpica"
+    "aos-fuse3"
     "bind"
     "boringssl"
     "cairo"
@@ -454,11 +455,27 @@ let
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-fuse-transport"
     "aos-landlock"
+    "aos-netd"
+    "aos-namespace-inspector-manager-query"
     "aos-recovery"
     "aos-registry-server"
+    "aos-sandbox-agent"
+    "aos-sandbox-guardian"
+    "aos-sandbox-hostd"
+    "aos-sandbox-mountd"
+    "aos-sandbox-network-lease-gate"
+    "aos-sandbox-network-lease-gate-loader"
+    "aos-sandbox-network-observer"
+    "aos-selinux-runtime-roots"
+    "aos-sandbox-zfs-worker"
+    "aos-sandboxd"
     "aos-service-root"
+    "aos-selinux-production-policy"
+    "aos-storaged"
     "aos-selinux-run"
+    "aos-selinux-stage0"
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
     "attr"
@@ -561,9 +578,11 @@ let
     "qemu-crucible-reference"
     "qemu-crucible-source"
     "refpolicy"
+    "refpolicy-production"
     "ripgrep"
     "rootlesskit"
     "runc"
+    "secilc"
     "semodule-utils"
     "setools"
     "slirp4netns"
@@ -724,6 +743,7 @@ let
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
+    "emulation/_qemu-aarch64-linux-user.nix" = "linux-only-build-helper";
     "emulation/qemu-patches/_series.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_k3s-addon-entrypoints.nix" = "linux-only-build-helper";
@@ -739,6 +759,7 @@ let
     "kubernetes/_k3s-traefik.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "storage/_postgresql-cross.nix" = "cross-build-helper";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
@@ -795,6 +816,27 @@ let
     "networking/_envoy-config/types.nix" = "linux-only-config-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "security/_aos-namespace-inspector-manager-query/fd-table.c" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/helper.h" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/main.c" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/protocol.c" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/systemd-query.c" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/aos_sandbox.fc" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/aos_sandbox.te" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_attribute_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/coverage.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/coverage_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/context_plan.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/context_plan_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/effective_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/effective_policy_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/kernel-classmap.c" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_context_dump.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_context_dump_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/verify_context_lookups.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_erofs_contexts.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_erofs_contexts_test.py" = "linux-only-test-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
@@ -831,15 +873,19 @@ in rec {
     packageInventory.${name}
     or (throw "package platform support: unclassified package '${name}'");
 
+  supportsArchitecture = system: name:
+    builtins.elem (systemCpu system) (packageSupport name).architectures;
+
   supportsTarget = system: name: let
     entry = packageSupport name;
+    architectureSupported = supportsArchitecture system name;
   in
     if isLinux system
-    then entry.disposition != "darwin-only"
+    then entry.disposition != "darwin-only" && architectureSupported
     else if isDarwin system
     then
       builtins.elem entry.disposition ["target" "independent" "darwin-only"]
-      && builtins.elem (systemCpu system) entry.architectures
+      && architectureSupported
     else throw "package platform support: unsupported target system '${system}'";
 
   targetPackageNames = system: names: builtins.filter (supportsTarget system) names;

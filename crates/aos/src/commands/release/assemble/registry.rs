@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_package::registry::release::{FinalizedRegistryRelease, RegistryStaticSurfaceFile};
 use aos_package::registry::static_upload::collect_static_origin_files;
 use aos_release::artifact::{ArtifactKind, BundlePath};

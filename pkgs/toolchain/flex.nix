@@ -42,11 +42,12 @@ in
         name = "configure";
         script =
           (
-            if stdenv.hostPlatform.isDarwin
+            if stdenv.isCross || stdenv.hostPlatform.isDarwin
             then ''
               # Flex builds stage1flex for the build machine. Autoconf already
-              # separates its flags, but the native AOS compiler wrapper would
-              # otherwise still inherit the target SDK and hardening settings.
+              # separates its flags, but CC_FOR_BUILD must retain the native
+              # build dependency closure while excluding target search paths
+              # and hardening settings inherited by the configure process.
               native_cc="$BUILD_CC"
               mkdir -p .aos-build-tools
               cat > .aos-build-tools/cc-for-build <<EOF
@@ -62,12 +63,86 @@ in
               export CPPFLAGS_FOR_BUILD=
               export LDFLAGS_FOR_BUILD=
 
-              # Darwin malloc(0) and realloc(0) return usable allocations.
-              # Avoid configuring target replacement functions into the
-              # config.h shared with the native stage1 generator.
+            ''
+            else ""
+          )
+          + (
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Preserve the established Darwin ABI cache: malloc(0) and
+              # realloc(0) return usable allocations on the target platform.
               export ac_cv_func_malloc_0_nonnull=yes
               export ac_cv_func_realloc_0_nonnull=yes
+            ''
+            else if stdenv.isCross && stdenv.targetRunner != null
+            then ''
+              # Run Flex's exact Autoconf tests against target libc before
+              # caching their results. config.h is also consumed by the native
+              # stage1 generator, so an unmeasured cross guess is unsafe.
+              cat > .aos-build-tools/malloc-zero-probe.c <<'EOF'
+              #include <stdlib.h>
 
+              int
+              main ()
+              {
+                return ! malloc (0);
+              }
+              EOF
+
+              cat > .aos-build-tools/realloc-zero-probe.c <<'EOF'
+              #include <stdlib.h>
+
+              int
+              main ()
+              {
+                return ! realloc (0, 0);
+              }
+              EOF
+
+              "$CC" .aos-build-tools/malloc-zero-probe.c \
+                -o .aos-build-tools/malloc-zero-probe
+              "$CC" .aos-build-tools/realloc-zero-probe.c \
+                -o .aos-build-tools/realloc-zero-probe
+
+              if ${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system} \
+                .aos-build-tools/malloc-zero-probe; then
+                ac_cv_func_malloc_0_nonnull=yes
+              else
+                probe_status=$?
+                if test "$probe_status" -eq 1; then
+                  ac_cv_func_malloc_0_nonnull=no
+                else
+                  echo "target malloc(0) probe failed with status $probe_status" >&2
+                  exit 1
+                fi
+              fi
+
+              if ${stdenv.targetRunner}/bin/aos-run-${stdenv.hostPlatform.system} \
+                .aos-build-tools/realloc-zero-probe; then
+                ac_cv_func_realloc_0_nonnull=yes
+              else
+                probe_status=$?
+                if test "$probe_status" -eq 1; then
+                  ac_cv_func_realloc_0_nonnull=no
+                else
+                  echo "target realloc(0, 0) probe failed with status $probe_status" >&2
+                  exit 1
+                fi
+              fi
+
+              export ac_cv_func_malloc_0_nonnull
+              export ac_cv_func_realloc_0_nonnull
+            ''
+            else if stdenv.isCross
+            then ''
+              echo 'cross build cannot run target malloc/realloc probes' >&2
+              exit 1
+            ''
+            else ""
+          )
+          + (
+            if stdenv.hostPlatform.isDarwin
+            then ''
               # libfl intentionally supplies main() while leaving yylex() to
               # the generated scanner linked by its consumer. Mach-O requires
               # that plugin-style unresolved symbol policy to be explicit.

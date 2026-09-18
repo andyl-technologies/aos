@@ -156,7 +156,7 @@
       "lib/systemd/system/multi-user.target.wants/demo.service"
     ];
   };
-  frozenInventoryJson = freezePkgs.freezeToJSON {
+  inventoryCandidates = {
     fixture =
       inventoryPackage
       // {
@@ -164,8 +164,35 @@
         name = "inventory-fixture";
         outputs = ["out"];
       };
+    fixtureAlias =
+      inventoryPackage
+      // {
+        type = "derivation";
+        name = "inventory-fixture-alias";
+        outputs = ["out"];
+      };
   };
-  frozenInventoryPackage = (freezePkgs.frozenFromJSON frozenInventoryJson).fixture;
+  legacyInventoryJson = freezePkgs.freezeToJSON inventoryCandidates;
+  x86InventoryJson = freezePkgs.freezeToJSON (
+    inventoryCandidates
+    // {
+      allPackageNames = ["fixture"];
+      platformSupport.supportsArchitecture = _: _: true;
+      stdenv.hostPlatform.system = "x86_64-linux";
+    }
+  );
+  frozenInventoryJson = freezePkgs.freezeToJSON (
+    inventoryCandidates
+    // {
+      allPackageNames = ["fixture" "unsupported"];
+      platformSupport.supportsArchitecture = _: name: name != "unsupported";
+      stdenv.hostPlatform.system = "aarch64-linux";
+      unsupported = throw "freeze-pkgs forced an architecture-incompatible package";
+    }
+  );
+  frozenInventory = freezePkgs.frozenFromJSON frozenInventoryJson;
+  frozenInventoryPackage = frozenInventory.fixture;
+  frozenInventoryAlias = frozenInventory.fixtureAlias;
   inventoryGenerated = systemdLib.generateUnits {
     type = "system";
     units."demo.service" = overlapUnit "demo.service";
@@ -304,6 +331,16 @@
     {
       cond = frozenInventoryPackage.systemdUnitInventory == inventoryPackage.systemdUnitInventory;
       msg = "systemd-lib: freeze-pkgs dropped package systemd inventory metadata";
+    }
+    {
+      cond =
+        builtins.attrNames frozenInventory
+        == ["fixture" "fixtureAlias"]
+        && x86InventoryJson == legacyInventoryJson
+        && frozenInventoryJson == legacyInventoryJson
+        && toString frozenInventoryAlias == toString inventoryPackage
+        && frozenInventoryAlias.systemdUnitInventory == inventoryPackage.systemdUnitInventory;
+      msg = "systemd-lib: freeze-pkgs must omit unsupported package thunks while retaining derivation aliases";
     }
     {
       cond =

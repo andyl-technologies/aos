@@ -14,9 +14,11 @@
   meson,
   ninja,
   pkg-config,
+  buildPackages,
   openssl,
 }: let
   version = "1.0.8";
+  opensslLibraryPath = "${openssl}/lib";
 in
   mkDerivation {
     pname = "composefs";
@@ -33,9 +35,23 @@ in
       meson
       ninja
       pkg-config
+      buildPackages.patchelf
     ];
     runtimeDeps = [openssl];
     propagatedDeps = [];
+
+    # Meson rewrites installed targets to their declared install RPATH, which
+    # is empty in this release. Restore the declared OpenSSL path on the
+    # library that directly needs libcrypto; the standard fixup still prunes
+    # entries that do not satisfy a DT_NEEDED dependency.
+    postInstall = ''
+      library="$out/lib/libcomposefs.so.1.4.0"
+      test -f "$library"
+      ${buildPackages.patchelf}/bin/patchelf --print-needed "$library" \
+        | grep -Eq '^libcrypto\.so\.[0-9]+$'
+      ${buildPackages.patchelf}/bin/patchelf \
+        --add-rpath "${opensslLibraryPath}" "$library"
+    '';
 
     phases = [
       {

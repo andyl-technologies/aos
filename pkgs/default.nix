@@ -1039,7 +1039,7 @@
   packageArgumentScope =
     self
     // {inherit firmwarePackages;}
-    // lib.optionalAttrs stdenv.isCross (
+    // lib.optionalAttrs (stdenv.hostPlatform.isDarwin || stdenv.isCross) (
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
@@ -1297,7 +1297,15 @@
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-namespace-inspector-manager-query"
+    "aos-sandbox-network-lease-gate"
+    "aos-sandbox-network-lease-gate-loader"
+    "aos-sandbox-network-observer"
+    "aos-selinux-runtime-roots"
+    "aos-sandbox-zfs-worker"
+    "aos-sandboxd"
     "aos-hub"
+    "aos-storaged"
     "aos-hub-cloudflare"
     "aos-hub-console-dist"
     "aos-hub-dialect-tests"
@@ -1310,6 +1318,7 @@
     "aos-release-signer"
     "aos-secret-reference-test"
     "aos-selinux-run"
+    "aos-selinux-stage0"
     "aos-service-root"
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
@@ -1502,6 +1511,12 @@
       };
     }
     // discoveredPackages
+    # The underscore-prefixed recipe deliberately stays outside package
+    # discovery: this is a native build-machine runner, not target inventory.
+    # Cross package sets consume it only through buildPackages.
+    // lib.optionalAttrs (!stdenv.isCross && stdenv.hostPlatform.isLinux) {
+      qemu-aarch64-linux-user = callPackage ./emulation/_qemu-aarch64-linux-user.nix {};
+    }
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
       # GLib bootstraps GObject Introspection, while downstream consumers need
@@ -1526,6 +1541,11 @@
           inherit linuxSource extraConfig;
           enforceRequiredConfig = false;
         };
+      # The immutable SELinux gate needs negative subjects whose loaded and
+      # expected policy bytes differ. Keep that construction explicit so the
+      # deployed package remains the no-argument discovered derivation.
+      aosSelinuxStage0With = arguments:
+        callPackage ./security/aos-selinux-stage0.nix arguments;
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
         callPackage ./filesystem/zfs.nix {inherit kernel;};
@@ -1717,60 +1737,62 @@
           passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
         };
       # Native package sets retain the final stdenv tools. Cross package roots
-      # must be actual target builds; scheduler-native tools remain available
-      # only through buildPackages and build-dependency splicing.
+      # must be actual target builds; build-machine tools remain available only
+      # through buildPackages and build-dependency splicing. Keep the explicit
+      # Darwin condition because Darwin always uses discovered target packages,
+      # independently of how a future native Darwin stdenv reports isCross.
       bash = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.bash
         else withBootstrapPublication "bash"
       );
       coreutils = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.coreutils
         else withBootstrapPublication "coreutils"
       );
       gnumake = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gnumake
         else withBootstrapPublication "gnumake"
       );
       sed = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.sed
         else withBootstrapPublication "sed"
       );
       grep = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.grep
         else withBootstrapPublication "grep"
       );
       findutils = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.findutils
         else withBootstrapPublication "findutils"
       );
       gawk = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gawk
         else withBootstrapPublication "gawk"
       );
       diffutils = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.diffutils
         else withBootstrapPublication "diffutils"
       );
       tar = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.tar
         else withBootstrapPublication "tar"
       );
       gzip = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gzip
         else withBootstrapPublication "gzip"
       );
       patch = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.patch
         else withBootstrapPublication "patch"
       );

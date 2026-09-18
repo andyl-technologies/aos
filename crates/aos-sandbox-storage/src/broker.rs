@@ -1,0 +1,13763 @@
+//! Non-executing storage admission coordinator.
+//!
+//! The coordinator is the sole owner of the storage journal lock. It verifies
+//! portable signed authority against an exact node-local catalog resolution,
+//! then commits the authenticated assignment fence, non-authorizing admission
+//! intent, and storage transaction intent in one journal transaction. It does
+//! not cross the ambiguous-mutation boundary and exposes no ZFS invocation.
+
+use std::collections::BTreeMap;
+
+use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+use aos_sandbox::journal::RecordNamespace;
+use aos_sandbox_broker::{
+    BrokerAuthorizationFenceV1, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
+    BrokerEffectStatusV1,
+};
+use aos_sandbox_core::model::SandboxSpec;
+use aos_sandbox_core::{
+    BrokerAssignment, BrokerGrantTarget, BrokerVerb, CanonicalAssignmentManifestV1, NodeId,
+    ObjectDigest, ProtocolVersion, RawPairedClockSample,
+};
+use aos_sandbox_protocol::semantics::storage::StorageOperation;
+use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
+use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
+use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+use sha2::{Digest as _, Sha256};
+
+use crate::authorization::{StorageAuthorityV1, decode_assignment};
+use crate::catalog_preparation::{
+    RetainedStorageCatalogPreparationV1, StoragePreparationAuthorityRecordsV1,
+};
+use crate::helper::{
+    PreobservedZfsMutation, StorageMutationHelper, ZfsHelperError, ZfsHelperOutcome,
+    ZfsProcessBackend,
+};
+use crate::observation_protocol::{
+    WorkspaceCatalogObservationExpectationV1, WorkspaceCatalogObservationObjectKindV1,
+    WorkspaceCatalogObservationObjectV1, WorkspaceCatalogObservationRootV1,
+    WorkspaceCatalogObservationTargetV1,
+};
+#[cfg(test)]
+use crate::pin_observer::WorkspacePinHostCustody;
+use crate::pin_worker::{
+    WorkspacePinWorkerAuthorityV1, encode_request as encode_pin_worker_request,
+};
+#[cfg(test)]
+use crate::pin_worker_runtime::{BorrowedSystemdWorkspacePinEffectIo, SystemdWorkspacePinExecutor};
+use crate::pin_worker_runtime::{FreshWorkspacePinRepairObservationV1, WorkspacePinRuntimeIo};
+use crate::resolver::StorageCatalogResolverV1;
+use crate::resolver::inventory::ProtectedStorageInventoryV1;
+#[cfg(test)]
+use crate::resolver::protected_catalog::StorageResolverPolicyBindingV1;
+use crate::resolver::protected_catalog::{
+    ProtectedStorageResolverPolicyDirectoryV1, StorageResolverPolicyCatalogBindingV1,
+};
+use crate::state::{
+    CatalogPreparationConsumption, StorageResolverPolicyAdmissionOutcomeV1,
+    StorageWorkspaceProjection, WorkspacePinRepairPredecessorV1,
+};
+use crate::workspace_catalog::{
+    StorageWorkspaceCatalogActionV1, StorageWorkspaceCatalogActivePrefixV1,
+    StorageWorkspaceCatalogPlanV1, StorageWorkspaceCatalogRowPlanV1,
+    StorageWorkspaceCatalogRowPolicyV1, StorageWorkspacePublicationV1,
+    StorageWorkspaceRetirementV1,
+};
+use crate::workspace_pin::{
+    BeginWorkspacePinAttemptV1, WorkspacePinActionV1, WorkspacePinAttemptPhaseV1,
+    WorkspacePinAttemptV1, WorkspacePinHostScopeV1, WorkspacePinRecoveryDispositionV1,
+    WorkspaceRootPinProofV1,
+};
+use crate::workspace_repair::WorkspacePinRepairProbeV1;
+use crate::workspace_repair_admission::{
+    WorkspacePinRepairAdmissionProbeV1, WorkspacePinRepairAdmissionRequestV1,
+    bind_probe as bind_repair_admission_probe, classify_predecessor as classify_repair_predecessor,
+    encode_request as encode_repair_admission_request,
+};
+use crate::workspace_repair_observer::{
+    WorkspacePinRepairObserverRequestV1, WorkspacePinRepairObserverResultV1,
+    bind_probe as bind_repair_probe, encode_request as encode_repair_observer_request,
+    random_challenge as random_repair_challenge,
+};
+use crate::workspace_repair_worker::{
+    WorkspacePinRepairWorkerRequestV1, encode_request as encode_repair_worker_request,
+};
+use crate::{
+    BeginStorageTransaction, CatalogPlanV1, CommittedStorageResultV1, DurableStoragePhase,
+    ProtectedStorageCatalogResolverV1, ResolvedCatalogCommitmentV1, StorageAdmissionError,
+    StorageCatalogPreparationError, StorageCatalogPreparationOutcomeV1, StorageTransactionStore,
+    StorageWorkspaceCatalogError, ZfsHelperContract, ZfsTransaction, decode_resolved,
+};
+
+/// Reports fail-closed storage admission failure.
+#[derive(Debug, thiserror::Error)]
+pub enum StorageBrokerError {
+    /// Hostile request bytes or local catalog association failed.
+    #[error("storage request or catalog resolution was rejected")]
+    Request,
+    /// Protected signed plan, lease, or fence validation failed.
+    #[error("storage authority was rejected")]
+    Authority,
+    /// Signed catalog preparation resolution or replay failed closed.
+    #[error("storage catalog preparation failed: {0}")]
+    Preparation(#[from] StorageCatalogPreparationError),
+    /// Durable admission state was corrupt, conflicting, or unavailable.
+    #[error("storage durable admission failed: {0}")]
+    State(#[from] crate::StorageStateError),
+    /// Workspace publication inputs failed closed validation.
+    #[error("storage workspace catalog input was rejected: {0}")]
+    WorkspaceCatalog(#[from] StorageWorkspaceCatalogError),
+}
+
+/// Classifies a durable admission without implying that mutation is runnable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageAdmissionOutcome {
+    /// Exact authority and intent were durably prepared for future observation.
+    Prepared {
+        /// Deterministic identity of the non-executing mutation intent.
+        mutation_digest: ObjectDigest,
+    },
+    /// Recovery must only re-observe; it must never blindly reapply mutation.
+    ObservationRequired {
+        /// Durable crash phase requiring reconciliation.
+        phase: DurableStoragePhase,
+        /// Deterministic identity of the pending mutation.
+        mutation_digest: ObjectDigest,
+    },
+    /// A future observer previously committed an exact result.
+    Replay(crate::CommittedStorageResultV1),
+    /// The exact expired or strictly superseded intent was retired before mutation.
+    Aborted {
+        /// Deterministic identity of the retired mutation intent.
+        mutation_digest: ObjectDigest,
+    },
+}
+
+/// Carries the terminal physical plan derived inside the locked coordinator.
+///
+/// Construction is private to this module so a self-consistent observation
+/// request cannot stand in for authenticated catalog and transaction state.
+/// Roots define every protected scope, allowed objects exhaustively name the
+/// authenticated filesystems or volumes inside it, and targets add terminal
+/// workspace pin expectations without replacing that complete inventory.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct AuthenticatedWorkspaceCatalogPhysicalPlanV1 {
+    roots: Vec<WorkspaceCatalogObservationRootV1>,
+    allowed_objects: Vec<WorkspaceCatalogObservationObjectV1>,
+    targets: Vec<WorkspaceCatalogObservationTargetV1>,
+}
+
+impl AuthenticatedWorkspaceCatalogPhysicalPlanV1 {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        roots: Vec<WorkspaceCatalogObservationRootV1>,
+        allowed_objects: Vec<WorkspaceCatalogObservationObjectV1>,
+        targets: Vec<WorkspaceCatalogObservationTargetV1>,
+    ) -> Self {
+        Self {
+            roots,
+            allowed_objects,
+            targets,
+        }
+    }
+
+    pub(crate) fn roots(&self) -> &[WorkspaceCatalogObservationRootV1] {
+        &self.roots
+    }
+
+    pub(crate) fn allowed_objects(&self) -> &[WorkspaceCatalogObservationObjectV1] {
+        &self.allowed_objects
+    }
+
+    pub(crate) fn targets(&self) -> &[WorkspaceCatalogObservationTargetV1] {
+        &self.targets
+    }
+}
+
+/// Serializes protected storage authority and durable transaction admission.
+pub struct StorageAdmissionCoordinator {
+    authority: StorageAuthorityV1,
+    transactions: StorageTransactionStore,
+}
+
+struct AuthenticatedCatalogPreparation {
+    record: RetainedStorageCatalogPreparationV1,
+    preparation_fence: BrokerAuthorizationFenceV1,
+    sealed_record: Vec<u8>,
+}
+
+/// Proves that one exact persisted effect passed the final authority check.
+///
+/// Only [`StorageAdmissionCoordinator`] constructs this non-clone value. The
+/// coordinator consumes it synchronously rather than returning it to callers.
+pub(crate) struct FreshStorageEffectAuthority {
+    entry: crate::StorageRecoveryEntry,
+}
+
+/// Identifies why startup retired one authenticated Prepared operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PreparedStorageRetirementReasonV1 {
+    /// The current protected clock reached the effect's exclusive deadline.
+    Expired,
+    /// A distinct authenticated DesiredState head strictly superseded the effect.
+    Superseded,
+}
+
+/// Reports one Prepared operation retired without dispatch during startup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PreparedStorageRetirementV1 {
+    /// Exact retired operation identity.
+    pub(crate) operation_id: [u8; 16],
+    /// Deterministic commitment of the retired mutation.
+    pub(crate) mutation_digest: ObjectDigest,
+    /// Authenticated reason that made dispatch unnecessary.
+    pub(crate) reason: PreparedStorageRetirementReasonV1,
+}
+
+enum PreparedStorageEffectAuthorizationV1 {
+    Fresh(Box<AuthenticatedPreparedStorageEffectV1>),
+    Retired,
+}
+
+enum PreparedStorageHeadV1 {
+    Current(Box<AuthenticatedPreparedStorageEffectV1>),
+    Superseded,
+}
+
+struct AuthenticatedPreparedStorageEffectV1 {
+    operation_fence: BrokerAuthorizationFenceV1,
+    effect: BrokerEffectIntentV1,
+}
+
+/// Proves a fresh authority check covered one exact root-pin attempt.
+///
+/// The attempt ID is the consumed grant identity persisted atomically with the
+/// attempt record. The digest binds its action, parent result, fence,
+/// assignment, dataset, proof precondition, and retained identity range.
+pub(crate) struct FreshWorkspacePinAuthority {
+    attempt_id: [u8; 16],
+    attempt_digest: ObjectDigest,
+    sealed_receipt: Vec<u8>,
+}
+
+impl FreshWorkspacePinAuthority {
+    pub(crate) const fn attempt_id(&self) -> [u8; 16] {
+        self.attempt_id
+    }
+
+    pub(crate) const fn attempt_digest(&self) -> ObjectDigest {
+        self.attempt_digest
+    }
+
+    pub(crate) fn into_sealed_receipt(self) -> Vec<u8> {
+        self.sealed_receipt
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(attempt_id: [u8; 16], attempt_digest: ObjectDigest) -> Self {
+        Self {
+            attempt_id,
+            attempt_digest,
+            sealed_receipt: vec![0xa5],
+        }
+    }
+}
+
+pub(crate) enum AuthorizedWorkspacePinAttemptV1 {
+    Dispatch(Box<FreshWorkspacePinDispatchV1>),
+    ObserveOnly,
+    Satisfied,
+}
+
+/// Carries one non-clone, freshly checked pin attempt into immediate dispatch.
+pub(crate) struct FreshWorkspacePinDispatchV1 {
+    attempt: WorkspacePinAttemptV1,
+    catalog: ResolvedCatalogCommitmentV1,
+    worker_authority: WorkspacePinWorkerAuthorityV1,
+}
+
+/// Carries one authenticated historical attempt into the read-only helper.
+pub(crate) struct WorkspacePinObservationDispatchV1 {
+    attempt: WorkspacePinAttemptV1,
+    catalog: ResolvedCatalogCommitmentV1,
+    observer_authority: WorkspacePinWorkerAuthorityV1,
+}
+
+/// Carries one fresh observation challenge for the latest retained repair.
+pub(crate) struct WorkspacePinRepairObservationDispatchV1 {
+    attempt: WorkspacePinAttemptV1,
+    request: WorkspacePinRepairObserverRequestV1,
+    probe: WorkspacePinRepairProbeV1,
+}
+
+/// Carries one fresh, non-authorizing observation challenge before admission.
+pub(crate) struct WorkspacePinRepairAdmissionDispatchV1 {
+    predecessor: WorkspacePinRepairPredecessorV1,
+    request: WorkspacePinRepairAdmissionRequestV1,
+    probe: WorkspacePinRepairAdmissionProbeV1,
+}
+
+/// Classifies a freshly admitted repair without permitting replay dispatch.
+pub(crate) enum AuthorizedWorkspacePinRepairAttemptV1 {
+    /// A newly committed attempt may be handed to the fixed repair worker once.
+    Dispatch(Box<FreshWorkspacePinRepairDispatchV1>),
+    /// The exact repair operation was already durable and is observation-only.
+    ObserveOnly,
+}
+
+/// Carries one newly committed repair attempt into immediate worker encoding.
+pub(crate) struct FreshWorkspacePinRepairDispatchV1 {
+    attempt: WorkspacePinAttemptV1,
+    request: WorkspacePinRepairWorkerRequestV1,
+}
+
+impl FreshWorkspacePinRepairDispatchV1 {
+    pub(crate) const fn attempt(&self) -> &WorkspacePinAttemptV1 {
+        &self.attempt
+    }
+
+    pub(crate) fn worker_request_bytes(&self) -> Result<Vec<u8>, ZfsHelperError> {
+        encode_repair_worker_request(&self.request).map_err(ZfsHelperError::Backend)
+    }
+}
+
+impl WorkspacePinRepairAdmissionDispatchV1 {
+    pub(crate) const fn probe(&self) -> &WorkspacePinRepairAdmissionProbeV1 {
+        &self.probe
+    }
+
+    pub(crate) fn request_bytes(&self) -> Result<Vec<u8>, ZfsHelperError> {
+        encode_repair_admission_request(&self.request).map_err(ZfsHelperError::Backend)
+    }
+}
+
+impl WorkspacePinRepairObservationDispatchV1 {
+    pub(crate) const fn attempt(&self) -> &WorkspacePinAttemptV1 {
+        &self.attempt
+    }
+
+    pub(crate) const fn probe(&self) -> &WorkspacePinRepairProbeV1 {
+        &self.probe
+    }
+
+    pub(crate) fn request_bytes(&self) -> Result<Vec<u8>, ZfsHelperError> {
+        encode_repair_observer_request(&self.request).map_err(ZfsHelperError::Backend)
+    }
+}
+
+impl WorkspacePinObservationDispatchV1 {
+    pub(crate) fn attempt(&self) -> &WorkspacePinAttemptV1 {
+        &self.attempt
+    }
+
+    pub(crate) fn request_bytes(
+        &self,
+        contract: &crate::ZfsHelperContract,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        encode_pin_worker_request(contract, &self.catalog, &self.observer_authority)
+            .map_err(ZfsHelperError::Backend)
+    }
+}
+
+impl FreshWorkspacePinDispatchV1 {
+    pub(crate) fn attempt(&self) -> &WorkspacePinAttemptV1 {
+        &self.attempt
+    }
+
+    pub(crate) fn worker_request_bytes(
+        &self,
+        contract: &crate::ZfsHelperContract,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        encode_pin_worker_request(contract, &self.catalog, &self.worker_authority)
+            .map_err(ZfsHelperError::Backend)
+    }
+}
+
+pub(crate) enum AuthorizedWorkspaceRemoveAttemptV1 {
+    Dispatch(Box<FreshWorkspaceRemoveDispatchV1>),
+    ObserveOnly,
+    Satisfied,
+    Aborted { mutation_digest: ObjectDigest },
+}
+
+/// Classifies whether synchronous pin coordination reached durable satisfaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspacePinExecutionOutcomeV1 {
+    /// The exact worker result was durably accepted.
+    Satisfied,
+    /// A prior ambiguous attempt forbids another dispatch.
+    ObservationRequired,
+    /// The parent Prepared mutation expired or was strictly superseded before any effect.
+    Aborted { mutation_digest: ObjectDigest },
+}
+
+pub(crate) enum WorkspaceRemovePinRequirementV1 {
+    NotWorkspace,
+    Required(WorkspaceRootPinProofV1),
+    Missing,
+}
+
+/// Couples the consumed pin grant to the pre-observed ZFS destruction.
+pub(crate) struct FreshWorkspaceRemoveDispatchV1 {
+    attempt: WorkspacePinAttemptV1,
+    prepared: PreobservedZfsMutation,
+    catalog: ResolvedCatalogCommitmentV1,
+    worker_authority: WorkspacePinWorkerAuthorityV1,
+}
+
+impl FreshWorkspaceRemoveDispatchV1 {
+    pub(crate) fn attempt(&self) -> &WorkspacePinAttemptV1 {
+        &self.attempt
+    }
+
+    pub(crate) fn into_parts(self) -> (WorkspacePinAttemptV1, PreobservedZfsMutation) {
+        (self.attempt, self.prepared)
+    }
+
+    pub(crate) fn worker_request_bytes(
+        &self,
+        contract: &crate::ZfsHelperContract,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        encode_pin_worker_request(contract, &self.catalog, &self.worker_authority)
+            .map_err(ZfsHelperError::Backend)
+    }
+}
+
+impl FreshStorageEffectAuthority {
+    pub(crate) const fn entry(&self) -> crate::StorageRecoveryEntry {
+        self.entry
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn new_for_test(entry: crate::StorageRecoveryEntry) -> Self {
+        Self { entry }
+    }
+}
+
+impl StorageAdmissionCoordinator {
+    /// Constructs a coordinator from complete protected authority and state.
+    #[must_use]
+    pub const fn new(authority: StorageAuthorityV1, transactions: StorageTransactionStore) -> Self {
+        Self {
+            authority,
+            transactions,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_after_next_journal_commit_for_test(&mut self) {
+        self.transactions.fail_after_next_journal_commit_for_test();
+    }
+
+    /// Reports whether the transaction journal must be reopened before reuse.
+    pub(crate) const fn transaction_journal_requires_reopen(&self) -> bool {
+        self.transactions.requires_reopen()
+    }
+
+    pub(crate) fn lifecycle_inventory_journal(
+        &self,
+    ) -> Result<crate::state::VerifiedStorageResolverJournalV1, StorageBrokerError> {
+        self.transactions
+            .verified_resolver_journal()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn atomic_dataset_snapshot_inventory(
+        &self,
+    ) -> Result<Vec<crate::state::AtomicDatasetSnapshotInventoryV1>, StorageBrokerError> {
+        self.transactions
+            .atomic_dataset_snapshot_inventory()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn prepare_atomic_dataset_snapshot(
+        &mut self,
+        program: crate::DormantAtomicDatasetSnapshotV1,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions
+            .prepare_atomic_dataset_snapshot(program)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn mark_atomic_dataset_snapshot_ambiguous(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+    ) -> Result<crate::DormantAtomicDatasetSnapshotV1, StorageBrokerError> {
+        self.transactions
+            .mark_atomic_dataset_snapshot_ambiguous(operation, program)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn atomic_dataset_snapshot_recovery(
+        &self,
+        operation: [u8; 16],
+    ) -> Result<
+        (
+            crate::state::AtomicDatasetSnapshotPhaseV1,
+            crate::DormantAtomicDatasetSnapshotV1,
+            Option<ObjectDigest>,
+        ),
+        StorageBrokerError,
+    > {
+        self.transactions
+            .atomic_dataset_snapshot_recovery(operation)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn commit_atomic_dataset_snapshot(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+        observation: ObjectDigest,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions
+            .commit_atomic_dataset_snapshot(operation, program, observation)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn admit_trusted_resolver_policy(
+        &mut self,
+        binding: StorageResolverPolicyCatalogBindingV1,
+    ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageBrokerError> {
+        self.transactions
+            .admit_resolver_policy_catalog(binding)
+            .map_err(Into::into)
+    }
+
+    /// Resolves and retains one production Prepare from freshly loaded policy and state.
+    ///
+    /// Exact replay authenticates current request authority and the retained v1
+    /// policy binding but never reloads policy or reruns resolution. A fresh
+    /// request first admits the complete trusted policy publication, including
+    /// an empty revoke-all publication, then selects only its exact assignment.
+    /// The final protected clock sample occurs after all nonmutating sealing and
+    /// immediately before the atomic preparation retain.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_catalog_from_protected_policy<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        resolver_policies: &ProtectedStorageResolverPolicyDirectoryV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.transactions.ensure_authority_readable()?;
+        let initial_clock = trusted_clock().map_err(|_| StorageBrokerError::Authority)?;
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            initial_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        let operation_id = semantics.operation_id();
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let request_id = *semantics.header().request_id();
+        let retained = self
+            .transactions
+            .catalog_preparation_record(&operation_id)?
+            .map(<[u8]>::to_vec);
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_preparation(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                peer,
+                policy,
+                &initial_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| StorageBrokerError::Authority)?;
+
+        if let Some(sealed_record) = retained {
+            let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
+            retained.record.replay_matches(
+                &semantics,
+                admission.plan_digest(),
+                admission.lease_digest(),
+                initial_clock.host_boot_id(),
+                initial_clock.boottime_nanoseconds(),
+            )?;
+            if &retained.preparation_fence != admission.fence()
+                || admission.transport_request_digest()
+                    != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            {
+                return Err(StorageCatalogPreparationError::Equivocation.into());
+            }
+            if retained.record.consumption().is_some() {
+                self.authenticate_consumed_preparation(&retained)?;
+            }
+            self.authority
+                .check_preparation_before_effect(&admission, trusted_clock)
+                .map_err(|_| StorageBrokerError::Authority)?;
+            return retained.record.outcome().map_err(Into::into);
+        }
+
+        let loaded_policy = resolver_policies
+            .load()
+            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        let policy_catalog_binding = loaded_policy
+            .binding()
+            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        self.transactions
+            .admit_resolver_policy_catalog(policy_catalog_binding)?;
+        let selected_policy = loaded_policy
+            .select(admission.resolution().assignment())
+            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        let policy_binding = selected_policy.binding();
+        let policy = selected_policy.into_policy();
+
+        let verified_journal = self.transactions.verified_resolver_journal()?;
+        let inventory =
+            ProtectedStorageInventoryV1::from_verified_journal(verified_journal, &policy)
+                .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        if semantics.inventory_binding() != inventory.binding() {
+            return Err(StorageCatalogPreparationError::InventoryMismatch.into());
+        }
+        let current_head = self.transactions.catalog_head_binding()?;
+        if semantics.expected_catalog_head() != current_head
+            || inventory.catalog_head() != current_head
+        {
+            return Err(StorageCatalogPreparationError::StaleCatalogHead.into());
+        }
+        let resolver = StorageCatalogResolverV1::new(policy, inventory)
+            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        let catalog = resolver.resolve(admission.resolution(), current_head)?;
+        let sealed = self
+            .authority
+            .seal_preparation(&admission)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let prepared = RetainedStorageCatalogPreparationV1::prepare_with_policy(
+            &semantics,
+            catalog,
+            request_id,
+            initial_clock.host_boot_id(),
+            admission.effect_deadline_boottime_nanoseconds(),
+            admission.plan_digest(),
+            admission.lease_digest(),
+            StoragePreparationAuthorityRecordsV1 {
+                sealed_fence: &sealed.current_fence,
+                sealed_effect: &sealed.effect,
+                sealed_operation_fence: &sealed.operation_fence,
+            },
+            policy_binding,
+        )?;
+        let receipt = self
+            .authority
+            .seal_catalog_preparation_receipt(&operation_id, &prepared.receipt_payload)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let record = prepared.record.with_receipt(receipt)?;
+        let sealed_record = self
+            .authority
+            .seal_catalog_preparation_record(&operation_id, &record.encode_payload()?)
+            .map_err(|_| StorageBrokerError::Authority)?;
+
+        self.authority
+            .check_preparation_before_effect(&admission, trusted_clock)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        self.transactions.retain_catalog_preparation(
+            operation_id,
+            sandbox_id,
+            request_id,
+            current_head,
+            sealed.current_fence,
+            sealed.effect,
+            sealed.operation_fence,
+            sealed_record,
+            policy_binding,
+        )?;
+        record.outcome().map_err(Into::into)
+    }
+
+    /// Resolves and durably retains one independently authorized catalog preparation.
+    ///
+    /// The returned receipt is authenticated replay evidence only. It cannot
+    /// authorize Apply, and successful preparation performs no physical or
+    /// catalog-head mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] for hostile request bytes, stale trusted
+    /// inventory or catalog head, rejected signed authority, unsafe protected
+    /// resolution, operation equivocation, corrupt replay links, or failure to
+    /// retain the preparation and its authority records atomically.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
+    pub(crate) fn prepare_catalog<R: ProtectedStorageCatalogResolverV1>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        current_inventory: crate::CatalogBindingV1,
+        resolver: &R,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError> {
+        self.transactions.ensure_authority_readable()?;
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        let operation_id = semantics.operation_id();
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let request_id = *semantics.header().request_id();
+        let retained = self
+            .transactions
+            .catalog_preparation_record(&operation_id)?
+            .map(<[u8]>::to_vec);
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_preparation(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                peer,
+                policy,
+                current_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| StorageBrokerError::Authority)?;
+
+        if let Some(sealed_record) = retained {
+            let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
+            retained.record.replay_matches(
+                &semantics,
+                admission.plan_digest(),
+                admission.lease_digest(),
+                current_clock.host_boot_id(),
+                current_clock.boottime_nanoseconds(),
+            )?;
+            if &retained.preparation_fence != admission.fence()
+                || admission.transport_request_digest()
+                    != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            {
+                return Err(StorageCatalogPreparationError::Equivocation.into());
+            }
+            if retained.record.consumption().is_some() {
+                self.authenticate_consumed_preparation(&retained)?;
+            }
+            return retained.record.outcome().map_err(Into::into);
+        }
+
+        if semantics.inventory_binding() != current_inventory {
+            return Err(StorageCatalogPreparationError::InventoryMismatch.into());
+        }
+        let current_head = self.transactions.catalog_head_binding()?;
+        if semantics.expected_catalog_head() != current_head {
+            return Err(StorageCatalogPreparationError::StaleCatalogHead.into());
+        }
+        let catalog = resolver.resolve(admission.resolution(), current_head)?;
+        let policy_binding = StorageResolverPolicyBindingV1::from_authenticated_parts(
+            catalog.generation(),
+            catalog.digest(),
+            admission.resolution().assignment().digest(),
+        )
+        .map_err(|_| StorageCatalogPreparationError::ResolutionMismatch)?;
+        let sealed = self
+            .authority
+            .seal_preparation(&admission)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let prepared = RetainedStorageCatalogPreparationV1::prepare_with_policy(
+            &semantics,
+            catalog,
+            request_id,
+            current_clock.host_boot_id(),
+            admission.effect_deadline_boottime_nanoseconds(),
+            admission.plan_digest(),
+            admission.lease_digest(),
+            StoragePreparationAuthorityRecordsV1 {
+                sealed_fence: &sealed.current_fence,
+                sealed_effect: &sealed.effect,
+                sealed_operation_fence: &sealed.operation_fence,
+            },
+            policy_binding,
+        )?;
+        let receipt = self
+            .authority
+            .seal_catalog_preparation_receipt(&operation_id, &prepared.receipt_payload)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let record = prepared.record.with_receipt(receipt)?;
+        let sealed_record = self
+            .authority
+            .seal_catalog_preparation_record(&operation_id, &record.encode_payload()?)
+            .map_err(|_| StorageBrokerError::Authority)?;
+
+        // The store rechecks the head while committing all four records. No
+        // resolver output becomes durable if that compare-and-swap fails.
+        self.transactions
+            .admit_resolver_policy_catalog(policy_binding.catalog_binding())?;
+        self.transactions.retain_catalog_preparation(
+            operation_id,
+            sandbox_id,
+            request_id,
+            current_head,
+            sealed.current_fence,
+            sealed.effect,
+            sealed.operation_fence,
+            sealed_record,
+            policy_binding,
+        )?;
+        record.outcome().map_err(Into::into)
+    }
+
+    /// Authenticates every retained preparation and its durable cross-links.
+    ///
+    /// This startup check accepts both unconsumed preparations and preparations
+    /// atomically consumed by an admitted Apply in any durable mutation phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] when any record is malformed, relocated,
+    /// tampered, missing an authority link, or inconsistent with its admitted
+    /// Apply operation.
+    pub fn authenticate_catalog_preparations(&self) -> Result<(), StorageBrokerError> {
+        for (operation_id, sealed_record) in self.transactions.catalog_preparation_records()? {
+            let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
+            if retained.record.consumption().is_some() {
+                self.authenticate_consumed_preparation(&retained)?;
+            } else if self.transactions.phase(operation_id)?.is_some() {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn recovery_entries(
+        &self,
+    ) -> Result<Vec<crate::StorageRecoveryEntry>, ZfsHelperError> {
+        Ok(self.transactions.recovery_entries()?.collect())
+    }
+
+    /// Retires authenticated inactive Prepared operations before startup observation.
+    ///
+    /// Entries are visited in stable operation-ID order. A fresh exact-current
+    /// authority remains Prepared. Clock non-continuity also retains an
+    /// exact-current entry for observation-only recovery. A strictly dominating
+    /// DesiredState head or authenticated expiry atomically publishes Aborted
+    /// and releases only that operation's physical-catalog reservation.
+    /// Superseded-only entries do not sample the clock; exact-current entries
+    /// share one lazily acquired sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ZfsHelperError`] when any Prepared operation, its effect, its
+    /// current DesiredState head, protected clock acquisition, or the atomic
+    /// journal transition fails closed. Authenticated clock non-continuity is
+    /// not an error: the entry remains Prepared. An indeterminate commit poisons
+    /// the transaction store until it is reopened.
+    pub(crate) fn retire_inactive_prepared_at_startup<F>(
+        &mut self,
+        trusted_clock: &mut F,
+    ) -> Result<Vec<PreparedStorageRetirementV1>, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let entries = self.recovery_entries()?;
+        let mut retired = Vec::new();
+        let mut cached_clock = None;
+
+        for entry in entries
+            .into_iter()
+            .filter(|entry| entry.phase() == DurableStoragePhase::Prepared)
+        {
+            let catalog = self.transactions.recover_catalog(entry)?;
+            let retirement_reason = match self.authenticate_prepared_head(entry)? {
+                PreparedStorageHeadV1::Superseded => PreparedStorageRetirementReasonV1::Superseded,
+                PreparedStorageHeadV1::Current(context) => {
+                    let current_clock = match cached_clock {
+                        Some(sample) => sample,
+                        None => {
+                            let sample = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
+                            cached_clock = Some(sample);
+                            sample
+                        }
+                    };
+                    match self
+                        .authority
+                        .classify_effect_clock(&context.effect, &current_clock)
+                    {
+                        Ok(BrokerEffectClockDispositionV1::Fresh) | Err(_) => continue,
+                        Ok(BrokerEffectClockDispositionV1::Expired) => {
+                            PreparedStorageRetirementReasonV1::Expired
+                        }
+                    }
+                }
+            };
+
+            self.transactions.abort_prepared_exact(entry, &catalog)?;
+            retired.push(PreparedStorageRetirementV1 {
+                operation_id: entry.operation_id(),
+                mutation_digest: entry.mutation_digest(),
+                reason: retirement_reason,
+            });
+        }
+
+        Ok(retired)
+    }
+
+    pub(crate) fn authenticate_workspace_pin_attempts(&self) -> Result<(), ZfsHelperError> {
+        let attempts = self.transactions.workspace_pin_attempts()?;
+
+        // Repair grants are retained history, not current dispatch authority.
+        // Authenticate every such history before reading ordinary effect state.
+        for attempt in attempts.iter().filter(|attempt| {
+            attempt.action() == WorkspacePinActionV1::Ensure
+                && attempt.effect_operation_id() != attempt.creation_operation_id()
+        }) {
+            let effect = self.authenticate_workspace_pin_repair(attempt)?;
+            self.authority
+                .verify_pin_attempt_receipt(attempt, &effect, attempt.effect_operation_id())
+                .map_err(|_| ZfsHelperError::Authority)?;
+        }
+
+        for attempt in attempts.iter().filter(|attempt| {
+            attempt.action() != WorkspacePinActionV1::Ensure
+                || attempt.effect_operation_id() == attempt.creation_operation_id()
+        }) {
+            let entry = self
+                .transactions
+                .current_recovery_entry(attempt.effect_operation_id())?;
+            let (_, effect) = self.persisted_effect_context(entry)?;
+            self.authority
+                .verify_pin_attempt_receipt(attempt, &effect, attempt.effect_operation_id())
+                .map_err(|_| ZfsHelperError::Authority)?;
+        }
+        Ok(())
+    }
+
+    fn authenticate_workspace_pin_repair(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+    ) -> Result<BrokerEffectIntentV1, ZfsHelperError> {
+        let operation_id = attempt.effect_operation_id();
+        let intent = self
+            .transactions
+            .workspace_pin_repair_intent(operation_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let sealed_operation_fence = self
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &operation_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let live_effect = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &intent.request_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let (_, admitted_effect) = self
+            .authority
+            .authenticate_workspace_pin_repair_intent(&intent, sealed_operation_fence, live_effect)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let opened_live_effect = self
+            .authority
+            .open_admission_intent(&intent.request_id(), live_effect)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        match (attempt.phase(), opened_live_effect.status()) {
+            (WorkspacePinAttemptPhaseV1::Ambiguous, BrokerEffectStatusV1::Pending) => {}
+            (WorkspacePinAttemptPhaseV1::Satisfied, BrokerEffectStatusV1::Complete) => {
+                let expected_completed_effect = self
+                    .authority
+                    .seal_workspace_pin_repair_completion(&admitted_effect, attempt)
+                    .map_err(|_| ZfsHelperError::Authority)?;
+                if expected_completed_effect.as_slice() != live_effect {
+                    return Err(ZfsHelperError::Authority);
+                }
+            }
+            _ => return Err(ZfsHelperError::Authority),
+        }
+        Ok(admitted_effect)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_workspace_pin_repair_admission_observation(
+        &self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        contract: &ZfsHelperContract,
+        current_host_scope: WorkspacePinHostScopeV1,
+    ) -> Result<WorkspacePinRepairAdmissionDispatchV1, ZfsHelperError> {
+        let semantics = CanonicalStorageRepairSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| ZfsHelperError::Authority)?;
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_workspace_pin_repair(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                current_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        if self.transactions.phase(semantics.operation_id())?.is_some()
+            || self
+                .transactions
+                .workspace_pin_repair_intent(semantics.operation_id())?
+                .is_some()
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+
+        let workspace_handle = *semantics.storage_handle().as_bytes();
+        let latest_attempt = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .filter(|attempt| attempt.workspace_handle() == workspace_handle)
+            .max_by_key(WorkspacePinAttemptV1::attempt_ordinal);
+        let creation = self
+            .transactions
+            .workspace_creation_for_pin_repair(workspace_handle)?;
+        if latest_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.creation_operation_id() != creation.operation_id())
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        let creation_entry = self.transactions.committed_recovery_entry(creation)?;
+        let (creation_fence, _) = self.persisted_effect_context(creation_entry)?;
+        if !workspace_repair_follows_creation(&creation_fence, &admission.fence) {
+            return Err(ZfsHelperError::Authority);
+        }
+        let creation_intent = self
+            .transactions
+            .workspace_publication_intent(creation.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        if creation_intent.assignment_digest() != creation_fence.assignment().digest() {
+            return Err(ZfsHelperError::Authority);
+        }
+        let catalog = self.transactions.recover_catalog(creation_entry)?;
+        let verified_journal = self.transactions.verified_resolver_journal()?;
+        let verified_creation = verified_journal
+            .operation(&creation.operation_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let physical_catalog_head = verified_journal.physical().binding();
+        if verified_creation.result() != creation || verified_creation.catalog() != &catalog {
+            return Err(ZfsHelperError::Authority);
+        }
+        let publication_intent_record = self
+            .transactions
+            .workspace_publication_intent_record(creation.operation_id())?;
+        let (
+            predecessor,
+            predecessor_kind,
+            observation_attempt_id,
+            latest_attempt_record,
+            predecessor_repair_intent_record,
+        ) = match latest_attempt {
+            Some(latest_attempt) => {
+                let predecessor_repair = self.transactions.workspace_pin_repair_intent(
+                    latest_attempt.effect_operation_id(),
+                )?;
+                let predecessor_kind = classify_repair_predecessor(
+                    &latest_attempt,
+                    predecessor_repair.as_ref(),
+                    true,
+                )?;
+                let attempt_record = self
+                    .transactions
+                    .workspace_pin_attempt_record(&latest_attempt)?;
+                let repair_record = match predecessor_repair.as_ref() {
+                    Some(intent) => self.transactions.workspace_pin_repair_intent_record(intent)?,
+                    None => Vec::new(),
+                };
+                (
+                    WorkspacePinRepairPredecessorV1::ExistingAttempt(Box::new(
+                        latest_attempt.clone(),
+                    )),
+                    predecessor_kind,
+                    latest_attempt.attempt_id(),
+                    attempt_record,
+                    repair_record,
+                )
+            }
+            None => (
+                WorkspacePinRepairPredecessorV1::MissingInitial {
+                    creation: Box::new(creation),
+                    creation_record_digest: ObjectDigest::from_bytes(
+                        Sha256::digest(self.transactions.workspace_creation_record(creation)?).into(),
+                    ),
+                    physical_catalog_head,
+                },
+                crate::workspace_repair_admission::WorkspacePinRepairPredecessorKindV1::MissingInitial,
+                self.transactions.missing_initial_repair_attempt_id(
+                    creation,
+                    semantics.operation_id(),
+                )?,
+                Vec::new(),
+                Vec::new(),
+            ),
+        };
+        let request = WorkspacePinRepairAdmissionRequestV1::new(
+            contract.executable().to_path_buf(),
+            random_repair_challenge()?,
+            *semantics.header().request_id(),
+            semantics.operation_id(),
+            admission.effect.transport_request_digest(),
+            admission.effect.request_digest(),
+            admission.fence.assignment().digest(),
+            workspace_handle,
+            creation.operation_id(),
+            creation.catalog(),
+            creation.result_digest(),
+            observation_attempt_id,
+            creation_intent.assignment_digest(),
+            creation
+                .object_guid()
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
+            creation_intent.portable_metadata().root_policy(),
+            physical_catalog_head,
+            predecessor_kind,
+            catalog,
+            latest_attempt_record,
+            publication_intent_record,
+            predecessor_repair_intent_record,
+        )?;
+        let probe = bind_repair_admission_probe(
+            &request,
+            match &predecessor {
+                WorkspacePinRepairPredecessorV1::ExistingAttempt(attempt) => Some(attempt),
+                WorkspacePinRepairPredecessorV1::MissingInitial { .. } => None,
+            },
+            match &predecessor {
+                WorkspacePinRepairPredecessorV1::ExistingAttempt(attempt) => self
+                    .transactions
+                    .workspace_pin_repair_intent(attempt.effect_operation_id())?,
+                WorkspacePinRepairPredecessorV1::MissingInitial { .. } => None,
+            }
+            .as_ref(),
+            current_host_scope,
+        )?;
+
+        Ok(WorkspacePinRepairAdmissionDispatchV1 {
+            predecessor,
+            request,
+            probe,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn workspace_pin_repair_replay(
+        &self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<bool, ZfsHelperError> {
+        let semantics = CanonicalStorageRepairSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| ZfsHelperError::Authority)?;
+        let Some(intent) = self
+            .transactions
+            .workspace_pin_repair_intent(semantics.operation_id())?
+        else {
+            return Ok(false);
+        };
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let admission = self
+            .authority
+            .admit_workspace_pin_repair(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                current_clock,
+                Some(prior_fence),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let attempt = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .find(|attempt| attempt.attempt_id() == intent.repair_attempt_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        if intent.request_id() != *semantics.header().request_id()
+            || intent.request_digest()
+                != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            || intent.semantic_commitment() != semantics.argument_commitment().digest()
+            || intent.repair_assignment_digest() != admission.fence.assignment().digest()
+            || intent.workspace_handle() != *semantics.storage_handle().as_bytes()
+            || attempt.effect_operation_id() != intent.repair_operation_id()
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.authenticate_workspace_pin_repair(&attempt)?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_workspace_pin_repair<F>(
+        &mut self,
+        dispatch: WorkspacePinRepairAdmissionDispatchV1,
+        fresh_observation: FreshWorkspacePinRepairObservationV1,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        contract: &ZfsHelperContract,
+        trusted_clock: &mut F,
+    ) -> Result<AuthorizedWorkspacePinRepairAttemptV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        if !fresh_observation.matches_probe(&dispatch.probe) {
+            return Err(ZfsHelperError::Authority);
+        }
+        let workspace_handle = dispatch.probe.workspace_handle();
+        let current_creation = self
+            .transactions
+            .workspace_creation_for_pin_repair(workspace_handle)?;
+        let current_publication = self
+            .transactions
+            .workspace_publication_intent(current_creation.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let verified_journal = self.transactions.verified_resolver_journal()?;
+        let verified_creation = verified_journal
+            .operation(&current_creation.operation_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let physical_catalog_head = verified_journal.physical().binding();
+        if !dispatch.request.matches_creation(
+            current_creation,
+            current_publication.assignment_digest(),
+            current_creation
+                .object_guid()
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
+            current_publication.portable_metadata().root_policy(),
+            physical_catalog_head,
+        ) || dispatch.probe.physical_catalog_head() != physical_catalog_head
+            || verified_creation.result() != current_creation
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        let (current_predecessor, current_attempt_record, current_repair_record) = match &dispatch
+            .predecessor
+        {
+            WorkspacePinRepairPredecessorV1::MissingInitial {
+                creation,
+                creation_record_digest,
+                physical_catalog_head: expected_head,
+            } => {
+                let creation_record = self.transactions.workspace_creation_record(**creation)?;
+                if current_creation != **creation
+                    || ObjectDigest::from_bytes(Sha256::digest(creation_record).into())
+                        != *creation_record_digest
+                    || physical_catalog_head != *expected_head
+                    || self
+                        .transactions
+                        .workspace_pin_attempts()?
+                        .iter()
+                        .any(|attempt| {
+                            attempt.workspace_handle() == workspace_handle
+                                || attempt.creation_operation_id() == creation.operation_id()
+                        })
+                {
+                    return Err(ZfsHelperError::Authority);
+                }
+                (dispatch.predecessor.clone(), Vec::new(), Vec::new())
+            }
+            WorkspacePinRepairPredecessorV1::ExistingAttempt(expected_latest) => {
+                let current_latest = self
+                    .transactions
+                    .workspace_pin_attempts()?
+                    .into_iter()
+                    .filter(|attempt| attempt.workspace_handle() == workspace_handle)
+                    .max_by_key(WorkspacePinAttemptV1::attempt_ordinal)
+                    .ok_or(ZfsHelperError::Authority)?;
+                if &current_latest != expected_latest.as_ref() {
+                    return Err(ZfsHelperError::Authority);
+                }
+                let predecessor_repair = self
+                    .transactions
+                    .workspace_pin_repair_intent(current_latest.effect_operation_id())?;
+                classify_repair_predecessor(&current_latest, predecessor_repair.as_ref(), true)?;
+                let attempt_record = self
+                    .transactions
+                    .workspace_pin_attempt_record(&current_latest)?;
+                let repair_record = match predecessor_repair.as_ref() {
+                    Some(intent) => self
+                        .transactions
+                        .workspace_pin_repair_intent_record(intent)?,
+                    None => Vec::new(),
+                };
+                (
+                    WorkspacePinRepairPredecessorV1::ExistingAttempt(Box::new(current_latest)),
+                    attempt_record,
+                    repair_record,
+                )
+            }
+        };
+        let current_publication_record = self
+            .transactions
+            .workspace_publication_intent_record(current_creation.operation_id())?;
+        if !dispatch.request.matches_current_records(
+            &current_attempt_record,
+            &current_publication_record,
+            &current_repair_record,
+        ) {
+            return Err(ZfsHelperError::Authority);
+        }
+
+        let current_clock = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
+        let semantics = CanonicalStorageRepairSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| ZfsHelperError::Authority)?;
+        let sandbox_id = *semantics.fence().sandbox_id();
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_workspace_pin_repair(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                &current_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        if !dispatch.request.matches_semantics(
+            *semantics.header().request_id(),
+            semantics.operation_id(),
+            admission.effect.transport_request_digest(),
+            admission.effect.request_digest(),
+            admission.fence.assignment().digest(),
+            *semantics.storage_handle().as_bytes(),
+        ) {
+            return Err(ZfsHelperError::Authority);
+        }
+        let creation_entry = self
+            .transactions
+            .committed_recovery_entry(current_creation)?;
+        let (creation_fence, _) = self.persisted_effect_context(creation_entry)?;
+        if !workspace_repair_follows_creation(&creation_fence, &admission.fence) {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.authority
+            .check_before_effect(&admission.effect, trusted_clock)
+            .map_err(|_| ZfsHelperError::Authority)?;
+
+        let sealed = self
+            .authority
+            .seal(
+                &sandbox_id,
+                semantics.header().request_id(),
+                &semantics.operation_id(),
+                &admission,
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let operation_fence_digest =
+            ObjectDigest::from_bytes(Sha256::digest(&sealed.operation_fence).into());
+        let attempt = match &current_predecessor {
+            WorkspacePinRepairPredecessorV1::MissingInitial { creation, .. } => {
+                let creation = **creation;
+
+                self.transactions
+                    .plan_missing_initial_workspace_pin_repair(
+                        creation,
+                        semantics.operation_id(),
+                        operation_fence_digest,
+                        admission.fence.assignment().digest(),
+                        dispatch.probe.current_host_scope(),
+                        *admission.effect.clock_provenance(),
+                        admission.effect.effect_deadline_boottime_nanoseconds(),
+                    )?
+            }
+            WorkspacePinRepairPredecessorV1::ExistingAttempt(latest) => {
+                self.transactions.plan_workspace_pin_repair(
+                    latest,
+                    semantics.operation_id(),
+                    operation_fence_digest,
+                    admission.fence.assignment().digest(),
+                    dispatch.probe.current_host_scope(),
+                    *admission.effect.clock_provenance(),
+                    admission.effect.effect_deadline_boottime_nanoseconds(),
+                )?
+            }
+        };
+        let sealed_receipt = self
+            .authority
+            .seal_pin_attempt_receipt(
+                &attempt,
+                &admission.effect,
+                &admission.fence,
+                semantics.operation_id(),
+                *semantics.header().request_id(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let authority = FreshWorkspacePinAuthority {
+            attempt_id: attempt.attempt_id(),
+            attempt_digest: attempt.authority_digest()?,
+            sealed_receipt,
+        };
+        let publication_digest =
+            ObjectDigest::from_bytes(Sha256::digest(&current_publication_record).into());
+        let repair_intent = match &current_predecessor {
+            WorkspacePinRepairPredecessorV1::MissingInitial {
+                creation,
+                creation_record_digest,
+                ..
+            } => crate::workspace_repair::StorageWorkspacePinRepairIntentV1::new_missing_initial_ambiguous(
+                semantics.operation_id(),
+                &admission.effect,
+                sealed.effect.clone(),
+                admission.fence.assignment().digest(),
+                operation_fence_digest,
+                creation.operation_id(),
+                creation.catalog(),
+                creation.result_digest(),
+                *creation_record_digest,
+                publication_digest,
+                workspace_handle,
+                attempt.attempt_id(),
+            )?,
+            WorkspacePinRepairPredecessorV1::ExistingAttempt(latest) => {
+                crate::workspace_repair::StorageWorkspacePinRepairIntentV1::new_ambiguous(
+                    semantics.operation_id(),
+                    &admission.effect,
+                    sealed.effect.clone(),
+                    admission.fence.assignment().digest(),
+                    operation_fence_digest,
+                    latest.creation_operation_id(),
+                    latest.creation_result_catalog(),
+                    latest.creation_result_digest(),
+                    publication_digest,
+                    latest.workspace_handle(),
+                    latest.attempt_id(),
+                    latest.phase(),
+                    ObjectDigest::from_bytes(Sha256::digest(&current_attempt_record).into()),
+                    attempt.attempt_id(),
+                    attempt.attempt_ordinal(),
+                )?
+            }
+        };
+        let sealed_completed_effect = self
+            .authority
+            .seal_workspace_pin_repair_completion(&admission.effect, &attempt)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let outcome = self.transactions.begin_workspace_pin_repair(
+            sandbox_id,
+            &current_predecessor,
+            repair_intent,
+            attempt,
+            sealed.current_fence,
+            sealed.effect,
+            sealed_completed_effect,
+            sealed.operation_fence,
+            authority,
+        )?;
+        let BeginWorkspacePinAttemptV1::Dispatch(attempt) = outcome else {
+            return Ok(AuthorizedWorkspacePinRepairAttemptV1::ObserveOnly);
+        };
+
+        let postcommit = (|| {
+            let effect = self.authenticate_workspace_pin_repair(&attempt)?;
+            let current_fence_bytes = self
+                .transactions
+                .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            let operation_fence_bytes = self
+                .transactions
+                .authority_record(
+                    RecordNamespace::AuthorityPublication,
+                    &attempt.effect_operation_id(),
+                )?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            let current_fence = self
+                .authority
+                .open_fence(&sandbox_id, current_fence_bytes)
+                .map_err(|_| ZfsHelperError::Authority)?;
+            let operation_fence = self
+                .authority
+                .open_operation_fence(&attempt.effect_operation_id(), operation_fence_bytes)
+                .map_err(|_| ZfsHelperError::Authority)?;
+            if current_fence != operation_fence {
+                return Err(ZfsHelperError::Authority);
+            }
+            self.authority
+                .check_before_effect(&effect, trusted_clock)
+                .map_err(|_| ZfsHelperError::Authority)?;
+            self.authority
+                .verify_pin_attempt_receipt(&attempt, &effect, attempt.effect_operation_id())
+                .map_err(|_| ZfsHelperError::Authority)?;
+            let catalog = self
+                .transactions
+                .workspace_creation_catalog_for_attempt(&attempt)?;
+            let intent = self
+                .transactions
+                .workspace_pin_repair_intent(attempt.effect_operation_id())?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            let repair_intent_record = self
+                .transactions
+                .workspace_pin_repair_intent_record(&intent)?;
+            let attempt_record = self.transactions.workspace_pin_attempt_record(&attempt)?;
+            let publication_intent_record = self
+                .transactions
+                .workspace_publication_intent_record(attempt.creation_operation_id())?;
+            let worker_authority = WorkspacePinWorkerAuthorityV1::new(
+                intent.request_id(),
+                attempt_record,
+                current_fence_bytes.to_vec(),
+                intent.admitted_effect_record().to_vec(),
+                operation_fence_bytes.to_vec(),
+            )?;
+            let request = WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                catalog,
+                worker_authority,
+                repair_intent_record,
+                publication_intent_record,
+            )?;
+            Ok(FreshWorkspacePinRepairDispatchV1 { attempt, request })
+        })();
+        match postcommit {
+            Ok(dispatch) => Ok(AuthorizedWorkspacePinRepairAttemptV1::Dispatch(Box::new(
+                dispatch,
+            ))),
+            Err(error) => {
+                self.transactions.poison_after_committed_repair_failure();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn workspace_pin_observation_dispatches(
+        &self,
+    ) -> Result<Vec<WorkspacePinObservationDispatchV1>, ZfsHelperError> {
+        let mut dispatches = Vec::new();
+        for attempt in self.transactions.workspace_pin_attempts()? {
+            let latest = self
+                .transactions
+                .latest_workspace_pin_attempt(attempt.creation_operation_id())?;
+            if latest.as_ref() != Some(&attempt)
+                || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
+                || (attempt.action() == WorkspacePinActionV1::Ensure
+                    && attempt.effect_operation_id() != attempt.creation_operation_id())
+            {
+                continue;
+            }
+            let entry = self
+                .transactions
+                .current_recovery_entry(attempt.effect_operation_id())?;
+            let (_, effect) = self.persisted_effect_context(entry)?;
+            self.authority
+                .verify_pin_attempt_receipt(&attempt, &effect, entry.operation_id())
+                .map_err(|_| ZfsHelperError::Authority)?;
+            dispatches.push(WorkspacePinObservationDispatchV1 {
+                catalog: self.transactions.recover_catalog(entry)?,
+                observer_authority: self.pin_worker_authority(entry, &attempt)?,
+                attempt,
+            });
+        }
+        Ok(dispatches)
+    }
+
+    pub(crate) fn workspace_pin_repair_observation_dispatches(
+        &self,
+        contract: &ZfsHelperContract,
+        current_host_scope: WorkspacePinHostScopeV1,
+    ) -> Result<Vec<WorkspacePinRepairObservationDispatchV1>, ZfsHelperError> {
+        let mut dispatches = Vec::new();
+        for intent in self.transactions.workspace_pin_repair_intents()? {
+            let Some(attempt) = self
+                .transactions
+                .latest_workspace_pin_attempt(intent.creation_operation_id())?
+            else {
+                return Err(crate::StorageStateError::MissingAuthorityLink.into());
+            };
+            if attempt.attempt_id() != intent.repair_attempt_id()
+                || attempt.action() != WorkspacePinActionV1::Ensure
+                || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
+                || !self.transactions.workspace_creation_is_active(
+                    intent.creation_operation_id(),
+                    intent.workspace_handle(),
+                )?
+            {
+                continue;
+            }
+
+            let catalog = self.transactions.workspace_creation_catalog(&intent)?;
+            let repair_intent_record = self
+                .transactions
+                .workspace_pin_repair_intent_record(&intent)?;
+            let repair_attempt_record = self.transactions.workspace_pin_attempt_record(&attempt)?;
+            let publication_intent_record = self
+                .transactions
+                .workspace_publication_intent_record(intent.creation_operation_id())?;
+            let historical_attempt_host_scope = WorkspacePinHostScopeV1::new(
+                attempt.host_boot_id(),
+                attempt.host_mount_namespace_device(),
+                attempt.host_mount_namespace_inode(),
+            )?;
+            let generated_challenge = random_repair_challenge()?;
+            let probe = bind_repair_probe(
+                &intent,
+                &attempt,
+                generated_challenge,
+                ObjectDigest::from_bytes(Sha256::digest(&repair_intent_record).into()),
+                ObjectDigest::from_bytes(Sha256::digest(&publication_intent_record).into()),
+                ObjectDigest::from_bytes(Sha256::digest(&repair_attempt_record).into()),
+                historical_attempt_host_scope,
+                current_host_scope,
+            )?;
+            let request = WorkspacePinRepairObserverRequestV1::new(
+                contract.executable().to_path_buf(),
+                generated_challenge,
+                catalog,
+                repair_intent_record,
+                repair_attempt_record,
+                publication_intent_record,
+            )?;
+            dispatches.push(WorkspacePinRepairObservationDispatchV1 {
+                attempt,
+                request,
+                probe,
+            });
+        }
+        Ok(dispatches)
+    }
+
+    pub(crate) fn complete_workspace_pin_repair_observation(
+        &mut self,
+        dispatch: WorkspacePinRepairObservationDispatchV1,
+        result: WorkspacePinRepairObserverResultV1,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        if result.probe_digest() != dispatch.probe.digest()
+            || result.observation().attempt_id() != dispatch.attempt.attempt_id()
+            || self
+                .transactions
+                .latest_workspace_pin_attempt(dispatch.attempt.creation_operation_id())?
+                .as_ref()
+                != Some(&dispatch.attempt)
+            || !self.transactions.workspace_creation_is_active(
+                dispatch.attempt.creation_operation_id(),
+                dispatch.attempt.workspace_handle(),
+            )?
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+
+        let intent = self
+            .transactions
+            .workspace_pin_repair_intent(dispatch.probe.repair_operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let repair_intent_record = self
+            .transactions
+            .workspace_pin_repair_intent_record(&intent)?;
+        let repair_attempt_record = self
+            .transactions
+            .workspace_pin_attempt_record(&dispatch.attempt)?;
+        let publication_intent_record = self
+            .transactions
+            .workspace_publication_intent_record(dispatch.attempt.creation_operation_id())?;
+        if result.probe_digest() != dispatch.probe.digest()
+            || ObjectDigest::from_bytes(Sha256::digest(repair_intent_record).into())
+                != dispatch.probe.repair_intent_record_digest()
+            || ObjectDigest::from_bytes(Sha256::digest(repair_attempt_record).into())
+                != dispatch.probe.latest_ensure_attempt_record_digest()
+            || ObjectDigest::from_bytes(Sha256::digest(publication_intent_record).into())
+                != dispatch.probe.publication_intent_record_digest()
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        if dispatch.probe.historical_attempt_host_scope() != dispatch.probe.current_host_scope()
+            && matches!(
+                result.observation().pin(),
+                crate::workspace_pin::WorkspacePinObservationV1::Present(_)
+            )
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+
+        let observation = result.into_observation();
+        let disposition = self.complete_workspace_pin_repair_attempt(
+            &dispatch.attempt,
+            observation.dataset(),
+            observation.pin(),
+        )?;
+        if disposition == WorkspacePinRecoveryDispositionV1::Mismatch {
+            return Err(ZfsHelperError::Authority);
+        }
+        Ok(disposition)
+    }
+
+    pub(crate) fn complete_workspace_pin_repair_execution(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        result: &crate::pin_worker::WorkspacePinWorkerResultV1,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        if result.attempt_id() != attempt.attempt_id()
+            || self
+                .transactions
+                .workspace_pin_attempts()?
+                .into_iter()
+                .find(|candidate| candidate.attempt_id() == attempt.attempt_id())
+                .as_ref()
+                != Some(attempt)
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.complete_workspace_pin_repair_attempt(attempt, result.dataset(), result.pin())
+    }
+
+    fn complete_workspace_pin_repair_attempt(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        dataset: &crate::workspace_pin::WorkspaceDatasetObservationV1,
+        pin: &crate::workspace_pin::WorkspacePinObservationV1,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        let admitted_effect = self.authenticate_workspace_pin_repair(attempt)?;
+        self.authority
+            .verify_pin_attempt_receipt(attempt, &admitted_effect, attempt.effect_operation_id())
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let sealed_completed_effect = self
+            .authority
+            .seal_workspace_pin_repair_completion(&admitted_effect, attempt)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let disposition = self.transactions.complete_workspace_pin_repair_attempt(
+            attempt.attempt_id(),
+            dataset,
+            pin,
+            sealed_completed_effect,
+        )?;
+        if disposition != WorkspacePinRecoveryDispositionV1::CompletePublication {
+            return Ok(disposition);
+        }
+
+        let satisfied = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .find(|candidate| candidate.attempt_id() == attempt.attempt_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        if satisfied.phase() != WorkspacePinAttemptPhaseV1::Satisfied
+            || !satisfied.same_authorized_effect(attempt)
+        {
+            self.transactions.poison_after_committed_repair_failure();
+            return Err(ZfsHelperError::Authority);
+        }
+        if self.authenticate_workspace_pin_repair(&satisfied).is_err() {
+            self.transactions.poison_after_committed_repair_failure();
+            return Err(ZfsHelperError::Authority);
+        }
+        Ok(disposition)
+    }
+
+    pub(crate) fn complete_workspace_pin_observation(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        result: &crate::pin_worker::WorkspacePinWorkerResultV1,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        if result.attempt_id() != attempt.attempt_id()
+            || self
+                .transactions
+                .workspace_pin_attempts()?
+                .into_iter()
+                .find(|candidate| candidate.attempt_id() == attempt.attempt_id())
+                .as_ref()
+                != Some(attempt)
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.transactions
+            .complete_workspace_pin_attempt(attempt.attempt_id(), result.dataset(), result.pin())
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn reconcile_recovery<B: ZfsProcessBackend>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        self.authenticate_recovery_entry(entry)?;
+        helper.observe_only(&mut self.transactions, entry.operation_id())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preobserve_and_execute<B, F>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        operation_id: [u8; 16],
+        trusted_clock: &mut F,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        B: ZfsProcessBackend,
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let prepared = self.preobserve(helper, operation_id)?;
+        self.execute_preobserved(helper, prepared, trusted_clock)
+    }
+
+    pub(crate) fn preobserve<B: ZfsProcessBackend>(
+        &self,
+        helper: &mut StorageMutationHelper<B>,
+        operation_id: [u8; 16],
+    ) -> Result<PreobservedZfsMutation, ZfsHelperError> {
+        helper.preobserve(&self.transactions, operation_id)
+    }
+
+    pub(crate) fn begin_workspace_pin_ensure<F>(
+        &mut self,
+        result: CommittedStorageResultV1,
+        host_scope: WorkspacePinHostScopeV1,
+        trusted_clock: &mut F,
+    ) -> Result<AuthorizedWorkspacePinAttemptV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let entry = self.transactions.committed_recovery_entry(result)?;
+        let current_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &entry.sandbox_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let current_fence = self
+            .authority
+            .open_fence(&entry.sandbox_id(), &current_fence_bytes)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let (operation_fence, effect) = self.persisted_effect_context(entry)?;
+        if current_fence != operation_fence {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.authority
+            .check_before_effect(&effect, trusted_clock)
+            .map_err(|_| ZfsHelperError::Authority)?;
+
+        let attempt = self.transactions.plan_workspace_pin_ensure(
+            result,
+            operation_fence.assignment().digest(),
+            host_scope,
+            *effect.clock_provenance(),
+            effect.effect_deadline_boottime_nanoseconds(),
+        )?;
+        let sealed_receipt = self
+            .authority
+            .seal_pin_attempt_receipt(
+                &attempt,
+                &effect,
+                &operation_fence,
+                entry.operation_id(),
+                entry.request_id(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let authority = FreshWorkspacePinAuthority {
+            attempt_id: attempt.attempt_id(),
+            attempt_digest: attempt.authority_digest()?,
+            sealed_receipt,
+        };
+        let outcome = self
+            .transactions
+            .begin_workspace_pin_attempt(attempt, authority)?;
+        match outcome {
+            BeginWorkspacePinAttemptV1::Dispatch(attempt) => {
+                // The distinct attempt grant is already durably consumed. A
+                // second protected clock sample immediately gates handing it
+                // to the fixed worker; failure leaves observation-only state.
+                self.authority
+                    .check_before_effect(&effect, trusted_clock)
+                    .map_err(|_| ZfsHelperError::Authority)?;
+                self.authority
+                    .verify_pin_attempt_receipt(&attempt, &effect, entry.operation_id())
+                    .map_err(|_| ZfsHelperError::Authority)?;
+                let catalog = self.transactions.recover_catalog(entry)?;
+                let worker_authority = self.pin_worker_authority(entry, &attempt)?;
+                Ok(AuthorizedWorkspacePinAttemptV1::Dispatch(Box::new(
+                    FreshWorkspacePinDispatchV1 {
+                        attempt,
+                        catalog,
+                        worker_authority,
+                    },
+                )))
+            }
+            BeginWorkspacePinAttemptV1::ObserveOnly(_) => {
+                Ok(AuthorizedWorkspacePinAttemptV1::ObserveOnly)
+            }
+            BeginWorkspacePinAttemptV1::Satisfied(_) => {
+                Ok(AuthorizedWorkspacePinAttemptV1::Satisfied)
+            }
+        }
+    }
+
+    pub(crate) fn begin_workspace_pin_remove_and_destroy<F>(
+        &mut self,
+        prepared: PreobservedZfsMutation,
+        host_scope: WorkspacePinHostScopeV1,
+        expected_pin: WorkspaceRootPinProofV1,
+        trusted_clock: &mut F,
+    ) -> Result<AuthorizedWorkspaceRemoveAttemptV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let entry = prepared.entry();
+        let current_entry = self
+            .transactions
+            .current_recovery_entry(entry.operation_id())?;
+        if current_entry != entry || entry.phase() != DurableStoragePhase::Prepared {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+        let PreparedStorageEffectAuthorizationV1::Fresh(context) =
+            self.authorize_or_retire_prepared(entry, prepared.catalog(), trusted_clock)?
+        else {
+            return Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted {
+                mutation_digest: entry.mutation_digest(),
+            });
+        };
+        let catalog = self.transactions.recover_catalog(entry)?;
+
+        let attempt = self.transactions.plan_workspace_pin_remove_and_destroy(
+            entry.operation_id(),
+            context.operation_fence.assignment().digest(),
+            host_scope,
+            *context.effect.clock_provenance(),
+            context.effect.effect_deadline_boottime_nanoseconds(),
+            expected_pin,
+        )?;
+        let sealed_receipt = self
+            .authority
+            .seal_pin_attempt_receipt(
+                &attempt,
+                &context.effect,
+                &context.operation_fence,
+                entry.operation_id(),
+                entry.request_id(),
+            )
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let authority = FreshWorkspacePinAuthority {
+            attempt_id: attempt.attempt_id(),
+            attempt_digest: attempt.authority_digest()?,
+            sealed_receipt,
+        };
+        let outcome = self.transactions.begin_workspace_pin_remove_and_destroy(
+            attempt,
+            entry.mutation_digest(),
+            authority,
+        )?;
+        match outcome {
+            BeginWorkspacePinAttemptV1::Dispatch(attempt) => {
+                self.authority
+                    .check_before_effect(&context.effect, trusted_clock)
+                    .map_err(|_| ZfsHelperError::Authority)?;
+                self.authority
+                    .verify_pin_attempt_receipt(&attempt, &context.effect, entry.operation_id())
+                    .map_err(|_| ZfsHelperError::Authority)?;
+                let worker_authority = self.pin_worker_authority(entry, &attempt)?;
+                Ok(AuthorizedWorkspaceRemoveAttemptV1::Dispatch(Box::new(
+                    FreshWorkspaceRemoveDispatchV1 {
+                        attempt,
+                        prepared,
+                        catalog,
+                        worker_authority,
+                    },
+                )))
+            }
+            BeginWorkspacePinAttemptV1::ObserveOnly(_) => {
+                Ok(AuthorizedWorkspaceRemoveAttemptV1::ObserveOnly)
+            }
+            BeginWorkspacePinAttemptV1::Satisfied(_) => {
+                Ok(AuthorizedWorkspaceRemoveAttemptV1::Satisfied)
+            }
+        }
+    }
+
+    pub(crate) fn execute_workspace_pin_ensure_with_io<F>(
+        &mut self,
+        pin_io: &mut dyn WorkspacePinRuntimeIo,
+        contract: &ZfsHelperContract,
+        result: CommittedStorageResultV1,
+        trusted_clock: &mut F,
+    ) -> Result<WorkspacePinExecutionOutcomeV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let host_scope = pin_io.host_scope()?;
+        match self.begin_workspace_pin_ensure(result, host_scope, trusted_clock)? {
+            AuthorizedWorkspacePinAttemptV1::Dispatch(dispatch) => {
+                let request = dispatch.worker_request_bytes(contract)?;
+                let result = pin_io.execute(&request, dispatch.attempt())?;
+                let disposition = self.transactions.complete_workspace_pin_attempt(
+                    result.attempt_id(),
+                    result.dataset(),
+                    result.pin(),
+                )?;
+                if disposition != WorkspacePinRecoveryDispositionV1::CompletePublication {
+                    return Err(ZfsHelperError::PostconditionMismatch);
+                }
+                Ok(WorkspacePinExecutionOutcomeV1::Satisfied)
+            }
+            AuthorizedWorkspacePinAttemptV1::Satisfied => {
+                Ok(WorkspacePinExecutionOutcomeV1::Satisfied)
+            }
+            AuthorizedWorkspacePinAttemptV1::ObserveOnly => {
+                Ok(WorkspacePinExecutionOutcomeV1::ObservationRequired)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execute_workspace_pin_ensure<F>(
+        &mut self,
+        executor: &mut SystemdWorkspacePinExecutor,
+        contract: &ZfsHelperContract,
+        custody: &WorkspacePinHostCustody,
+        result: CommittedStorageResultV1,
+        trusted_clock: &mut F,
+    ) -> Result<WorkspacePinExecutionOutcomeV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let mut pin_io = BorrowedSystemdWorkspacePinEffectIo::new(executor, custody);
+        self.execute_workspace_pin_ensure_with_io(&mut pin_io, contract, result, trusted_clock)
+    }
+
+    pub(crate) fn workspace_remove_pin_requirement(
+        &self,
+        prepared: &PreobservedZfsMutation,
+    ) -> Result<WorkspaceRemovePinRequirementV1, ZfsHelperError> {
+        let CatalogPlanV1::DestroyDataset { dataset } = prepared.catalog().plan() else {
+            return Ok(WorkspaceRemovePinRequirementV1::NotWorkspace);
+        };
+        let Some(creation) = self
+            .transactions
+            .managed_workspace_creation(dataset.guid())?
+        else {
+            return Ok(WorkspaceRemovePinRequirementV1::NotWorkspace);
+        };
+        if creation.storage_handle() != Some(dataset.storage_handle()) {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        let latest = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .filter(|attempt| {
+                attempt.workspace_handle() == dataset.storage_handle()
+                    && attempt.dataset_name() == dataset.name()
+                    && attempt.dataset_guid() == dataset.guid()
+                    && attempt.action() == WorkspacePinActionV1::Ensure
+                    && attempt.phase() == WorkspacePinAttemptPhaseV1::Satisfied
+            })
+            .max_by_key(WorkspacePinAttemptV1::attempt_ordinal);
+        Ok(
+            match latest.and_then(|attempt| attempt.satisfied_pin().cloned()) {
+                Some(proof) => WorkspaceRemovePinRequirementV1::Required(proof),
+                None => WorkspaceRemovePinRequirementV1::Missing,
+            },
+        )
+    }
+
+    pub(crate) fn execute_workspace_remove_and_destroy_with_io<F>(
+        &mut self,
+        pin_io: &mut dyn WorkspacePinRuntimeIo,
+        contract: &ZfsHelperContract,
+        prepared: PreobservedZfsMutation,
+        expected_pin: WorkspaceRootPinProofV1,
+        trusted_clock: &mut F,
+    ) -> Result<
+        (
+            WorkspacePinExecutionOutcomeV1,
+            Option<CommittedStorageResultV1>,
+        ),
+        ZfsHelperError,
+    >
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let host_scope = pin_io.host_scope()?;
+        match self.begin_workspace_pin_remove_and_destroy(
+            prepared,
+            host_scope,
+            expected_pin,
+            trusted_clock,
+        )? {
+            AuthorizedWorkspaceRemoveAttemptV1::Dispatch(dispatch) => {
+                let request = dispatch.worker_request_bytes(contract)?;
+                let result = pin_io.execute(&request, dispatch.attempt())?;
+                if dispatch.attempt().classify(result.dataset(), result.pin())
+                    != WorkspacePinRecoveryDispositionV1::CompleteRetirement
+                {
+                    return Err(ZfsHelperError::PostconditionMismatch);
+                }
+
+                let (attempt, prepared) = (*dispatch).into_parts();
+                let transaction =
+                    ZfsTransaction::from_catalog(prepared.operation(), prepared.catalog())?;
+                let entry = prepared.entry();
+                let committed = self.transactions.commit_observed_with_supplement(
+                    entry.operation_id(),
+                    entry.mutation_digest(),
+                    prepared.catalog(),
+                    transaction.postcondition(),
+                    None,
+                    result.observation_digest(),
+                    crate::snapshot_metadata::CatalogCommitSupplementV1::None,
+                )?;
+                let disposition = self.transactions.complete_workspace_pin_attempt(
+                    attempt.attempt_id(),
+                    result.dataset(),
+                    result.pin(),
+                )?;
+                if disposition != WorkspacePinRecoveryDispositionV1::CompleteRetirement {
+                    return Err(ZfsHelperError::PostconditionMismatch);
+                }
+                Ok((WorkspacePinExecutionOutcomeV1::Satisfied, Some(committed)))
+            }
+            AuthorizedWorkspaceRemoveAttemptV1::Satisfied => {
+                Ok((WorkspacePinExecutionOutcomeV1::Satisfied, None))
+            }
+            AuthorizedWorkspaceRemoveAttemptV1::ObserveOnly => {
+                Ok((WorkspacePinExecutionOutcomeV1::ObservationRequired, None))
+            }
+            AuthorizedWorkspaceRemoveAttemptV1::Aborted { mutation_digest } => Ok((
+                WorkspacePinExecutionOutcomeV1::Aborted { mutation_digest },
+                None,
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execute_workspace_remove_and_destroy<F>(
+        &mut self,
+        executor: &mut SystemdWorkspacePinExecutor,
+        contract: &ZfsHelperContract,
+        custody: &WorkspacePinHostCustody,
+        prepared: PreobservedZfsMutation,
+        expected_pin: WorkspaceRootPinProofV1,
+        trusted_clock: &mut F,
+    ) -> Result<
+        (
+            WorkspacePinExecutionOutcomeV1,
+            Option<CommittedStorageResultV1>,
+        ),
+        ZfsHelperError,
+    >
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let mut pin_io = BorrowedSystemdWorkspacePinEffectIo::new(executor, custody);
+        self.execute_workspace_remove_and_destroy_with_io(
+            &mut pin_io,
+            contract,
+            prepared,
+            expected_pin,
+            trusted_clock,
+        )
+    }
+
+    /// Verifies and durably records an unadvertised Apply admission intent.
+    ///
+    /// This method deliberately does not make StorageApply service-ready. A
+    /// future privileged observer/helper must reconcile the typed transaction
+    /// under this same lock before any service may advertise Apply.
+    /// `CreateWorkspace` and `Clone` are rejected because they require the
+    /// composed runtime's workspace-publication admission path. Snapshot is
+    /// held until authenticated source-root metadata is part of its authority
+    /// path; no durable admission or effect is created for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] for hostile bytes, catalog substitution,
+    /// signed-authority failure, fencing conflict, or durable-state failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_apply_intent(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
+        self.admit_apply_intent_inner(
+            request_body,
+            artifacts,
+            catalog,
+            protocol_version,
+            peer,
+            policy,
+            current_clock,
+            None,
+        )
+    }
+
+    /// Verifies and durably records a workspace-creating Apply admission.
+    ///
+    /// The canonical assignment manifest and sandbox specification are checked
+    /// against the admitted assignment. Storage 1.0 retains their exact
+    /// canonical bytes alongside the request replay identity, full assignment,
+    /// node, exact planned destination and catalog, root policy, and
+    /// private-userns range in the authenticated operation-bound intent. The
+    /// destination handle is minted only after the effect is verified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] for every failure documented by
+    /// [`Self::admit_apply_intent`], or when the portable publication inputs do
+    /// not exactly match the admitted workspace creation or clone.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_workspace_apply_intent(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        identity_range_start: u32,
+        manifest: &CanonicalAssignmentManifestV1,
+        sandbox_spec: &SandboxSpec,
+    ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
+        self.admit_apply_intent_inner(
+            request_body,
+            artifacts,
+            catalog,
+            protocol_version,
+            peer,
+            policy,
+            current_clock,
+            Some((identity_range_start, manifest, sandbox_spec)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_apply_intent_inner(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        publication_inputs: Option<(u32, &CanonicalAssignmentManifestV1, &SandboxSpec)>,
+    ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
+        self.transactions.ensure_authority_readable()?;
+        let semantics = decode_resolved(
+            request_body,
+            catalog,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        if publication_inputs.is_none() && semantics.operation().requires_workspace_metadata() {
+            return Err(StorageBrokerError::Request);
+        }
+        let assignment =
+            decode_assignment(request_body).map_err(|_| StorageBrokerError::Request)?;
+        let sandbox_id = *assignment.sandbox().as_bytes();
+        let request_id = *semantics.header().request_id();
+        let operation_id = *semantics.operation_id();
+        let sealed_preparation = self
+            .transactions
+            .catalog_preparation_record(&operation_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let preparation =
+            self.authenticate_catalog_preparation(operation_id, sealed_preparation)?;
+        let existing = self.transactions.phase(operation_id)?.is_some();
+        if preparation.record.catalog() != catalog
+            || preparation.record.sandbox_id() != sandbox_id
+            || preparation.preparation_fence.assignment() != assignment
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        match (existing, preparation.record.consumption()) {
+            (false, None) => {
+                if preparation.record.host_boot_id() != current_clock.host_boot_id() {
+                    return Err(StorageCatalogPreparationError::HostBootMismatch.into());
+                }
+                if current_clock.boottime_nanoseconds()
+                    >= preparation.record.expires_boottime_nanoseconds()
+                {
+                    return Err(StorageCatalogPreparationError::Expired.into());
+                }
+                if self.transactions.catalog_head_binding()? != preparation.record.expected_head() {
+                    return Err(StorageCatalogPreparationError::StaleCatalogHead.into());
+                }
+            }
+            (true, Some(_)) => self.authenticate_consumed_preparation(&preparation)?,
+            _ => return Err(crate::StorageStateError::AuthorityLinkMismatch.into()),
+        }
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .map(<[u8]>::to_vec);
+        let prior_admission_intent = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &request_id)?
+            .map(<[u8]>::to_vec);
+        if !existing
+            && (request_id == preparation.record.request_id() || prior_admission_intent.is_some())
+        {
+            return Err(crate::StorageStateError::Equivocation.into());
+        }
+        if existing && (prior_fence.is_none() || prior_admission_intent.is_none()) {
+            return Err(StorageBrokerError::State(
+                crate::StorageStateError::MissingAuthorityLink,
+            ));
+        }
+        let admission = self
+            .authority
+            .admit(
+                artifacts,
+                &semantics,
+                request_body,
+                protocol_version,
+                current_clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let request_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
+        let publication_intent = publication_inputs
+            .map(|(identity_range_start, manifest, sandbox_spec)| {
+                let metadata = semantics
+                    .workspace_metadata()
+                    .ok_or(StorageWorkspaceCatalogError::InvalidCandidate)?;
+                if metadata.manifest() != manifest || metadata.sandbox_spec() != sandbox_spec {
+                    return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+                }
+                crate::workspace_catalog::StorageWorkspacePublicationIntentV1::new(
+                    *semantics.operation_id(),
+                    request_id,
+                    request_digest,
+                    catalog,
+                    assignment,
+                    admission.fence.node(),
+                    metadata,
+                    identity_range_start,
+                )
+            })
+            .transpose()?;
+        if existing {
+            let persisted_fence = self
+                .authority
+                .open_fence(
+                    &sandbox_id,
+                    prior_fence
+                        .as_deref()
+                        .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
+                )
+                .map_err(|_| StorageBrokerError::Authority)?;
+            let persisted_intent = self
+                .authority
+                .open_admission_intent(
+                    &request_id,
+                    prior_admission_intent
+                        .as_deref()
+                        .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
+                )
+                .map_err(|_| StorageBrokerError::Authority)?;
+            let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
+            if persisted_fence.assignment() != assignment
+                || persisted_intent.transport_request_digest() != transport_digest
+                || persisted_intent.request_digest() != semantics.argument_commitment().digest()
+                || persisted_intent.verb() != semantics.broker_verb()
+                || persisted_intent.target() != semantics.grant_target()
+                || persisted_intent.plan_digest() != admission.effect.plan_digest()
+                || persisted_intent.lease_digest() != admission.effect.lease_digest()
+            {
+                return Err(StorageBrokerError::State(
+                    crate::StorageStateError::AuthorityLinkMismatch,
+                ));
+            }
+        }
+        let sealed = self
+            .authority
+            .seal(&sandbox_id, &request_id, &operation_id, &admission)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let outcome = if existing {
+            let consumption = preparation
+                .record
+                .consumption()
+                .ok_or(crate::StorageStateError::AuthorityLinkMismatch)?;
+            if consumption.apply_request_id() != request_id
+                || consumption.apply_transport_digest() != request_digest
+                || consumption.apply_semantic_digest() != semantics.argument_commitment().digest()
+                || consumption.apply_plan_digest() != admission.effect.plan_digest()
+                || consumption.apply_lease_digest() != admission.effect.lease_digest()
+            {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+            self.transactions.begin_authorized_with_publication(
+                operation_id,
+                request_digest,
+                catalog,
+                sandbox_id,
+                request_id,
+                sealed.current_fence,
+                sealed.effect,
+                sealed.operation_fence,
+                publication_intent,
+            )?
+        } else {
+            let consumed = preparation.record.consume(
+                request_id,
+                request_digest,
+                semantics.argument_commitment().digest(),
+                admission.effect.plan_digest(),
+                admission.effect.lease_digest(),
+            )?;
+            let sealed_consumed = self
+                .authority
+                .seal_catalog_preparation_record(&operation_id, &consumed.encode_payload()?)
+                .map_err(|_| StorageBrokerError::Authority)?;
+            let transition = CatalogPreparationConsumption::new(
+                preparation.record.expected_head(),
+                preparation.sealed_record,
+                sealed_consumed,
+            )?;
+            self.transactions
+                .begin_authorized_with_consumed_preparation(
+                    operation_id,
+                    request_digest,
+                    catalog,
+                    sandbox_id,
+                    request_id,
+                    sealed.current_fence,
+                    sealed.effect,
+                    sealed.operation_fence,
+                    publication_intent,
+                    transition,
+                )?
+        };
+        Ok(match outcome {
+            BeginStorageTransaction::Prepared { mutation_digest } => {
+                StorageAdmissionOutcome::Prepared { mutation_digest }
+            }
+            BeginStorageTransaction::ObserveOnly {
+                phase,
+                mutation_digest,
+            } => StorageAdmissionOutcome::ObservationRequired {
+                phase,
+                mutation_digest,
+            },
+            BeginStorageTransaction::Replay(result) => StorageAdmissionOutcome::Replay(result),
+            BeginStorageTransaction::Aborted { mutation_digest } => {
+                StorageAdmissionOutcome::Aborted { mutation_digest }
+            }
+        })
+    }
+
+    /// Revalidates current authority and synchronously consumes one mutation.
+    ///
+    /// The slow physical pre-observation has already completed. This method
+    /// reopens the exact durable effect, operation fence, and current sandbox
+    /// fence; retires a strictly superseded intent without sampling time or
+    /// dispatching; and samples trusted time for an exact-current intent. An
+    /// authenticated expiry aborts before Ambiguous or dispatch. Only a Fresh
+    /// intent consumes the one-shot proof in the helper call made before return.
+    pub(crate) fn execute_preobserved<B, F>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        prepared: PreobservedZfsMutation,
+        trusted_clock: &mut F,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        B: ZfsProcessBackend,
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let entry = prepared.entry();
+        let current_entry = self
+            .transactions
+            .current_recovery_entry(entry.operation_id())?;
+        if current_entry != entry || entry.phase() != DurableStoragePhase::Prepared {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+        let PreparedStorageEffectAuthorizationV1::Fresh(context) =
+            self.authorize_or_retire_prepared(entry, prepared.catalog(), trusted_clock)?
+        else {
+            return Ok(ZfsHelperOutcome::Aborted {
+                mutation_digest: entry.mutation_digest(),
+            });
+        };
+
+        let authority = FreshStorageEffectAuthority { entry };
+        let protected_authority = &self.authority;
+        helper.execute_preobserved(&mut self.transactions, prepared, authority, || {
+            protected_authority
+                .check_before_effect(&context.effect, trusted_clock)
+                .map_err(|_| ZfsHelperError::Authority)
+        })
+    }
+
+    fn authorize_or_retire_prepared<F>(
+        &mut self,
+        entry: crate::StorageRecoveryEntry,
+        catalog: &ResolvedCatalogCommitmentV1,
+        trusted_clock: &mut F,
+    ) -> Result<PreparedStorageEffectAuthorizationV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        match self.authenticate_prepared_head(entry)? {
+            PreparedStorageHeadV1::Current(context) => {
+                let current_clock = trusted_clock().map_err(|_| ZfsHelperError::Authority)?;
+                match self
+                    .authority
+                    .classify_effect_clock(&context.effect, &current_clock)
+                    .map_err(|_| ZfsHelperError::Authority)?
+                {
+                    BrokerEffectClockDispositionV1::Fresh => {
+                        return Ok(PreparedStorageEffectAuthorizationV1::Fresh(context));
+                    }
+                    BrokerEffectClockDispositionV1::Expired => {}
+                }
+            }
+            PreparedStorageHeadV1::Superseded => {}
+        }
+
+        self.transactions.abort_prepared_exact(entry, catalog)?;
+        Ok(PreparedStorageEffectAuthorizationV1::Retired)
+    }
+
+    fn authenticate_prepared_head(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<PreparedStorageHeadV1, ZfsHelperError> {
+        if entry.phase() != DurableStoragePhase::Prepared
+            || self
+                .transactions
+                .current_recovery_entry(entry.operation_id())?
+                != entry
+        {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+
+        // Authenticate the complete historical effect context and live head
+        // before using either one as an ordering or retirement authority.
+        let (operation_fence, effect) = self.persisted_effect_context(entry)?;
+        let current_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &entry.sandbox_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let current_fence = self
+            .authority
+            .open_fence(&entry.sandbox_id(), current_fence_bytes)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        self.authority
+            .check_current_fence(&current_fence)
+            .map_err(|_| ZfsHelperError::Authority)?;
+
+        if current_fence == operation_fence {
+            return Ok(PreparedStorageHeadV1::Current(Box::new(
+                AuthenticatedPreparedStorageEffectV1 {
+                    operation_fence,
+                    effect,
+                },
+            )));
+        }
+        if prepared_fence_is_strictly_superseded(&operation_fence, &current_fence) {
+            return Ok(PreparedStorageHeadV1::Superseded);
+        }
+        Err(ZfsHelperError::Authority)
+    }
+
+    pub(crate) fn authenticate_recovery_entry(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<(), ZfsHelperError> {
+        self.persisted_effect_context(entry).map(|_| ())
+    }
+
+    fn authenticate_catalog_preparation(
+        &self,
+        operation_id: [u8; 16],
+        sealed_record: Vec<u8>,
+    ) -> Result<AuthenticatedCatalogPreparation, StorageBrokerError> {
+        let payload = self
+            .authority
+            .open_catalog_preparation_record(&operation_id, &sealed_record)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let record = RetainedStorageCatalogPreparationV1::decode_payload(payload)?;
+        if record.operation_id() != operation_id {
+            return Err(StorageCatalogPreparationError::CorruptRecord.into());
+        }
+        self.transactions
+            .validate_historical_resolver_policy(record.resolver_policy_binding())?;
+
+        let receipt_payload = self
+            .authority
+            .open_catalog_preparation_receipt(&operation_id, record.receipt())
+            .map_err(|_| StorageBrokerError::Authority)?;
+        if receipt_payload != record.expected_receipt_payload() {
+            return Err(StorageCatalogPreparationError::CorruptRecord.into());
+        }
+
+        // These historical copies remain inside the preparation record after
+        // Apply atomically replaces their journal locations with Apply links.
+        let current_fence = self
+            .authority
+            .open_fence(&record.sandbox_id(), record.sealed_fence())
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let operation_fence = self
+            .authority
+            .open_operation_fence(&operation_id, record.sealed_operation_fence())
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let effect = self
+            .authority
+            .open_admission_intent(&record.request_id(), record.sealed_effect())
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let live_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &record.sandbox_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let live_fence = self
+            .authority
+            .open_fence(&record.sandbox_id(), live_fence_bytes)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let live_effect = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &record.request_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        self.authority
+            .check_current_fence(&operation_fence)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        self.authority
+            .check_current_fence(&live_fence)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        if current_fence != operation_fence
+            || !fence_is_same_or_successor(&operation_fence, &live_fence)
+            || live_effect != record.sealed_effect()
+            || operation_fence.assignment().sandbox().as_bytes() != &record.sandbox_id()
+            || operation_fence.assignment().digest() != record.assignment_digest()
+            || operation_fence.plan_digest() != record.plan_digest()
+            || operation_fence.local_lease_record().lease_digest() != record.lease_digest()
+            || effect.status() != BrokerEffectStatusV1::Pending
+            || effect.request_id() != &record.request_id()
+            || effect.request_digest() != record.preparation_digest()
+            || effect.verb() != BrokerVerb::StoragePrepareCatalog
+            || effect.target() != BrokerGrantTarget::Assignment
+            || effect.plan_digest() != record.plan_digest()
+            || effect.lease_digest() != record.lease_digest()
+            || effect.plan_expires_seconds() != operation_fence.plan_expires_seconds()
+            || effect.local_lease_record() != operation_fence.local_lease_record()
+            || effect.host_boot_id() != &record.host_boot_id()
+            || record.expires_boottime_nanoseconds() > effect.effect_deadline_boottime_nanoseconds()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        if record.consumption().is_none() {
+            let live_operation_fence = self
+                .transactions
+                .authority_record(RecordNamespace::AuthorityPublication, &operation_id)?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            if live_operation_fence != record.sealed_operation_fence() {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+        }
+
+        Ok(AuthenticatedCatalogPreparation {
+            record,
+            preparation_fence: operation_fence,
+            sealed_record,
+        })
+    }
+
+    fn authenticate_consumed_preparation(
+        &self,
+        preparation: &AuthenticatedCatalogPreparation,
+    ) -> Result<(), StorageBrokerError> {
+        let consumption = preparation
+            .record
+            .consumption()
+            .ok_or(crate::StorageStateError::AuthorityLinkMismatch)?;
+        let entry = self
+            .transactions
+            .current_recovery_entry(preparation.record.operation_id())?;
+        let catalog = self.transactions.recover_catalog(entry)?;
+        let (apply_fence, effect) = self
+            .persisted_effect_context(entry)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        if entry.sandbox_id() != preparation.record.sandbox_id()
+            || entry.request_id() != consumption.apply_request_id()
+            || entry.request_digest() != consumption.apply_transport_digest()
+            || catalog != *preparation.record.catalog()
+            || apply_fence.assignment() != preparation.preparation_fence.assignment()
+            || effect.request_digest() != consumption.apply_semantic_digest()
+            || effect.plan_digest() != consumption.apply_plan_digest()
+            || effect.lease_digest() != consumption.apply_lease_digest()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        Ok(())
+    }
+
+    /// Reopens the exact catalog retained by one authenticated preparation.
+    ///
+    /// This accessor does not authorize execution. It exists so the production
+    /// runtime can derive Apply inputs from protected preparation state instead
+    /// of accepting a caller-selected catalog beside the signed request.
+    pub(crate) fn prepared_catalog_for_apply(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<ResolvedCatalogCommitmentV1, StorageBrokerError> {
+        let sealed = self
+            .transactions
+            .catalog_preparation_record(&operation_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let preparation = self.authenticate_catalog_preparation(operation_id, sealed)?;
+        if preparation.record.consumption().is_some() {
+            let entry = self.transactions.current_recovery_entry(operation_id)?;
+            self.authenticate_consumed_preparation(&preparation)?;
+            return self.transactions.recover_catalog(entry).map_err(Into::into);
+        }
+        Ok(preparation.record.catalog().clone())
+    }
+
+    fn persisted_effect_context(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV1), ZfsHelperError> {
+        if self
+            .transactions
+            .current_recovery_entry(entry.operation_id())?
+            != entry
+        {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+        let catalog = self.transactions.recover_catalog(entry)?;
+        let operation = catalog.plan().operation();
+        let operation_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let effect_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &entry.request_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let operation_fence = self
+            .authority
+            .open_operation_fence(&entry.operation_id(), &operation_fence_bytes)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        self.authority
+            .check_current_fence(&operation_fence)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let effect = self
+            .authority
+            .open_admission_intent(&entry.request_id(), &effect_bytes)
+            .map_err(|_| ZfsHelperError::Authority)?;
+        let semantic_commitment = match self
+            .transactions
+            .workspace_publication_intent(entry.operation_id())?
+            .map(|intent| intent.portable_metadata().clone())
+        {
+            Some(metadata) => {
+                if metadata.request_id() != entry.request_id()
+                    || metadata.request_digest() != entry.request_digest()
+                    || metadata.assignment() != operation_fence.assignment()
+                    || metadata.node() != operation_fence.node()
+                    || catalog.root_policy() != Some(metadata.root_policy())
+                {
+                    return Err(ZfsHelperError::Authority);
+                }
+                operation.persisted_workspace_argument_commitment(
+                    operation_fence.assignment(),
+                    entry.operation_id(),
+                    catalog.binding(),
+                    metadata.manifest_bytes(),
+                    metadata.sandbox_spec_bytes(),
+                )
+            }
+            None => operation.persisted_argument_commitment(
+                operation_fence.assignment(),
+                entry.operation_id(),
+                catalog.binding(),
+            ),
+        }
+        .map_err(|_| ZfsHelperError::Authority)?;
+        let grant_target = operation
+            .grant_target()
+            .map_err(|_| ZfsHelperError::Authority)?;
+        if operation_fence.assignment().sandbox().as_bytes() != &entry.sandbox_id()
+            || effect.status() != aos_sandbox_broker::BrokerEffectStatusV1::Pending
+            || effect.request_id() != &entry.request_id()
+            || effect.transport_request_digest() != entry.request_digest()
+            || effect.request_digest() != semantic_commitment.digest()
+            || effect.verb() != operation.broker_verb()
+            || effect.target() != grant_target
+            || effect.plan_digest() != operation_fence.plan_digest()
+            || effect.plan_expires_seconds() != operation_fence.plan_expires_seconds()
+            || effect.local_lease_record() != operation_fence.local_lease_record()
+            || effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        Ok((operation_fence, effect))
+    }
+
+    fn pin_worker_authority(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+        attempt: &WorkspacePinAttemptV1,
+    ) -> Result<WorkspacePinWorkerAuthorityV1, ZfsHelperError> {
+        let attempt_record = self.transactions.workspace_pin_attempt_record(attempt)?;
+        let current_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &entry.sandbox_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let effect = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &entry.request_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let operation_fence = self
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
+            .to_vec();
+        let publication_intent = self
+            .transactions
+            .workspace_publication_intent_record(attempt.creation_operation_id())?;
+        WorkspacePinWorkerAuthorityV1::new_with_publication_intent(
+            entry.request_id(),
+            attempt_record,
+            current_fence,
+            effect,
+            operation_fence,
+            publication_intent,
+        )
+        .map_err(ZfsHelperError::Backend)
+    }
+
+    /// Reconstructs one launchable workspace publication from committed state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] when the result is not the exact current
+    /// committed record, its catalog cannot be recovered, its authority fence
+    /// is missing or invalid, or its authenticated publication intent does not
+    /// match that fence. The latest durable pin attempt for the workspace must
+    /// be a satisfied Ensure attempt for this creation.
+    pub fn workspace_publication(
+        &self,
+        result: CommittedStorageResultV1,
+    ) -> Result<StorageWorkspacePublicationV1, StorageBrokerError> {
+        let workspace_handle = result
+            .storage_handle()
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let pin_proof = self
+            .transactions
+            .satisfied_workspace_ensure_pin_for_active_creation(
+                result.operation_id(),
+                workspace_handle,
+            )?;
+        self.workspace_publication_from_committed(result, pin_proof)
+    }
+
+    fn workspace_publication_from_committed(
+        &self,
+        result: CommittedStorageResultV1,
+        pin_proof: WorkspaceRootPinProofV1,
+    ) -> Result<StorageWorkspacePublicationV1, StorageBrokerError> {
+        let (catalog, assignment, _) = self.committed_context(result)?;
+        let intent = self
+            .transactions
+            .workspace_publication_intent(result.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        StorageWorkspacePublicationV1::from_intent(result, &catalog, assignment, intent, pin_proof)
+            .map_err(Into::into)
+    }
+
+    /// Reconstructs one workspace retirement from an exact committed destroy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] when the result is not the exact current
+    /// committed record, its catalog cannot be recovered, its operation-scoped
+    /// authority fence is missing or invalid, or the operation is not a dataset
+    /// destruction. The latest durable pin attempt for the workspace must be a
+    /// satisfied RemoveAndDestroy attempt for this destruction.
+    pub fn workspace_retirement(
+        &self,
+        result: CommittedStorageResultV1,
+    ) -> Result<StorageWorkspaceRetirementV1, StorageBrokerError> {
+        let workspace_handle = result
+            .storage_handle()
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        self.transactions.require_satisfied_workspace_pin_effect(
+            result.operation_id(),
+            workspace_handle,
+            WorkspacePinActionV1::RemoveAndDestroy,
+        )?;
+        let (catalog, _, _) = self.committed_context(result)?;
+        StorageWorkspaceRetirementV1::from_committed(result, &catalog).map_err(Into::into)
+    }
+
+    /// Composes a complete structural workspace-catalog plan from durable authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageBrokerError`] when the B1 projection is inconsistent,
+    /// an exact selected pin-attempt record or portable authority link changed,
+    /// or the resulting row set violates the closed catalog-plan invariants.
+    #[allow(
+        dead_code,
+        reason = "structural plans await the physical-evidence runtime boundary"
+    )]
+    pub(crate) fn workspace_catalog_plan(
+        &self,
+    ) -> Result<StorageWorkspaceCatalogPlanV1, StorageBrokerError> {
+        self.workspace_catalog_composition()
+            .map(|composition| composition.0)
+    }
+
+    /// Composes complete protected physical scope beside the structural plan.
+    ///
+    /// `None` means at least one row is intentionally non-terminal and cannot
+    /// authorize inventory yet. A present plan includes every authenticated
+    /// root and descendant dataset even when the workspace plan is empty.
+    pub(crate) fn workspace_catalog_activation_plan(
+        &self,
+    ) -> Result<
+        (
+            StorageWorkspaceCatalogPlanV1,
+            Option<AuthenticatedWorkspaceCatalogPhysicalPlanV1>,
+        ),
+        StorageBrokerError,
+    > {
+        self.workspace_catalog_composition()
+    }
+
+    fn workspace_catalog_composition(
+        &self,
+    ) -> Result<
+        (
+            StorageWorkspaceCatalogPlanV1,
+            Option<AuthenticatedWorkspaceCatalogPhysicalPlanV1>,
+        ),
+        StorageBrokerError,
+    > {
+        let projection = self.transactions.workspace_projection_plan()?;
+        let verified_journal = self.transactions.verified_resolver_journal()?;
+        let physical = verified_journal.physical();
+        if physical.binding().generation() != projection.physical_head_generation()
+            || physical.binding().digest() != projection.physical_head_digest()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+
+        let mut root_table = BTreeMap::new();
+        for root in physical.roots() {
+            match root_table.get(root.dataset_prefix()) {
+                Some(existing_guid) if *existing_guid != root.guid() => {
+                    return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+                }
+                Some(_) => {}
+                None => {
+                    root_table.insert(root.dataset_prefix().to_owned(), root.guid());
+                }
+            }
+        }
+        let roots = root_table
+            .iter()
+            .map(|(name, guid)| {
+                WorkspaceCatalogObservationRootV1::new(name.clone(), *guid)
+                    .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate.into())
+            })
+            .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+        for (index, root) in roots.iter().enumerate() {
+            if roots[..index]
+                .iter()
+                .any(|candidate| strict_dataset_descendant(root.name(), candidate.name()))
+            {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+        }
+        let root_indices = roots
+            .iter()
+            .enumerate()
+            .map(|(index, root)| {
+                u16::try_from(index)
+                    .map(|index| (root.name().to_owned(), index))
+                    .map_err(|_| {
+                        StorageBrokerError::WorkspaceCatalog(
+                            StorageWorkspaceCatalogError::InvalidCandidate,
+                        )
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let mut allowed_object_rows = physical
+            .datasets()
+            .iter()
+            .map(|dataset| {
+                let root_index = root_indices
+                    .get(dataset.root().dataset_prefix())
+                    .copied()
+                    .ok_or(crate::StorageStateError::AuthorityLinkMismatch)?;
+                let root = roots
+                    .get(usize::from(root_index))
+                    .filter(|root| root.guid() == dataset.root().guid())
+                    .ok_or(crate::StorageStateError::AuthorityLinkMismatch)?;
+                if !strict_dataset_descendant(dataset.name(), root.name()) {
+                    return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+                }
+                Ok((dataset.name().to_owned(), root_index, dataset.guid()))
+            })
+            .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+        allowed_object_rows.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+        let allowed_objects = allowed_object_rows
+            .into_iter()
+            .map(|(name, root_index, guid)| {
+                WorkspaceCatalogObservationObjectV1::new(
+                    root_index,
+                    name,
+                    WorkspaceCatalogObservationObjectKindV1::Filesystem,
+                    guid,
+                )
+                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate.into())
+            })
+            .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+
+        let mut rows = Vec::with_capacity(projection.entries().len());
+        let mut physical_rows = Vec::with_capacity(projection.entries().len());
+        let mut all_rows_terminal = true;
+        for entry in projection.entries() {
+            let creation = self.transactions.workspace_projection_creation(entry)?;
+            let (creation_catalog, _, _) = self.committed_context(creation)?;
+            let (root_name, root_guid, dataset_name) = match creation_catalog.plan() {
+                CatalogPlanV1::CreateWorkspace { destination, .. }
+                | CatalogPlanV1::Clone { destination, .. } => (
+                    destination.root().dataset_prefix().to_owned(),
+                    destination.root().guid(),
+                    destination.name().to_owned(),
+                ),
+                _ => return Err(crate::StorageStateError::AuthorityLinkMismatch.into()),
+            };
+            let (identity_range_start, identity_range_size) = self
+                .transactions
+                .workspace_identity_range(entry.creation_operation_id())?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+
+            let active_prefixes = self
+                .transactions
+                .workspace_projection_satisfied_ensure_bindings(entry)?
+                .into_iter()
+                .map(|binding| {
+                    let pin_proof = self
+                        .transactions
+                        .workspace_projection_ensure_pin(entry, binding)?;
+                    let publication =
+                        self.workspace_publication_from_committed(creation, pin_proof)?;
+                    StorageWorkspaceCatalogActivePrefixV1::new(
+                        binding.attempt_id(),
+                        binding.attempt_ordinal(),
+                        binding.record_digest(),
+                        publication,
+                    )
+                    .map_err(Into::into)
+                })
+                .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+
+            let policy = if entry.requires_absent_row() {
+                StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+            } else if let Some(binding) = entry.retained_active_binding() {
+                let pin_proof = self
+                    .transactions
+                    .workspace_projection_ensure_pin(entry, binding)?;
+                StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(
+                    self.workspace_publication_from_committed(creation, pin_proof)?,
+                )
+            } else if let Some(binding) = entry.converging_active_binding() {
+                let pin_proof = self
+                    .transactions
+                    .workspace_projection_ensure_pin(entry, binding)?;
+                StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(
+                    self.workspace_publication_from_committed(creation, pin_proof)?,
+                )
+            } else if let Some((historical_ensure, removal)) = entry.converging_retired_bindings() {
+                let Some(StorageWorkspaceProjection::Retired {
+                    creation: ready_creation,
+                    retirement,
+                }) = entry.ready_projection()
+                else {
+                    return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+                };
+                if *ready_creation != creation {
+                    return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+                }
+                let pin_proof = self
+                    .transactions
+                    .workspace_projection_ensure_pin(entry, historical_ensure)?;
+                self.transactions.require_workspace_projection_effect(
+                    entry,
+                    retirement.operation_id(),
+                    WorkspacePinActionV1::RemoveAndDestroy,
+                    removal,
+                )?;
+                let (catalog, _, _) = self.committed_context(*retirement)?;
+                let retirement =
+                    StorageWorkspaceRetirementV1::from_committed(*retirement, &catalog)?;
+                StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired {
+                    creation: self.workspace_publication_from_committed(creation, pin_proof)?,
+                    retirement,
+                }
+            } else {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            };
+            let expectation = match &policy {
+                StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(publication) => {
+                    Some(WorkspaceCatalogObservationExpectationV1::Present {
+                        mount_id: publication.pin_proof().mount_id(),
+                        root_device: publication.pin_proof().root_device(),
+                        root_inode: publication.pin_proof().root_inode(),
+                    })
+                }
+                StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired { .. } => {
+                    Some(WorkspaceCatalogObservationExpectationV1::Absent)
+                }
+                StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+                | StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(_) => {
+                    all_rows_terminal = false;
+                    None
+                }
+            };
+            physical_rows.push((
+                entry.workspace_handle(),
+                entry.creation_operation_id(),
+                root_name,
+                root_guid,
+                dataset_name,
+                entry.dataset_guid(),
+                expectation,
+            ));
+            rows.push(StorageWorkspaceCatalogRowPlanV1::new(
+                entry.workspace_handle(),
+                entry.dataset_guid(),
+                entry.creation_operation_id(),
+                identity_range_start,
+                identity_range_size,
+                policy,
+                active_prefixes,
+            )?);
+        }
+
+        let structural = StorageWorkspaceCatalogPlanV1::new(
+            projection.transaction_sequence(),
+            projection.transaction_snapshot_digest(),
+            projection.plan_digest(),
+            projection.physical_head_generation(),
+            projection.physical_head_digest(),
+            rows,
+        )?;
+        if !all_rows_terminal {
+            return Ok((structural, None));
+        }
+
+        let targets = physical_rows
+            .into_iter()
+            .map(
+                |(
+                    workspace_handle,
+                    creation_operation_id,
+                    root_name,
+                    _,
+                    dataset_name,
+                    dataset_guid,
+                    expectation,
+                )| {
+                    let root_index = root_indices.get(&root_name).copied().ok_or(
+                        StorageBrokerError::WorkspaceCatalog(
+                            StorageWorkspaceCatalogError::InvalidCandidate,
+                        ),
+                    )?;
+                    let expectation = expectation.ok_or(StorageBrokerError::WorkspaceCatalog(
+                        StorageWorkspaceCatalogError::InvalidCandidate,
+                    ))?;
+                    WorkspaceCatalogObservationTargetV1::new(
+                        workspace_handle,
+                        creation_operation_id,
+                        root_index,
+                        dataset_name,
+                        dataset_guid,
+                        expectation,
+                    )
+                    .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate.into())
+                },
+            )
+            .collect::<Result<Vec<_>, StorageBrokerError>>()?;
+
+        Ok((
+            structural,
+            Some(AuthenticatedWorkspaceCatalogPhysicalPlanV1 {
+                roots,
+                allowed_objects,
+                targets,
+            }),
+        ))
+    }
+
+    pub(crate) fn workspace_projection(
+        &self,
+    ) -> Result<Vec<StorageWorkspaceCatalogActionV1>, StorageBrokerError> {
+        self.transactions
+            .workspace_projection()?
+            .into_iter()
+            .map(|projection| match projection {
+                StorageWorkspaceProjection::Active(result) => self
+                    .workspace_publication(result)
+                    .map(StorageWorkspaceCatalogActionV1::Publish),
+                StorageWorkspaceProjection::Retired {
+                    creation,
+                    retirement,
+                } => Ok(StorageWorkspaceCatalogActionV1::Retire {
+                    // State projection admits retirement only after the latest
+                    // pin attempt is a satisfied RemoveAndDestroy. Reconstruct
+                    // historical creation identity without demanding that the
+                    // now-retired workspace still have a launchable Ensure.
+                    creation: self.workspace_publication_from_committed(
+                        creation,
+                        self.transactions
+                            .satisfied_workspace_ensure_pin_for_creation_history(
+                                creation.operation_id(),
+                                creation
+                                    .storage_handle()
+                                    .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
+                            )?,
+                    )?,
+                    retirement: self.workspace_retirement(retirement)?,
+                }),
+            })
+            .collect()
+    }
+
+    pub(crate) fn workspace_identity_ranges(&self) -> Result<Vec<(u32, u32)>, StorageBrokerError> {
+        self.transactions
+            .workspace_identity_ranges()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn workspace_identity_range(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<(u32, u32)>, StorageBrokerError> {
+        self.transactions
+            .workspace_identity_range(operation_id)
+            .map_err(Into::into)
+    }
+
+    fn committed_context(
+        &self,
+        result: CommittedStorageResultV1,
+    ) -> Result<(ResolvedCatalogCommitmentV1, BrokerAssignment, NodeId), StorageBrokerError> {
+        let entry = self.transactions.committed_recovery_entry(result)?;
+        let catalog = self.transactions.recover_catalog(entry)?;
+        let sandbox_id = entry.sandbox_id();
+        let sealed_fence = self
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let fence = self
+            .authority
+            .open_operation_fence(&entry.operation_id(), sealed_fence)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let assignment = fence.assignment();
+        if assignment.sandbox().as_bytes() != &sandbox_id {
+            return Err(StorageBrokerError::Authority);
+        }
+        Ok((catalog, assignment, fence.node()))
+    }
+}
+
+fn strict_dataset_descendant(name: &str, root: &str) -> bool {
+    name.strip_prefix(root)
+        .is_some_and(|suffix| suffix.starts_with('/') && suffix.len() > 1)
+}
+
+fn fence_is_same_or_successor(
+    historical: &BrokerAuthorizationFenceV1,
+    current: &BrokerAuthorizationFenceV1,
+) -> bool {
+    let historical_assignment = historical.assignment();
+    let current_assignment = current.assignment();
+    if historical.node() != current.node()
+        || current_assignment.epoch() < historical_assignment.epoch()
+    {
+        return false;
+    }
+    if current_assignment.epoch() > historical_assignment.epoch() {
+        return true;
+    }
+    if current.ownership_authority() != historical.ownership_authority()
+        || current_assignment.incarnation() != historical_assignment.incarnation()
+        || current_assignment.desired_generation() < historical_assignment.desired_generation()
+    {
+        return false;
+    }
+    current_assignment.desired_generation() > historical_assignment.desired_generation()
+        || (current_assignment.digest() == historical_assignment.digest()
+            && current.plan_digest() == historical.plan_digest())
+}
+
+fn workspace_repair_follows_creation(
+    creation: &BrokerAuthorizationFenceV1,
+    repair: &BrokerAuthorizationFenceV1,
+) -> bool {
+    let creation_assignment = creation.assignment();
+    let repair_assignment = repair.assignment();
+    creation.node() == repair.node()
+        && creation.ownership_authority() == repair.ownership_authority()
+        && creation_assignment.sandbox() == repair_assignment.sandbox()
+        && creation_assignment.incarnation() == repair_assignment.incarnation()
+        && creation_assignment.epoch() == repair_assignment.epoch()
+        && creation_assignment.desired_generation() <= repair_assignment.desired_generation()
+}
+
+fn prepared_fence_is_strictly_superseded(
+    historical: &BrokerAuthorizationFenceV1,
+    current: &BrokerAuthorizationFenceV1,
+) -> bool {
+    let historical_assignment = historical.assignment();
+    let current_assignment = current.assignment();
+    // Both fences have already passed check_current_fence, which binds their
+    // node and ownership authority to this runtime configuration. Keeping the
+    // equality checks here makes the comparator fail closed if that precondition
+    // is ever weakened; it deliberately narrows generic cross-epoch admission.
+    if current.node() != historical.node()
+        || current_assignment.sandbox() != historical_assignment.sandbox()
+        || current.ownership_authority() != historical.ownership_authority()
+        || current_assignment.epoch() < historical_assignment.epoch()
+    {
+        return false;
+    }
+    if current_assignment.epoch() > historical_assignment.epoch() {
+        return true;
+    }
+    if current_assignment.incarnation() != historical_assignment.incarnation()
+        || current_assignment.desired_generation() < historical_assignment.desired_generation()
+    {
+        return false;
+    }
+    if current_assignment.desired_generation() > historical_assignment.desired_generation() {
+        return true;
+    }
+    if current_assignment.digest() != historical_assignment.digest()
+        || current.plan_digest() != historical.plan_digest()
+    {
+        return false;
+    }
+
+    current.local_lease_record().lease_generation()
+        > historical.local_lease_record().lease_generation()
+}
+
+/// Returns the closed method set safe for the current storage composition.
+///
+/// Authoritative inventory, non-authorizing catalog preparation, isolated
+/// repair are advertised independently from their exact runtime readiness
+/// proofs. Apply remains absent until every action and privileged backend has
+/// qualified in a future complete implementation.
+#[must_use]
+pub fn advertised_storage_methods(
+    inventory_ready: bool,
+    prepare_ready: bool,
+    repair_ready: bool,
+) -> Vec<BrokerMethod> {
+    let mut methods = Vec::with_capacity(3);
+    if inventory_ready {
+        methods.push(BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES);
+    }
+    if prepare_ready {
+        methods.push(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG);
+    }
+    if repair_ready {
+        methods.push(BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN);
+    }
+    methods
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::cell::Cell;
+    use std::fs;
+    use std::num::NonZeroU32;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::rc::Rc;
+    use std::thread;
+    use std::time::Duration;
+
+    use aos_proto::aos::sandbox::local::v1::{
+        ApplyStorageRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello,
+        BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, Feature, InventoryStorageRequest,
+        PrepareStorageCatalogRequest, PrepareStorageCatalogResponse,
+        RepairStorageWorkspacePinRequest, StorageAction, StorageResult,
+    };
+    use aos_sandbox_core::format::{
+        encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
+        encode_trust_policy,
+    };
+    use aos_sandbox_core::model::{
+        AssignmentManifestV1, IdentityProfile, KeyReference, KeyUsage, NetworkKind, NetworkProfile,
+        ResourceProfile, SandboxAncestry, SignaturePurpose, SignatureStatement, StableKeyId,
+        TrustPolicy, UnmappableIdentityPolicy,
+    };
+    use aos_sandbox_core::{
+        AssignmentEpoch, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, BrokerGrantTarget,
+        BrokerVerb, CanonicalAssignmentManifestV1, DecodeLimits, DesiredGeneration, FeatureRef,
+        IncarnationId, LeaseAssignment, MediaType, NamespaceGeneration, NodeId, ObjectDescriptor,
+        OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType, ProjectId, ProtocolId,
+        RawClockProvenance, ResourceVector, RevocationScopeId, SandboxId, TrustScopeId,
+        descriptor_for_bytes, encode_sandbox_spec, sign_statement,
+    };
+    use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
+    use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
+    use aos_sandbox_protocol::{
+        AuthorizationArtifactBytes, MINIMUM_HOST_IDENTITY_RANGE, decode_request_envelope,
+        decode_response_envelope, decode_server_hello, decode_storage_resource_inventory_response,
+        encode_authorized_request_envelope, encode_unauthed_request_envelope,
+    };
+    use buffa::Message as _;
+    use ed25519_dalek::SigningKey;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::helper::{
+        SealedZfsProgram, SystemdZfsProcessBackend, ZfsHelperError, ZfsPostconditionObservation,
+        ZfsProcessOutput,
+    };
+    use crate::resolver::inventory::ProtectedStorageInventoryV1;
+    use crate::resolver::policy::ProtectedStorageResolverPolicyV1;
+    use crate::resolver::protected_catalog::{
+        ProtectedStorageResolverPolicyDirectoryV1, encode_catalog_for_test,
+    };
+    use crate::root_policy::WorkspaceRootPolicyV1;
+    use crate::workspace_pin::derive_attempt_id;
+    use crate::workspace_repair::StorageWorkspacePinRepairIntentV1;
+    use crate::{
+        ActiveHoldEvidence, CatalogPlanV1, HoldId, ManagedDatasetRoot, PlannedDataset,
+        ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset, ResolvedSnapshot,
+        StorageAdmissionError, StorageDomainsV1, StorageStateKey, WorkspaceSpacePolicyV1,
+        ZfsHelperContract,
+    };
+
+    fn private_tempdir_in(parent: &Path) -> std::io::Result<TempDir> {
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(parent)
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct SystemdSocketSample {
+        accepted: u64,
+        invocation_id: String,
+    }
+
+    fn systemd_socket_sample(unit: &str) -> SystemdSocketSample {
+        let systemctl = std::env::var_os("AOS_SYSTEMCTL_EXECUTABLE").unwrap();
+        let output = Command::new(systemctl)
+            .args([
+                "show",
+                unit,
+                "--property=NAccepted",
+                "--property=InvocationID",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "systemctl failed for {unit}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let properties = String::from_utf8(output.stdout).unwrap();
+        let mut accepted = None;
+        let mut invocation_id = None;
+        for line in properties.lines() {
+            let (name, value) = line.split_once('=').unwrap();
+            match name {
+                "NAccepted" => accepted = Some(value.parse().unwrap()),
+                "InvocationID" => invocation_id = Some(value.to_owned()),
+                _ => panic!("unexpected systemd socket property {name}"),
+            }
+        }
+
+        let invocation_id = invocation_id.unwrap();
+        assert!(!invocation_id.is_empty(), "socket invocation ID was empty");
+        SystemdSocketSample {
+            accepted: accepted.unwrap(),
+            invocation_id,
+        }
+    }
+
+    fn assert_same_socket_invocation(before: &SystemdSocketSample, after: &SystemdSocketSample) {
+        assert_eq!(after.invocation_id, before.invocation_id);
+    }
+
+    fn workspace_pin_replay_claim_count() -> usize {
+        fs::read_dir("/var/lib/aos-sandbox-workspace-pin-worker")
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("attempt-"))
+            .count()
+    }
+
+    const NODE: NodeId = NodeId::from_bytes([31; 16]);
+
+    struct Fixture {
+        plan_key: SigningKey,
+        lease_key: SigningKey,
+        plan_signer: KeyReference,
+        lease_signer: KeyReference,
+        plan_policy: Vec<u8>,
+        plan_descriptor: aos_sandbox_core::ObjectDescriptor,
+        lease_policy: Vec<u8>,
+        lease_descriptor: aos_sandbox_core::ObjectDescriptor,
+        plan_scope: TrustScopeId,
+        lease_scope: TrustScopeId,
+        revocation: RevocationScopeId,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self::with_lease_key([42; 32])
+        }
+
+        fn with_lease_key(lease_key_bytes: [u8; 32]) -> Self {
+            let plan_key = SigningKey::from_bytes(&[41; 32]);
+            let lease_key = SigningKey::from_bytes(&lease_key_bytes);
+            let plan_signer = key_ref("storage-plan", 3, KeyUsage::BrokerAuthorization, &plan_key);
+            let lease_signer = key_ref("storage-lease", 7, KeyUsage::OwnershipLease, &lease_key);
+            let plan_scope = TrustScopeId::from_bytes([43; 16]);
+            let lease_scope = TrustScopeId::from_bytes([44; 16]);
+            let (plan_policy, plan_descriptor) = policy(
+                plan_scope,
+                SignaturePurpose::BrokerAuthorization,
+                plan_signer.clone(),
+            );
+            let (lease_policy, lease_descriptor) = policy(
+                lease_scope,
+                SignaturePurpose::OwnershipLease,
+                lease_signer.clone(),
+            );
+            Self {
+                plan_key,
+                lease_key,
+                plan_signer,
+                lease_signer,
+                plan_policy,
+                plan_descriptor,
+                lease_policy,
+                lease_descriptor,
+                plan_scope,
+                lease_scope,
+                revocation: RevocationScopeId::from_bytes([45; 16]),
+            }
+        }
+
+        fn authority(&self) -> StorageAuthorityV1 {
+            self.authority_at_node(NODE)
+        }
+
+        fn authority_at_node(&self, node: NodeId) -> StorageAuthorityV1 {
+            let plan = aos_sandbox_core::BrokerPlanTrustAnchor::from_trusted_configuration(
+                self.plan_policy.clone(),
+                self.plan_descriptor.clone(),
+                self.plan_scope,
+                self.plan_signer.clone(),
+                self.plan_key.verifying_key().to_bytes(),
+                self.revocation,
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            let lease = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+                self.lease_policy.clone(),
+                self.lease_descriptor.clone(),
+                self.lease_scope,
+                self.lease_signer.clone(),
+                self.lease_key.verifying_key().to_bytes(),
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            StorageAuthorityV1::new(plan, lease, node, [51; 16], [52; 32]).unwrap()
+        }
+
+        fn protected_authority_binding(&self) -> ObjectDigest {
+            let mut hash = Sha256::new();
+            hash.update(b"aos.sandbox.broker.protected-configuration.v1\0");
+            hash.update([3]);
+            hash.update((self.plan_policy.len() as u64).to_be_bytes());
+            hash.update(&self.plan_policy);
+            hash.update(self.plan_key.verifying_key().as_bytes());
+            hash.update(self.revocation.as_bytes());
+            hash.update((self.lease_policy.len() as u64).to_be_bytes());
+            hash.update(&self.lease_policy);
+            hash.update(self.lease_key.verifying_key().as_bytes());
+            hash.update(NODE.as_bytes());
+            hash.update([51; 16]);
+            ObjectDigest::from_bytes(hash.finalize().into())
+        }
+
+        fn provision_protected(&self, directory: &Path) {
+            fs::create_dir_all(directory).unwrap();
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+
+            self.write_protected(directory, "broker-plan-policy.cbor", &self.plan_policy);
+            self.write_protected(
+                directory,
+                "broker-plan-public-key",
+                &self.plan_key.verifying_key().to_bytes(),
+            );
+            self.write_protected(
+                directory,
+                "broker-revocation-scope",
+                self.revocation.as_bytes(),
+            );
+            self.write_protected(directory, "ownership-lease-policy.cbor", &self.lease_policy);
+            self.write_protected(
+                directory,
+                "ownership-lease-public-key",
+                &self.lease_key.verifying_key().to_bytes(),
+            );
+            self.write_protected(directory, "node-id", NODE.as_bytes());
+
+            let mut journal_key = Vec::with_capacity(48);
+            journal_key.extend_from_slice(&[51; 16]);
+            journal_key.extend_from_slice(&[52; 32]);
+            self.write_protected(directory, "journal-mac-key", &journal_key);
+        }
+
+        fn write_protected(&self, directory: &Path, name: &str, bytes: &[u8]) {
+            let path = directory.join(name);
+            fs::write(&path, bytes).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        fn artifacts(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing(request, catalog, &[request], expires, audience, protocol)
+        }
+
+        fn storage_artifacts_at_protocol(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            protocol_version: ProtocolVersion,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head_and_protocol(
+                request,
+                catalog,
+                &[request],
+                None,
+                true,
+                true,
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                protocol_version,
+            )
+        }
+
+        fn artifacts_at_head(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            expected_head: crate::CatalogBindingV1,
+            expires: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head(
+                request,
+                catalog,
+                &[request],
+                Some(expected_head),
+                true,
+                true,
+                100,
+                expires,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            )
+        }
+
+        fn artifacts_authorizing(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            authorized: &[&[u8]],
+            expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between(
+                request, catalog, authorized, 100, expires, 300, audience, protocol,
+            )
+        }
+
+        fn artifacts_for_kernel_clock(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            current_wall_seconds: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            // Whole-second wall expiry must comfortably cover the request's
+            // nanosecond-precision boottime deadline after clock conversion.
+            self.artifacts_authorizing_between(
+                request,
+                catalog,
+                &[request],
+                current_wall_seconds - 30,
+                current_wall_seconds + 300,
+                current_wall_seconds + 300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            )
+        }
+
+        fn artifacts_at_lease_generation(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
+            let (preparation_bytes, _, _) = preparation_request(request, catalog);
+            let preparation = CanonicalStoragePreparationSemanticsV1::decode(
+                &preparation_bytes,
+                peer(),
+                peer_policy(),
+                100,
+            )
+            .unwrap();
+            let mut grants = vec![
+                BrokerGrant::new(
+                    semantics.broker_verb(),
+                    semantics.grant_target(),
+                    semantics.argument_commitment(),
+                    request.len() as u32,
+                    0,
+                )
+                .unwrap(),
+                BrokerGrant::new(
+                    preparation.broker_verb(),
+                    preparation.grant_target(),
+                    preparation.argument_commitment(),
+                    preparation_bytes.len() as u32,
+                    0,
+                )
+                .unwrap(),
+            ];
+            grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
+            self.signed_artifacts_at_lease_generation(
+                decode_assignment(request).unwrap(),
+                grants,
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+                lease_generation,
+            )
+        }
+
+        fn artifacts_for_node(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            node: NodeId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
+            let (preparation_bytes, _, _) = preparation_request(request, catalog);
+            let preparation = CanonicalStoragePreparationSemanticsV1::decode(
+                &preparation_bytes,
+                peer(),
+                peer_policy(),
+                100,
+            )
+            .unwrap();
+            let mut grants = vec![
+                BrokerGrant::new(
+                    semantics.broker_verb(),
+                    semantics.grant_target(),
+                    semantics.argument_commitment(),
+                    request.len() as u32,
+                    0,
+                )
+                .unwrap(),
+                BrokerGrant::new(
+                    preparation.broker_verb(),
+                    preparation.grant_target(),
+                    preparation.argument_commitment(),
+                    preparation_bytes.len() as u32,
+                    0,
+                )
+                .unwrap(),
+            ];
+            grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
+            self.signed_artifacts_at_node(decode_assignment(request).unwrap(), grants, node, 1)
+        }
+
+        fn artifacts_for_kernel_clock_at_head(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            expected_head: crate::CatalogBindingV1,
+            current_wall_seconds: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            // Later operations must authorize the exact preparation bytes,
+            // including the catalog head advanced by earlier operations.
+            self.artifacts_authorizing_between_at_head(
+                request,
+                catalog,
+                &[request],
+                Some(expected_head),
+                true,
+                true,
+                current_wall_seconds - 30,
+                current_wall_seconds + 300,
+                current_wall_seconds + 300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn artifacts_authorizing_between(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            authorized: &[&[u8]],
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head(
+                request,
+                catalog,
+                authorized,
+                None,
+                true,
+                true,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+            )
+        }
+
+        fn artifacts_with_grants(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            include_apply: bool,
+            include_prepare: bool,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head(
+                request,
+                catalog,
+                &[request],
+                None,
+                include_apply,
+                include_prepare,
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            )
+        }
+
+        fn repair_artifacts(&self, request: &[u8]) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.repair_artifacts_between(request, 100, 300, 300)
+        }
+
+        fn repair_artifacts_without_plan_grant(
+            &self,
+            request: &[u8],
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = CanonicalStorageRepairSemanticsV1::decode(
+                request,
+                peer(),
+                peer_policy(),
+                clock().boottime_nanoseconds(),
+            )
+            .unwrap();
+            let fence = semantics.fence();
+            let assignment = BrokerAssignment::new(
+                SandboxId::from_bytes(*fence.sandbox_id()),
+                IncarnationId::from_bytes(*fence.incarnation_id()),
+                AssignmentEpoch::new(fence.assignment_epoch()),
+                DesiredGeneration::new(fence.desired_generation()),
+                ObjectDigest::from_bytes(*fence.assignment_digest()),
+            )
+            .unwrap();
+            let unrelated_grant = BrokerGrant::new(
+                BrokerVerb::StorageInventory,
+                BrokerGrantTarget::Assignment,
+                semantics.argument_commitment(),
+                request.len() as u32,
+                0,
+            )
+            .unwrap();
+            self.signed_artifacts(
+                assignment,
+                vec![unrelated_grant],
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+            )
+        }
+
+        fn repair_artifacts_for_kernel_clock(
+            &self,
+            request: &[u8],
+            current_wall_seconds: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.repair_artifacts_between(
+                request,
+                current_wall_seconds - 30,
+                current_wall_seconds + 300,
+                current_wall_seconds + 300,
+            )
+        }
+
+        fn repair_artifacts_for_rpc(
+            &self,
+            request: &[u8],
+            current_wall_seconds: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = CanonicalStorageRepairSemanticsV1::decode(
+                request,
+                rpc_peer(),
+                rpc_peer_policy(),
+                vm_clock().boottime_nanoseconds(),
+            )
+            .unwrap();
+            let fence = semantics.fence();
+            let assignment = BrokerAssignment::new(
+                SandboxId::from_bytes(*fence.sandbox_id()),
+                IncarnationId::from_bytes(*fence.incarnation_id()),
+                AssignmentEpoch::new(fence.assignment_epoch()),
+                DesiredGeneration::new(fence.desired_generation()),
+                ObjectDigest::from_bytes(*fence.assignment_digest()),
+            )
+            .unwrap();
+            let grant = BrokerGrant::new(
+                semantics.broker_verb(),
+                semantics.grant_target(),
+                semantics.argument_commitment(),
+                request.len() as u32,
+                0,
+            )
+            .unwrap();
+
+            self.signed_artifacts(
+                assignment,
+                vec![grant],
+                current_wall_seconds - 30,
+                current_wall_seconds + 600,
+                current_wall_seconds + 600,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+            )
+        }
+
+        fn preparation_artifacts_for_rpc(
+            &self,
+            apply_request: &[u8],
+            preparation_request: &[u8],
+            current_wall_seconds: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+                preparation_request,
+                rpc_peer(),
+                rpc_peer_policy(),
+                vm_clock().boottime_nanoseconds(),
+            )
+            .unwrap();
+            let grant = BrokerGrant::new(
+                semantics.broker_verb(),
+                semantics.grant_target(),
+                semantics.argument_commitment(),
+                preparation_request.len() as u32,
+                0,
+            )
+            .unwrap();
+
+            self.signed_artifacts(
+                decode_assignment(apply_request).unwrap(),
+                vec![grant],
+                current_wall_seconds - 30,
+                current_wall_seconds + 600,
+                current_wall_seconds + 600,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+            )
+        }
+
+        fn repair_artifacts_between(
+            &self,
+            request: &[u8],
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = CanonicalStorageRepairSemanticsV1::decode(
+                request,
+                peer(),
+                peer_policy(),
+                clock().boottime_nanoseconds(),
+            )
+            .unwrap();
+            let fence = semantics.fence();
+            let assignment = BrokerAssignment::new(
+                SandboxId::from_bytes(*fence.sandbox_id()),
+                IncarnationId::from_bytes(*fence.incarnation_id()),
+                AssignmentEpoch::new(fence.assignment_epoch()),
+                DesiredGeneration::new(fence.desired_generation()),
+                ObjectDigest::from_bytes(*fence.assignment_digest()),
+            )
+            .unwrap();
+            let grant = BrokerGrant::new(
+                semantics.broker_verb(),
+                semantics.grant_target(),
+                semantics.argument_commitment(),
+                request.len() as u32,
+                0,
+            )
+            .unwrap();
+            self.signed_artifacts(
+                assignment,
+                vec![grant],
+                valid_after,
+                expires,
+                lease_expires,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn artifacts_authorizing_between_at_head(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            authorized: &[&[u8]],
+            expected_head: Option<crate::CatalogBindingV1>,
+            include_apply: bool,
+            include_prepare: bool,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_authorizing_between_at_head_and_protocol(
+                request,
+                catalog,
+                authorized,
+                expected_head,
+                include_apply,
+                include_prepare,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+                ProtocolVersion::new(1, 0),
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn artifacts_authorizing_between_at_head_and_protocol(
+            &self,
+            request: &[u8],
+            catalog: &ResolvedCatalogCommitmentV1,
+            authorized: &[&[u8]],
+            expected_head: Option<crate::CatalogBindingV1>,
+            include_apply: bool,
+            include_prepare: bool,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+            protocol_version: ProtocolVersion,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
+            let assignment = decode_assignment(request).unwrap();
+            let mut grants = if audience == BrokerAudience::Storage {
+                authorized
+                    .iter()
+                    .flat_map(|bytes| {
+                        let candidate =
+                            decode_resolved(bytes, catalog, peer(), peer_policy(), 100).unwrap();
+                        let (preparation_bytes, _, _) = match expected_head {
+                            Some(head) => preparation_request_at_head(bytes, catalog, head),
+                            None => preparation_request(bytes, catalog),
+                        };
+                        let preparation = CanonicalStoragePreparationSemanticsV1::decode(
+                            &preparation_bytes,
+                            peer(),
+                            peer_policy(),
+                            100,
+                        )
+                        .unwrap();
+                        let mut grants = Vec::with_capacity(2);
+                        if include_apply {
+                            grants.push(
+                                BrokerGrant::new(
+                                    candidate.broker_verb(),
+                                    candidate.grant_target(),
+                                    candidate.argument_commitment(),
+                                    bytes.len() as u32,
+                                    0,
+                                )
+                                .unwrap(),
+                            );
+                        }
+                        if include_prepare {
+                            grants.push(
+                                BrokerGrant::new(
+                                    preparation.broker_verb(),
+                                    preparation.grant_target(),
+                                    preparation.argument_commitment(),
+                                    preparation_bytes.len() as u32,
+                                    0,
+                                )
+                                .unwrap(),
+                            );
+                        }
+                        grants
+                    })
+                    .collect()
+            } else {
+                vec![
+                    BrokerGrant::new(
+                        BrokerVerb::MountInventorySummary,
+                        BrokerGrantTarget::Assignment,
+                        semantics.argument_commitment(),
+                        request.len() as u32,
+                        0,
+                    )
+                    .unwrap(),
+                ]
+            };
+            grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
+            grants.dedup();
+            self.signed_artifacts(
+                assignment,
+                grants,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+                protocol_version,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn signed_artifacts(
+            &self,
+            assignment: BrokerAssignment,
+            grants: Vec<BrokerGrant>,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+            protocol_version: ProtocolVersion,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.signed_artifacts_at_lease_generation(
+                assignment,
+                grants,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+                protocol_version,
+                1,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn signed_artifacts_at_lease_generation(
+            &self,
+            assignment: BrokerAssignment,
+            grants: Vec<BrokerGrant>,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+            protocol_version: ProtocolVersion,
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.signed_artifacts_at_node_with_validity(
+                assignment,
+                grants,
+                NODE,
+                valid_after,
+                expires,
+                lease_expires,
+                audience,
+                protocol,
+                protocol_version,
+                lease_generation,
+            )
+        }
+
+        fn signed_artifacts_at_node(
+            &self,
+            assignment: BrokerAssignment,
+            grants: Vec<BrokerGrant>,
+            node: NodeId,
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.signed_artifacts_at_node_with_validity(
+                assignment,
+                grants,
+                node,
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+                lease_generation,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn signed_artifacts_at_node_with_validity(
+            &self,
+            assignment: BrokerAssignment,
+            grants: Vec<BrokerGrant>,
+            node: NodeId,
+            valid_after: i64,
+            expires: i64,
+            lease_expires: i64,
+            audience: BrokerAudience,
+            protocol: ProtocolId,
+            protocol_version: ProtocolVersion,
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let plan = BrokerAuthorizationPlan::new(
+                audience,
+                protocol,
+                protocol_version,
+                assignment,
+                node,
+                self.lease_signer.clone(),
+                grants,
+                ObjectDigest::from_bytes([48; 32]),
+                self.revocation,
+                valid_after,
+                expires,
+                Vec::new(),
+            )
+            .unwrap();
+            let plan_bytes = encode_broker_authorization_plan(&plan);
+            let lease = OwnershipLease::new(
+                LeaseAssignment::new(
+                    assignment.sandbox(),
+                    assignment.incarnation(),
+                    assignment.epoch(),
+                    assignment.digest(),
+                )
+                .unwrap(),
+                node,
+                lease_generation,
+                valid_after,
+                lease_expires,
+                10,
+                [49; 16],
+            )
+            .unwrap();
+            let lease_bytes = encode_ownership_lease(&lease);
+            validated(
+                BrokerAuthorizationArtifactsV1 {
+                    broker_plan_signature: signed(
+                        &plan_bytes,
+                        PortableMediaType::BrokerAuthorizationPlan,
+                        self.plan_scope,
+                        self.plan_signer.clone(),
+                        SignaturePurpose::BrokerAuthorization,
+                        valid_after,
+                        expires,
+                        &self.plan_descriptor,
+                        &self.plan_key,
+                    ),
+                    broker_plan: plan_bytes,
+                    ownership_lease_signature: signed(
+                        &lease_bytes,
+                        PortableMediaType::OwnershipLease,
+                        self.lease_scope,
+                        self.lease_signer.clone(),
+                        SignaturePurpose::OwnershipLease,
+                        valid_after,
+                        lease_expires,
+                        &self.lease_descriptor,
+                        &self.lease_key,
+                    ),
+                    ownership_lease: lease_bytes,
+                    ..Default::default()
+                },
+                protocol,
+            )
+        }
+    }
+
+    fn peer() -> PeerCredentials {
+        PeerCredentials {
+            uid: 100,
+            gid: 200,
+            pid: Some(300),
+        }
+    }
+    fn peer_policy() -> PeerPolicy {
+        PeerPolicy {
+            uid: 100,
+            gid: Some(200),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        }
+    }
+    fn rpc_peer() -> PeerCredentials {
+        PeerCredentials {
+            uid: 811,
+            gid: 811,
+            pid: Some(300),
+        }
+    }
+    fn rpc_peer_policy() -> PeerPolicy {
+        PeerPolicy {
+            uid: 811,
+            gid: Some(811),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        }
+    }
+    fn clock() -> RawPairedClockSample {
+        clock_at([50; 16], 150, 100)
+    }
+
+    fn clock_at(
+        host_boot_id: [u8; 16],
+        wall_seconds: i64,
+        boottime_nanoseconds: u64,
+    ) -> RawPairedClockSample {
+        RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            host_boot_id,
+            wall_seconds,
+            boottime_nanoseconds,
+        )
+        .unwrap()
+    }
+
+    fn workspace_pin_proof(
+        workspace_handle: [u8; 32],
+        dataset_name: &str,
+        dataset_guid: u64,
+    ) -> WorkspaceRootPinProofV1 {
+        use std::fmt::Write as _;
+
+        let mut mount_point = "/run/aos/sandbox-pins/workspaces/".to_owned();
+        for byte in workspace_handle {
+            write!(mount_point, "{byte:02x}").unwrap();
+        }
+
+        WorkspaceRootPinProofV1::new(
+            [50; 16],
+            51,
+            52,
+            53,
+            "/".to_owned(),
+            mount_point,
+            "zfs".to_owned(),
+            dataset_name.to_owned(),
+            dataset_guid,
+            54,
+            55,
+            WorkspaceRootPolicyV1::create_initialize().root_attributes(),
+        )
+        .unwrap()
+    }
+
+    fn request(operation: u8, handle: u8) -> Vec<u8> {
+        request_with_generation(operation, handle, 5)
+    }
+
+    fn with_request_id(request: &[u8], request_id: [u8; 16]) -> Vec<u8> {
+        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        decoded.header.get_or_insert_default().request_id = request_id.to_vec();
+        decoded.encode_to_vec()
+    }
+
+    fn with_assignment_incarnation_and_epoch(
+        request: &[u8],
+        incarnation_id: [u8; 16],
+        assignment_epoch: u64,
+    ) -> Vec<u8> {
+        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        let fence = decoded.fence.get_or_insert_default();
+        fence.incarnation_id = incarnation_id.to_vec();
+        fence.assignment_epoch = assignment_epoch;
+        decoded.encode_to_vec()
+    }
+
+    fn with_assignment_digest(request: &[u8], assignment_digest: ObjectDigest) -> Vec<u8> {
+        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        decoded.fence.get_or_insert_default().assignment_digest =
+            assignment_digest.as_bytes().to_vec();
+        decoded.encode_to_vec()
+    }
+
+    fn with_deadline(request: &[u8], deadline_boottime_nanoseconds: u64) -> Vec<u8> {
+        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        decoded
+            .header
+            .get_or_insert_default()
+            .deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
+        decoded.encode_to_vec()
+    }
+
+    fn preparation_request(
+        apply_bytes: &[u8],
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> (Vec<u8>, crate::CatalogBindingV1, crate::CatalogBindingV1) {
+        let expected_head =
+            crate::catalog_transition::StorageCatalogTransitionProvider::bootstrap_binding(
+                catalog.generation() - 1,
+                std::slice::from_ref(catalog),
+            )
+            .unwrap();
+        preparation_request_at_head(apply_bytes, catalog, expected_head)
+    }
+
+    fn preparation_request_at_head(
+        apply_bytes: &[u8],
+        catalog: &ResolvedCatalogCommitmentV1,
+        expected_head: crate::CatalogBindingV1,
+    ) -> (Vec<u8>, crate::CatalogBindingV1, crate::CatalogBindingV1) {
+        let apply = ApplyStorageRequest::decode_from_slice(apply_bytes).unwrap();
+        let inventory = catalog.binding();
+        let mut request = PrepareStorageCatalogRequest {
+            header: apply.header.clone(),
+            ..Default::default()
+        };
+        let header = request.header.get_or_insert_default();
+        header.protocol_minor = 0;
+        let operation_marker = apply.operation_id.first().copied().unwrap();
+        header.request_id = vec![operation_marker.wrapping_add(128); 16];
+        request.fence = apply.fence.clone();
+        request.action = apply.action;
+        request.operation_id = apply.operation_id;
+        request.storage_handle = apply.storage_handle;
+        request.source_version_handle = apply.source_version_handle;
+        request.requested_quota_bytes = apply.quota_bytes;
+        request.requested_reservation_bytes = match catalog.plan() {
+            CatalogPlanV1::CreateWorkspace { space, .. }
+            | CatalogPlanV1::Clone { space, .. }
+            | CatalogPlanV1::SetQuota { space, .. } => match space.reservation() {
+                ReservationPolicy::None => 0,
+                ReservationPolicy::Exact(bytes) => bytes,
+            },
+            _ => 0,
+        };
+        request.requested_hold_id = match catalog.plan() {
+            CatalogPlanV1::HoldSnapshot { hold_id, .. }
+            | CatalogPlanV1::ReleaseHold { hold_id, .. } => hold_id.as_bytes().to_vec(),
+            CatalogPlanV1::Clone { origin_hold, .. } => origin_hold.hold_id().as_bytes().to_vec(),
+            _ => Vec::new(),
+        };
+        request.inventory_generation = inventory.generation();
+        request.inventory_digest = inventory.digest().as_bytes().to_vec();
+        request.expected_catalog_generation = expected_head.generation();
+        request.expected_catalog_digest = expected_head.digest().as_bytes().to_vec();
+        request.preparation_expires_boottime_nanoseconds =
+            header.deadline_boottime_nanoseconds.checked_sub(1).unwrap();
+        (request.encode_to_vec(), inventory, expected_head)
+    }
+
+    struct StaticCatalogResolver<'a> {
+        catalog: &'a ResolvedCatalogCommitmentV1,
+    }
+
+    struct AssignmentBoundCatalogResolver<'a> {
+        expected: BrokerAssignment,
+        catalog: &'a ResolvedCatalogCommitmentV1,
+    }
+
+    impl ProtectedStorageCatalogResolverV1 for AssignmentBoundCatalogResolver<'_> {
+        fn resolve(
+            &self,
+            authorization: &crate::AuthorizedStorageResolutionV1,
+            _current_head: crate::CatalogBindingV1,
+        ) -> Result<ResolvedCatalogCommitmentV1, StorageCatalogPreparationError> {
+            if authorization.assignment() != self.expected
+                || authorization.preparation_commitment().as_bytes() == &[0; 32]
+                || authorization.transport_request_digest().as_bytes() == &[0; 32]
+                || authorization.plan_digest().as_bytes() == &[0; 32]
+                || authorization.lease_digest().as_bytes() == &[0; 32]
+            {
+                return Err(StorageCatalogPreparationError::ResolutionRejected);
+            }
+            Ok(self.catalog.clone())
+        }
+    }
+
+    impl ProtectedStorageCatalogResolverV1 for StaticCatalogResolver<'_> {
+        fn resolve(
+            &self,
+            _authorization: &crate::AuthorizedStorageResolutionV1,
+            _current_head: crate::CatalogBindingV1,
+        ) -> Result<ResolvedCatalogCommitmentV1, StorageCatalogPreparationError> {
+            Ok(self.catalog.clone())
+        }
+    }
+
+    fn prepare_for_apply(
+        coordinator: &mut StorageAdmissionCoordinator,
+        request: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        current_clock: &RawPairedClockSample,
+    ) -> StorageCatalogPreparationOutcomeV1 {
+        prepare_for_apply_at_protocol(
+            coordinator,
+            request,
+            artifacts,
+            catalog,
+            ProtocolVersion::new(1, 0),
+            current_clock,
+        )
+    }
+
+    fn prepare_for_apply_at_protocol(
+        coordinator: &mut StorageAdmissionCoordinator,
+        request: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+    ) -> StorageCatalogPreparationOutcomeV1 {
+        let expected_head = coordinator.transactions.catalog_head_binding().unwrap();
+        let (preparation, inventory, _) =
+            preparation_request_at_head(request, catalog, expected_head);
+        coordinator
+            .prepare_catalog(
+                &preparation,
+                artifacts,
+                inventory,
+                &StaticCatalogResolver { catalog },
+                protocol_version,
+                peer(),
+                peer_policy(),
+                current_clock,
+            )
+            .unwrap()
+    }
+
+    fn seal_current_fence(
+        coordinator: &StorageAdmissionCoordinator,
+        request: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        prior_fence: Option<&[u8]>,
+    ) -> Vec<u8> {
+        seal_current_fence_with_authority(
+            &coordinator.authority,
+            request,
+            artifacts,
+            catalog,
+            prior_fence,
+        )
+    }
+
+    fn seal_current_fence_with_authority(
+        authority: &StorageAuthorityV1,
+        request: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        prior_fence: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let semantics = decode_resolved(request, catalog, peer(), peer_policy(), 100).unwrap();
+        let assignment = decode_assignment(request).unwrap();
+        let admission = authority
+            .admit(
+                artifacts,
+                &semantics,
+                request,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                prior_fence,
+            )
+            .unwrap();
+        authority
+            .seal(
+                assignment.sandbox().as_bytes(),
+                semantics.header().request_id(),
+                semantics.operation_id(),
+                &admission,
+            )
+            .unwrap()
+            .current_fence
+    }
+
+    fn request_with_generation(operation: u8, handle: u8, desired_generation: u64) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![operation; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 200;
+        header.maximum_response_bytes = 4096;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = desired_generation;
+        fence.assignment_digest = vec![6; 32];
+        value.action = StorageAction::STORAGE_ACTION_SET_QUOTA.into();
+        value.operation_id = vec![operation; 16];
+        value.storage_handle = vec![handle; 32];
+        value.quota_bytes = 4096;
+        value.encode_to_vec()
+    }
+
+    fn with_assignment_epoch(request: &[u8], epoch: u64) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().assignment_epoch = epoch;
+        value.encode_to_vec()
+    }
+
+    fn with_incarnation(request: &[u8], incarnation: [u8; 16]) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().incarnation_id = incarnation.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn with_sandbox(request: &[u8], sandbox: [u8; 16]) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().sandbox_id = sandbox.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn repair_request(
+        request_id: u8,
+        operation_id: u8,
+        workspace_handle: [u8; 32],
+        desired_generation: u64,
+        assignment_digest: ObjectDigest,
+    ) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![request_id; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 200;
+        header.maximum_response_bytes = 4096;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = desired_generation;
+        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        value.operation_id = vec![operation_id; 16];
+        value.storage_handle = workspace_handle.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn with_repair_sandbox(request: &[u8], sandbox_id: [u8; 16]) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().sandbox_id = sandbox_id.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn with_repair_incarnation(request: &[u8], incarnation_id: [u8; 16]) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().incarnation_id = incarnation_id.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn with_repair_epoch(request: &[u8], assignment_epoch: u64) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().assignment_epoch = assignment_epoch;
+        value.encode_to_vec()
+    }
+
+    fn with_repair_generation(request: &[u8], desired_generation: u64) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().desired_generation = desired_generation;
+        value.encode_to_vec()
+    }
+
+    fn with_repair_assignment(request: &[u8], assignment_digest: ObjectDigest) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().assignment_digest =
+            assignment_digest.as_bytes().to_vec();
+        value.encode_to_vec()
+    }
+
+    fn vm_repair_request(
+        request_id: u8,
+        operation_id: u8,
+        workspace_handle: [u8; 32],
+        desired_generation: u64,
+        assignment_digest: ObjectDigest,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Vec<u8> {
+        let encoded = repair_request(
+            request_id,
+            operation_id,
+            workspace_handle,
+            desired_generation,
+            assignment_digest,
+        );
+        let mut request = RepairStorageWorkspacePinRequest::decode_from_slice(&encoded).unwrap();
+        request
+            .header
+            .get_or_insert_default()
+            .deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
+        request.encode_to_vec()
+    }
+
+    fn reverse_length_delimited_fields(bytes: &[u8]) -> Vec<u8> {
+        let mut fields = Vec::new();
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let start = offset;
+            let tag = bytes[offset];
+            assert_eq!(tag & 0x07, 2);
+            offset += 1;
+
+            let mut length = 0_usize;
+            let mut shift = 0_u32;
+            loop {
+                let byte = bytes[offset];
+                offset += 1;
+                length |= usize::from(byte & 0x7f) << shift;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+                shift += 7;
+            }
+            offset += length;
+            fields.push(bytes[start..offset].to_vec());
+        }
+        fields.reverse();
+        fields.concat()
+    }
+
+    fn destroy_request(
+        operation: u8,
+        workspace_handle: [u8; 32],
+        assignment_digest: ObjectDigest,
+    ) -> Vec<u8> {
+        destroy_request_at_generation(operation, workspace_handle, 6, assignment_digest)
+    }
+
+    fn destroy_request_at_generation(
+        operation: u8,
+        workspace_handle: [u8; 32],
+        desired_generation: u64,
+        assignment_digest: ObjectDigest,
+    ) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![operation; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 200;
+        header.maximum_response_bytes = 4096;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = desired_generation;
+        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        value.action = StorageAction::STORAGE_ACTION_DESTROY.into();
+        value.operation_id = vec![operation; 16];
+        value.storage_handle = workspace_handle.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn create_request(operation: u8, assignment_digest: ObjectDigest) -> Vec<u8> {
+        let specification = sandbox_spec(72);
+        let manifest = assignment_manifest(&specification);
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![operation; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 200;
+        header.maximum_response_bytes = 4096;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 5;
+        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
+        value.operation_id = vec![operation; 16];
+        value.quota_bytes = 4096;
+        value.assignment_manifest = manifest.canonical_bytes().to_vec();
+        value.sandbox_spec = encode_sandbox_spec(&specification);
+        value.encode_to_vec()
+    }
+
+    fn catalog(handle: u8, generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
+        let ancestor =
+            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [9; 32], domains)
+                .unwrap();
+        let dataset =
+            ResolvedDataset::from_catalog(root, "tank/aos/project/work", 11, [handle; 32], domains)
+                .unwrap();
+        ResolvedCatalogCommitmentV1::new_for_test(
+            generation,
+            domains,
+            CatalogPlanV1::SetQuota {
+                dataset,
+                space: WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1)).unwrap(),
+                ancestor: ProjectAncestorPolicyV1::new(ancestor, 65_536, 8, 16).unwrap(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn destroy_catalog(workspace_handle: [u8; 32], generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let dataset = ResolvedDataset::from_catalog(
+            ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap(),
+            "tank/aos/project/work",
+            11,
+            workspace_handle,
+            domains,
+        )
+        .unwrap();
+        ResolvedCatalogCommitmentV1::new_for_test(
+            generation,
+            domains,
+            CatalogPlanV1::DestroyDataset { dataset },
+        )
+        .unwrap()
+    }
+
+    fn create_catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
+        let ancestor =
+            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [9; 32], domains)
+                .unwrap();
+        let destination =
+            PlannedDataset::from_catalog(root, "tank/aos/project/work", domains).unwrap();
+        ResolvedCatalogCommitmentV1::new_for_test(
+            generation,
+            domains,
+            CatalogPlanV1::CreateWorkspace {
+                destination,
+                space: WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1)).unwrap(),
+                ancestor: ProjectAncestorPolicyV1::new(ancestor, 65_536, 8, 16).unwrap(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn portable_create_catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
+        let base = create_catalog(generation);
+        ResolvedCatalogCommitmentV1::new_execution_v1(
+            generation,
+            base.domains(),
+            base.plan().clone(),
+            Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn clone_catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
+        clone_catalog_with_source_version(generation, [32; 32])
+    }
+
+    fn clone_catalog_with_source_version(
+        generation: u64,
+        source_version_handle: [u8; 32],
+    ) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
+        let ancestor =
+            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [9; 32], domains)
+                .unwrap();
+        let source = ResolvedDataset::from_catalog(
+            root.clone(),
+            "tank/aos/project/source",
+            11,
+            [31; 32],
+            domains,
+        )
+        .unwrap();
+        let snapshot =
+            ResolvedSnapshot::from_catalog(source, "revision-1", 12, source_version_handle)
+                .unwrap();
+        let destination =
+            PlannedDataset::from_catalog(root, "tank/aos/project/clone", domains).unwrap();
+        ResolvedCatalogCommitmentV1::new_for_test(
+            generation,
+            domains,
+            CatalogPlanV1::Clone {
+                source: Box::new(snapshot),
+                origin_hold: ActiveHoldEvidence::from_catalog(
+                    12,
+                    HoldId::from_bytes([33; 16]).unwrap(),
+                )
+                .unwrap(),
+                destination,
+                space: WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1)).unwrap(),
+                ancestor: ProjectAncestorPolicyV1::new(ancestor, 65_536, 8, 16).unwrap(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn workspace_request(action: StorageAction, operation: u8) -> Vec<u8> {
+        let specification = sandbox_spec(72);
+        let manifest = assignment_manifest(&specification);
+        let mut request = ApplyStorageRequest::default();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![operation; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 200;
+        header.maximum_response_bytes = 4096;
+        let fence = request.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 5;
+        fence.assignment_digest = manifest.digest().as_bytes().to_vec();
+        request.action = action.into();
+        request.operation_id = vec![operation; 16];
+        request.quota_bytes = 4096;
+        if action == StorageAction::STORAGE_ACTION_CLONE {
+            request.storage_handle = vec![31; 32];
+            request.source_version_handle = vec![32; 32];
+        }
+        request.assignment_manifest = manifest.canonical_bytes().to_vec();
+        request.sandbox_spec = encode_sandbox_spec(&specification);
+        request.encode_to_vec()
+    }
+
+    fn vm_clock() -> RawPairedClockSample {
+        let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+        RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            aos_sandbox_linux::boot::KernelBootId::current()
+                .unwrap()
+                .into_bytes(),
+            realtime.tv_sec,
+            crate::pin_worker::boottime_now_nanoseconds().unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn vm_create_request(
+        assignment_digest: ObjectDigest,
+        effect_deadline_boottime_nanoseconds: u64,
+    ) -> Vec<u8> {
+        let specification = sandbox_spec(72);
+        let manifest = assignment_manifest(&specification);
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![7; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = effect_deadline_boottime_nanoseconds;
+        header.maximum_response_bytes = 4096;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 5;
+        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
+        value.operation_id = vec![7; 16];
+        value.quota_bytes = 67_108_864;
+        value.assignment_manifest = manifest.canonical_bytes().to_vec();
+        value.sandbox_spec = encode_sandbox_spec(&specification);
+        value.encode_to_vec()
+    }
+
+    fn vm_prepare_create_request(
+        assignment_digest: ObjectDigest,
+        effect_deadline_boottime_nanoseconds: u64,
+    ) -> Vec<u8> {
+        let specification = sandbox_spec(72);
+        let manifest = assignment_manifest_at(&specification, 7);
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![86; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = effect_deadline_boottime_nanoseconds;
+        header.maximum_response_bytes = STORAGE_RPC_RESPONSE_BYTES;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 7;
+        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
+        value.operation_id = vec![86; 16];
+        value.quota_bytes = 33_554_432;
+        value.assignment_manifest = manifest.canonical_bytes().to_vec();
+        value.sandbox_spec = encode_sandbox_spec(&specification);
+        value.encode_to_vec()
+    }
+
+    fn vm_destroy_request(
+        workspace_handle: [u8; 32],
+        assignment_digest: ObjectDigest,
+        effect_deadline_boottime_nanoseconds: u64,
+    ) -> Vec<u8> {
+        let mut value = ApplyStorageRequest::default();
+        let header = value.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![8; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = effect_deadline_boottime_nanoseconds;
+        header.maximum_response_bytes = 4096;
+        let fence = value.fence.get_or_insert_default();
+        fence.sandbox_id = vec![2; 16];
+        fence.incarnation_id = vec![3; 16];
+        fence.assignment_epoch = 4;
+        fence.desired_generation = 6;
+        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        value.action = StorageAction::STORAGE_ACTION_DESTROY.into();
+        value.operation_id = vec![8; 16];
+        value.storage_handle = workspace_handle.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn vm_create_catalog(
+        root_guid: u64,
+        ancestor_guid: u64,
+        dataset_name: &str,
+    ) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("aosproof", "aosproof/aos", root_guid).unwrap();
+        let ancestor = ResolvedDataset::from_catalog(
+            root.clone(),
+            "aosproof/aos/project",
+            ancestor_guid,
+            [9; 32],
+            domains,
+        )
+        .unwrap();
+        let destination = PlannedDataset::from_catalog(root, dataset_name, domains).unwrap();
+
+        ResolvedCatalogCommitmentV1::new_for_test(
+            9,
+            domains,
+            CatalogPlanV1::CreateWorkspace {
+                destination,
+                space: WorkspaceSpacePolicyV1::new(67_108_864, ReservationPolicy::Exact(1_048_576))
+                    .unwrap(),
+                ancestor: ProjectAncestorPolicyV1::new(ancestor, 268_435_456, 8, 16).unwrap(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn vm_prepared_create_catalog(
+        generation: u64,
+        policy: &ProtectedStorageResolverPolicyV1,
+    ) -> ResolvedCatalogCommitmentV1 {
+        let destination = PlannedDataset::from_catalog(
+            policy.root().clone(),
+            &policy.workspace_name(&[2; 16]).unwrap(),
+            policy.domains(),
+        )
+        .unwrap();
+        ResolvedCatalogCommitmentV1::new_execution_v1(
+            generation,
+            policy.domains(),
+            CatalogPlanV1::CreateWorkspace {
+                destination,
+                space: policy.space(33_554_432, 1_048_576).unwrap(),
+                ancestor: policy.project_ancestor().clone(),
+            },
+            Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn vm_destroy_catalog(
+        root_guid: u64,
+        dataset_guid: u64,
+        workspace_handle: [u8; 32],
+        dataset_name: &str,
+    ) -> ResolvedCatalogCommitmentV1 {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("aosproof", "aosproof/aos", root_guid).unwrap();
+        let dataset = ResolvedDataset::from_catalog(
+            root,
+            dataset_name,
+            dataset_guid,
+            workspace_handle,
+            domains,
+        )
+        .unwrap();
+
+        ResolvedCatalogCommitmentV1::new_for_test(
+            11,
+            domains,
+            CatalogPlanV1::DestroyDataset { dataset },
+        )
+        .unwrap()
+    }
+
+    fn object_descriptor(kind: PortableMediaType, marker: u8) -> ObjectDescriptor {
+        ObjectDescriptor::new(
+            MediaType::new(kind.as_str().to_owned()).unwrap(),
+            ObjectDigest::from_bytes([marker; 32]),
+            1,
+        )
+    }
+
+    fn sandbox_spec(root_marker: u8) -> SandboxSpec {
+        SandboxSpec::new(
+            FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).unwrap(),
+            IdentityProfile::PrivateUserns {
+                id_range_size: NonZeroU32::new(65_536).unwrap(),
+                unmappable_policy: UnmappableIdentityPolicy::Reject,
+                required_features: Vec::new(),
+            },
+            ResourceProfile::new(Vec::new()).unwrap(),
+            object_descriptor(PortableMediaType::Environment, 71),
+            object_descriptor(PortableMediaType::View, root_marker),
+            Vec::new(),
+            NetworkProfile::new(NetworkKind::Isolated, Vec::new(), Vec::new()).unwrap(),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn assignment_manifest(spec: &SandboxSpec) -> CanonicalAssignmentManifestV1 {
+        assignment_manifest_at(spec, 5)
+    }
+
+    fn assignment_manifest_at(
+        spec: &SandboxSpec,
+        desired_generation: u64,
+    ) -> CanonicalAssignmentManifestV1 {
+        let spec_bytes = encode_sandbox_spec(spec);
+        let spec_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned()).unwrap(),
+            &spec_bytes,
+        );
+        let manifest = AssignmentManifestV1::new(
+            SandboxId::from_bytes([2; 16]),
+            ProjectId::from_bytes([4; 16]),
+            SandboxAncestry::new(SandboxId::from_bytes([2; 16]), Vec::new()).unwrap(),
+            IncarnationId::from_bytes([3; 16]),
+            NODE,
+            AssignmentEpoch::new(4),
+            DesiredGeneration::new(desired_generation),
+            NamespaceGeneration::new(6),
+            spec_descriptor,
+            object_descriptor(PortableMediaType::Policy, 70),
+            spec.environment().clone(),
+            spec.root_view().clone(),
+            Vec::new(),
+            ObjectDigest::from_bytes([73; 32]),
+            ResourceVector::ZERO,
+            Vec::new(),
+        )
+        .unwrap();
+        CanonicalAssignmentManifestV1::new(manifest)
+    }
+    fn key_ref(id: &str, generation: u64, usage: KeyUsage, key: &SigningKey) -> KeyReference {
+        KeyReference::new(
+            StableKeyId::new(id.to_owned()).unwrap(),
+            generation,
+            ObjectDigest::from_bytes(Sha256::digest(key.verifying_key().as_bytes()).into()),
+            usage,
+        )
+    }
+    fn policy(
+        scope: TrustScopeId,
+        purpose: SignaturePurpose,
+        signer: KeyReference,
+    ) -> (Vec<u8>, aos_sandbox_core::ObjectDescriptor) {
+        let bytes = encode_trust_policy(
+            &TrustPolicy::new(scope, purpose, vec![signer], Vec::new()).unwrap(),
+        );
+        let descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned()).unwrap(),
+            &bytes,
+        );
+        (bytes, descriptor)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn signed(
+        bytes: &[u8],
+        media: PortableMediaType,
+        scope: TrustScopeId,
+        signer: KeyReference,
+        purpose: SignaturePurpose,
+        issued_seconds: i64,
+        expires_seconds: i64,
+        policy: &aos_sandbox_core::ObjectDescriptor,
+        key: &SigningKey,
+    ) -> Vec<u8> {
+        let subject =
+            descriptor_for_bytes(MediaType::new(media.as_str().to_owned()).unwrap(), bytes);
+        let statement = SignatureStatement::new(
+            subject,
+            scope,
+            signer,
+            purpose,
+            issued_seconds,
+            Some(expires_seconds),
+            policy.clone(),
+        )
+        .unwrap();
+        encode_signature(&sign_statement(statement, key).unwrap())
+    }
+    fn validated(
+        artifacts: BrokerAuthorizationArtifactsV1,
+        protocol: ProtocolId,
+    ) -> ValidatedUntrustedAuthorizationArtifacts {
+        let envelope = BrokerRequestEnvelope {
+            method: if protocol == ProtocolId::StorageBroker {
+                BrokerMethod::BROKER_METHOD_STORAGE_APPLY.into()
+            } else {
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into()
+            },
+            body: vec![1],
+            authorization: Some(artifacts).into(),
+            ..Default::default()
+        };
+        decode_request_envelope(&envelope.encode_to_vec(), protocol, 0)
+            .unwrap()
+            .authorization()
+            .unwrap()
+            .clone()
+    }
+    fn coordinator(directory: &TempDir, fixture: &Fixture) -> StorageAdmissionCoordinator {
+        let store = StorageTransactionStore::open_for_test(
+            directory.path(),
+            StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            0,
+        )
+        .unwrap();
+        StorageAdmissionCoordinator::new(fixture.authority(), store)
+    }
+
+    fn initialized_coordinator(
+        directory: &TempDir,
+        fixture: &Fixture,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> StorageAdmissionCoordinator {
+        let mut coordinator = coordinator(directory, fixture);
+        coordinator
+            .transactions
+            .initialize_catalog_from_protected_snapshot(
+                catalog.generation() - 1,
+                std::slice::from_ref(catalog),
+            )
+            .unwrap();
+        coordinator
+    }
+
+    fn production_resolver_policy(
+        request: &[u8],
+        bootstrap_catalog: &ResolvedCatalogCommitmentV1,
+    ) -> ProtectedStorageResolverPolicyV1 {
+        let CatalogPlanV1::SetQuota {
+            dataset, ancestor, ..
+        } = bootstrap_catalog.plan()
+        else {
+            panic!("production Prepare fixture requires a SetQuota bootstrap catalog")
+        };
+        ProtectedStorageResolverPolicyV1::new(
+            decode_assignment(request).unwrap(),
+            dataset.root().clone(),
+            bootstrap_catalog.domains(),
+            ancestor.clone(),
+            65_536,
+            4_096,
+        )
+        .unwrap()
+    }
+
+    fn production_create_catalog(
+        generation: u64,
+        policy: &ProtectedStorageResolverPolicyV1,
+        sandbox_id: [u8; 16],
+    ) -> ResolvedCatalogCommitmentV1 {
+        let destination = PlannedDataset::from_catalog(
+            policy.root().clone(),
+            &policy.workspace_name(&sandbox_id).unwrap(),
+            policy.domains(),
+        )
+        .unwrap();
+        let plan = CatalogPlanV1::CreateWorkspace {
+            destination,
+            space: policy.space(4_096, 1).unwrap(),
+            ancestor: policy.project_ancestor().clone(),
+        };
+        ResolvedCatalogCommitmentV1::new_execution_v1(
+            generation,
+            policy.domains(),
+            plan,
+            Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn production_preparation_request(
+        apply_request: &[u8],
+        expected_catalog: &ResolvedCatalogCommitmentV1,
+        inventory: crate::CatalogBindingV1,
+        expected_head: crate::CatalogBindingV1,
+    ) -> Vec<u8> {
+        let (bytes, _, _) =
+            preparation_request_at_head(apply_request, expected_catalog, expected_head);
+        let mut request = PrepareStorageCatalogRequest::decode_from_slice(&bytes).unwrap();
+        request.inventory_generation = inventory.generation();
+        request.inventory_digest = inventory.digest().as_bytes().to_vec();
+        request.encode_to_vec()
+    }
+
+    fn preparation_artifacts(
+        fixture: &Fixture,
+        apply_request: &[u8],
+        preparation_request: &[u8],
+    ) -> ValidatedUntrustedAuthorizationArtifacts {
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            preparation_request,
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let grant = BrokerGrant::new(
+            semantics.broker_verb(),
+            semantics.grant_target(),
+            semantics.argument_commitment(),
+            preparation_request.len() as u32,
+            0,
+        )
+        .unwrap();
+        fixture.signed_artifacts(
+            decode_assignment(apply_request).unwrap(),
+            vec![grant],
+            100,
+            300,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+            ProtocolVersion::new(1, 0),
+        )
+    }
+
+    fn protected_resolver_policy_directory(
+        parent: &Path,
+        fixture: &Fixture,
+        generation: u64,
+        policies: &[ProtectedStorageResolverPolicyV1],
+    ) -> (PathBuf, ProtectedStorageResolverPolicyDirectoryV1) {
+        let directory = parent.join(format!("resolver-policy-{generation}"));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let bytes =
+            encode_catalog_for_test(generation, fixture.protected_authority_binding(), policies);
+        let catalog = directory.join("storage-resolver-policy.catalog");
+        fs::write(&catalog, bytes).unwrap();
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o600)).unwrap();
+        let uid = fs::metadata(&directory).unwrap().uid();
+        let protected = ProtectedStorageResolverPolicyDirectoryV1::open_for_test(
+            &directory,
+            fixture.protected_authority_binding(),
+            uid,
+        )
+        .unwrap();
+        (directory, protected)
+    }
+
+    fn publish_resolver_policy_catalog(
+        directory: &Path,
+        fixture: &Fixture,
+        generation: u64,
+        policies: &[ProtectedStorageResolverPolicyV1],
+    ) {
+        let staging = directory.join("storage-resolver-policy.next");
+        fs::write(
+            &staging,
+            encode_catalog_for_test(generation, fixture.protected_authority_binding(), policies),
+        )
+        .unwrap();
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(staging, directory.join("storage-resolver-policy.catalog")).unwrap();
+    }
+
+    struct ProductionPreparationFixture {
+        state: TempDir,
+        fixture: Fixture,
+        broker: StorageAdmissionCoordinator,
+        policy: ProtectedStorageResolverPolicyV1,
+        policies: ProtectedStorageResolverPolicyDirectoryV1,
+        request: Vec<u8>,
+        artifacts: ValidatedUntrustedAuthorizationArtifacts,
+        expected_catalog: ResolvedCatalogCommitmentV1,
+        head: crate::CatalogBindingV1,
+        policy_directory: PathBuf,
+    }
+
+    fn production_preparation_fixture(policy_generation: u64) -> ProductionPreparationFixture {
+        let state = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let bootstrap_catalog = catalog(8, 9);
+        let request = create_request(7, ObjectDigest::from_bytes([6; 32]));
+        let policy = production_resolver_policy(&request, &bootstrap_catalog);
+        let broker = initialized_coordinator(&state, &fixture, &bootstrap_catalog);
+        let journal = broker.transactions.verified_resolver_journal().unwrap();
+        let inventory = ProtectedStorageInventoryV1::from_verified_journal(journal, &policy)
+            .unwrap()
+            .binding();
+        let head = broker.transactions.catalog_head_binding().unwrap();
+        let expected_catalog = production_create_catalog(head.generation() + 1, &policy, [2; 16]);
+        let preparation =
+            production_preparation_request(&request, &expected_catalog, inventory, head);
+        let artifacts = preparation_artifacts(&fixture, &request, &preparation);
+        let (policy_directory, policies) = protected_resolver_policy_directory(
+            state.path(),
+            &fixture,
+            policy_generation,
+            std::slice::from_ref(&policy),
+        );
+
+        ProductionPreparationFixture {
+            state,
+            fixture,
+            broker,
+            policy,
+            policies,
+            request: preparation,
+            artifacts,
+            expected_catalog,
+            head,
+            policy_directory,
+        }
+    }
+
+    fn production_preparation_for_operation(
+        production: &ProductionPreparationFixture,
+        operation: u8,
+    ) -> (Vec<u8>, ValidatedUntrustedAuthorizationArtifacts) {
+        let apply_request = create_request(operation, ObjectDigest::from_bytes([6; 32]));
+        let journal = production
+            .broker
+            .transactions
+            .verified_resolver_journal()
+            .unwrap();
+        let inventory =
+            ProtectedStorageInventoryV1::from_verified_journal(journal, &production.policy)
+                .unwrap()
+                .binding();
+        let request = production_preparation_request(
+            &apply_request,
+            &production.expected_catalog,
+            inventory,
+            production.head,
+        );
+        let artifacts = preparation_artifacts(&production.fixture, &apply_request, &request);
+        (request, artifacts)
+    }
+
+    fn runtime_coordinator(
+        directory: &TempDir,
+        fixture: &Fixture,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> Result<StorageAdmissionCoordinator, crate::StorageStateError> {
+        let range = aos_sandbox_protocol::MINIMUM_HOST_IDENTITY_RANGE;
+        let identity_pool = crate::StorageIdentityPoolV1::new(range, range * 4).unwrap();
+        let configuration_binding = crate::runtime::runtime_configuration_binding(
+            fixture.protected_authority_binding(),
+            identity_pool,
+        );
+        let store = StorageTransactionStore::open_runtime_for_test(
+            directory.path(),
+            StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            catalog.generation() - 1,
+            configuration_binding,
+            catalog.generation() - 1,
+            std::slice::from_ref(catalog),
+        )?;
+        store.validate_runtime_restart(
+            configuration_binding,
+            catalog.generation() - 1,
+            std::slice::from_ref(catalog),
+        )?;
+        Ok(StorageAdmissionCoordinator::new(fixture.authority(), store))
+    }
+
+    fn workspace_pin_ensure_dispatch(
+        directory: &TempDir,
+        fixture: &Fixture,
+    ) -> (
+        StorageAdmissionCoordinator,
+        FreshWorkspacePinDispatchV1,
+        CommittedStorageResultV1,
+    ) {
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let request = create_request(7, manifest.digest());
+        let catalog = create_catalog(9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut coordinator = initialized_coordinator(directory, fixture, &catalog);
+        prepare_for_apply(&mut coordinator, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("workspace pin worker fixture was not prepared")
+        };
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let result = coordinator
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(11),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(dispatch) = coordinator
+            .begin_workspace_pin_ensure(result, host_scope, &mut || Ok(clock()))
+            .unwrap()
+        else {
+            panic!("workspace pin worker fixture was not dispatched")
+        };
+
+        (coordinator, *dispatch, result)
+    }
+
+    fn committed_workspace_without_pin(
+        directory: &TempDir,
+        fixture: &Fixture,
+    ) -> (StorageAdmissionCoordinator, CommittedStorageResultV1) {
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let request = create_request(7, manifest.digest());
+        let catalog = create_catalog(9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut coordinator = initialized_coordinator(directory, fixture, &catalog);
+        prepare_for_apply(&mut coordinator, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("workspace fixture was not prepared")
+        };
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let result = coordinator
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(11),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+
+        (coordinator, result)
+    }
+
+    fn committed_clone_without_pin(
+        directory: &TempDir,
+        fixture: &Fixture,
+    ) -> (StorageAdmissionCoordinator, CommittedStorageResultV1) {
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let request = workspace_request(StorageAction::STORAGE_ACTION_CLONE, 7);
+        let catalog = clone_catalog(9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut coordinator = initialized_coordinator(directory, fixture, &catalog);
+        prepare_for_apply(&mut coordinator, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("clone fixture was not prepared")
+        };
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let result = coordinator
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(13),
+                ObjectDigest::from_bytes([63; 32]),
+            )
+            .unwrap();
+
+        (coordinator, result)
+    }
+
+    fn portable_workspace_pin_ensure_dispatch(
+        directory: &TempDir,
+        fixture: &Fixture,
+    ) -> (
+        StorageAdmissionCoordinator,
+        FreshWorkspacePinDispatchV1,
+        CommittedStorageResultV1,
+    ) {
+        let request = workspace_request(StorageAction::STORAGE_ACTION_CREATE_WORKSPACE, 73);
+        let catalog = portable_create_catalog(9);
+        let artifacts =
+            fixture.storage_artifacts_at_protocol(&request, &catalog, ProtocolVersion::new(1, 0));
+        let semantics = CanonicalStorageSemanticsV1::decode(
+            &request,
+            catalog.binding(),
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let metadata = semantics.workspace_metadata().unwrap();
+        let mut coordinator = initialized_coordinator(directory, fixture, &catalog);
+        prepare_for_apply_at_protocol(
+            &mut coordinator,
+            &request,
+            &artifacts,
+            &catalog,
+            ProtocolVersion::new(1, 0),
+            &clock(),
+        );
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                metadata.manifest(),
+                metadata.sandbox_spec(),
+            )
+            .unwrap()
+        else {
+            panic!("portable workspace pin worker fixture was not prepared")
+        };
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([73; 16], mutation_digest)
+            .unwrap();
+        let result = coordinator
+            .transactions
+            .commit_observed(
+                [73; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(11),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(dispatch) = coordinator
+            .begin_workspace_pin_ensure(result, host_scope, &mut || Ok(clock()))
+            .unwrap()
+        else {
+            panic!("portable workspace pin worker fixture was not dispatched")
+        };
+
+        (coordinator, *dispatch, result)
+    }
+
+    fn workspace_pin_remove_dispatch(
+        directory: &TempDir,
+        fixture: &Fixture,
+    ) -> (
+        StorageAdmissionCoordinator,
+        FreshWorkspaceRemoveDispatchV1,
+        CommittedStorageResultV1,
+    ) {
+        let (mut coordinator, ensure, creation) = workspace_pin_ensure_dispatch(directory, fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        coordinator
+            .transactions
+            .complete_workspace_pin_attempt(
+                ensure.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof.clone()),
+            )
+            .unwrap();
+
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest_at(&spec, 6);
+        let request = destroy_request(8, workspace_handle, manifest.digest());
+        let catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = coordinator.transactions.catalog_head_binding().unwrap();
+        let artifacts = fixture.artifacts_at_head(&request, &catalog, expected_head, 300);
+        prepare_for_apply(&mut coordinator, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { .. } = coordinator
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("workspace pin removal fixture was not prepared")
+        };
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::new(Cell::new(0)),
+            },
+        );
+        let prepared = helper
+            .preobserve(&coordinator.transactions, [8; 16])
+            .unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let AuthorizedWorkspaceRemoveAttemptV1::Dispatch(dispatch) =
+            coordinator
+                .begin_workspace_pin_remove_and_destroy(prepared, host_scope, proof, &mut || {
+                    Ok(clock())
+                })
+                .unwrap()
+        else {
+            panic!("workspace pin removal fixture was not dispatched")
+        };
+
+        (coordinator, *dispatch, creation)
+    }
+
+    fn retain_satisfied_workspace_pin_repair(
+        broker: &mut StorageAdmissionCoordinator,
+        fixture: &Fixture,
+        creation: CommittedStorageResultV1,
+        initial_attempt: &WorkspacePinAttemptV1,
+        repaired_pin: crate::workspace_pin::WorkspaceRootPinProofV1,
+    ) {
+        let workspace_handle = creation.storage_handle().unwrap();
+        let repair_assignment_digest = assignment_manifest_at(&sandbox_spec(72), 6).digest();
+        let request_body = repair_request(80, 81, workspace_handle, 6, repair_assignment_digest);
+        let semantics = CanonicalStorageRepairSemanticsV1::decode(
+            &request_body,
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let artifacts = fixture.repair_artifacts(&request_body);
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let admission = broker
+            .authority
+            .admit_workspace_pin_repair(
+                &artifacts,
+                &semantics,
+                &request_body,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                Some(&prior_fence),
+            )
+            .unwrap();
+        let sealed = broker
+            .authority
+            .seal(
+                &[2; 16],
+                semantics.header().request_id(),
+                &semantics.operation_id(),
+                &admission,
+            )
+            .unwrap();
+        let operation_fence_digest =
+            ObjectDigest::from_bytes(Sha256::digest(&sealed.operation_fence).into());
+        let repair_attempt_id = derive_attempt_id(
+            &[52; 32],
+            semantics.operation_id(),
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            initial_attempt.attempt_ordinal() + 1,
+        )
+        .unwrap();
+        let repair_attempt = WorkspacePinAttemptV1::new_ambiguous(
+            repair_attempt_id,
+            initial_attempt.attempt_ordinal() + 1,
+            WorkspacePinActionV1::Ensure,
+            semantics.operation_id(),
+            creation.operation_id(),
+            operation_fence_digest,
+            admission.fence.assignment().digest(),
+            initial_attempt.workspace_assignment_digest(),
+            creation.catalog(),
+            creation.result_digest(),
+            workspace_handle,
+            initial_attempt.host_boot_id(),
+            initial_attempt.host_mount_namespace_device(),
+            initial_attempt.host_mount_namespace_inode(),
+            *admission.effect.clock_provenance(),
+            admission.effect.effect_deadline_boottime_nanoseconds(),
+            initial_attempt.dataset_name().to_owned(),
+            initial_attempt.dataset_guid(),
+            initial_attempt.identity_range_start(),
+            initial_attempt.identity_range_size(),
+            initial_attempt.root_policy(),
+            None,
+        )
+        .unwrap();
+        let receipt = broker
+            .authority
+            .seal_pin_attempt_receipt(
+                &repair_attempt,
+                &admission.effect,
+                &admission.fence,
+                semantics.operation_id(),
+                *semantics.header().request_id(),
+            )
+            .unwrap();
+        let repair_attempt = repair_attempt.with_authority_receipt(receipt).unwrap();
+        let publication_record = broker
+            .transactions
+            .workspace_publication_intent_record(creation.operation_id())
+            .unwrap();
+        let initial_attempt_record = broker
+            .transactions
+            .workspace_pin_attempt_record(initial_attempt)
+            .unwrap();
+        let repair_intent = StorageWorkspacePinRepairIntentV1::new_ambiguous(
+            semantics.operation_id(),
+            &admission.effect,
+            sealed.effect.clone(),
+            admission.fence.assignment().digest(),
+            operation_fence_digest,
+            creation.operation_id(),
+            creation.catalog(),
+            creation.result_digest(),
+            ObjectDigest::from_bytes(Sha256::digest(publication_record).into()),
+            workspace_handle,
+            initial_attempt.attempt_id(),
+            initial_attempt.phase(),
+            ObjectDigest::from_bytes(Sha256::digest(&initial_attempt_record).into()),
+            repair_attempt.attempt_id(),
+            repair_attempt.attempt_ordinal(),
+        )
+        .unwrap();
+        broker
+            .transactions
+            .retain_workspace_pin_repair_for_test(
+                [2; 16],
+                repair_intent,
+                repair_attempt.clone(),
+                sealed.current_fence,
+                sealed.effect,
+                sealed.operation_fence,
+            )
+            .unwrap();
+
+        assert_eq!(
+            broker
+                .complete_workspace_pin_repair_attempt(
+                    &repair_attempt,
+                    &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                        name: initial_attempt.dataset_name().to_owned(),
+                        guid: initial_attempt.dataset_guid(),
+                    },
+                    &crate::workspace_pin::WorkspacePinObservationV1::Present(repaired_pin),
+                )
+                .unwrap(),
+            crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompletePublication,
+        );
+    }
+
+    struct CountingBackend {
+        executions: Rc<Cell<usize>>,
+    }
+
+    impl ZfsProcessBackend for CountingBackend {
+        fn observe_preconditions(
+            &mut self,
+            _program: &SealedZfsProgram<'_>,
+            expected: &[crate::ZfsPrecondition],
+        ) -> Result<Vec<crate::ZfsPrecondition>, ZfsHelperError> {
+            Ok(expected.to_vec())
+        }
+
+        fn execute_once(
+            &mut self,
+            _program: &SealedZfsProgram<'_>,
+        ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+            self.executions.set(self.executions.get() + 1);
+            Err(ZfsHelperError::ProcessContract)
+        }
+
+        fn observe_postcondition(
+            &mut self,
+            _program: &SealedZfsProgram<'_>,
+            _expected: &crate::PostconditionPolicyV1,
+            _expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+        ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn kernel_clock_authorization_signatures_match_plan_and_lease_validity() {
+        let fixture = Fixture::new();
+        let state = TempDir::new().unwrap();
+        let catalog = vm_create_catalog(41, 42, "aosproof/aos/project/pinned-workspace");
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let admission_clock = vm_clock();
+        let effect_deadline = admission_clock
+            .boottime_nanoseconds()
+            .checked_add(120_000_000_000)
+            .unwrap();
+        let request = vm_create_request(manifest.digest(), effect_deadline);
+        let artifacts =
+            fixture.artifacts_for_kernel_clock(&request, &catalog, admission_clock.wall_seconds());
+        let mut coordinator = initialized_coordinator(&state, &fixture, &catalog);
+
+        prepare_for_apply(
+            &mut coordinator,
+            &request,
+            &artifacts,
+            &catalog,
+            &admission_clock,
+        );
+    }
+
+    #[test]
+    fn preparation_expiry_stays_within_fractional_clock_lease_fail_stop() {
+        let fixture = Fixture::new();
+        let catalog = vm_create_catalog(41, 42, "aosproof/aos/project/pinned-workspace");
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let admission_clock = clock_at([50; 16], 1_750_000_000, 123_456_789_123);
+
+        let excessive_deadline = admission_clock
+            .boottime_nanoseconds()
+            .checked_add(600_000_000_000)
+            .unwrap();
+        let excessive_request = vm_create_request(manifest.digest(), excessive_deadline);
+        let excessive_artifacts = fixture.artifacts_for_kernel_clock(
+            &excessive_request,
+            &catalog,
+            admission_clock.wall_seconds(),
+        );
+        let excessive_state = TempDir::new().unwrap();
+        let mut excessive = initialized_coordinator(&excessive_state, &fixture, &catalog);
+        let excessive_head = excessive.transactions.catalog_head_binding().unwrap();
+        let (excessive_preparation, inventory, _) =
+            preparation_request_at_head(&excessive_request, &catalog, excessive_head);
+        let excessive_semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            &excessive_preparation,
+            peer(),
+            peer_policy(),
+            admission_clock.boottime_nanoseconds(),
+        )
+        .unwrap();
+        let admission = excessive
+            .authority
+            .admit_preparation(
+                &excessive_artifacts,
+                &excessive_semantics,
+                &excessive_preparation,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &admission_clock,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            admission.effect_deadline_boottime_nanoseconds(),
+            admission_clock
+                .boottime_nanoseconds()
+                .checked_add(285_000_000_000)
+                .unwrap()
+        );
+        assert!(matches!(
+            excessive.prepare_catalog(
+                &excessive_preparation,
+                &excessive_artifacts,
+                inventory,
+                &StaticCatalogResolver { catalog: &catalog },
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &admission_clock,
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::ResolutionMismatch
+            ))
+        ));
+
+        let bounded_deadline = admission_clock
+            .boottime_nanoseconds()
+            .checked_add(240_000_000_000)
+            .unwrap();
+        let bounded_request = vm_create_request(manifest.digest(), bounded_deadline);
+        let bounded_artifacts = fixture.artifacts_for_kernel_clock(
+            &bounded_request,
+            &catalog,
+            admission_clock.wall_seconds(),
+        );
+        let bounded_state = TempDir::new().unwrap();
+        let mut bounded = initialized_coordinator(&bounded_state, &fixture, &catalog);
+        let outcome = prepare_for_apply(
+            &mut bounded,
+            &bounded_request,
+            &bounded_artifacts,
+            &catalog,
+            &admission_clock,
+        );
+
+        assert_eq!(outcome.expires_boottime_nanoseconds(), bounded_deadline - 1);
+    }
+
+    #[test]
+    #[ignore = "requires the installed generic and root-pin systemd workers"]
+    fn systemd_workspace_pin_vm_client() {
+        let executable = std::env::var_os("AOS_ZFS_EXECUTABLE")
+            .map(PathBuf::from)
+            .unwrap();
+        let authority_directory = std::env::var_os("AOS_STORAGE_AUTHORITY_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let root_guid = std::env::var("AOS_STORAGE_ROOT_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let ancestor_guid = std::env::var("AOS_STORAGE_ANCESTOR_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let fixture = Fixture::new();
+        fixture.provision_protected(&authority_directory);
+        let state = TempDir::new().unwrap();
+        let catalog = vm_create_catalog(
+            root_guid,
+            ancestor_guid,
+            "aosproof/aos/project/pinned-workspace",
+        );
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let admission_clock = vm_clock();
+        let effect_deadline = admission_clock
+            .boottime_nanoseconds()
+            .checked_add(120_000_000_000)
+            .unwrap();
+        let request = vm_create_request(manifest.digest(), effect_deadline);
+        let artifacts =
+            fixture.artifacts_for_kernel_clock(&request, &catalog, admission_clock.wall_seconds());
+        let mut coordinator = initialized_coordinator(&state, &fixture, &catalog);
+        prepare_for_apply(
+            &mut coordinator,
+            &request,
+            &artifacts,
+            &catalog,
+            &admission_clock,
+        );
+        let StorageAdmissionOutcome::Prepared { .. } = coordinator
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &admission_clock,
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("installed-worker create was not prepared")
+        };
+
+        let contract = ZfsHelperContract::new(executable.clone()).unwrap();
+        let generic_executor = crate::SystemdZfsExecutor::new(
+            PathBuf::from("/run/aos/sandbox-zfs-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let mut helper = StorageMutationHelper::new(
+            contract.clone(),
+            SystemdZfsProcessBackend::new(generic_executor),
+        );
+        let ZfsHelperOutcome::Committed(creation) = coordinator
+            .preobserve_and_execute(&mut helper, [7; 16], &mut || Ok(vm_clock()))
+            .unwrap()
+        else {
+            panic!("installed generic worker did not commit create")
+        };
+        let dataset_guid = creation.object_guid().unwrap();
+        let workspace_handle = creation.storage_handle().unwrap();
+
+        let custody = WorkspacePinHostCustody::retain_initial_root_owned().unwrap();
+        let mut pin_executor = SystemdWorkspacePinExecutor::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            coordinator
+                .execute_workspace_pin_ensure(
+                    &mut pin_executor,
+                    &contract,
+                    &custody,
+                    creation,
+                    &mut || Ok(vm_clock()),
+                )
+                .unwrap(),
+            WorkspacePinExecutionOutcomeV1::Satisfied
+        );
+        let pin_path = PathBuf::from(crate::workspace_pin::workspace_pin_path(&workspace_handle));
+        assert!(pin_path.is_dir());
+        let expected_pin = coordinator
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap()
+            .into_iter()
+            .find(|attempt| {
+                attempt.action() == WorkspacePinActionV1::Ensure
+                    && attempt.phase() == WorkspacePinAttemptPhaseV1::Satisfied
+            })
+            .and_then(|attempt| attempt.satisfied_pin().cloned())
+            .unwrap();
+
+        // Exercise the root-owned production catalog against the real pinned
+        // ZFS mount, including live inventory validation and restart recovery.
+        // The production opener requires root-owned, non-writable ancestry;
+        // `/tmp` is intentionally outside that protected boundary.
+        let protected_parent = fs::symlink_metadata("/run/aos").unwrap();
+        assert!(protected_parent.file_type().is_dir());
+        assert_eq!(protected_parent.uid(), 0);
+        assert_eq!(protected_parent.permissions().mode() & 0o022, 0);
+        let workspace_catalog_state = private_tempdir_in(Path::new("/run/aos")).unwrap();
+        let catalog_state_metadata = fs::symlink_metadata(workspace_catalog_state.path()).unwrap();
+        assert!(catalog_state_metadata.file_type().is_dir());
+        assert_eq!(catalog_state_metadata.uid(), 0);
+        assert_eq!(catalog_state_metadata.permissions().mode() & 0o777, 0o700);
+        let identity_pool = crate::StorageIdentityPoolV1::new(
+            MINIMUM_HOST_IDENTITY_RANGE,
+            MINIMUM_HOST_IDENTITY_RANGE * 4,
+        )
+        .unwrap();
+        let publication = coordinator.workspace_publication(creation).unwrap();
+        let mut workspace_catalog = crate::StorageWorkspaceCatalogV1::open_root_owned(
+            workspace_catalog_state.path(),
+            identity_pool,
+        )
+        .unwrap();
+        assert_eq!(
+            workspace_catalog.publish(publication.clone()).unwrap(),
+            crate::StorageWorkspaceCatalogOutcomeV1::Published
+        );
+        let inventory = decode_storage_resource_inventory_response(
+            &workspace_catalog.inventory_resources().unwrap(),
+            1_048_576,
+        )
+        .unwrap();
+        assert_eq!(inventory.workspaces().len(), 1);
+        drop(workspace_catalog);
+
+        let mut workspace_catalog = crate::StorageWorkspaceCatalogV1::open_root_owned(
+            workspace_catalog_state.path(),
+            identity_pool,
+        )
+        .unwrap();
+        assert_eq!(
+            workspace_catalog.publish(publication).unwrap(),
+            crate::StorageWorkspaceCatalogOutcomeV1::Replay
+        );
+        assert_eq!(
+            decode_storage_resource_inventory_response(
+                &workspace_catalog.inventory_resources().unwrap(),
+                1_048_576,
+            )
+            .unwrap()
+            .workspaces()
+            .len(),
+            1
+        );
+
+        let destroy_spec = sandbox_spec(72);
+        let destroy_manifest = assignment_manifest_at(&destroy_spec, 6);
+        let destroy_clock = vm_clock();
+        let destroy_deadline = destroy_clock
+            .boottime_nanoseconds()
+            .checked_add(120_000_000_000)
+            .unwrap();
+        let destroy_request = vm_destroy_request(
+            workspace_handle,
+            destroy_manifest.digest(),
+            destroy_deadline,
+        );
+        let destroy_catalog = vm_destroy_catalog(
+            root_guid,
+            dataset_guid,
+            workspace_handle,
+            "aosproof/aos/project/pinned-workspace",
+        );
+        let destroy_artifacts = fixture.artifacts_for_kernel_clock_at_head(
+            &destroy_request,
+            &destroy_catalog,
+            coordinator.transactions.catalog_head_binding().unwrap(),
+            destroy_clock.wall_seconds(),
+        );
+        prepare_for_apply(
+            &mut coordinator,
+            &destroy_request,
+            &destroy_artifacts,
+            &destroy_catalog,
+            &destroy_clock,
+        );
+        let StorageAdmissionOutcome::Prepared { .. } = coordinator
+            .admit_apply_intent(
+                &destroy_request,
+                &destroy_artifacts,
+                &destroy_catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &destroy_clock,
+            )
+            .unwrap()
+        else {
+            panic!("installed-worker destroy was not prepared")
+        };
+        let prepared = coordinator.preobserve(&mut helper, [8; 16]).unwrap();
+        let (pin_outcome, committed) = coordinator
+            .execute_workspace_remove_and_destroy(
+                &mut pin_executor,
+                &contract,
+                &custody,
+                prepared,
+                expected_pin,
+                &mut || Ok(vm_clock()),
+            )
+            .unwrap();
+        assert_eq!(pin_outcome, WorkspacePinExecutionOutcomeV1::Satisfied);
+        let committed = committed.unwrap();
+        assert!(!pin_path.exists());
+        let retirement = coordinator.workspace_retirement(committed).unwrap();
+        assert_eq!(
+            workspace_catalog.retire(retirement).unwrap(),
+            crate::StorageWorkspaceCatalogOutcomeV1::Retired
+        );
+        assert!(
+            decode_storage_resource_inventory_response(
+                &workspace_catalog.inventory_resources().unwrap(),
+                1_048_576,
+            )
+            .unwrap()
+            .workspaces()
+            .is_empty()
+        );
+        drop(workspace_catalog);
+
+        let workspace_catalog = crate::StorageWorkspaceCatalogV1::open_root_owned(
+            workspace_catalog_state.path(),
+            identity_pool,
+        )
+        .unwrap();
+        assert!(
+            decode_storage_resource_inventory_response(
+                &workspace_catalog.inventory_resources().unwrap(),
+                1_048_576,
+            )
+            .unwrap()
+            .workspaces()
+            .is_empty()
+        );
+
+        // A second workspace leaves its Ensure attempt Ambiguous, advances the
+        // desired fence, and proves the installed effect worker rejects that
+        // stale fence without a replay claim or mount. The distinct observer
+        // then authenticates the historical operation under current
+        // same-sandbox authority and returns read-only absence evidence.
+        let observation_state = TempDir::new().unwrap();
+        let observation_catalog = vm_create_catalog(
+            root_guid,
+            ancestor_guid,
+            "aosproof/aos/project/observed-workspace",
+        );
+        let observation_spec = sandbox_spec(74);
+        let observation_manifest = assignment_manifest(&observation_spec);
+        let observation_clock = vm_clock();
+        let observation_deadline = observation_clock
+            .boottime_nanoseconds()
+            .checked_add(120_000_000_000)
+            .unwrap();
+        let observation_request =
+            vm_create_request(observation_manifest.digest(), observation_deadline);
+        let observation_artifacts = fixture.artifacts_for_kernel_clock(
+            &observation_request,
+            &observation_catalog,
+            observation_clock.wall_seconds(),
+        );
+        let mut observer_coordinator =
+            runtime_coordinator(&observation_state, &fixture, &observation_catalog).unwrap();
+        prepare_for_apply(
+            &mut observer_coordinator,
+            &observation_request,
+            &observation_artifacts,
+            &observation_catalog,
+            &observation_clock,
+        );
+        let StorageAdmissionOutcome::Prepared { .. } = observer_coordinator
+            .admit_workspace_apply_intent(
+                &observation_request,
+                &observation_artifacts,
+                &observation_catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &observation_clock,
+                131_072,
+                &observation_manifest,
+                &observation_spec,
+            )
+            .unwrap()
+        else {
+            panic!("observer fixture create was not prepared")
+        };
+        let ZfsHelperOutcome::Committed(observation_creation) = observer_coordinator
+            .preobserve_and_execute(&mut helper, [7; 16], &mut || Ok(vm_clock()))
+            .unwrap()
+        else {
+            panic!("observer fixture dataset was not created")
+        };
+        let observation_guid = observation_creation.object_guid().unwrap();
+        let observation_handle = observation_creation.storage_handle().unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(observation_dispatch) = observer_coordinator
+            .begin_workspace_pin_ensure(
+                observation_creation,
+                custody.host_scope().unwrap(),
+                &mut || Ok(vm_clock()),
+            )
+            .unwrap()
+        else {
+            panic!("observer fixture Ensure was not dispatched")
+        };
+
+        let advanced_spec = sandbox_spec(74);
+        let advanced_manifest = assignment_manifest_at(&advanced_spec, 6);
+        let advanced_clock = vm_clock();
+        let advanced_deadline = advanced_clock
+            .boottime_nanoseconds()
+            .checked_add(120_000_000_000)
+            .unwrap();
+        let advanced_request = vm_destroy_request(
+            observation_handle,
+            advanced_manifest.digest(),
+            advanced_deadline,
+        );
+        let advanced_catalog = vm_destroy_catalog(
+            root_guid,
+            observation_guid,
+            observation_handle,
+            "aosproof/aos/project/observed-workspace",
+        );
+        let advanced_artifacts = fixture.artifacts_for_kernel_clock_at_head(
+            &advanced_request,
+            &advanced_catalog,
+            observer_coordinator
+                .transactions
+                .catalog_head_binding()
+                .unwrap(),
+            advanced_clock.wall_seconds(),
+        );
+        prepare_for_apply(
+            &mut observer_coordinator,
+            &advanced_request,
+            &advanced_artifacts,
+            &advanced_catalog,
+            &advanced_clock,
+        );
+        let StorageAdmissionOutcome::Prepared { .. } = observer_coordinator
+            .admit_apply_intent(
+                &advanced_request,
+                &advanced_artifacts,
+                &advanced_catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &advanced_clock,
+            )
+            .unwrap()
+        else {
+            panic!("observer fixture fence was not advanced")
+        };
+
+        use crate::pin_worker::WorkspacePinWorkerAuthorityRecord;
+
+        let current_fence = observer_coordinator
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let valid_request = observation_dispatch
+            .worker_request_bytes(&contract)
+            .unwrap();
+        let mut stale_request = crate::pin_worker::decode_request(&valid_request).unwrap();
+        let current_fence_donor = crate::pin_worker::WorkspacePinWorkerAuthorityV1::new(
+            [1; 16],
+            vec![1],
+            current_fence,
+            vec![1],
+            vec![1],
+        )
+        .unwrap();
+        stale_request.authority.substitute_record_from(
+            WorkspacePinWorkerAuthorityRecord::CurrentFence,
+            &current_fence_donor,
+        );
+        let stale_request = crate::pin_worker::encode_request(
+            &contract,
+            &stale_request.catalog,
+            &stale_request.authority,
+        )
+        .unwrap();
+        assert!(
+            pin_executor
+                .execute(&stale_request, observation_dispatch.attempt(), &custody,)
+                .is_err()
+        );
+        let observation_pin_path = PathBuf::from(crate::workspace_pin::workspace_pin_path(
+            &observation_handle,
+        ));
+        assert!(!observation_pin_path.exists());
+
+        let replay_claims_before = workspace_pin_replay_claim_count();
+        assert_eq!(replay_claims_before, 2);
+        let mut observations = observer_coordinator
+            .workspace_pin_observation_dispatches()
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        let observation = observations.remove(0);
+        let mut pin_observer = crate::pin_worker_runtime::SystemdWorkspacePinObserver::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-observer/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let observer_request = observation.request_bytes(&contract).unwrap();
+        let observer_result = pin_observer
+            .observe(&observer_request, observation.attempt(), &custody)
+            .unwrap();
+        assert_eq!(
+            observer_result.dataset(),
+            &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                name: "aosproof/aos/project/observed-workspace".to_owned(),
+                guid: observation_guid,
+            }
+        );
+        assert_eq!(
+            observer_result.pin(),
+            &crate::workspace_pin::WorkspacePinObservationV1::Absent
+        );
+        assert_eq!(
+            observer_coordinator
+                .complete_workspace_pin_observation(observation.attempt(), &observer_result)
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::AwaitFreshRepair
+        );
+        assert!(!observation_pin_path.exists());
+        let replay_claims_after = workspace_pin_replay_claim_count();
+        assert_eq!(replay_claims_after, replay_claims_before);
+
+        // Assemble the production Runtime from the same protected journals,
+        // retained namespace, and systemd clients. Its startup reconciliation
+        // must independently preserve the pending repair classification.
+        let repair_workspace_catalog_state = private_tempdir_in(Path::new("/run/aos")).unwrap();
+        let repair_catalog_path = repair_workspace_catalog_state.path().to_owned();
+        let mut runtime = crate::StorageBrokerRuntime::from_protected_components_for_test(
+            observer_coordinator,
+            || {
+                let initialized = crate::StorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )?;
+                drop(initialized);
+                crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )
+                .map_err(Into::into)
+            },
+            &mut || Ok(vm_clock()),
+            crate::runtime::runtime_configuration_binding(
+                fixture.protected_authority_binding(),
+                identity_pool,
+            ),
+            custody,
+            contract,
+            pin_executor,
+            pin_observer,
+            helper,
+        )
+        .unwrap();
+        assert!(matches!(
+            runtime.readiness(),
+            crate::StorageRuntimeReadiness::RecoveryPending { operations }
+                if operations > 0
+        ));
+
+        let observer_socket = "aos-sandbox-workspace-pin-observer.socket";
+        let worker_socket = "aos-sandbox-workspace-pin-worker.socket";
+        let journal_before_negatives = runtime
+            .coordinator_for_test()
+            .transactions
+            .journal_sequence_for_test();
+        let attempts_before_negatives = runtime
+            .coordinator_for_test()
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap();
+        let observer_before_negatives = systemd_socket_sample(observer_socket);
+        let worker_before_negatives = systemd_socket_sample(worker_socket);
+
+        let repair_clock = vm_clock();
+        let repair_deadline = repair_clock
+            .boottime_nanoseconds()
+            .checked_add(120_000_000_000)
+            .unwrap();
+        let repair_manifest = assignment_manifest_at(&observation_spec, 7);
+        let wrong_target_request = vm_repair_request(
+            80,
+            81,
+            [0x83; 32],
+            7,
+            repair_manifest.digest(),
+            repair_deadline,
+        );
+        let wrong_target_artifacts = fixture
+            .repair_artifacts_for_kernel_clock(&wrong_target_request, repair_clock.wall_seconds());
+        assert!(
+            runtime
+                .repair_workspace_pin(
+                    &wrong_target_request,
+                    &wrong_target_artifacts,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(vm_clock()),
+                )
+                .is_err()
+        );
+
+        let stale_manifest = assignment_manifest_at(&observation_spec, 5);
+        let stale_request = vm_repair_request(
+            82,
+            83,
+            observation_handle,
+            5,
+            stale_manifest.digest(),
+            repair_deadline,
+        );
+        let stale_artifacts =
+            fixture.repair_artifacts_for_kernel_clock(&stale_request, repair_clock.wall_seconds());
+        assert!(
+            runtime
+                .repair_workspace_pin(
+                    &stale_request,
+                    &stale_artifacts,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(vm_clock()),
+                )
+                .is_err()
+        );
+
+        let observer_after_negatives = systemd_socket_sample(observer_socket);
+        let worker_after_negatives = systemd_socket_sample(worker_socket);
+        assert_same_socket_invocation(&observer_before_negatives, &observer_after_negatives);
+        assert_same_socket_invocation(&worker_before_negatives, &worker_after_negatives);
+        assert_eq!(
+            observer_after_negatives.accepted,
+            observer_before_negatives.accepted
+        );
+        assert_eq!(
+            worker_after_negatives.accepted,
+            worker_before_negatives.accepted
+        );
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            journal_before_negatives
+        );
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .workspace_pin_attempts()
+                .unwrap(),
+            attempts_before_negatives
+        );
+
+        let repair_request = vm_repair_request(
+            84,
+            85,
+            observation_handle,
+            7,
+            repair_manifest.digest(),
+            repair_deadline,
+        );
+        let repair_artifacts =
+            fixture.repair_artifacts_for_kernel_clock(&repair_request, repair_clock.wall_seconds());
+        let repair_semantics = CanonicalStorageRepairSemanticsV1::decode(
+            &repair_request,
+            peer(),
+            peer_policy(),
+            vm_clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let journal_before_repair = runtime
+            .coordinator_for_test()
+            .transactions
+            .journal_sequence_for_test();
+        let observer_before_repair = systemd_socket_sample(observer_socket);
+        let worker_before_repair = systemd_socket_sample(worker_socket);
+        let claims_before_repair = workspace_pin_replay_claim_count();
+
+        // Model a process failure after the repair admission transaction is
+        // durable but before its worker dispatch can be constructed.
+        runtime.fail_after_next_transaction_journal_commit_for_test();
+        assert!(matches!(
+            runtime.repair_workspace_pin(
+                &repair_request,
+                &repair_artifacts,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(vm_clock()),
+            ),
+            Err(crate::StorageRuntimeError::ReopenRequired)
+        ));
+        assert!(!observation_pin_path.exists());
+        assert!(runtime.requires_reopen());
+        assert!(!runtime.is_prepare_ready());
+        assert_eq!(
+            runtime.apply_readiness(),
+            crate::runtime::StorageApplyReadiness::WorkspaceBackendUnavailable
+        );
+        assert!(!runtime.is_repair_ready());
+        assert!(!runtime.is_inventory_ready());
+        let fatal = crate::service::finish_dispatched_response(
+            runtime.requires_reopen(),
+            true,
+            crate::StorageConnectionOutcome::RequestRejected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fatal,
+            crate::StorageServiceError::Runtime(crate::StorageRuntimeError::ReopenRequired)
+        ));
+
+        let observer_after_repair = systemd_socket_sample(observer_socket);
+        let worker_after_repair = systemd_socket_sample(worker_socket);
+        assert_same_socket_invocation(&observer_before_repair, &observer_after_repair);
+        assert_same_socket_invocation(&worker_before_repair, &worker_after_repair);
+        assert_eq!(
+            observer_after_repair.accepted,
+            observer_before_repair.accepted + 1
+        );
+        assert_eq!(worker_after_repair.accepted, worker_before_repair.accepted);
+        assert_eq!(workspace_pin_replay_claim_count(), claims_before_repair);
+        let admitted_sequence = journal_before_repair.checked_add(7).unwrap();
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            admitted_sequence
+        );
+
+        drop(runtime);
+
+        // Protected reopen replays the durable transaction into authenticated
+        // state, then uses only the observer to classify the absent pin.
+        let observer_before_restart = systemd_socket_sample(observer_socket);
+        let worker_before_restart = systemd_socket_sample(worker_socket);
+        let claims_before_restart = workspace_pin_replay_claim_count();
+        let restart_coordinator =
+            runtime_coordinator(&observation_state, &fixture, &observation_catalog).unwrap();
+        let restart_custody = WorkspacePinHostCustody::retain_initial_root_owned().unwrap();
+        let restart_contract = ZfsHelperContract::new(executable.clone()).unwrap();
+        let restart_pin_executor = SystemdWorkspacePinExecutor::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let restart_pin_observer = crate::pin_worker_runtime::SystemdWorkspacePinObserver::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-observer/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let restart_generic_executor = crate::SystemdZfsExecutor::new(
+            PathBuf::from("/run/aos/sandbox-zfs-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let restart_helper = StorageMutationHelper::new(
+            restart_contract.clone(),
+            SystemdZfsProcessBackend::new(restart_generic_executor),
+        );
+        let mut runtime = crate::StorageBrokerRuntime::from_protected_components_for_test(
+            restart_coordinator,
+            || {
+                let initialized = crate::StorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )?;
+                drop(initialized);
+                crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )
+                .map_err(Into::into)
+            },
+            &mut || Ok(vm_clock()),
+            crate::runtime::runtime_configuration_binding(
+                fixture.protected_authority_binding(),
+                identity_pool,
+            ),
+            restart_custody,
+            restart_contract,
+            restart_pin_executor,
+            restart_pin_observer,
+            restart_helper,
+        )
+        .unwrap();
+        assert!(matches!(
+            runtime.readiness(),
+            crate::StorageRuntimeReadiness::RecoveryPending { operations }
+                if operations > 0
+        ));
+        assert!(!observation_pin_path.exists());
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            admitted_sequence
+        );
+        let observer_after_restart = systemd_socket_sample(observer_socket);
+        let worker_after_restart = systemd_socket_sample(worker_socket);
+        assert_same_socket_invocation(&observer_before_restart, &observer_after_restart);
+        assert_same_socket_invocation(&worker_before_restart, &worker_after_restart);
+        assert_eq!(
+            observer_after_restart.accepted,
+            observer_before_restart.accepted + 1
+        );
+        assert_eq!(
+            worker_after_restart.accepted,
+            worker_before_restart.accepted
+        );
+        assert_eq!(workspace_pin_replay_claim_count(), claims_before_restart);
+
+        let interrupted_attempt = runtime
+            .coordinator_for_test()
+            .transactions
+            .latest_workspace_pin_attempt(observation_creation.operation_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(interrupted_attempt.attempt_ordinal(), 2);
+        assert_eq!(interrupted_attempt.action(), WorkspacePinActionV1::Ensure);
+        assert_eq!(
+            interrupted_attempt.phase(),
+            WorkspacePinAttemptPhaseV1::Ambiguous
+        );
+        assert_eq!(interrupted_attempt.effect_operation_id(), [85; 16]);
+        runtime
+            .coordinator_for_test()
+            .authenticate_workspace_pin_attempts()
+            .unwrap();
+        runtime
+            .coordinator_for_test()
+            .authenticate_workspace_pin_repair(&interrupted_attempt)
+            .unwrap();
+        let interrupted_intent = runtime
+            .coordinator_for_test()
+            .transactions
+            .workspace_pin_repair_intent(repair_semantics.operation_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            interrupted_intent.repair_attempt_id(),
+            interrupted_attempt.attempt_id()
+        );
+        assert_eq!(
+            interrupted_intent.repair_attempt_ordinal(),
+            interrupted_attempt.attempt_ordinal()
+        );
+        assert_eq!(
+            interrupted_intent.creation_operation_id(),
+            observation_creation.operation_id()
+        );
+        assert_eq!(interrupted_intent.workspace_handle(), observation_handle);
+        let pending_effect = runtime
+            .coordinator_for_test()
+            .transactions
+            .authority_record(
+                RecordNamespace::Effect,
+                repair_semantics.header().request_id(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .authority
+                .open_admission_intent(repair_semantics.header().request_id(), pending_effect)
+                .unwrap()
+                .status(),
+            BrokerEffectStatusV1::Pending
+        );
+        assert_eq!(interrupted_intent.admitted_effect_record(), pending_effect);
+        let current_fence = runtime
+            .coordinator_for_test()
+            .transactions
+            .authority_record(
+                RecordNamespace::DesiredState,
+                repair_semantics.fence().sandbox_id(),
+            )
+            .unwrap()
+            .unwrap();
+        let operation_fence = runtime
+            .coordinator_for_test()
+            .transactions
+            .authority_record(
+                RecordNamespace::AuthorityPublication,
+                &repair_semantics.operation_id(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .authority
+                .open_fence(repair_semantics.fence().sandbox_id(), current_fence)
+                .unwrap(),
+            runtime
+                .coordinator_for_test()
+                .authority
+                .open_operation_fence(&repair_semantics.operation_id(), operation_fence)
+                .unwrap()
+        );
+        assert!(!runtime.is_inventory_ready());
+
+        // Exact replay of the interrupted effect is resolved before a new
+        // observer or mutator activation and cannot alter its durable history.
+        let replay_sequence = runtime
+            .coordinator_for_test()
+            .transactions
+            .journal_sequence_for_test();
+        let observer_before_retry = systemd_socket_sample(observer_socket);
+        let worker_before_retry = systemd_socket_sample(worker_socket);
+        assert_eq!(
+            runtime
+                .repair_workspace_pin(
+                    &repair_request,
+                    &repair_artifacts,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(vm_clock()),
+                )
+                .unwrap(),
+            crate::runtime::WorkspacePinRepairExecutionOutcomeV1::ObservationRequired
+        );
+        let observer_after_retry = systemd_socket_sample(observer_socket);
+        let worker_after_retry = systemd_socket_sample(worker_socket);
+        assert_eq!(observer_after_retry, observer_before_retry);
+        assert_eq!(worker_after_retry, worker_before_retry);
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            replay_sequence
+        );
+        assert_eq!(workspace_pin_replay_claim_count(), claims_before_restart);
+
+        // A distinct next-generation repair may advance from the retained
+        // ambiguous attempt after making its own fresh absence observation.
+        let resumed_manifest = assignment_manifest_at(&observation_spec, 8);
+        let resumed_request = vm_repair_request(
+            86,
+            87,
+            observation_handle,
+            8,
+            resumed_manifest.digest(),
+            repair_deadline,
+        );
+        let resumed_artifacts = fixture
+            .repair_artifacts_for_kernel_clock(&resumed_request, repair_clock.wall_seconds());
+        let observer_before_resumed = systemd_socket_sample(observer_socket);
+        let worker_before_resumed = systemd_socket_sample(worker_socket);
+        let claims_before_resumed = workspace_pin_replay_claim_count();
+        assert!(runtime.fail_after_next_workspace_catalog_commit_for_test());
+        assert!(matches!(
+            runtime
+                .repair_workspace_pin(
+                    &resumed_request,
+                    &resumed_artifacts,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(vm_clock()),
+                )
+                .unwrap_err(),
+            crate::StorageRuntimeError::ReopenRequired
+        ));
+        assert!(observation_pin_path.is_dir());
+        assert!(runtime.requires_reopen());
+        assert!(!runtime.is_prepare_ready());
+        assert_eq!(
+            runtime.apply_readiness(),
+            crate::runtime::StorageApplyReadiness::WorkspaceBackendUnavailable
+        );
+        assert!(!runtime.is_repair_ready());
+        assert!(!runtime.is_inventory_ready());
+        let fatal = crate::service::finish_dispatched_response(
+            runtime.requires_reopen(),
+            true,
+            crate::StorageConnectionOutcome::RequestRejected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fatal,
+            crate::StorageServiceError::Runtime(crate::StorageRuntimeError::ReopenRequired)
+        ));
+
+        // The effect and catalog prefix are durable, but the consumed runtime
+        // cannot trust its old projection. A new process reopens both journals
+        // and freshly reproves the catalog before serving another RPC.
+        drop(runtime);
+        let reopen_coordinator =
+            runtime_coordinator(&observation_state, &fixture, &observation_catalog).unwrap();
+        let reopen_custody = WorkspacePinHostCustody::retain_initial_root_owned().unwrap();
+        let reopen_contract = ZfsHelperContract::new(executable.clone()).unwrap();
+        let reopen_pin_executor = SystemdWorkspacePinExecutor::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let reopen_pin_observer = crate::pin_worker_runtime::SystemdWorkspacePinObserver::new(
+            PathBuf::from("/run/aos/sandbox-workspace-pin-observer/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let reopen_generic_executor = crate::SystemdZfsExecutor::new(
+            PathBuf::from("/run/aos/sandbox-zfs-worker/control.sock"),
+            crate::process::open_cgroup_root().unwrap(),
+        )
+        .unwrap();
+        let reopen_helper = StorageMutationHelper::new(
+            reopen_contract.clone(),
+            SystemdZfsProcessBackend::new(reopen_generic_executor),
+        );
+        let mut runtime = crate::StorageBrokerRuntime::from_protected_components_for_test(
+            reopen_coordinator,
+            || {
+                crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_root_owned(
+                    &repair_catalog_path,
+                    identity_pool,
+                )
+                .map_err(Into::into)
+            },
+            &mut || Ok(vm_clock()),
+            crate::runtime::runtime_configuration_binding(
+                fixture.protected_authority_binding(),
+                identity_pool,
+            ),
+            reopen_custody,
+            reopen_contract,
+            reopen_pin_executor,
+            reopen_pin_observer,
+            reopen_helper,
+        )
+        .unwrap();
+        assert!(matches!(
+            runtime.readiness(),
+            crate::StorageRuntimeReadiness::Ready
+        ));
+        assert!(runtime.is_inventory_ready());
+
+        let observer_after_resumed = systemd_socket_sample(observer_socket);
+        let worker_after_resumed = systemd_socket_sample(worker_socket);
+        assert_same_socket_invocation(&observer_before_resumed, &observer_after_resumed);
+        assert_same_socket_invocation(&worker_before_resumed, &worker_after_resumed);
+        assert_eq!(
+            observer_after_resumed.accepted,
+            observer_before_resumed.accepted + 3
+        );
+        assert_eq!(
+            worker_after_resumed.accepted,
+            worker_before_resumed.accepted + 1
+        );
+        let claims_after_repair = workspace_pin_replay_claim_count();
+        assert_eq!(claims_after_repair, claims_before_resumed + 1);
+
+        let repair_attempt = runtime
+            .coordinator_for_test()
+            .transactions
+            .latest_workspace_pin_attempt(observation_creation.operation_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(repair_attempt.attempt_ordinal(), 3);
+        assert_eq!(repair_attempt.action(), WorkspacePinActionV1::Ensure);
+        assert_eq!(
+            repair_attempt.phase(),
+            WorkspacePinAttemptPhaseV1::Satisfied
+        );
+        assert_eq!(repair_attempt.effect_operation_id(), [87; 16]);
+        runtime
+            .coordinator_for_test()
+            .authenticate_workspace_pin_attempts()
+            .unwrap();
+        runtime
+            .coordinator_for_test()
+            .authenticate_workspace_pin_repair(&interrupted_attempt)
+            .unwrap();
+        runtime
+            .coordinator_for_test()
+            .authenticate_workspace_pin_repair(&repair_attempt)
+            .unwrap();
+
+        let resumed_semantics = CanonicalStorageRepairSemanticsV1::decode(
+            &resumed_request,
+            peer(),
+            peer_policy(),
+            vm_clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let completed_effect = runtime
+            .coordinator_for_test()
+            .transactions
+            .authority_record(
+                RecordNamespace::Effect,
+                resumed_semantics.header().request_id(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .authority
+                .open_admission_intent(resumed_semantics.header().request_id(), completed_effect)
+                .unwrap()
+                .status(),
+            BrokerEffectStatusV1::Complete
+        );
+        assert!(runtime.is_inventory_ready());
+
+        // Exact replay of the completed successor is also side-effect free.
+        let replay_sequence = runtime
+            .coordinator_for_test()
+            .transactions
+            .journal_sequence_for_test();
+        let observer_before_retry = systemd_socket_sample(observer_socket);
+        let worker_before_retry = systemd_socket_sample(worker_socket);
+        assert_eq!(
+            runtime
+                .repair_workspace_pin(
+                    &resumed_request,
+                    &resumed_artifacts,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(vm_clock()),
+                )
+                .unwrap(),
+            crate::runtime::WorkspacePinRepairExecutionOutcomeV1::ObservationRequired
+        );
+        let observer_after_retry = systemd_socket_sample(observer_socket);
+        let worker_after_retry = systemd_socket_sample(worker_socket);
+        assert_eq!(observer_after_retry, observer_before_retry);
+        assert_eq!(worker_after_retry, worker_before_retry);
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            replay_sequence
+        );
+        assert_eq!(workspace_pin_replay_claim_count(), claims_after_repair);
+
+        // A distinct current request must observe the already-present pin, then
+        // fail without admitting an effect or reaching the mutator.
+        let present_manifest = assignment_manifest_at(&observation_spec, 9);
+        let present_request = vm_repair_request(
+            88,
+            89,
+            observation_handle,
+            9,
+            present_manifest.digest(),
+            repair_deadline,
+        );
+        let present_artifacts = fixture
+            .repair_artifacts_for_kernel_clock(&present_request, repair_clock.wall_seconds());
+        let present_sequence = runtime
+            .coordinator_for_test()
+            .transactions
+            .journal_sequence_for_test();
+        let attempts_before_present = runtime
+            .coordinator_for_test()
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap();
+        let observer_before_present = systemd_socket_sample(observer_socket);
+        let worker_before_present = systemd_socket_sample(worker_socket);
+        assert!(
+            runtime
+                .repair_workspace_pin(
+                    &present_request,
+                    &present_artifacts,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(vm_clock()),
+                )
+                .is_err()
+        );
+        let observer_after_present = systemd_socket_sample(observer_socket);
+        let worker_after_present = systemd_socket_sample(worker_socket);
+        assert_same_socket_invocation(&observer_before_present, &observer_after_present);
+        assert_same_socket_invocation(&worker_before_present, &worker_after_present);
+        assert_eq!(
+            observer_after_present.accepted,
+            observer_before_present.accepted + 1
+        );
+        assert_eq!(
+            worker_after_present.accepted,
+            worker_before_present.accepted
+        );
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .journal_sequence_for_test(),
+            present_sequence
+        );
+        assert_eq!(
+            runtime
+                .coordinator_for_test()
+                .transactions
+                .workspace_pin_attempts()
+                .unwrap(),
+            attempts_before_present
+        );
+
+        let (reopen_coordinator, reopen_workspace_catalog) = runtime.into_journals_for_test();
+        drop(reopen_workspace_catalog);
+        drop(reopen_coordinator);
+
+        let reopened =
+            runtime_coordinator(&observation_state, &fixture, &observation_catalog).unwrap();
+        reopened.authenticate_workspace_pin_attempts().unwrap();
+        let reopened_attempt = reopened
+            .transactions
+            .latest_workspace_pin_attempt(observation_creation.operation_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(reopened_attempt, repair_attempt);
+        reopened
+            .authenticate_workspace_pin_repair(&reopened_attempt)
+            .unwrap();
+        let reopened_interrupted = reopened
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id() == interrupted_attempt.attempt_id())
+            .unwrap();
+        assert_eq!(reopened_interrupted, interrupted_attempt);
+        reopened
+            .authenticate_workspace_pin_repair(&reopened_interrupted)
+            .unwrap();
+        drop(reopened);
+
+        let reopened_catalog =
+            crate::StorageWorkspaceCatalogV1::open_root_owned(&repair_catalog_path, identity_pool)
+                .unwrap();
+        let reopened_inventory = decode_storage_resource_inventory_response(
+            &reopened_catalog.inventory_resources().unwrap(),
+            1_048_576,
+        )
+        .unwrap();
+        assert_eq!(reopened_inventory.workspaces().len(), 1);
+        assert_eq!(
+            reopened_inventory.workspaces()[0].workspace_handle(),
+            &observation_handle
+        );
+        fs::write(
+            "/run/aos/repaired-workspace-pin-path",
+            format!("{}\n", observation_pin_path.display()),
+        )
+        .unwrap();
+    }
+
+    const STORAGE_RPC_SOCKET: &str = "/run/aos/sandbox-storage/control.sock";
+    const STORAGE_RPC_FIXTURE_DIRECTORY: &str = "/run/aos/storage-rpc-fixture";
+    const STORAGE_RPC_CONTROL_DIRECTORY: &str = "/run/storage-rpc-controller";
+    const STORAGE_RPC_RESPONSE_BYTES: u32 = 1_048_576;
+
+    #[test]
+    #[ignore = "requires the installed aos-storaged and systemd Storage workers"]
+    fn systemd_storage_rpc_vm_fixture() {
+        match std::env::var("AOS_STORAGE_RPC_ROLE").unwrap().as_str() {
+            "seed" => seed_storage_rpc_state(),
+            "audit" => audit_storage_rpc_state(),
+            "controller" => storage_rpc_controller_loop(),
+            "decoy" => storage_rpc_decoy(),
+            role => panic!("unknown Storage RPC fixture role {role}"),
+        }
+    }
+
+    fn seed_storage_rpc_state() {
+        let fixture_directory = Path::new(STORAGE_RPC_FIXTURE_DIRECTORY);
+        let marker = fixture_directory.join("seeded");
+        if marker.exists() {
+            return;
+        }
+
+        let authority_directory = std::env::var_os("AOS_STORAGE_AUTHORITY_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let bootstrap_directory = std::env::var_os("AOS_STORAGE_BOOTSTRAP_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let resolver_policy_directory = std::env::var_os("AOS_STORAGE_RESOLVER_POLICY_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let state_directory = std::env::var_os("AOS_STORAGE_STATE_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let root_guid = std::env::var("AOS_STORAGE_ROOT_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let ancestor_guid = std::env::var("AOS_STORAGE_ANCESTOR_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let dataset_guid = std::env::var("AOS_STORAGE_DATASET_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        fs::create_dir_all(fixture_directory).unwrap();
+        fs::set_permissions(fixture_directory, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(&state_directory).unwrap();
+        fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let fixture = Fixture::new();
+        fixture.provision_protected(&authority_directory);
+        let catalog = vm_create_catalog(
+            root_guid,
+            ancestor_guid,
+            "aosproof/aos/project/rpc-workspace",
+        );
+        provision_storage_rpc_bootstrap(&bootstrap_directory, &catalog);
+
+        let identity_pool = crate::StorageIdentityPoolV1::new(
+            MINIMUM_HOST_IDENTITY_RANGE,
+            MINIMUM_HOST_IDENTITY_RANGE * 4,
+        )
+        .unwrap();
+        let configuration_binding = crate::runtime::runtime_configuration_binding(
+            fixture.protected_authority_binding(),
+            identity_pool,
+        );
+        let store = StorageTransactionStore::open_root_owned_runtime(
+            &state_directory,
+            StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            catalog.generation() - 1,
+            configuration_binding,
+            catalog.generation() - 1,
+            std::slice::from_ref(&catalog),
+        )
+        .unwrap();
+        store
+            .validate_runtime_restart(
+                configuration_binding,
+                catalog.generation() - 1,
+                std::slice::from_ref(&catalog),
+            )
+            .unwrap();
+        let mut coordinator = StorageAdmissionCoordinator::new(fixture.authority(), store);
+
+        let specification = sandbox_spec(74);
+        let manifest = assignment_manifest(&specification);
+        let admission_clock = vm_clock();
+        // Stay below the fixture lease's 285-second conservative local fail-stop.
+        let create_deadline = admission_clock
+            .boottime_nanoseconds()
+            .checked_add(240_000_000_000)
+            .unwrap();
+        let create_request = vm_create_request(manifest.digest(), create_deadline);
+        let create_artifacts = fixture.artifacts_for_kernel_clock(
+            &create_request,
+            &catalog,
+            admission_clock.wall_seconds(),
+        );
+        prepare_for_apply(
+            &mut coordinator,
+            &create_request,
+            &create_artifacts,
+            &catalog,
+            &admission_clock,
+        );
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &create_request,
+                &create_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &admission_clock,
+                MINIMUM_HOST_IDENTITY_RANGE,
+                &manifest,
+                &specification,
+            )
+            .unwrap()
+        else {
+            panic!("Storage RPC seed create was not prepared")
+        };
+
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let creation = coordinator
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(dataset_guid),
+                ObjectDigest::from_bytes([0xa1; 32]),
+            )
+            .unwrap();
+        let workspace_handle = creation.storage_handle().unwrap();
+        let custody = WorkspacePinHostCustody::retain_initial_root_owned().unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(initial_pin) = coordinator
+            .begin_workspace_pin_ensure(creation, custody.host_scope().unwrap(), &mut || {
+                Ok(vm_clock())
+            })
+            .unwrap()
+        else {
+            panic!("Storage RPC seed Ensure was not admitted")
+        };
+        assert_eq!(initial_pin.attempt().attempt_ordinal(), 1);
+        let pin_path = PathBuf::from(crate::workspace_pin::workspace_pin_path(&workspace_handle));
+        assert!(!pin_path.exists());
+
+        let prepare_manifest = assignment_manifest_at(&specification, 7);
+        let prepare_clock = vm_clock();
+        let prepare_apply_request = vm_prepare_create_request(
+            prepare_manifest.digest(),
+            prepare_clock
+                .boottime_nanoseconds()
+                .checked_add(600_000_000_000)
+                .unwrap(),
+        );
+        let CatalogPlanV1::CreateWorkspace {
+            destination,
+            ancestor,
+            ..
+        } = catalog.plan()
+        else {
+            panic!("Storage RPC bootstrap did not carry its managed root")
+        };
+        let resolver_policy = ProtectedStorageResolverPolicyV1::new(
+            decode_assignment(&prepare_apply_request).unwrap(),
+            destination.root().clone(),
+            catalog.domains(),
+            ancestor.clone(),
+            134_217_728,
+            67_108_864,
+        )
+        .unwrap();
+        let verified_journal = coordinator
+            .transactions
+            .verified_resolver_journal()
+            .unwrap();
+        let inventory =
+            ProtectedStorageInventoryV1::from_verified_journal(verified_journal, &resolver_policy)
+                .unwrap()
+                .binding();
+        let head = coordinator.transactions.catalog_head_binding().unwrap();
+        write_public_fixture_file(
+            &fixture_directory.join("catalog-head-generation"),
+            head.generation().to_string().as_bytes(),
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("catalog-head-digest"),
+            head.digest().as_bytes(),
+        );
+        let expected_catalog = vm_prepared_create_catalog(head.generation() + 1, &resolver_policy);
+        let mut prepare_request =
+            PrepareStorageCatalogRequest::decode_from_slice(&production_preparation_request(
+                &prepare_apply_request,
+                &expected_catalog,
+                inventory,
+                head,
+            ))
+            .unwrap();
+        prepare_request
+            .header
+            .get_or_insert_default()
+            .protocol_minor = 0;
+        let prepare_request = prepare_request.encode_to_vec();
+        let prepare_artifacts = fixture.preparation_artifacts_for_rpc(
+            &prepare_apply_request,
+            &prepare_request,
+            prepare_clock.wall_seconds(),
+        );
+        let prepare_artifacts = BrokerAuthorizationArtifactsV1 {
+            broker_plan: prepare_artifacts.broker_plan().to_vec(),
+            broker_plan_signature: prepare_artifacts.broker_plan_signature().to_vec(),
+            ownership_lease: prepare_artifacts.ownership_lease().to_vec(),
+            ownership_lease_signature: prepare_artifacts.ownership_lease_signature().to_vec(),
+            ..Default::default()
+        };
+
+        fs::create_dir_all(&resolver_policy_directory).unwrap();
+        fs::set_permissions(
+            &resolver_policy_directory,
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let policy_path = resolver_policy_directory.join("storage-resolver-policy.catalog");
+        fs::write(
+            &policy_path,
+            encode_catalog_for_test(7, fixture.protected_authority_binding(), &[resolver_policy]),
+        )
+        .unwrap();
+        fs::set_permissions(&policy_path, fs::Permissions::from_mode(0o600)).unwrap();
+        write_public_fixture_file(
+            &fixture_directory.join("prepare-request.pb"),
+            &prepare_request,
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("prepare-artifacts.pb"),
+            &prepare_artifacts.encode_to_vec(),
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("prepare-catalog-generation"),
+            expected_catalog.generation().to_string().as_bytes(),
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("prepare-catalog-digest"),
+            expected_catalog.digest().as_bytes(),
+        );
+        drop(coordinator);
+
+        let workspace_catalog =
+            crate::StorageWorkspaceCatalogV1::open_root_owned(&state_directory, identity_pool)
+                .unwrap();
+        assert!(
+            decode_storage_resource_inventory_response(
+                &workspace_catalog.inventory_resources().unwrap(),
+                STORAGE_RPC_RESPONSE_BYTES,
+            )
+            .unwrap()
+            .workspaces()
+            .is_empty()
+        );
+        drop(workspace_catalog);
+
+        let repair_clock = vm_clock();
+        let repair_manifest = assignment_manifest_at(&specification, 6);
+        let repair_request = vm_repair_request(
+            84,
+            85,
+            workspace_handle,
+            6,
+            repair_manifest.digest(),
+            repair_clock
+                .boottime_nanoseconds()
+                .checked_add(600_000_000_000)
+                .unwrap(),
+        );
+        let repair_artifacts =
+            fixture.repair_artifacts_for_rpc(&repair_request, repair_clock.wall_seconds());
+        let artifacts = BrokerAuthorizationArtifactsV1 {
+            broker_plan: repair_artifacts.broker_plan().to_vec(),
+            broker_plan_signature: repair_artifacts.broker_plan_signature().to_vec(),
+            ownership_lease: repair_artifacts.ownership_lease().to_vec(),
+            ownership_lease_signature: repair_artifacts.ownership_lease_signature().to_vec(),
+            ..Default::default()
+        };
+
+        write_public_fixture_file(
+            &fixture_directory.join("repair-request.pb"),
+            &repair_request,
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("repair-artifacts.pb"),
+            &artifacts.encode_to_vec(),
+        );
+        write_public_fixture_file(
+            &fixture_directory.join("workspace-handle"),
+            &workspace_handle,
+        );
+        write_public_fixture_file(&marker, b"ready\n");
+    }
+
+    fn audit_storage_rpc_state() {
+        let fixture_directory = Path::new(STORAGE_RPC_FIXTURE_DIRECTORY);
+        let state_directory = std::env::var_os("AOS_STORAGE_STATE_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap();
+        let root_guid = std::env::var("AOS_STORAGE_ROOT_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let ancestor_guid = std::env::var("AOS_STORAGE_ANCESTOR_GUID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let fixture = Fixture::new();
+        let catalog = vm_create_catalog(
+            root_guid,
+            ancestor_guid,
+            "aosproof/aos/project/rpc-workspace",
+        );
+        let identity_pool = crate::StorageIdentityPoolV1::new(
+            MINIMUM_HOST_IDENTITY_RANGE,
+            MINIMUM_HOST_IDENTITY_RANGE * 4,
+        )
+        .unwrap();
+        let configuration_binding = crate::runtime::runtime_configuration_binding(
+            fixture.protected_authority_binding(),
+            identity_pool,
+        );
+        let store = StorageTransactionStore::open_root_owned_runtime(
+            &state_directory,
+            StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            catalog.generation() - 1,
+            configuration_binding,
+            catalog.generation() - 1,
+            std::slice::from_ref(&catalog),
+        )
+        .unwrap();
+        let head = store.catalog_head_binding().unwrap();
+        let expected_generation: u64 =
+            fs::read_to_string(fixture_directory.join("catalog-head-generation"))
+                .unwrap()
+                .parse()
+                .unwrap();
+        let expected_digest = fs::read(fixture_directory.join("catalog-head-digest")).unwrap();
+
+        assert_eq!(head.generation(), expected_generation);
+        assert_eq!(head.digest().as_bytes(), expected_digest.as_slice());
+    }
+
+    fn provision_storage_rpc_bootstrap(directory: &Path, catalog: &ResolvedCatalogCommitmentV1) {
+        fs::create_dir_all(directory).unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let generation = catalog.generation() - 1;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"AOSSBT01");
+        bytes.extend_from_slice(&1_u16.to_be_bytes());
+        bytes.extend_from_slice(&[0; 2]);
+        bytes.extend_from_slice(&generation.to_be_bytes());
+        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        bytes.extend_from_slice(&(catalog.canonical_bytes().len() as u32).to_be_bytes());
+        bytes.extend_from_slice(catalog.canonical_bytes());
+
+        let minimum = directory.join("storage-minimum-generation");
+        fs::write(&minimum, generation.to_be_bytes()).unwrap();
+        fs::set_permissions(&minimum, fs::Permissions::from_mode(0o600)).unwrap();
+        let genesis = directory.join("storage-genesis.catalog");
+        fs::write(&genesis, bytes).unwrap();
+        fs::set_permissions(&genesis, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn write_public_fixture_file(path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    fn storage_rpc_controller_loop() {
+        let command_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("command");
+        let result_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("result");
+        let mut previous = String::new();
+        let mut prepared_response = None;
+        let mut live_inventory_response = None;
+
+        loop {
+            let command = fs::read_to_string(&command_path).unwrap_or_default();
+            let command = command.trim();
+            if command.is_empty() || command == previous {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            previous = command.to_owned();
+            let (token, action) = command
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("malformed Storage RPC command {command}"));
+            let detail = match action {
+                "inventory-empty" => {
+                    let inventory = storage_rpc_inventory(90);
+                    assert_eq!(storage_rpc_inventory_count(&inventory), 0);
+                    "inventory-empty"
+                }
+                "missing-authority" => {
+                    storage_rpc_missing_authority();
+                    "missing-authority"
+                }
+                "repair" => {
+                    storage_rpc_repair(false);
+                    "repair"
+                }
+                "inventory-live" => {
+                    let inventory = storage_rpc_inventory(91);
+                    assert_eq!(storage_rpc_inventory_count(&inventory), 1);
+                    if let Some(expected) = &live_inventory_response {
+                        assert_eq!(&inventory, expected);
+                    } else {
+                        live_inventory_response = Some(inventory);
+                    }
+                    "inventory-live"
+                }
+                "retry" => {
+                    storage_rpc_repair(true);
+                    "retry-conflict"
+                }
+                "prepare" => {
+                    assert!(prepared_response.is_none());
+                    prepared_response = Some(storage_rpc_prepare());
+                    "prepare"
+                }
+                "prepare-replay" => {
+                    let replayed_response = storage_rpc_prepare();
+                    assert_eq!(prepared_response.as_ref(), Some(&replayed_response));
+                    "prepare-replay"
+                }
+                "prepare-one-two-unavailable" => {
+                    storage_rpc_method_unavailable(
+                        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+                        2,
+                    );
+                    "prepare-one-two-unavailable"
+                }
+                "prepare-unavailable" => {
+                    storage_rpc_method_unavailable(
+                        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+                        4,
+                    );
+                    "prepare-unavailable"
+                }
+                "apply-unavailable" => {
+                    storage_rpc_method_unavailable(BrokerMethod::BROKER_METHOD_STORAGE_APPLY, 4);
+                    "apply-unavailable"
+                }
+                "exit" => {
+                    fs::write(&result_path, format!("{token} ok exit\n")).unwrap();
+                    return;
+                }
+                _ => panic!("unknown Storage RPC command {action}"),
+            };
+            fs::write(&result_path, format!("{token} ok {detail}\n")).unwrap();
+        }
+    }
+
+    fn storage_rpc_prepare() -> Vec<u8> {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
+        let request =
+            fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-request.pb")).unwrap();
+        let artifacts = BrokerAuthorizationArtifactsV1::decode_from_slice(
+            &fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-artifacts.pb"))
+                .unwrap(),
+        )
+        .unwrap();
+        let packet = encode_authorized_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            &request,
+            &[],
+            AuthorizationArtifactBytes {
+                broker_plan: &artifacts.broker_plan,
+                broker_plan_signature: &artifacts.broker_plan_signature,
+                ownership_lease: &artifacts.ownership_lease,
+                ownership_lease_signature: &artifacts.ownership_lease_signature,
+            },
+        )
+        .unwrap();
+        let request = PrepareStorageCatalogRequest::decode_from_slice(&request).unwrap();
+        let request_id: [u8; 16] = request
+            .header
+            .as_option()
+            .unwrap()
+            .request_id
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let maximum_response_bytes = request.header.as_option().unwrap().maximum_response_bytes;
+        let (mut socket, session, deadline) = storage_rpc_handshake(method);
+        session.decode_request(&packet, 0).unwrap();
+        crate::transport::send(&mut socket, &packet, deadline).unwrap();
+        let response =
+            crate::transport::receive(&mut socket, maximum_response_bytes as usize, deadline)
+                .unwrap();
+        let response = decode_response_envelope(
+            response.payload(),
+            &request_id,
+            method,
+            &[],
+            0,
+            session.maximum_response_bytes(),
+            maximum_response_bytes,
+        )
+        .unwrap();
+        assert!(response.error().is_none());
+        let prepared = PrepareStorageCatalogResponse::decode_from_slice(response.body()).unwrap();
+        let expected_generation: u64 = fs::read_to_string(
+            Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-catalog-generation"),
+        )
+        .unwrap()
+        .parse()
+        .unwrap();
+        let expected_digest =
+            fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-catalog-digest"))
+                .unwrap();
+        assert_eq!(prepared.operation_id, vec![86; 16]);
+        assert_eq!(prepared.catalog_generation, expected_generation);
+        assert_eq!(prepared.catalog_digest, expected_digest);
+        assert!(!prepared.non_authorizing_receipt.is_empty());
+        response.body().to_vec()
+    }
+
+    fn storage_rpc_method_unavailable(method: BrokerMethod, minor: u32) {
+        let mut socket =
+            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
+                .unwrap();
+        let deadline = crate::transport::boottime()
+            .unwrap()
+            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
+            .unwrap();
+        let hello = storage_rpc_client_hello_at(method, minor);
+        crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).unwrap();
+        let response = crate::transport::receive(
+            &mut socket,
+            aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
+            deadline,
+        )
+        .unwrap();
+        let feature = FeatureRef::new(
+            aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+            1,
+            0,
+        )
+        .unwrap();
+        assert!(matches!(
+            decode_server_hello(
+                response.payload(),
+                ProtocolId::StorageBroker,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                ProtocolVersion::new(1, minor as u16),
+                &[feature],
+                &[method],
+                STORAGE_RPC_RESPONSE_BYTES,
+            ),
+            Err(aos_sandbox_protocol::ProtocolValidationError::BrokerRejected(code))
+                if code == BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST
+        ));
+    }
+
+    fn storage_rpc_decoy() {
+        let mut socket =
+            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
+                .unwrap();
+        let deadline = crate::transport::boottime()
+            .unwrap()
+            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
+            .unwrap();
+        let hello =
+            storage_rpc_client_hello(BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES);
+
+        if crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).is_ok() {
+            assert!(
+                crate::transport::receive(
+                    &mut socket,
+                    aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
+                    deadline,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    fn storage_rpc_missing_authority() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
+        let (mut socket, _session, deadline) = storage_rpc_handshake(method);
+        let request =
+            fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("repair-request.pb")).unwrap();
+        let packet = BrokerRequestEnvelope {
+            method: method.into(),
+            body: request,
+            ..Default::default()
+        }
+        .encode_to_vec();
+
+        crate::transport::send(&mut socket, &packet, deadline).unwrap();
+        assert!(
+            crate::transport::receive(&mut socket, STORAGE_RPC_RESPONSE_BYTES as usize, deadline)
+                .is_err()
+        );
+    }
+
+    fn storage_rpc_repair(expect_conflict: bool) {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
+        let request =
+            fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("repair-request.pb")).unwrap();
+        let artifacts = BrokerAuthorizationArtifactsV1::decode_from_slice(
+            &fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("repair-artifacts.pb"))
+                .unwrap(),
+        )
+        .unwrap();
+        let packet = encode_authorized_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            &request,
+            &[],
+            AuthorizationArtifactBytes {
+                broker_plan: &artifacts.broker_plan,
+                broker_plan_signature: &artifacts.broker_plan_signature,
+                ownership_lease: &artifacts.ownership_lease,
+                ownership_lease_signature: &artifacts.ownership_lease_signature,
+            },
+        )
+        .unwrap();
+        let request = RepairStorageWorkspacePinRequest::decode_from_slice(&request).unwrap();
+        let request_id: [u8; 16] = request
+            .header
+            .as_option()
+            .unwrap()
+            .request_id
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let maximum_response_bytes = request.header.as_option().unwrap().maximum_response_bytes;
+        let (mut socket, session, deadline) = storage_rpc_handshake(method);
+        session.decode_request(&packet, 0).unwrap();
+        crate::transport::send(&mut socket, &packet, deadline).unwrap();
+        let response =
+            crate::transport::receive(&mut socket, maximum_response_bytes as usize, deadline)
+                .unwrap();
+        let response = decode_response_envelope(
+            response.payload(),
+            &request_id,
+            method,
+            &[],
+            0,
+            session.maximum_response_bytes(),
+            maximum_response_bytes,
+        )
+        .unwrap();
+
+        if expect_conflict {
+            let error = response.error().unwrap();
+            assert_eq!(error.code(), BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT);
+            assert!(!error.retryable());
+            assert!(response.body().is_empty());
+        } else {
+            assert!(response.error().is_none());
+            let result = StorageResult::decode_from_slice(response.body()).unwrap();
+            let expected =
+                fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("workspace-handle"))
+                    .unwrap();
+            assert_eq!(result.storage_handle, expected);
+        }
+    }
+
+    fn storage_rpc_inventory(request_marker: u8) -> Vec<u8> {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES;
+        let now = crate::transport::boottime().unwrap();
+        let mut request = InventoryStorageRequest::default();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![request_marker; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = now.checked_add(30_000_000_000).unwrap();
+        header.maximum_response_bytes = STORAGE_RPC_RESPONSE_BYTES;
+        let packet = encode_unauthed_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            &request.encode_to_vec(),
+        )
+        .unwrap();
+        let request_id = [request_marker; 16];
+        let (mut socket, session, deadline) = storage_rpc_handshake(method);
+        session.decode_request(&packet, 0).unwrap();
+        crate::transport::send(&mut socket, &packet, deadline).unwrap();
+        let response =
+            crate::transport::receive(&mut socket, STORAGE_RPC_RESPONSE_BYTES as usize, deadline)
+                .unwrap();
+        let response = decode_response_envelope(
+            response.payload(),
+            &request_id,
+            method,
+            &[],
+            0,
+            session.maximum_response_bytes(),
+            STORAGE_RPC_RESPONSE_BYTES,
+        )
+        .unwrap();
+        assert!(response.error().is_none());
+
+        response.body().to_vec()
+    }
+
+    fn storage_rpc_inventory_count(response: &[u8]) -> usize {
+        decode_storage_resource_inventory_response(response, STORAGE_RPC_RESPONSE_BYTES)
+            .unwrap()
+            .workspaces()
+            .len()
+    }
+
+    fn storage_rpc_handshake(
+        method: BrokerMethod,
+    ) -> (
+        aos_sandbox_linux::seqpacket::SeqpacketSocket,
+        aos_sandbox_protocol::NegotiatedBrokerSession,
+        u64,
+    ) {
+        let mut socket =
+            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
+                .unwrap();
+        let deadline = crate::transport::boottime()
+            .unwrap()
+            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
+            .unwrap();
+        let hello = storage_rpc_client_hello(method);
+        crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).unwrap();
+        let response = crate::transport::receive(
+            &mut socket,
+            aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
+            deadline,
+        )
+        .unwrap();
+        let feature = FeatureRef::new(
+            aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+            1,
+            0,
+        )
+        .unwrap();
+        let session = decode_server_hello(
+            response.payload(),
+            ProtocolId::StorageBroker,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            ProtocolVersion::new(1, 0),
+            &[feature],
+            &[method],
+            STORAGE_RPC_RESPONSE_BYTES,
+        )
+        .unwrap();
+
+        (socket, session, deadline)
+    }
+
+    fn storage_rpc_client_hello(method: BrokerMethod) -> BrokerClientHello {
+        storage_rpc_client_hello_at(method, 4)
+    }
+
+    fn storage_rpc_client_hello_at(method: BrokerMethod, minor: u32) -> BrokerClientHello {
+        BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: minor,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: vec![Feature {
+                namespace: aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE
+                    .to_owned(),
+                major: 1,
+                minor: 0,
+                ..Default::default()
+            }],
+            maximum_response_bytes: STORAGE_RPC_RESPONSE_BYTES,
+            required_methods: vec![method.into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn private_tempdir_builder_does_not_inherit_permissive_parent_mode() {
+        let parent = TempDir::new().unwrap();
+        fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o777)).unwrap();
+
+        let directory = private_tempdir_in(parent.path()).unwrap();
+        let metadata = fs::symlink_metadata(directory.path()).unwrap();
+
+        assert!(metadata.file_type().is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn production_prepare_resolves_and_retains_the_authenticated_v1_record() {
+        let mut production = production_preparation_fixture(7);
+        let before = production.broker.transactions.journal_sequence_for_test();
+        let mut samples = 0;
+
+        let prepared = production
+            .broker
+            .prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || {
+                    samples += 1;
+                    Ok(clock())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(samples, 2);
+        assert_eq!(prepared.operation_id(), [7; 16]);
+        assert_eq!(prepared.catalog(), production.expected_catalog.binding());
+        // One-record floor admission and four-record preparation retention
+        // contribute their begin/commit frames to the journal sequence.
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            before + 9
+        );
+        let sealed_record = production
+            .broker
+            .transactions
+            .catalog_preparation_record(&[7; 16])
+            .unwrap()
+            .unwrap();
+        let payload = production
+            .broker
+            .authority
+            .open_catalog_preparation_record(&[7; 16], sealed_record)
+            .unwrap();
+        assert_eq!(&payload[..8], b"AOSSPR01");
+        assert_eq!(u16::from_be_bytes(payload[8..10].try_into().unwrap()), 1);
+        let retained = RetainedStorageCatalogPreparationV1::decode_payload(payload).unwrap();
+        assert_eq!(retained.encode_payload().unwrap(), payload);
+        let selected_binding = production
+            .policies
+            .load()
+            .unwrap()
+            .select(production.policy.assignment())
+            .unwrap()
+            .binding();
+        assert_eq!(retained.resolver_policy_binding(), selected_binding);
+        assert_ne!(selected_binding.entry_digest().as_bytes(), &[0; 32]);
+        production
+            .broker
+            .authenticate_catalog_preparations()
+            .unwrap();
+        let floor = production
+            .broker
+            .transactions
+            .resolver_policy_floor()
+            .unwrap();
+        assert_eq!(floor.generation(), 7);
+        assert_ne!(floor.catalog_digest().as_bytes(), &[0; 32]);
+        for (namespace, key) in [
+            (RecordNamespace::DesiredState, [2; 16]),
+            (RecordNamespace::Effect, [135; 16]),
+            (RecordNamespace::AuthorityPublication, [7; 16]),
+        ] {
+            assert!(
+                production
+                    .broker
+                    .transactions
+                    .authority_record(namespace, &key)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert_eq!(
+            production
+                .broker
+                .transactions
+                .catalog_head_binding()
+                .unwrap(),
+            production.head
+        );
+        assert_eq!(production.broker.transactions.phase([7; 16]).unwrap(), None);
+    }
+
+    #[test]
+    fn production_prepare_second_clock_rejections_retain_only_the_policy_floor() {
+        let rejected_samples = [
+            Err(StorageAdmissionError::VerificationFailed),
+            Ok(clock_at([50; 16], 150, 200)),
+            Ok(clock_at([51; 16], 150, 101)),
+        ];
+
+        for rejected_sample in rejected_samples {
+            let mut production = production_preparation_fixture(7);
+            let before = production.broker.transactions.journal_sequence_for_test();
+            let mut samples = 0;
+            let result = production.broker.prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || {
+                    samples += 1;
+                    if samples == 1 {
+                        Ok(clock())
+                    } else {
+                        rejected_sample
+                    }
+                },
+            );
+
+            assert!(matches!(result, Err(StorageBrokerError::Authority)));
+            assert_eq!(samples, 2);
+            // Only the independently trusted, one-record policy publication
+            // becomes durable. No user preparation or authority link does.
+            assert_eq!(
+                production.broker.transactions.journal_sequence_for_test(),
+                before + 3
+            );
+            let floor = production
+                .broker
+                .transactions
+                .resolver_policy_floor()
+                .unwrap();
+            assert_eq!(floor.generation(), 7);
+            assert_eq!(
+                production
+                    .broker
+                    .transactions
+                    .catalog_head_binding()
+                    .unwrap(),
+                production.head
+            );
+            assert!(
+                production
+                    .broker
+                    .transactions
+                    .catalog_preparation_record(&[7; 16])
+                    .unwrap()
+                    .is_none()
+            );
+            for (namespace, key) in [
+                (RecordNamespace::DesiredState, [2; 16]),
+                (RecordNamespace::Effect, [135; 16]),
+                (RecordNamespace::AuthorityPublication, [7; 16]),
+            ] {
+                assert!(
+                    production
+                        .broker
+                        .transactions
+                        .authority_record(namespace, &key)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn revoked_prepare_authority_fails_before_policy_admission() {
+        let mut production = production_preparation_fixture(7);
+        let mut revoked_fixture = Fixture::new();
+        revoked_fixture.revocation = RevocationScopeId::from_bytes([46; 16]);
+        let apply_request = create_request(7, ObjectDigest::from_bytes([6; 32]));
+        let revoked_artifacts =
+            preparation_artifacts(&revoked_fixture, &apply_request, &production.request);
+        let before = production.broker.transactions.journal_sequence_for_test();
+
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &production.request,
+                &revoked_artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert!(
+            production
+                .broker
+                .transactions
+                .resolver_policy_floor()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn revoke_all_and_unknown_assignment_publications_advance_the_policy_floor() {
+        let mut production = production_preparation_fixture(7);
+        let (request, artifacts) = production_preparation_for_operation(&production, 8);
+        let initial_sequence = production.broker.transactions.journal_sequence_for_test();
+
+        publish_resolver_policy_catalog(&production.policy_directory, &production.fixture, 8, &[]);
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::ResolutionRejected
+            ))
+        ));
+        let revoke_all = production.policies.load().unwrap().binding().unwrap();
+        let floor = production
+            .broker
+            .transactions
+            .resolver_policy_floor()
+            .unwrap();
+        assert_eq!(floor.generation(), revoke_all.generation());
+        assert_eq!(floor.catalog_digest(), revoke_all.digest());
+
+        let assignment = production.policy.assignment();
+        let sibling_assignment = BrokerAssignment::new(
+            assignment.sandbox(),
+            IncarnationId::from_bytes([99; 16]),
+            assignment.epoch(),
+            assignment.desired_generation(),
+            assignment.digest(),
+        )
+        .unwrap();
+        let sibling_policy = ProtectedStorageResolverPolicyV1::new(
+            sibling_assignment,
+            production.policy.root().clone(),
+            production.policy.domains(),
+            production.policy.project_ancestor().clone(),
+            production.policy.maximum_workspace_quota_bytes(),
+            production.policy.maximum_workspace_reservation_bytes(),
+        )
+        .unwrap();
+        publish_resolver_policy_catalog(
+            &production.policy_directory,
+            &production.fixture,
+            9,
+            &[sibling_policy],
+        );
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::ResolutionRejected
+            ))
+        ));
+        let unknown = production.policies.load().unwrap().binding().unwrap();
+        let floor = production
+            .broker
+            .transactions
+            .resolver_policy_floor()
+            .unwrap();
+        assert_eq!(floor.generation(), unknown.generation());
+        assert_eq!(floor.catalog_digest(), unknown.digest());
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            initial_sequence + 6
+        );
+        assert!(
+            production
+                .broker
+                .transactions
+                .catalog_preparation_record(&[8; 16])
+                .unwrap()
+                .is_none()
+        );
+        for (namespace, key) in [
+            (RecordNamespace::DesiredState, [2; 16]),
+            (RecordNamespace::Effect, [136; 16]),
+            (RecordNamespace::AuthorityPublication, [8; 16]),
+        ] {
+            assert!(
+                production
+                    .broker
+                    .transactions
+                    .authority_record(namespace, &key)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        publish_resolver_policy_catalog(
+            &production.policy_directory,
+            &production.fixture,
+            8,
+            std::slice::from_ref(&production.policy),
+        );
+        let before_restore = production.broker.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::Rollback
+            ))
+        ));
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            before_restore
+        );
+
+        publish_resolver_policy_catalog(
+            &production.policy_directory,
+            &production.fixture,
+            9,
+            std::slice::from_ref(&production.policy),
+        );
+        assert!(matches!(
+            production.broker.prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::Rollback
+            ))
+        ));
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            before_restore
+        );
+    }
+
+    #[test]
+    fn v1_prepare_reopens_and_replays_under_a_newer_floor_without_resolution() {
+        let mut production = production_preparation_fixture(7);
+        let prepared = production
+            .broker
+            .prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap();
+
+        publish_resolver_policy_catalog(
+            &production.policy_directory,
+            &production.fixture,
+            8,
+            std::slice::from_ref(&production.policy),
+        );
+        let newer = production.policies.load().unwrap().binding().unwrap();
+        assert_eq!(
+            production
+                .broker
+                .admit_trusted_resolver_policy(newer)
+                .unwrap(),
+            StorageResolverPolicyAdmissionOutcomeV1::Advanced
+        );
+        let sequence = production.broker.transactions.journal_sequence_for_test();
+        let sealed_preparation = production
+            .broker
+            .transactions
+            .catalog_preparation_record(&[7; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+
+        // Exact replay must not consult the current resolver file. Destroy its
+        // syntax while retaining the already-opened protected directory.
+        fs::write(
+            production
+                .policy_directory
+                .join("storage-resolver-policy.catalog"),
+            b"malformed current publication",
+        )
+        .unwrap();
+        let ProductionPreparationFixture {
+            state,
+            fixture,
+            broker: prior_broker,
+            policies,
+            request,
+            artifacts,
+            head,
+            ..
+        } = production;
+        drop(prior_broker);
+        let mut broker = coordinator(&state, &fixture);
+        broker.authenticate_catalog_preparations().unwrap();
+        let mut samples = 0;
+        let replayed = broker
+            .prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || {
+                    samples += 1;
+                    Ok(clock())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(samples, 2);
+        assert_eq!(replayed, prepared);
+        assert_eq!(broker.transactions.journal_sequence_for_test(), sequence);
+        assert_eq!(broker.transactions.catalog_head_binding().unwrap(), head);
+        assert_eq!(
+            broker
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap(),
+            Some(sealed_preparation.as_slice())
+        );
+        let floor = broker.transactions.resolver_policy_floor().unwrap();
+        assert_eq!(floor.generation(), newer.generation());
+        assert_eq!(floor.catalog_digest(), newer.digest());
+    }
+
+    #[test]
+    fn production_prepare_floor_commit_ambiguity_reopens_before_retry() {
+        let mut production = production_preparation_fixture(7);
+        let policy_binding = production.policies.load().unwrap().binding().unwrap();
+        let initial_sequence = production.broker.transactions.journal_sequence_for_test();
+        production.broker.fail_after_next_journal_commit_for_test();
+
+        let failure = production
+            .broker
+            .prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            StorageBrokerError::State(crate::StorageStateError::Journal(_))
+        ));
+        assert!(production.broker.transaction_journal_requires_reopen());
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            initial_sequence + 3
+        );
+        let fatal = crate::service::finish_dispatched_response(
+            production.broker.transaction_journal_requires_reopen(),
+            true,
+            crate::StorageConnectionOutcome::RequestRejected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fatal,
+            crate::StorageServiceError::Runtime(crate::StorageRuntimeError::ReopenRequired)
+        ));
+
+        let ProductionPreparationFixture {
+            state,
+            fixture,
+            broker: poisoned,
+            policies,
+            request,
+            artifacts,
+            ..
+        } = production;
+        drop(poisoned);
+        let mut reopened = coordinator(&state, &fixture);
+        reopened.authenticate_catalog_preparations().unwrap();
+        let reopened_floor = reopened.transactions.resolver_policy_floor().unwrap();
+        assert_eq!(reopened_floor.generation(), policy_binding.generation());
+        assert_eq!(reopened_floor.catalog_digest(), policy_binding.digest());
+        let floor_sequence = reopened.transactions.journal_sequence_for_test();
+        let prepared = reopened
+            .prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap();
+        assert_eq!(
+            reopened.transactions.journal_sequence_for_test(),
+            floor_sequence + 6
+        );
+        let prepared_sequence = reopened.transactions.journal_sequence_for_test();
+        drop(reopened);
+
+        let mut replay = coordinator(&state, &fixture);
+        replay.authenticate_catalog_preparations().unwrap();
+        let replayed = replay
+            .prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap();
+        assert_eq!(replayed, prepared);
+        assert_eq!(
+            replay.transactions.journal_sequence_for_test(),
+            prepared_sequence
+        );
+    }
+
+    #[test]
+    fn production_prepare_retention_commit_ambiguity_reopens_to_exact_replay() {
+        let mut production = production_preparation_fixture(7);
+        let policy_binding = production.policies.load().unwrap().binding().unwrap();
+        assert_eq!(
+            production
+                .broker
+                .admit_trusted_resolver_policy(policy_binding)
+                .unwrap(),
+            StorageResolverPolicyAdmissionOutcomeV1::Advanced
+        );
+        let floor_sequence = production.broker.transactions.journal_sequence_for_test();
+        production.broker.fail_after_next_journal_commit_for_test();
+
+        let failure = production
+            .broker
+            .prepare_catalog_from_protected_policy(
+                &production.request,
+                &production.artifacts,
+                &production.policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || Ok(clock()),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            StorageBrokerError::State(crate::StorageStateError::Journal(_))
+        ));
+        assert!(production.broker.transaction_journal_requires_reopen());
+        assert_eq!(
+            production.broker.transactions.journal_sequence_for_test(),
+            floor_sequence + 6
+        );
+        let fatal = crate::service::finish_dispatched_response(
+            production.broker.transaction_journal_requires_reopen(),
+            true,
+            crate::StorageConnectionOutcome::RequestRejected,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fatal,
+            crate::StorageServiceError::Runtime(crate::StorageRuntimeError::ReopenRequired)
+        ));
+
+        // Exact replay must not reload or resolve the policy after the process
+        // reopens the durable four-record preparation transaction.
+        fs::write(
+            production
+                .policy_directory
+                .join("storage-resolver-policy.catalog"),
+            b"malformed current publication",
+        )
+        .unwrap();
+        let ProductionPreparationFixture {
+            state,
+            fixture,
+            broker: poisoned,
+            policies,
+            request,
+            artifacts,
+            ..
+        } = production;
+        drop(poisoned);
+        let mut reopened = coordinator(&state, &fixture);
+        reopened.authenticate_catalog_preparations().unwrap();
+        let durable_sequence = reopened.transactions.journal_sequence_for_test();
+        let mut samples = 0;
+        let replayed = reopened
+            .prepare_catalog_from_protected_policy(
+                &request,
+                &artifacts,
+                &policies,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &mut || {
+                    samples += 1;
+                    Ok(clock())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(samples, 2);
+        assert_eq!(replayed.operation_id(), [7; 16]);
+        assert_eq!(
+            reopened.transactions.journal_sequence_for_test(),
+            durable_sequence
+        );
+        assert!(
+            reopened
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn v1_preparation_requires_its_policy_floor_on_reopen() {
+        for floor_mutation in 0..3 {
+            let mut production = production_preparation_fixture(7);
+            production
+                .broker
+                .prepare_catalog_from_protected_policy(
+                    &production.request,
+                    &production.artifacts,
+                    &production.policies,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &mut || Ok(clock()),
+                )
+                .unwrap();
+            let original = production
+                .broker
+                .transactions
+                .resolver_policy_floor()
+                .unwrap();
+            match floor_mutation {
+                0 => production
+                    .broker
+                    .transactions
+                    .remove_authority_record_for_test(
+                        RecordNamespace::StorageResolverPolicyFloor,
+                        b"current",
+                    ),
+                1 => production
+                    .broker
+                    .transactions
+                    .put_resolver_policy_floor_for_test(6, original.catalog_digest()),
+                2 => production
+                    .broker
+                    .transactions
+                    .put_resolver_policy_floor_for_test(
+                        original.generation(),
+                        ObjectDigest::from_bytes([99; 32]),
+                    ),
+                _ => unreachable!(),
+            }
+
+            drop(production.broker);
+            let reopened = coordinator(&production.state, &production.fixture);
+            assert!(matches!(
+                reopened.authenticate_catalog_preparations(),
+                Err(StorageBrokerError::State(
+                    crate::StorageStateError::MissingAuthorityLink
+                        | crate::StorageStateError::AuthorityLinkMismatch
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn real_authority_prepares_and_exact_replay_is_observation_only() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let original_request = request(7, 8);
+        let original_catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &original_request,
+            &original_catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &original_catalog);
+        prepare_for_apply(
+            &mut broker,
+            &original_request,
+            &artifacts,
+            &original_catalog,
+            &clock(),
+        );
+        assert!(matches!(
+            broker
+                .admit_apply_intent(
+                    &original_request,
+                    &artifacts,
+                    &original_catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock()
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::Prepared { .. }
+        ));
+        assert!(matches!(
+            broker
+                .admit_apply_intent(
+                    &original_request,
+                    &artifacts,
+                    &original_catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock()
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn generic_apply_rejects_workspace_actions_without_mutating_the_journal() {
+        let fixture = Fixture::new();
+        let cases = [
+            (
+                workspace_request(StorageAction::STORAGE_ACTION_CREATE_WORKSPACE, 71),
+                create_catalog(9),
+            ),
+            (
+                workspace_request(StorageAction::STORAGE_ACTION_CLONE, 72),
+                clone_catalog(9),
+            ),
+        ];
+
+        for (request, catalog) in cases {
+            let directory = TempDir::new().unwrap();
+            let artifacts = fixture.storage_artifacts_at_protocol(
+                &request,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+            );
+            let preparation_artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(
+                &mut broker,
+                &request,
+                &preparation_artifacts,
+                &catalog,
+                &clock(),
+            );
+            let operation_id = ApplyStorageRequest::decode_from_slice(&request)
+                .unwrap()
+                .operation_id
+                .try_into()
+                .unwrap();
+            let before = broker.transactions.journal_sequence_for_test();
+
+            assert!(matches!(
+                broker.admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                ),
+                Err(StorageBrokerError::Request)
+            ));
+            assert_eq!(broker.transactions.journal_sequence_for_test(), before);
+            assert_eq!(broker.transactions.phase(operation_id).unwrap(), None);
+            assert!(
+                broker
+                    .transactions
+                    .workspace_publication_intent(operation_id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn portable_workspace_admission_replays_live_and_across_reopen() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = workspace_request(StorageAction::STORAGE_ACTION_CREATE_WORKSPACE, 73);
+        let catalog = portable_create_catalog(9);
+        let artifacts =
+            fixture.storage_artifacts_at_protocol(&request, &catalog, ProtocolVersion::new(1, 0));
+        let semantics = CanonicalStorageSemanticsV1::decode(
+            &request,
+            catalog.binding(),
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let metadata = semantics.workspace_metadata().unwrap();
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply_at_protocol(
+            &mut broker,
+            &request,
+            &artifacts,
+            &catalog,
+            ProtocolVersion::new(1, 0),
+            &clock(),
+        );
+
+        assert!(matches!(
+            broker
+                .admit_workspace_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    65_536,
+                    metadata.manifest(),
+                    metadata.sandbox_spec(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::Prepared { .. }
+        ));
+        let retained_sequence = broker.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            broker
+                .admit_workspace_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    65_536,
+                    metadata.manifest(),
+                    metadata.sandbox_spec(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+        assert_eq!(
+            broker.transactions.journal_sequence_for_test(),
+            retained_sequence
+        );
+
+        let mut altered = request.clone();
+        *altered.last_mut().unwrap() ^= 1;
+        assert!(
+            broker
+                .admit_workspace_apply_intent(
+                    &altered,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    65_536,
+                    metadata.manifest(),
+                    metadata.sandbox_spec(),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            broker.transactions.journal_sequence_for_test(),
+            retained_sequence
+        );
+
+        drop(broker);
+        let mut reopened = coordinator(&directory, &fixture);
+        crate::runtime::authenticate_startup_authority(&reopened).unwrap();
+        assert!(matches!(
+            reopened
+                .admit_workspace_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    65_536,
+                    metadata.manifest(),
+                    metadata.sandbox_spec(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+        assert_eq!(
+            reopened
+                .transactions
+                .workspace_identity_range([73; 16])
+                .unwrap(),
+            Some((65_536, 65_536))
+        );
+    }
+
+    #[test]
+    fn signed_preparation_and_apply_replay_exactly_across_reopen() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        let prepared = prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        drop(broker);
+
+        let mut broker = coordinator(&directory, &fixture);
+        crate::runtime::authenticate_startup_authority(&broker).unwrap();
+        let replayed = prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        assert_eq!(replayed, prepared);
+        assert!(matches!(
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::Prepared { .. }
+        ));
+        drop(broker);
+
+        let mut broker = coordinator(&directory, &fixture);
+        crate::runtime::authenticate_startup_authority(&broker).unwrap();
+        assert!(matches!(
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn preparation_and_apply_require_independent_signed_grants() {
+        let apply_only_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let apply_only = fixture.artifacts_with_grants(&request, &catalog, true, false);
+        let mut apply_only_broker =
+            initialized_coordinator(&apply_only_directory, &fixture, &catalog);
+        let before = apply_only_broker.transactions.journal_sequence_for_test();
+        let (preparation, inventory, _) = preparation_request(&request, &catalog);
+
+        assert!(matches!(
+            apply_only_broker.prepare_catalog(
+                &preparation,
+                &apply_only,
+                inventory,
+                &StaticCatalogResolver { catalog: &catalog },
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(
+            apply_only_broker.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert!(
+            apply_only_broker
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap()
+                .is_none()
+        );
+
+        let prepare_only_directory = TempDir::new().unwrap();
+        let prepare_only = fixture.artifacts_with_grants(&request, &catalog, false, true);
+        let mut prepare_only_broker =
+            initialized_coordinator(&prepare_only_directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut prepare_only_broker,
+            &request,
+            &prepare_only,
+            &catalog,
+            &clock(),
+        );
+        let before = prepare_only_broker.transactions.journal_sequence_for_test();
+
+        assert!(matches!(
+            prepare_only_broker.admit_apply_intent(
+                &request,
+                &prepare_only,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(
+            prepare_only_broker.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert_eq!(
+            prepare_only_broker.transactions.phase([7; 16]).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn preparation_admission_rejects_semantics_from_a_sibling_body() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request_body = request(7, 8);
+        let sibling_request = request(9, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts_with_grants(&request_body, &catalog, false, true);
+        let broker = initialized_coordinator(&directory, &fixture, &catalog);
+        let (preparation_body, _, _) = preparation_request(&request_body, &catalog);
+        let (sibling_body, _, _) = preparation_request(&sibling_request, &catalog);
+        let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+            &preparation_body,
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            broker
+                .authority
+                .admit_preparation(
+                    &artifacts,
+                    &semantics,
+                    &sibling_body,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    None,
+                )
+                .unwrap_err(),
+            StorageAdmissionError::RequestMismatch
+        );
+    }
+
+    #[test]
+    fn signed_preparation_token_preserves_full_assignment_for_policy_selection() {
+        let fixture = Fixture::new();
+        let current_request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let expected = decode_assignment(&current_request).unwrap();
+
+        for stale_request in [
+            with_assignment_incarnation_and_epoch(&current_request, [4; 16], 4),
+            with_assignment_incarnation_and_epoch(&current_request, [3; 16], 3),
+        ] {
+            let directory = TempDir::new().unwrap();
+            let artifacts = fixture.artifacts_with_grants(&stale_request, &catalog, false, true);
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            let before = broker.transactions.journal_sequence_for_test();
+            let (preparation, inventory, _) = preparation_request(&stale_request, &catalog);
+
+            assert!(matches!(
+                broker.prepare_catalog(
+                    &preparation,
+                    &artifacts,
+                    inventory,
+                    &AssignmentBoundCatalogResolver {
+                        expected,
+                        catalog: &catalog,
+                    },
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                ),
+                Err(StorageBrokerError::Preparation(
+                    StorageCatalogPreparationError::ResolutionRejected
+                ))
+            ));
+            assert_eq!(broker.transactions.journal_sequence_for_test(), before);
+        }
+
+        let directory = TempDir::new().unwrap();
+        let artifacts = fixture.artifacts_with_grants(&current_request, &catalog, false, true);
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        let (preparation, inventory, _) = preparation_request(&current_request, &catalog);
+        let prepared = broker
+            .prepare_catalog(
+                &preparation,
+                &artifacts,
+                inventory,
+                &AssignmentBoundCatalogResolver {
+                    expected,
+                    catalog: &catalog,
+                },
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        assert_eq!(prepared.operation_id(), [7; 16]);
+    }
+
+    #[test]
+    fn stale_catalog_head_rejects_preparation_without_journal_mutation() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let current_catalog = catalog(8, 9);
+        let stale_catalog = catalog(8, 10);
+        let request = request(7, 8);
+        let artifacts = fixture.artifacts(
+            &request,
+            &stale_catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &current_catalog);
+        let before = broker.transactions.journal_sequence_for_test();
+        let (preparation, inventory, _) = preparation_request(&request, &stale_catalog);
+
+        assert!(matches!(
+            broker.prepare_catalog(
+                &preparation,
+                &artifacts,
+                inventory,
+                &StaticCatalogResolver {
+                    catalog: &stale_catalog,
+                },
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::StaleCatalogHead
+            ))
+        ));
+        assert_eq!(broker.transactions.journal_sequence_for_test(), before);
+        assert!(
+            broker
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn apply_rechecks_preparation_expiry_boot_and_revocation_without_mutation() {
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+
+        let expired_directory = TempDir::new().unwrap();
+        let mut expired = initialized_coordinator(&expired_directory, &fixture, &catalog);
+        prepare_for_apply(&mut expired, &request, &artifacts, &catalog, &clock());
+        let before = expired.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            expired.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock_at([50; 16], 150, 199),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::Expired
+            ))
+        ));
+        assert_eq!(expired.transactions.journal_sequence_for_test(), before);
+        assert_eq!(expired.transactions.phase([7; 16]).unwrap(), None);
+
+        let rebooted_directory = TempDir::new().unwrap();
+        let mut rebooted = initialized_coordinator(&rebooted_directory, &fixture, &catalog);
+        prepare_for_apply(&mut rebooted, &request, &artifacts, &catalog, &clock());
+        let before = rebooted.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            rebooted.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock_at([60; 16], 150, 100),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::HostBootMismatch
+            ))
+        ));
+        assert_eq!(rebooted.transactions.journal_sequence_for_test(), before);
+        assert_eq!(rebooted.transactions.phase([7; 16]).unwrap(), None);
+
+        let revoked_directory = TempDir::new().unwrap();
+        let mut revoked = initialized_coordinator(&revoked_directory, &fixture, &catalog);
+        prepare_for_apply(&mut revoked, &request, &artifacts, &catalog, &clock());
+        let mut revoked_fixture = Fixture::new();
+        revoked_fixture.revocation = RevocationScopeId::from_bytes([46; 16]);
+        let revoked_artifacts = revoked_fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let before = revoked.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            revoked.admit_apply_intent(
+                &request,
+                &revoked_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(revoked.transactions.journal_sequence_for_test(), before);
+        assert_eq!(revoked.transactions.phase([7; 16]).unwrap(), None);
+
+        let authority_change_directory = TempDir::new().unwrap();
+        let mut before_change =
+            runtime_coordinator(&authority_change_directory, &fixture, &catalog).unwrap();
+        prepare_for_apply(&mut before_change, &request, &artifacts, &catalog, &clock());
+        let before = before_change.transactions.journal_sequence_for_test();
+        drop(before_change);
+
+        assert!(
+            runtime_coordinator(&authority_change_directory, &revoked_fixture, &catalog).is_err()
+        );
+        let mut after_change = coordinator(&authority_change_directory, &revoked_fixture);
+        assert_eq!(
+            after_change.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert!(matches!(
+            after_change.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+        assert_eq!(
+            after_change.transactions.journal_sequence_for_test(),
+            before
+        );
+        assert_eq!(after_change.transactions.phase([7; 16]).unwrap(), None);
+    }
+
+    #[test]
+    fn retained_preparation_rejects_same_operation_equivocation() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let conflicting = with_deadline(&request, 201);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts_authorizing(
+            &request,
+            &catalog,
+            &[&request, &conflicting],
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        let before = broker.transactions.journal_sequence_for_test();
+        let retained = broker
+            .transactions
+            .catalog_preparation_record(&[7; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let (conflicting_preparation, inventory, _) = preparation_request(&conflicting, &catalog);
+
+        assert!(matches!(
+            broker.prepare_catalog(
+                &conflicting_preparation,
+                &artifacts,
+                inventory,
+                &StaticCatalogResolver { catalog: &catalog },
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Preparation(
+                StorageCatalogPreparationError::Equivocation
+            ))
+        ));
+        assert_eq!(broker.transactions.journal_sequence_for_test(), before);
+        assert_eq!(
+            broker
+                .transactions
+                .catalog_preparation_record(&[7; 16])
+                .unwrap(),
+            Some(retained.as_slice())
+        );
+    }
+
+    #[test]
+    fn occupied_apply_request_ids_never_consume_preparation() {
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let occupied_directory = TempDir::new().unwrap();
+        let mut occupied = initialized_coordinator(&occupied_directory, &fixture, &catalog);
+        prepare_for_apply(&mut occupied, &request, &artifacts, &catalog, &clock());
+        let preparation_effect = occupied
+            .transactions
+            .authority_record(RecordNamespace::Effect, &[135; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        occupied.transactions.put_authority_record_for_test(
+            RecordNamespace::Effect,
+            &[7; 16],
+            preparation_effect,
+        );
+        let before = occupied.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            occupied.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::Equivocation
+            ))
+        ));
+        assert_eq!(occupied.transactions.journal_sequence_for_test(), before);
+        assert_eq!(occupied.transactions.phase([7; 16]).unwrap(), None);
+
+        let same_id_directory = TempDir::new().unwrap();
+        let same_id_request = with_request_id(&request, [135; 16]);
+        let same_id_artifacts = fixture.artifacts(
+            &same_id_request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut same_id = initialized_coordinator(&same_id_directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut same_id,
+            &same_id_request,
+            &same_id_artifacts,
+            &catalog,
+            &clock(),
+        );
+        let before = same_id.transactions.journal_sequence_for_test();
+        assert!(matches!(
+            same_id.admit_apply_intent(
+                &same_id_request,
+                &same_id_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::Equivocation
+            ))
+        ));
+        assert_eq!(same_id.transactions.journal_sequence_for_test(), before);
+        assert_eq!(same_id.transactions.phase([7; 16]).unwrap(), None);
+    }
+
+    #[test]
+    fn crash_after_atomic_apply_consumption_reopens_observation_only() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .transactions
+            .fail_after_next_journal_commit_for_test();
+
+        assert!(
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .is_err()
+        );
+        drop(broker);
+
+        let mut recovered = coordinator(&directory, &fixture);
+        crate::runtime::authenticate_startup_authority(&recovered).unwrap();
+        assert_eq!(
+            recovered.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+        assert!(matches!(
+            recovered
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap(),
+            StorageAdmissionOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Prepared,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn startup_rejects_each_missing_or_substituted_preparation_authority_link() {
+        for case in 0..4 {
+            let directory = TempDir::new().unwrap();
+            let fixture = Fixture::new();
+            let request = request(7, 8);
+            let catalog = catalog(8, 9);
+            let artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            let effect = broker
+                .transactions
+                .authority_record(RecordNamespace::Effect, &[135; 16])
+                .unwrap()
+                .unwrap()
+                .to_vec();
+            let operation_fence = broker
+                .transactions
+                .authority_record(RecordNamespace::AuthorityPublication, &[7; 16])
+                .unwrap()
+                .unwrap()
+                .to_vec();
+
+            match case {
+                0 => broker
+                    .transactions
+                    .remove_authority_record_for_test(RecordNamespace::Effect, &[135; 16]),
+                1 => broker.transactions.put_authority_record_for_test(
+                    RecordNamespace::Effect,
+                    &[135; 16],
+                    operation_fence,
+                ),
+                2 => broker.transactions.remove_authority_record_for_test(
+                    RecordNamespace::AuthorityPublication,
+                    &[7; 16],
+                ),
+                3 => broker.transactions.put_authority_record_for_test(
+                    RecordNamespace::AuthorityPublication,
+                    &[7; 16],
+                    effect,
+                ),
+                _ => unreachable!(),
+            }
+            drop(broker);
+
+            let recovered = coordinator(&directory, &fixture);
+            assert!(matches!(
+                crate::runtime::authenticate_startup_authority(&recovered),
+                Err(crate::StorageRuntimeError::Recovery)
+            ));
+        }
+    }
+
+    #[test]
+    fn startup_rejects_prepared_apply_inconsistency_and_missing_historical_effect() {
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+
+        let inconsistent_directory = TempDir::new().unwrap();
+        let mut inconsistent = initialized_coordinator(&inconsistent_directory, &fixture, &catalog);
+        prepare_for_apply(&mut inconsistent, &request, &artifacts, &catalog, &clock());
+        let prepared_record = inconsistent
+            .transactions
+            .catalog_preparation_record(&[7; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        inconsistent
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        inconsistent.transactions.put_authority_record_for_test(
+            RecordNamespace::StorageCatalogPreparation,
+            &[7; 16],
+            prepared_record,
+        );
+        drop(inconsistent);
+
+        let recovered = coordinator(&inconsistent_directory, &fixture);
+        assert!(matches!(
+            crate::runtime::authenticate_startup_authority(&recovered),
+            Err(crate::StorageRuntimeError::Recovery)
+        ));
+
+        let missing_history_directory = TempDir::new().unwrap();
+        let mut missing_history =
+            initialized_coordinator(&missing_history_directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut missing_history,
+            &request,
+            &artifacts,
+            &catalog,
+            &clock(),
+        );
+        missing_history
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        missing_history
+            .transactions
+            .remove_authority_record_for_test(RecordNamespace::Effect, &[135; 16]);
+        drop(missing_history);
+
+        let recovered = coordinator(&missing_history_directory, &fixture);
+        assert!(matches!(
+            crate::runtime::authenticate_startup_authority(&recovered),
+            Err(crate::StorageRuntimeError::Recovery)
+        ));
+    }
+
+    fn assert_second_clock_rejection(
+        second_sample: Result<RawPairedClockSample, StorageAdmissionError>,
+    ) {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let mut samples = 0;
+        let result = broker.preobserve_and_execute(&mut helper, [7; 16], &mut || {
+            samples += 1;
+            if samples == 1 {
+                Ok(clock())
+            } else {
+                second_sample
+            }
+        });
+
+        assert!(matches!(result, Err(ZfsHelperError::Authority)));
+        assert_eq!(samples, 2);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
+        drop(helper);
+        drop(broker);
+
+        let mut recovered = coordinator(&directory, &fixture);
+        let entry = recovered
+            .recovery_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.operation_id() == [7; 16])
+            .unwrap();
+        let recovery_executions = Rc::new(Cell::new(0));
+        let mut observer = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&recovery_executions),
+            },
+        );
+        assert!(matches!(
+            recovered.reconcile_recovery(&mut observer, entry).unwrap(),
+            ZfsHelperOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Ambiguous,
+                ..
+            }
+        ));
+        assert_eq!(recovery_executions.get(), 0);
+    }
+
+    #[test]
+    fn exact_fresh_head_crosses_ambiguous_and_dispatches_once() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let mut samples = 0;
+        assert!(matches!(
+            broker.preobserve_and_execute(&mut helper, [7; 16], &mut || {
+                samples += 1;
+                Ok(clock())
+            }),
+            Err(ZfsHelperError::ProcessContract)
+        ));
+        assert_eq!(samples, 2);
+        assert_eq!(executions.get(), 1);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn failed_second_clock_sample_leaves_ambiguous_without_dispatch() {
+        assert_second_clock_rejection(Err(StorageAdmissionError::VerificationFailed));
+    }
+
+    #[test]
+    fn expired_second_clock_sample_leaves_ambiguous_without_dispatch() {
+        let expired = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [50; 16],
+            150,
+            200,
+        )
+        .unwrap();
+        assert_second_clock_rejection(Ok(expired));
+    }
+
+    #[test]
+    fn authenticated_expired_first_sample_aborts_before_ambiguous_or_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("operation was not prepared")
+        };
+        let entry = broker.transactions.current_recovery_entry([7; 16]).unwrap();
+        let (_, effect) = broker.persisted_effect_context(entry).unwrap();
+        let one_nanosecond_before_deadline = clock_at([50; 16], 150, 199);
+        let at_deadline = clock_at([50; 16], 150, 200);
+        let wrong_boot = clock_at([51; 16], 150, 200);
+        let wrong_provenance = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"bad-kernel-clock").unwrap(),
+            [50; 16],
+            150,
+            200,
+        )
+        .unwrap();
+
+        assert_eq!(
+            broker
+                .authority
+                .classify_effect_clock(&effect, &one_nanosecond_before_deadline)
+                .unwrap(),
+            BrokerEffectClockDispositionV1::Fresh
+        );
+        assert_eq!(
+            broker
+                .authority
+                .classify_effect_clock(&effect, &at_deadline)
+                .unwrap(),
+            BrokerEffectClockDispositionV1::Expired
+        );
+        for invalid in [&wrong_boot, &wrong_provenance] {
+            assert!(
+                broker
+                    .authority
+                    .classify_effect_clock(&effect, invalid)
+                    .is_err()
+            );
+        }
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let mut samples = 0;
+        assert!(matches!(
+            broker.preobserve_and_execute(&mut helper, [7; 16], &mut || {
+                samples += 1;
+                Ok(at_deadline)
+            }),
+            Ok(ZfsHelperOutcome::Aborted {
+                mutation_digest: aborted
+            }) if aborted == mutation_digest
+        ));
+        assert_eq!(samples, 1);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            broker.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Ok(StorageAdmissionOutcome::Aborted {
+                mutation_digest: replayed
+            }) if replayed == mutation_digest
+        ));
+        drop(helper);
+        drop(broker);
+
+        let recovered = coordinator(&directory, &fixture);
+        assert_eq!(
+            recovered.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        crate::runtime::authenticate_startup_authority(&recovered).unwrap();
+    }
+
+    #[test]
+    fn expired_workspace_remove_first_sample_aborts_before_pin_attempt() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, ensure, creation) = workspace_pin_ensure_dispatch(&directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                ensure.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof.clone()),
+            )
+            .unwrap();
+
+        let manifest = assignment_manifest_at(&sandbox_spec(72), 6);
+        let request = destroy_request(8, workspace_handle, manifest.digest());
+        let catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = broker.transactions.catalog_head_binding().unwrap();
+        let artifacts = fixture.artifacts_at_head(&request, &catalog, expected_head, 300);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("workspace removal was not prepared")
+        };
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = helper.preobserve(&broker.transactions, [8; 16]).unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let mut samples = 0;
+
+        assert!(matches!(
+            broker.begin_workspace_pin_remove_and_destroy(
+                prepared,
+                host_scope,
+                proof,
+                &mut || {
+                    samples += 1;
+                    Ok(clock_at([50; 16], 150, 200))
+                },
+            ),
+            Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted {
+                mutation_digest: aborted
+            }) if aborted == mutation_digest
+        ));
+        assert_eq!(samples, 1);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([8; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[8; 16])
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            broker.transactions.workspace_pin_attempts().unwrap().len(),
+            1
+        );
+        drop(helper);
+        drop(broker);
+
+        let recovered = coordinator(&directory, &fixture);
+        recovered.authenticate_workspace_pin_attempts().unwrap();
+        assert_eq!(
+            recovered.transactions.phase([8; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert_eq!(
+            recovered
+                .transactions
+                .workspace_pin_attempts()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn superseded_workspace_remove_retires_without_clock_or_pin_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, ensure, creation) = workspace_pin_ensure_dispatch(&directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                ensure.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof.clone()),
+            )
+            .unwrap();
+
+        let manifest = assignment_manifest_at(&sandbox_spec(72), 6);
+        let request = destroy_request(8, workspace_handle, manifest.digest());
+        let catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = broker.transactions.catalog_head_binding().unwrap();
+        let artifacts = fixture.artifacts_at_head(&request, &catalog, expected_head, 300);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::new(Cell::new(0)),
+            },
+        );
+        let prepared = helper.preobserve(&broker.transactions, [8; 16]).unwrap();
+
+        let superseding_request = destroy_request_at_generation(
+            9,
+            workspace_handle,
+            7,
+            assignment_manifest_at(&sandbox_spec(72), 7).digest(),
+        );
+        let superseding_artifacts =
+            fixture.artifacts_at_head(&superseding_request, &catalog, expected_head, 300);
+        let superseding_semantics =
+            decode_resolved(&superseding_request, &catalog, peer(), peer_policy(), 100).unwrap();
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let superseding_admission = broker
+            .authority
+            .admit(
+                &superseding_artifacts,
+                &superseding_semantics,
+                &superseding_request,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                Some(&prior_fence),
+            )
+            .unwrap();
+        let superseding_sealed = broker
+            .authority
+            .seal(&[2; 16], &[9; 16], &[9; 16], &superseding_admission)
+            .unwrap();
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            superseding_sealed.current_fence,
+        );
+
+        let attempts_before = broker.transactions.workspace_pin_attempts().unwrap().len();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let mut samples = 0;
+        assert!(matches!(
+            broker.begin_workspace_pin_remove_and_destroy(prepared, host_scope, proof, &mut || {
+                samples += 1;
+                Ok(clock())
+            },),
+            Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted { .. })
+        ));
+        assert_eq!(samples, 0);
+        assert_eq!(
+            broker.transactions.workspace_pin_attempts().unwrap().len(),
+            attempts_before
+        );
+        assert_eq!(
+            broker.transactions.phase([8; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[8; 16])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn superseded_current_fence_after_preobservation_retires_without_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let original_request = request_with_generation(7, 8, 5);
+        let original_artifacts = fixture.artifacts(
+            &original_request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut broker,
+            &original_request,
+            &original_artifacts,
+            &catalog,
+            &clock(),
+        );
+        broker
+            .admit_apply_intent(
+                &original_request,
+                &original_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = helper.preobserve(&broker.transactions, [7; 16]).unwrap();
+
+        let superseding_request = request_with_generation(9, 8, 6);
+        let superseding_artifacts = fixture.artifacts(
+            &superseding_request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let superseding_semantics =
+            decode_resolved(&superseding_request, &catalog, peer(), peer_policy(), 100).unwrap();
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let superseding_admission = broker
+            .authority
+            .admit(
+                &superseding_artifacts,
+                &superseding_semantics,
+                &superseding_request,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                Some(&prior_fence),
+            )
+            .unwrap();
+        let superseding_sealed = broker
+            .authority
+            .seal(&[2; 16], &[9; 16], &[9; 16], &superseding_admission)
+            .unwrap();
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            superseding_sealed.current_fence,
+        );
+
+        let mut samples = 0;
+        assert!(matches!(
+            broker.execute_preobserved(&mut helper, prepared, &mut || {
+                samples += 1;
+                Ok(clock())
+            }),
+            Ok(ZfsHelperOutcome::Aborted { .. })
+        ));
+        assert_eq!(samples, 0);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_none()
+        );
+
+        prepare_for_apply(
+            &mut broker,
+            &superseding_request,
+            &superseding_artifacts,
+            &catalog,
+            &clock(),
+        );
+        assert!(matches!(
+            broker.admit_apply_intent(
+                &superseding_request,
+                &superseding_artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Ok(StorageAdmissionOutcome::Prepared { .. })
+        ));
+        drop(helper);
+        drop(broker);
+
+        let reopened = coordinator(&directory, &fixture);
+        assert_eq!(
+            reopened.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert_eq!(
+            reopened.transactions.phase([9; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+    }
+
+    #[test]
+    fn stale_tampered_and_incomparable_heads_cannot_retire_prepared() {
+        enum HeadCase {
+            Stale,
+            Tampered,
+            AssignmentDigest,
+            Incarnation,
+            Sandbox,
+            Node,
+            Ownership,
+        }
+
+        for case in [
+            HeadCase::Stale,
+            HeadCase::Tampered,
+            HeadCase::AssignmentDigest,
+            HeadCase::Incarnation,
+            HeadCase::Sandbox,
+            HeadCase::Node,
+            HeadCase::Ownership,
+        ] {
+            let directory = TempDir::new().unwrap();
+            let fixture = Fixture::new();
+            let catalog = catalog(8, 9);
+            let request = request_with_generation(7, 8, 5);
+            let artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap();
+            let current = broker
+                .transactions
+                .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                .unwrap()
+                .unwrap()
+                .to_vec();
+            let hostile_head = match case {
+                HeadCase::Tampered => {
+                    let mut tampered = current;
+                    tampered[0] ^= 1;
+                    tampered
+                }
+                HeadCase::Stale => {
+                    let stale_request = request_with_generation(9, 8, 4);
+                    let stale_artifacts = fixture.artifacts(
+                        &stale_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence(&broker, &stale_request, &stale_artifacts, &catalog, None)
+                }
+                HeadCase::AssignmentDigest => {
+                    let incomparable_request = with_assignment_digest(
+                        &request_with_generation(9, 8, 5),
+                        ObjectDigest::from_bytes([77; 32]),
+                    );
+                    let incomparable_artifacts = fixture.artifacts(
+                        &incomparable_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence(
+                        &broker,
+                        &incomparable_request,
+                        &incomparable_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+                HeadCase::Incarnation => {
+                    let incomparable_request =
+                        with_incarnation(&request_with_generation(9, 8, 6), [78; 16]);
+                    let incomparable_artifacts = fixture.artifacts(
+                        &incomparable_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence(
+                        &broker,
+                        &incomparable_request,
+                        &incomparable_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+                HeadCase::Sandbox => {
+                    let wrong_sandbox_request =
+                        with_sandbox(&request_with_generation(9, 8, 6), [79; 16]);
+                    let wrong_sandbox_artifacts = fixture.artifacts(
+                        &wrong_sandbox_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence(
+                        &broker,
+                        &wrong_sandbox_request,
+                        &wrong_sandbox_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+                HeadCase::Node => {
+                    let wrong_node = NodeId::from_bytes([80; 16]);
+                    let candidate_request = request_with_generation(9, 8, 6);
+                    let candidate_artifacts =
+                        fixture.artifacts_for_node(&candidate_request, &catalog, wrong_node);
+                    seal_current_fence_with_authority(
+                        &fixture.authority_at_node(wrong_node),
+                        &candidate_request,
+                        &candidate_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+                HeadCase::Ownership => {
+                    let wrong_fixture = Fixture::with_lease_key([81; 32]);
+                    let candidate_request = request_with_generation(9, 8, 6);
+                    let candidate_artifacts = wrong_fixture.artifacts(
+                        &candidate_request,
+                        &catalog,
+                        300,
+                        BrokerAudience::Storage,
+                        ProtocolId::StorageBroker,
+                    );
+                    seal_current_fence_with_authority(
+                        &wrong_fixture.authority(),
+                        &candidate_request,
+                        &candidate_artifacts,
+                        &catalog,
+                        None,
+                    )
+                }
+            };
+            broker.transactions.put_authority_record_for_test(
+                RecordNamespace::DesiredState,
+                &[2; 16],
+                hostile_head,
+            );
+
+            let executions = Rc::new(Cell::new(0));
+            let mut helper = StorageMutationHelper::new(
+                ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+                CountingBackend {
+                    executions: Rc::clone(&executions),
+                },
+            );
+            let prepared = broker.preobserve(&mut helper, [7; 16]).unwrap();
+            let mut samples = 0;
+            assert!(matches!(
+                broker.execute_preobserved(&mut helper, prepared, &mut || {
+                    samples += 1;
+                    Ok(clock())
+                }),
+                Err(ZfsHelperError::Authority)
+            ));
+            assert_eq!(samples, 0);
+            assert_eq!(executions.get(), 0);
+            assert_eq!(
+                broker.transactions.phase([7; 16]).unwrap(),
+                Some(DurableStoragePhase::Prepared)
+            );
+            assert!(
+                broker
+                    .transactions
+                    .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn newer_lease_for_exact_assignment_strictly_supersedes_prepared() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let renewed_artifacts = fixture.artifacts_at_lease_generation(&request, &catalog, 2);
+        let prior = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let renewed_fence = seal_current_fence(
+            &broker,
+            &request,
+            &renewed_artifacts,
+            &catalog,
+            Some(&prior),
+        );
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            renewed_fence,
+        );
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = broker.preobserve(&mut helper, [7; 16]).unwrap();
+        assert!(matches!(
+            broker.execute_preobserved(&mut helper, prepared, &mut || Ok(clock())),
+            Ok(ZfsHelperOutcome::Aborted { .. })
+        ));
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+    }
+
+    #[test]
+    fn higher_epoch_strictly_supersedes_prepared_without_clock_or_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let successor = with_assignment_epoch(&request_with_generation(9, 8, 1), 5);
+        let successor_artifacts = fixture.artifacts(
+            &successor,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let prior = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let successor_fence = seal_current_fence(
+            &broker,
+            &successor,
+            &successor_artifacts,
+            &catalog,
+            Some(&prior),
+        );
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            successor_fence,
+        );
+
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = broker.preobserve(&mut helper, [7; 16]).unwrap();
+        let samples = Cell::new(0);
+        assert!(matches!(
+            broker.execute_preobserved(&mut helper, prepared, &mut || {
+                samples.set(samples.get() + 1);
+                Ok(clock())
+            }),
+            Ok(ZfsHelperOutcome::Aborted { .. })
+        ));
+        assert_eq!(samples.get(), 0);
+        assert_eq!(executions.get(), 0);
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    fn validate_startup_workspace_catalog<F>(
+        coordinator: &mut StorageAdmissionCoordinator,
+        directory: &TempDir,
+        trusted_clock: &mut F,
+    ) -> Result<(), crate::StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+        let validated = crate::runtime::open_validated_workspace_catalog_after_startup(
+            coordinator,
+            trusted_clock,
+            || {
+                crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                    directory.path(),
+                    identity_pool,
+                )
+                .map_err(Into::into)
+            },
+        )?;
+        drop(validated);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_runtime_path_retains_exact_fresh_and_old_boot_prepared_for_recovery() {
+        for startup_clock in [clock(), clock_at([82; 16], 150, 100)] {
+            let directory = TempDir::new().unwrap();
+            let workspace_directory = TempDir::new().unwrap();
+            let fixture = Fixture::new();
+            let catalog = catalog(8, 9);
+            let request = request_with_generation(7, 8, 5);
+            let artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap();
+
+            let samples = Cell::new(0);
+            validate_startup_workspace_catalog(&mut broker, &workspace_directory, &mut || {
+                samples.set(samples.get() + 1);
+                Ok(startup_clock)
+            })
+            .unwrap();
+            assert_eq!(samples.get(), 1);
+            assert_eq!(
+                broker.transactions.phase([7; 16]).unwrap(),
+                Some(DurableStoragePhase::Prepared)
+            );
+            assert!(
+                broker
+                    .transactions
+                    .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                    .unwrap()
+                    .is_some()
+            );
+
+            let executions = Rc::new(Cell::new(0));
+            let mut helper = StorageMutationHelper::new(
+                ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+                CountingBackend {
+                    executions: Rc::clone(&executions),
+                },
+            );
+            let pending =
+                crate::runtime::reconcile_transaction_recovery(&mut broker, &mut helper).unwrap();
+            assert_eq!(pending, 1);
+            assert_eq!(
+                crate::runtime::pending_startup_readiness(pending, true),
+                Some(crate::StorageRuntimeReadiness::RecoveryPending { operations: 1 })
+            );
+            assert_eq!(executions.get(), 0);
+        }
+    }
+
+    #[test]
+    fn startup_runtime_path_rejects_missing_or_tampered_prepared_authority_before_inventory() {
+        for missing in [true, false] {
+            let directory = TempDir::new().unwrap();
+            let workspace_directory = TempDir::new().unwrap();
+            let fixture = Fixture::new();
+            let catalog = catalog(8, 9);
+            let request = request_with_generation(7, 8, 5);
+            let artifacts = fixture.artifacts(
+                &request,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap();
+
+            if missing {
+                broker
+                    .transactions
+                    .remove_authority_record_for_test(RecordNamespace::DesiredState, &[2; 16]);
+            } else {
+                let mut tampered = broker
+                    .transactions
+                    .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                    .unwrap()
+                    .unwrap()
+                    .to_vec();
+                tampered[0] ^= 1;
+                broker.transactions.put_authority_record_for_test(
+                    RecordNamespace::DesiredState,
+                    &[2; 16],
+                    tampered,
+                );
+            }
+
+            let samples = Cell::new(0);
+            let inventory_opened = Cell::new(false);
+            let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+            assert!(matches!(
+                crate::runtime::open_validated_workspace_catalog_after_startup(
+                    &mut broker,
+                    &mut || {
+                        samples.set(samples.get() + 1);
+                        Ok(clock())
+                    },
+                    || {
+                        inventory_opened.set(true);
+                        crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                            workspace_directory.path(),
+                            identity_pool,
+                        )
+                        .map_err(Into::into)
+                    },
+                ),
+                Err(crate::StorageRuntimeError::Recovery)
+            ));
+            assert_eq!(samples.get(), 0);
+            assert!(!inventory_opened.get());
+            assert_eq!(
+                broker.transactions.phase([7; 16]).unwrap(),
+                Some(DurableStoragePhase::Prepared)
+            );
+            assert!(
+                broker
+                    .transactions
+                    .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn startup_runtime_path_clock_acquisition_failure_preserves_prepared_and_inventory_order() {
+        let directory = TempDir::new().unwrap();
+        let workspace_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let samples = Cell::new(0);
+        let inventory_opened = Cell::new(false);
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+        assert!(matches!(
+            crate::runtime::open_validated_workspace_catalog_after_startup(
+                &mut broker,
+                &mut || {
+                    samples.set(samples.get() + 1);
+                    Err(StorageAdmissionError::VerificationFailed)
+                },
+                || {
+                    inventory_opened.set(true);
+                    crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                        workspace_directory.path(),
+                        identity_pool,
+                    )
+                    .map_err(Into::into)
+                },
+            ),
+            Err(crate::StorageRuntimeError::Recovery)
+        ));
+        assert_eq!(samples.get(), 1);
+        assert!(!inventory_opened.get());
+        assert!(!broker.transaction_journal_requires_reopen());
+        assert_eq!(
+            broker.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+        assert!(
+            broker
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn startup_retires_superseded_and_expired_prepared_but_not_ambiguous() {
+        let superseded_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        {
+            let mut broker = initialized_coordinator(&superseded_directory, &fixture, &catalog);
+            prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+            let StorageAdmissionOutcome::Prepared { .. } = broker
+                .admit_apply_intent(
+                    &request,
+                    &artifacts,
+                    &catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                )
+                .unwrap()
+            else {
+                panic!("operation was not prepared")
+            };
+            let successor = request_with_generation(9, 8, 6);
+            let successor_artifacts = fixture.artifacts(
+                &successor,
+                &catalog,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+            );
+            let prior = broker
+                .transactions
+                .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                .unwrap()
+                .unwrap()
+                .to_vec();
+            let successor_fence = seal_current_fence(
+                &broker,
+                &successor,
+                &successor_artifacts,
+                &catalog,
+                Some(&prior),
+            );
+            broker.transactions.put_authority_record_for_test(
+                RecordNamespace::DesiredState,
+                &[2; 16],
+                successor_fence,
+            );
+        }
+        let mut reopened = coordinator(&superseded_directory, &fixture);
+        let superseded_workspace_directory = TempDir::new().unwrap();
+        let superseded_samples = Cell::new(0);
+        validate_startup_workspace_catalog(
+            &mut reopened,
+            &superseded_workspace_directory,
+            &mut || {
+                superseded_samples.set(superseded_samples.get() + 1);
+                Ok(clock())
+            },
+        )
+        .unwrap();
+        assert_eq!(superseded_samples.get(), 0);
+        assert_eq!(
+            reopened.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+
+        let expired_directory = TempDir::new().unwrap();
+        let mut expired = initialized_coordinator(&expired_directory, &fixture, &catalog);
+        prepare_for_apply(&mut expired, &request, &artifacts, &catalog, &clock());
+        expired
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        let expired_workspace_directory = TempDir::new().unwrap();
+        let expired_samples = Cell::new(0);
+        validate_startup_workspace_catalog(&mut expired, &expired_workspace_directory, &mut || {
+            expired_samples.set(expired_samples.get() + 1);
+            Ok(clock_at([50; 16], 150, 200))
+        })
+        .unwrap();
+        assert_eq!(expired_samples.get(), 1);
+        assert_eq!(
+            expired.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            expired
+                .retire_inactive_prepared_at_startup(&mut || {
+                    panic!("terminal Aborted entry sampled startup time")
+                })
+                .unwrap()
+                .is_empty()
+        );
+
+        let committed_directory = TempDir::new().unwrap();
+        let mut committed = initialized_coordinator(&committed_directory, &fixture, &catalog);
+        prepare_for_apply(&mut committed, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = committed
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("operation was not prepared")
+        };
+        committed
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        committed
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(11),
+                ObjectDigest::from_bytes([78; 32]),
+            )
+            .unwrap();
+        let committed_workspace_directory = TempDir::new().unwrap();
+        validate_startup_workspace_catalog(
+            &mut committed,
+            &committed_workspace_directory,
+            &mut || panic!("terminal Committed entry sampled startup time"),
+        )
+        .unwrap();
+        assert_eq!(
+            committed.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Committed)
+        );
+
+        let ambiguous_directory = TempDir::new().unwrap();
+        let mut ambiguous = initialized_coordinator(&ambiguous_directory, &fixture, &catalog);
+        prepare_for_apply(&mut ambiguous, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = ambiguous
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("operation was not prepared")
+        };
+        ambiguous
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let ambiguous_workspace_directory = TempDir::new().unwrap();
+        validate_startup_workspace_catalog(
+            &mut ambiguous,
+            &ambiguous_workspace_directory,
+            &mut || panic!("Ambiguous entry sampled startup time"),
+        )
+        .unwrap();
+        assert_eq!(
+            ambiguous.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
+        assert!(
+            ambiguous
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn uncertain_startup_supersession_requires_reopen_and_recovers_aborted() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let catalog = catalog(8, 9);
+        let request = request_with_generation(7, 8, 5);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        let successor = request_with_generation(9, 8, 6);
+        let successor_artifacts = fixture.artifacts(
+            &successor,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let prior = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let successor_fence = seal_current_fence(
+            &broker,
+            &successor,
+            &successor_artifacts,
+            &catalog,
+            Some(&prior),
+        );
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            successor_fence,
+        );
+        broker.fail_after_next_journal_commit_for_test();
+
+        let workspace_directory = TempDir::new().unwrap();
+        let inventory_opened = Cell::new(false);
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+        assert!(matches!(
+            crate::runtime::open_validated_workspace_catalog_after_startup(
+                &mut broker,
+                &mut || Ok(clock()),
+                || {
+                    inventory_opened.set(true);
+                    crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                        workspace_directory.path(),
+                        identity_pool,
+                    )
+                    .map_err(Into::into)
+                },
+            ),
+            Err(crate::StorageRuntimeError::ReopenRequired)
+        ));
+        assert!(!inventory_opened.get());
+        assert!(broker.transaction_journal_requires_reopen());
+        assert!(broker.recovery_entries().is_err());
+        drop(broker);
+
+        let mut reopened = coordinator(&directory, &fixture);
+        assert_eq!(
+            reopened.transactions.phase([7; 16]).unwrap(),
+            Some(DurableStoragePhase::Aborted)
+        );
+        assert!(
+            reopened
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[7; 16])
+                .unwrap()
+                .is_none()
+        );
+        let reopened_workspace_directory = TempDir::new().unwrap();
+        validate_startup_workspace_catalog(
+            &mut reopened,
+            &reopened_workspace_directory,
+            &mut || panic!("reopened terminal entry sampled startup time"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn exact_committed_destroy_reconstructs_an_authenticated_retirement() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let create_request = create_request(7, manifest.digest());
+        let create_catalog = create_catalog(9);
+        let create_artifacts = fixture.artifacts(
+            &create_request,
+            &create_catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &create_catalog);
+        prepare_for_apply(
+            &mut broker,
+            &create_request,
+            &create_artifacts,
+            &create_catalog,
+            &clock(),
+        );
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_workspace_apply_intent(
+                &create_request,
+                &create_artifacts,
+                &create_catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("managed workspace creation was not prepared")
+        };
+        broker
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let creation = broker
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &create_catalog,
+                &create_catalog.plan().postcondition(),
+                Some(11),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+        let workspace_handle = creation.storage_handle().unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(ensure_dispatch) = broker
+            .begin_workspace_pin_ensure(creation, host_scope, &mut || Ok(clock()))
+            .unwrap()
+        else {
+            panic!("workspace pin Ensure was not dispatched")
+        };
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                ensure_dispatch.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof.clone()),
+            )
+            .unwrap();
+        assert!(broker.workspace_publication(creation).is_ok());
+
+        let destroy_manifest = assignment_manifest_at(&spec, 6);
+        let request = destroy_request(8, workspace_handle, destroy_manifest.digest());
+        let catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = broker.transactions.catalog_head_binding().unwrap();
+        let current_clock = clock();
+
+        // A later operation's preparation grant must bind the head advanced by
+        // the creation. Reusing genesis-head fixture artifacts is outside the
+        // signed plan even when its assignment generation advances correctly.
+        let wrong_head_artifacts =
+            fixture.artifacts_for_kernel_clock(&request, &catalog, current_clock.wall_seconds());
+        let (preparation_bytes, _, _) =
+            preparation_request_at_head(&request, &catalog, expected_head);
+        let preparation = CanonicalStoragePreparationSemanticsV1::decode(
+            &preparation_bytes,
+            peer(),
+            peer_policy(),
+            current_clock.boottime_nanoseconds(),
+        )
+        .unwrap();
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap();
+        assert_eq!(
+            broker
+                .authority
+                .admit_preparation(
+                    &wrong_head_artifacts,
+                    &preparation,
+                    &preparation_bytes,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &current_clock,
+                    prior_fence,
+                )
+                .unwrap_err(),
+            StorageAdmissionError::RequestMismatch
+        );
+
+        let artifacts = fixture.artifacts_at_head(&request, &catalog, expected_head, 300);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &current_clock);
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &current_clock,
+            )
+            .unwrap()
+        else {
+            panic!("managed workspace destruction was not prepared")
+        };
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = helper.preobserve(&broker.transactions, [8; 16]).unwrap();
+        assert_eq!(prepared.entry().mutation_digest(), mutation_digest);
+        let AuthorizedWorkspaceRemoveAttemptV1::Dispatch(remove_dispatch) =
+            broker
+                .begin_workspace_pin_remove_and_destroy(prepared, host_scope, proof, &mut || {
+                    Ok(clock())
+                })
+                .unwrap()
+        else {
+            panic!("workspace pin RemoveAndDestroy was not dispatched")
+        };
+        let (remove_attempt, prepared) = (*remove_dispatch).into_parts();
+        assert_eq!(remove_attempt.attempt_ordinal(), 2);
+        assert_eq!(executions.get(), 0);
+        let result = broker
+            .transactions
+            .commit_observed(
+                [8; 16],
+                prepared.entry().mutation_digest(),
+                &catalog,
+                &catalog.plan().postcondition(),
+                None,
+                ObjectDigest::from_bytes([63; 32]),
+            )
+            .unwrap();
+        assert!(broker.workspace_retirement(result).is_err());
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                remove_attempt.attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Absent,
+                &crate::workspace_pin::WorkspacePinObservationV1::Absent,
+            )
+            .unwrap();
+        assert!(broker.workspace_publication(creation).is_err());
+        assert!(broker.workspace_retirement(result).is_ok());
+        assert!(matches!(
+            broker.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Retire { .. }]
+        ));
+
+        drop(broker);
+        let mut broker = coordinator(&directory, &fixture);
+        broker.authenticate_workspace_pin_attempts().unwrap();
+        assert!(broker.workspace_retirement(result).is_ok());
+
+        let operation_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &[8; 16])
+            .unwrap()
+            .unwrap();
+        assert!(
+            broker
+                .authority
+                .open_operation_fence(&[9; 16], operation_fence)
+                .is_err()
+        );
+        broker
+            .transactions
+            .remove_authority_record_for_test(RecordNamespace::DesiredState, &[2; 16]);
+        assert!(broker.workspace_retirement(result).is_ok());
+        broker
+            .transactions
+            .remove_authority_record_for_test(RecordNamespace::AuthorityPublication, &[8; 16]);
+        assert!(matches!(
+            broker.workspace_retirement(result),
+            Err(StorageBrokerError::State(
+                crate::StorageStateError::MissingAuthorityLink
+            ))
+        ));
+    }
+
+    #[test]
+    fn exact_committed_creation_requires_the_canonical_manifest_and_specification() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let request = create_request(7, manifest.digest());
+        let catalog = create_catalog(9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        assert!(matches!(
+            broker.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            ),
+            Err(StorageBrokerError::Request)
+        ));
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("new workspace creation was not prepared")
+        };
+        broker
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let result = broker
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(91),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(dispatch) = broker
+            .begin_workspace_pin_ensure(result, host_scope, &mut || Ok(clock()))
+            .unwrap()
+        else {
+            panic!("workspace pin Ensure was not dispatched")
+        };
+        let attempt_id = dispatch.attempt().attempt_id();
+        let proof = workspace_pin_proof(
+            result.storage_handle().unwrap(),
+            "tank/aos/project/work",
+            91,
+        );
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                attempt_id,
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 91,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof),
+            )
+            .unwrap();
+
+        assert!(broker.workspace_publication(result).is_ok());
+        drop(broker);
+        let mut broker = coordinator(&directory, &fixture);
+        broker.authenticate_workspace_pin_attempts().unwrap();
+        assert!(broker.workspace_publication(result).is_ok());
+        assert!(matches!(
+            broker.admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &sandbox_spec(74),
+            ),
+            Err(StorageBrokerError::WorkspaceCatalog(
+                StorageWorkspaceCatalogError::InvalidCandidate
+            ))
+        ));
+    }
+
+    #[test]
+    fn initialized_empty_workspace_plan_retains_roots_and_project_infrastructure() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let broker = initialized_coordinator(&directory, &fixture, &create_catalog(8));
+
+        let (plan, physical_plan) = broker.workspace_catalog_activation_plan().unwrap();
+        let physical_plan = physical_plan.unwrap();
+
+        assert!(plan.rows().is_empty());
+        assert_eq!(physical_plan.roots().len(), 1);
+        assert_eq!(physical_plan.roots()[0].name(), "tank/aos");
+        assert_eq!(
+            physical_plan
+                .allowed_objects()
+                .iter()
+                .map(|object| (object.name(), object.guid()))
+                .collect::<Vec<_>>(),
+            [("tank/aos/project", 15)]
+        );
+        assert!(physical_plan.targets().is_empty());
+    }
+
+    #[test]
+    fn authenticated_workspace_history_composes_a_closed_pending_catalog_plan() {
+        let state_directory = TempDir::new().unwrap();
+        let workspace_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, dispatch, creation) =
+            workspace_pin_ensure_dispatch(&state_directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let pending_plan = broker.workspace_catalog_plan().unwrap();
+        assert!(matches!(
+            pending_plan.rows()[0].policy(),
+            StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent
+        ));
+
+        let proof = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                dispatch.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(proof),
+            )
+            .unwrap();
+
+        let (plan, physical_plan) = broker.workspace_catalog_activation_plan().unwrap();
+        let physical_plan = physical_plan.unwrap();
+        assert!(plan.transaction_sequence() > 1);
+        assert_ne!(plan.transaction_snapshot_digest().as_bytes(), &[0; 32]);
+        assert_ne!(plan.plan_digest().as_bytes(), &[0; 32]);
+        assert_ne!(plan.physical_head().1.as_bytes(), &[0; 32]);
+        assert_eq!(plan.rows().len(), 1);
+        let row = &plan.rows()[0];
+        assert_eq!(row.workspace_handle(), workspace_handle);
+        assert_eq!(row.dataset_guid(), 11);
+        assert_eq!(row.creation_operation_id(), creation.operation_id());
+        assert_eq!(row.identity_range(), (65_536, 65_536));
+        assert!(matches!(
+            row.policy(),
+            StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(_)
+        ));
+        assert_eq!(physical_plan.roots().len(), 1);
+        assert_eq!(physical_plan.roots()[0].name(), "tank/aos");
+        assert_eq!(
+            physical_plan
+                .allowed_objects()
+                .iter()
+                .map(|object| (object.name(), object.guid()))
+                .collect::<Vec<_>>(),
+            [("tank/aos/project", 15), ("tank/aos/project/work", 11)]
+        );
+        assert_eq!(physical_plan.targets().len(), 1);
+
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536 * 4).unwrap();
+        let pending = crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+            workspace_directory.path(),
+            identity_pool,
+        )
+        .unwrap();
+        let validated = pending.validate_plan(plan).unwrap();
+        assert!(!validated.is_initialized());
+        assert_eq!(validated.plan().rows().len(), 1);
+        assert_eq!(validated.snapshot().catalog_generation(), None);
+    }
+
+    #[test]
+    fn pending_catalog_accepts_only_authenticated_historical_pin_prefixes() {
+        let state_directory = TempDir::new().unwrap();
+        let workspace_directory = TempDir::new().unwrap();
+        let forged_directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, dispatch, creation) =
+            workspace_pin_ensure_dispatch(&state_directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let initial_pin = workspace_pin_proof(workspace_handle, "tank/aos/project/work", 11);
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                dispatch.attempt().attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: "tank/aos/project/work".to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(initial_pin.clone()),
+            )
+            .unwrap();
+        let initial_attempt = broker
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id() == dispatch.attempt().attempt_id())
+            .unwrap();
+        let initial_plan = broker.workspace_catalog_plan().unwrap();
+        let StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(initial_publication) =
+            initial_plan.rows()[0].policy()
+        else {
+            panic!("initial satisfied Ensure did not produce an active target")
+        };
+        let initial_publication = initial_publication.clone();
+
+        let identity_pool = crate::StorageIdentityPoolV1::new(65_536, 65_536 * 4).unwrap();
+        crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::write_active_record_for_test(
+            workspace_directory.path(),
+            identity_pool,
+            &initial_publication,
+            initial_pin.clone(),
+        )
+        .unwrap();
+
+        let repaired_pin = crate::workspace_pin::WorkspaceRootPinProofV1::new(
+            initial_pin.kernel_boot_id(),
+            initial_pin.mount_namespace_device(),
+            initial_pin.mount_namespace_inode(),
+            initial_pin.mount_id() + 10,
+            initial_pin.mount_root().to_owned(),
+            initial_pin.mount_point().to_owned(),
+            initial_pin.filesystem_type().to_owned(),
+            initial_pin.superblock_source().to_owned(),
+            initial_pin.dataset_guid(),
+            initial_pin.root_device() + 10,
+            initial_pin.root_inode() + 10,
+            initial_pin.root_attributes(),
+        )
+        .unwrap();
+        retain_satisfied_workspace_pin_repair(
+            &mut broker,
+            &fixture,
+            creation,
+            &initial_attempt,
+            repaired_pin,
+        );
+
+        let plan = broker.workspace_catalog_plan().unwrap();
+        assert_eq!(plan.rows().len(), 1);
+        assert_eq!(plan.rows()[0].active_prefixes().len(), 2);
+        let StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(repaired_publication) =
+            plan.rows()[0].policy()
+        else {
+            panic!("satisfied repair did not produce an active convergence target")
+        };
+        assert_eq!(
+            plan.rows()[0].active_prefixes()[0].publication(),
+            &initial_publication
+        );
+        assert_eq!(
+            plan.rows()[0].active_prefixes()[1].publication(),
+            repaired_publication
+        );
+        assert_ne!(repaired_publication, &initial_publication);
+        let transaction_binding = (
+            plan.transaction_sequence(),
+            plan.transaction_snapshot_digest(),
+            plan.plan_digest(),
+        );
+
+        let validated = crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+            workspace_directory.path(),
+            identity_pool,
+        )
+        .unwrap()
+        .validate_plan(plan)
+        .unwrap();
+        let catalog_snapshot = validated.snapshot();
+        drop(validated);
+        drop(broker);
+
+        let reopened = coordinator(&state_directory, &fixture);
+        reopened.authenticate_workspace_pin_attempts().unwrap();
+        let reopened_plan = reopened.workspace_catalog_plan().unwrap();
+        assert_eq!(
+            (
+                reopened_plan.transaction_sequence(),
+                reopened_plan.transaction_snapshot_digest(),
+                reopened_plan.plan_digest(),
+            ),
+            transaction_binding
+        );
+        let reopened_catalog =
+            crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                workspace_directory.path(),
+                identity_pool,
+            )
+            .unwrap()
+            .validate_plan(reopened_plan)
+            .unwrap();
+        assert_eq!(reopened_catalog.snapshot(), catalog_snapshot);
+        drop(reopened_catalog);
+
+        let forged_pin = crate::workspace_pin::WorkspaceRootPinProofV1::new(
+            initial_pin.kernel_boot_id(),
+            initial_pin.mount_namespace_device(),
+            initial_pin.mount_namespace_inode(),
+            initial_pin.mount_id() + 20,
+            initial_pin.mount_root().to_owned(),
+            initial_pin.mount_point().to_owned(),
+            initial_pin.filesystem_type().to_owned(),
+            initial_pin.superblock_source().to_owned(),
+            initial_pin.dataset_guid(),
+            initial_pin.root_device() + 20,
+            initial_pin.root_inode() + 20,
+            initial_pin.root_attributes(),
+        )
+        .unwrap();
+        crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::write_active_record_for_test(
+            forged_directory.path(),
+            identity_pool,
+            &initial_publication,
+            forged_pin,
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::workspace_catalog::PendingStorageWorkspaceCatalogV1::open_for_test(
+                forged_directory.path(),
+                identity_pool,
+            )
+            .unwrap()
+            .validate_plan(reopened.workspace_catalog_plan().unwrap()),
+            Err(StorageWorkspaceCatalogError::IdentityConflict)
+        ));
+    }
+
+    #[test]
+    fn removal_plan_uses_bound_historical_ensure_and_exact_retirement() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, dispatch, creation) = workspace_pin_remove_dispatch(&directory, &fixture);
+
+        let removing = broker.workspace_catalog_plan().unwrap();
+        assert_eq!(removing.rows().len(), 1);
+        assert!(matches!(
+            removing.rows()[0].policy(),
+            StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(_)
+        ));
+
+        let (attempt, prepared) = dispatch.into_parts();
+        let transaction =
+            ZfsTransaction::from_catalog(prepared.operation(), prepared.catalog()).unwrap();
+        let entry = prepared.entry();
+        let retirement = broker
+            .transactions
+            .commit_observed(
+                entry.operation_id(),
+                entry.mutation_digest(),
+                prepared.catalog(),
+                transaction.postcondition(),
+                None,
+                ObjectDigest::from_bytes([93; 32]),
+            )
+            .unwrap();
+        broker
+            .transactions
+            .complete_workspace_pin_attempt(
+                attempt.attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Absent,
+                &crate::workspace_pin::WorkspacePinObservationV1::Absent,
+            )
+            .unwrap();
+
+        let expected_retirement = broker.workspace_retirement(retirement).unwrap();
+        let retired = broker.workspace_catalog_plan().unwrap();
+        assert_eq!(retired.rows().len(), 1);
+        assert_eq!(
+            retired.rows()[0].workspace_handle(),
+            creation.storage_handle().unwrap()
+        );
+        let StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired {
+            retirement: planned,
+            ..
+        } = retired.rows()[0].policy()
+        else {
+            panic!("retired workspace did not produce a retirement row")
+        };
+        assert_eq!(planned, &expected_retirement);
+
+        let repair_manifest = assignment_manifest_at(&sandbox_spec(72), 7);
+        let repair = repair_request(
+            80,
+            81,
+            creation.storage_handle().unwrap(),
+            7,
+            repair_manifest.digest(),
+        );
+        let artifacts = fixture.repair_artifacts(&repair);
+        let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        assert!(
+            broker
+                .plan_workspace_pin_repair_admission_observation(
+                    &repair,
+                    &artifacts,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    &contract,
+                    WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap(),
+                )
+                .is_err()
+        );
+        assert!(
+            broker
+                .transactions
+                .workspace_pin_repair_intent([81; 16])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    mod missing_initial_runtime_tests;
+    mod missing_initial_tests;
+
+    #[test]
+    fn repair_history_reopen_authenticates_pending_effect_and_rejects_resealed_drift() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, initial_dispatch, creation) =
+            workspace_pin_ensure_dispatch(&directory, &fixture);
+        let initial_attempt = initial_dispatch.attempt().clone();
+        let workspace_handle = creation.storage_handle().unwrap();
+        let repair_assignment_digest = assignment_manifest_at(&sandbox_spec(72), 6).digest();
+        let repair_request_bytes =
+            repair_request(80, 81, workspace_handle, 6, repair_assignment_digest);
+        let repair_semantics = CanonicalStorageRepairSemanticsV1::decode(
+            &repair_request_bytes,
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        let repair_artifacts = fixture.repair_artifacts(&repair_request_bytes);
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let admission = broker
+            .authority
+            .admit_workspace_pin_repair(
+                &repair_artifacts,
+                &repair_semantics,
+                &repair_request_bytes,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                Some(&prior_fence),
+            )
+            .unwrap();
+        let sealed = broker
+            .authority
+            .seal(
+                &[2; 16],
+                repair_semantics.header().request_id(),
+                &repair_semantics.operation_id(),
+                &admission,
+            )
+            .unwrap();
+        let operation_fence_digest =
+            ObjectDigest::from_bytes(Sha256::digest(&sealed.operation_fence).into());
+        let repair_attempt_id = derive_attempt_id(
+            &[52; 32],
+            repair_semantics.operation_id(),
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            2,
+        )
+        .unwrap();
+        let repair_attempt = WorkspacePinAttemptV1::new_ambiguous(
+            repair_attempt_id,
+            2,
+            WorkspacePinActionV1::Ensure,
+            repair_semantics.operation_id(),
+            creation.operation_id(),
+            operation_fence_digest,
+            admission.fence.assignment().digest(),
+            initial_attempt.workspace_assignment_digest(),
+            creation.catalog(),
+            creation.result_digest(),
+            workspace_handle,
+            initial_attempt.host_boot_id(),
+            initial_attempt.host_mount_namespace_device(),
+            initial_attempt.host_mount_namespace_inode(),
+            *admission.effect.clock_provenance(),
+            admission.effect.effect_deadline_boottime_nanoseconds(),
+            initial_attempt.dataset_name().to_owned(),
+            initial_attempt.dataset_guid(),
+            initial_attempt.identity_range_start(),
+            initial_attempt.identity_range_size(),
+            initial_attempt.root_policy(),
+            None,
+        )
+        .unwrap();
+        let receipt = broker
+            .authority
+            .seal_pin_attempt_receipt(
+                &repair_attempt,
+                &admission.effect,
+                &admission.fence,
+                repair_semantics.operation_id(),
+                *repair_semantics.header().request_id(),
+            )
+            .unwrap();
+        let repair_attempt = repair_attempt.with_authority_receipt(receipt).unwrap();
+        let publication_record = broker
+            .transactions
+            .authority_record(
+                RecordNamespace::StorageWorkspacePublicationIntent,
+                &creation.operation_id(),
+            )
+            .unwrap()
+            .unwrap();
+        let initial_attempt_record = broker
+            .transactions
+            .workspace_pin_attempt_record(&initial_attempt)
+            .unwrap();
+        let repair_intent = StorageWorkspacePinRepairIntentV1::new_ambiguous(
+            repair_semantics.operation_id(),
+            &admission.effect,
+            sealed.effect.clone(),
+            admission.fence.assignment().digest(),
+            operation_fence_digest,
+            creation.operation_id(),
+            creation.catalog(),
+            creation.result_digest(),
+            ObjectDigest::from_bytes(Sha256::digest(publication_record).into()),
+            workspace_handle,
+            initial_attempt.attempt_id(),
+            initial_attempt.phase(),
+            ObjectDigest::from_bytes(Sha256::digest(&initial_attempt_record).into()),
+            repair_attempt.attempt_id(),
+            repair_attempt.attempt_ordinal(),
+        )
+        .unwrap();
+        let valid_pending_effect = sealed.effect.clone();
+        broker
+            .transactions
+            .retain_workspace_pin_repair_for_test(
+                [2; 16],
+                repair_intent.clone(),
+                repair_attempt.clone(),
+                sealed.current_fence,
+                sealed.effect,
+                sealed.operation_fence,
+            )
+            .unwrap();
+        drop(broker);
+
+        let mut broker = coordinator(&directory, &fixture);
+        broker.authenticate_workspace_pin_attempts().unwrap();
+        let arbitrary_completed_effect = broker
+            .authority
+            .seal_effect_for_test(
+                repair_semantics.header().request_id(),
+                &admission.effect.clone().complete(vec![0xcc]).unwrap(),
+            )
+            .unwrap();
+        let ambiguous_completed_directory = TempDir::new().unwrap();
+        fs::copy(
+            directory.path().join("storage-state.journal"),
+            ambiguous_completed_directory
+                .path()
+                .join("storage-state.journal"),
+        )
+        .unwrap();
+        let mut ambiguous_completed = coordinator(&ambiguous_completed_directory, &fixture);
+        ambiguous_completed
+            .transactions
+            .put_authority_record_with_transaction_for_test(
+                [0xbf; 16],
+                RecordNamespace::Effect,
+                repair_semantics.header().request_id(),
+                arbitrary_completed_effect.clone(),
+            );
+        assert!(matches!(
+            ambiguous_completed.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
+        assert!(
+            broker
+                .workspace_pin_observation_dispatches()
+                .unwrap()
+                .is_empty()
+        );
+        let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        let worker_catalog = broker
+            .transactions
+            .workspace_creation_catalog(&repair_intent)
+            .unwrap();
+        let repair_intent_record = broker
+            .transactions
+            .workspace_pin_repair_intent_record(&repair_intent)
+            .unwrap();
+        let repair_attempt_record = broker
+            .transactions
+            .workspace_pin_attempt_record(&repair_attempt)
+            .unwrap();
+        let publication_intent_record = broker
+            .transactions
+            .workspace_publication_intent_record(creation.operation_id())
+            .unwrap();
+        let current_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let operation_fence = broker
+            .transactions
+            .authority_record(
+                RecordNamespace::AuthorityPublication,
+                &repair_semantics.operation_id(),
+            )
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let worker_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            repair_attempt_record.clone(),
+            current_fence.clone(),
+            valid_pending_effect.clone(),
+            operation_fence.clone(),
+        )
+        .unwrap();
+        let worker_request =
+            crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                worker_catalog.clone(),
+                worker_authority,
+                repair_intent_record.clone(),
+                publication_intent_record.clone(),
+            )
+            .unwrap();
+        let encoded_worker_request =
+            crate::workspace_repair_worker::encode_request(&worker_request).unwrap();
+        let authenticated_worker = crate::workspace_repair_worker::authenticate_request(
+            &fixture.authority(),
+            &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            &contract,
+            crate::workspace_repair_worker::decode_request(&encoded_worker_request).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(authenticated_worker.attempt(), &repair_attempt);
+
+        let stale_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            repair_attempt_record.clone(),
+            prior_fence.clone(),
+            valid_pending_effect.clone(),
+            operation_fence.clone(),
+        )
+        .unwrap();
+        let stale_request = crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+            contract.executable().to_path_buf(),
+            worker_catalog.clone(),
+            stale_authority,
+            repair_intent_record.clone(),
+            publication_intent_record.clone(),
+        )
+        .unwrap();
+        assert!(
+            crate::workspace_repair_worker::authenticate_request(
+                &fixture.authority(),
+                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                &contract,
+                stale_request,
+            )
+            .is_err()
+        );
+
+        let prior_attempt_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            initial_attempt_record.clone(),
+            current_fence.clone(),
+            valid_pending_effect.clone(),
+            operation_fence.clone(),
+        )
+        .unwrap();
+        let prior_attempt_request =
+            crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                worker_catalog.clone(),
+                prior_attempt_authority,
+                repair_intent_record.clone(),
+                publication_intent_record.clone(),
+            )
+            .unwrap();
+        assert!(
+            crate::workspace_repair_worker::authenticate_request(
+                &fixture.authority(),
+                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                &contract,
+                prior_attempt_request,
+            )
+            .is_err()
+        );
+
+        let receipt_mismatched_attempt = repair_attempt
+            .with_authority_receipt(vec![0xee; 32])
+            .unwrap();
+        let receipt_mismatched_attempt_record =
+            crate::workspace_pin::attempt_record(&receipt_mismatched_attempt, [51; 16], &[52; 32])
+                .unwrap()
+                .value()
+                .unwrap()
+                .to_vec();
+        let receipt_mismatched_authority = WorkspacePinWorkerAuthorityV1::new(
+            *repair_semantics.header().request_id(),
+            receipt_mismatched_attempt_record,
+            current_fence.clone(),
+            valid_pending_effect.clone(),
+            operation_fence.clone(),
+        )
+        .unwrap();
+        let receipt_mismatched_request =
+            crate::workspace_repair_worker::WorkspacePinRepairWorkerRequestV1::new(
+                contract.executable().to_path_buf(),
+                worker_catalog.clone(),
+                receipt_mismatched_authority,
+                repair_intent_record.clone(),
+                publication_intent_record.clone(),
+            )
+            .unwrap();
+        assert!(
+            crate::workspace_repair_worker::authenticate_request(
+                &fixture.authority(),
+                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                &contract,
+                receipt_mismatched_request,
+            )
+            .is_err()
+        );
+
+        let publication = broker
+            .transactions
+            .workspace_publication_intent(creation.operation_id())
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            crate::workspace_catalog::StorageWorkspacePublicationIntentV1::from_authenticated_parts(
+                publication.operation_id(),
+                publication.request_catalog(),
+                ObjectDigest::from_bytes([0xef; 32]),
+                publication.root_image().clone(),
+                publication.identity_range_start(),
+                publication.identity_range_size(),
+                publication.portable_metadata().clone(),
+            ),
+            Err(crate::workspace_catalog::StorageWorkspaceCatalogError::InvalidCandidate)
+        ));
+        let cross_boot_scope = WorkspacePinHostScopeV1::new([0x91; 16], 0x92, 0x93).unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new(
+            repair_attempt.host_boot_id(),
+            repair_attempt.host_mount_namespace_device(),
+            repair_attempt.host_mount_namespace_inode(),
+        )
+        .unwrap();
+        let before_observation = broker.transactions.journal_sequence_for_test();
+        let stale_dispatch = broker
+            .workspace_pin_repair_observation_dispatches(&contract, cross_boot_scope)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let stale_result = WorkspacePinRepairObserverResultV1::new(
+            ObjectDigest::from_bytes([0xce; 32]),
+            crate::pin_worker::WorkspacePinWorkerResultV1::new(
+                repair_attempt.attempt_id(),
+                crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: initial_attempt.dataset_name().to_owned(),
+                    guid: 11,
+                },
+                crate::workspace_pin::WorkspacePinObservationV1::Absent,
+                ObjectDigest::from_bytes([0xcd; 32]),
+            ),
+        );
+        assert!(matches!(
+            broker.complete_workspace_pin_repair_observation(stale_dispatch, stale_result),
+            Err(ZfsHelperError::Authority)
+        ));
+        assert_eq!(
+            broker.transactions.journal_sequence_for_test(),
+            before_observation
+        );
+
+        let cross_boot_absent = broker
+            .workspace_pin_repair_observation_dispatches(&contract, cross_boot_scope)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let request_bytes = cross_boot_absent.request_bytes().unwrap();
+        let authenticated_request = crate::workspace_repair_observer::authenticate_request(
+            &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+            &contract,
+            crate::workspace_repair_observer::decode_request(&request_bytes).unwrap(),
+            cross_boot_scope,
+        )
+        .unwrap();
+        assert_eq!(
+            authenticated_request.probe().digest(),
+            cross_boot_absent.probe().digest()
+        );
+        for record in [
+            crate::workspace_repair_observer::WorkspacePinRepairObserverRecordV1::RepairIntent,
+            crate::workspace_repair_observer::WorkspacePinRepairObserverRecordV1::RepairAttempt,
+            crate::workspace_repair_observer::WorkspacePinRepairObserverRecordV1::PublicationIntent,
+        ] {
+            let mut substituted =
+                crate::workspace_repair_observer::decode_request(&request_bytes).unwrap();
+            substituted.corrupt_record_for_test(record);
+            assert!(matches!(
+                crate::workspace_repair_observer::authenticate_request(
+                    &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                    &contract,
+                    substituted,
+                    cross_boot_scope,
+                ),
+                Err(crate::ZfsWorkerError::Authority)
+            ));
+        }
+        let mut wrong_catalog =
+            crate::workspace_repair_observer::decode_request(&request_bytes).unwrap();
+        wrong_catalog.replace_catalog_for_test(catalog(0x97, 30));
+        assert!(matches!(
+            crate::workspace_repair_observer::authenticate_request(
+                &StorageStateKey::new([51; 16], [52; 32]).unwrap(),
+                &contract,
+                wrong_catalog,
+                cross_boot_scope,
+            ),
+            Err(crate::ZfsWorkerError::Authority)
+        ));
+        let cross_boot_absent_result = WorkspacePinRepairObserverResultV1::new(
+            cross_boot_absent.probe().digest(),
+            crate::pin_worker::WorkspacePinWorkerResultV1::new(
+                repair_attempt.attempt_id(),
+                crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: initial_attempt.dataset_name().to_owned(),
+                    guid: 11,
+                },
+                crate::workspace_pin::WorkspacePinObservationV1::Absent,
+                ObjectDigest::from_bytes([0xcf; 32]),
+            ),
+        );
+        assert_eq!(
+            broker
+                .complete_workspace_pin_repair_observation(
+                    cross_boot_absent,
+                    cross_boot_absent_result,
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::AwaitFreshRepair
+        );
+        assert_eq!(
+            broker.transactions.journal_sequence_for_test(),
+            before_observation
+        );
+
+        let cross_boot_present = broker
+            .workspace_pin_repair_observation_dispatches(&contract, cross_boot_scope)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let cross_boot_proof = WorkspaceRootPinProofV1::new(
+            cross_boot_scope.kernel_boot_id(),
+            cross_boot_scope.mount_namespace_device(),
+            cross_boot_scope.mount_namespace_inode(),
+            0x94,
+            "/".to_owned(),
+            crate::workspace_pin::workspace_pin_path(&workspace_handle),
+            "zfs".to_owned(),
+            initial_attempt.dataset_name().to_owned(),
+            11,
+            0x95,
+            0x96,
+            initial_attempt.root_policy().root_attributes(),
+        )
+        .unwrap();
+        let cross_boot_present_result = WorkspacePinRepairObserverResultV1::new(
+            cross_boot_present.probe().digest(),
+            crate::pin_worker::WorkspacePinWorkerResultV1::new(
+                repair_attempt.attempt_id(),
+                crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: initial_attempt.dataset_name().to_owned(),
+                    guid: 11,
+                },
+                crate::workspace_pin::WorkspacePinObservationV1::Present(cross_boot_proof),
+                ObjectDigest::from_bytes([0xd0; 32]),
+            ),
+        );
+        assert!(matches!(
+            broker.complete_workspace_pin_repair_observation(
+                cross_boot_present,
+                cross_boot_present_result,
+            ),
+            Err(ZfsHelperError::Authority)
+        ));
+        assert_eq!(
+            broker.transactions.journal_sequence_for_test(),
+            before_observation
+        );
+
+        let changed_directory = TempDir::new().unwrap();
+        fs::copy(
+            directory.path().join("storage-state.journal"),
+            changed_directory.path().join("storage-state.journal"),
+        )
+        .unwrap();
+        let mut changed = coordinator(&changed_directory, &fixture);
+        let changed_dispatch = changed
+            .workspace_pin_repair_observation_dispatches(&contract, host_scope)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let changed_proof =
+            workspace_pin_proof(workspace_handle, initial_attempt.dataset_name(), 11);
+        changed
+            .transactions
+            .complete_workspace_pin_attempt(
+                repair_attempt.attempt_id(),
+                &crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: initial_attempt.dataset_name().to_owned(),
+                    guid: 11,
+                },
+                &crate::workspace_pin::WorkspacePinObservationV1::Present(changed_proof),
+            )
+            .unwrap();
+        assert!(matches!(
+            changed.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
+        let after_history_change = changed.transactions.journal_sequence_for_test();
+        let superseded_result = WorkspacePinRepairObserverResultV1::new(
+            changed_dispatch.probe().digest(),
+            crate::pin_worker::WorkspacePinWorkerResultV1::new(
+                repair_attempt.attempt_id(),
+                crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: initial_attempt.dataset_name().to_owned(),
+                    guid: 11,
+                },
+                crate::workspace_pin::WorkspacePinObservationV1::Absent,
+                ObjectDigest::from_bytes([0xd1; 32]),
+            ),
+        );
+        assert!(matches!(
+            changed.complete_workspace_pin_repair_observation(changed_dispatch, superseded_result,),
+            Err(ZfsHelperError::Authority)
+        ));
+        assert_eq!(
+            changed.transactions.journal_sequence_for_test(),
+            after_history_change
+        );
+
+        let completion_failure_directory = TempDir::new().unwrap();
+        fs::copy(
+            directory.path().join("storage-state.journal"),
+            completion_failure_directory
+                .path()
+                .join("storage-state.journal"),
+        )
+        .unwrap();
+        let mut completion_failure = coordinator(&completion_failure_directory, &fixture);
+        let failure_dispatch = completion_failure
+            .workspace_pin_repair_observation_dispatches(&contract, host_scope)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let failure_result = WorkspacePinRepairObserverResultV1::new(
+            failure_dispatch.probe().digest(),
+            crate::pin_worker::WorkspacePinWorkerResultV1::new(
+                repair_attempt.attempt_id(),
+                crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: initial_attempt.dataset_name().to_owned(),
+                    guid: 11,
+                },
+                crate::workspace_pin::WorkspacePinObservationV1::Present(workspace_pin_proof(
+                    workspace_handle,
+                    initial_attempt.dataset_name(),
+                    11,
+                )),
+                ObjectDigest::from_bytes([0xd2; 32]),
+            ),
+        );
+        completion_failure
+            .transactions
+            .fail_after_next_journal_commit_for_test();
+        assert!(
+            completion_failure
+                .complete_workspace_pin_repair_observation(failure_dispatch, failure_result)
+                .is_err()
+        );
+        assert!(
+            completion_failure
+                .authenticate_workspace_pin_attempts()
+                .is_err()
+        );
+        drop(completion_failure);
+        let completion_failure = coordinator(&completion_failure_directory, &fixture);
+        completion_failure
+            .authenticate_workspace_pin_attempts()
+            .unwrap();
+        assert_eq!(
+            completion_failure
+                .transactions
+                .latest_workspace_pin_attempt(creation.operation_id())
+                .unwrap()
+                .unwrap()
+                .phase(),
+            WorkspacePinAttemptPhaseV1::Satisfied
+        );
+
+        let mut dispatches = broker
+            .workspace_pin_repair_observation_dispatches(&contract, host_scope)
+            .unwrap();
+        assert_eq!(dispatches.len(), 1);
+        let dispatch = dispatches.pop().unwrap();
+        let proof = workspace_pin_proof(workspace_handle, initial_attempt.dataset_name(), 11);
+        let result = WorkspacePinRepairObserverResultV1::new(
+            dispatch.probe().digest(),
+            crate::pin_worker::WorkspacePinWorkerResultV1::new(
+                repair_attempt.attempt_id(),
+                crate::workspace_pin::WorkspaceDatasetObservationV1::Exact {
+                    name: initial_attempt.dataset_name().to_owned(),
+                    guid: 11,
+                },
+                crate::workspace_pin::WorkspacePinObservationV1::Present(proof),
+                ObjectDigest::from_bytes([0xd1; 32]),
+            ),
+        );
+        assert_eq!(
+            broker
+                .complete_workspace_pin_repair_observation(dispatch, result)
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompletePublication
+        );
+        assert!(
+            broker
+                .workspace_pin_repair_observation_dispatches(&contract, host_scope)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            broker.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Publish(_)]
+        ));
+        let valid_completed_effect = broker
+            .transactions
+            .authority_record(
+                RecordNamespace::Effect,
+                repair_semantics.header().request_id(),
+            )
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        drop(broker);
+
+        let mut broker = coordinator(&directory, &fixture);
+        broker.authenticate_workspace_pin_attempts().unwrap();
+        assert!(matches!(
+            broker.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Publish(_)]
+        ));
+
+        // A repaired Ensure is historical creation evidence after retirement.
+        // Exercise the recovery projection both before and after journal reopen.
+        let retirement_directory = TempDir::new().unwrap();
+        fs::copy(
+            directory.path().join("storage-state.journal"),
+            retirement_directory.path().join("storage-state.journal"),
+        )
+        .unwrap();
+        let mut retired = coordinator(&retirement_directory, &fixture);
+        retired.authenticate_workspace_pin_attempts().unwrap();
+        let destroy_manifest = assignment_manifest_at(&sandbox_spec(72), 7);
+        let destroy_request =
+            destroy_request_at_generation(8, workspace_handle, 7, destroy_manifest.digest());
+        let destroy_catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = retired.transactions.catalog_head_binding().unwrap();
+        let destroy_artifacts =
+            fixture.artifacts_at_head(&destroy_request, &destroy_catalog, expected_head, 300);
+        prepare_for_apply(
+            &mut retired,
+            &destroy_request,
+            &destroy_artifacts,
+            &destroy_catalog,
+            &clock(),
+        );
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = retired
+            .admit_apply_intent(
+                &destroy_request,
+                &destroy_artifacts,
+                &destroy_catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("repaired workspace destruction was not prepared")
+        };
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::new(Cell::new(0)),
+            },
+        );
+        let prepared = helper.preobserve(&retired.transactions, [8; 16]).unwrap();
+        assert_eq!(prepared.entry().mutation_digest(), mutation_digest);
+        let proof = workspace_pin_proof(workspace_handle, initial_attempt.dataset_name(), 11);
+        let AuthorizedWorkspaceRemoveAttemptV1::Dispatch(remove_dispatch) =
+            retired
+                .begin_workspace_pin_remove_and_destroy(prepared, host_scope, proof, &mut || {
+                    Ok(clock())
+                })
+                .unwrap()
+        else {
+            panic!("repaired workspace pin removal was not dispatched")
+        };
+        let (remove_attempt, prepared) = (*remove_dispatch).into_parts();
+        assert_eq!(remove_attempt.attempt_ordinal(), 3);
+        let _retirement = retired
+            .transactions
+            .commit_observed(
+                [8; 16],
+                prepared.entry().mutation_digest(),
+                &destroy_catalog,
+                &destroy_catalog.plan().postcondition(),
+                None,
+                ObjectDigest::from_bytes([0xd3; 32]),
+            )
+            .unwrap();
+        assert_eq!(
+            retired
+                .transactions
+                .complete_workspace_pin_attempt(
+                    remove_attempt.attempt_id(),
+                    &crate::workspace_pin::WorkspaceDatasetObservationV1::Absent,
+                    &crate::workspace_pin::WorkspacePinObservationV1::Absent,
+                )
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompleteRetirement
+        );
+        assert!(matches!(
+            retired.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Retire { .. }]
+        ));
+        drop(retired);
+
+        let retired = coordinator(&retirement_directory, &fixture);
+        retired.authenticate_workspace_pin_attempts().unwrap();
+        assert!(matches!(
+            retired.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Retire { .. }]
+        ));
+
+        broker
+            .transactions
+            .put_authority_record_with_transaction_for_test(
+                [0xc0; 16],
+                RecordNamespace::Effect,
+                repair_semantics.header().request_id(),
+                arbitrary_completed_effect,
+            );
+        assert!(matches!(
+            broker.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
+
+        let alternate_transport = reverse_length_delimited_fields(&repair_request_bytes);
+        assert_ne!(alternate_transport, repair_request_bytes);
+        let alternate_semantics = CanonicalStorageRepairSemanticsV1::decode(
+            &alternate_transport,
+            peer(),
+            peer_policy(),
+            clock().boottime_nanoseconds(),
+        )
+        .unwrap();
+        assert_eq!(
+            alternate_semantics.argument_commitment(),
+            repair_semantics.argument_commitment()
+        );
+        let wrong_semantic = repair_request(80, 82, workspace_handle, 6, repair_assignment_digest);
+        let wrong_target = repair_request(80, 81, [0x83; 32], 6, repair_assignment_digest);
+        let wrong_assignment = repair_request(
+            80,
+            81,
+            workspace_handle,
+            7,
+            ObjectDigest::from_bytes([0x84; 32]),
+        );
+        let mut wrong_live_effects = Vec::new();
+        for (case, wrong_request) in [
+            ("transport", alternate_transport),
+            ("semantic", wrong_semantic),
+            ("target", wrong_target),
+            ("assignment", wrong_assignment),
+        ] {
+            let wrong_semantics = CanonicalStorageRepairSemanticsV1::decode(
+                &wrong_request,
+                peer(),
+                peer_policy(),
+                clock().boottime_nanoseconds(),
+            )
+            .unwrap();
+            let wrong_artifacts = fixture.repair_artifacts(&wrong_request);
+            let wrong_admission = broker
+                .authority
+                .admit_workspace_pin_repair(
+                    &wrong_artifacts,
+                    &wrong_semantics,
+                    &wrong_request,
+                    ProtocolVersion::new(1, 0),
+                    &clock(),
+                    None,
+                )
+                .unwrap();
+            let wrong_live_effect = broker
+                .authority
+                .seal(
+                    &[2; 16],
+                    repair_semantics.header().request_id(),
+                    &repair_semantics.operation_id(),
+                    &wrong_admission,
+                )
+                .unwrap()
+                .effect;
+            wrong_live_effects.push(wrong_live_effect.clone());
+            let transaction_marker = 0xc1 + u8::try_from(wrong_live_effects.len()).unwrap();
+            broker
+                .transactions
+                .put_authority_record_with_transaction_for_test(
+                    [transaction_marker; 16],
+                    RecordNamespace::Effect,
+                    repair_semantics.header().request_id(),
+                    wrong_live_effect,
+                );
+            assert!(
+                matches!(
+                    broker.authenticate_workspace_pin_attempts(),
+                    Err(ZfsHelperError::Authority)
+                ),
+                "correctly resealed {case} drift was accepted"
+            );
+        }
+
+        broker
+            .transactions
+            .put_authority_record_with_transaction_for_test(
+                [0xc6; 16],
+                RecordNamespace::Effect,
+                repair_semantics.header().request_id(),
+                valid_pending_effect,
+            );
+        assert!(matches!(
+            broker.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
+        broker
+            .transactions
+            .put_authority_record_with_transaction_for_test(
+                [0xc7; 16],
+                RecordNamespace::Effect,
+                repair_semantics.header().request_id(),
+                valid_completed_effect,
+            );
+        broker.authenticate_workspace_pin_attempts().unwrap();
+
+        let retained_directory = TempDir::new().unwrap();
+        fs::copy(
+            directory.path().join("storage-state.journal"),
+            retained_directory.path().join("storage-state.journal"),
+        )
+        .unwrap();
+        let mut retained = coordinator(&retained_directory, &fixture);
+        let wrong_retained_intent = StorageWorkspacePinRepairIntentV1::new_for_test(
+            repair_intent.repair_operation_id(),
+            repair_intent.request_id(),
+            repair_intent.request_digest(),
+            repair_intent.semantic_commitment(),
+            repair_intent.repair_assignment_digest(),
+            wrong_live_effects.remove(0),
+            repair_intent.operation_fence_digest(),
+            repair_intent.creation_operation_id(),
+            repair_intent.creation_result_catalog(),
+            repair_intent.creation_result_digest(),
+            repair_intent.publication_intent_record_digest(),
+            repair_intent.workspace_handle(),
+            repair_intent.latest_ensure_attempt_id(),
+            repair_intent.latest_ensure_phase(),
+            repair_intent.latest_ensure_attempt_record_digest(),
+            repair_intent.repair_attempt_id(),
+            repair_intent.repair_attempt_ordinal(),
+        )
+        .unwrap();
+        retained
+            .transactions
+            .replace_workspace_pin_repair_intent_for_test([0xd8; 16], wrong_retained_intent)
+            .unwrap();
+        drop(retained);
+
+        let retained = coordinator(&retained_directory, &fixture);
+        assert!(matches!(
+            retained.authenticate_workspace_pin_attempts(),
+            Err(ZfsHelperError::Authority)
+        ));
+    }
+
+    #[test]
+    fn fixed_worker_independently_authenticates_current_ensure_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (_coordinator, dispatch, result) = workspace_pin_ensure_dispatch(&directory, &fixture);
+        let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        let bytes = dispatch.worker_request_bytes(&contract).unwrap();
+        let decoded = crate::pin_worker::decode_request(&bytes).unwrap();
+        let state_key = StorageStateKey::new([51; 16], [52; 32]).unwrap();
+
+        assert_eq!(decoded.catalog.generation(), 9);
+        assert_eq!(
+            dispatch.attempt().creation_result_catalog(),
+            result.catalog()
+        );
+        assert_eq!(result.catalog().generation(), 10);
+        assert_eq!(
+            decoded.catalog.generation().checked_add(1),
+            Some(result.catalog().generation())
+        );
+        assert_ne!(
+            result.catalog().digest(),
+            decoded.catalog.binding().digest()
+        );
+
+        let authenticated = crate::pin_worker::authenticate_request(
+            &fixture.authority(),
+            &state_key,
+            &contract,
+            decoded,
+        )
+        .unwrap();
+
+        assert_eq!(authenticated.attempt(), dispatch.attempt());
+        assert_eq!(
+            authenticated.attempt().workspace_handle(),
+            result.storage_handle().unwrap()
+        );
+        crate::pin_worker::check_before_effect(&fixture.authority(), &authenticated, &mut || {
+            Ok(clock())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn portable_publication_intent_rejects_cross_bound_assignment_at_construction() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (coordinator, _dispatch, _) =
+            portable_workspace_pin_ensure_dispatch(&directory, &fixture);
+        let publication = coordinator
+            .transactions
+            .workspace_publication_intent([73; 16])
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            crate::workspace_catalog::StorageWorkspacePublicationIntentV1::from_authenticated_parts(
+                publication.operation_id(),
+                publication.request_catalog(),
+                ObjectDigest::from_bytes([0xef; 32]),
+                publication.root_image().clone(),
+                publication.identity_range_start(),
+                publication.identity_range_size(),
+                publication.portable_metadata().clone(),
+            ),
+            Err(crate::workspace_catalog::StorageWorkspaceCatalogError::InvalidCandidate)
+        ));
+    }
+
+    #[test]
+    fn historical_observer_authenticates_superseded_ambiguous_attempt_without_effect_authority() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, _dispatch, _result) = workspace_pin_ensure_dispatch(&directory, &fixture);
+        let superseding_catalog = catalog(8, 9);
+        let superseding_request = request_with_generation(9, 8, 6);
+        let superseding_artifacts = fixture.artifacts(
+            &superseding_request,
+            &superseding_catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let superseding_semantics = decode_resolved(
+            &superseding_request,
+            &superseding_catalog,
+            peer(),
+            peer_policy(),
+            100,
+        )
+        .unwrap();
+        let prior_fence = broker
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &[2; 16])
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let superseding_admission = broker
+            .authority
+            .admit(
+                &superseding_artifacts,
+                &superseding_semantics,
+                &superseding_request,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                Some(&prior_fence),
+            )
+            .unwrap();
+        let superseding_sealed = broker
+            .authority
+            .seal(&[2; 16], &[9; 16], &[9; 16], &superseding_admission)
+            .unwrap();
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::DesiredState,
+            &[2; 16],
+            superseding_sealed.current_fence,
+        );
+
+        let observations = broker.workspace_pin_observation_dispatches().unwrap();
+        assert_eq!(observations.len(), 1);
+        let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        let bytes = observations[0].request_bytes(&contract).unwrap();
+        let state_key = StorageStateKey::new([51; 16], [52; 32]).unwrap();
+
+        crate::pin_worker::authenticate_observation_request(
+            &fixture.authority(),
+            &state_key,
+            &contract,
+            crate::pin_worker::decode_request(&bytes).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            crate::pin_worker::authenticate_request(
+                &fixture.authority(),
+                &state_key,
+                &contract,
+                crate::pin_worker::decode_request(&bytes).unwrap(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn fixed_worker_independently_authenticates_current_remove_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (_coordinator, dispatch, creation) =
+            workspace_pin_remove_dispatch(&directory, &fixture);
+        let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        let bytes = dispatch.worker_request_bytes(&contract).unwrap();
+        let decoded = crate::pin_worker::decode_request(&bytes).unwrap();
+        let state_key = StorageStateKey::new([51; 16], [52; 32]).unwrap();
+
+        assert_eq!(decoded.catalog.generation(), 11);
+        assert_eq!(
+            dispatch.attempt().creation_result_catalog(),
+            creation.catalog()
+        );
+        assert!(
+            decoded.catalog.generation()
+                > dispatch.attempt().creation_result_catalog().generation()
+        );
+
+        let authenticated = crate::pin_worker::authenticate_request(
+            &fixture.authority(),
+            &state_key,
+            &contract,
+            decoded,
+        )
+        .unwrap();
+
+        assert_eq!(authenticated.attempt(), dispatch.attempt());
+        assert_eq!(
+            authenticated.attempt().workspace_handle(),
+            creation.storage_handle().unwrap()
+        );
+        crate::pin_worker::check_before_effect(&fixture.authority(), &authenticated, &mut || {
+            Ok(clock())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn managed_workspace_without_satisfied_pin_never_falls_through_to_generic_destroy() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut coordinator, _ensure, creation) =
+            workspace_pin_ensure_dispatch(&directory, &fixture);
+        let workspace_handle = creation.storage_handle().unwrap();
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest_at(&spec, 6);
+        let request = destroy_request(8, workspace_handle, manifest.digest());
+        let catalog = destroy_catalog(workspace_handle, 11);
+        let expected_head = coordinator.transactions.catalog_head_binding().unwrap();
+        let artifacts = fixture.artifacts_at_head(&request, &catalog, expected_head, 300);
+        prepare_for_apply(&mut coordinator, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { .. } = coordinator
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap()
+        else {
+            panic!("workspace destruction was not prepared")
+        };
+        let executions = Rc::new(Cell::new(0));
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            CountingBackend {
+                executions: Rc::clone(&executions),
+            },
+        );
+        let prepared = coordinator.preobserve(&mut helper, [8; 16]).unwrap();
+
+        assert!(matches!(
+            coordinator
+                .workspace_remove_pin_requirement(&prepared)
+                .unwrap(),
+            WorkspaceRemovePinRequirementV1::Missing
+        ));
+        assert_eq!(executions.get(), 0);
+    }
+
+    #[test]
+    fn committed_destroy_with_ambiguous_pin_recovers_observation_only() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (mut broker, dispatch, _creation) = workspace_pin_remove_dispatch(&directory, &fixture);
+        let attempt_id = dispatch.attempt().attempt_id();
+        let (attempt, prepared) = dispatch.into_parts();
+        let transaction =
+            ZfsTransaction::from_catalog(prepared.operation(), prepared.catalog()).unwrap();
+        let entry = prepared.entry();
+        broker
+            .transactions
+            .commit_observed(
+                entry.operation_id(),
+                entry.mutation_digest(),
+                prepared.catalog(),
+                transaction.postcondition(),
+                None,
+                ObjectDigest::from_bytes([93; 32]),
+            )
+            .unwrap();
+        assert_eq!(attempt.attempt_id(), attempt_id);
+        drop(broker);
+
+        let mut recovered = coordinator(&directory, &fixture);
+        recovered.authenticate_workspace_pin_attempts().unwrap();
+        assert_eq!(
+            recovered.transactions.phase([8; 16]).unwrap(),
+            Some(DurableStoragePhase::Committed)
+        );
+        let recovered_attempt = recovered
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.attempt_id() == attempt_id)
+            .unwrap();
+        assert_eq!(
+            recovered_attempt.phase(),
+            WorkspacePinAttemptPhaseV1::Ambiguous
+        );
+        let observation_dispatches = recovered.workspace_pin_observation_dispatches().unwrap();
+        assert_eq!(observation_dispatches.len(), 1);
+        assert_eq!(observation_dispatches[0].attempt(), &recovered_attempt);
+        let observation = crate::pin_worker::WorkspacePinWorkerResultV1::new(
+            attempt_id,
+            crate::workspace_pin::WorkspaceDatasetObservationV1::Absent,
+            crate::workspace_pin::WorkspacePinObservationV1::Absent,
+            ObjectDigest::from_bytes([94; 32]),
+        );
+        assert_eq!(
+            recovered
+                .complete_workspace_pin_observation(&recovered_attempt, &observation)
+                .unwrap(),
+            WorkspacePinRecoveryDispositionV1::CompleteRetirement
+        );
+        assert!(matches!(
+            recovered.workspace_projection().unwrap().as_slice(),
+            [StorageWorkspaceCatalogActionV1::Retire { .. }]
+        ));
+    }
+
+    #[test]
+    fn fixed_worker_rejects_each_substituted_authority_record_and_context() {
+        use crate::pin_worker::WorkspacePinWorkerAuthorityRecord;
+
+        let fixture = Fixture::new();
+        let ensure_directory = TempDir::new().unwrap();
+        let remove_directory = TempDir::new().unwrap();
+        let (_ensure_coordinator, ensure, _) =
+            workspace_pin_ensure_dispatch(&ensure_directory, &fixture);
+        let (_remove_coordinator, remove, _) =
+            workspace_pin_remove_dispatch(&remove_directory, &fixture);
+        let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        let ensure_bytes = ensure.worker_request_bytes(&contract).unwrap();
+        let remove_bytes = remove.worker_request_bytes(&contract).unwrap();
+        let donor = crate::pin_worker::decode_request(&remove_bytes).unwrap();
+        let state_key = StorageStateKey::new([51; 16], [52; 32]).unwrap();
+
+        for record in [
+            WorkspacePinWorkerAuthorityRecord::ParentRequest,
+            WorkspacePinWorkerAuthorityRecord::Attempt,
+            WorkspacePinWorkerAuthorityRecord::CurrentFence,
+            WorkspacePinWorkerAuthorityRecord::Effect,
+            WorkspacePinWorkerAuthorityRecord::OperationFence,
+        ] {
+            let mut substituted = crate::pin_worker::decode_request(&ensure_bytes).unwrap();
+            substituted
+                .authority
+                .substitute_record_from(record, &donor.authority);
+
+            assert!(matches!(
+                crate::pin_worker::authenticate_request(
+                    &fixture.authority(),
+                    &state_key,
+                    &contract,
+                    substituted,
+                ),
+                Err(crate::ZfsWorkerError::Authority)
+            ));
+        }
+
+        let mut substituted_catalog = crate::pin_worker::decode_request(&ensure_bytes).unwrap();
+        substituted_catalog.catalog = donor.catalog;
+        assert!(matches!(
+            crate::pin_worker::authenticate_request(
+                &fixture.authority(),
+                &state_key,
+                &contract,
+                substituted_catalog,
+            ),
+            Err(crate::ZfsWorkerError::Authority)
+        ));
+
+        let base_publication = crate::pin_worker::decode_request(&ensure_bytes)
+            .unwrap()
+            .authority
+            .publication_intent()
+            .unwrap()
+            .to_vec();
+        let media_length = usize::from(u16::from_be_bytes(
+            base_publication[114..116].try_into().unwrap(),
+        ));
+        let root_image_digest_offset = 116 + media_length;
+        let range_start_offset = root_image_digest_offset + 32 + 8;
+        let range_size_offset = range_start_offset + 4;
+        let root_policy_offset = range_size_offset + 4 + 16 + 32 + 80 + 16;
+
+        let mut outer_assignment = base_publication.clone();
+        outer_assignment[82] ^= 1;
+        let mut root_image = base_publication.clone();
+        root_image[root_image_digest_offset] ^= 1;
+        let mut range_size = base_publication.clone();
+        range_size[range_size_offset..range_size_offset + 4]
+            .copy_from_slice(&131_072_u32.to_be_bytes());
+        let mut range_start = base_publication.clone();
+        range_start[range_start_offset..range_start_offset + 4]
+            .copy_from_slice(&131_072_u32.to_be_bytes());
+        let mut root_policy = base_publication.clone();
+        let clone_policy = WorkspaceRootPolicyV1::clone_preserve(
+            91,
+            crate::root_policy::PortableRootAttributesV1::new(1000, 1001, 0o2750).unwrap(),
+            ObjectDigest::from_bytes([92; 32]),
+        )
+        .unwrap();
+        root_policy[root_policy_offset..root_policy_offset + 64]
+            .copy_from_slice(&clone_policy.canonical_bytes());
+        let mut request_catalog = base_publication.clone();
+        request_catalog[50] ^= 1;
+
+        for (relationship, mut publication) in [
+            ("outer assignment/fence", outer_assignment),
+            ("root image/manifest", root_image),
+            ("range size/spec", range_size),
+            ("range start/attempt", range_start),
+            ("root policy/catalog/attempt", root_policy),
+            ("request catalog/worker catalog", request_catalog),
+        ] {
+            state_key
+                .retag_workspace_publication_intent_for_test(&mut publication)
+                .unwrap();
+            let donor =
+                crate::pin_worker::WorkspacePinWorkerAuthorityV1::new_with_publication_intent(
+                    [1; 16],
+                    vec![1],
+                    vec![1],
+                    vec![1],
+                    vec![1],
+                    publication,
+                )
+                .unwrap();
+            let mut substituted = crate::pin_worker::decode_request(&ensure_bytes).unwrap();
+            substituted.authority.substitute_record_from(
+                WorkspacePinWorkerAuthorityRecord::PublicationIntent,
+                &donor,
+            );
+
+            assert!(
+                matches!(
+                    crate::pin_worker::authenticate_request(
+                        &fixture.authority(),
+                        &state_key,
+                        &contract,
+                        substituted,
+                    ),
+                    Err(crate::ZfsWorkerError::Authority)
+                ),
+                "authenticated publication substitution escaped {relationship} binding"
+            );
+        }
+
+        let mut substituted_executable = crate::pin_worker::decode_request(&ensure_bytes).unwrap();
+        substituted_executable.executable = "/nix/store/substituted-zfs/sbin/zfs".into();
+        assert!(matches!(
+            crate::pin_worker::authenticate_request(
+                &fixture.authority(),
+                &state_key,
+                &contract,
+                substituted_executable,
+            ),
+            Err(crate::ZfsWorkerError::Authority)
+        ));
+    }
+
+    #[test]
+    fn fixed_worker_rechecks_the_protected_clock_immediately_before_effect() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let (_coordinator, dispatch, _) = workspace_pin_ensure_dispatch(&directory, &fixture);
+        let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        let request =
+            crate::pin_worker::decode_request(&dispatch.worker_request_bytes(&contract).unwrap())
+                .unwrap();
+        let state_key = StorageStateKey::new([51; 16], [52; 32]).unwrap();
+        let authenticated = crate::pin_worker::authenticate_request(
+            &fixture.authority(),
+            &state_key,
+            &contract,
+            request,
+        )
+        .unwrap();
+        let expired = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [50; 16],
+            150,
+            authenticated.effect_deadline_boottime_nanoseconds(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            crate::pin_worker::check_before_effect(
+                &fixture.authority(),
+                &authenticated,
+                &mut || Ok(expired),
+            ),
+            Err(crate::ZfsWorkerError::Authority)
+        ));
+    }
+
+    #[test]
+    fn pin_attempt_receipt_round_trips_and_rejects_tamper_relocation_and_expiry() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let request = create_request(7, manifest.digest());
+        let catalog = create_catalog(9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = broker
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("new workspace creation was not prepared")
+        };
+        broker
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let result = broker
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(91),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+        let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+        let AuthorizedWorkspacePinAttemptV1::Dispatch(dispatch) = broker
+            .begin_workspace_pin_ensure(result, host_scope, &mut || Ok(clock()))
+            .unwrap()
+        else {
+            panic!("fresh pin authority did not produce one dispatch")
+        };
+        let attempt = dispatch.attempt().clone();
+        let entry = broker
+            .transactions
+            .committed_recovery_entry(result)
+            .unwrap();
+        let (_, effect) = broker.persisted_effect_context(entry).unwrap();
+        broker
+            .authority
+            .verify_pin_attempt_receipt(&attempt, &effect, entry.operation_id())
+            .unwrap();
+
+        let mut tampered_receipt = attempt.authority_receipt().to_vec();
+        tampered_receipt[0] ^= 0xff;
+        let tampered = attempt.with_authority_receipt(tampered_receipt).unwrap();
+        assert!(
+            broker
+                .authority
+                .verify_pin_attempt_receipt(&tampered, &effect, entry.operation_id())
+                .is_err()
+        );
+        assert!(
+            broker
+                .authority
+                .verify_pin_attempt_receipt(&attempt, &effect, [99; 16])
+                .is_err()
+        );
+        drop(broker);
+
+        let recovered = coordinator(&directory, &fixture);
+        recovered.authenticate_workspace_pin_attempts().unwrap();
+        let recovered_attempts = recovered.transactions.workspace_pin_attempts().unwrap();
+        assert_eq!(recovered_attempts, vec![attempt]);
+
+        let expired_directory = TempDir::new().unwrap();
+        let mut expired_broker = initialized_coordinator(&expired_directory, &fixture, &catalog);
+        prepare_for_apply(
+            &mut expired_broker,
+            &request,
+            &artifacts,
+            &catalog,
+            &clock(),
+        );
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = expired_broker
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("expiry fixture was not prepared")
+        };
+        expired_broker
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let expired_result = expired_broker
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(91),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+        let expired_sample = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [50; 16],
+            150,
+            200,
+        )
+        .unwrap();
+        let mut samples = 0;
+        assert!(matches!(
+            expired_broker.begin_workspace_pin_ensure(expired_result, host_scope, &mut || {
+                samples += 1;
+                if samples == 1 {
+                    Ok(clock())
+                } else {
+                    Ok(expired_sample)
+                }
+            },),
+            Err(ZfsHelperError::Authority)
+        ));
+        assert_eq!(samples, 2);
+        let expired_attempts = expired_broker
+            .transactions
+            .workspace_pin_attempts()
+            .unwrap();
+        assert_eq!(expired_attempts.len(), 1);
+        assert_eq!(
+            expired_attempts[0].phase(),
+            crate::workspace_pin::WorkspacePinAttemptPhaseV1::Ambiguous
+        );
+    }
+
+    #[test]
+    fn substitutions_and_invalid_authority_fail_closed() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let original_request = request(7, 8);
+        let original_catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &original_request,
+            &original_catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &original_catalog);
+        prepare_for_apply(
+            &mut broker,
+            &original_request,
+            &artifacts,
+            &original_catalog,
+            &clock(),
+        );
+        broker
+            .admit_apply_intent(
+                &original_request,
+                &artifacts,
+                &original_catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        assert!(
+            broker
+                .admit_apply_intent(
+                    &request(9, 8),
+                    &artifacts,
+                    &original_catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock()
+                )
+                .is_err()
+        );
+        assert!(
+            broker
+                .admit_apply_intent(
+                    &original_request,
+                    &artifacts,
+                    &catalog(9, 10),
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock()
+                )
+                .is_err()
+        );
+
+        let expired = fixture.artifacts(
+            &original_request,
+            &original_catalog,
+            140,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        assert!(
+            broker
+                .admit_apply_intent(
+                    &original_request,
+                    &expired,
+                    &original_catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock()
+                )
+                .is_err()
+        );
+        let wrong = fixture.artifacts_for_node(
+            &original_request,
+            &original_catalog,
+            NodeId::from_bytes([80; 16]),
+        );
+        assert!(
+            broker
+                .admit_apply_intent(
+                    &original_request,
+                    &wrong,
+                    &original_catalog,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock()
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn missing_link_after_recovery_is_rejected() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+        broker
+            .transactions
+            .remove_authority_record_for_test(RecordNamespace::Effect, &[7; 16]);
+        drop(broker);
+        let mut recovered = coordinator(&directory, &fixture);
+        assert!(matches!(
+            recovered.admit_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock()
+            ),
+            Err(StorageBrokerError::Authority)
+        ));
+    }
+
+    #[test]
+    fn cross_linked_intent_cannot_be_sealed_for_another_request() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let original = request(7, 8);
+        let substituted = request(9, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts_authorizing(
+            &original,
+            &catalog,
+            &[&original, &substituted],
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &original, &artifacts, &catalog, &clock());
+        broker
+            .admit_apply_intent(
+                &original,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+            )
+            .unwrap();
+
+        let semantics =
+            decode_resolved(&substituted, &catalog, peer(), peer_policy(), 100).unwrap();
+        let admission = broker
+            .authority
+            .admit(
+                &artifacts,
+                &semantics,
+                &substituted,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                broker
+                    .transactions
+                    .authority_record(RecordNamespace::DesiredState, &[2; 16])
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            broker
+                .authority
+                .seal(&[2; 16], &[7; 16], &[9; 16], &admission)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn apply_is_never_advertised_without_complete_effect_readiness() {
+        assert!(advertised_storage_methods(false, false, false).is_empty());
+        assert_eq!(
+            advertised_storage_methods(true, false, false),
+            [BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES]
+        );
+        assert_eq!(
+            advertised_storage_methods(false, false, true),
+            [BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN]
+        );
+        assert_eq!(
+            advertised_storage_methods(true, true, true),
+            [
+                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+                BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
+            ]
+        );
+        assert!(
+            !advertised_storage_methods(true, true, true)
+                .contains(&BrokerMethod::BROKER_METHOD_STORAGE_APPLY)
+        );
+    }
+}

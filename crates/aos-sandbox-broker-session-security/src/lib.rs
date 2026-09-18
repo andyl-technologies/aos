@@ -1,0 +1,152 @@
+//! Protected local foundation for Broker Session Authentication 1.0.
+//!
+//! This crate decodes one fixed protected manifest, retains
+//! role-local signing seeds behind protected file descriptors, detects local
+//! configuration replacement, pins the custody process through a retained
+//! self pidfd, and obtains process identifiers, hello nonces, and time directly
+//! from the Linux kernel. Its fixed activation owner adopts only the exact
+//! systemd listener table for a selected broker service. The protected
+//! composition accepts one connected sequenced-packet socket, completes the
+//! authenticated hello flights, opens
+//! the matching protected journal, and exposes the complete post-handshake
+//! request, response, replay, and recovery state machine. Transcript, peer,
+//! protected time, descriptor custody, and journal ownership remain inseparable;
+//! no detached signer, caller-built authenticated request, or raw channel
+//! authority is exposed.
+//!
+//! Broker-side execution reserves the authenticated request durably before
+//! issuing a move-only domain handoff. Concrete Host, Storage, Mount, and
+//! Network adapters cover the closed method profile, including observation and
+//! inventory, and bind the signed terminal outcome to the protected domain
+//! observation. Ambiguous effects and commits retain exact recovery custody.
+//! The crate creates no listener and registers no service by itself. Production
+//! daemons must explicitly own its activation object, dispatch the closed
+//! method profile, and retain recovery custody before advertising readiness.
+//!
+//! [`manifest`] owns the fixed `AOSBSC01` format. The private protected-files
+//! module pins the endpoint directory and its three role-local files. The
+//! private self-execution module pins and revalidates the loading process, the
+//! private entropy module implements bounded kernel acquisition, the endpoint
+//! module owns deliberately narrow client and broker custody APIs, and the
+//! handshake module owns the dormant same-channel hello and general protected
+//! traffic typestates. The private
+//! recovery module owns the fixed-root `AOSBSJ01` namespace-47 journal, stable
+//! endpoint identity and authenticated process rollover, protected full-history
+//! currentness sandwiches, and the only paths able to mint recovered resend or
+//! outstanding-outcome state.
+
+#![cfg(target_os = "linux")]
+
+mod dormant_handshake;
+mod endpoint;
+mod entropy;
+mod error;
+mod handoff;
+mod handshake;
+mod lifecycle_domain_effect;
+mod lifecycle_host_inventory;
+pub mod manifest;
+mod production_activation;
+mod production_dispatch;
+mod production_receive;
+mod production_response;
+mod production_service;
+#[allow(
+    dead_code,
+    reason = "sealed handshake context access stays unreachable until P0-10"
+)]
+mod protected_files;
+mod recovery;
+#[allow(
+    dead_code,
+    reason = "sealed handshake boot access stays unreachable until P0-10"
+)]
+mod self_execution;
+
+pub use dormant_handshake::{
+    DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitRecoveryV1,
+    DormantBrokerDescriptorCommitResultV1, DormantBrokerDescriptorExecutionFailureV1,
+    DormantBrokerDescriptorInFlightReplayV1, DormantBrokerDescriptorOutcomeUnknownV1,
+    DormantBrokerDescriptorRequestPreparationV1, DormantBrokerDescriptorRequestReceiveProgressV1,
+    DormantBrokerDescriptorRequestSendProgressV1, DormantBrokerDescriptorRequestSendRecoveryV1,
+    DormantBrokerDescriptorResponseProgressV1, DormantBrokerDescriptorSendProgressV1,
+    DormantBrokerDescriptorSendRecoveryV1, DormantBrokerDescriptorTerminalReplayRecoveryProgressV1,
+    DormantBrokerDescriptorTerminalReplaySendProgressV1, DormantBrokerDescriptorTerminalReplayV1,
+    DormantBrokerEndpointHandshakeProgressV1, DormantBrokerEndpointHandshakeV1,
+    DormantBrokerExecutionErrorV1, DormantBrokerExecutionFailureV1, DormantBrokerFailureV1,
+    DormantBrokerOutcomeUnknownV1, DormantBrokerOutcomeVerificationV1,
+    DormantBrokerPublicationExecutionFailureV1, DormantBrokerRequestCoordinatesV1,
+    DormantBrokerRequestPreparationV1, DormantBrokerRequestReceiveProgressV1,
+    DormantBrokerRequestSendProgressV1, DormantBrokerResponseProgressV1,
+    DormantBrokerResponseSendProgressV1, DormantBrokerSessionHandshakeErrorV1,
+    DormantBrokerTerminalReplaySendProgressV1, DormantBrokerTerminalReplayV1,
+    DormantCommittedBrokerDescriptorResponseV1, DormantControllerClientHandshakeProgressV1,
+    DormantControllerClientHandshakeV1, DormantHostCatalogPublicationRecoveryProgressV1,
+    DormantHostCatalogPublicationRetryV1, DormantHostCatalogPublicationUnknownV1,
+    DormantHostScopeTerminalFinalizationV1, DormantMountSourceBrokerRecoveryProgressV1,
+    DormantMountSourceBrokerRecoveryV1, DormantOutstandingBrokerRequestV1,
+    DormantPreparedBrokerDescriptorRequestV1, DormantPreparedBrokerRequestV1,
+    DormantReadyBrokerDescriptorTerminalReplayV1, DormantReceivedBrokerDescriptorRequestV1,
+    DormantReceivedBrokerRequestV1, DormantUnconfirmedBrokerDescriptorRequestV1,
+    DormantUnconfirmedBrokerRequestV1, DormantUnconfirmedReceivedBrokerRequestV1,
+};
+pub use endpoint::{
+    BrokerSessionProcessExecutionIdV1, FreshBrokerHelloNonceV1, FreshClientHelloNonceV1,
+};
+pub(crate) use endpoint::{ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1};
+pub use error::BrokerSessionSecurityError;
+pub use handoff::{
+    DormantBrokerEffectHandoffErrorV1, DormantHostBrokerEffectAdapterV1,
+    DormantHostBrokerObservationAdapterV1, DormantMountBrokerEffectAdapterV1,
+    DormantMountBrokerInventoryAdapterV1, DormantMountCatalogPreparationAdapterV1,
+    DormantNetworkBrokerEffectAdapterV1, DormantStorageBrokerEffectAdapterV1,
+    ProtectedBrokerEffectEvidenceV1, ProtectedBrokerEffectHandoffV1,
+    ProtectedBrokerEffectObservationOutcomeV1, ProtectedBrokerEffectObservationRetryV1,
+    ProtectedBrokerEffectObservationV1, ProtectedHostEffectHandoffV1,
+    ProtectedMountEffectHandoffV1, ProtectedNetworkEffectHandoffV1,
+    ProtectedStorageEffectHandoffV1,
+};
+pub use lifecycle_domain_effect::{
+    DormantLifecycleDomainEffectOwnerV1, DormantLifecycleDomainEffectProgressV1,
+    DormantLifecycleDomainEffectRecoveryV1,
+};
+pub use lifecycle_host_inventory::{
+    DormantAtomicStorageInventoryFinishProgressV1, DormantAtomicStorageInventoryFinishRecoveryV1,
+    DormantAtomicStorageInventoryPredecessorV1, DormantHostRuntimeInventoryOwnerV1,
+    DormantLifecycleInventoryQueryProgressV1, DormantLifecycleInventoryQueryRecoveryV1,
+    DormantMountLifecycleInventoryOwnerV1, DormantNetworkLifecycleInventoryOwnerV1,
+    DormantStorageLifecycleInventoryOwnerV1,
+};
+pub use manifest::{
+    BROKER_SESSION_SECURITY_MANIFEST_BYTES, BrokerSessionManifestBindingV1,
+    BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1,
+    BrokerSessionSecurityManifestV1,
+};
+pub use production_activation::{
+    ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
+};
+pub use production_dispatch::{
+    ProductionHostBrokerDispatchCommitV1, ProductionHostBrokerDispatchFailureV1,
+    ProductionMountBrokerDispatchErrorV1, ProductionNetworkBrokerDispatchErrorV1,
+    ProductionStorageBrokerDispatchErrorV1,
+};
+pub use production_receive::{
+    ProductionBrokerReceiveErrorV1, ProductionBrokerRequestEventV1,
+    ProductionHostBrokerRequestEventV1,
+};
+pub use production_response::ProductionBrokerResponseErrorV1;
+pub use production_service::{
+    ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1, ProductionMountBrokerOwnersV1,
+    ProductionMountSourceOwnersV1, production_deadline_after,
+};
+pub use recovery::{
+    ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,
+    ProtectedBrokerOutcomeCommitReadbackV1, ProtectedBrokerOutcomeCommitRecoveryV1,
+    ProtectedBrokerOutcomeCommitResultV1, ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ProtectedBrokerOutcomeCurrentV1, ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ProtectedBrokerOutcomeDurableCasV1, ProtectedBrokerOutcomePendingAdvancementV1,
+    ProtectedBrokerOutcomeReplayV1, ProtectedBrokerRequestCommitRecoveryV1,
+    ProtectedBrokerRequestCommitResultV1, ProtectedBrokerSessionFixedCustodyV1,
+    ProtectedBrokerSessionFixedEndpointV1, ProtectedBrokerSessionInitializationRecoveryV1,
+    ProtectedBrokerSessionInitializationResultV1,
+};

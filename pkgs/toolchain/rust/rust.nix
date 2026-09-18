@@ -186,8 +186,7 @@ in
             # (wasm has no system linker), so the install phase symlinks it from
             # the AOS LLVM's own lld driver instead. The bootstrap override keeps the
             # host (x86_64) target on GCC's ld; rust-lld as the default host
-            # linker chokes on the zlib-compressed debug sections in GCC 14's
-            # libgcc.a.
+            # linker chokes on compressed debug sections in the GCC runtime.
             lld = false
             bootstrap-override-lld = false
 

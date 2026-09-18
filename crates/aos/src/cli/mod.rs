@@ -3,8 +3,8 @@
 //! `Cli` is the top-level parser (global `--verbose`/`--quiet`/`--json`
 //! flags) and `Commands` enumerates every subcommand. Most subcommands
 //! carry their arguments inline in the `Commands` variant; larger
-//! argument sets live in the sibling modules (`cache`, `package`,
-//! `server`, `test`) and are re-exported here.
+//! argument sets live in sibling modules such as `cache`, `sandbox`,
+//! `server`, and `test` and are re-exported here where appropriate.
 //!
 //! The doc comments on clap enum variants and fields double as the
 //! `--help` text — keep them short, imperative, and user-facing. Do NOT
@@ -47,6 +47,8 @@ pub use vm::*;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+
+pub mod sandbox;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ProgressChoice {
@@ -347,6 +349,8 @@ pub enum Commands {
         #[command(subcommand)]
         command: ContainerCommand,
     },
+    /// Manage generic sandboxes and filesystem views
+    Sandbox(sandbox::SandboxArgs),
     /// Plan, build, verify, and publish canonical AOS releases
     Release {
         #[command(subcommand)]

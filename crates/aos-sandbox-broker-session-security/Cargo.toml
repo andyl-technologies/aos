@@ -1,0 +1,55 @@
+[package]
+name = "aos-sandbox-broker-session-security"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
+[dependencies]
+aos-proto.workspace = true
+aos-sandbox.workspace = true
+aos-sandbox-broker-session-protocol.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-host.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-mount.workspace = true
+aos-sandbox-network.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-storage.workspace = true
+aos-sandbox-source-provider.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+aos-sandbox-source-provider-security.workspace = true
+buffa.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+rustix = { workspace = true, features = ["event", "fs", "process", "rand", "time"] }
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[[bin]]
+name = "aos-sandbox-hostd"
+path = "src/bin/aos-sandbox-hostd.rs"
+
+[[bin]]
+name = "aos-storaged"
+path = "src/bin/aos-storaged.rs"
+
+[[bin]]
+name = "aos-netd"
+path = "src/bin/aos-netd.rs"
+
+[[bin]]
+name = "aos-sandbox-mountd"
+path = "src/bin/aos-sandbox-mountd.rs"
+
+[dev-dependencies]
+hex.workspace = true
+rustix = { workspace = true, features = ["net", "pipe"] }
+tempfile = "3"
+
+[lints]
+workspace = true

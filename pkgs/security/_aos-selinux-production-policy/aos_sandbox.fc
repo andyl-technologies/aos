@@ -1,0 +1,27 @@
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-sandbox-hostd-[^/]+/bin/aos-sandbox-hostd -- system_u:object_r:aos_sandbox_host_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-netd -- system_u:object_r:aos_sandbox_network_publisher_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
+/usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
+/usr/lib/systemd/aos-empty-ld-so-preload -- system_u:object_r:lib_t
+/aos-registration -- system_u:object_r:etc_t
+/aos-toplevel -l system_u:object_r:etc_t
+/root -d system_u:object_r:user_home_dir_t
+/root(/.*)? system_u:object_r:user_home_t
+/run/current-system -l system_u:object_r:var_run_t
+/run/etc -d system_u:object_r:var_run_t
+/sysroot -d system_u:object_r:root_t
+
+/var/lib/aos/sandbox-network -d system_u:object_r:aos_sandbox_network_root_t
+/var/lib/aos/sandbox-network/broker-state(/.*)? system_u:object_r:aos_sandbox_network_state_t
+/var/lib/aos/sandbox-network/namespace-inspector -d system_u:object_r:aos_sandbox_network_store_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-staging -d system_u:object_r:aos_sandbox_network_expected_staging_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-staging/\.aosni-expected-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_expected_record_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-final -d system_u:object_r:aos_sandbox_network_expected_final_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-final/aosni-expected-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_expected_record_t
+
+/var/lib/aos/sandbox-network/namespace-inspector/spent-staging -d system_u:object_r:aos_sandbox_network_spent_staging_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-staging/\.aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-final -d system_u:object_r:aos_sandbox_network_spent_final_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-final/aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t

@@ -1,0 +1,902 @@
+//! Lock-coupled privileged ZFS observation and execution boundary.
+//!
+//! This module intentionally keeps executable argv crate-private. The fixed
+//! backend contract receives only typed resolved semantics. The production
+//! adapter sends those types to a systemd-contained one-shot worker, which
+//! independently recompiles argv before invoking its fixed executable. ZFS
+//! observations remain a separate backend and never trust child output.
+
+use std::fs::File;
+use std::io::Read as _;
+use std::os::fd::OwnedFd;
+use std::time::Duration;
+
+use aos_sandbox_core::ObjectDigest;
+use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
+
+use crate::broker::FreshStorageEffectAuthority;
+use crate::process::{SystemdZfsExecutor, WorkerObservationOutcome, ZfsWorkerError};
+use crate::{
+    AncestorPolicyTransaction, DurableStoragePhase, PostconditionPolicyV1, ProjectAncestorPolicyV1,
+    ResolvedCatalogCommitmentV1, StorageOperation, StorageRecoveryEntry, StorageStateError,
+    StorageTransactionStore, ZfsHelperContract, ZfsPrecondition, ZfsTransaction,
+    ZfsTransactionError,
+};
+
+const MAXIMUM_STDOUT_BYTES: usize = 64 * 1024;
+const MAXIMUM_STDERR_BYTES: usize = 64 * 1024;
+const PROCESS_TREE_TIMEOUT: Duration = Duration::from_secs(30);
+const FIXED_SNAPSHOT_METADATA_DIRECTORY: &str = "/var/lib/aos/sandbox-storage/snapshot-metadata";
+const SNAPSHOT_METADATA_RECORD_BYTES: usize = 384;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ZfsHelperError {
+    #[error("storage transaction compilation failed: {0}")]
+    Transaction(#[from] ZfsTransactionError),
+    #[error("storage durable transition failed: {0}")]
+    State(#[from] StorageStateError),
+    #[error("ZFS precondition observation did not match")]
+    PreconditionMismatch,
+    #[error("ZFS postcondition observation did not match")]
+    PostconditionMismatch,
+    #[error("a prepared transaction already has its physical postcondition")]
+    PreparedPostconditionConflict,
+    #[error("fixed ZFS process backend failed: {0}")]
+    Backend(#[from] ZfsWorkerError),
+    #[error("fresh persisted storage authority was rejected")]
+    Authority,
+    #[error("fixed ZFS process output or timeout contract was violated")]
+    ProcessContract,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ZfsHelperOutcome {
+    Committed(crate::CommittedStorageResultV1),
+    Aborted {
+        mutation_digest: ObjectDigest,
+    },
+    ObservationRequired {
+        phase: DurableStoragePhase,
+        mutation_digest: ObjectDigest,
+    },
+}
+
+pub(crate) struct ZfsProcessOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    success: bool,
+    timed_out: bool,
+}
+
+pub(crate) struct ZfsPostconditionObservation {
+    observed: PostconditionPolicyV1,
+    ancestor: Option<ProjectAncestorPolicyV1>,
+    object_guid: Option<u64>,
+    digest: ObjectDigest,
+}
+
+pub(crate) struct SealedZfsProgram<'a> {
+    executable: &'a std::path::Path,
+    operation: StorageOperation,
+    catalog: &'a ResolvedCatalogCommitmentV1,
+    environment_is_empty: bool,
+    inherited_descriptor_count: u8,
+    maximum_stdout_bytes: usize,
+    maximum_stderr_bytes: usize,
+    process_tree_timeout: Duration,
+}
+
+pub(crate) trait ZfsProcessBackend {
+    fn observe_preconditions(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &[ZfsPrecondition],
+    ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError>;
+
+    fn execute_once(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError>;
+
+    fn atomic_snapshot_once(
+        &mut self,
+        _contract: &ZfsHelperContract,
+        _program: &crate::DormantAtomicDatasetSnapshotV1,
+        _mutate: bool,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        Err(ZfsHelperError::ProcessContract)
+    }
+
+    fn observe_postcondition(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &PostconditionPolicyV1,
+        expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+    ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError>;
+
+    /// Reads protected whole-tree identity metadata for one Snapshot commit.
+    fn snapshot_metadata(
+        &mut self,
+        _operation_id: [u8; 16],
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError>
+    {
+        Ok(None)
+    }
+}
+
+impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
+    fn observe_preconditions(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &[ZfsPrecondition],
+    ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+        (**self).observe_preconditions(program, expected)
+    }
+
+    fn execute_once(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        (**self).execute_once(program)
+    }
+
+    fn atomic_snapshot_once(
+        &mut self,
+        contract: &ZfsHelperContract,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        (**self).atomic_snapshot_once(contract, program, mutate)
+    }
+
+    fn observe_postcondition(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &PostconditionPolicyV1,
+        expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+    ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+        (**self).observe_postcondition(program, expected, expected_ancestor)
+    }
+
+    fn snapshot_metadata(
+        &mut self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError>
+    {
+        (**self).snapshot_metadata(operation_id)
+    }
+}
+
+pub(crate) struct SystemdZfsProcessBackend {
+    executor: SystemdZfsExecutor,
+    snapshot_metadata: Option<ProtectedSnapshotMetadataDirectoryV1>,
+}
+
+impl SystemdZfsProcessBackend {
+    pub(crate) fn new(executor: SystemdZfsExecutor) -> Self {
+        Self {
+            executor,
+            snapshot_metadata: None,
+        }
+    }
+
+    /// Opens the fixed protected Snapshot metadata owner for dormant Apply.
+    pub(crate) fn with_protected_snapshot_metadata(
+        executor: SystemdZfsExecutor,
+    ) -> Result<Self, ZfsHelperError> {
+        Ok(Self {
+            executor,
+            snapshot_metadata: Some(ProtectedSnapshotMetadataDirectoryV1::open_fixed()?),
+        })
+    }
+}
+
+impl ZfsProcessBackend for SystemdZfsProcessBackend {
+    fn observe_preconditions(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &[ZfsPrecondition],
+    ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        match self
+            .executor
+            .observe_preconditions(&contract, program.operation, program.catalog)?
+        {
+            WorkerObservationOutcome::Matched {
+                object_guid: None, ..
+            } => Ok(expected.to_vec()),
+            WorkerObservationOutcome::Matched { .. } => Err(ZfsHelperError::PreconditionMismatch),
+            WorkerObservationOutcome::Incomplete | WorkerObservationOutcome::Mismatch => {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    fn execute_once(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        let output = self
+            .executor
+            .execute_once(&contract, program.operation, program.catalog)?;
+        Ok(ZfsProcessOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            success: output.success,
+            timed_out: output.timed_out,
+        })
+    }
+
+    fn atomic_snapshot_once(
+        &mut self,
+        contract: &ZfsHelperContract,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        let output = self
+            .executor
+            .atomic_snapshot_once(contract, program, mutate)?;
+        Ok(ZfsProcessOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            success: output.success,
+            timed_out: output.timed_out,
+        })
+    }
+
+    fn observe_postcondition(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &PostconditionPolicyV1,
+        expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+    ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        match self
+            .executor
+            .observe_postcondition(&contract, program.operation, program.catalog)?
+        {
+            WorkerObservationOutcome::Matched {
+                object_guid,
+                observation_digest,
+            } => {
+                let captures_guid = matches!(
+                    expected,
+                    PostconditionPolicyV1::CaptureDataset { .. }
+                        | PostconditionPolicyV1::CaptureSnapshot { .. }
+                );
+                if captures_guid != object_guid.is_some() {
+                    return Err(ZfsHelperError::PostconditionMismatch);
+                }
+                Ok(Some(ZfsPostconditionObservation {
+                    observed: expected.clone(),
+                    ancestor: expected_ancestor.cloned(),
+                    object_guid,
+                    digest: observation_digest,
+                }))
+            }
+            WorkerObservationOutcome::Incomplete => Ok(None),
+            WorkerObservationOutcome::Mismatch => Err(ZfsHelperError::PostconditionMismatch),
+        }
+    }
+
+    fn snapshot_metadata(
+        &mut self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError>
+    {
+        self.snapshot_metadata
+            .as_ref()
+            .map(|owner| owner.read(operation_id))
+            .transpose()
+    }
+}
+
+/// Retains the fixed root-owned directory containing exact AOSSMT01 records.
+struct ProtectedSnapshotMetadataDirectoryV1 {
+    directory: OwnedFd,
+}
+
+impl ProtectedSnapshotMetadataDirectoryV1 {
+    fn open_fixed() -> Result<Self, ZfsHelperError> {
+        let directory = open(
+            FIXED_SNAPSHOT_METADATA_DIRECTORY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| ZfsHelperError::ProcessContract)?;
+        let metadata = fstat(&directory).map_err(|_| ZfsHelperError::ProcessContract)?;
+        if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+            || metadata.st_uid != 0
+            || !matches!(metadata.st_mode & 0o7777, 0o500 | 0o700)
+        {
+            return Err(ZfsHelperError::ProcessContract);
+        }
+        Ok(Self { directory })
+    }
+
+    fn read(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1, ZfsHelperError> {
+        let name = snapshot_metadata_name(operation_id);
+        let descriptor = openat(
+            &self.directory,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| ZfsHelperError::ProcessContract)?;
+        let before = fstat(&descriptor).map_err(|_| ZfsHelperError::ProcessContract)?;
+        if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
+            || before.st_uid != 0
+            || before.st_nlink != 1
+            || before.st_mode & 0o7777 != 0o400
+            || before.st_size != SNAPSHOT_METADATA_RECORD_BYTES as i64
+        {
+            return Err(ZfsHelperError::ProcessContract);
+        }
+
+        let mut file = File::from(descriptor);
+        let mut bytes = Vec::with_capacity(SNAPSHOT_METADATA_RECORD_BYTES);
+        (&mut file)
+            .take((SNAPSHOT_METADATA_RECORD_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ZfsHelperError::ProcessContract)?;
+        if bytes.len() != SNAPSHOT_METADATA_RECORD_BYTES {
+            return Err(ZfsHelperError::ProcessContract);
+        }
+        let after = fstat(&file).map_err(|_| ZfsHelperError::ProcessContract)?;
+        if before.st_dev != after.st_dev
+            || before.st_ino != after.st_ino
+            || before.st_size != after.st_size
+            || before.st_mtime != after.st_mtime
+            || before.st_mtime_nsec != after.st_mtime_nsec
+        {
+            return Err(ZfsHelperError::ProcessContract);
+        }
+        crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1::from_canonical_bytes(&bytes)
+            .map_err(|_| ZfsHelperError::ProcessContract)
+    }
+}
+
+fn snapshot_metadata_name(operation_id: [u8; 16]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut name = String::with_capacity(41);
+    for byte in operation_id {
+        name.push(char::from(HEX[(byte >> 4) as usize]));
+        name.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    name.push_str(".aossmt01");
+    name
+}
+
+pub(crate) struct StorageMutationHelper<B> {
+    contract: ZfsHelperContract,
+    backend: B,
+}
+
+/// Carries one pre-observed persisted transaction into its sole dispatch.
+///
+/// This capability is deliberately neither `Clone` nor `Copy`. Its fields are
+/// reconstructed from authenticated store state rather than caller input.
+pub(crate) struct PreobservedZfsMutation {
+    context: PersistedZfsMutation,
+}
+
+struct PersistedZfsMutation {
+    entry: StorageRecoveryEntry,
+    catalog: ResolvedCatalogCommitmentV1,
+    operation: StorageOperation,
+}
+
+impl PreobservedZfsMutation {
+    pub(crate) const fn entry(&self) -> StorageRecoveryEntry {
+        self.context.entry
+    }
+
+    pub(crate) const fn catalog(&self) -> &ResolvedCatalogCommitmentV1 {
+        &self.context.catalog
+    }
+
+    pub(crate) const fn operation(&self) -> StorageOperation {
+        self.context.operation
+    }
+}
+
+impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
+    pub(crate) fn new(contract: ZfsHelperContract, backend: B) -> Self {
+        Self { contract, backend }
+    }
+
+    pub(crate) fn into_boxed(self) -> StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>
+    where
+        B: Send + 'static,
+    {
+        StorageMutationHelper {
+            contract: self.contract,
+            backend: Box::new(self.backend),
+        }
+    }
+
+    pub(crate) fn atomic_snapshot_once(
+        &mut self,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+    ) -> Result<ObjectDigest, ZfsHelperError> {
+        let output = self
+            .backend
+            .atomic_snapshot_once(&self.contract, program, mutate)?;
+        if output.timed_out
+            || !output.success
+            || output.stdout.len() != 32
+            || !output.stderr.is_empty()
+        {
+            return Err(ZfsHelperError::PostconditionMismatch);
+        }
+        let digest: [u8; 32] = output
+            .stdout
+            .try_into()
+            .map_err(|_| ZfsHelperError::PostconditionMismatch)?;
+        if digest == [0; 32] {
+            return Err(ZfsHelperError::PostconditionMismatch);
+        }
+        Ok(ObjectDigest::from_bytes(digest))
+    }
+
+    /// Observes exact preconditions for the current persisted Prepared entry.
+    pub(crate) fn preobserve(
+        &mut self,
+        store: &StorageTransactionStore,
+        operation_id: [u8; 16],
+    ) -> Result<PreobservedZfsMutation, ZfsHelperError> {
+        let context = persisted_context(store, operation_id)?;
+        if context.entry.phase() != DurableStoragePhase::Prepared {
+            return Err(StorageStateError::InvalidTransition.into());
+        }
+        let transaction = ZfsTransaction::from_catalog(context.operation, &context.catalog)?;
+        let expected_preconditions = all_preconditions(&transaction);
+        let program = sealed_program(&self.contract, &context);
+        let observed = self
+            .backend
+            .observe_preconditions(&program, &expected_preconditions)?;
+        if observed != expected_preconditions {
+            return Err(ZfsHelperError::PreconditionMismatch);
+        }
+        Ok(PreobservedZfsMutation { context })
+    }
+
+    /// Crosses Ambiguous, dispatches exactly once, then observes the result.
+    pub(crate) fn execute_preobserved<F>(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        prepared: PreobservedZfsMutation,
+        authority: FreshStorageEffectAuthority,
+        mut check_after_ambiguous: F,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        F: FnMut() -> Result<(), ZfsHelperError>,
+    {
+        if authority.entry() != prepared.context.entry {
+            return Err(StorageStateError::InvalidTransition.into());
+        }
+        let current = persisted_context(store, prepared.context.entry.operation_id())?;
+        if current.entry != prepared.context.entry
+            || current.catalog != prepared.context.catalog
+            || current.operation != prepared.context.operation
+        {
+            return Err(StorageStateError::InvalidTransition.into());
+        }
+        store.validate_mutation_exact(
+            current.entry.operation_id(),
+            current.entry.request_digest(),
+            current.entry.mutation_digest(),
+            &current.catalog,
+        )?;
+        store.mark_mutation_ambiguous_exact(
+            current.entry.operation_id(),
+            current.entry.request_digest(),
+            current.entry.mutation_digest(),
+            &current.catalog,
+        )?;
+
+        // The durable sync may outlive the first authority sample. Failure of
+        // this second sample deliberately leaves Ambiguous for observation-only
+        // recovery; dispatch must never resume from that phase.
+        check_after_ambiguous()?;
+
+        let program = sealed_program(&self.contract, &current);
+        validate_process_output(self.backend.execute_once(&program)?)?;
+        self.observe_postcondition(store, &current, DurableStoragePhase::Ambiguous)
+    }
+
+    /// Re-observes current Prepared or Ambiguous state without dispatching.
+    pub(crate) fn observe_only(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        operation_id: [u8; 16],
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        let context = persisted_context(store, operation_id)?;
+        if !matches!(
+            context.entry.phase(),
+            DurableStoragePhase::Prepared | DurableStoragePhase::Ambiguous
+        ) {
+            return Err(StorageStateError::InvalidTransition.into());
+        }
+        self.observe_postcondition(store, &context, context.entry.phase())
+    }
+
+    fn observe_postcondition(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        context: &PersistedZfsMutation,
+        phase: DurableStoragePhase,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        let transaction = ZfsTransaction::from_catalog(context.operation, &context.catalog)?;
+        let program = sealed_program(&self.contract, context);
+        let Some(observation) = self.backend.observe_postcondition(
+            &program,
+            transaction.postcondition(),
+            transaction
+                .ancestor_transaction()
+                .map(AncestorPolicyTransaction::postcondition),
+        )?
+        else {
+            return Ok(ZfsHelperOutcome::ObservationRequired {
+                phase,
+                mutation_digest: context.entry.mutation_digest(),
+            });
+        };
+        if phase == DurableStoragePhase::Prepared {
+            return Err(ZfsHelperError::PreparedPostconditionConflict);
+        }
+        if observation.ancestor.as_ref()
+            != transaction
+                .ancestor_transaction()
+                .map(AncestorPolicyTransaction::postcondition)
+        {
+            return Err(ZfsHelperError::PostconditionMismatch);
+        }
+        let supplement = match context.catalog.plan() {
+            crate::CatalogPlanV1::Snapshot { .. } => self
+                .backend
+                .snapshot_metadata(context.entry.operation_id())?
+                .map(crate::snapshot_metadata::SnapshotCommitEvidenceV1::from_checked_record)
+                .map(crate::snapshot_metadata::CatalogCommitSupplementV1::Snapshot)
+                .ok_or(ZfsHelperError::PostconditionMismatch)?,
+            _ => crate::snapshot_metadata::CatalogCommitSupplementV1::None,
+        };
+        let result = store.commit_observed_with_supplement(
+            context.entry.operation_id(),
+            context.entry.mutation_digest(),
+            &context.catalog,
+            &observation.observed,
+            observation.object_guid,
+            observation.digest,
+            supplement,
+        )?;
+        Ok(ZfsHelperOutcome::Committed(result))
+    }
+}
+
+fn persisted_context(
+    store: &StorageTransactionStore,
+    operation_id: [u8; 16],
+) -> Result<PersistedZfsMutation, ZfsHelperError> {
+    let entry = store.current_recovery_entry(operation_id)?;
+    let catalog = store.recover_catalog(entry)?;
+    let operation = catalog.plan().operation();
+    ZfsTransaction::from_catalog(operation, &catalog)?;
+    Ok(PersistedZfsMutation {
+        entry,
+        catalog,
+        operation,
+    })
+}
+
+fn sealed_program<'a>(
+    contract: &'a ZfsHelperContract,
+    context: &'a PersistedZfsMutation,
+) -> SealedZfsProgram<'a> {
+    SealedZfsProgram {
+        executable: contract.executable(),
+        operation: context.operation,
+        catalog: &context.catalog,
+        environment_is_empty: true,
+        inherited_descriptor_count: 0,
+        maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES,
+        maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+        process_tree_timeout: PROCESS_TREE_TIMEOUT,
+    }
+}
+
+fn all_preconditions(transaction: &ZfsTransaction) -> Vec<ZfsPrecondition> {
+    let mut values = transaction.preconditions().to_vec();
+    if let Some(ancestor) = transaction.ancestor_transaction() {
+        values.push(ancestor.precondition().clone());
+    }
+    values
+}
+
+fn validate_process_output(output: ZfsProcessOutput) -> Result<(), ZfsHelperError> {
+    if output.timed_out
+        || !output.success
+        || output.stdout.len() > MAXIMUM_STDOUT_BYTES
+        || output.stderr.len() > MAXIMUM_STDERR_BYTES
+    {
+        Err(ZfsHelperError::ProcessContract)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::{
+        CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
+        ReservationPolicy, ResolvedDataset, StorageDomainsV1, StorageStateKey,
+        WorkspaceSpacePolicyV1,
+    };
+
+    struct FakeBackend {
+        preconditions_match: bool,
+        precondition_observation_count: usize,
+        execute_count: usize,
+        fail_execution: bool,
+        oversized_output: bool,
+        observation: Option<ZfsPostconditionObservation>,
+    }
+
+    impl ZfsProcessBackend for FakeBackend {
+        fn observe_preconditions(
+            &mut self,
+            _program: &SealedZfsProgram<'_>,
+            expected: &[ZfsPrecondition],
+        ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+            self.precondition_observation_count += 1;
+            if self.preconditions_match {
+                Ok(expected.to_vec())
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn execute_once(
+            &mut self,
+            program: &SealedZfsProgram<'_>,
+        ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+            assert!(program.executable.is_absolute());
+            let transaction =
+                ZfsTransaction::from_catalog(program.operation, program.catalog).unwrap();
+            assert!(!transaction.mutation_arguments().is_empty());
+            assert!(transaction.ancestor_transaction().is_some());
+            assert!(program.environment_is_empty);
+            assert_eq!(program.inherited_descriptor_count, 0);
+            assert_eq!(program.maximum_stdout_bytes, MAXIMUM_STDOUT_BYTES);
+            assert_eq!(program.maximum_stderr_bytes, MAXIMUM_STDERR_BYTES);
+            assert_eq!(program.process_tree_timeout, PROCESS_TREE_TIMEOUT);
+            self.execute_count += 1;
+            if self.fail_execution {
+                return Err(ZfsHelperError::ProcessContract);
+            }
+            Ok(ZfsProcessOutput {
+                stdout: vec![
+                    0;
+                    if self.oversized_output {
+                        MAXIMUM_STDOUT_BYTES + 1
+                    } else {
+                        0
+                    }
+                ],
+                stderr: Vec::new(),
+                success: true,
+                timed_out: false,
+            })
+        }
+
+        fn observe_postcondition(
+            &mut self,
+            _program: &SealedZfsProgram<'_>,
+            _expected: &PostconditionPolicyV1,
+            _expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+        ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+            Ok(self.observation.take())
+        }
+    }
+
+    fn fixture() -> (ResolvedCatalogCommitmentV1, StorageOperation) {
+        fixture_named("tank/aos/project/work")
+    }
+
+    fn fixture_named(name: &str) -> (ResolvedCatalogCommitmentV1, StorageOperation) {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
+        let ancestor_dataset =
+            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [1; 32], domains)
+                .unwrap();
+        let ancestor = ProjectAncestorPolicyV1::new(ancestor_dataset, 65_536, 8, 16).unwrap();
+        let destination = PlannedDataset::from_catalog(root, name, domains).unwrap();
+        let space = WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap();
+        (
+            ResolvedCatalogCommitmentV1::new_for_test(
+                7,
+                domains,
+                CatalogPlanV1::CreateWorkspace {
+                    destination,
+                    space,
+                    ancestor,
+                },
+            )
+            .unwrap(),
+            StorageOperation::CreateWorkspace { quota_bytes: 4096 },
+        )
+    }
+
+    fn open_store(directory: &TempDir) -> StorageTransactionStore {
+        StorageTransactionStore::open_for_test(
+            directory.path(),
+            StorageStateKey::new([1; 16], [2; 32]).unwrap(),
+            0,
+        )
+        .unwrap()
+    }
+
+    fn backend(catalog: &ResolvedCatalogCommitmentV1) -> FakeBackend {
+        FakeBackend {
+            preconditions_match: true,
+            precondition_observation_count: 0,
+            execute_count: 0,
+            fail_execution: false,
+            oversized_output: false,
+            observation: Some(ZfsPostconditionObservation {
+                observed: catalog.plan().postcondition(),
+                ancestor: match catalog.plan() {
+                    CatalogPlanV1::CreateWorkspace { ancestor, .. } => Some(ancestor.clone()),
+                    _ => None,
+                },
+                object_guid: Some(91),
+                digest: ObjectDigest::from_bytes([9; 32]),
+            }),
+        }
+    }
+
+    fn prepare(
+        store: &mut StorageTransactionStore,
+        catalog: &ResolvedCatalogCommitmentV1,
+    ) -> ObjectDigest {
+        store
+            .initialize_catalog_from_protected_snapshot(
+                catalog.generation() - 1,
+                std::slice::from_ref(catalog),
+            )
+            .unwrap();
+        let crate::BeginStorageTransaction::Prepared { mutation_digest } = store
+            .begin([3; 16], ObjectDigest::from_bytes([4; 32]), catalog)
+            .unwrap()
+        else {
+            panic!("fixture did not prepare")
+        };
+        mutation_digest
+    }
+
+    #[test]
+    fn prepared_runs_once_and_commits_full_observation() {
+        let directory = TempDir::new().unwrap();
+        let (catalog, _) = fixture();
+        let mut store = open_store(&directory);
+        let mutation = prepare(&mut store, &catalog);
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            backend(&catalog),
+        );
+        let prepared = helper.preobserve(&store, [3; 16]).unwrap();
+        assert_eq!(prepared.entry().mutation_digest(), mutation);
+        let authority = FreshStorageEffectAuthority::new_for_test(prepared.entry());
+        assert!(matches!(
+            helper
+                .execute_preobserved(&mut store, prepared, authority, || Ok(()))
+                .unwrap(),
+            ZfsHelperOutcome::Committed(_)
+        ));
+        assert_eq!(helper.backend.execute_count, 1);
+        assert_eq!(
+            store.phase([3; 16]).unwrap(),
+            Some(DurableStoragePhase::Committed)
+        );
+    }
+
+    #[test]
+    fn crash_after_ambiguous_never_reexecutes_during_recovery() {
+        let directory = TempDir::new().unwrap();
+        let (catalog, _) = fixture();
+        let mut store = open_store(&directory);
+        let mutation = prepare(&mut store, &catalog);
+        let mut failed = backend(&catalog);
+        failed.fail_execution = true;
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            failed,
+        );
+        let prepared = helper.preobserve(&store, [3; 16]).unwrap();
+        let authority = FreshStorageEffectAuthority::new_for_test(prepared.entry());
+        assert!(
+            helper
+                .execute_preobserved(&mut store, prepared, authority, || Ok(()))
+                .is_err()
+        );
+        assert_eq!(
+            store.phase([3; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
+        drop(store);
+
+        let mut recovered = open_store(&directory);
+        let mut observer = backend(&catalog);
+        observer.observation = None;
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            observer,
+        );
+        assert_eq!(
+            helper.observe_only(&mut recovered, [3; 16]).unwrap(),
+            ZfsHelperOutcome::ObservationRequired {
+                phase: DurableStoragePhase::Ambiguous,
+                mutation_digest: mutation
+            }
+        );
+        assert_eq!(helper.backend.execute_count, 0);
+        assert_eq!(helper.backend.precondition_observation_count, 0);
+    }
+
+    #[test]
+    fn persisted_context_mismatch_and_oversized_output_fail_closed() {
+        let directory = TempDir::new().unwrap();
+        let (catalog, _) = fixture();
+        let mut store = open_store(&directory);
+        prepare(&mut store, &catalog);
+
+        let mut wrong = backend(&catalog);
+        wrong.preconditions_match = false;
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            wrong,
+        );
+        assert!(matches!(
+            helper.preobserve(&store, [3; 16]),
+            Err(ZfsHelperError::PreconditionMismatch)
+        ));
+        assert_eq!(
+            store.phase([3; 16]).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
+
+        let mut oversized = backend(&catalog);
+        oversized.oversized_output = true;
+        let mut helper = StorageMutationHelper::new(
+            ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+            oversized,
+        );
+        let prepared = helper.preobserve(&store, [3; 16]).unwrap();
+        let authority = FreshStorageEffectAuthority::new_for_test(prepared.entry());
+        assert!(matches!(
+            helper.execute_preobserved(&mut store, prepared, authority, || Ok(())),
+            Err(ZfsHelperError::ProcessContract)
+        ));
+        assert_eq!(
+            store.phase([3; 16]).unwrap(),
+            Some(DurableStoragePhase::Ambiguous)
+        );
+    }
+}

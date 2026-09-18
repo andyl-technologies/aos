@@ -4,25 +4,11 @@
 # Verity initrds mask both emergency and rescue targets as well as their shell
 # services. PID1 must reject both targets and freeze, proving the requested
 # failure path remains noninteractive before mounting the root or /var.
-{
-  mkSystem,
-  pkgs,
-  ...
-}: let
+{mkSystem, ...}: let
   failClosedSystem = mkSystem [
     ../../systems/server.nix
     {
       aos.boot.kernelParams = ["rd.systemd.unit=emergency.target"];
-      aos.image.erofsCompressionLevel = 1;
-      # Fast compression with the test agent produces a roughly 666 MiB root.
-      aos.image.budgets.maxRootMiB = 704;
-
-      # This negative boot fixture deliberately bundles the fleet agent.
-      aos.image.allowTestArtifacts = true;
-      aos.packages.aos-test-agent = {
-        package = pkgs.aos-test-agent;
-        bundle = true;
-      };
     }
   ];
 in
