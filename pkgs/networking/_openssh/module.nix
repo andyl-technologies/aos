@@ -21,6 +21,13 @@
     element = boundedString;
     maxItems = 256;
   };
+  authorizedKeysCommand = abilityTypes.record {
+    fields = {
+      executable = abilityTypes.artifactPathReference;
+      arguments = boundedStrings;
+      user = abilityTypes.principalName;
+    };
+  };
   producer = key: interface: parameters:
     serviceManagement.forProducer {
       inherit consumerInstance key interface parameters;
@@ -85,11 +92,6 @@
       else "no"
     }
     AuthorizedKeysFile ${cfg.authorizedKeysFile}
-    ${
-      if cfg.authorizedKeysCommand != null
-      then "AuthorizedKeysCommand ${cfg.authorizedKeysCommand}\nAuthorizedKeysCommandUser ${cfg.authorizedKeysCommandUser}"
-      else ""
-    }
     MaxAuthTries ${toString cfg.maxAuthTries}
 
     ChallengeResponseAuthentication no
@@ -129,6 +131,22 @@
     ClientAliveInterval 300
     ClientAliveCountMax 3
   '';
+  authorizedKeysCommandFragments = lib.optionals (cfg.authorizedKeysCommand != null) [
+    {
+      kind = "literal";
+      text = "AuthorizedKeysCommand ";
+    }
+    {
+      kind = "artifact-file-path";
+      reference = cfg.authorizedKeysCommand.executable;
+    }
+    {
+      kind = "literal";
+      text =
+        " ${builtins.concatStringsSep " " cfg.authorizedKeysCommand.arguments}\n"
+        + "AuthorizedKeysCommandUser ${cfg.authorizedKeysCommand.user}\n";
+    }
+  ];
 
   group = producer "sshd-group" interfaces.groupResolution {
     name = "sshd";
@@ -175,23 +193,31 @@
       name = "sshd-config-source";
       source = {
         kind = "interpolated-text";
-        fragments = [
-          {
-            kind = "literal";
-            text = "${sshdConfigPrefix}\nSubsystem sftp ";
-          }
-          {
-            kind = "artifact-file-path";
-            reference = {
-              artifact = lib.abilities.packageOutput {};
-              path = "libexec/sftp-server";
-            };
-          }
-          {
-            kind = "literal";
-            text = sshdConfigSuffix;
-          }
-        ];
+        fragments =
+          [
+            {
+              kind = "literal";
+              text = sshdConfigPrefix;
+            }
+          ]
+          ++ authorizedKeysCommandFragments
+          ++ [
+            {
+              kind = "literal";
+              text = "\nSubsystem sftp ";
+            }
+            {
+              kind = "artifact-file-path";
+              reference = {
+                artifact = lib.abilities.packageOutput {};
+                path = "libexec/sftp-server";
+              };
+            }
+            {
+              kind = "literal";
+              text = sshdConfigSuffix;
+            }
+          ];
         maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
       };
       mode = "0444";
@@ -479,14 +505,10 @@ in {
       description = "Path pattern used to find authorized keys.";
     };
     authorizedKeysCommand = lib.mkOption {
-      type = abilityTypes.optional boundedString;
+      type = abilityTypes.optional authorizedKeysCommand;
       default = null;
-      description = "Command used to look up authorized keys.";
-    };
-    authorizedKeysCommandUser = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.principalName;
-      default = null;
-      description = "Principal under which the authorized-keys command runs.";
+      contributable = true;
+      description = "Symbolic package command used to look up authorized keys.";
     };
   };
 
