@@ -198,7 +198,7 @@ in
   );
   assert aos.platform.aosSystem == aosSystem;
   assert testing.config.aos.release.registry == "andyl/testing";
-  assert testing.config.aos.system.version == "2026.9.0-dev.20260917.1";
+  assert testing.config.aos.system.version == "2026.9.0-dev.20260917.0";
   assert lib.hasInfix "\nID=aos\n" testing.config.environment.etc."os-release".text;
   assert lib.hasInfix "\nAOS_REGISTRY=andyl/testing\n" testing.config.environment.etc."os-release".text;
   assert testing.config.system.build.defaultContainer.coordination.definitionAttribute
