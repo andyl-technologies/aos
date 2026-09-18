@@ -23,6 +23,23 @@
     pkgs.runc
     pkgs.tar
   ];
+
+  # Match the transfer service's unpack destination to the native snapshotter
+  # selected for each qualification operation.
+  containerPlatform =
+    if pkgs.stdenv.hostPlatform.isAarch64
+    then "linux/arm64"
+    else "linux/amd64";
+  containerdConfig = pkgs.writeTextFile {
+    name = "qualification-containerd.toml";
+    destination = "/config.toml";
+    text = ''
+      version = 3
+      [[plugins."io.containerd.transfer.v1.local".unpack_config]]
+        platform = "${containerPlatform}"
+        snapshotter = "native"
+    '';
+  };
 in
   assert identity != "";
   assert builtins.substring 0 1 assessmentRoot == "/";
@@ -59,7 +76,7 @@ in
         and ((.qualification_case.checks | sort) == ([
           "signed-index-and-platform-selection",
           "anonymous-pull",
-          "native-platform-execution",
+          "declared-platform-execution",
           "start-stop-network",
           "repeated-stop-start-and-recreate",
           "persistent-state",
@@ -129,6 +146,7 @@ in
       mkdir -p "$runtime_root" "$runtime_state"
 
       ${pkgs.containerd}/bin/containerd \
+        --config ${containerdConfig}/config.toml \
         --address "$runtime_socket" \
         --root "$runtime_root" \
         --state "$runtime_state" \
@@ -337,7 +355,7 @@ in
         '.qualification_case.checks | map({key: ., value: {passed: true, detail:
           (if . == "signed-index-and-platform-selection" then "The signed manifest selected the native platform from the reconstructed OCI index."
            elif . == "anonymous-pull" then "The executor downloaded every OCI object anonymously before runtime import."
-           elif . == "native-platform-execution" then "The imported image executed on the requested native architecture."
+           elif . == "declared-platform-execution" then "The imported image executed on the requested native architecture."
            elif . == "start-stop-network" then "Every lifecycle fetched the retained state from the host HTTP server over loopback."
            elif . == "repeated-stop-start-and-recreate" then "Ten isolated create, start, stop, and remove lifecycles completed."
            elif . == "persistent-state" then "The bind-mounted state and complete cycle journal survived every recreation."

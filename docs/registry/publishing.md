@@ -84,11 +84,28 @@ channel partition commands, `update-server-info`, root `objects/info/alternates`
 refresh hooks, static Nix-cache generation/upload, and static git-origin upload
 now exist.
 
+### Previewing a command with `--dry-run`
+
+`apr --dry-run` is accepted by every mutating subcommand and reports what the
+command would do without writing. A preview runs the same validation a real
+invocation does and stops immediately before the first change, so it fails on
+the same preconditions rather than reporting a plan that could not be applied.
+
+The promise is enforced beneath the handlers, not merely honored by them:
+`crates/aos-package/src/dry_run.rs` arms a process-wide barrier that classifies
+every Git invocation and refuses the mutating ones, so a handler that failed to
+stop reports a bug instead of writing. `git fetch` is allowed through — it only
+adds objects and moves remote-tracking refs, and previewing a change request
+requires reading a draft that exists only on the remote.
+
+Read-only subcommands reject `--dry-run` rather than accepting it as a no-op,
+and `apr release` takes its own `--dry-run` after the subcommand name.
+
 The commands relevant to a release, in workflow order:
 
 | Command | Function | What it actually does (CURRENT) |
 |---|---|---|
-| `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>] [--key <path> \| --key-id <id>]` | `create` (`registry_ops.rs`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml` (seeded by `--trust-key`), initial commit (signed with `--key`/`--key-id` when the roster is seeded), then refresh dumb-HTTP object indexes; optional `git remote add origin`. |
+| `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>] [--key <path> \| --key-id <id>] [--dry-run]` | `create` (`registry_ops.rs`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml` (seeded by `--trust-key`), initial commit (signed with `--key`/`--key-id` when the roster is seeded), then refresh dumb-HTTP object indexes; optional `git remote add origin`. `--dry-run` checks every precondition and reports the registry it would create without writing anything. |
 | `apr keys generate <id> [--registry <name>] [--add] [--no-commit] [--key \| --key-id]` | `generate_roster_key` (`registry_ops.rs:2922`) | Mints an Ed25519 keypair in-process (hermetic `sshkey` module, no `ssh-keygen`), writes the OpenSSH private key to `apm/keys/<registry>-<id>.key` (`0600`, refuses overwrite), records its path in `[registry.signing_keys]`, prints the public key + fingerprint; with `--add` appends it to `keys.toml` (signed commit unless `--no-commit`). `--add` on an empty roster errors → use `apr create --trust-key`. |
 | `apr keys list/add/retire` | `run_keys` (`registry_ops.rs:2551`) | Maintains committed `keys.toml`: list active/revoked ids; add registry-bound active signing keys; retire active ids into `[[revoked]]` with an active survivor/vouching id and **re-sign** the channel/release tags whose only valid signer was the retired key (`--no-resign` to skip). `add`/`retire` modify `keys.toml`, so they require `--key`/`--key-id` and produce a **signed** commit; then commit + refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
 | `apr publish <store-path> […]` | `publish` (`registry_ops.rs`) | For an ordinary package, evaluate `DerivationInventoryV1`, require `<store-path>` to be its exact primary output, and atomically author metadata, generated documentation, every named output, the exact package contract and selector bindings, provenance, and the complete `store/` graph in one signed commit. No package or contract is rediscovered by basename. Manual metadata and `--no-commit` are accepted only for `--sysroot` image catalog entries. |

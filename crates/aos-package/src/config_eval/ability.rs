@@ -1028,7 +1028,6 @@ mod tests {
                 descriptor: digest(1),
             },
             methods: Vec::new(),
-            methods: Vec::new(),
             guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: digest(2),

@@ -27,8 +27,8 @@ use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::trust::{derive_trust_key, load_committed_roster, validate_roster_key_id};
 use crate::security::parse_signing_key;
 use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, package_name_bucket,
-    validate_attestation_meta, validate_package_name, validate_platform_name,
+    AttestationMeta, DocumentationArtifactMeta, package_name_bucket, validate_attestation_meta,
+    validate_package_name, validate_platform_name,
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};

@@ -621,6 +621,7 @@ mod tests {
                 decision: MatrixCell::Artifact {
                     artifact: PlannedArtifactSet {
                         artifacts: Vec::new(),
+                        package_contract: None,
                     },
                 },
             })
@@ -702,6 +703,7 @@ mod tests {
                         platform: cell.platform,
                         decision: MatrixCell::Artifact {
                             artifact: FinalArtifactSet {
+                                package_contract: None,
                                 artifact_ids: vec![artifact_id(cell.platform)],
                             },
                         },

@@ -169,11 +169,11 @@ AOS_OIDC_CLIENT_SECRET='<secret>' \
     --token-endpoint https://idp.example.com/token \
     --jwks-uri https://idp.example.com/jwks \
     --client-id aos-hub \
-    --if-version absent \
+    --if-version "" \
     --idempotency-key plan-acme-idp
 
 aos hub org domain claim plan acme login.example.com \
-  --if-version absent \
+  --if-version "" \
   --idempotency-key plan-acme-domain
 ```
 

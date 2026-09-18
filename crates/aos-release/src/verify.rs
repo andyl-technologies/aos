@@ -321,6 +321,7 @@ pub(crate) mod tests {
 
     fn planned(ids: &[String]) -> PlannedArtifactSet {
         PlannedArtifactSet {
+            package_contract: None,
             artifacts: ids
                 .iter()
                 .map(|id| PlannedArtifact {
@@ -336,6 +337,7 @@ pub(crate) mod tests {
 
     fn final_set(ids: &[String]) -> FinalArtifactSet {
         FinalArtifactSet {
+            package_contract: None,
             artifact_ids: ids.to_vec(),
         }
     }

@@ -20,7 +20,23 @@
   mkSystem,
   pkgs,
   systems,
-}: {
+}: let
+  # The provisioning transaction derives its deterministic repart seed from
+  # each target's GPT UUID. Keep only the primary GPT in the store fixture;
+  # the driver expands it to the declared disk size and systemd-repart writes
+  # the canonical backup table while applying the first partition plan.
+  emptyDataDiskGpt =
+    pkgs.runCommand "aos-provisioning-empty-data-disk-gpt" {
+      buildDeps = [pkgs.gptfdisk];
+    } ''
+        work_disk="$TMPDIR/empty-data-disk.img"
+        truncate -s 4096M "$work_disk"
+        ${pkgs.gptfdisk}/sbin/sgdisk --clear \
+          --disk-guid=11111111-2222-4333-8444-555555555556 \
+          "$work_disk"
+      dd if="$work_disk" of="$out/disk.gpt" bs=512 count=34 status=none
+    '';
+in {
   name = "provisioning-boot";
   # Shared image builds plus positive, fallback, multi-device, and fail-closed
   # UEFI boots. No registry or upgrade, so this remains cheaper than
@@ -60,6 +76,7 @@
         {
           serial = "aos-data";
           sizeMiB = 4096;
+          source = "${emptyDataDiskGpt}/disk.gpt";
         }
       ];
       metadata."host.nix" = ''

@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::{
-    NarCompression, NarInfoSigner, StaticNarInfoInput, render_static_narinfo,
+    NarCompression, NarInfoSigner, StaticNarInfoInput, nar_url, render_static_narinfo,
 };
 use aos_release::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
@@ -94,16 +94,17 @@ async fn main() -> Result<()> {
 }
 
 fn prepare(arguments: &[String]) -> Result<()> {
-    if arguments.len() != 8 {
+    if arguments.len() != 9 {
         bail!(
-            "usage: aos-release-fleet-fixture prepare BASE_SURFACE OUTPUT TRUST_DIR BASE_COMMIT X86_LINUX AARCH64_LINUX X86_DARWIN AARCH64_DARWIN"
+            "usage: aos-release-fleet-fixture prepare BASE_SURFACE OUTPUT PREDECESSOR TRUST_DIR BASE_COMMIT X86_LINUX AARCH64_LINUX X86_DARWIN AARCH64_DARWIN"
         );
     }
     let base = Path::new(&arguments[0]);
     let output = Path::new(&arguments[1]);
-    let trust = Path::new(&arguments[2]);
-    let base_commit = &arguments[3];
-    if output.exists() || trust.exists() {
+    let predecessor = Path::new(&arguments[2]);
+    let trust = Path::new(&arguments[3]);
+    let base_commit = &arguments[4];
+    if output.exists() || predecessor.exists() || trust.exists() {
         bail!("fixture outputs must not already exist");
     }
 
@@ -120,7 +121,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
 
     let package_inputs = Platform::ALL
         .into_iter()
-        .zip(arguments[4..].iter().map(PathBuf::from))
+        .zip(arguments[5..].iter().map(PathBuf::from))
         .collect::<Vec<_>>();
     let package_cells = package_inputs
         .iter()
@@ -128,6 +129,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
             platform: *platform,
             decision: MatrixCell::Artifact {
                 artifact: PlannedArtifactSet {
+                    package_contract: None,
                     artifacts: vec![PlannedArtifact {
                         id: package_id(*platform),
                         derivation: None,
@@ -139,9 +141,9 @@ fn prepare(arguments: &[String]) -> Result<()> {
             },
         })
         .collect::<Vec<_>>();
-    let plan = release_plan(base_commit, package_cells.clone())?;
+    let mut plan = release_plan(base_commit, package_cells.clone())?;
     plan.validate()?;
-    let plan_bytes = canonical::to_vec(&plan)?;
+    let mut plan_bytes = canonical::to_vec(&plan)?;
     write_new(output.join("release-plan.json"), &plan_bytes)?;
 
     let mut artifacts = Vec::new();
@@ -149,7 +151,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
     for (platform, source) in &package_inputs {
         let package_bytes = fs::read(source)
             .with_context(|| format!("reading mounted package NAR {}", source.display()))?;
-        let relative = format!("releases/candidate/{RELEASE_VERSION}/packages/{platform}.nar");
+        let relative = fixture_nar_url(*platform, &package_bytes)?;
         let destination = output.join(&relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -284,6 +286,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform: cell.platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
+                            package_contract: None,
                             artifact_ids: vec![package_id(cell.platform)],
                         },
                     },
@@ -298,6 +301,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
+                            package_contract: None,
                             artifact_ids: vec![
                                 format!("image/server/{platform}"),
                                 format!("image/server/{platform}/metadata"),
@@ -323,6 +327,15 @@ fn prepare(arguments: &[String]) -> Result<()> {
             finished_at: TIME.into(),
         }],
     };
+    let predecessor =
+        prepare_predecessor(output, predecessor, &plan, &manifest, gate_report_digest)?;
+    plan.qualification_predecessor = Some(predecessor);
+    plan.validate()?;
+    plan_bytes = canonical::to_vec(&plan)?;
+    fs::write(output.join("release-plan.json"), &plan_bytes)?;
+    bind_plan_artifact(&mut manifest, &plan_bytes)?;
+    manifest.plan_digest = Sha256Digest::of_bytes(&plan_bytes);
+
     manifest.evidence = aos_release::qualification_evidence::cases(
         &plan,
         &manifest,
@@ -340,24 +353,8 @@ fn prepare(arguments: &[String]) -> Result<()> {
     })
     .collect::<Result<Vec<_>>>()?;
     manifest.validate(&plan)?;
-    let manifest_digest = Sha256Digest::of_canonical(MANIFEST_DOMAIN, &manifest)?;
-    let signing_key = SigningKey::from_bytes(&RELEASE_SEED);
-    let request = signing_request(
-        SignerRole::ReleaseEvidence,
-        RELEASE_KEY_ID,
-        "release-manifest",
-        Sha256Digest::of_bytes(&plan_bytes),
-        Some(manifest_digest),
-        manifest_digest,
-        SignatureAlgorithm::Ed25519,
-    );
-    let response = signature_response(&request, &signing_key, request.digest()?.as_bytes())?;
-    let envelope = ManifestEnvelopeV1 {
-        schema_version: MANIFEST_ENVELOPE_V1.into(),
-        payload: manifest,
-        payload_digest: manifest_digest,
-        signatures: vec![ManifestSignature { request, response }],
-    };
+    let envelope = signed_manifest(&plan_bytes, manifest)?;
+    let manifest_digest = envelope.payload_digest;
     write_new(
         output.join("release-manifest.json"),
         &canonical::to_vec(&envelope)?,
@@ -368,6 +365,103 @@ fn prepare(arguments: &[String]) -> Result<()> {
         manifest_digest,
     )?;
     Ok(())
+}
+
+fn prepare_predecessor(
+    source: &Path,
+    output: &Path,
+    release_plan: &ReleasePlanV1,
+    release_manifest: &ReleaseManifestV1,
+    gate_report_digest: Sha256Digest,
+) -> Result<aos_release::qualification_evidence::QualificationPredecessor> {
+    let mut plan = release_plan.clone();
+    plan.qualification_predecessor = None;
+    plan.release_id = format!(
+        "{}{}",
+        aos_release::plan::QUALIFICATION_SNAPSHOT_RELEASE_PREFIX,
+        plan.version
+    );
+    plan.source.source_tag = format!(
+        "{}{}",
+        aos_release::plan::QUALIFICATION_SNAPSHOT_TAG_PREFIX,
+        plan.version
+    );
+    plan.intended_channels.clear();
+    plan.validate()?;
+    let plan_bytes = canonical::to_vec(&plan)?;
+
+    copy_tree(source, output)?;
+    fs::write(output.join("release-plan.json"), &plan_bytes)?;
+
+    let mut manifest = release_manifest.clone();
+    manifest.release_id.clone_from(&plan.release_id);
+    manifest.plan_digest = Sha256Digest::of_bytes(&plan_bytes);
+    bind_plan_artifact(&mut manifest, &plan_bytes)?;
+    manifest.evidence = aos_release::qualification_evidence::cases(
+        &plan,
+        &manifest,
+        aos_release::qualification::QualificationPhase::Build,
+    )?
+    .iter()
+    .map(|case| {
+        fixture_evidence(
+            case,
+            gate_report_digest,
+            "fleet-preflight-authority",
+            None,
+            &humantime::format_rfc3339(std::time::SystemTime::now()).to_string(),
+        )
+    })
+    .collect::<Result<Vec<_>>>()?;
+    manifest.validate(&plan)?;
+
+    let envelope = signed_manifest(&plan_bytes, manifest)?;
+    let manifest_digest = envelope.payload_digest;
+    write_new(
+        output.join("release-manifest.json"),
+        &canonical::to_vec(&envelope)?,
+    )?;
+    Ok(
+        aos_release::qualification_evidence::QualificationPredecessor {
+            registry: plan.registry,
+            release_id: plan.release_id,
+            manifest_digest,
+        },
+    )
+}
+
+fn bind_plan_artifact(manifest: &mut ReleaseManifestV1, plan_bytes: &[u8]) -> Result<()> {
+    let artifact = manifest
+        .artifacts
+        .iter_mut()
+        .find(|artifact| artifact.id == "control/release-plan")
+        .context("release fixture lacks its plan artifact")?;
+    artifact.size_bytes = u64::try_from(plan_bytes.len())?;
+    artifact.sha256 = Sha256Digest::of_bytes(plan_bytes);
+    Ok(())
+}
+
+fn signed_manifest(plan_bytes: &[u8], manifest: ReleaseManifestV1) -> Result<ManifestEnvelopeV1> {
+    let manifest_digest = Sha256Digest::of_canonical(MANIFEST_DOMAIN, &manifest)?;
+    let signing_key = SigningKey::from_bytes(&RELEASE_SEED);
+    let request = signing_request(
+        SignerRole::ReleaseEvidence,
+        RELEASE_KEY_ID,
+        "release-manifest",
+        &manifest.registry,
+        &manifest.release_id,
+        Sha256Digest::of_bytes(plan_bytes),
+        Some(manifest_digest),
+        manifest_digest,
+        SignatureAlgorithm::Ed25519,
+    );
+    let response = signature_response(&request, &signing_key, request.digest()?.as_bytes())?;
+    Ok(ManifestEnvelopeV1 {
+        schema_version: MANIFEST_ENVELOPE_V1.into(),
+        payload: manifest,
+        payload_digest: manifest_digest,
+        signatures: vec![ManifestSignature { request, response }],
+    })
 }
 
 fn release_plan(
@@ -475,6 +569,7 @@ fn release_plan(
                 platform,
                 decision: MatrixCell::Artifact {
                     artifact: PlannedArtifactSet {
+                        package_contract: None,
                         artifacts: [
                             format!("image/server/{platform}"),
                             format!("image/server/{platform}/metadata"),
@@ -564,6 +659,8 @@ fn signing_request(
     role: SignerRole,
     key_id: &str,
     artifact_kind: &str,
+    registry: &str,
+    release_id: &str,
     plan_digest: Sha256Digest,
     manifest_digest: Option<Sha256Digest>,
     payload_digest: Sha256Digest,
@@ -573,8 +670,8 @@ fn signing_request(
         schema_version: SIGNING_REQUEST_DOMAIN.into(),
         request_id: format!("fleet/{artifact_kind}"),
         nonce: "2".repeat(64),
-        registry: aos_release::registry::MAIN_REGISTRY.into(),
-        release_id: RELEASE_ID.into(),
+        registry: registry.into(),
+        release_id: release_id.into(),
         plan_digest,
         manifest_digest,
         role,
@@ -678,7 +775,7 @@ fn signer_exchange() -> Result<()> {
     Ok(())
 }
 
-#[path = "../../../aos-release/tests/support/qualification.rs"]
+#[path = "../../../aos-release/src/test_support/qualification/mod.rs"]
 mod qualification_fixture;
 
 async fn qualification_executor() -> Result<()> {
@@ -1013,8 +1110,7 @@ fn narinfo_id(platform: Platform) -> String {
 
 fn fixture_narinfo(platform: Platform, nar_bytes: &[u8]) -> Result<String> {
     let digest = Sha256Digest::of_bytes(nar_bytes).to_string();
-    let store_path =
-        format!("/nix/store/00000000000000000000000000000000-release-fleet-{platform}");
+    let store_path = fixture_store_path(platform);
     let mut secret = [0_u8; 64];
     secret[..RELEASE_SEED.len()].copy_from_slice(&RELEASE_SEED);
     let encoded = base64::engine::general_purpose::STANDARD.encode(secret);
@@ -1035,6 +1131,15 @@ fn fixture_narinfo(platform: Platform, nar_bytes: &[u8]) -> Result<String> {
         "/nix/store",
         Some(&signer),
     )
+}
+
+fn fixture_nar_url(platform: Platform, nar_bytes: &[u8]) -> Result<String> {
+    let digest = Sha256Digest::of_bytes(nar_bytes).to_string();
+    nar_url(&fixture_store_path(platform), &digest, NarCompression::None)
+}
+
+fn fixture_store_path(platform: Platform) -> String {
+    format!("/nix/store/00000000000000000000000000000000-release-fleet-{platform}")
 }
 
 fn digest(value: &str) -> Sha256Digest {
@@ -1102,6 +1207,7 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let base = temporary.path().join("base");
         let output = temporary.path().join("surface");
+        let predecessor = temporary.path().join("predecessor");
         let trust = temporary.path().join("trust");
         fs::create_dir_all(base.join("info"))?;
         let commit = "a".repeat(64);
@@ -1113,6 +1219,7 @@ mod tests {
         let mut arguments = vec![
             base.display().to_string(),
             output.display().to_string(),
+            predecessor.display().to_string(),
             trust.display().to_string(),
             commit,
         ];
@@ -1131,6 +1238,24 @@ mod tests {
         let summary = aos_release::verify::verify_release(&plan, &envelope, &files, &[key])?;
         assert_eq!(summary.release_id, RELEASE_ID);
         assert_eq!(summary.signatures_verified, 1);
+
+        let predecessor_plan = fs::read(predecessor.join("release-plan.json"))?;
+        let predecessor_envelope = fs::read(predecessor.join("release-manifest.json"))?;
+        let predecessor_files = captured_files(&predecessor, &predecessor)?;
+        let key =
+            TrustedEd25519Key::from_encoded(RELEASE_KEY_ID, &fs::read(trust.join("release.pub"))?)?;
+        let predecessor_summary = aos_release::verify::verify_release(
+            &predecessor_plan,
+            &predecessor_envelope,
+            &predecessor_files,
+            &[key],
+        )?;
+        assert!(
+            predecessor_summary
+                .release_id
+                .starts_with("qualification-snapshot-")
+        );
+
         let journal = fs::read(trust.join("release-journal.jsonl"))?;
         assert_eq!(
             parse_journal(&journal)?.last().map(|entry| entry.new_state),

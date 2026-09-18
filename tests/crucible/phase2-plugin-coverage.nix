@@ -391,7 +391,7 @@
       }
       {
         label = "flush callback registered before translation callbacks";
-        needle = "(apis.register_flush_cb)(plugin_id, live_coverage_flush);";
+        needle = "(apis.register_flush_cb)(plugin_id, live_coverage_flush, state_ptr.cast());";
       }
       {
         label = "flush callback reclaims translation metadata";

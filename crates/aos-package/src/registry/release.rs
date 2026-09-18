@@ -743,7 +743,7 @@ fn validate_release_identity_and_entries(
             bail!("invalid registry release entry id '{}'", entry.id);
         }
         validate_package_name(&entry.name)?;
-        semver::Version::parse(&entry.version)
+        aos_registry_surface::package_version::validate_package_version(&entry.version)
             .with_context(|| format!("invalid version for entry '{}'", entry.id))?;
         if !matches!(
             entry.platform.as_str(),

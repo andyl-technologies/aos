@@ -156,8 +156,8 @@ writable `/var/lib/apm/config` overlay.
 
 ## Build an image
 
-The image pipeline currently targets `x86_64-linux` and produces a raw GPT
-disk, QCOW2, VMDK, and dynamic VHD from the same evaluated system:
+The image pipeline targets `x86_64-linux` and `aarch64-linux` and produces a
+raw GPT disk, QCOW2, VMDK, and dynamic VHD from the same evaluated system:
 
 ```sh
 git add systems/acme-server.nix
@@ -168,10 +168,13 @@ nix build .#acme-server-image-vmdk
 nix build .#acme-server-image-vhd
 ```
 
-Build the experimental artifacts from the same variant evaluation:
+Build the experimental artifacts from the same variant evaluation. The
+`aos-testing` variant defers image signing to the release finalizer, so Nix
+stops at the unsigned assembly and publishes no `-image-<format>` outputs;
+`aos release finalize-image` turns the assembly into the signed disks:
 
 ```sh
-nix build .#aos-testing-image-qcow2
+nix build .#aos-testing-unsigned-image-assembly
 nix build .#container-aos-testing-oci
 nix build .#container-aos-testing-docker
 nix build .#container-aos-testing-publication-inputs
@@ -226,9 +229,40 @@ before deploying a payload that depends on larger root, verity, or ESP maxima.
 Use `aos profile closure systems.acme-server.build.toplevel` to attribute
 closure growth first.
 
-The server and edge golden images cap each directly downloadable encoding at
-640 MiB with `maxDownloadMiB`. Treat a transfer-budget failure as a release-size
-regression: profile the closure and artifacts before changing that ceiling.
+UKI assembly and signing tools execute on the build platform. The EFI stub
+and kernel match the target architecture, and runtime PE inspection uses the
+small target-hosted `pe-tools` package without retaining the full binutils.
+AArch64's uncompressed kernel makes its UKIs larger than the x86_64 images:
+
+| Default maximum (MiB) | x86_64 | AArch64 |
+| --- | ---: | ---: |
+| UKI | 160 | 192 |
+| ESP, including update workspace | 384 | 416 |
+| Runtime NAR closure | 768 | 896 |
+
+Recovery-enabled Secure Boot fixtures use ESP maxima of 544 MiB on x86_64
+and 768 MiB on AArch64, retaining both recovery copies throughout an update.
+The `server-2` HTTP fixture uses runtime closure maxima of 832 and 960 MiB,
+respectively, and an 800 MiB download ceiling to accommodate its x86_64 VHD.
+Development payload and forbidden-artifact checks remain the same on both
+architectures.
+
+The server and edge golden images cap compressed raw downloads at 768 MiB
+with `maxDownloadMiB`. The uncompressed qcow2, VMDK, and VHD encodings use
+`maxConvertedDownloadMiB`, which defaults to the raw limit. Secure Boot test
+fixtures allow 800 MiB compressed raw because their recovery UKIs remain in
+the disk. The diagnostic server-test images also allow 800 MiB compressed raw
+on both architectures. Converted limits follow the measured target payloads:
+
+| Converted maximum (MiB) | x86_64 | AArch64 |
+| --- | ---: | ---: |
+| Server and edge | 768 | 801 |
+| Server-2 | 800 | 832 |
+| Diagnostic server-test | 832 | 896 |
+| Secure Boot and recovery fixtures | 896 | 1024 |
+
+Each format manifest records its own limit in `artifactBudgetsMiB.download`.
+Profile the closure and artifacts before changing either ceiling.
 
 Inspect the evaluated option before building:
 

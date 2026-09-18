@@ -51,6 +51,7 @@ pub mod desired;
 pub mod documentation;
 mod documentation_lsp;
 pub mod download;
+pub mod dry_run;
 pub mod environment;
 /// Test-only helpers that shell out to the host `git` to set up fixtures; the
 /// production registry paths use libgit2 ([`registry::repo`],

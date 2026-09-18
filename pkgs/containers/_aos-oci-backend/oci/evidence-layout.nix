@@ -124,6 +124,7 @@ in
           export AOS_EVIDENCE_ABILITY_CONTRACT=${lib.escapeShellArg (builtins.toString checkedAbilityContract.artifact)}
           export AOS_EVIDENCE_REFERENCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedReferenceGraph)}
           export AOS_EVIDENCE_SOURCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedSourceGraph)}
+          export AOS_EVIDENCE_PLATFORM_VALIDATOR=${./evidence-platforms.sh}
           printf '%s\n' ${layerArguments} > evidence-layer-paths
           export AOS_EVIDENCE_LAYER_PATHS="$PWD/evidence-layer-paths"
           ${common.archiveScript}

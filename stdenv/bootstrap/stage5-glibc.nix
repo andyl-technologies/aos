@@ -47,6 +47,8 @@
     sha256 = sources.glibc.linuxthreads.sha256;
   };
 
+  # Each generated syscall input belongs to one make target; a shared
+  # stdin.c races between normal, profiled, and shared-object compiler jobs.
   patchBootFile = ./patches/glibc-boot-2.2.5.patch;
   patchSystemFile = ./patches/glibc-bootstrap-system-2.2.5.patch;
 in

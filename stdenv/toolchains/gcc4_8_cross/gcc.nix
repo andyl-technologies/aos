@@ -60,6 +60,10 @@ in
               cp -r ${mpcSrc} "$TMPDIR/gcc-4.8.5/mpc"
               chmod -R u+w "$TMPDIR/gcc-4.8.5/mpc"
 
+              # Pin source helpers that configure or make can execute directly.
+              AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/gcc-4.8.5"
+
               SRC="$TMPDIR/gcc-4.8.5"
               cd "$SRC"
 
@@ -97,9 +101,9 @@ in
               mkdir -p "$TMPDIR/build"
               cd "$TMPDIR/build"
 
+              ${import ../lib/static-build-compiler.nix {tools = prev;}}
+
               # Canadian cross: build=x86_64, host=target, target=target
-              CC_FOR_BUILD="${prev.gcc}/bin/gcc" \
-              CXX_FOR_BUILD="${prev.gcc}/bin/g++" \
               CC="${crossGccStage2}/bin/${hostPlatform.config}-gcc" \
               CXX="${crossGccStage2}/bin/${hostPlatform.config}-g++" \
               AR="${crossBinutils}/bin/${hostPlatform.config}-ar" \
@@ -123,20 +127,20 @@ in
                 --program-transform-name=
 
               # Patch SYSTEM_HEADER_DIR
-              make configure-gcc
+              make SHELL="${prev.bash}/bin/bash" configure-gcc
               ${prev.sed}/bin/sed -i \
                 "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${crossGlibc}/include|" \
                 gcc/Makefile
 
               # Canadian cross: xgcc is target-arch and can't run on x86_64 build machine,
               # so build only gcc (not target libraries like libgcc).
-              make -j"$NIX_BUILD_CORES" all-gcc \
+              make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-gcc \
                 BOOT_CFLAGS="-O2" \
                 CFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
                 CXXFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
                 LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
 
-              make install-gcc
+              make SHELL="${prev.bash}/bin/bash" install-gcc
 
               test -f "$out/bin/gcc" && test ! -f "$out/bin/cc" && ln -sf gcc "$out/bin/cc"
               test -f "$out/bin/g++" && test ! -f "$out/bin/c++" && ln -sf g++ "$out/bin/c++"
@@ -149,12 +153,23 @@ in
         #endif
         SYSLIM
 
-              # Copy libgcc.a from cross-compiler (can't build it in Canadian cross —
-              # xgcc is target-arch, can't run on x86_64 build machine)
+              # Retain the matching target runtime from the construction
+              # compiler. These objects and C++ headers are part of the export.
               GCCLIB="$out/lib/gcc/${targetPlatform.config}/4.8.5"
               mkdir -p "$GCCLIB"
-              cp "${crossGccStage2}/lib/gcc/${hostPlatform.config}/4.8.5/libgcc.a" "$GCCLIB/" 2>/dev/null || true
-              "${crossBinutils}/bin/${hostPlatform.config}-ar" crs "$GCCLIB/libgcc_eh.a"
+              for runtime in libgcc.a libgcc_eh.a crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o; do
+                cp "${crossGccStage2}/lib/gcc/${hostPlatform.config}/4.8.5/$runtime" "$GCCLIB/"
+              done
+              mkdir -p "$out/include/c++" "$out/lib"
+              cp -R "${crossGccStage2}/include/c++/4.8.5" "$out/include/c++/"
+              for library in libstdc++.a libsupc++.a; do
+                runtime_library="$("${crossGccStage2}/bin/${hostPlatform.config}-g++" -print-file-name="$library")"
+                case "$runtime_library" in
+                  "${crossGccStage2}/"*) ;;
+                  *) echo "FATAL: $library is outside the cross compiler output"; exit 1 ;;
+                esac
+                cp "$runtime_library" "$out/lib/"
+              done
 
               # Symlink binutils tools so native gcc can find as/ld
               mkdir -p "$out/${targetPlatform.config}/bin"

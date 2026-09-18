@@ -6,6 +6,7 @@
   cmake,
   ninja,
   pkg-config,
+  patch,
   elfutils,
   zlib,
   xz,
@@ -94,6 +95,7 @@ in
       cmake
       ninja
       pkg-config
+      patch
     ];
     runtimeDeps = [
       elfutils
@@ -111,6 +113,14 @@ in
         script = ''
           tar xf $src
           cd dwarves-${version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          # These trailing allocations are flexible arrays. Zero-length arrays
+          # have no writable elements under strict flex-array hardening.
+          patch -p1 < ${./dwarves-flexible-arrays.patch}
         '';
       }
       {

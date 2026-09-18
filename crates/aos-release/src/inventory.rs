@@ -13,7 +13,10 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{require_identifier, require_store_path};
-use crate::plan::{PackagePlan, PlannedArtifact, PlannedArtifactSet, PlatformCell};
+use crate::plan::{
+    PackageOutputBinding, PackagePlan, PlannedArtifact, PlannedArtifactSet, PlannedPackageContract,
+    PlatformCell,
+};
 use crate::platform::{MatrixCell, Platform, require_complete_package_platforms};
 
 /// Exact schema emitted by the Nix package inventory.
@@ -113,23 +116,16 @@ pub struct DerivationPackageContract {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DerivationContractDocument {
-    /// Derivation that produces the document as its `out` output.
+    /// Derivation that produces the document.
     pub derivation: String,
+    /// Named output of the document derivation.
+    pub output: String,
     /// Evaluated regular-file store path.
     pub store_path: String,
 }
 
 /// Evaluated binding for one symbolic package-output selector.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct DerivationSelectorResolution {
-    /// Canonical package name selected by the PackageDocument.
-    pub package: String,
-    /// Canonical output name selected from that package.
-    pub output: String,
-    /// Exact evaluated store path for the selected output.
-    pub store_path: String,
-}
+pub type DerivationSelectorResolution = PackageOutputBinding;
 
 /// Public distribution metadata required by atomic registry authoring.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -149,7 +145,8 @@ pub struct PackagePublicationMetadata {
 
 impl PackagePublicationMetadata {
     pub(crate) fn validate(&self) -> Result<()> {
-        semver::Version::parse(&self.version).context("parsing package publication version")?;
+        aos_registry_surface::package_version::validate_package_version(&self.version)
+            .context("validating package publication version")?;
         for (value, label) in [
             (&self.description, "package description"),
             (&self.license_expression, "package license expression"),
@@ -179,15 +176,14 @@ impl PackagePublicationMetadata {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DerivationOutput {
-    /// Nix output name.
+    /// Logical package output name.
     pub name: String,
-    /// Exact owning derivation when this is a separately built companion.
-    ///
-    /// Ordinary outputs inherit the package payload derivation. A distinct
-    /// derivation keeps ability-only source changes from renaming unchanged
-    /// payload outputs.
+    /// Exact owning derivation, absent for a content-addressed store input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derivation: Option<String>,
+    /// Exact Nix output, absent for a content-addressed store input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
     /// Evaluated output store path.
     pub store_path: String,
 }
@@ -239,6 +235,12 @@ impl DerivationInventoryV1 {
                 if let Some(derivation) = &output.derivation {
                     require_store_path(derivation, true)?;
                 }
+                if output.derivation.is_some() != output.output.is_some() {
+                    bail!("derivation inventory output has an incomplete Nix identity");
+                }
+                if let Some(output) = &output.output {
+                    require_identifier(output, "derivation output name")?;
+                }
                 require_store_path(&output.store_path, false)?;
                 if !output_names.insert(&output.name) || !output_paths.insert(&output.store_path) {
                     bail!("derivation package repeats an output name or store path");
@@ -246,6 +248,7 @@ impl DerivationInventoryV1 {
             }
             if let Some(contract) = &package.contract {
                 require_store_path(&contract.document.derivation, true)?;
+                require_identifier(&contract.document.output, "contract document output")?;
                 require_store_path(&contract.document.store_path, false)?;
                 if output_paths.contains(&contract.document.store_path) {
                     bail!("package contract document repeats a payload output path");
@@ -385,18 +388,14 @@ impl PackageInventoryV1 {
                         let mut artifacts = evaluated
                             .outputs
                             .iter()
+                            .filter(|output| output.derivation.is_some())
                             .map(|output| PlannedArtifact {
                                 id: format!(
                                     "package/{}/{}/{}",
                                     package.name, cell.platform, output.name
                                 ),
-                                derivation: Some(
-                                    output
-                                        .derivation
-                                        .clone()
-                                        .unwrap_or_else(|| evaluated.derivation.clone()),
-                                ),
-                                output: Some(output.name.clone()),
+                                derivation: output.derivation.clone(),
+                                output: output.output.clone(),
                                 store_path: Some(output.store_path.clone()),
                                 source_store_paths: evaluated.source_store_paths.clone(),
                             })
@@ -405,7 +404,7 @@ impl PackageInventoryV1 {
                             artifacts.push(PlannedArtifact {
                                 id: format!("package/{}/{}/contract", package.name, cell.platform),
                                 derivation: Some(contract.document.derivation.clone()),
-                                output: Some("contract".to_owned()),
+                                output: Some(contract.document.output.clone()),
                                 store_path: Some(contract.document.store_path.clone()),
                                 source_store_paths: evaluated.source_store_paths.clone(),
                             });
@@ -413,7 +412,18 @@ impl PackageInventoryV1 {
                         artifacts.sort_by(|left, right| left.id.cmp(&right.id));
 
                         MatrixCell::Artifact {
-                            artifact: PlannedArtifactSet { artifacts },
+                            artifact: PlannedArtifactSet {
+                                artifacts,
+                                package_contract: evaluated.contract.as_ref().map(|contract| {
+                                    PlannedPackageContract {
+                                        document_artifact: format!(
+                                            "package/{}/{}/contract",
+                                            package.name, cell.platform
+                                        ),
+                                        selectors: contract.selectors.clone(),
+                                    }
+                                }),
+                            },
                         }
                     }
                     InventoryDecision::Eligible {} => MatrixCell::Blocked {
@@ -592,16 +602,18 @@ mod tests {
                     outputs: vec![
                         DerivationOutput {
                             name: "out".to_owned(),
-                            derivation: None,
+                            derivation: Some(
+                                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
+                                    .to_owned(),
+                            ),
+                            output: Some("out".to_owned()),
                             store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
                                 .to_owned(),
                         },
                         DerivationOutput {
                             name: "module".to_owned(),
-                            derivation: Some(
-                                "/nix/store/cccccccccccccccccccccccccccccccc-example-module.drv"
-                                    .to_owned(),
-                            ),
+                            derivation: None,
+                            output: None,
                             store_path:
                                 "/nix/store/dddddddddddddddddddddddddddddddd-example-module"
                                     .to_owned(),
@@ -612,6 +624,7 @@ mod tests {
                             derivation:
                                 "/nix/store/11111111111111111111111111111111-example-contract.drv"
                                     .to_owned(),
+                            output: "out".to_owned(),
                             store_path:
                                 "/nix/store/ffffffffffffffffffffffffffffffff-example-contract"
                                     .to_owned(),
@@ -632,19 +645,24 @@ mod tests {
         let MatrixCell::Artifact { artifact } = &plan[0].platforms[0].decision else {
             panic!("eligible fixture should produce an artifact plan");
         };
-        assert_eq!(artifact.artifacts.len(), 3);
+        assert_eq!(artifact.artifacts.len(), 2);
         assert_eq!(
             artifact.artifacts[0].id,
             "package/example/x86_64-linux/contract"
         );
-        assert_eq!(artifact.artifacts[0].output.as_deref(), Some("contract"));
+        assert_eq!(artifact.artifacts[0].output.as_deref(), Some("out"));
         assert_eq!(
             artifact.artifacts[0].store_path.as_deref(),
             Some("/nix/store/ffffffffffffffffffffffffffffffff-example-contract")
         );
+        assert_eq!(artifact.artifacts[1].id, "package/example/x86_64-linux/out");
         assert_eq!(
-            artifact.artifacts[1].derivation.as_deref(),
-            Some("/nix/store/cccccccccccccccccccccccccccccccc-example-module.drv")
+            artifact
+                .package_contract
+                .as_ref()
+                .and_then(|contract| contract.selectors.first())
+                .map(|selector| selector.store_path.as_str()),
+            Some("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example")
         );
         assert_eq!(
             plan[0]
@@ -668,7 +686,10 @@ mod tests {
                 derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
                 outputs: vec![DerivationOutput {
                     name: "out".to_owned(),
-                    derivation: None,
+                    derivation: Some(
+                        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
+                    ),
+                    output: Some("out".to_owned()),
                     store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example".to_owned(),
                 }],
                 contract: Some(DerivationPackageContract {
@@ -676,6 +697,7 @@ mod tests {
                         derivation:
                             "/nix/store/11111111111111111111111111111111-example-contract.drv"
                                 .to_owned(),
+                        output: "out".to_owned(),
                         store_path: "/nix/store/ffffffffffffffffffffffffffffffff-example-contract"
                             .to_owned(),
                     },
@@ -740,7 +762,10 @@ mod tests {
                         .to_owned(),
                     outputs: vec![DerivationOutput {
                         name: "out".to_owned(),
-                        derivation: None,
+                        derivation: Some(
+                            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
+                        ),
+                        output: Some("out".to_owned()),
                         store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
                             .to_owned(),
                     }],

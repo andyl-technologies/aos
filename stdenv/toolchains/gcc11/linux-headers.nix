@@ -9,6 +9,34 @@
   buildPlatform,
   hostPlatform,
 }: let
+  # Header installation has independent per-file targets; avoid serial emulation.
+  headerJobs =
+    if hostPlatform.constraints.cpu == "aarch64"
+    then " -j\"$NIX_BUILD_CORES\""
+    else "";
+
+  # Reuse the source filter so emulated builds do not fork for every kernel file.
+  filterSourceScripts = hostPlatform.constraints.cpu != "x86_64";
+  sourceScriptFilterSetup =
+    if filterSourceScripts
+    then ''
+      source_runtime_inputs="$TMPDIR/kernel-runtime-scripts"
+      mkdir -p "$source_runtime_inputs"
+      ${prev.perl}/bin/perl ${../../filter-runtime-scripts.pl} . "$source_runtime_inputs"
+    ''
+    else "";
+  sourceScriptRoot =
+    if filterSourceScripts
+    then ''"$source_runtime_inputs"''
+    else ".";
+  sourceScriptFilterCleanup =
+    if filterSourceScripts
+    then ''
+
+      rm -rf "$source_runtime_inputs"
+    ''
+    else "";
+
   src = builtins.fetchTarball {
     url = "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.14.tar.xz";
     sha256 = "15c91flxhankd62xwv02azjxy4hqll4s3jsl5kq8vbhjrz57lcl0";
@@ -27,7 +55,7 @@ in
               # Linux 5.3+ uses rsync for headers_install. Provide a minimal replacement.
               mkdir -p "$TMPDIR/fakebin"
               cat > "$TMPDIR/fakebin/rsync" << 'RSYNC_EOF'
-        #!/bin/sh
+        #!${prev.bash}/bin/bash
         # Minimal rsync replacement for kernel headers_install.
         # Handles: rsync -mrl --include='*.h' --exclude='*' src/ dst/
         shift_flags() { while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done; echo "$@"; }
@@ -52,7 +80,11 @@ in
               cd linux-5.14
               chmod -R u+w .
 
-              make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+              # Pin source helpers that configure or make can execute directly.
+              ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
+
+              make${headerJobs} SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
               echo "Linux 5.14 headers installed to $out"
       ''

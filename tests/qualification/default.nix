@@ -44,6 +44,7 @@
     destination = "/matrix-spec.json";
     text = nativeAdapterMatrix.canonical_json;
   };
+  k3sBindings = import ./k3s-bindings.nix {inherit pkgs;};
 in
   assert builtins.elem "checks.fleet.measured-boot" imageRecovery.regressions;
   assert (resolve "checks.fleet.measured-boot").drvPath == fleet.measured-boot.drvPath;
@@ -51,7 +52,9 @@ in
     // {
       policy = import ./policy.nix {inherit pkgs lib nativeAdapterMatrix releaseExecutor;};
       native-adapter-matrix = nativeAdapterMatrixArtifact;
-      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib nativeAdapterMatrix releaseExecutor;})] ++ builtins.attrValues groups);
+      k3s-bindings = k3sBindings;
+      toolchain-hermeticity = aggregate "toolchain-hermeticity" [build.toolchain-boundaries.all build.native-sandbox-boundary];
+      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib nativeAdapterMatrix releaseExecutor;}) k3sBindings build.toolchain-boundaries.all build.native-sandbox-boundary] ++ builtins.attrValues groups);
       # Evaluating this inventory resolves every reference, including sparse
       # groups, before an expensive VM campaign starts.
       inventory = builtins.listToAttrs (map (requirement: {

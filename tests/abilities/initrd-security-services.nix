@@ -77,7 +77,7 @@
   };
   secureVerityPackages =
     builtins.map
-    (package: package.pname)
+    (package: package.pname or (builtins.parseDrvName package.name).name)
     secureVeritySystem.config.aos.boot.initrd.packageRoots;
   secureBootModule = builtins.readFile ../../modules/base/secure-boot.nix;
 in

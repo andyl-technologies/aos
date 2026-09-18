@@ -54,6 +54,7 @@
   sed,
   tar,
   bash,
+  bzip2,
   python3-pefile,
   python3-pyelftools,
   aos-systemd-provider,
@@ -87,6 +88,7 @@
     sbsigntools
     sed
     tar
+    bzip2
     util-linux
     kmod
     zlib

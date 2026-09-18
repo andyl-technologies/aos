@@ -291,6 +291,37 @@ The coordinator checks the request digest, role, operation, key id, provider
 revision, public verification-material digest, and Ed25519 signature. It never
 passes a private-key path to the provider.
 
+### File-backed signer for registries without an HSM
+
+`aos-release-signer` (`nix build .#pkg-aos-release-signer`) implements the
+exchange above for deployments whose private keys are operator-owned files,
+which is the approved custody model for `andyl/testing`. It reads a JSON
+configuration named by `AOS_RELEASE_SIGNER_CONFIG` or `--config` that maps
+each public key id to a private-key file, the roles it may serve, and the
+verification identity the coordinator pins. The configuration, private keys,
+and the wrapper that exports the environment variable live in restricted
+deployment storage, never in the repository or the Nix store.
+
+The adapter refuses any request whose provider revision or registry is not in
+its configuration, whose key is not authorized for the requested role, or whose
+payload does not reproduce the request digest. It signs Ed25519 request
+digests and raw payloads in process, produces OpenSSH SSHSIG signatures for the
+`registry` and `provenance` roles from an OpenSSH key whose roster trust line is
+part of the configuration, signs measured-boot PCR policies and recovery
+manifests with RSA, and delegates Authenticode and kernel-module signatures to
+the `sbsign` and `openssl` executables named in its `tools` table. Its
+`verification_material_digest` is always the SHA-256 of the configured public
+file or trust line, so those bytes must be identical to the public copies the
+image assembly and coordinator pin independently.
+
+`aos-release-signer show` prints every configured key's public identity for
+comparison with the public key inventory. `aos-release-signer sign-evidence
+--key-id KEY --payload intent.json --output approval.json` wraps a canonical
+approval payload, such as an `aos.release.registry-bootstrap-intent/v1`
+document, in the `aos.hub.signed-release-evidence/v1` envelope that
+`aos release bootstrap`, `qualify-run --review-receipt`, and
+`channel complete` consume.
+
 ## Finalize each Linux image
 
 Build the exact unsigned assembly named by the release plan, then invoke the

@@ -83,7 +83,6 @@ in {
     '';
     configureScript = ''
       sed -i "s|'/bin/pwd'|'$PWD_CMD', '/bin/pwd'|" dist/PathTools/Cwd.pm
-      sed -i 's/getcwd()/getcwd() || "."/' dist/PathTools/Cwd.pm 2>/dev/null || true
 
       sed -i \
         -e "s|/usr/include/errno.h|${glibc.dev}/include/errno.h|g" \
@@ -114,10 +113,10 @@ in {
         -Ui_xlocale
     '';
     buildScript = ''
-      make -j1
+      make SHELL="$CONFIG_SHELL" -j1
     '';
     installScript = ''
-      make install ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" install ${autotoolsVars}
     '';
     meta = gnuMeta "Perl programming language 5.44.0" "https://www.perl.org/" "Artistic-1.0-Perl OR GPL-1.0-or-later";
   };
@@ -152,11 +151,11 @@ in {
       touch tp/Texinfo/Commands.pm
     '';
     buildScript = ''
-      make -k -j"$NIX_BUILD_CORES" ${autotoolsVars} || true
+      make SHELL="$CONFIG_SHELL" -k -j"$NIX_BUILD_CORES" ${autotoolsVars} || true
       test -f tp/texi2any || { echo "FATAL: texi2any not built"; exit 1; }
     '';
     installScript = ''
-      make install -k ${autotoolsVars} || true
+      make SHELL="$CONFIG_SHELL" install -k ${autotoolsVars} || true
 
       if [ ! -f "$out/bin/texi2any" ]; then
         mkdir -p "$out/bin"
@@ -403,6 +402,7 @@ in {
       [ -f "$out/bin/python3" ] && [ ! -f "$out/bin/python" ] && ln -sf python3 "$out/bin/python"
       [ -f "$out/bin/python3.8-config" ] && [ ! -f "$out/bin/python3-config" ] && ln -sf python3.8-config "$out/bin/python3-config"
       [ -f "$out/bin/python3-config" ] && [ ! -f "$out/bin/python-config" ] && ln -sf python3-config "$out/bin/python-config"
+      "$out/bin/python3" -E -S ${../../runtime_python_scripts.py} "$out"
     '';
     meta = gnuMeta "Python 3.8.18 minimal interpreter for build scripts" "https://www.python.org/" "PSF-2.0";
   };
@@ -427,7 +427,7 @@ in {
         "--disable-nls"
       ];
     buildScript = ''
-      make -j1 ${autotoolsVars}
+      make SHELL="$CONFIG_SHELL" -j1 ${autotoolsVars}
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
@@ -448,6 +448,8 @@ in {
       ++ [
         "--enable-no-install-program=stdbuf"
         "--enable-single-binary=symlinks"
+        # Coreutils 9.10 made these previously shipped commands opt-in.
+        "--enable-install-program=kill,uptime"
       ];
     meta = gnuMeta "GNU core utilities 9.11 (ls, cat, cp, mv, etc.)" "https://www.gnu.org/software/coreutils/" "GPL-3.0-or-later";
   };

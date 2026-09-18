@@ -3,6 +3,7 @@
   lib,
   mkDerivation,
   fetchurl,
+  patchelf,
   meson,
   ninja,
   pkg-config,
@@ -15,6 +16,8 @@
   stdenv,
 }: let
   version = "1.16.2";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  linuxRuntimeLibraryPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") [expat libselinux audit libcap-ng systemd]);
 in
   mkDerivation {
     platformSupport = {
@@ -117,12 +120,9 @@ in
       hash = "sha256-C6KhpLFq/nvOssB+nOmajCw1COXewpDbtkM4S9a+t+I=";
     };
 
-    buildDeps = [
-      meson
-      ninja
-      pkg-config
-      python3
-    ];
+    buildDeps =
+      [meson ninja pkg-config python3]
+      ++ lib.optionals isLinuxCross [patchelf];
     runtimeDeps =
       [expat]
       ++ (
@@ -138,7 +138,12 @@ in
           systemd
         ]
       );
-    propagatedDeps = [];
+    # dbus-1.pc requires libsystemd, including when consumers only request
+    # compiler flags. Keep that metadata dependency visible downstream.
+    propagatedDeps =
+      if stdenv.hostPlatform.isDarwin
+      then []
+      else [systemd];
 
     abilities = ./_dbus;
 
@@ -227,7 +232,6 @@ in
             cp -a $out$out/. $out/
             rm -rf $out/nix
           fi
-
           # The registration controller owns the deployment-specific search
           # order. Keep the stock policy and omit the mutable directory hooks
           # that the controller appends after authenticated package entries.
@@ -236,7 +240,14 @@ in
             -e '/<include.*system-local\.conf<\/include>/d' \
             "$out/share/dbus-1/system.conf"
 
-        '';
+          ${lib.optionalString isLinuxCross ''
+            # Meson's install step drops some cross-wrapper runtime paths.
+            # Restore declared libraries before the normal unused-path shrink.
+            find "$out" -type f | while read -r binary; do
+              patchelf --print-needed "$binary" >/dev/null 2>&1 || continue
+              patchelf --add-rpath "$out/lib:${linuxRuntimeLibraryPath}" "$binary"
+            done
+          ''}'';
       }
     ];
 

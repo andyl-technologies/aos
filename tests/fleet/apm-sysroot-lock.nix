@@ -80,7 +80,9 @@
   ];
   fixtureClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
-      pkgs.aos
+      pkgs.aos.apm
+      pkgs.aos.apr
+      pkgs.gawk
       pkgs.git
       pkgs.jq
       pkgs.nix
@@ -114,6 +116,7 @@ in {
 
       APM = "${pkgs.aos.apm}/bin/apm"
       APR = "${pkgs.aos.apr}/bin/apr"
+      AWK = "${pkgs.gawk}/bin/awk"
       GIT = "${pkgs.git}/bin/git"
       JQ = "${pkgs.jq}/bin/jq"
       MOUNT = "${pkgs.util-linux}/bin/mount"
@@ -181,15 +184,32 @@ in {
             "$image_state")
           version=$({JQ} -er '. as $state | .generations[] | select(.number == $state.running) | .version' "$image_state")
 
-          {APR} create lock-system
-          {APR} publish "$running_top" --registry lock-system \
+          # Every published graph carries provenance tied to its registry signer.
+          mkdir -p "$HOME/.config/apm/registries.d"
+          for registry in lock-system lock-apps; do
+            {APR} keys generate release --registry "$registry" > "$HOME/keygen.out" 2>&1
+            public_key=$({AWK} '/Public key:/ {{print $NF; exit}}' "$HOME/keygen.out")
+            key="$HOME/.config/apm/keys/$registry-release.key"
+            {APR} create "$registry" --trust-key "$public_key" \
+              --trust-key-id release --key "$key"
+            cat > "$HOME/.config/apm/registries.d/$registry.toml" <<EOF
+          [registry]
+          name = "$registry"
+          url = "file://$HOME/.local/share/apm/registries/$registry"
+
+          [registry.signing_keys]
+          release = "$key"
+          EOF
+          done
+
+          {APR} publish "$running_top" --registry lock-system --key-id release \
             --name "$package" --version "$version" --sysroot \
             --description 'Authenticated running AOS image' --license MIT \
             --maintainer platform@example.test --no-commit
-          {APR} publish {SSL_V1} --registry lock-system \
+          {APR} publish {SSL_V1} --registry lock-system --key-id release \
             --name lock-ssl --version 1.0.0 --description 'System SSL fixture' \
             --license MIT --maintainer platform@example.test --no-commit
-          {APR} publish {COMPRESSION_V1} --registry lock-system \
+          {APR} publish {COMPRESSION_V1} --registry lock-system --key-id release \
             --name lock-compression --version 1.0.0 \
             --description 'System compression fixture' --license MIT \
             --maintainer platform@example.test --no-commit
@@ -198,18 +218,17 @@ in {
             -c user.name=publisher -c user.email=publisher@example.test \
             commit -m 'publish authenticated system graph'
 
-          {APR} create lock-apps
-          {APR} publish {SSL_V2} --registry lock-apps \
+          {APR} publish {SSL_V2} --registry lock-apps --key-id release \
             --name lock-ssl --version 2.0.0 --description 'Application SSL fixture' \
             --license MIT --maintainer applications@example.test --no-commit
-          {APR} publish {COMPRESSION_V2} --registry lock-apps \
+          {APR} publish {COMPRESSION_V2} --registry lock-apps --key-id release \
             --name lock-compression --version 2.0.0 \
             --description 'Application compression fixture' --license MIT \
             --maintainer applications@example.test --no-commit
-          {APR} publish {DIVERGENT_APP} --registry lock-apps \
+          {APR} publish {DIVERGENT_APP} --registry lock-apps --key-id release \
             --name lock-app --version 2.0.0 --description 'Divergent application' \
             --license MIT --maintainer applications@example.test --no-commit
-          {APR} publish {COMPATIBLE_APP} --registry lock-apps \
+          {APR} publish {COMPATIBLE_APP} --registry lock-apps --key-id release \
             --name lock-compatible --version 1.0.0 \
             --description 'Compatible application' --license MIT \
             --maintainer applications@example.test --no-commit

@@ -25,8 +25,11 @@
 
   publicationMatrix = support.publicationMatrix packageNames;
   releaseInventory = support.releaseInventory packageNames;
-  releaseDerivations =
-    support.releaseDerivations pkgs.stdenv.hostPlatform.system pkgs packageNames;
+  releaseDerivations = support.releaseDerivations {
+    system = pkgs.stdenv.hostPlatform.system;
+    packages = pkgs;
+    names = packageNames;
+  };
   linuxPackages = publicationMatrix.${pkgs.stdenv.hostPlatform.system};
   eligibleOnAnyPlatform = support.publicationEligibleNamesAny packageNames;
   eligibleDecision = support.publicationDecision pkgs.stdenv.hostPlatform.system "aos";
@@ -41,9 +44,15 @@
       "linux"
     ];
   annotationProbe = support.annotate "rust" pkgs.rust;
-  nestedSource = ../../qualification/modules;
-  derivationProbe = support.releaseDerivations "x86_64-linux" {
-    aos = {
+  sourceTree = builtins.path {
+    path = ../../qualification;
+    name = "qualification-source-fixture";
+  };
+  nestedSource = /. + builtins.unsafeDiscardStringContext (sourceTree + "/modules");
+  derivationProbe = support.releaseDerivations {
+    system = "x86_64-linux";
+    names = ["aos"];
+    packages.aos = {
       type = "derivation";
       drvPath = "/nix/store/00000000000000000000000000000000-aos.drv";
       outPath = "/nix/store/00000000000000000000000000000000-aos";
@@ -63,9 +72,11 @@
         maintainers = ["AOS test"];
       };
     };
-  } ["aos"];
-  companionProbe = support.releaseDerivations "x86_64-linux" {
-    aos = {
+  };
+  companionProbe = support.releaseDerivations {
+    system = "x86_64-linux";
+    names = ["aos"];
+    packages.aos = {
       type = "derivation";
       drvPath = "/nix/store/22222222222222222222222222222222-example.drv";
       outPath = "/nix/store/33333333333333333333333333333333-example";
@@ -79,13 +90,7 @@
         license = "MIT";
         maintainers = ["AOS test"];
       };
-      module = {
-        type = "derivation";
-        outputName = "module";
-        drvPath = "/nix/store/44444444444444444444444444444444-example-module.drv";
-        outPath = "/nix/store/55555555555555555555555555555555-example-module";
-        __toString = value: value.outPath;
-      };
+      module = "/nix/store/55555555555555555555555555555555-example-module";
       contract = {
         value = {};
         document = {
@@ -106,9 +111,11 @@
         ];
       };
     };
-  } ["aos"];
-  probeOnlyContractProbe = support.releaseDerivations "x86_64-linux" {
-    aos = {
+  };
+  probeOnlyContractProbe = support.releaseDerivations {
+    system = "x86_64-linux";
+    names = ["aos"];
+    packages.aos = {
       type = "derivation";
       drvPath = "/nix/store/88888888888888888888888888888888-probe-only.drv";
       outPath = "/nix/store/99999999999999999999999999999999-probe-only";
@@ -138,7 +145,7 @@
         ];
       };
     };
-  } ["aos"];
+  };
   abilityModulePayload = abilities:
     pkgs.mkDerivation {
       pname = "ability-module-layout-probe";
@@ -155,18 +162,12 @@
         }
       ];
     };
-  fileModulePayload = abilityModulePayload ./fixtures/ability-module-file.nix;
+  fileModuleRejected = !(builtins.tryEval (abilityModulePayload ./fixtures/ability-module-file.nix)).success;
   directoryModulePayload = abilityModulePayload ./fixtures/ability-module-directory;
   missingEntryRejected = !(builtins.tryEval (abilityModulePayload ./fixtures)).success;
-  fileModuleArtifact = fileModulePayload.module;
   directoryModuleArtifact = directoryModulePayload.module;
-  fileProjectionArtifact = fileModulePayload.contract.document;
-  directoryProjectionArtifact = directoryModulePayload.contract.document;
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
-  nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
-    path = nestedSource;
-    name = builtins.baseNameOf (toString nestedSource);
-  }));
+  nestedSourceRoot = builtins.unsafeDiscardStringContext (toString sourceTree);
   releasePackageByName = name:
     builtins.head (builtins.filter (package: package.name == name) releaseDerivations.packages);
   releaseSourcesComplete =
@@ -200,12 +201,15 @@ in
   assert (builtins.head companionProbe.packages).outputs
   == [
     {
+      derivation = "/nix/store/22222222222222222222222222222222-example.drv";
       name = "out";
+      output = "out";
       store_path = "/nix/store/33333333333333333333333333333333-example";
     }
     {
+      derivation = null;
       name = "module";
-      derivation = "/nix/store/44444444444444444444444444444444-example-module.drv";
+      output = null;
       store_path = "/nix/store/55555555555555555555555555555555-example-module";
     }
   ];
@@ -213,6 +217,7 @@ in
   == {
     document = {
       derivation = "/nix/store/66666666666666666666666666666666-example-contract.drv";
+      output = "out";
       store_path = "/nix/store/77777777777777777777777777777777-example-contract";
     };
     selectors = [
@@ -239,14 +244,14 @@ in
   assert (builtins.head probeOnlyContractProbe.packages).outputs
   == [
     {
+      derivation = "/nix/store/88888888888888888888888888888888-probe-only.drv";
       name = "out";
+      output = "out";
       store_path = "/nix/store/99999999999999999999999999999999-probe-only";
     }
   ];
-  assert fileModulePayload.drvPath == directoryModulePayload.drvPath;
-  assert fileModuleArtifact.drvPath != directoryModuleArtifact.drvPath;
+  assert fileModuleRejected;
   assert missingEntryRejected;
-  assert builtins.attrNames fileModulePayload.abilities.interfaces == [];
   assert builtins.attrNames directoryModulePayload.abilities.interfaces == [];
   assert releaseSourcesComplete;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
@@ -272,14 +277,18 @@ in
   assert (releasePackageByName "dnsutils").outputs
   == [
     {
+      derivation = builtins.unsafeDiscardStringContext pkgs.dnsutils.drvPath;
       name = "out";
+      output = "dnsutils";
       store_path = builtins.unsafeDiscardStringContext (toString pkgs.dnsutils);
     }
   ];
   assert (releasePackageByName "getent").outputs
   == [
     {
+      derivation = builtins.unsafeDiscardStringContext pkgs.getent.drvPath;
       name = "out";
+      output = "getent";
       store_path = builtins.unsafeDiscardStringContext (toString pkgs.getent);
     }
   ];
@@ -304,13 +313,10 @@ in
         {
           name = "check";
           script = ''
-            test "$(find ${fileModuleArtifact} -mindepth 1 -maxdepth 1 ! -name nix-support -printf '%f\n')" = module.nix
-            test ! -e ${fileModuleArtifact}/ability-module-file-sibling.txt
             test -f ${directoryModuleArtifact}/module.nix
             test -f ${directoryModuleArtifact}/private.nix
             test ! -e ${directoryModuleArtifact}/ability-module-directory-sibling.txt
             test "$(find ${directoryModuleArtifact} -mindepth 1 -maxdepth 1 ! -name nix-support -printf '%f\n' | sort)" = "$(printf 'module.nix\nprivate.nix')"
-            cmp ${fileProjectionArtifact} ${directoryProjectionArtifact}
             mkdir -p "$out"
             cat > "$out/result" <<'EOF'
             schema=${support.schema}

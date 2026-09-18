@@ -13,10 +13,11 @@
   allowTestArtifacts ? false,
   testArtifactRoots ? [],
 }: let
+  buildPackages = pkgs.buildPackages or pkgs;
   mib = 1048576;
   checkedTestArtifactRoots = assert allowTestArtifacts || testArtifactRoots == []; testArtifactRoots;
 in
-  pkgs.mkDerivation {
+  buildPackages.mkDerivation {
     pname = "aos-${name}-runtime-closure-audit";
     version = "1";
     src = null;
@@ -26,7 +27,7 @@ in
       runtime = roots;
       testArtifacts = checkedTestArtifactRoots;
     };
-    buildDeps = [pkgs.coreutils pkgs.jq];
+    buildDeps = [buildPackages.coreutils buildPackages.jq];
     dontStrip = true;
     dontNukeRefs = true;
 

@@ -241,6 +241,19 @@ pub async fn commit_changes(
     let roster = load_committed_roster(&dir)?;
     let signing_key =
         resolve_roster_commit_key(config, &dir, &registry_name, &roster, key, key_id)?;
+
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would commit to registry '{registry_name}': {message}"
+        ));
+        for path in paths {
+            printer.kv("Path", &path.display().to_string());
+        }
+        printer.kv("Signed", if signing_key.is_some() { "yes" } else { "no" });
+        printer.info("Dry run: nothing was committed.");
+        return Ok(());
+    }
+
     commit_registry_paths(
         &dir,
         message,
@@ -452,6 +465,14 @@ pub async fn run_branch(
         BranchCommand::Create { name, registry } => {
             validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would create branch '{name}' in {}",
+                    dir.display()
+                ));
+                printer.info("Dry run: no branch was created.");
+                return Ok(());
+            }
             git(&dir, &["branch", "--", name])?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
@@ -468,6 +489,14 @@ pub async fn run_branch(
         BranchCommand::Switch { name, registry } => {
             validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would switch {} to branch '{name}'",
+                    dir.display()
+                ));
+                printer.info("Dry run: the checked-out branch is unchanged.");
+                return Ok(());
+            }
             git(&dir, &["switch", "--", name])?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
@@ -484,6 +513,14 @@ pub async fn run_branch(
         BranchCommand::Delete { name, registry } => {
             validate_branch_name(name)?;
             let dir = registry_dir(config, registry.as_deref())?;
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would delete branch '{name}' from {}",
+                    dir.display()
+                ));
+                printer.info("Dry run: no branch was deleted.");
+                return Ok(());
+            }
             git(&dir, &["branch", "-d", "--", name])?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
@@ -766,6 +803,19 @@ async fn change_merge(
     // of `apr` uses).
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
 
+    // The diff above is the whole point of a preview here, so the dry run stops
+    // only once the maintainer has seen exactly what promoting would sign.
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would promote change request '{id}' into '{}' of registry '{registry_name}', \
+             re-signed with {}",
+            current_git_branch(&dir)?,
+            signing_key.path()
+        ));
+        printer.info("Dry run: nothing was committed or pushed.");
+        return Ok(());
+    }
+
     // Replay the draft's tree onto the working tree + index, then commit it as a
     // fresh, roster-signed child of HEAD (a cherry-pick of the change).
     let change_commit = git(&dir, &["rev-parse", &reference])?;
@@ -842,6 +892,21 @@ pub async fn push(
         args.push(&current);
     }
 
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would push branch '{pushed_branch}' of {} to origin",
+            dir.display()
+        ));
+        if force {
+            printer.info("  --force: the remote branch would be overwritten.");
+        }
+        if set_upstream {
+            printer.info("  --set-upstream: the branch would start tracking origin.");
+        }
+        printer.info("Dry run: nothing was pushed.");
+        return Ok(());
+    }
+
     let output = git_transport(&dir, &args)?;
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({
@@ -883,6 +948,16 @@ pub async fn pull(
     let mut args = vec!["pull"];
     if rebase {
         args.push("--rebase");
+    }
+
+    if crate::dry_run::active() {
+        let strategy = if rebase { "rebasing onto" } else { "merging" };
+        printer.info(&format!(
+            "Would pull origin into {}, {strategy} the upstream branch",
+            dir.display()
+        ));
+        printer.info("Dry run: nothing was fetched or merged.");
+        return Ok(());
     }
 
     let output = git_transport(&dir, &args)?;
@@ -932,6 +1007,22 @@ pub async fn merge(
     }
     args.push("--");
     args.push(branch);
+
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would merge '{branch}' into '{}' in {}",
+            current_git_branch(&dir)?,
+            dir.display()
+        ));
+        if no_ff {
+            printer.info("  --no-ff: a merge commit would be created.");
+        }
+        if squash {
+            printer.info("  --squash: changes would be staged without committing.");
+        }
+        printer.info("Dry run: nothing was merged.");
+        return Ok(());
+    }
 
     let output = git(&dir, &args)?;
     if printer.mode() == OutputMode::Json {

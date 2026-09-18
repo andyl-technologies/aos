@@ -382,6 +382,9 @@
             kernel = evaluated.config.system.build.kernel;
             initrd = evaluated.config.system.build.initrd;
             image = evaluated.config.system.build.image;
+            # Null unless the variant defers signing to the release finalizer,
+            # in which case it replaces `image` as the variant's only output.
+            unsignedImageAssembly = evaluated.config.system.build.unsignedImageAssembly;
             containers = evaluated.config.system.build.containers;
             defaultContainer = evaluated.config.system.build.defaultContainer;
           };
@@ -784,6 +787,23 @@
         systemVariant = "server";
       }
     else null;
+  k3sPackageScenarios = lib.optionalAttrs hostPlatform.isLinux (
+    builtins.listToAttrs (map (rule: let
+        name = "aos-qualification-${hostPlatform.system}-${rule.name}-fleet";
+        scenario = testing.mkQualificationK3sPackageScenario {
+          inherit name;
+          identity = qualificationExecutorIdentity;
+          packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
+          systemVariant = rule.execution.system_variant;
+          topology = rule.execution.topology;
+        };
+      in {
+        name = "package-function/${rule.name}/${hostPlatform.system}";
+        value = "${scenario}/bin/${name}";
+      }) (builtins.filter (rule:
+        rule ? execution && rule.execution.kind == "k3s-fleet")
+      releaseQualification.package_rules))
+  );
   qualificationTargetIds = map (target: target.id) (
     builtins.filter (target: target.platform == hostPlatform.system) releaseQualification.targets
   );
@@ -823,13 +843,17 @@
       package-function = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
     }
     // lib.optionalAttrs hostPlatform.isLinux {
-      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
       "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
     }
     // lib.mapAttrs (
       scenarioId: scenario: "${scenario}/bin/aos-qualification-${scenarioId}"
     )
-    nativeAbilityScenarios;
+    nativeAbilityScenarios
+    // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+      # ARM64 container qualification imports a report with the outer x86 host,
+      # TCG guest and container layers; the local runner observes only two.
+      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
+    };
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";
     platform = hostPlatform.system;
@@ -841,9 +865,11 @@
         operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
         production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
       };
-    caseScenarios = lib.optionalAttrs hostPlatform.isLinux {
-      "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
-    };
+    caseScenarios =
+      k3sPackageScenarios
+      // lib.optionalAttrs hostPlatform.isLinux {
+        "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
+      };
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
   };
@@ -1671,10 +1697,11 @@ in {
   );
   inherit releaseQualification;
   releasePackageDerivations = requireReleasePlatforms (
-    pkgs.platformSupport.releaseDerivations
-    hostPlatform.system
-    pkgs
-    pkgs.allPackageNames
+    pkgs.platformSupport.releaseDerivations {
+      system = hostPlatform.system;
+      packages = pkgs;
+      names = pkgs.allPackageNames;
+    }
   );
 
   # Pure package-maintenance content. Git and local-clone identities are added
@@ -1688,6 +1715,10 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
+    image-matrix = testing.mkImageMatrix {
+      systems = discoverSystems;
+      sourceIdentity = toString pkgs.aos.src;
+    };
     qualification = import ./tests/qualification {
       inherit pkgs lib build fleet container nativeAdapterMatrix;
       releaseExecutor = releaseQualificationExecutor;
@@ -1739,6 +1770,19 @@ in {
       ];
     };
     build = let
+      toolchain-boundaries = import ./tests/build/toolchain-boundaries.nix {
+        pkgs = buildPackages;
+        inherit buildPlatform;
+        # Linux qualification includes its architecture-transition tiers.
+        # Darwin uses the native build ladder and a separate hosted toolchain.
+        hostPlatform =
+          if hostPlatform.isLinux
+          then hostPlatform
+          else buildPlatform;
+      };
+      native-sandbox-boundary = import ./tests/build/native-sandbox-boundary.nix {
+        pkgs = buildPackages;
+      };
       bootstrap-seed =
         if buildPlatform.isLinux && buildPlatform.isx86_64
         then import ./tests/build/bootstrap-seed.nix {pkgs = buildPackages;}
@@ -1813,6 +1857,7 @@ in {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
+        inherit toolchain-boundaries native-sandbox-boundary;
         inherit artifact-consumption critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
@@ -1826,7 +1871,7 @@ in {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support runtime-python-outputs structured-attrs-export systemd-verity]
+            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support runtime-python-outputs structured-attrs-export systemd-verity]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust
@@ -1896,6 +1941,7 @@ in {
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
+      evidence-platforms = import ./tests/containers/evidence-platforms.nix {inherit pkgs;};
       evidence = import ./tests/containers/evidence.nix {
         inherit pkgs lib;
         inherit (containerImages.aos.checks) evidence evidenceRepeat;
@@ -1935,6 +1981,7 @@ in {
           phase0
           eval
           oci-builders
+          evidence-platforms
           evidence
           runtime
           aos-runtime-closure

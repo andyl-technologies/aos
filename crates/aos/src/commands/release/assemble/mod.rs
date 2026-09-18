@@ -445,6 +445,7 @@ fn map_decision(
     match decision {
         MatrixCell::Artifact { artifact } => MatrixCell::Artifact {
             artifact: FinalArtifactSet {
+                package_contract: artifact.package_contract.clone(),
                 artifact_ids: artifact
                     .artifacts
                     .iter()

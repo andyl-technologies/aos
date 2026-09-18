@@ -15,6 +15,7 @@
   systemIdentity,
   definitionAttribute,
 }: let
+  buildPackages = pkgs.buildPackages;
   releaseIdentity =
     systemIdentity.release
     or {
@@ -47,6 +48,7 @@
     pkgs = buildPkgs;
     name = "container-${container.name}";
     roots = auditRoots;
+    inherit (container.runtimePolicy) allowTestArtifacts testArtifactRoots;
     inherit (container.budgets) maxClosureMiB maxDevelopmentPayloadMiB;
   };
   bakedRootInventory = buildPkgs.writeTextFile {
@@ -421,6 +423,16 @@
       buildPkgs.coreutils
       buildPkgs.diffutils
       buildPkgs.jq
+      primary.image
+      repeat.image
+      primary.dockerArchive
+      repeat.dockerArchive
+      primary.ociIndex
+      repeat.ociIndex
+      evidence
+      evidenceRepeat
+      publicationInputs
+      publicationInputsRepeat
     ];
     outputChecks.out = {};
     unsafeDiscardReferences.out = true;

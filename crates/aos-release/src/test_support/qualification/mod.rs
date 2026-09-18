@@ -46,11 +46,11 @@ pub(crate) fn native_adapter_matrix_spec() -> NativeAdapterMatrixSpec {
         ("durable-attempt-state-classified", "journal-timeline"),
         ("foreign-resources-unchanged", "foreign-resource-snapshot"),
     ]);
-    let postconditions = postcondition_kinds
+    let postconditions = postcondition_names
         .iter()
-        .map(|(name, evidence_kind)| {
+        .map(|name| {
             json!({
-                "evidence_kind": evidence_kind,
+                "evidence_kind": postcondition_kinds[name],
                 "name": name,
             })
         })

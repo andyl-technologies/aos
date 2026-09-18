@@ -37,12 +37,12 @@ in
               # keep gccRaw's $out free of the pre-tier chain), so this build must
               # supply them itself at build time.
               mkdir -p "$TMPDIR/fakebin"
-              printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -no-pie -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "$@"\n' > "$TMPDIR/fakebin/gcc"
+              printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -static -no-pie -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "$@"\n' > "$TMPDIR/fakebin/gcc"
               chmod +x "$TMPDIR/fakebin/gcc"
 
               # Linux 5.3+ uses rsync for headers_install. Provide a minimal replacement.
               cat > "$TMPDIR/fakebin/rsync" << 'RSYNC_EOF'
-        #!/bin/sh
+        #!${prev.bash}/bin/bash
         # Minimal rsync replacement for kernel headers_install.
         # Handles: rsync -mrl --include='*.h' --exclude='*' src/ dst/
         src="" dst=""
@@ -66,7 +66,11 @@ in
               cd linux-6.12
               chmod -R u+w .
 
-              make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+              # Pin source helpers that configure or make can execute directly.
+              AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
+              make SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
               echo "Linux 6.12 headers installed to $out"
       ''

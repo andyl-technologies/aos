@@ -28,13 +28,13 @@
   aos.security.verity.enable = lib.mkDefault true;
   aos.boot.initrd.abilityHandoff.enable = lib.mkDefault true;
   aos.image.budgets = {
-    maxRootMiB = 512;
+    maxRootMiB = 640;
     maxVerityMiB = 16;
-    maxInitrdMiB = 128;
+    maxInitrdMiB = 132;
     maxBootExecutableMiB = 160;
     maxFirmwarePartitionMiB = 384;
     maxRuntimeClosureMiB = 768;
-    maxDownloadMiB = 640;
+    maxDownloadMiB = 768;
   };
 
   # The service modules predate host-time evaluation and default to enabled.

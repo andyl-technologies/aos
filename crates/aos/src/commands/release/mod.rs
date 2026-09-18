@@ -23,6 +23,7 @@ mod qualification_run;
 mod qualification_transition;
 mod qualify;
 mod record;
+mod registry_entries;
 mod signer;
 mod stage;
 mod status;

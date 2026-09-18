@@ -145,6 +145,20 @@
       inherit (declaration) contract platformSupport;
     };
 
+  # Bootstrap tools retain their audited derivations, but need the same public
+  # metadata as their target builds. Never attach a different source version.
+  withBootstrapPublication = name: let
+    # Read only the declaration: realizing the target derivation here would
+    # recurse through the very bootstrap tools whose metadata we are filling.
+    package = callPackage (./base + "/${name}.nix") {
+      mkDerivation = attrs: attrs;
+    };
+    bootstrap = stdenv.${name};
+    version = (builtins.parseDrvName bootstrap.name).version;
+  in
+    assert version == package.version;
+      (withDistributionMeta package.meta bootstrap) // {inherit version;};
+
   cargoArtifactsSupport = import ./build-support/_cargo-artifacts.nix {
     inherit lib mkDerivation;
   };
@@ -524,12 +538,9 @@
           stdenv.patch
           stdenv.bash
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -548,12 +559,9 @@
           stdenv.gzip
           stdenv.bash
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -592,12 +600,9 @@
           stdenv.findutils
           resolvedBuildPackages.git
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -894,6 +899,7 @@
         installBins = false;
         installLibs = false;
         installCargoArtifacts = true;
+        passthru = (args.passthru or {}) // {isCargoArtifacts = true;};
         doCheck = false;
         dontStrip = true;
         dontPatchELF = true;
@@ -1224,6 +1230,10 @@
     bash = self.bash;
     zlib = self.zlib;
   };
+  linuxHostedGlibc = import ./toolchain/_linux-hosted-glibc.nix {
+    inherit mkDerivation stdenv buildPackages;
+    inherit (self) bash perl;
+  };
   linuxHostedGcc = import ./toolchain/_linux-hosted-gcc.nix {
     inherit mkDerivation stdenv buildPackages;
     bash = self.bash;
@@ -1250,9 +1260,19 @@
         '';
       }
     ];
-    passthru.evidenceSources = stdenv.gccRuntime.passthru.evidenceSources;
+    passthru = {
+      evidenceSources = stdenv.gccRuntime.passthru.evidenceSources;
+      # The public package forwards these separately realized runtime libraries.
+      evidenceRuntimePackages = [
+        (stdenv.gccRuntime
+          // {
+            pname = "gcc-runtime";
+            meta.license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          })
+      ];
+    };
     meta = {
-      description = "GCC runtime shared libraries for ${stdenv.hostPlatform.system}";
+      description = "GCC runtime shared libraries (libstdc++.so, libgcc_s.so)";
       homepage = "https://gcc.gnu.org/";
       license = "GPL-3.0-or-later WITH GCC-exception-3.1";
     };
@@ -1344,6 +1364,8 @@
     "aos-recovery"
     "aos-registry-server"
     "aos-credential-delivery-test"
+    "aos-release-signer"
+    "aos-secret-reference-test"
     "aos-selinux-run"
     "aos-service-root"
     "aos-system-image-e2e-fixture"
@@ -1497,6 +1519,15 @@
     units = builtins.sort (left: right: left.unitId < right.unitId) maintenanceUnits;
   };
 
+  # All Linux QEMU variants enable compressed disk-image support when bzip2
+  # is found. Retain that target library through runtime-reference scrubbing.
+  mkQemuPackage = args: let
+    package = callPackage ./emulation/qemu.nix args;
+  in
+    if stdenv.isCross && stdenv.hostPlatform.isLinux
+    then package.overrideAttrs (previous: {runtimeDeps = previous.runtimeDeps ++ [self.bzip2];})
+    else package;
+
   self =
     {
       # --- Plumbing ---
@@ -1623,7 +1654,33 @@
       nvidiaOpenForKernel = kernel:
         callPackage ./kernel/nvidia-open.nix {inherit kernel;};
 
-      qemu-crucible = callPackage ./emulation/qemu.nix {
+      qemu = let
+        package = mkQemuPackage {};
+      in
+        if stdenv.isCross && stdenv.hostPlatform.isLinux
+        then
+          package.overrideAttrs (previous: {
+            # Linux-user emulation needs UAPI families such as sound/, beyond
+            # the linux/ and asm/ headers exported by the target glibc output.
+            # An explicit include preserves the target header identity instead
+            # of treating these non-executable inputs as native build tools.
+            phases = map (phase:
+              if phase.name == "configure"
+              then
+                phase
+                // {
+                  script =
+                    ''
+                      export C_INCLUDE_PATH="${stdenv.linuxHeaders}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+                    ''
+                    + phase.script;
+                }
+              else phase)
+            previous.phases;
+          })
+        else package;
+
+      qemu-crucible = mkQemuPackage {
         pname = "qemu-crucible";
         qualification.packageProbe = lib.qualification.commandProbe {
           "primary" = {
@@ -1688,7 +1745,7 @@
         enablePlugins = true;
         applyCruciblePatches = true;
       };
-      qemu-crucible-reference = callPackage ./emulation/qemu.nix {
+      qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
         qualification.packageProbe = lib.qualification.commandProbe {
           "primary" = {
@@ -1761,7 +1818,7 @@
         series,
         testOnlyPostPatch ? null,
       }:
-        callPackage ./emulation/qemu.nix {
+        mkQemuPackage {
           inherit pname series testOnlyPostPatch;
           enablePlugins = true;
           applyCruciblePatches = true;
@@ -1937,13 +1994,16 @@
       } (
         (withDistributionMeta {
             description = "GNU Compiler Collection with AOS target and runtime defaults";
+            homepage = "https://gcc.gnu.org/";
             license = "GPL-3.0-or-later WITH GCC-exception-3.1";
           }
           (
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
             else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedGcc
+            # Preserve the public package identity so build dependencies
+            # resolve to native GCC rather than the target-hosted wrapper.
+            then linuxHostedCc // {pname = "gcc";}
             else stdenv.gcc
           ))
         // {version = "16.2.0";}
@@ -2043,10 +2103,15 @@
       } (
         (withDistributionMeta {
             description = "GNU C Library for the AOS target runtime";
+            homepage = "https://www.gnu.org/software/libc/";
             license = "LGPL-2.1-or-later";
           }
           (
-            stdenv.glibc
+            (
+              if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedGlibc
+              else stdenv.glibc
+            )
             // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
               dev = stdenv.glibc;
               static = stdenv.glibc;
@@ -2378,6 +2443,7 @@
       } (
         (withDistributionMeta {
             description = "Name service database lookup utility from GNU C Library";
+            homepage = "https://www.gnu.org/software/libc/";
             license = "LGPL-2.1-or-later";
           }
           (lib.getOutput "getent" stdenv.glibc))
@@ -2392,57 +2458,57 @@
       bash = withContractFrom discoveredPackages.bash (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.bash
-        else stdenv.bash
+        else withBootstrapPublication "bash"
       ));
       coreutils = withContractFrom discoveredPackages.coreutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.coreutils
-        else stdenv.coreutils
+        else withBootstrapPublication "coreutils"
       ));
       gnumake = withContractFrom discoveredPackages.gnumake (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gnumake
-        else stdenv.gnumake
+        else withBootstrapPublication "gnumake"
       ));
       sed = withContractFrom discoveredPackages.sed (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.sed
-        else stdenv.sed
+        else withBootstrapPublication "sed"
       ));
       grep = withContractFrom discoveredPackages.grep (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.grep
-        else stdenv.grep
+        else withBootstrapPublication "grep"
       ));
       findutils = withContractFrom discoveredPackages.findutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.findutils
-        else stdenv.findutils
+        else withBootstrapPublication "findutils"
       ));
       gawk = withContractFrom discoveredPackages.gawk (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gawk
-        else stdenv.gawk
+        else withBootstrapPublication "gawk"
       ));
       diffutils = withContractFrom discoveredPackages.diffutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.diffutils
-        else stdenv.diffutils
+        else withBootstrapPublication "diffutils"
       ));
       tar = withContractFrom discoveredPackages.tar (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.tar
-        else stdenv.tar
+        else withBootstrapPublication "tar"
       ));
       gzip = withContractFrom discoveredPackages.gzip (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gzip
-        else stdenv.gzip
+        else withBootstrapPublication "gzip"
       ));
       patch = withContractFrom discoveredPackages.patch (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.patch
-        else stdenv.patch
+        else withBootstrapPublication "patch"
       ));
     }
     # --- Trivial builders, exposed flat on the package set ---

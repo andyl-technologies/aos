@@ -71,7 +71,7 @@ in
       # builds its wrapper against the current default LLVM headers.
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
       targetLlvm = llvm;
-      description = "Rust ${version} — Darwin-hosted bootstrap chain intermediate";
+      description = "Rust ${version} — bootstrap chain intermediate";
     }
   else if stdenv.isCross && stdenv.hostPlatform.isLinux
   then
@@ -81,7 +81,7 @@ in
       nativeRust = buildPackages.${prevRust.pname};
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
       targetLlvm = llvm;
-      description = "Rust ${version} — Linux-hosted bootstrap chain intermediate";
+      description = "Rust ${version} — bootstrap chain intermediate";
     }
   else
     mkDerivation {
@@ -108,6 +108,14 @@ in
           script = ''
             tar xf $src
             cd rustc-${version}-src
+            ${
+              if
+                builtins.compareVersions version "1.75.0"
+                >= 0
+                && builtins.compareVersions version "1.77.0" < 0
+              then "patch --fuzz=0 -p1 < ${./rust-bootstrap-vendored-remap.patch}"
+              else ""
+            }
           '';
         }
         {
@@ -124,7 +132,7 @@ in
             # Must return exit 1 for unknown commands (especially rev-parse),
             # otherwise bootstrap tries canonicalize("") and panics.
             mkdir -p .fake-bin
-            printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
 
@@ -175,9 +183,11 @@ in
 
             [target.x86_64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
 
             [target.aarch64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
 
             [build]
             docs = false
@@ -198,6 +208,7 @@ in
             # scheduler allocation as the surrounding bootstrap.
             codegen-units = $NIX_BUILD_CORES
             rpath = true
+            remap-debuginfo = true
             omit-git-hash = true
             ${
               if needsDownloadRustc
@@ -251,7 +262,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!/bin/sh
+            #!${bash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
@@ -261,6 +272,18 @@ in
                         fi
                       fi
                     done
+
+                    install_log="$out/lib/rustlib/install.log"
+                    test -f "$install_log"
+                    sed -i \
+                      -e "s|/build/rustc-${version}-src/build/|/rustc/${version}/bootstrap/|g" \
+                      -e "s|/build/rustc-${version}-src|/rustc/${version}|g" \
+                      "$install_log"
+                    if find "$out" -type f -exec grep -a -l -m1 -F \
+                      "/build/rustc-${version}-src" {} + | grep -q .; then
+                      echo "Rust output retains its bootstrap source root" >&2
+                      exit 1
+                    fi
           '';
         }
       ];

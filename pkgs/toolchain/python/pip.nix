@@ -107,6 +107,13 @@ in
 
           cat > "$out/bin/pip" <<'EOF'
           #!${python3}/bin/python3
+          import pathlib
+          import sys
+
+          # Console scripts must find their own immutable modules without an
+          # activation profile or caller-provided PYTHONPATH.
+          prefix = pathlib.Path(__file__).resolve().parent.parent
+          sys.path.insert(0, str(prefix / "lib/python3.14/site-packages"))
           from pip._internal.cli.main import main
 
           raise SystemExit(main())
@@ -119,8 +126,8 @@ in
       {
         name = "check";
         script = ''
-          PYTHONPATH=$out/lib/python3.14/site-packages \
-            "$out/bin/pip" --version | grep -F "pip ${version}"
+          unset PYTHONPATH
+          "$out/bin/pip" --version | grep -F "pip ${version}"
         '';
       }
     ];

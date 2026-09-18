@@ -7,6 +7,7 @@
   ncurses,
   libxcrypt,
   perl,
+  stdenv,
 }: let
   version = "2.8";
 in
@@ -98,7 +99,16 @@ in
     runtimeDeps = [ncurses libxcrypt];
     propagatedDeps = [];
     abilities = ./_inetutils;
-    configureFlags = "--with-ncurses-include-dir=${ncurses}/include";
+    configureFlags =
+      "--with-ncurses-include-dir=${ncurses}/include"
+      + (
+        if stdenv.isCross && stdenv.hostPlatform.isLinux
+        then
+          # Cross configure cannot inspect the target procfs. Linux ifconfig
+          # requires this kernel interface even when the build sandbox lacks it.
+          " inetutils_cv_path_procnet_dev=/proc/net/dev"
+        else ""
+      );
     # Inetutils 2.8 adds -Wno-format, which conflicts with the stdenv's
     # mandatory -Wformat-security hardening. Keep format checking enabled.
     makeFlags = "WARN_CFLAGS=-Wformat";

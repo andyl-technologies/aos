@@ -18,9 +18,13 @@ Whenever an item names a journal state, inspect the journal it produced with
 `aos release status --journal PATH_TO_JOURNAL` and compare the printed `State:`
 line with the expected value. Keep the old journal; later commands write successors.
 
-**Current blocker:** the test programs for published release artifacts still
-need implementation and installation. Do not substitute synthetic fleet
-reports. Main also remains closed until its
+**Qualification readiness:** packaged executors include native package and
+Linux disk/container staging scenarios, with dedicated recovery and K3s
+package scenarios. Install the exact platform closures and run them against
+the staged artifacts. Required report-backed scenarios still need real
+campaign or operator evidence; do not substitute synthetic fleet reports.
+Follow the [executor setup](qualification.md#native-executors) before treating
+the test environments as ready. Main remains closed until its
 [launch requirements](registry-main.md) are satisfied.
 
 ## 1. Prepare the release
@@ -67,7 +71,7 @@ Complete this section before starting builds or requesting signatures.
   **Check when:** the programs and operating instructions are available, signer
   identities match the approved role roster, and every required test has an
   implementation. A generic runner, empty scenario mapping, or passing fixture
-  test does not satisfy this item. Resolve the current blockers above first.
+  test does not satisfy this item. Complete the executor setup described above.
 
 - [ ] **Verify the registry and both Hub deployments.** Follow the preconditions
   and live-state commands in the [testing](registry-testing.md#preconditions)

@@ -46,6 +46,24 @@
     container = evaluated.config.aos.containers.definitions.aos;
   }) ["edge" "candidate" "stable"];
   goldenRoots = server.config.environment.systemPackages;
+
+  fixture = evaluateServer {
+    aos.image.allowTestArtifacts = true;
+    aos.image.testArtifactRoots = [pkgs.python3];
+    aos.containers.definitions.custom =
+      (import ../../containers/aos.nix {
+        inherit lib pkgs goldenRoots aosSystem;
+      })
+      .config;
+  };
+  fixturePolicy = fixture.config.aos.containers.definitions.aos.runtimePolicy;
+  customPolicy = fixture.config.aos.containers.definitions.custom.runtimePolicy;
+  fixtureAudit = fixture.config.system.build.containers.aos.checks.runtimeAudit;
+  customAudit = fixture.config.system.build.containers.custom.checks.runtimeAudit;
+  unmarkedTestRoots = tryDefinition {
+    aos.containers.definitions.aos.runtimePolicy.testArtifactRoots = [pkgs.python3];
+  };
+
   mismatchedSystem =
     if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
     then "aarch64-linux"
@@ -145,6 +163,17 @@
   containerFilePaths = map (file: file.path) aos.filesystem.files;
 in
   assert aos.name == "aos";
+  assert !aos.runtimePolicy.allowTestArtifacts;
+  assert aos.runtimePolicy.testArtifactRoots == [];
+  assert fixturePolicy.allowTestArtifacts;
+  assert map builtins.toString fixturePolicy.testArtifactRoots == ["${pkgs.python3}"];
+  assert !customPolicy.allowTestArtifacts;
+  assert customPolicy.testArtifactRoots == [];
+  assert fixtureAudit.ALLOW_TEST_ARTIFACTS == "1";
+  assert map builtins.toString fixtureAudit.exportReferencesGraph.testArtifacts == ["${pkgs.python3}"];
+  assert customAudit.ALLOW_TEST_ARTIFACTS == "0";
+  assert customAudit.exportReferencesGraph.testArtifacts == [];
+  assert !unmarkedTestRoots.success;
   assert builtins.attrNames server.config.system.build.containers == ["aos"];
   assert server.config.system.build.defaultContainer.coordination.definitionAttribute
   == "systems.container-eval.build.containers.aos";
@@ -186,7 +215,7 @@ in
   );
   assert aos.platform.aosSystem == aosSystem;
   assert testing.config.aos.release.registry == "andyl/testing";
-  assert testing.config.aos.system.version == "2026.9.0-dev.20260904.1";
+  assert testing.config.aos.system.version == "2026.9.0-dev.20260917.0";
   assert lib.hasInfix "\nID=aos\n" testing.config.environment.etc."os-release".text;
   assert lib.hasInfix "\nAOS_REGISTRY=andyl/testing\n" testing.config.environment.etc."os-release".text;
   assert testing.config.system.build.defaultContainer.coordination.definitionAttribute

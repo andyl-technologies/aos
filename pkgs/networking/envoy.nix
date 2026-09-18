@@ -20,6 +20,7 @@
   python3,
   openjdk,
   gcc,
+  glibc,
   binutils,
   llvm,
   rust,
@@ -45,146 +46,147 @@
   bootstrapTools,
 }: let
   version = "1.37.0";
+  isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
 
-  # Repository rules, generators, and execution-platform actions run on the
-  # Linux builder.  Keep those tools native while the explicit Bazel target
-  # toolchains below select the AOS Darwin compiler and Rust standard library
-  # for the final Envoy binary.
+  # Repository rules, generators, and execution-platform actions stay on the
+  # Linux build platform. Explicit target toolchains below produce the final
+  # foreign-platform Envoy binary.
   buildBazel =
-    if isDarwinCross
+    if isCross
     then buildPackages.bazel-7
     else bazel-7;
   buildJdk =
-    if isDarwinCross
+    if isCross
     then buildPackages.openjdk
     else openjdk;
   buildBash =
-    if isDarwinCross
+    if isCross
     then buildPackages.bash
     else bash;
   buildCoreutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.coreutils
     else coreutils;
   buildWhich =
-    if isDarwinCross
+    if isCross
     then buildPackages.which
     else which;
   buildZip =
-    if isDarwinCross
+    if isCross
     then buildPackages.zip
     else zip;
   buildUnzip =
-    if isDarwinCross
+    if isCross
     then buildPackages.unzip
     else unzip;
   buildGawk =
-    if isDarwinCross
+    if isCross
     then buildPackages.gawk
     else gawk;
   buildPython =
-    if isDarwinCross
+    if isCross
     then buildPackages.python3
     else python3;
   buildGcc =
-    if isDarwinCross
+    if isCross
     then buildPackages.gcc
     else gcc;
   buildBinutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.binutils
     else binutils;
   buildLlvm =
-    if isDarwinCross
+    if isCross
     then buildPackages.llvm
     else llvm;
   buildRust =
-    if isDarwinCross
+    if isCross
     then rust.passthru.buildTool
     else rust;
   nativeRust =
-    if isDarwinCross
+    if isCross
     then buildPackages.rust
     else rust;
   buildCmake =
-    if isDarwinCross
+    if isCross
     then buildPackages.cmake
     else cmake;
   buildNinja =
-    if isDarwinCross
+    if isCross
     then buildPackages.ninja
     else ninja;
   buildGrep =
-    if isDarwinCross
+    if isCross
     then buildPackages.grep
     else grep;
   buildGzip =
-    if isDarwinCross
+    if isCross
     then buildPackages.gzip
     else gzip;
   buildPatch =
-    if isDarwinCross
+    if isCross
     then buildPackages.patch
     else patch;
   buildDiffutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.diffutils
     else diffutils;
   buildFindutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.findutils
     else findutils;
   buildSed =
-    if isDarwinCross
+    if isCross
     then buildPackages.sed
     else sed;
   buildTar =
-    if isDarwinCross
+    if isCross
     then buildPackages.tar
     else tar;
   buildXz =
-    if isDarwinCross
+    if isCross
     then buildPackages.xz
     else xz;
   buildFile =
-    if isDarwinCross
+    if isCross
     then buildPackages.file
     else file;
   buildPerl =
-    if isDarwinCross
+    if isCross
     then buildPackages.perl
     else perl;
   buildGnumake =
-    if isDarwinCross
+    if isCross
     then buildPackages.gnumake
     else gnumake;
   buildPkgConfig =
-    if isDarwinCross
+    if isCross
     then buildPackages.pkg-config
     else pkg-config;
   buildAutoconf =
-    if isDarwinCross
+    if isCross
     then buildPackages.autoconf
     else autoconf;
   buildAutomake =
-    if isDarwinCross
+    if isCross
     then buildPackages.automake
     else automake;
   buildM4 =
-    if isDarwinCross
+    if isCross
     then buildPackages.m4
     else m4;
   buildCaCertificates =
-    if isDarwinCross
+    if isCross
     then buildPackages.ca-certificates
     else ca-certificates;
   buildPatchelf =
-    if isDarwinCross
+    if isCross
     then buildPackages.patchelf
     else patchelf;
   buildBootstrapTools =
-    if isDarwinCross
+    if isCross
     then buildPackages.bootstrapTools
     else bootstrapTools;
   darwinBazelCpu =
@@ -196,6 +198,19 @@
     then "aarch64"
     else "x86_64";
   darwinTargetTriple = stdenv.hostPlatform.config;
+  targetTriple = stdenv.hostPlatform.config;
+  targetGcc =
+    if isLinuxCross
+    then stdenv.cc.cc
+    else gcc;
+  linuxBazelCpu =
+    if stdenv.hostPlatform.isAarch64
+    then "aarch64"
+    else "k8";
+  linuxBazelCpuConstraint =
+    if stdenv.hostPlatform.isAarch64
+    then "aarch64"
+    else "x86_64";
   llvmMajor = builtins.head (lib.splitString "." buildLlvm.version);
 
   tools = [
@@ -475,9 +490,174 @@
     DARWIN_TOOLCHAIN_EOF
   '';
 
+  linuxToolchainSetup = lib.optionalString isLinuxCross ''
+    mkdir -p aos-linux-cross-toolchain
+    ${buildUnzip}/bin/unzip -jo "${buildBazel.src}" \
+      tools/cpp/unix_cc_toolchain_config.bzl \
+      -d aos-linux-cross-toolchain
+
+    # Bazel executes this compiler launcher on x86_64 while every output it
+    # produces targets the hosted AArch64 system.
+    {
+      printf '%s\n' '#!${buildBash}/bin/bash'
+      printf '%s\n' 'set -eu'
+      printf '%s\n' 'target_gcc_dir=$(dirname "$(${stdenv.cc}/bin/cc -print-libgcc-file-name)")'
+      printf '%s\n' 'target_cxx_lib_dir="${targetGcc}/${targetTriple}/lib64"'
+      printf '%s\n' 'target_libc="${glibc}"'
+      printf '%s\n' 'target_libc_dev="${glibc.dev}"'
+      printf '%s\n' 'target_dynamic_linker="${glibc}/lib/${stdenv.hostPlatform.dynamicLinker}"'
+      printf '%s\n' 'compiling=false'
+      printf '%s\n' 'c_source=false'
+      printf '%s\n' 'cxx_source=false'
+      printf '%s\n' 'for arg in "$@"; do'
+      printf '%s\n' '  case "$arg" in'
+      printf '%s\n' '    -c|-S|-E|-M|-MM|-fsyntax-only) compiling=true ;;'
+      printf '%s\n' '    *.c|*.s|*.S) c_source=true ;;'
+      printf '%s\n' '    *.cc|*.cp|*.cpp|*.cxx|*.C) cxx_source=true ;;'
+      printf '%s\n' '  esac'
+      printf '%s\n' 'done'
+      printf '%s\n' 'driver="${buildLlvm}/bin/clang++"'
+      printf '%s\n' 'if [ "$compiling" = true ] && [ "$c_source" = true ] && [ "$cxx_source" = false ]; then'
+      printf '%s\n' '  driver="${buildLlvm}/bin/clang"'
+      printf '%s\n' 'fi'
+      printf '%s\n' 'common_flags=(' \
+        '  "--target=${targetTriple}"' \
+        '  "--gcc-install-dir=$target_gcc_dir"' \
+        '  "-idirafter" "$target_libc_dev/include"' \
+        '  "-B$target_libc/lib" "-B$target_gcc_dir"' \
+        ')'
+      printf '%s\n' 'if [ "$compiling" = true ]; then'
+      # Some Envoy dependencies select GCC-only warning switches before their
+      # own -Werror. Keep Clang's unknown-warning diagnostic non-fatal by
+      # placing the exception after all Bazel-provided arguments.
+      printf '%s\n' '  exec "$driver" "''${common_flags[@]}" "$@" -Wno-error=unknown-warning-option'
+      printf '%s\n' 'fi'
+      printf '%s\n' 'exec "$driver" "''${common_flags[@]}" "$@" \'
+      printf '%s\n' '  -fuse-ld=lld \'
+      printf '%s\n' '  -L"$target_libc/lib" -L"$target_gcc_dir" -L"$target_cxx_lib_dir" \'
+      printf '%s\n' '  -L${glibc.static}/lib \'
+      printf '%s\n' '  -latomic \'
+      printf '%s\n' '  -Wl,-dynamic-linker,"$target_dynamic_linker" \'
+      printf '%s\n' '  -Wl,-rpath,"$target_libc/lib" \'
+      printf '%s\n' '  -Wl,-rpath,"$target_cxx_lib_dir" \'
+      printf '%s\n' '  -Wl,-rpath,\$ORIGIN/../lib'
+    } > aos-linux-cross-toolchain/compiler
+    chmod +x aos-linux-cross-toolchain/compiler
+
+    cat > aos-linux-cross-toolchain/BUILD.bazel <<'LINUX_CROSS_TOOLCHAIN_EOF'
+    load(":unix_cc_toolchain_config.bzl", "cc_toolchain_config")
+    load("@rules_cc//cc:defs.bzl", "cc_toolchain", "cc_toolchain_suite")
+
+    package(default_visibility = ["//visibility:public"])
+
+    platform(
+        name = "target-platform",
+        constraint_values = [
+            "@platforms//cpu:${linuxBazelCpuConstraint}",
+            "@platforms//os:linux",
+        ],
+    )
+
+    filegroup(name = "empty")
+    filegroup(
+        name = "compiler-files",
+        srcs = ["compiler", "unix_cc_toolchain_config.bzl"],
+    )
+
+    cc_toolchain_suite(
+        name = "toolchain",
+        toolchains = {
+            "${linuxBazelCpu}": ":cc-compiler",
+            "${linuxBazelCpu}|clang": ":cc-compiler",
+        },
+    )
+
+    cc_toolchain(
+        name = "cc-compiler",
+        toolchain_identifier = "aos-${targetTriple}",
+        toolchain_config = ":config",
+        all_files = ":compiler-files",
+        ar_files = ":compiler-files",
+        as_files = ":compiler-files",
+        compiler_files = ":compiler-files",
+        dwp_files = ":empty",
+        linker_files = ":compiler-files",
+        objcopy_files = ":compiler-files",
+        strip_files = ":compiler-files",
+        supports_header_parsing = 1,
+        supports_param_files = 1,
+    )
+
+    toolchain(
+        name = "registered-toolchain",
+        exec_compatible_with = [
+            "@platforms//cpu:x86_64",
+            "@platforms//os:linux",
+        ],
+        target_compatible_with = [
+            "@platforms//cpu:${linuxBazelCpuConstraint}",
+            "@platforms//os:linux",
+        ],
+        toolchain = ":cc-compiler",
+        toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    )
+
+    cc_toolchain_config(
+        name = "config",
+        cpu = "${linuxBazelCpu}",
+        compiler = "clang",
+        toolchain_identifier = "aos-${targetTriple}",
+        host_system_name = "x86_64-unknown-linux-gnu",
+        target_system_name = "${targetTriple}",
+        target_libc = "glibc",
+        abi_version = "gnu",
+        abi_libc_version = "glibc",
+        builtin_sysroot = "",
+        cxx_builtin_include_directories = [
+            "${glibc.dev}/include",
+            "${targetGcc}/lib/gcc/${targetTriple}/${targetGcc.version}/include",
+            "${targetGcc}/lib/gcc/${targetTriple}/${targetGcc.version}/include-fixed",
+            "${targetGcc}/${targetTriple}/include/c++/${targetGcc.version}",
+            "${targetGcc}/${targetTriple}/include/c++/${targetGcc.version}/${targetTriple}",
+            "${buildLlvm}/lib/clang/${llvmMajor}/include",
+        ],
+        tool_paths = {
+            "ar": "${buildLlvm}/bin/llvm-ar",
+            "c++filt": "${buildLlvm}/bin/llvm-cxxfilt",
+            "cpp": "compiler",
+            "dwp": "${buildLlvm}/bin/llvm-dwp",
+            "gcc": "compiler",
+            "gcov": "${buildLlvm}/bin/llvm-cov",
+            "ld": "compiler",
+            "llvm-cov": "${buildLlvm}/bin/llvm-cov",
+            "llvm-profdata": "${buildLlvm}/bin/llvm-profdata",
+            "nm": "${buildLlvm}/bin/llvm-nm",
+            "objcopy": "${buildLlvm}/bin/llvm-objcopy",
+            "objdump": "${buildLlvm}/bin/llvm-objdump",
+            "strip": "${buildLlvm}/bin/llvm-strip",
+        },
+        compile_flags = [],
+        dbg_compile_flags = ["-g"],
+        opt_compile_flags = ["-O2", "-DNDEBUG"],
+        conly_flags = [],
+        cxx_flags = [],
+        link_flags = [],
+        archive_flags = [],
+        link_libs = [],
+        opt_link_flags = [],
+        unfiltered_compile_flags = [],
+        coverage_compile_flags = [],
+        coverage_link_flags = [],
+        supports_start_end_lib = False,
+        extra_flags_per_feature = {},
+    )
+    LINUX_CROSS_TOOLCHAIN_EOF
+  '';
+
   # Source patching — shared between fetch and build phases
   postPatchScript =
     darwinToolchainSetup
+    + linuxToolchainSetup
     + ''
           # Apply patches
           patch -p1 < ${./envoy-patches/0001-use-system-python.patch}
@@ -578,17 +758,17 @@
           # Set up Rust toolchain symlinks for Bazel
           mkdir -p bazel/nix
           ln -sf ${
-        if isDarwinCross
+        if isCross
         then "${nativeRust}/bin/rustc.unwrapped"
         else "${buildRust}/bin/rustc"
       } bazel/nix/rustc
           ln -sf ${
-        if isDarwinCross
+        if isCross
         then "${nativeRust}/bin/cargo"
         else "${buildRust}/bin/cargo"
       } bazel/nix/cargo
           ln -sf ${
-        if isDarwinCross
+        if isCross
         then "${nativeRust}/bin/rustdoc.unwrapped"
         else "${buildRust}/bin/rustdoc"
       } bazel/nix/rustdoc
@@ -651,6 +831,63 @@
           )
           DARWIN_RUST_TOOLCHAIN_EOF
         ''
+        else if isLinuxCross
+        then ''
+          cat > bazel/nix/BUILD.bazel <<'LINUX_RUST_TOOLCHAIN_EOF'
+          load("@bazel_tools//tools/sh:sh_toolchain.bzl", "sh_toolchain")
+          load("@rules_rust//rust:toolchain.bzl", "rust_toolchain")
+          load("@rules_rust//rust:defs.bzl", "rust_stdlib_filegroup")
+
+          exports_files(["cargo", "rustdoc", "rustc"])
+
+          rust_stdlib_filegroup(
+              name = "rust_nix_target_stdlib",
+              srcs = glob([
+                  "rustcroot/lib/rustlib/${targetTriple}/lib/**",
+              ]),
+          )
+
+          rust_toolchain(
+              name = "rust_nix_target_impl",
+              binary_ext = "",
+              dylib_ext = ".so",
+              exec_triple = "x86_64-unknown-linux-gnu",
+              cargo = ":cargo",
+              rust_doc = ":rustdoc",
+              rust_std = ":rust_nix_target_stdlib",
+              rustc = ":rustc",
+              stdlib_linkflags = ["-ldl", "-lpthread"],
+              staticlib_ext = ".a",
+              target_triple = "${targetTriple}",
+              extra_rustc_flags = ["-Clinker=aos-linux-cross-toolchain/compiler"],
+          )
+
+          toolchain(
+              name = "rust_nix_target",
+              exec_compatible_with = [
+                  "@platforms//cpu:x86_64",
+                  "@platforms//os:linux",
+              ],
+              target_compatible_with = [
+                  "@platforms//cpu:${linuxBazelCpuConstraint}",
+                  "@platforms//os:linux",
+              ],
+              toolchain = ":rust_nix_target_impl",
+              toolchain_type = "@rules_rust//rust:toolchain_type",
+          )
+
+          sh_toolchain(
+              name = "local_sh_impl",
+              path = "${buildBash}/bin/bash",
+          )
+
+          toolchain(
+              name = "local_sh",
+              toolchain = ":local_sh_impl",
+              toolchain_type = "@bazel_tools//tools/sh:toolchain_type",
+          )
+          LINUX_RUST_TOOLCHAIN_EOF
+        ''
         else ''sed "s|@bash@|${buildBash}/bin/bash|g" ${./envoy-patches/nix-build.BUILD.bazel} > bazel/nix/BUILD.bazel''
       }
 
@@ -659,6 +896,7 @@
             -e 's|crate_universe_dependencies()|crate_universe_dependencies(bootstrap=True, rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc")|' \
             -e 's|crates_repository(|crates_repository(generator="@@cargo_bazel_bootstrap//:cargo-bazel", supported_platform_triples=["x86_64-unknown-linux-gnu"${
         lib.optionalString isDarwinCross '', "x86_64-apple-darwin", "aarch64-apple-darwin"''
+        + lib.optionalString isLinuxCross '', "${targetTriple}"''
       }], rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc",|' \
             bazel/dependency_imports.bzl
 
@@ -770,6 +1008,18 @@ in
         "--extra_toolchains=//aos-darwin-toolchain:registered-toolchain"
         "--repo_env=CC=${buildGcc}/bin/gcc"
         "--repo_env=CXX=${buildGcc}/bin/g++"
+      ]
+      ++ lib.optionals isLinuxCross [
+        "--noenable_platform_specific_config"
+        "--config=linux"
+        "--platforms=//aos-linux-cross-toolchain:target-platform"
+        "--cpu=${linuxBazelCpu}"
+        "--host_cpu=k8"
+        "--crosstool_top=//aos-linux-cross-toolchain:toolchain"
+        "--host_crosstool_top=@local_config_cc//:toolchain"
+        "--extra_toolchains=//aos-linux-cross-toolchain:registered-toolchain"
+        "--repo_env=CC=${buildGcc}/bin/gcc"
+        "--repo_env=CXX=${buildGcc}/bin/g++"
       ];
     inherit scrubMap;
 
@@ -777,16 +1027,18 @@ in
     depsHash =
       if isDarwinCross
       then "sha256-OFSJQxEQ+LWGa8ZnTBZ6R16IauY5EL7Kh80T+m17emU="
+      else if isLinuxCross
+      then "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y="
       else "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y=";
     fetchPostPatch = "";
     bazelFetchFlags = [
       "--extra_toolchains=//bazel/nix:${
-        if isDarwinCross
+        if isCross
         then "rust_nix_target"
         else "rust_nix_x86_64"
       }"
     ];
-    fetchEnv = lib.optionalAttrs isDarwinCross {
+    fetchEnv = lib.optionalAttrs isCross {
       CARGO_BAZEL_REPIN = "true";
     };
     postFetch = ''
@@ -842,6 +1094,20 @@ in
         "--strip=always"
         "--host_linkopt=-fuse-ld=lld"
         "--host_linkopt=-no-pie"
+        "--cxxopt=-Wno-error"
+      ]
+      else if isLinuxCross
+      then [
+        "-c opt"
+        "--spawn_strategy=remote,standalone"
+        "--extra_toolchains=@local_jdk//:all"
+        "--java_runtime_version=local_jdk"
+        "--tool_java_runtime_version=local_jdk"
+        "--extra_toolchains=//bazel/nix:rust_nix_target"
+        "--strip=always"
+        "--host_linkopt=-fuse-ld=lld"
+        "--host_linkopt=-no-pie"
+        "--cxxopt=-Wno-changes-meaning"
         "--cxxopt=-Wno-error"
       ]
       else [
@@ -1165,6 +1431,38 @@ in
           fi
         done
       ''}
+                ${lib.optionalString isLinuxCross ''
+
+        # Generic Bazel setup emits link options for the native execution
+        # runtime. The target compiler launcher supplies the matching AArch64
+        # interpreter, libraries, and RPATH instead.
+        sed -i \
+          -e "\|^build --linkopt=-L$TMPDIR/rust-link-libs$|d" \
+          -e "\|^build --linkopt=-L$GLIBC/lib$|d" \
+          -e "\|^build --linkopt=-Wl,-dynamic-linker,$INTERP$|d" \
+          -e "\|^build --linkopt=-Wl,-rpath,$GLIBC/lib$|d" \
+          -e "\|^build --linkopt=-B$TMPDIR/fake-bin$|d" \
+          -e "\|^build --action_env=COMPILER_PATH=$TMPDIR/fake-bin$|d" \
+          .bazelrc
+
+        # local_config_cc owns native host actions. Target actions use the
+        # explicit cross toolchain selected by bazelFlags.
+        unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+        export CC="${buildGcc}/bin/gcc"
+        export CXX="${buildGcc}/bin/g++"
+        export AR="${buildGcc}/bin/ar"
+        export LD="${buildGcc}/bin/ld"
+        export NM="${buildGcc}/bin/nm"
+        export OBJCOPY="${buildGcc}/bin/objcopy"
+        export OBJDUMP="${buildGcc}/bin/objdump"
+        export RANLIB="${buildGcc}/bin/ranlib"
+        export STRIP="${buildGcc}/bin/strip"
+        echo "build --action_env=CC=$PWD/aos-linux-cross-toolchain/compiler" >> .bazelrc
+        echo "build --action_env=CXX=$PWD/aos-linux-cross-toolchain/compiler" >> .bazelrc
+        echo "build --host_action_env=CC=${buildGcc}/bin/gcc" >> .bazelrc
+        echo "build --host_action_env=CXX=${buildGcc}/bin/g++" >> .bazelrc
+        echo "build --host_action_env=COMPILER_PATH=$TMPDIR/fake-bin" >> .bazelrc
+      ''}
     '';
     installPhase =
       if isDarwinCross
@@ -1215,24 +1513,50 @@ in
         cp "$ENVOY_BIN" $out/bin/envoy
         chmod +x $out/bin/envoy
 
-        # Patch ELF interpreter and RPATH
-        INTERP=$(cat "${buildBootstrapTools}/nix-support/dynamic-linker")
-        BT_LIB=$(dirname "$INTERP")
-        STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-        STDCXX_DIR=""
-        if [ -n "$STDCXX_FILE" ]; then
-          STDCXX_DIR=$(dirname "$STDCXX_FILE")
-        fi
-        RPATH="$BT_LIB"
-        if [ -n "$STDCXX_DIR" ]; then
-          RPATH="$RPATH:$STDCXX_DIR"
-        fi
-        ${buildPatchelf}/bin/patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
-                 $out/bin/envoy 2>/dev/null || true
+        ${
+          if isLinuxCross
+          then ''
+            ${buildFile}/bin/file $out/bin/envoy | ${buildGrep}/bin/grep -q 'ARM aarch64'
+
+            mkdir -p $out/lib
+            for library in libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
+              test -e "${targetGcc}/${targetTriple}/lib64/$library"
+              cp -L "${targetGcc}/${targetTriple}/lib64/$library" "$out/lib/$library"
+            done
+
+            # DT_RUNPATH is not transitive: the executable's path does not
+            # help libstdc++ locate libgcc_s. Give the binary and its copied
+            # runtime libraries a self-contained target runtime search path.
+            for elf in "$out/bin/envoy" "$out/lib/"*.so.*; do
+              chmod u+w "$elf"
+              ${buildPatchelf}/bin/patchelf \
+                --set-rpath "$out/lib:${glibc}/lib" \
+                "$elf"
+            done
+          ''
+          else ''
+            # Patch the native ELF interpreter and RPATH.
+            INTERP=$(cat "${buildBootstrapTools}/nix-support/dynamic-linker")
+            BT_LIB=$(dirname "$INTERP")
+            STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+            STDCXX_DIR=""
+            if [ -n "$STDCXX_FILE" ]; then
+              STDCXX_DIR=$(dirname "$STDCXX_FILE")
+            fi
+            RPATH="$BT_LIB"
+            if [ -n "$STDCXX_DIR" ]; then
+              RPATH="$RPATH:$STDCXX_DIR"
+            fi
+            ${buildPatchelf}/bin/patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
+                     $out/bin/envoy 2>/dev/null || true
+          ''
+        }
       '';
 
     buildDeps = [buildPatchelf];
-    runtimeDeps = [];
+    # The Linux cross-toolchain embeds the target glibc interpreter in Envoy.
+    # Retain that loader through reference scrubbing and in the runtime closure.
+    runtimeDeps = lib.optional isLinuxCross glibc;
     propagatedDeps = [];
 
     meta = {
