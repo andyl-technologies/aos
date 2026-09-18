@@ -636,6 +636,15 @@ does not satisfy the other. Package publication support policy determines
 which cells apply. The package probe schema has no architecture selector that
 can silently exempt an otherwise published cell.
 
+Recovery and K3s package cases also bind their published execution image. The
+shared policy's `qualification.packageExecutionImageVariant` defaults to
+`aos-testing`, whose canonical image contains the public release profile and
+trust inputs. Recovery and fleet executors derive their image variant from the
+same package rule. Alternate reviewed contracts can select another canonical
+published variant; a fixture image name is not an implicit substitute. Plan
+validation rejects a missing execution image or platform before builds and
+signing, rather than waiting for staging case expansion.
+
 `qualify-run` routes each case to its platform's `--executor` mapping. The
 package executor runs natively and validates the requested platform; it does
 not create a VM itself. To qualify packages in Linux VMs, provision an executor

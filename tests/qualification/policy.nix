@@ -291,8 +291,11 @@ in
   assert recoveryPackage.execution
   == {
     kind = "recovery-image";
-    system_variant = "server";
+    system_variant = "aos-testing";
   };
+  assert builtins.all (rule:
+    (rule.execution or null) == null || rule.execution.system_variant == "aos-testing")
+  contract.package_rules;
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
   assert builtins.all (target:
