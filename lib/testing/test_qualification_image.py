@@ -1,4 +1,4 @@
-"""Tests that VM reboot evidence survives SSH transport failures."""
+"""Tests image transport and host/guest identity boundaries."""
 
 from __future__ import annotations
 
@@ -81,6 +81,36 @@ class RebootEvidenceTests(unittest.TestCase):
 
         self.ready.assert_not_called()
         self.assertEqual(self.machine.counts.reboot_cycles, 0)
+
+    def test_arm64_image_records_the_actual_x86_host(self):
+        host = os.uname_result(("Linux", "test", "kernel", "version", "x86_64"))
+        with (
+            patch.object(self.transport, "PLATFORM", "aarch64-linux"),
+            patch.object(self.transport.os, "uname", return_value=host),
+        ):
+            self.assertEqual(self.transport.execution_host_platform(), "x86_64-linux")
+
+    def test_native_arm64_image_host_is_supported(self):
+        host = os.uname_result(("Linux", "test", "kernel", "version", "aarch64"))
+        with (
+            patch.object(self.transport, "PLATFORM", "aarch64-linux"),
+            patch.object(self.transport.os, "uname", return_value=host),
+        ):
+            self.assertEqual(self.transport.execution_host_platform(), "aarch64-linux")
+
+    def test_x86_kvm_image_cannot_use_an_arm64_host(self):
+        host = os.uname_result(("Linux", "test", "kernel", "version", "aarch64"))
+        with patch.object(self.transport.os, "uname", return_value=host):
+            with self.assertRaisesRegex(RuntimeError, "KVM qualification requires"):
+                self.transport.execution_host_platform()
+
+    def test_unsupported_execution_hosts_are_rejected(self):
+        for system, architecture in (("Darwin", "arm64"), ("Linux", "riscv64")):
+            host = os.uname_result((system, "test", "kernel", "version", architecture))
+            with self.subTest(system=system, architecture=architecture):
+                with patch.object(self.transport.os, "uname", return_value=host):
+                    with self.assertRaisesRegex(RuntimeError, "supported Linux host"):
+                        self.transport.execution_host_platform()
 
     def test_arguments_attach_declared_disks_after_root(self):
         machine = self.transport.VirtualMachine.__new__(self.transport.VirtualMachine)
