@@ -13,6 +13,7 @@
   config,
   lib,
   pkgs,
+  systemName ? "system",
   ...
 }: let
   # Assembly and validation execute on the build machine; payloads stay target-specific.
@@ -54,6 +55,7 @@
     inherit pkgs lib runtimeClosureAudit;
     system = {inherit config;};
     name = config.aos.system.name;
+    systemVariant = systemName;
   };
   imageBudgetCheck = import ./_budget-check.nix {
     inherit config lib pkgs runtimeClosureAudit;
