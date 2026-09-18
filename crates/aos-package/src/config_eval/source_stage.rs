@@ -784,17 +784,16 @@ impl<'a> SourceComposition<'a> {
             .instances
             .get(&binding.provider_instance)
             .with_context(|| format!("binding {binding_name:?} has no provider instance"))?;
-        let (package_name, implementation_name) = declaration_parts(&binding.implementation)?;
         ensure!(
-            package_name == instance.package,
+            binding.implementation.package == instance.package,
             "binding crosses package provenance"
         );
-        let package = self.package(&package_name)?;
+        let package = self.package(&binding.implementation.package)?;
         let implementation = package
             .implementation
             .providers
             .iter()
-            .find(|provider| provider.name == implementation_name)
+            .find(|provider| provider.name == binding.implementation.local_key)
             .with_context(|| format!("binding {binding_name:?} has no implementation"))?;
         let descriptor = implementation.descriptor_digest()?;
         ensure!(
