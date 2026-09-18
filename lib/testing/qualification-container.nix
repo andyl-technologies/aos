@@ -7,6 +7,9 @@
   identity,
   assessmentRoot ? "/etc/aos-release/qualification-assessments",
   lifecycleCycles ? 10,
+  # A full-system guest cannot observe its outer host. Its operator collects
+  # this report, adds the observed outer layers, then invokes respond host-side.
+  reportOnly ? false,
 }: let
   runtimePath = lib.makeBinPath [
     pkgs.bash
@@ -405,9 +408,15 @@ in
           assessment: $assessment[0]
         }' >scenario-report.json
 
-      exec ${pkgs.aos}/bin/aos release qualification respond \
-        --request "$request" \
-        --scenarios scenario-registry.json \
-        --report scenario-report.json \
-        --identity ${lib.escapeShellArg identity}
+      ${
+        if reportOnly
+        then "${pkgs.coreutils}/bin/cat scenario-report.json"
+        else ''
+          exec ${pkgs.aos}/bin/aos release qualification respond \
+            --request "$request" \
+            --scenarios scenario-registry.json \
+            --report scenario-report.json \
+            --identity ${lib.escapeShellArg identity}
+        ''
+      }
     ''
