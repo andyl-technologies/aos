@@ -134,7 +134,7 @@
         slot = "${stage}-${requestName}";
       })
     (consumerModuleFor stage extraRequests).config.aos.abilities.requests;
-  evaluate = stage: extraRequests: bindings:
+  evaluate = stage: extraRequests: bindings: abilityResolution:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -160,7 +160,7 @@
       ];
       selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
-        inherit pkgs;
+        inherit pkgs abilityResolution;
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
@@ -169,8 +169,11 @@
     };
   complete = stage: extraRequests: let
     baseBindings = baseBindingsFor stage extraRequests;
-    pending = evaluate stage extraRequests baseBindings;
+    pending = evaluate stage extraRequests baseBindings {};
     children = builtins.attrValues pending.config.aos.abilities.compositionPendingRequests;
+    resolvedAbilityInputs = import ./_composition-resolution.nix {
+      abilities = pending.config.aos.abilities;
+    };
     effectBindings = builtins.listToAttrs (builtins.map (child: {
         name = "test:${child.request}";
         value = {
@@ -185,7 +188,7 @@
       })
       children);
   in
-    evaluate stage extraRequests (baseBindings // effectBindings);
+    evaluate stage extraRequests (baseBindings // effectBindings) resolvedAbilityInputs;
   checkStage = stage: let
     abilities = (complete stage {}).config.aos.abilities;
     expected = expectedUnits.${stage} // {early-system = earlySystemUnit.${stage};};

@@ -90,7 +90,10 @@
       };
     };
   };
-  evaluate = bindings:
+  evaluate = {
+    bindings,
+    abilityResolution ? {},
+  }:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -116,14 +119,14 @@
       ];
       selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
-        inherit pkgs;
+        inherit pkgs abilityResolution;
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
         };
       };
     };
-  pending = evaluate baseBindings;
+  pending = evaluate {bindings = baseBindings;};
   pendingChildren = builtins.attrValues pending.config.aos.abilities.compositionPendingRequests;
   childFor = field:
     builtins.head (builtins.filter
@@ -139,33 +142,40 @@
     (child:
       (child.declaration.parameters.expected.entries or []) != [])
     pendingChildren);
-  evaluation = evaluate (baseBindings
-    // {
-      "test:network-effects" = {
-        request = networkChild.request;
-        implementation = "systemd:systemd-network-readiness-effects";
-        providerInstance = "systemd:manager";
-        slot = networkChild.slot;
+  resolvedAbilityInputs = import ./_composition-resolution.nix {
+    abilities = pending.config.aos.abilities;
+  };
+  evaluation = evaluate {
+    bindings =
+      baseBindings
+      // {
+        "test:network-effects" = {
+          request = networkChild.request;
+          implementation = "systemd:systemd-network-readiness-effects";
+          providerInstance = "systemd:manager";
+          slot = networkChild.slot;
+        };
+        "test:filesystem-effects" = {
+          request = filesystemChild.request;
+          implementation = "systemd:systemd-filesystem-readiness-effects";
+          providerInstance = "systemd:manager";
+          slot = filesystemChild.slot;
+        };
+        "test:milestone-effects" = {
+          request = milestoneChild.request;
+          implementation = "systemd:systemd-activation-milestone-effects";
+          providerInstance = "systemd:manager";
+          slot = milestoneChild.slot;
+        };
+        "test:runtime-entry-effects" = {
+          request = runtimeEntriesChild.request;
+          implementation = "systemd:systemd-runtime-entry-population-effects";
+          providerInstance = "systemd:manager";
+          slot = runtimeEntriesChild.slot;
+        };
       };
-      "test:filesystem-effects" = {
-        request = filesystemChild.request;
-        implementation = "systemd:systemd-filesystem-readiness-effects";
-        providerInstance = "systemd:manager";
-        slot = filesystemChild.slot;
-      };
-      "test:milestone-effects" = {
-        request = milestoneChild.request;
-        implementation = "systemd:systemd-activation-milestone-effects";
-        providerInstance = "systemd:manager";
-        slot = milestoneChild.slot;
-      };
-      "test:runtime-entry-effects" = {
-        request = runtimeEntriesChild.request;
-        implementation = "systemd:systemd-runtime-entry-population-effects";
-        providerInstance = "systemd:manager";
-        slot = runtimeEntriesChild.slot;
-      };
-    });
+    abilityResolution = resolvedAbilityInputs;
+  };
   abilities = evaluation.config.aos.abilities;
   outputs = {
     network = abilities.compositionOutputs."consumer:network".resource.value;

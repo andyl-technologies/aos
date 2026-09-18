@@ -18,7 +18,10 @@
       slot = "entry";
     };
   };
-  evaluate = bindings:
+  evaluate = {
+    bindings,
+    abilityResolution ? {},
+  }:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -70,24 +73,31 @@
       ];
       selectedProviderModules = [selectedProvider];
       specialArgs = {
-        inherit pkgs;
+        inherit pkgs abilityResolution;
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
         };
       };
     };
-  pending = evaluate baseBindings;
+  pending = evaluate {bindings = baseBindings;};
   effectsChild = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
-  evaluation = evaluate (baseBindings
-    // {
-      "test:entry-effects" = {
-        request = effectsChild.request;
-        implementation = "aos-filesystem-provider:filesystem-entry-effects";
-        providerInstance = "aos-filesystem-provider:filesystem";
-        slot = effectsChild.slot;
+  resolvedAbilityInputs = import ./_composition-resolution.nix {
+    abilities = pending.config.aos.abilities;
+  };
+  evaluation = evaluate {
+    bindings =
+      baseBindings
+      // {
+        "test:entry-effects" = {
+          request = effectsChild.request;
+          implementation = "aos-filesystem-provider:filesystem-entry-effects";
+          providerInstance = "aos-filesystem-provider:filesystem";
+          slot = effectsChild.slot;
+        };
       };
-    });
+    abilityResolution = resolvedAbilityInputs;
+  };
   abilities = evaluation.config.aos.abilities;
   output = abilities.compositionOutputs."consumer:entry".resource;
   resources = builtins.attrValues abilities.resolvedResources;

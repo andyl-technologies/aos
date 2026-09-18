@@ -78,6 +78,9 @@
     };
   pending = evaluate {bindings = baseBindings;};
   child = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
+  resolvedAbilityInputs = import ./_composition-resolution.nix {
+    abilities = pending.config.aos.abilities;
+  };
   resolved = evaluate {
     bindings =
       baseBindings
@@ -89,7 +92,7 @@
           slot = child.slot;
         };
       };
-    abilityResolution.requests.${child.request} = child.declaration;
+    abilityResolution = resolvedAbilityInputs;
   };
   abilities = resolved.config.aos.abilities;
   resource = builtins.head (builtins.attrValues abilities.desiredResources);
