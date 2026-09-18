@@ -161,6 +161,41 @@ production access profile, deployment identity, plan, and idempotency key. The
 topology row and `aos release bootstrap` publication are separate: create and
 inspect the row first, then install the independently approved empty base.
 
+## Prepare the image signing authorities
+
+The `aos-testing` variant is a canonical release image: `aos.image` emits only
+`system.build.unsignedImageAssembly` and every signature is applied later by
+`aos release finalize-image` through the registry's signer adapter. Four public
+trust inputs are therefore committed, and their private halves are prepared once
+and held in operator custody with the registry and TUF keys.
+
+| Custody file | Public half in the repository | Signer key id |
+| --- | --- | --- |
+| `image/db.key` + `image/db.crt` | `systems/andyl-testing-authorities/db.crt` | `andyl-testing-secure-boot-db-v1` |
+| `image/modsign.key` + `image/modsign.crt` | `systems/andyl-testing-authorities/modsign.crt` | `andyl-testing-kernel-module-v1` |
+| `image/pcr.key` | `systems/andyl-testing-authorities/pcr.pem` | `andyl-testing-pcr-policy-v1` |
+| `image/PK.key`, `image/KEK.key` | `systems/andyl-testing-authorities/enrollment/*.auth` | offline only |
+| `provenance/andyl-testing-provenance-v1` | registry roster trust line | `andyl-testing-provenance-v1` |
+
+Secure Boot db, kernel module signing, and PCR policy are three separate trust
+domains and must stay three separate keys; the profile asserts that their signer
+roles are distinct. The Platform and Key Exchange keys sign only the enrollment
+blobs and never participate in a release, so they stay offline after generation.
+
+Regenerating the `.auth` blobs from the same certificates reproduces identical
+bytes: both the owner GUID and the signing timestamp are fixed. Do not mint a
+different key under an already-published identity — that is a trust-root epoch
+reset, not a key rotation.
+
+The file-backed adapter reads all of these from one configuration; see the
+file-backed signer section of
+[`canonical-releases.md`](canonical-releases.md). Confirm the adapter resolves
+every role before planning a release:
+
+```sh
+aos-release-signer show
+```
+
 ## Publish the first or a later edge release
 
 The prepared first-release profile uses

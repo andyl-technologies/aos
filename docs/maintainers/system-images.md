@@ -168,10 +168,13 @@ nix build .#acme-server-image-vmdk
 nix build .#acme-server-image-vhd
 ```
 
-Build the experimental artifacts from the same variant evaluation:
+Build the experimental artifacts from the same variant evaluation. The
+`aos-testing` variant defers image signing to the release finalizer, so Nix
+stops at the unsigned assembly and publishes no `-image-<format>` outputs;
+`aos release finalize-image` turns the assembly into the signed disks:
 
 ```sh
-nix build .#aos-testing-image-qcow2
+nix build .#aos-testing-unsigned-image-assembly
 nix build .#container-aos-testing-oci
 nix build .#container-aos-testing-docker
 nix build .#container-aos-testing-publication-inputs
