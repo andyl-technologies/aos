@@ -38,12 +38,13 @@
       aos.image.allowTestArtifacts = true;
       aos.image.testArtifactRoots = [pkgs.test-http-server.expose];
 
-      # The bundled Python HTTP server and registry fixtures bring this test's
-      # runtime closure to 854 MiB. Its compressed disk remains below the
-      # adjacent 832 MiB cap; production keeps its own limits.
+      # The bundled Python HTTP server, registry fixtures, and sandbox-capable
+      # AOS CLI bring this test's runtime closure to 867 MiB. Its compressed
+      # disk remains below the adjacent 832 MiB cap; production keeps its own
+      # limits.
       aos.image.budgets = {
         maxRootMiB = 736;
-        maxRuntimeClosureMiB = 864;
+        maxRuntimeClosureMiB = 880;
         maxDownloadMiB = 832;
       };
 
