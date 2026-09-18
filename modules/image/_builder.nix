@@ -32,6 +32,7 @@
   lib,
   system,
   name,
+  systemVariant ? name,
   runtimeClosureAudit,
 }: let
   # Assembly and validation execute on the build machine; payloads stay target-specific.
@@ -546,7 +547,7 @@
             --arg schema aos.image.assembly-recipe/v2 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
-            --arg variant ${lib.escapeShellArg name} \
+            --arg variant ${lib.escapeShellArg systemVariant} \
             --arg kernelRelease ${lib.escapeShellArg system.config.system.build.kernel.version} \
             --arg kernelParams ${lib.escapeShellArg kernelParams} \
             --arg kernelParamsB ${lib.escapeShellArg kernelParamsB} \
