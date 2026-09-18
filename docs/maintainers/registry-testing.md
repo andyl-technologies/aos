@@ -210,7 +210,16 @@ Before freezing the epoch-one public `.1` plan, create and retain the
 at `2026.9.0-dev.20260917.0`. Its protected source revision carries the `.0`
 testing profile and uses the reserved snapshot release id and source tag. After
 offline verification, advance the profile to `.1` in a later reviewed protected
-source revision. Do not upload the `.0` snapshot or use its isolated registry
+source revision.
+
+Plan the snapshot while the `.0` revision is still the head of `master`.
+Planning derives its source identity from the checked-out commit and refuses
+one that is merely an ancestor: `aos release plan` requires `HEAD` to equal the
+protected branch head for every class except `emergency`, and accepts no
+protected branch other than `master`. Merging the `.0` and `.1` revisions
+together therefore leaves no revision from which the snapshot can be planned,
+and recovering means putting `.0` back at the head of `master` before trying
+again. Land `.0`, plan and build the snapshot, and only then land `.1`. Do not upload the `.0` snapshot or use its isolated registry
 commit as the public registry base. The `.1` request names the snapshot's
 verified release id and manifest digest while retaining the approved empty Hub
 base commit and generation.
