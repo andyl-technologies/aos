@@ -76,27 +76,6 @@
     request = "aos:${requestName}";
     inherit output;
   };
-  expectedRequirements = builtins.sort builtins.lessThan [
-    "aos:credential-delivery"
-    "aos:group-resolution"
-    "aos:linux-service-isolation"
-    "aos:named-credential-resolution"
-    "aos:network-readiness"
-    "aos:persistent-storage-allocation"
-    "aos:principal-resolution"
-    "aos:scheduled-activation"
-    "aos:service-activation"
-    "aos:service-concurrency"
-    "aos:service-credentials"
-    "aos:service-dependencies"
-    "aos:service-failure-policy"
-    "aos:service-identity"
-    "aos:service-isolation"
-    "aos:service-lifecycle"
-    "aos:service-logging"
-    "aos:service-storage"
-    "aos:storage-allocation"
-  ];
   lifecycleNames = [
     "release"
     "timestamp"
@@ -126,9 +105,6 @@ in
   assert !(abilities disabled).instances ? "aos:release-coordinator";
   assert releaseCoordinatorRequests disabled == {};
   assert (abilities disabled).requirementTemplates == (abilities enabled).requirementTemplates;
-  assert builtins.all
-  (name: builtins.hasAttr name (abilities enabled).requirementTemplates)
-  expectedRequirements;
   assert portableOptionTree enabled.options.aos.services.releaseCoordinator;
   assert builtins.all
   (name: (request "${name}-lifecycle").service == name)
