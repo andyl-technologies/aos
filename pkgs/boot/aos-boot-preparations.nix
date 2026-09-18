@@ -9,7 +9,6 @@
   erofs-utils,
   jq,
   sbsigntools,
-  systemd,
   tpm2-tools,
   util-linux,
 }: let
@@ -18,8 +17,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -40,7 +50,6 @@ in
       erofs-utils
       jq
       sbsigntools
-      systemd
       tpm2-tools
       util-linux
     ];
@@ -64,18 +73,13 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/systemd/system
+          mkdir -p $out/bin
           cp aos-boot-preparations $out/bin/
           for source in ${./_aos-boot-preparations}/*.sh; do
             destination="$out/bin/$(basename "$source" .sh)"
             sed 's|@bash@|${bash}|g' "$source" > "$destination"
             chmod 0555 "$destination"
           done
-
-          sed \
-            's#^ExecStart=.*#ExecStart=${systemd}/lib/systemd/systemd-networkd-wait-online --any#' \
-            ${systemd}/lib/systemd/system/systemd-networkd-wait-online.service \
-            > $out/lib/systemd/system/systemd-networkd-wait-online.service
         '';
       }
     ];

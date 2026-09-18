@@ -52,6 +52,8 @@ struct Addressing {
     addresses: Vec<String>,
     gateway: Option<String>,
     dns: Vec<String>,
+    link_local: Option<String>,
+    ipv4_link_local_route: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -244,6 +246,8 @@ fn addressing_from_validated(value: &Value) -> Result<Addressing> {
         addresses: string_list_field(document, "addresses")?,
         gateway: optional_text_field(document, "gateway")?,
         dns: string_list_field(document, "dns")?,
+        link_local: optional_text_field(document, "link_local")?,
+        ipv4_link_local_route: optional_bool_field(document, "ipv4_link_local_route")?,
     })
 }
 
@@ -301,6 +305,18 @@ fn optional_text_field(document: &Map<String, Value>, name: &str) -> Result<Opti
                 .as_str()
                 .map(str::to_string)
                 .with_context(|| format!("validated network {name} field is not text"))
+        })
+        .transpose()
+}
+
+fn optional_bool_field(document: &Map<String, Value>, name: &str) -> Result<Option<bool>> {
+    document
+        .get(name)
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_bool()
+                .with_context(|| format!("validated network {name} field is not Boolean"))
         })
         .transpose()
 }
@@ -550,6 +566,11 @@ fn validate_addressing(addressing: &Addressing) -> Result<()> {
     if !addressing.dhcp && addressing.addresses.is_empty() {
         bail!("network link requires DHCP or at least one static address");
     }
+    if addressing.ipv4_link_local_route == Some(true)
+        && !matches!(addressing.link_local.as_deref(), Some("ipv4" | "both"))
+    {
+        bail!("IPv4 link-local routing requires IPv4 link-local addressing");
+    }
     Ok(())
 }
 
@@ -629,6 +650,8 @@ fn empty_addressing() -> Addressing {
         addresses: Vec::new(),
         gateway: None,
         dns: Vec::new(),
+        link_local: None,
+        ipv4_link_local_route: None,
     }
 }
 
@@ -653,6 +676,15 @@ fn render_network(
     for dns in &addressing.dns {
         output.push_str(&format!("DNS={dns}\n"));
     }
+    if let Some(link_local) = &addressing.link_local {
+        output.push_str(&format!("LinkLocalAddressing={link_local}\n"));
+    }
+    if let Some(enabled) = addressing.ipv4_link_local_route {
+        output.push_str(&format!(
+            "IPv4LLRoute={}\n",
+            if enabled { "true" } else { "false" }
+        ));
+    }
     for vlan in vlans {
         output.push_str(&format!("VLAN={vlan}\n"));
     }
@@ -669,7 +701,7 @@ fn render_selector(output: &mut String, selector: &LinkSelector) {
     match selector {
         LinkSelector::Name(value) => output.push_str(&format!("Name={value}\n")),
         LinkSelector::Mac(value) => output.push_str(&format!("MACAddress={value}\n")),
-        LinkSelector::Ethernet => output.push_str("Name=en*\nType=ether\n"),
+        LinkSelector::Ethernet => output.push_str("Type=ether\nKind=!*\n"),
     }
 }
 
@@ -700,6 +732,8 @@ fn render_bootstrap(bootstrap: &BootstrapNetwork) -> String {
             addresses: bootstrap.addresses.clone(),
             gateway: bootstrap.gateway.clone(),
             dns: bootstrap.dns.clone(),
+            link_local: None,
+            ipv4_link_local_route: None,
         },
         &[],
         &[],
@@ -1027,6 +1061,12 @@ fn addressing_to_json(addressing: &Addressing) -> Value {
         "dns".to_string(),
         Value::Array(addressing.dns.iter().cloned().map(Value::String).collect()),
     );
+    if let Some(link_local) = &addressing.link_local {
+        document.insert("link_local".to_string(), Value::String(link_local.clone()));
+    }
+    if let Some(enabled) = addressing.ipv4_link_local_route {
+        document.insert("ipv4_link_local_route".to_string(), Value::Bool(enabled));
+    }
     Value::Object(document)
 }
 
@@ -1062,9 +1102,9 @@ mod tests {
     use aos_net::{BootstrapLinkSelector, BootstrapNetwork};
 
     use super::{
-        Addressing, LinkSelector, NetworkAuthority, NetworkConfiguration,
-        NetworkLink, ResolverConfiguration, converge_bootstrap, network_configuration_to_json,
-        render, render_static,
+        Addressing, LinkSelector, NetworkAuthority, NetworkConfiguration, NetworkLink,
+        ResolverConfiguration, converge_bootstrap, network_configuration_to_json, render,
+        render_static,
     };
 
     fn configuration(authority: NetworkAuthority) -> NetworkConfiguration {
@@ -1078,6 +1118,8 @@ mod tests {
                     addresses: vec!["192.0.2.10/24".to_string()],
                     gateway: Some("192.0.2.1".to_string()),
                     dns: vec!["192.0.2.53".to_string()],
+                    link_local: None,
+                    ipv4_link_local_route: None,
                 },
             }],
             resolver: ResolverConfiguration {
@@ -1115,6 +1157,38 @@ mod tests {
                 .files
                 .contains_key(std::path::Path::new("systemd/resolved.conf"))
         );
+    }
+
+    #[test]
+    fn semantic_link_local_policy_renders_without_manager_specific_input() {
+        let mut configuration = configuration(NetworkAuthority::Image);
+        let NetworkLink::Ethernet {
+            selector,
+            addressing,
+            ..
+        } = &mut configuration.links[0]
+        else {
+            panic!("fixture must use an Ethernet link");
+        };
+        *selector = LinkSelector::Ethernet;
+        addressing.dhcp = true;
+        addressing.addresses.clear();
+        addressing.gateway = None;
+        addressing.dns.clear();
+        addressing.link_local = Some("ipv4".to_string());
+        addressing.ipv4_link_local_route = Some(true);
+
+        let rendered = render(&configuration).expect("link-local policy renders");
+        let network = rendered
+            .files
+            .get(std::path::Path::new("systemd/network/80-host.network"))
+            .expect("network file");
+        let network = String::from_utf8_lossy(network);
+
+        assert!(network.starts_with("[Match]\nType=ether\nKind=!*\n"));
+        assert!(network.contains("DHCP=yes\n"));
+        assert!(network.contains("LinkLocalAddressing=ipv4\n"));
+        assert!(network.contains("IPv4LLRoute=true\n"));
     }
 
     #[test]

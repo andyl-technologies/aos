@@ -157,6 +157,37 @@
     configurationSeed
   ];
   baseContributions = builtins.map serviceManagement.splitContribution baseFragments;
+  networkConfiguration = serviceManagement.forProducer {
+    inherit consumerInstance;
+    key = "bootstrap-network";
+    interface = lib.abilities.interfaces.networkConfiguration.interface;
+    methods = ["apply" "observe" "remove"];
+    parameters = {
+      authority = "image";
+      links = [
+        {
+          kind = "ethernet";
+          name = "dhcp";
+          selector.kind = "ethernet";
+          addressing = {
+            dhcp = true;
+            addresses = [];
+            dns = [];
+            link_local = "ipv4";
+            ipv4_link_local_route = true;
+          };
+        }
+      ];
+      resolver = {
+        enabled = false;
+        nameservers = [];
+        search = [];
+        dnssec = "no";
+      };
+      prerequisites = [];
+    };
+  };
+  networkContribution = serviceManagement.splitContribution networkConfiguration;
 
   emptyDependencies = {
     prerequisites = [];
@@ -575,45 +606,6 @@
       };
     };
   };
-  systemdPackagedUnitAlias = "systemd-packaged-unit";
-  networkWaitOnline = {
-    requirementTemplates.${systemdPackagedUnitAlias} =
-      lib.abilities.interfaceSelector {
-        name = "aos.systemd.packaged-unit";
-        abi = 1;
-      }
-      // {
-        description = "Retains the initrd wait-online service with any-link readiness semantics.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    requests."network-wait-online-unit" = {
-      requirement = systemdPackagedUnitAlias;
-      consumer = consumerInstance;
-      scope = ["network-wait-online-unit"];
-      parameters = {
-        source = {
-          artifact = packageArtifact;
-          unit_file = "lib/systemd/system/systemd-networkd-wait-online.service";
-        };
-        activation = "reference";
-        prerequisites = [];
-        dependencies = {
-          after = [];
-          before = [];
-          requires = [];
-          wants = [];
-        };
-        drop_in = {
-          accepted_exit_statuses = [];
-          reload_triggers = [];
-          search_path = [];
-        };
-      };
-    };
-  };
   substrateFragments = [
     initrdFilesystems
     initrdRootFilesystems
@@ -627,7 +619,6 @@
     runEtcSetup
     machineId
     etcOverlaySetup
-    networkWaitOnline
   ];
   handoffInitrdFragments = [initrdController initrdHandoffBarrier];
   handoffHostFragments = [localFilesystems hostStageReceived hostReceiver];
@@ -721,7 +712,7 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        [handoffDeclaration]
+        [handoffDeclaration networkContribution.declarations]
         ++ builtins.map (contribution: contribution.declarations) (
           baseContributions
           ++ substrateContributions
@@ -738,7 +729,8 @@ in {
     })
     (lib.mkIf (initrdStage && cfg.enable) {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.configured) substrateContributions
+        [networkContribution.configured]
+        ++ builtins.map (contribution: contribution.configured) substrateContributions
       );
     })
     (lib.mkIf (initrdStage && cfg.handoffEnabled) {

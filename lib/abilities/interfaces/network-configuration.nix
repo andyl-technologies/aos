@@ -63,6 +63,8 @@
       inherit addresses;
       gateway = optional (text 128);
       dns = dnsServers;
+      link_local = optional (types.enum ["ipv4" "ipv6" "both"]);
+      ipv4_link_local_route = optional types.boolean;
     };
   };
   link = types.taggedUnion {

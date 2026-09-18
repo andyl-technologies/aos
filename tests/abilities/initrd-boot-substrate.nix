@@ -70,8 +70,22 @@ in
     "run-etc-setup"
     "aos-machine-id"
   ];
-  assert (request "aos-boot-preparations" "network-wait-online-unit").source.unit_file
-  == "lib/systemd/system/systemd-networkd-wait-online.service";
+  assert !(requests ? "aos:host-network");
+  assert (request "aos-boot-preparations" "bootstrap-network").links
+  == [
+    {
+      kind = "ethernet";
+      name = "dhcp";
+      selector.kind = "ethernet";
+      addressing = {
+        dhcp = true;
+        addresses = [];
+        dns = [];
+        link_local = "ipv4";
+        ipv4_link_local_route = true;
+      };
+    }
+  ];
   assert builtins.elem
   (output "aos-boot-preparations" "initrd-stage" "resource")
   mountVar.requires;

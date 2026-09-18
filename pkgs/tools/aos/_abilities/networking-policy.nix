@@ -23,7 +23,10 @@
       };
     }
     config;
-  configured = config.aos.abilities.environment != null;
+  configured =
+    config.aos.abilities.environment
+    != null
+    && config.aos.abilities.environment.stage == "host";
   consumerInstance = "networking";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   kernelTunables = serviceManagement.forProducer {
