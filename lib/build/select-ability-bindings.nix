@@ -2,15 +2,12 @@
 {
   lib,
   abilities,
-  candidateImplementations ? {},
 }: let
-  localCandidates =
+  candidatesByName =
     builtins.mapAttrs (_: implementation: {
       inherit implementation;
-      packageModule = null;
     })
     abilities.implementations;
-  candidatesByName = candidateImplementations // localCandidates;
   pendingRequestDeclarations =
     builtins.mapAttrs (_: pending: pending.declaration)
     abilities.compositionPendingRequests;
@@ -198,48 +195,36 @@
     then let
       implementation = builtins.head candidates;
       candidate = candidatesByName.${implementation};
-    in
-      if candidate.packageModule != null
-      then {
-        inherit requestName request requirement;
-        discoveredModule = candidate.packageModule;
-      }
-      else let
-        providerInstance = providerInstanceFor implementation requestName request;
-        declaration = interfaceDeclarationFor candidatesByName.${implementation}.implementation;
-        slot =
-          if
-            !declaration.aggregation.rejectSlotCollisions
-            && declaration.aggregation.mergeContract != null
-          then declaration.aggregation.key
-          else baseSlotFor requestName request;
-        binding = lib.abilities.staticBinding {
-          request = requestName;
-          inherit implementation providerInstance slot;
-        };
-      in {
-        inherit implementation providerInstance requestName request requirement;
-        package = packageForImplementation implementation candidate.implementation;
-        discoveredModule = null;
-        bindingName = binding.name;
-        bindingValue = binding.value;
-      }
+      providerInstance = providerInstanceFor implementation requestName request;
+      declaration = interfaceDeclarationFor candidate.implementation;
+      slot =
+        if
+          !declaration.aggregation.rejectSlotCollisions
+          && declaration.aggregation.mergeContract != null
+        then declaration.aggregation.key
+        else baseSlotFor requestName request;
+      binding = lib.abilities.staticBinding {
+        request = requestName;
+        inherit implementation providerInstance slot;
+      };
+    in {
+      inherit implementation providerInstance requestName request requirement;
+      package = packageForImplementation implementation candidate.implementation;
+      bindingName = binding.name;
+      bindingValue = binding.value;
+    }
     else if candidates == [] && requirement.strength == "advisory"
     then null
     else if candidates == []
     then
       throw
-      "ability request '${requestName}' has no selected provider candidate for ${builtins.toJSON requirement}; pending origin: ${builtins.toJSON (abilities.compositionPendingRequests.${requestName} or null)}"
-    else throw "ability request '${requestName}' has ambiguous provider candidates: ${builtins.concatStringsSep ", " candidates}";
+      "ability request '${requestName}' in ${abilities.environment.stage} environment '${abilities.environment.key}' has no selected provider candidate for ${builtins.toJSON requirement}; pending origin: ${builtins.toJSON (abilities.compositionPendingRequests.${requestName} or null)}"
+    else throw "ability request '${requestName}' in ${abilities.environment.stage} environment '${abilities.environment.key}' has ambiguous provider candidates: ${builtins.concatStringsSep ", " candidates}";
   selections = builtins.filter (selection: selection != null) (
     builtins.map selectionFor unresolvedRequestNames
   );
-  bindingSelections =
-    builtins.filter
-    (selection: selection.discoveredModule == null)
-    selections;
   selectedProviders =
-    bindingSelections
+    selections
     ++ builtins.map (binding: {
       inherit (binding) implementation providerInstance;
       package =
@@ -271,7 +256,7 @@
       name = selection.bindingName;
       value = selection.bindingValue;
     })
-    bindingSelections);
+    selections);
   generatedRequests = builtins.listToAttrs (builtins.concatMap (selection:
     if builtins.hasAttr selection.requestName abilities.compositionPendingRequests
     then [
@@ -281,7 +266,7 @@
       }
     ]
     else [])
-  bindingSelections);
+  selections);
   generatedRequirements = builtins.listToAttrs (builtins.concatMap (selection:
     if builtins.hasAttr selection.requestName abilities.compositionPendingRequests
     then let
@@ -297,16 +282,13 @@
       }
     ]
     else [])
-  bindingSelections);
+  selections);
 in
   if abilities.environment == null
   then throw "ability provider selection requires an explicit target environment"
   else if duplicateBindings != []
   then throw "ability requests have several selected bindings: ${builtins.concatStringsSep ", " duplicateBindings}"
   else {
-    packageModules = builtins.map (selection: selection.discoveredModule) (
-      builtins.filter (selection: selection.discoveredModule != null) selections
-    );
     instances = generatedInstances;
     bindings = generatedBindings;
     requests = generatedRequests;

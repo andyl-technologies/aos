@@ -139,15 +139,19 @@
 in {
   config = lib.mkMerge [
     {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
-    (lib.mkIf (config.aos.abilities.environment != null) {
-      aos.abilities = lib.mkMerge (
-        [
-          {instances.ability-runtime = {};}
-          {instances.apm-runtime = {};}
-          {instances.wrapper-layout = {};}
-        ]
-        ++ builtins.map (entry: entry.configured) contributions
-      );
-    })
+    (lib.mkIf (
+        config.aos.abilities.environment
+        != null
+        && config.aos.abilities.environment.stage == "host"
+      ) {
+        aos.abilities = lib.mkMerge (
+          [
+            {instances.ability-runtime = {};}
+            {instances.apm-runtime = {};}
+            {instances.wrapper-layout = {};}
+          ]
+          ++ builtins.map (entry: entry.configured) contributions
+        );
+      })
   ];
 }

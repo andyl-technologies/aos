@@ -5,7 +5,10 @@
   ...
 }: let
   builder = lib.abilities.interfaces.imageBuilder.interfaces.builder;
-  configured = config.aos.abilities.environment != null;
+  configured =
+    config.aos.abilities.environment
+    != null
+    && config.aos.abilities.environment.stage == "host";
 in {
   config.aos.abilities = {
     requirementTemplates.image-builder = {

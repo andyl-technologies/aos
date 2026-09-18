@@ -25,11 +25,16 @@
 in {
   config = lib.mkMerge [
     {aos.abilities = contribution.declarations;}
-    (lib.mkIf (enabled && config.aos.abilities.environment != null) {
-      aos.abilities = lib.mkMerge [
-        {instances.watchdog = {};}
-        contribution.configured
-      ];
-    })
+    (lib.mkIf (
+        enabled
+        && config.aos.abilities.environment
+        != null
+        && config.aos.abilities.environment.stage == "host"
+      ) {
+        aos.abilities = lib.mkMerge [
+          {instances.watchdog = {};}
+          contribution.configured
+        ];
+      })
   ];
 }

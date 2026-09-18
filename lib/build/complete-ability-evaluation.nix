@@ -33,12 +33,6 @@
 
   hostSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.environment.systemPackages;
   initrdSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.aos.boot.initrd.packageRoots;
-  availableAbilityPackages = selectedAbilityPackagesFrom (builtins.attrValues pkgs);
-  availablePackagesByName = builtins.listToAttrs (builtins.map (package: {
-      name = package.contract.value.package.name;
-      value = package;
-    })
-    availableAbilityPackages);
   callerPackageModules = lib.abilities.canonicalizeAuthenticatedModuleRecords packageModules;
   authenticatedModuleRecordFor = package: let
     name = package.contract.value.package.name;
@@ -61,23 +55,6 @@
     lib.abilities.canonicalizeAuthenticatedModuleRecords (
       unrelatedCallerRecords ++ authenticatedModuleRecordsFor selectedPackages
     );
-  candidateImplementations = builtins.listToAttrs (builtins.concatMap (package: let
-    packageName = package.contract.value.package.name;
-    packageModule = authenticatedModuleRecordFor package;
-  in
-    builtins.map (localKey: {
-      name = "${packageName}:${localKey}";
-      value = {
-        implementation = package.abilities.implementations.${localKey};
-        inherit packageModule;
-      };
-    })
-    (builtins.attrNames package.abilities.implementations))
-  availableAbilityPackages);
-  packagesForRecords = records:
-    builtins.concatMap
-    (record: lib.optional (builtins.hasAttr record.name availablePackagesByName) availablePackagesByName.${record.name})
-    records;
   abilityEnvironment = stage: {
     authority = "system-image";
     key = systemName;
@@ -122,7 +99,7 @@
   }: let
     selectedPackages = selectedAbilityPackagesFrom initialPackages;
     resolution = import ./resolve-ability-configuration.nix {
-      inherit lib candidateImplementations;
+      inherit lib;
       initialPackageModules = withSelectedPackageRecords selectedPackages;
       evaluate = {
         packageModules,
@@ -142,8 +119,12 @@
       in
         authenticatedModuleRecordsFor (selectedAbilityPackagesFrom stagePackages);
     };
+    evaluatedStagePackages =
+      if environment.stage == "host"
+      then resolution.evaluation.config.environment.systemPackages
+      else resolution.evaluation.config.aos.boot.initrd.packageRoots;
   in
-    resolution // {packages = packagesForRecords resolution.packageModules;};
+    resolution // {packages = selectedAbilityPackagesFrom evaluatedStagePackages;};
   hostEnvironment = abilityEnvironment "host";
   hostResolution = resolveStage {
     environment = hostEnvironment;
