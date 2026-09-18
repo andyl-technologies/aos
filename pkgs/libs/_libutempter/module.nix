@@ -4,7 +4,7 @@
   lib,
   ...
 }: let
-  enabled = lib.attrByPath ["aos" "security" "utempter" "enable"] false config;
+  cfg = config.aos.security.utempter;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   wrapper = serviceManagement.forProducer {
     consumerInstance = "runtime";
@@ -33,9 +33,15 @@
   };
   contribution = serviceManagement.splitContribution wrapper;
 in {
+  options.aos.security.utempter.enable = lib.mkOption {
+    type = lib.abilities.types.boolean;
+    default = false;
+    description = "Allow terminal programs to update utmp through libutempter.";
+  };
+
   config = lib.mkMerge [
     {aos.abilities = contribution.declarations;}
-    (lib.mkIf (enabled && config.aos.abilities.environment != null) {
+    (lib.mkIf (cfg.enable && config.aos.abilities.environment != null) {
       aos.abilities = lib.mkMerge [
         {instances.runtime = {};}
         contribution.configured
