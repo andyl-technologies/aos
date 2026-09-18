@@ -5284,6 +5284,22 @@ pub async fn run_apr(
     run_registry(&config, command, dry_run, printer).await
 }
 
+/// Reports whether a registry subcommand honors the global `--dry-run` flag.
+///
+/// `--dry-run` is a promise that nothing is written, so a command that accepts
+/// the flag and mutates anyway breaks it in the most damaging direction. The
+/// dispatcher refuses the flag for anything absent from this list rather than
+/// silently ignoring it.
+///
+/// `release` is deliberately absent: it carries its own `--dry-run`, which
+/// belongs after the subcommand name and is threaded through separately.
+fn implements_global_dry_run(command: &RegistryCommand) -> bool {
+    matches!(
+        command,
+        RegistryCommand::Cache { .. } | RegistryCommand::Create { .. }
+    )
+}
+
 /// Dispatch an `apr` subcommand to its handler.
 ///
 /// The consumer-facing lifecycle commands (`list`, `add`, `remove`) are
@@ -5294,6 +5310,14 @@ async fn run_registry(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
+    if dry_run && !implements_global_dry_run(command) {
+        bail!(
+            "--dry-run is not implemented for this apr subcommand, and apr will not \
+             run a mutating operation while pretending to preview it; \
+             `apr cache` and `apr create` accept the global --dry-run, and \
+             `apr release` takes its own --dry-run after the subcommand name"
+        );
+    }
     match command {
         RegistryCommand::List => registry_list(config, printer).await,
         RegistryCommand::Add {
@@ -5356,6 +5380,7 @@ async fn run_registry(
                 trust_key_id.as_deref(),
                 key.as_deref(),
                 key_id.as_deref(),
+                dry_run,
                 printer,
             )
             .await
