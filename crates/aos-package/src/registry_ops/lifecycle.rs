@@ -180,8 +180,9 @@ fn initial_keys_roster(
 /// `--key` or `--key-id` is supplied, the static dumb-HTTP object store is
 /// refreshed, and `--remote` configures an `origin` remote on the clone.
 ///
-/// With `dry_run`, every precondition is still checked and reported, but the
-/// function returns before the first write and no registry is created.
+/// In dry-run mode ([`crate::dry_run`]), every precondition is still checked
+/// and reported, but the function returns before the first write and no
+/// registry is created.
 ///
 /// # Errors
 ///
@@ -200,7 +201,6 @@ pub async fn create(
     trust_key_id: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
-    dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
     validate_registry_name(name)?;
@@ -232,7 +232,7 @@ pub async fn create(
     // first write: a registry root commit is a trust anchor, and creating one
     // that the operator only asked to preview would silently establish an
     // identity that later releases pin.
-    if dry_run {
+    if crate::dry_run::active() {
         report_planned_create(name, &dir, remote, trust_key, trust_key_id, printer);
         return Ok(());
     }

@@ -84,6 +84,23 @@ channel partition commands, `update-server-info`, root `objects/info/alternates`
 refresh hooks, static Nix-cache generation/upload, and static git-origin upload
 now exist.
 
+### Previewing a command with `--dry-run`
+
+`apr --dry-run` is accepted by every mutating subcommand and reports what the
+command would do without writing. A preview runs the same validation a real
+invocation does and stops immediately before the first change, so it fails on
+the same preconditions rather than reporting a plan that could not be applied.
+
+The promise is enforced beneath the handlers, not merely honored by them:
+`crates/aos-package/src/dry_run.rs` arms a process-wide barrier that classifies
+every Git invocation and refuses the mutating ones, so a handler that failed to
+stop reports a bug instead of writing. `git fetch` is allowed through — it only
+adds objects and moves remote-tracking refs, and previewing a change request
+requires reading a draft that exists only on the remote.
+
+Read-only subcommands reject `--dry-run` rather than accepting it as a no-op,
+and `apr release` takes its own `--dry-run` after the subcommand name.
+
 The commands relevant to a release, in workflow order:
 
 | Command | Function | What it actually does (CURRENT) |
