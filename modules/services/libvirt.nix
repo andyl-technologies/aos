@@ -10,7 +10,6 @@
       environment.systemPackages = [pkgs.libvirt pkgs.qemu];
     }
     (lib.mkIf config.aos.services.libvirt.enable {
-      environment.etc."libvirt".source = "${pkgs.libvirt}/etc/libvirt";
       aos.security.polkit.enable = true;
 
       system.checks.libvirt = {
