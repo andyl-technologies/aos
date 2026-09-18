@@ -2,6 +2,7 @@
 {
   config,
   lib,
+  packageArtifactFor,
   ...
 }: let
   cfg = config.aos.services.libvirt;
@@ -541,6 +542,8 @@ in {
       );
     }
     (lib.mkIf cfg.enable {
+      environment.etc."libvirt".source = "${packageArtifactFor (lib.abilities.packageOutput {})}/etc/libvirt";
+
       aos.abilities = lib.mkMerge (
         [
           {
