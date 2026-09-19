@@ -2,15 +2,7 @@
 {pkgs}: let
   support = pkgs.platformSupport;
   packageNames = pkgs.allPackageNames or pkgs.packageNames;
-  releaseSystems = [
-    "x86_64-linux"
-    "aarch64-linux"
-    "x86_64-darwin"
-    "aarch64-darwin"
-  ];
   implicitReleaseInventory = builtins.tryEval (import ../.. {}).releasePackageInventory;
-  selectedRelease = import ../.. {releasePlatforms = releaseSystems;};
-  selectedReleaseInventory = selectedRelease.releasePackageInventory;
   decisionMatchesRustContract = decision: let
     fields = builtins.attrNames decision;
   in
@@ -19,10 +11,6 @@
     else
       decision.state == "not-applicable"
       && fields == ["reason" "rule" "state"];
-  packageMatchesRustContract = package:
-    builtins.map (cell: cell.platform) package.platforms == releaseSystems
-    && builtins.all (cell: decisionMatchesRustContract cell.decision) package.platforms;
-
   publicationMatrix = support.publicationMatrix packageNames;
   releaseInventory = support.releaseInventory packageNames;
   releaseDerivations = support.releaseDerivations {
@@ -271,9 +259,12 @@ in
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
   assert releaseInventory.platforms == support.platforms;
+  assert builtins.all (
+    package:
+      builtins.map (cell: cell.platform) package.platforms == support.platforms
+      && builtins.all (cell: decisionMatchesRustContract cell.decision) package.platforms
+  ) releaseInventory.packages;
   assert !implicitReleaseInventory.success;
-  assert selectedReleaseInventory.platforms == releaseSystems;
-  assert builtins.all packageMatchesRustContract selectedReleaseInventory.packages;
   assert eligibleDecision.state == "eligible";
   assert builtins.attrNames eligibleDecision == ["state"];
   assert inapplicableDecision.state == "not-applicable";

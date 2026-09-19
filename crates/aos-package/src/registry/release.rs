@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use aos_oci_types::CONTAINER_RELEASE_SIDECAR_PATH;
+use aos_release::platform::Platform;
 use async_trait::async_trait;
 use git2::{Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
@@ -745,10 +746,7 @@ fn validate_release_identity_and_entries(
         validate_package_name(&entry.name)?;
         aos_registry_surface::package_version::validate_package_version(&entry.version)
             .with_context(|| format!("invalid version for entry '{}'", entry.id))?;
-        if !matches!(
-            entry.platform.as_str(),
-            "x86_64-linux" | "aarch64-linux" | "x86_64-darwin" | "aarch64-darwin"
-        ) {
+        if entry.platform.parse::<Platform>().is_err() {
             bail!("entry '{}' has unsupported platform", entry.id);
         }
         if !entry.store_path.starts_with("/nix/store/") {

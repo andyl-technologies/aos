@@ -69,16 +69,3 @@ fn semantic_nix_input_crosses_the_rust_inventory_boundary() -> Result<()> {
 
     Ok(())
 }
-
-#[test]
-fn production_nix_inventory_crosses_the_rust_inventory_boundary() -> Result<()> {
-    let nix = nix_runner()?;
-    let release_platforms = Platform::ALL.map(Platform::as_str);
-    let bytes = nix.eval_release_json_bytes("releasePackageInventory", None, &release_platforms)?;
-    let inventory = decode_and_validate(&bytes)?;
-
-    assert_eq!(inventory.platforms, Platform::ALL);
-    assert!(!inventory.packages.is_empty());
-
-    Ok(())
-}

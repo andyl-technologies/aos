@@ -914,9 +914,8 @@ fn platform_map<T>(
 }
 
 fn parse_platform(value: &str) -> Result<Platform> {
-    Platform::ALL
-        .into_iter()
-        .find(|platform| platform.as_str() == value)
+    value
+        .parse()
         .with_context(|| format!("unknown qualification platform {value}"))
 }
 
