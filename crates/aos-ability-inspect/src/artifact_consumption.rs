@@ -822,10 +822,10 @@ fn has_duplicate<T: Ord + Clone>(values: &[T]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use aos_ability_model::document::PlatformIdentity;
     use aos_ability_model::{
         ArtifactConsumptionPlatforms, ElfSearchPathKind, ElfStartupLinkageContract,
-        ElfStartupLinkageObservation, ElfSymbolVersion, LocalKey, PlatformIdentity,
-        encode_canonical,
+        ElfStartupLinkageObservation, ElfSymbolVersion, LocalKey, encode_canonical,
     };
     use aos_ability_validate::test_support::plan_fixture;
 
