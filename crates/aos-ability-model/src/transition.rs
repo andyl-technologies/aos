@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Names the required semantic feature for explicit provider-state adoption.
-pub const PROVIDER_STATE_ADOPTION_FEATURE: &str = "provider-state-adoption-v1";
+pub const PROVIDER_STATE_ADOPTION_FEATURE: &str = "provider-state-adoption";
 
 /// Pins one side of an explicit provider-state ownership transfer.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
