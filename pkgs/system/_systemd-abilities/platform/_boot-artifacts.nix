@@ -57,7 +57,7 @@
     };
   };
   efiName =
-    efiNames.${targetPlatform.cpu}
+    efiNames.${targetPlatform.constraints.cpu}
     or (throw "systemd-boot has no UEFI executable names for ${targetPlatform.system}");
 
   espUkiFilename = builtins.baseNameOf normalArtifactPath;
@@ -360,7 +360,7 @@ in {
   recoveryUkiAEspPath = "EFI/AOS/recovery-a.efi";
   recoveryUkiBEspPath = "EFI/AOS/recovery-b.efi";
   ukiStubExecutable = "${pkgs.systemd}/lib/systemd/boot/efi/linux${
-    if targetPlatform.cpu == "x86_64"
+    if targetPlatform.constraints.cpu == "x86_64"
     then "x64"
     else "aa64"
   }.efi.stub";

@@ -45,9 +45,11 @@
 ##! Output: $out/aos-${name}-${version}.efi
 {
   mkDerivation,
-  stdenv,
+  targetPlatform,
+  binutils,
   systemd,
-  buildPackages,
+  sbsigntools,
+  openssl,
 }: {
   kernel,
   initrd,
@@ -67,16 +69,13 @@
     aarch64 = "aa64";
   };
   efiArchitecture =
-    efiArchitectures.${stdenv.hostPlatform.constraints.cpu}
-    or (throw "aos-uki: unsupported EFI target ${stdenv.hostPlatform.system}");
+    efiArchitectures.${targetPlatform.constraints.cpu}
+    or (throw "aos-uki: unsupported EFI target ${targetPlatform.system}");
 
   # Assembly and signing run on the build platform; only the stub and kernel
   # are target executables. This also keeps cross builds independent of binfmt.
-  inherit (buildPackages) sbsigntools openssl;
-
   # Cross binutils executes natively while understanding the target PE format.
-  inherit (stdenv) binutils;
-  buildSystemd = buildPackages.systemd;
+  buildSystemd = systemd;
 
   effectiveStub =
     if stub != null

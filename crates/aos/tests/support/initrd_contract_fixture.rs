@@ -81,12 +81,12 @@ pub(super) fn verify_assembly(arguments: &[String]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error when the assembly is invalid or either extracted tree does
-/// not contain the exact captured stage contract at its immutable path.
+/// Returns an error when the assembly is invalid or the extracted initrd does
+/// not contain the exact captured contract at its immutable path.
 pub(super) fn verify_assembly_attachments(arguments: &[String]) -> Result<()> {
-    if arguments.len() != 4 {
+    if arguments.len() != 3 {
         bail!(
-            "usage: aos-release-fleet-fixture image-assembly-attachments ROOT RELEASE_ID INITRD_TREE ROOT_TREE"
+            "usage: aos-release-fleet-fixture image-assembly-attachments ROOT RELEASE_ID INITRD_TREE"
         );
     }
     let assembly = capture_unsigned_assembly(Path::new(&arguments[0]), &arguments[1], |_| {
@@ -102,6 +102,5 @@ pub(super) fn verify_assembly_attachments(arguments: &[String]) -> Result<()> {
         &assembly,
         captured_inputs.path(),
         Path::new(&arguments[2]),
-        Path::new(&arguments[3]),
     )
 }

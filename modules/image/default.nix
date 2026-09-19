@@ -347,6 +347,18 @@ in {
           assertion = cfg.extraFirmwareFreeMiB >= 0;
           message = "aos.image.extraFirmwareFreeMiB must not be negative";
         }
+        {
+          assertion =
+            !cfg.enable
+            || platform == null
+            || plan.finalization
+            == (
+              if externalFinalization
+              then "external"
+              else "self-contained"
+            );
+          message = "selected image plan finalization must match the configured finalization mode";
+        }
       ];
     }
     (lib.mkIf (cfg.enable && platform != null) {
@@ -355,10 +367,7 @@ in {
         closureInfoFor = import ../../lib/build/closure-info.nix {
           inherit pkgs lib;
         };
-        targetPlatform = {
-          system = lib.system;
-          cpu = lib.platform.constraints.cpu;
-        };
+        targetPlatform = lib.platform;
         inputs = {
           kernel = config.aos.kernel.selected;
           managerConfiguration = config.system.build.managerConfiguration;

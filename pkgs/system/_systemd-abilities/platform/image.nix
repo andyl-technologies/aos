@@ -11,6 +11,7 @@
   packageOutput = package: lib.abilities.packageOutput {inherit package;};
   systemdToolsOutput = lib.abilities.packageOutput {output = "tools";};
   dependencyNames = [
+    "aos-recovery"
     "bash"
     "binutils"
     "coreutils"
@@ -29,6 +30,7 @@
     "kmod"
     "mtools"
     "openssl"
+    "pe-tools"
     "qemu"
     "sbsigntools"
     "tar"
@@ -65,6 +67,7 @@
   normalArtifactPath = let
     tries = config.aos.boot.bootAttemptLimit;
   in "EFI/Linux/aos-generation-0000000001${lib.optionalString (tries != null) "+${toString tries}"}.efi";
+  externalFinalization = config.aos.boot.secureBoot.externalFinalization.enable;
 
   buildImage = {
     closureInfoFor,
@@ -76,12 +79,13 @@
     imagePackages = {
       inherit mkDerivation writeTextFile;
       aos-uki = import ./_uki-builder.nix {
-        inherit mkDerivation;
-        stdenv.binutils = artifactFor "binutils";
+        inherit mkDerivation targetPlatform;
+        binutils = artifactFor "binutils";
         systemd = imagePackages.systemd;
         sbsigntools = imagePackages.sbsigntools;
         openssl = imagePackages.openssl;
       };
+      aos-recovery = artifactFor "aos-recovery";
       bash = artifactFor "bash";
       binutils = artifactFor "binutils";
       coreutils = artifactFor "coreutils";
@@ -100,6 +104,7 @@
       kmod = artifactFor "kmod";
       mtools = artifactFor "mtools";
       openssl = artifactFor "openssl";
+      pe-tools = artifactFor "pe-tools";
       qemu = artifactFor "qemu";
       sbsigntools = artifactFor "sbsigntools";
       systemd = {
@@ -126,22 +131,27 @@
       system = {inherit config;};
       activeImageDbCerts = trustBundle;
     };
-    rawImage = import ./_image-builder.nix {
+    imageBuild = import ./_image-builder.nix {
       pkgs = imagePackages;
       inherit kernel lib bootArtifacts rawDiskFilename rawMetadataFilename rootfs runtimeClosureAudit targetPlatform;
       system = {inherit config;};
       inherit name;
     };
-    budgetCheck = import ./_image-budget-check.nix {
-      pkgs = imagePackages;
-      inherit config lib runtimeClosureAudit;
-      image = rawImage;
-      metadataFilename = rawMetadataFilename;
-      inherit name rootfs;
-      uki = "${rawImage.ukiA}/${rawImage.ukiAStoreFilename}";
-    };
+    rawImage = imageBuild.finalImage;
+    budgetCheck =
+      if externalFinalization
+      then null
+      else
+        import ./_image-budget-check.nix {
+          pkgs = imagePackages;
+          inherit config lib runtimeClosureAudit;
+          image = rawImage;
+          metadataFilename = rawMetadataFilename;
+          inherit name rootfs;
+          uki = "${imageBuild.artifacts.ukiA}/${imageBuild.artifacts.ukiAStoreFilename}";
+        };
     installBundle =
-      if config.aos.boot.storage.backend == "zfs-zvol"
+      if !externalFinalization && config.aos.boot.storage.backend == "zfs-zvol"
       then
         import ./install-bundle.nix {
           pkgs = imagePackages;
@@ -152,22 +162,56 @@
       else null;
   in {
     _type = "aos-image-build-plan";
-    inherit budgetCheck installBundle rawDiskFilename rawImage rawMetadataFilename;
-    finishConvertedImage = {
-      baseImage,
-      metadataFilename,
-    }:
-      import ./_converted-image.nix {
-        pkgs = imagePackages;
-        inherit baseImage config lib metadataFilename rawImage targetPlatform;
-      };
-    unsignedAssembly = rawImage.unsignedAssembly;
-    initialBootExecutable = rawImage.uki;
-    recoveryInitrd = rawImage.recoveryInitrdA;
-    recoverySlotManifest = rawImage.recoverySlotManifest;
-    recoveryBootExecutableA = rawImage.recoveryUkiA;
-    recoveryBootExecutableB = rawImage.recoveryUkiB;
-    recoveryBundle = rawImage.recoveryBundle;
+    finalization =
+      if externalFinalization
+      then "external"
+      else "self-contained";
+    inherit budgetCheck installBundle rawImage;
+    rawDiskFilename =
+      if externalFinalization
+      then null
+      else rawDiskFilename;
+    rawMetadataFilename =
+      if externalFinalization
+      then null
+      else rawMetadataFilename;
+    finishConvertedImage =
+      if externalFinalization
+      then null
+      else
+        {
+          baseImage,
+          metadataFilename,
+        }:
+          import ./_converted-image.nix {
+            pkgs = imagePackages;
+            inherit baseImage config lib metadataFilename rawImage targetPlatform;
+          };
+    unsignedAssembly = imageBuild.unsignedAssembly;
+    initialBootExecutable =
+      if externalFinalization
+      then null
+      else imageBuild.artifacts.uki;
+    recoveryInitrd =
+      if externalFinalization
+      then null
+      else imageBuild.artifacts.recoveryInitrdA;
+    recoverySlotManifest =
+      if externalFinalization
+      then null
+      else imageBuild.artifacts.recoverySlotManifest;
+    recoveryBootExecutableA =
+      if externalFinalization
+      then null
+      else imageBuild.artifacts.recoveryUkiA;
+    recoveryBootExecutableB =
+      if externalFinalization
+      then null
+      else imageBuild.artifacts.recoveryUkiB;
+    recoveryBundle =
+      if externalFinalization
+      then null
+      else imageBuild.artifacts.recoveryBundle;
   };
 
   authoredPlatform = {
