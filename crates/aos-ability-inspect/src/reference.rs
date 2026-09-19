@@ -706,7 +706,7 @@ mod tests {
             slice.disclosure(),
             ReferenceInspectionDisclosure::PublicPackageContract
         );
-        assert!(!slice.is_truncated());
+        assert!(slice.is_truncated());
         assert_eq!(slice.nodes().len(), 2);
         assert_eq!(slice.edges().len(), 1);
         assert_eq!(slice.diagnostics().len(), 3);

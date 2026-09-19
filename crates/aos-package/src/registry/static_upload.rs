@@ -1822,15 +1822,20 @@ mod tests {
             disk_bytes,
         )
         .unwrap();
+        let disk_key = aos_registry_surface::manifest::immutable_image_object_key(
+            &image_sha,
+            "aos-test.qcow2",
+        );
+        let info_key = aos_registry_surface::manifest::immutable_image_contract_object_key(
+            &image_sha,
+            &info_sha,
+            "image-info.json",
+        );
         std::fs::write(
-            root.join(format!(
-                "aos-image-staging/images/sha256/{image_sha}/metadata/{info_sha}/image-info.json"
-            )),
+            root.join("aos-image-staging").join(&info_key),
             info_bytes,
         )
         .unwrap();
-        let disk_key = format!("images/sha256/{image_sha}/aos-test.qcow2");
-        let info_key = format!("images/sha256/{image_sha}/metadata/{info_sha}/image-info.json");
         let objects = serde_json::json!([
             {
                 "key": disk_key.as_str(),

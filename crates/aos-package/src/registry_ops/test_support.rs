@@ -604,8 +604,6 @@ pub(in crate::registry_ops) fn write_sample_package_toml(
     let path = root.join("packages").join("w").join("webapp.toml");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let root_digest = artifact.attestation.root_digest.as_deref().unwrap();
-    let root_hash = artifact.attestation.root_hash.as_deref().unwrap();
-    let root_hash_sig = artifact.attestation.root_hash_sig.as_deref().unwrap();
     let provenance = artifact.attestation.provenance.as_deref().unwrap();
     let measurement = measurement_override
         .or(artifact.attestation.measurement.as_deref())
@@ -626,16 +624,12 @@ pub(in crate::registry_ops) fn write_sample_package_toml(
              source_drv = \"{}\"\n\
              source_nar_hash = \"{}\"\n\
              root_digest = \"{}\"\n\
-             root_hash = \"{}\"\n\
-             root_hash_sig = \"{}\"\n\
              provenance = \"{}\"\n\
              measurement = \"{}\"\n",
             info.path,
             source.path,
             source.nar_hash,
             root_digest,
-            root_hash,
-            root_hash_sig,
             provenance,
             measurement
         ),

@@ -190,7 +190,11 @@ nar_size = 1
 closure_size = 1
 source_drv = ""
 source_nar_hash = ""
-references = []
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
 
 [[versions.platforms.x86_64-linux.images]]
 format = "qcow2"

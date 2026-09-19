@@ -1859,6 +1859,12 @@ mod tests {
             "schema": "aos.config-manifest/v1",
             "module_abi": 1,
             "inputs": {
+                "store_view": {
+                    "schema": "aos.package-store.read-view-locator/v1",
+                    "identity_root": "/nix/store",
+                    "read_root": "/immutable/store",
+                    "static_contract": "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-static-contract/contract.json"
+                },
                 "base_lib": {
                     "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base",
                     "abi_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

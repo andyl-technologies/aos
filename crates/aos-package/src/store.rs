@@ -1260,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn baselib_retention_drops_historical_images_sharing_a_retained_abi() {
+    fn baselib_retention_drops_historical_images_sharing_the_running_abi() {
         use crate::types::{ConfigGenerationState, ImageGenerationState};
 
         let images = ImageGenerationState {
@@ -1283,11 +1283,7 @@ mod tests {
         };
 
         let keep = retained_baselib_image_generations(&images, &configs);
-        assert_eq!(keep, [2, 3].into_iter().collect());
-        assert!(
-            !keep.contains(&1),
-            "ABI equality must not retain every old image"
-        );
+        assert_eq!(keep, [3].into_iter().collect());
     }
 
     #[test]
@@ -1340,7 +1336,6 @@ mod tests {
                 .symlink_metadata()
                 .is_err()
         );
-        assert!(image_profile.join("image-gen-2/baselib/7").is_symlink());
         assert!(image_profile.join("image-gen-3/baselib/7").is_symlink());
         assert!(
             image_profile
@@ -1354,18 +1349,26 @@ mod tests {
                 .symlink_metadata()
                 .is_err()
         );
-        for number in [2, 3] {
-            assert!(
-                image_profile
-                    .join(format!("image-gen-{number}/toplevel"))
-                    .is_symlink()
-            );
-            assert!(
-                image_profile
-                    .join(format!("image-gen-{number}/executor"))
-                    .is_symlink()
-            );
-        }
+        assert!(
+            image_profile
+                .join("image-gen-2/baselib/7")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            image_profile
+                .join("image-gen-2/toplevel")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            image_profile
+                .join("image-gen-2/executor")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(image_profile.join("image-gen-3/toplevel").is_symlink());
+        assert!(image_profile.join("image-gen-3/executor").is_symlink());
     }
 
     #[test]

@@ -1231,7 +1231,8 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     }
                     if let Some(path) = image
                         .get("delivery")
-                        .and_then(|delivery| delivery.get("image_info"))
+                        .and_then(|delivery| delivery.get("artifact_contract"))
+                        .and_then(|contract| contract.get("document"))
                         .and_then(|metadata| metadata.get("store_path"))
                         .and_then(TomlValue::as_str)
                         .filter(|path| !path.is_empty())
@@ -1240,7 +1241,8 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     }
                     if let Some(path) = image
                         .get("delivery")
-                        .and_then(|delivery| delivery.get("update_payload"))
+                        .and_then(|delivery| delivery.get("artifact_contract"))
+                        .and_then(|contract| contract.get("artifacts"))
                         .and_then(|payload| payload.get("store_path"))
                         .and_then(TomlValue::as_str)
                         .filter(|path| !path.is_empty())
@@ -1706,12 +1708,10 @@ store_path = "/nix/store/ability111-kernel-abilities"
             inventory.roots.into_iter().collect::<Vec<_>>(),
             vec![
                 "/nix/store/ability111-kernel-abilities".to_string(),
-                "/nix/store/cfg111-kernel-config".to_string(),
                 "/nix/store/dev111-kernel".to_string(),
                 "/nix/store/docs111-kernel-docs.json".to_string(),
                 "/nix/store/img111-system-image".to_string(),
                 "/nix/store/info111-system-image-info".to_string(),
-                "/nix/store/lib111-config-base-lib".to_string(),
                 "/nix/store/payload111-system-update-payload".to_string(),
                 "/nix/store/root111-kernel".to_string(),
                 "/nix/store/src111-kernel-source".to_string(),

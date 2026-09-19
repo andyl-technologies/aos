@@ -17,6 +17,7 @@
 //! can map them to the standard exit codes.
 
 use std::env;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -32,6 +33,7 @@ pub struct NixRunner {
     root: PathBuf,
     verbose: u8,
     quiet: bool,
+    command_environment: Vec<(OsString, OsString)>,
 }
 
 impl NixRunner {
@@ -53,6 +55,7 @@ impl NixRunner {
             root,
             verbose,
             quiet,
+            command_environment: Vec::new(),
         })
     }
 
@@ -76,7 +79,20 @@ impl NixRunner {
             root,
             verbose,
             quiet,
+            command_environment: Vec::new(),
         })
+    }
+
+    /// Applies explicit environment variables to every Nix child process.
+    ///
+    /// This lets callers isolate Nix state without mutating process-global
+    /// environment variables shared with concurrent work.
+    pub fn with_command_environment(
+        mut self,
+        environment: impl IntoIterator<Item = (OsString, OsString)>,
+    ) -> Self {
+        self.command_environment.extend(environment);
+        self
     }
 
     /// Returns the project root path (the directory containing
@@ -700,6 +716,11 @@ impl NixRunner {
         let child = Command::new(cmd)
             .args(args)
             .current_dir(&self.root)
+            .envs(
+                self.command_environment
+                    .iter()
+                    .map(|(key, value)| (key, value)),
+            )
             .stdout(Stdio::piped())
             .stderr(stderr_behavior)
             .spawn()

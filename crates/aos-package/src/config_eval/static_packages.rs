@@ -94,7 +94,12 @@ pub(crate) fn measurement_catalog(
     checked
         .packages()
         .map(|selected| {
-            let root_digest = selected.payload().nar_hash.to_string();
+            let root_digest = format!(
+                "sha256:{}",
+                aos_registry_surface::store::canonical_digest_hex(
+                    &selected.payload().nar_hash.to_string(),
+                )?,
+            );
             let manifest_digest = selected.manifest().digest().to_string();
             let measurement = crate::package_attestation::package_measurement_digest(
                 selected.name().as_str(),

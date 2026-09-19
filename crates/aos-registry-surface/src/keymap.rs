@@ -222,7 +222,7 @@ pub fn image_object_sha256(path: &str) -> Option<&str> {
     };
     match parts.as_slice() {
         [sha256, name] if digest(sha256) && filename(name) => Some(*sha256),
-        [disk_sha256, "metadata", info_sha256, "image-info.json"] => {
+        [disk_sha256, "contracts", info_sha256, "image-info.json"] => {
             (digest(disk_sha256) && digest(info_sha256)).then_some(*info_sha256)
         }
         _ => None,

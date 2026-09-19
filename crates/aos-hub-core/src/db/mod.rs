@@ -26907,8 +26907,8 @@ mod tests {
     fn signed_image_package() -> aos_registry_surface::manifest::PackageToml {
         use aos_registry_surface::manifest::{
             ImageArtifactContractDocumentReference, ImageArtifactContractReference,
-            ImageCompression, ImageDelivery, ImageTarget, immutable_image_contract_object_key,
-            immutable_image_object_key,
+            ImageCompression, ImageDelivery, ImageTarget,
+            immutable_image_contract_object_key, immutable_image_object_key,
         };
 
         #[derive(serde::Serialize)]
@@ -27025,6 +27025,11 @@ store_path = "/aos/store/aos-system"
 closure_size = 1
 source_drv = ""
 source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
 {images}
 "#,
         ))
@@ -27067,6 +27072,8 @@ source_nar_hash = ""
     }
 
     fn store_backed_image_package() -> aos_registry_surface::manifest::PackageToml {
+        use aos_registry_surface::manifest::ImageStoreReference;
+
         let mut package = signed_image_package();
         for version in &mut package.versions {
             for artifact in version.platforms.values_mut() {
@@ -27084,6 +27091,11 @@ source_nar_hash = ""
                         format!("/aos/store/{store_hash}-aos-system-{}-info", image.format);
                     image.delivery.artifact_contract.document.nar_hash = format!("sha256:{}", "0".repeat(52));
                     image.delivery.artifact_contract.document.nar_size = 1;
+                    image.delivery.artifact_contract.artifacts = Some(ImageStoreReference {
+                        store_path: image.store_path.clone(),
+                        nar_hash: image.nar_hash.clone(),
+                        nar_size: image.nar_size,
+                    });
                 }
             }
         }

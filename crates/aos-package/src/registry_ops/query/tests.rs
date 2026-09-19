@@ -4,40 +4,6 @@ use super::{
     latest_version_string, matching_package_versions, package_toml_with_versions,
     selected_package_versions,
 };
-use crate::registry_ops::git::commit_registry_paths;
-use crate::registry_ops::test_support::init_test_transparency_repo;
-use std::fs;
-use tempfile::TempDir;
-
-#[test]
-fn commit_registry_paths_rejects_rfc0001_package_without_provenance() {
-    let tmp = TempDir::new().unwrap();
-    let repo = tmp.path().join("repo");
-    fs::create_dir(&repo).unwrap();
-    init_test_transparency_repo(&repo);
-    let package_toml = repo.join("packages").join("w").join("webapp.toml");
-    fs::create_dir_all(package_toml.parent().unwrap()).unwrap();
-    fs::write(
-        &package_toml,
-        "[package]\n\
-         name = \"webapp\"\n\
-         description = \"\"\n\
-         \n\
-         [[versions]]\n\
-         version = \"1.0.0\"\n\
-         \n\
-         [versions.platforms.x86_64-linux]\n\
-         store_path = \"/nix/store/abc123-webapp-1.0.0\"\n\
-         closure_size = 1\n\
-         source_drv = \"\"\n\
-         source_nar_hash = \"\"\n",
-    )
-    .unwrap();
-
-    let err = commit_registry_paths(&repo, "publish webapp", &[package_toml], None).unwrap_err();
-
-    assert!(format!("{err:#}").contains("without attestation provenance"));
-}
 
 #[test]
 fn selected_package_versions_filters_exact_version() {

@@ -73,7 +73,11 @@ nar_size = {nar_size}
 closure_size = {nar_size}
 source_drv = "/nix/store/{store_hash}-aos-{version}.drv"
 source_nar_hash = "{hash}"
-references = []
+
+[versions.platforms.{platform}.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
 
 [[versions.platforms.{platform}.images]]
 format = "qcow2"

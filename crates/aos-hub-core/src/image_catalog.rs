@@ -282,9 +282,22 @@ fn matches_query(record: &ImageRecord, query: &ImageQuery) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_registry_surface::manifest::parse_package_file;
+    use aos_registry_surface::manifest::{
+        immutable_image_contract_object_key, immutable_image_object_key, parse_package_file,
+    };
 
     fn package() -> PackageToml {
+        let image_sha256 = "a".repeat(64);
+        let image_info_sha256 = "c".repeat(64);
+        let image_filename = "aos-server.img.zst";
+        let image_info_filename = "image-info.json";
+        let image_object_key = immutable_image_object_key(&image_sha256, image_filename);
+        let image_info_object_key = immutable_image_contract_object_key(
+            &image_sha256,
+            &image_info_sha256,
+            image_info_filename,
+        );
+
         parse_package_file(&format!(
             r#"
 [package]
@@ -303,6 +316,11 @@ closure_size = 1
 source_drv = ""
 source_nar_hash = ""
 
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
+
 [[versions.platforms.x86_64-linux.images]]
 format = "raw"
 store_path = "/aos/store/00000000000000000000000000000000-server-raw"
@@ -316,8 +334,8 @@ platform = "x86_64-linux"
 architecture = "x86_64"
 logical_image_id = "{logical}"
 logical_disk_sha256 = "{disk}"
-filename = "aos-server.img.zst"
-object_key = "images/sha256/{image}/aos-server.img.zst"
+filename = "{image_filename}"
+object_key = "{image_object_key}"
 media_type = "application/vnd.aos.disk-image.raw+zstd"
 compression = "zstd"
 byte_size = 10
@@ -328,16 +346,16 @@ compatible_targets = ["bare-metal"]
 schema = "aos.test.boot-artifacts/v1"
 
 [versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]
-filename = "image-info.json"
-object_key = "images/sha256/{image}/metadata/{info}/image-info.json"
+filename = "{image_info_filename}"
+object_key = "{image_info_object_key}"
 media_type = "application/vnd.aos.image-info+json"
 byte_size = 20
 sha256 = "{info}"
 "#,
             logical = "b".repeat(64),
             disk = "a".repeat(64),
-            image = "a".repeat(64),
-            info = "c".repeat(64),
+            image = image_sha256,
+            info = image_info_sha256,
         ))
         .unwrap()
     }

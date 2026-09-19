@@ -589,6 +589,11 @@ closure_size = 1
 source_drv = ""
 source_nar_hash = ""
 
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
+
 [[versions.platforms.x86_64-linux.images]]
 format = "raw"
 store_path = "/aos/store/imagehash-server-raw"
@@ -637,6 +642,11 @@ closure_size = 1
 source_drv = ""
 source_nar_hash = ""
 
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
+
 [[versions.platforms.x86_64-linux.images]]
 format = "{format}"
 store_path = "/aos/store/00000000000000000000000000000000-server-{format}"
@@ -672,7 +682,7 @@ sha256 = "{info_sha256}"
     }
 
     #[test]
-    fn old_signed_image_catalog_remains_store_install_compatible() {
+    fn store_only_signed_image_catalog_remains_installable() {
         let meta = parse_package_toml(MISSING_DELIVERY_IMAGE_TOML, "x86_64-linux")
             .unwrap()
             .unwrap();
@@ -814,7 +824,10 @@ requires-features = ["attestation-v1"]
 
     #[test]
     fn parse_attestation_metadata_requires_own_feature_gate() {
-        let content = ATTESTATION_TOML.replace("attestation-v1", "unknown-feature-v1");
+        let content = ATTESTATION_TOML.replace(
+            "requires-features = [\"attestation-v1\"]",
+            "requires-features = []",
+        );
 
         let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
         assert!(format!("{err:#}").contains("attestation-v1"));
