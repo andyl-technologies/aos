@@ -92,7 +92,13 @@
       };
       module = "/nix/store/55555555555555555555555555555555-example-module";
       contract = {
-        value = {};
+        value.package_module = {
+          artifact = {
+            package = "aos";
+            output = "module";
+          };
+          path = "module.nix";
+        };
         document = {
           type = "derivation";
           drvPath = "/nix/store/66666666666666666666666666666666-example-contract.drv";
@@ -130,7 +136,7 @@
         maintainers = ["AOS test"];
       };
       contract = {
-        value = {};
+        value.package_module = null;
         document = {
           type = "derivation";
           drvPath = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-probe-contract.drv";
@@ -220,6 +226,11 @@ in
       output = "out";
       store_path = "/nix/store/77777777777777777777777777777777-example-contract";
     };
+    package_module = {
+      package = "aos";
+      output = "module";
+      store_path = "/nix/store/55555555555555555555555555555555-example-module";
+    };
     selectors = [
       {
         package = "aos";
@@ -233,6 +244,7 @@ in
       }
     ];
   };
+  assert (builtins.head probeOnlyContractProbe.packages).contract.package_module == null;
   assert (builtins.head probeOnlyContractProbe.packages).contract.selectors
   == [
     {

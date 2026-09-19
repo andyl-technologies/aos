@@ -35,40 +35,43 @@ def fixture():
                     "output": "out",
                     "store_path": output_path,
                 },
-            ])
-            artifact = {"artifact_ids": [output_id]}
-            if has_native_module:
-                payload["artifacts"].append({
+                {
                     "id": contract_id,
                     "kind": "package-nar",
                     "platform": platform,
                     "output": "out",
                     "store_path": contract_path,
-                })
+                },
+            ])
+            selectors = [
+                {
+                    "package": "self",
+                    "output": "out",
+                    "store_path": output_path,
+                },
+            ]
+            package_module = None
+            if has_native_module:
                 module_path = f"{STORE_PREFIX}-{name}-{platform}-module"
                 payload["artifacts"].append({
                     "id": f"source/{name}/{platform}/module",
                     "kind": "source",
                     "store_path": module_path,
                 })
-                artifact = {
-                    "artifact_ids": [contract_id, output_id],
-                    "package_contract": {
-                        "document_artifact": contract_id,
-                        "selectors": [
-                            {
-                                "package": "self",
-                                "output": "module",
-                                "store_path": module_path,
-                            },
-                            {
-                                "package": "self",
-                                "output": "out",
-                                "store_path": output_path,
-                            },
-                        ],
-                    },
+                package_module = {
+                    "package": "self",
+                    "output": "module",
+                    "store_path": module_path,
                 }
+                selectors.insert(0, package_module)
+            artifact = {
+                "artifact_ids": [contract_id, output_id],
+                "package_contract": {
+                    "document_artifact": contract_id,
+                    "package_module": package_module,
+                    "selectors": selectors,
+                },
+            }
             cells.append({
                 "platform": platform,
                 "decision": {
@@ -176,14 +179,15 @@ class BindingsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "module|selector|source"):
                     bind(payload)
 
-    def test_module_requirement_follows_contract_presence(self):
+    def test_module_requirement_follows_package_projection(self):
         payload = fixture()
         k3s = payload["packages"][0]["platforms"][0]["decision"]["artifact"]
         bind(payload)
 
-        k3s["package_contract"] = {
-            "document_artifact": k3s["artifact_ids"][0],
-            "selectors": [],
+        k3s["package_contract"]["package_module"] = {
+            "package": "self",
+            "output": "module",
+            "store_path": f"{STORE_PREFIX}-k3s-{PLATFORM}-module",
         }
         with self.assertRaisesRegex(ValueError, "native package module"):
             bind(payload)

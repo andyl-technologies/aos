@@ -149,6 +149,19 @@ in rec {
           )
           (declaredSources
             ++ (if package ? module then [package.module] else []));
+        resolveContractSelector = selector: let
+          selectedPackageName =
+            if selector.package == "self"
+            then name
+            else selector.package;
+          selectedPackage =
+            if builtins.elem selectedPackageName eligibleNames
+            then packages.${selectedPackageName}
+            else throw "package contract for '${name}' selects unpublished package '${selectedPackageName}'";
+        in {
+          inherit (selector) package output;
+          store_path = builtins.unsafeDiscardStringContext (toString (outputStorePath selectedPackage selector.output));
+        };
         contract =
           if !(package ? contract)
           then null
@@ -158,21 +171,11 @@ in rec {
               output = package.contract.document.outputName or "out";
               store_path = builtins.unsafeDiscardStringContext (toString package.contract.document);
             };
-            selectors =
-              map (selector: let
-                selectedPackageName =
-                  if selector.package == "self"
-                  then name
-                  else selector.package;
-                selectedPackage =
-                  if builtins.elem selectedPackageName eligibleNames
-                  then packages.${selectedPackageName}
-                  else throw "package contract for '${name}' selects unpublished package '${selectedPackageName}'";
-              in {
-                inherit (selector) package output;
-                store_path = builtins.unsafeDiscardStringContext (toString (outputStorePath selectedPackage selector.output));
-              })
-              package.contract.selectors;
+            package_module =
+              if package.contract.value.package_module == null
+              then null
+              else resolveContractSelector package.contract.value.package_module.artifact;
+            selectors = map resolveContractSelector package.contract.selectors;
           };
       in {
         inherit name contract;

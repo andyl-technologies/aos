@@ -430,6 +430,7 @@ mod tests {
                                 "/nix/store/22222222222222222222222222222222-owner-contract"
                                     .to_string(),
                         },
+                        package_module: None,
                         selectors: vec![DerivationSelectorResolution {
                             package: "provider".to_string(),
                             output: "out".to_string(),
