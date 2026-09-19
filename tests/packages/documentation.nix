@@ -78,6 +78,16 @@
     (entry: entry.relative)
     (builtins.filter (entry: importsPrivateLibrary entry.source) packageSources);
 
+  invalidAuthenticatedOutputs = builtins.filter (name:
+    !(
+      builtins.tryEval (
+        builtins.deepSeq
+        (lib.abilities.authenticatedPackageOutputsFor abilityPackages.${name})
+        true
+      )
+    ).success)
+  packageNames;
+
   invalidPackages = builtins.filter (name: let
     package = abilityPackages.${name};
     evaluatedAbilities = builtins.tryEval (builtins.toJSON {
@@ -112,6 +122,8 @@ in
   then throw "lib.mkArtifactConsumptionAudit must expose the package-safe artifact audit constructor"
   else if privateLibraryImports != []
   then throw "package definitions import private library paths: ${builtins.concatStringsSep ", " privateLibraryImports}"
+  else if invalidAuthenticatedOutputs != []
+  then throw "package ability contracts contain unresolved authenticated artifact selectors: ${builtins.concatStringsSep ", " invalidAuthenticatedOutputs}"
   else if invalidPackages != []
   then throw "package ability documentation projections are invalid: ${builtins.concatStringsSep ", " invalidPackages}"
   else if productionRefinedSchemaCount == 0

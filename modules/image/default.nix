@@ -364,9 +364,7 @@ in {
     (lib.mkIf (cfg.enable && platform != null) {
       aos.image.plan = platform.build {
         inherit (pkgs) mkDerivation writeTextFile;
-        closureInfoFor = import ../../lib/build/closure-info.nix {
-          inherit pkgs lib;
-        };
+        closureInfoFor = lib.build.closureInfo {inherit pkgs;};
         targetPlatform = lib.platform;
         inputs = {
           kernel = config.aos.kernel.selected;
