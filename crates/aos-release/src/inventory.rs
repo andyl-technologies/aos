@@ -17,7 +17,7 @@ use crate::plan::{
     PackageOutputBinding, PackagePlan, PlannedArtifact, PlannedArtifactSet, PlannedPackageContract,
     PlatformCell,
 };
-use crate::platform::{MatrixCell, Platform, require_complete_package_platforms};
+use crate::platform::{MatrixCell, Platform};
 
 /// Exact schema emitted by the Nix package inventory.
 pub const PACKAGE_INVENTORY_V1: &str = "aos.release.package-inventory/v1";
@@ -25,25 +25,25 @@ pub const PACKAGE_INVENTORY_V1: &str = "aos.release.package-inventory/v1";
 /// Exact schema for target-specific evaluated Nix identities.
 pub const DERIVATION_INVENTORY_V1: &str = "aos.release.derivation-inventory/v1";
 
-/// Nix-derived package eligibility for every canonical target.
+/// Nix-derived package eligibility for an explicitly selected target roster.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageInventoryV1 {
     /// Exact inventory schema identifier.
     pub schema_version: String,
-    /// Closed platform roster in canonical order.
+    /// Closed selected platform roster in caller-supplied order.
     pub platforms: Vec<Platform>,
     /// Every structurally discovered package, sorted by name.
     pub packages: Vec<InventoryPackage>,
 }
 
-/// Complete target eligibility for one discovered package.
+/// Complete selected-target eligibility for one discovered package.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InventoryPackage {
     /// Canonical package name.
     pub name: String,
-    /// Exactly one decision for every canonical target.
+    /// Exactly one decision for every selected target.
     pub platforms: Vec<InventoryPlatformCell>,
 }
 
@@ -331,11 +331,34 @@ impl PackageInventoryV1 {
     /// duplicate, or unsorted package list, incomplete cells, invalid policy
     /// identifiers, or an invalid package-owned projection.
     pub fn validate(&self) -> Result<()> {
+        self.validate_for_platforms(&Platform::ALL)
+    }
+
+    /// Validates an inventory for an explicit selected platform roster.
+    ///
+    /// This validates the same schema, ordering, package closure, and decisions
+    /// as [`Self::validate`] while allowing a caller to check the exact subset
+    /// that it asked Nix to evaluate. Full release planning continues to use
+    /// [`Self::validate`] and therefore requires [`Platform::ALL`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or duplicate expected roster, a different
+    /// inventory roster, an empty, duplicate, or unsorted package list,
+    /// incomplete cells, invalid policy identifiers, or an invalid
+    /// package-owned projection.
+    pub fn validate_for_platforms(&self, expected: &[Platform]) -> Result<()> {
         if self.schema_version != PACKAGE_INVENTORY_V1 {
             bail!("unsupported package inventory schema");
         }
-        if self.platforms.as_slice() != Platform::ALL {
-            bail!("package inventory platform roster is not canonical");
+        if expected.is_empty() {
+            bail!("expected package inventory platform roster is empty");
+        }
+        if expected.iter().copied().collect::<BTreeSet<_>>().len() != expected.len() {
+            bail!("expected package inventory platform roster contains duplicates");
+        }
+        if self.platforms.as_slice() != expected {
+            bail!("package inventory platform roster differs from the requested selection");
         }
         if self.packages.is_empty() {
             bail!("package inventory is empty");
@@ -349,19 +372,16 @@ impl PackageInventoryV1 {
         }
         for package in &self.packages {
             require_identifier(&package.name, "inventory package name")?;
-            require_complete_package_platforms(
-                package.platforms.iter().map(|cell| &cell.platform),
-            )?;
-            if package.platforms.len() != Platform::ALL.len() {
+            if package.platforms.len() != expected.len() {
                 bail!("inventory package contains a duplicate platform cell");
             }
             if package
                 .platforms
                 .iter()
                 .map(|cell| cell.platform)
-                .ne(Platform::ALL)
+                .ne(expected.iter().copied())
             {
-                bail!("inventory package platform cells are not in canonical order");
+                bail!("inventory package platform cells differ from the requested selection");
             }
             for cell in &package.platforms {
                 validate_decision(&cell.decision)?;
@@ -762,6 +782,28 @@ mod tests {
             packages: Vec::new(),
         };
         assert!(inventory.validate().is_err());
+    }
+
+    #[test]
+    fn inventory_validates_the_exact_selected_platform_roster() -> Result<()> {
+        let inventory = PackageInventoryV1 {
+            schema_version: PACKAGE_INVENTORY_V1.to_owned(),
+            platforms: vec![Platform::X86_64Linux],
+            packages: vec![InventoryPackage {
+                name: "example".to_owned(),
+                platforms: vec![decision(Platform::X86_64Linux)],
+            }],
+        };
+
+        inventory.validate_for_platforms(&[Platform::X86_64Linux])?;
+        assert!(inventory.validate().is_err());
+        assert!(inventory.validate_for_platforms(&[]).is_err());
+        assert!(
+            inventory
+                .validate_for_platforms(&[Platform::X86_64Linux, Platform::X86_64Linux])
+                .is_err()
+        );
+        Ok(())
     }
 
     #[test]

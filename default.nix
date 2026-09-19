@@ -1839,6 +1839,11 @@ in {
       package-platform-declarations = import ./tests/build/package-platform-declarations.nix {
         pkgs = buildPackages;
       };
+      release-inventory-boundary = import ./tests/build/release-inventory-boundary.nix {
+        inherit pkgs;
+        platform = pkgs.stdenv.hostPlatform.system;
+        releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
+      };
       runtime-python-outputs = import ./tests/build/runtime-python-outputs.nix {
         pkgs = buildPackages;
       };
@@ -1858,7 +1863,7 @@ in {
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary;
-        inherit artifact-consumption critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        inherit artifact-consumption critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1871,7 +1876,7 @@ in {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support runtime-python-outputs structured-attrs-export systemd-verity]
+            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust

@@ -26,7 +26,7 @@ use aos_release::evidence::{
     EvidenceRecord, GateRequirement, GateResult, QUALIFICATION_EXECUTOR_RESPONSE_V1,
     QualificationExecutorRequestV1, QualificationExecutorResponseV1,
 };
-use aos_release::inventory::PackagePublicationMetadata;
+use aos_release::inventory::{PackageInventoryV1, PackagePublicationMetadata};
 use aos_release::manifest::{
     FinalArtifactSet, MANIFEST_DOMAIN, MANIFEST_ENVELOPE_V1, ManifestEnvelopeV1, ManifestSignature,
     PackageResult, ReleaseManifestV1,
@@ -84,6 +84,7 @@ async fn main() -> Result<()> {
         Some("image-assembly-attachments") => {
             initrd_contract_fixture::verify_assembly_attachments(&arguments[1..])
         }
+        Some("validate-package-inventory") => validate_package_inventory(&arguments[1..]),
         Some("sign-exchange-v1") => signer_exchange(),
         Some("completion") => completion(&arguments[1..]),
         Some("review") => review(&arguments[1..]),
@@ -91,6 +92,25 @@ async fn main() -> Result<()> {
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
     }
+}
+
+fn validate_package_inventory(arguments: &[String]) -> Result<()> {
+    if arguments.len() < 2 {
+        bail!("usage: aos-release-fleet-fixture validate-package-inventory INVENTORY PLATFORM...");
+    }
+
+    let path = Path::new(&arguments[0]);
+    let bytes = fs::read(path)
+        .with_context(|| format!("reading release package inventory {}", path.display()))?;
+    let inventory: PackageInventoryV1 = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding release package inventory {}", path.display()))?;
+    let platforms = arguments[1..]
+        .iter()
+        .map(|value| value.parse::<Platform>())
+        .collect::<Result<Vec<_>>>()?;
+    inventory.validate_for_platforms(&platforms)?;
+
+    Ok(())
 }
 
 fn prepare(arguments: &[String]) -> Result<()> {
