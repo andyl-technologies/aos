@@ -533,7 +533,7 @@ impl PackageDocumentation {
 
         let canonical = serde_json::to_vec(self)?;
         if canonical.len() > MAX_DOCUMENT_BYTES {
-            return Err(invalid("canonical document exceeds the 4 MiB limit"));
+            return Err(invalid("canonical document exceeds the 12 MiB limit"));
         }
         if find_store_reference(&canonical) {
             return Err(invalid("document contains a forbidden Nix store path"));
