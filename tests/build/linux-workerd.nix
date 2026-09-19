@@ -30,10 +30,7 @@
     destination = "/probe.py";
     text = builtins.readFile ../../lib/testing/qualification-package-probe.py;
   };
-  mkClosureInfo = import ../../lib/build/closure-info.nix {
-    inherit pkgs;
-    lib = cross.lib;
-  };
+  mkClosureInfo = cross.lib.build.closureInfo {inherit pkgs;};
   packageClosures = builtins.listToAttrs (map (name: {
       inherit name;
       value = mkClosureInfo {rootPaths = [target.${name}];};

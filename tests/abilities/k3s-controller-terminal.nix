@@ -98,10 +98,7 @@
       requests = {};
       requirements = {};
     };
-    selected = import ../../lib/build/select-ability-bindings.nix {
-      inherit lib;
-      abilities = initial.config.aos.abilities;
-    };
+    selected = lib.abilities.selectBindings initial.config.aos.abilities;
     evaluated = evaluate selected;
     childRequestKeys = builtins.attrNames selected.requests;
     childRequestKey =

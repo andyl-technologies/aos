@@ -71,7 +71,7 @@
   '';
   emptyHost = "${emptyHostSource}/host.nix";
   emptyFacts = builtins.toFile "static-contract-runtime-facts.json" "{}\n";
-  runtimeEvalInputClosure = import ../../lib/build/closure-info.nix {inherit pkgs lib;} {
+  runtimeEvalInputClosure = lib.build.closureInfo {inherit pkgs;} {
     pname = "initrd-stage-contract-eval-input-closure";
     rootPaths = [baseLib emptyHostSource emptyFacts];
   };

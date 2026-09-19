@@ -22,10 +22,7 @@
         packages;
     };
   select = evaluation:
-    import ../../lib/build/select-ability-bindings.nix {
-      inherit lib;
-      abilities = evaluation.config.aos.abilities;
-    };
+    lib.abilities.selectBindings evaluation.config.aos.abilities;
   selectionFails = evaluation:
     !(builtins.tryEval (builtins.deepSeq (select evaluation) true)).success;
 
@@ -49,10 +46,7 @@
     };
   unownedProviderFails =
     !(builtins.tryEval (builtins.deepSeq (
-        import ../../lib/build/select-ability-bindings.nix {
-          inherit lib;
-          abilities = unownedProvider;
-        }
+        lib.abilities.selectBindings unownedProvider
       )
       true)).success;
   selectedBindings = builtins.attrValues selected.bindings;

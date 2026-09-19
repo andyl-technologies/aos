@@ -161,7 +161,7 @@
   packageDerivationRecord = derivationRecord "maintain-fixture-package-derivation-record" mountedPackageDerivation;
   sourceDerivationRecord = derivationRecord "maintain-fixture-source-derivation-record" mountedSourceDerivation;
 
-  mountedClosure = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  mountedClosure = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       fixtureRepository
       maintainerToolBundle

@@ -83,10 +83,7 @@
     packageSetChanged =
       builtins.map moduleIdentity nextPackageModules
       != builtins.map moduleIdentity packageModules;
-    additions = import ./select-ability-bindings.nix {
-      inherit lib;
-      abilities = evaluation.config.aos.abilities;
-    };
+    additions = lib.abilities.selectBindings evaluation.config.aos.abilities;
     nextSelection = mergeSelection selection additions;
     nextBindings = forceBindings (bindings // additions.bindings);
     selectionChanged = nextSelection != selection;

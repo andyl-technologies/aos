@@ -11,7 +11,7 @@
   archive = pkgs.ociTools.common;
   expectedRootCount = builtins.length goldenRoots;
   goldenRootList = builtins.concatStringsSep "\n" (map builtins.toString goldenRoots);
-  closureInfo = import ../../lib/build/closure-info.nix {inherit pkgs lib;} {
+  closureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = goldenRoots;
     pname = "aos-container-phase0-closure-info";
   };

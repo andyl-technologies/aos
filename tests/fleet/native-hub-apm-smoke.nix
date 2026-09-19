@@ -21,7 +21,7 @@
   upgradeImageDisk = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.disk;
   upgradeImageInfo = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.info;
   upgradeUki = fixture.consumerUpgradeSystem.config.system.build.initialBootExecutable;
-  publisherClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  publisherClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       fixture.toolV1
       fixture.toolV2

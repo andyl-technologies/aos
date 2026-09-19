@@ -78,7 +78,7 @@
       ];
     }
   ];
-  fixtureClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  fixtureClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       pkgs.aos.apm
       pkgs.aos.apr

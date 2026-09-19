@@ -1334,7 +1334,7 @@
     providerInstance = "provider:instance";
     slot = "selected";
   };
-  storeViewLib = import ../../lib/build/store-view.nix {inherit lib;};
+  storeViewLib = lib.build.storeView;
   checkedStoreView = {
     schema = "aos.package-store.read-view-locator/v1";
     identity_root = "/identity/store";

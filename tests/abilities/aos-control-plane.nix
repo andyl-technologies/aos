@@ -116,10 +116,7 @@
     requests = {};
     requirements = {};
   };
-  select = abilities:
-    import ../../lib/build/select-ability-bindings.nix {
-      inherit lib abilities;
-    };
+  select = lib.abilities.selectBindings;
   mergeSelection = current: additions: {
     instances = current.instances // additions.instances;
     bindings = current.bindings // additions.bindings;
