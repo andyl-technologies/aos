@@ -14,7 +14,13 @@ def fixture():
     """Builds two platform populations with native package contract bindings."""
 
     payload = {"packages": [], "images": [], "artifacts": []}
-    for name in ("k3s", "k3s-combined", "k3s-control-plane", "k3s-worker"):
+    package_contracts = (
+        ("k3s", False),
+        ("k3s-combined", True),
+        ("k3s-control-plane", True),
+        ("k3s-worker", True),
+    )
+    for name, has_native_module in package_contracts:
         cells = []
         for platform in (PLATFORM, "aarch64-linux"):
             output_id = f"package/{name}/{platform}/out"
@@ -29,36 +35,45 @@ def fixture():
                     "output": "out",
                     "store_path": output_path,
                 },
-                {
+            ])
+            artifact = {"artifact_ids": [output_id]}
+            if has_native_module:
+                payload["artifacts"].append({
                     "id": contract_id,
                     "kind": "package-nar",
                     "platform": platform,
                     "output": "out",
                     "store_path": contract_path,
-                },
-            ])
-            selectors = [{"package": "self", "output": "out", "store_path": output_path}]
-            if name != "k3s":
+                })
                 module_path = f"{STORE_PREFIX}-{name}-{platform}-module"
                 payload["artifacts"].append({
                     "id": f"source/{name}/{platform}/module",
                     "kind": "source",
                     "store_path": module_path,
                 })
-                selectors.insert(0, {
-                    "package": "self", "output": "module", "store_path": module_path,
-                })
+                artifact = {
+                    "artifact_ids": [contract_id, output_id],
+                    "package_contract": {
+                        "document_artifact": contract_id,
+                        "selectors": [
+                            {
+                                "package": "self",
+                                "output": "module",
+                                "store_path": module_path,
+                            },
+                            {
+                                "package": "self",
+                                "output": "out",
+                                "store_path": output_path,
+                            },
+                        ],
+                    },
+                }
             cells.append({
                 "platform": platform,
                 "decision": {
                     "state": "artifact",
-                    "artifact": {
-                        "artifact_ids": [contract_id, output_id],
-                        "package_contract": {
-                            "document_artifact": contract_id,
-                            "selectors": selectors,
-                        },
-                    },
+                    "artifact": artifact,
                 },
             })
         payload["packages"].append({"name": name, "platforms": cells})
@@ -134,12 +149,10 @@ class BindingsTest(unittest.TestCase):
             self.assertFalse(any("aarch64" in value for value in result.subjects))
 
     def test_missing_or_substituted_native_module_is_rejected(self):
-        for mutation in ("contract", "selector", "source", "path"):
+        for mutation in ("selector", "source", "path"):
             payload = fixture()
             cell = payload["packages"][-1]["platforms"][0]["decision"]["artifact"]
-            if mutation == "contract":
-                del cell["package_contract"]
-            elif mutation == "selector":
+            if mutation == "selector":
                 cell["package_contract"]["selectors"] = [
                     entry
                     for entry in cell["package_contract"]["selectors"]
@@ -162,6 +175,18 @@ class BindingsTest(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 with self.assertRaisesRegex(ValueError, "module|selector|source"):
                     bind(payload)
+
+    def test_module_requirement_follows_contract_presence(self):
+        payload = fixture()
+        k3s = payload["packages"][0]["platforms"][0]["decision"]["artifact"]
+        bind(payload)
+
+        k3s["package_contract"] = {
+            "document_artifact": k3s["artifact_ids"][0],
+            "selectors": [],
+        }
+        with self.assertRaisesRegex(ValueError, "native package module"):
+            bind(payload)
 
     def test_missing_package_or_oci_identity_is_rejected(self):
         payload = fixture()

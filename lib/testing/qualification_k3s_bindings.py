@@ -160,7 +160,8 @@ def bind_k3s_fleet(payload, platform, package, system_variant, topology):
             outputs[output] = path
         if "out" not in outputs:
             raise ValueError(f"K3s fleet {name} lacks its primary output")
-        if name != "k3s" and "module" not in outputs:
+        has_contract = cell["decision"]["artifact"].get("package_contract") is not None
+        if has_contract and "module" not in outputs:
             raise ValueError(f"K3s fleet {name} lacks its native package module")
         package_outputs[name] = outputs
         subjects.extend(package_artifacts)
