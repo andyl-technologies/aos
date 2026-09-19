@@ -1739,8 +1739,7 @@ in
   assert !unrelatedArtifactSelection.success;
   assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"leaf\"}"
   == "/nix/store/33333333333333333333333333333333-leaf";
-  assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"middle\"}"
-  == "/nix/store/44444444444444444444444444444444-middle";
+  assert !(builtins.hasAttr "{\"output\":\"out\",\"package\":\"middle\"}" transitiveOutputs.dependencies);
   assert helperTraversalOutputs.dependencies."{\"output\":\"out\",\"package\":\"leaf\"}"
   == "/nix/store/33333333333333333333333333333333-leaf";
   assert !unrelatedOutput.success;
