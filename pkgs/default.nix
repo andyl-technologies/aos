@@ -178,6 +178,15 @@
       inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
     };
   ociTools = mkOciTools {};
+  mkOciMultiPlatformContainer = args:
+    import ./containers/_aos-oci-backend/container/multi-platform.nix (
+      args
+      // {
+        inherit lib;
+        pkgs = self;
+        oci = ociTools;
+      }
+    );
 
   packageContractDocument = {
     packageName,
@@ -1551,7 +1560,7 @@
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
-      inherit mkOciTools ociTools;
+      inherit mkOciTools ociTools mkOciMultiPlatformContainer;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;

@@ -15,7 +15,7 @@
   lib,
   ...
 }: let
-  workloadImage = import ../../lib/testing/k3s-workload-image.nix {inherit pkgs lib;};
+  workloadImage = import ../../pkgs/kubernetes/_k3s-workload-image.nix {inherit pkgs lib;};
   combinedSystem = mkSystem [
     ../../systems/server.nix
     {
