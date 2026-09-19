@@ -166,33 +166,37 @@
           type = lib.types.enum ["aos-image-build-plan"];
           description = "Immutable image plan discriminator.";
         };
+        finalization = lib.mkOption {
+          type = lib.types.enum ["external" "self-contained"];
+          description = "Selected finalization mode for the immutable image.";
+        };
         budgetCheck = lib.mkOption {
-          type = lib.types.package;
-          description = "Selected provider's image budget check.";
+          type = nullableArtifact;
+          description = "Optional selected-provider image budget check.";
         };
         finishConvertedImage = lib.mkOption {
-          type = lib.types.functionTo lib.types.package;
-          description = "Opaque provider finalizer for one converted disk image.";
+          type = lib.types.nullOr (lib.types.functionTo lib.types.package);
+          description = "Optional provider finalizer for one converted disk image.";
         };
         initialBootExecutable = lib.mkOption {
-          type = lib.types.package;
-          description = "Initial boot executable emitted by the selected provider.";
+          type = nullableArtifact;
+          description = "Optional initial boot executable emitted by the selected provider.";
         };
         installBundle = lib.mkOption {
           type = nullableArtifact;
           description = "Optional selected-provider installation bundle.";
         };
         rawDiskFilename = lib.mkOption {
-          type = artifactFilenameType;
-          description = "Filename of the compressed raw disk inside its artifact.";
+          type = lib.types.nullOr artifactFilenameType;
+          description = "Optional filename of the compressed raw disk inside its artifact.";
         };
         rawImage = lib.mkOption {
-          type = lib.types.package;
-          description = "Selected provider's compressed raw disk artifact.";
+          type = nullableArtifact;
+          description = "Optional selected-provider compressed raw disk artifact.";
         };
         rawMetadataFilename = lib.mkOption {
-          type = artifactFilenameType;
-          description = "Filename of image metadata inside the raw artifact.";
+          type = lib.types.nullOr artifactFilenameType;
+          description = "Optional filename of image metadata inside the raw artifact.";
         };
         recoveryBootExecutableA = lib.mkOption {
           type = nullableArtifact;
@@ -215,11 +219,19 @@
           description = "Optional recovery slot manifest.";
         };
         unsignedAssembly = lib.mkOption {
-          type = lib.types.package;
-          description = "Deterministic public-only image assembly inputs.";
+          type = nullableArtifact;
+          description = "Optional deterministic public-only image assembly inputs.";
         };
       };
     }) (value: let
+      selfContainedArtifacts = [
+        value.budgetCheck
+        value.finishConvertedImage
+        value.initialBootExecutable
+        value.rawDiskFilename
+        value.rawImage
+        value.rawMetadataFilename
+      ];
       recoveryArtifacts = [
         value.recoveryBootExecutableA
         value.recoveryBootExecutableB
@@ -227,11 +239,22 @@
         value.recoveryInitrd
         value.recoverySlotManifest
       ];
+      selfContainedPresent = builtins.map (artifact: artifact != null) selfContainedArtifacts;
       present = builtins.map (artifact: artifact != null) recoveryArtifacts;
     in
-      value.rawDiskFilename
-      != value.rawMetadataFilename
-      && (lib.all (value: value) present || lib.all (value: !value) present));
+      if value.finalization == "external"
+      then
+        value.unsignedAssembly
+        != null
+        && value.installBundle == null
+        && lib.all (value: !value) selfContainedPresent
+        && lib.all (value: !value) present
+      else
+        value.unsignedAssembly
+        == null
+        && lib.all (value: value) selfContainedPresent
+        && value.rawDiskFilename != value.rawMetadataFilename
+        && (lib.all (value: value) present || lib.all (value: !value) present));
 in {
   options.aos.image.platform = lib.mkOption {
     type = lib.types.nullOr (lib.types.uniq selectedBuilderType);

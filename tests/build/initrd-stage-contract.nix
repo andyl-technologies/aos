@@ -461,7 +461,7 @@ in
             done
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               image-assembly-attachments \
-              ${assembly} initrd-stage-contract-check unit-graph root-tree
+              ${assembly} initrd-stage-contract-check unit-graph
             validate_unit_graph unit-graph "$contract"
 
             first_unit=$(${pkgs.jq}/bin/jq -er '.handoff.required_units[0]' "$contract")

@@ -81,7 +81,7 @@
     };
   };
   dpsType =
-    dpsTypes.${targetPlatform.cpu}
+    dpsTypes.${targetPlatform.constraints.cpu}
     or (throw "no DPS root partition types for ${targetPlatform.system}");
   rootGuid = dpsType.root;
   verityGuid = dpsType.verity;
@@ -119,7 +119,7 @@
   # role-bound external providers, and constructs the final disk bytes there.
   # Private material is intentionally neither an argument nor an environment
   # value of this derivation.
-  unsignedAssembly = pkgs.mkDerivation {
+  unsignedAssemblyValue = pkgs.mkDerivation {
     pname = "aos-image-${name}-unsigned-assembly";
     inherit version;
     src = null;
@@ -320,7 +320,7 @@
         ]
         ++ lib.optional localSecureBootSigning pkgs.sbsigntools
         ++ lib.optionals recoveryEnabled [
-          pkgs.stdenv.binutils # Native executable with target PE support.
+          pkgs.binutils # Native executable with target PE support.
           pkgs.openssl
         ];
 
@@ -342,7 +342,7 @@
       IMAGE_NAME = name;
       IMAGE_FILENAME = rawDiskFilename;
       IMAGE_VERSION = version;
-      IMAGE_ARCHITECTURE = targetPlatform.cpu;
+      IMAGE_ARCHITECTURE = targetPlatform.constraints.cpu;
       IMAGE_PLATFORM = targetPlatform.system;
       IMAGE_KERNEL_PARAMS = kernelParams;
       IMAGE_ROOT_FS_TYPE = rootFsType;
@@ -833,23 +833,17 @@
         ];
       }
     else null;
-in
-  # Expose the assembled UKI (the exact `.efi` written to the ESP) as a
-  # passthru attribute so callers can publish or measure it directly
-  # (RFC-0006 phase 4: `apr publish --image <uki>` derives Secure Boot
-  # facts from this signed binary).
-  (
+in {
+  finalImage =
     if externalFinalization
-    then unsignedAssembly
-    else imageDrv
-  )
-  // {
-    inherit unsignedAssembly;
+    then null
+    else imageDrv;
+  unsignedAssembly =
+    if externalFinalization
+    then unsignedAssemblyValue
+    else null;
+  artifacts = {
     inherit rootfs uki ukiA ukiB ukiAStoreFilename ukiBStoreFilename;
-    recoveryInitrdA = recoveryInitrdA;
-    recoveryInitrdB = recoveryInitrdB;
-    recoverySlotManifest = recoverySlotManifest;
-    recoveryUkiA = recoveryUkiA;
-    recoveryUkiB = recoveryUkiB;
-    recoveryBundle = recoveryBundle;
-  }
+    inherit recoveryInitrdA recoveryInitrdB recoverySlotManifest recoveryUkiA recoveryUkiB recoveryBundle;
+  };
+}

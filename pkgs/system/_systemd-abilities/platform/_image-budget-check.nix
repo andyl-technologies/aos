@@ -10,14 +10,11 @@
   name,
   runtimeClosureAudit,
 }: let
-  # Assembly and validation execute on the build machine; payloads stay target-specific.
-  buildPackages = pkgs.buildPackages or pkgs;
-
   budgets = config.aos.image.budgets;
   mib = 1048576;
   verityEnabled = config.aos.security.verity.enable;
 in
-  buildPackages.mkDerivation ({
+  pkgs.mkDerivation ({
       pname = "aos-image-${name}-budget-check";
       version = config.aos.system.version;
       src = null;
@@ -26,7 +23,7 @@ in
       # The raw publication artifact performs the authoritative ESP-content
       # and fixed-layout checks. Keeping it as an input makes this focused
       # check a complete release gate instead of a partial parallel policy.
-      buildDeps = [buildPackages.coreutils buildPackages.jq image runtimeClosureAudit];
+      buildDeps = [pkgs.coreutils pkgs.jq image runtimeClosureAudit];
       dontStrip = true;
       dontNukeRefs = true;
 

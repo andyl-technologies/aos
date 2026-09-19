@@ -57,7 +57,9 @@
   bzip2,
   python3-pefile,
   python3-pyelftools,
+  aos-recovery,
   aos-systemd-provider,
+  pe-tools,
 }: let
   version = "261.2";
 
@@ -109,6 +111,8 @@
     elfutils
     linux-pam
     tpm2-tss
+    aos-recovery
+    pe-tools
   ];
   systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
     map (dependency: "${dependency}/lib") systemdRuntimeDeps

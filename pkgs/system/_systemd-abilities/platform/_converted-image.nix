@@ -58,7 +58,7 @@ else
           jq -S -n \
             --arg schema aos.recovery-bundle/v1 \
             --arg release ${lib.escapeShellArg config.aos.system.version} \
-            --arg architecture ${lib.escapeShellArg targetPlatform.cpu} \
+            --arg architecture ${lib.escapeShellArg targetPlatform.constraints.cpu} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
             --argjson module_abi ${toString config.aos.system.moduleAbi} \
             --argjson recovery_abi ${toString config.aos.boot.recovery.abi} \
