@@ -108,6 +108,8 @@ pub struct DerivationPackage {
 pub struct DerivationPackageContract {
     /// Context-free PackageDocument file produced by its own derivation.
     pub document: DerivationContractDocument,
+    /// Exact native package module binding declared by the document, when any.
+    pub package_module: Option<PackageOutputBinding>,
     /// Exact package outputs selected by the symbolic document.
     pub selectors: Vec<DerivationSelectorResolution>,
 }
@@ -266,6 +268,17 @@ impl DerivationInventoryV1 {
                     }
                     require_store_path(&selector.store_path, false)?;
                 }
+                if let Some(package_module) = &contract.package_module {
+                    if package_module.output != "module" {
+                        bail!("package contract native module must select the module output");
+                    }
+                    if package_module.package != "self" && package_module.package != package.name {
+                        bail!("package contract native module must belong to its package");
+                    }
+                    if !contract.selectors.contains(package_module) {
+                        bail!("package contract native module is absent from its selectors");
+                    }
+                }
             }
         }
 
@@ -420,6 +433,7 @@ impl PackageInventoryV1 {
                                             "package/{}/{}/contract",
                                             package.name, cell.platform
                                         ),
+                                        package_module: contract.package_module.clone(),
                                         selectors: contract.selectors.clone(),
                                     }
                                 }),
@@ -629,12 +643,28 @@ mod tests {
                                 "/nix/store/ffffffffffffffffffffffffffffffff-example-contract"
                                     .to_owned(),
                         },
-                        selectors: vec![DerivationSelectorResolution {
+                        package_module: Some(DerivationSelectorResolution {
                             package: "example".to_owned(),
-                            output: "out".to_owned(),
-                            store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
-                                .to_owned(),
-                        }],
+                            output: "module".to_owned(),
+                            store_path:
+                                "/nix/store/dddddddddddddddddddddddddddddddd-example-module"
+                                    .to_owned(),
+                        }),
+                        selectors: vec![
+                            DerivationSelectorResolution {
+                                package: "example".to_owned(),
+                                output: "module".to_owned(),
+                                store_path:
+                                    "/nix/store/dddddddddddddddddddddddddddddddd-example-module"
+                                        .to_owned(),
+                            },
+                            DerivationSelectorResolution {
+                                package: "example".to_owned(),
+                                output: "out".to_owned(),
+                                store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
+                                    .to_owned(),
+                            },
+                        ],
                     }),
                 }],
             })
@@ -660,9 +690,9 @@ mod tests {
             artifact
                 .package_contract
                 .as_ref()
-                .and_then(|contract| contract.selectors.first())
+                .and_then(|contract| contract.package_module.as_ref())
                 .map(|selector| selector.store_path.as_str()),
-            Some("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example")
+            Some("/nix/store/dddddddddddddddddddddddddddddddd-example-module")
         );
         assert_eq!(
             plan[0]
@@ -701,6 +731,7 @@ mod tests {
                         store_path: "/nix/store/ffffffffffffffffffffffffffffffff-example-contract"
                             .to_owned(),
                     },
+                    package_module: None,
                     selectors: vec![DerivationSelectorResolution {
                         package: "example".to_owned(),
                         output: "out".to_owned(),

@@ -54,6 +54,15 @@ def _package_contract_outputs(decision, artifacts, package):
     if contract["document_artifact"] not in artifact_ids:
         raise ValueError(f"K3s fleet {package} contract document is not retained")
 
+    package_module = contract["package_module"]
+    if package_module is not None:
+        if (
+            package_module.get("package") not in ("self", package)
+            or package_module.get("output") != "module"
+            or package_module not in contract["selectors"]
+        ):
+            raise ValueError(f"K3s fleet {package} has an invalid native package module")
+
     outputs = {}
     subjects = []
     for selector in contract["selectors"]:
@@ -160,9 +169,6 @@ def bind_k3s_fleet(payload, platform, package, system_variant, topology):
             outputs[output] = path
         if "out" not in outputs:
             raise ValueError(f"K3s fleet {name} lacks its primary output")
-        has_contract = cell["decision"]["artifact"].get("package_contract") is not None
-        if has_contract and "module" not in outputs:
-            raise ValueError(f"K3s fleet {name} lacks its native package module")
         package_outputs[name] = outputs
         subjects.extend(package_artifacts)
         subjects.extend(contract_subjects)

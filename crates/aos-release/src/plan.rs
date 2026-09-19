@@ -88,6 +88,8 @@ pub struct PlannedArtifactSet {
 pub struct PlannedPackageContract {
     /// Planned artifact containing the context-free contract document.
     pub document_artifact: String,
+    /// Exact native package module binding declared by the document, when any.
+    pub package_module: Option<PackageOutputBinding>,
     /// Exact evaluated package-output bindings used to resolve the document.
     pub selectors: Vec<PackageOutputBinding>,
 }
@@ -173,6 +175,14 @@ impl PlannedArtifactSet {
                     bail!("package contracts cannot select another package contract");
                 }
                 require_store_path(&selector.store_path, false)?;
+            }
+            if let Some(package_module) = &contract.package_module {
+                if package_module.output != "module" {
+                    bail!("package contract native module must select the module output");
+                }
+                if !contract.selectors.contains(package_module) {
+                    bail!("package contract native module is absent from its selectors");
+                }
             }
         }
         require_unique_by(

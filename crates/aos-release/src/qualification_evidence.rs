@@ -980,12 +980,14 @@ fn k3s_fleet_subjects(
         let MatrixCell::Artifact { artifact } = &cell.decision else {
             bail!("K3s fleet package {name}/{platform} is not an artifact");
         };
-        if artifact.package_contract.as_ref().is_some_and(|contract| {
-            !contract.selectors.iter().any(|selector| {
-                matches!(selector.package.as_str(), "self") && selector.output == "module"
-            })
-        }) {
-            bail!("K3s fleet {name} lacks its native package module binding");
+        if let Some(package_module) = artifact
+            .package_contract
+            .as_ref()
+            .and_then(|contract| contract.package_module.as_ref())
+        {
+            if package_module.package != "self" && package_module.package != name {
+                bail!("K3s fleet {name} native package module belongs to another package");
+            }
         }
         subjects.extend(artifact.artifact_ids.iter().cloned());
         subjects.extend(package_contract_subjects(manifest, artifact)?);
