@@ -101,11 +101,21 @@
   in "${root}/${digest}";
   storagePath = persistent: resource: request:
     request.requested_path or (defaultStoragePath persistent resource);
-  sourcePath = entry:
+  requestNameForSlot = requests: bindings: slot: let
+    matches = builtins.filter (binding: binding.slot == slot) (builtins.attrValues bindings);
+    binding =
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "a filesystem resource must have exactly one originating request";
+  in
+    if builtins.hasAttr binding.request requests
+    then binding.request
+    else throw "a filesystem resource binding names an absent request";
+  sourcePath = artifactForRequest: requestName: entry:
     if entry.kind != "copied-file"
     then null
     else if entry.source.kind == "artifact-file"
-    then "${entry.source.reference.artifact.store_path}/${entry.source.reference.path}"
+    then "${artifactForRequest requestName entry.source.reference.artifact}/${entry.source.reference.path}"
     else entry.source.path;
   provide = interface: lifetime: plannedPath: {
     instance,
@@ -192,11 +202,19 @@
         path = storageViewPath resource.value;
       })
       resources);
-  entryCompose = {resources, ...}:
-    withEffects "filesystem-entry" resources (builtins.mapAttrs (_: resource: {
+  entryCompose = {
+    artifactForRequest,
+    bindings,
+    requests,
+    resources,
+    ...
+  }:
+    withEffects "filesystem-entry" resources (builtins.mapAttrs (slot: resource: let
+        requestName = requestNameForSlot requests bindings slot;
+      in {
         schema = realizationSchemaFor "filesystem-entry";
         path = resource.value.destination;
-        source_path = sourcePath resource.value.entry;
+        source_path = sourcePath artifactForRequest requestName resource.value.entry;
       })
       resources);
 in {

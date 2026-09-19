@@ -8,6 +8,7 @@
   abilityIdentityKeyFor,
   config,
   lib,
+  packageArtifactForOwner,
   ...
 }: let
   abilities = config.aos.abilities;
@@ -231,17 +232,24 @@
   contextFor = entries: let
     first = builtins.head entries;
     groupKey = selectionGroupKey first;
+    requests = builtins.listToAttrs (builtins.map (entry: {
+        name = entry.binding.request;
+        value = entry.request;
+      })
+      entries);
   in {
     provider = first.provider;
     instance = {
       id = first.provider;
       configuration = first.instance.configuration;
     };
-    requests = builtins.listToAttrs (builtins.map (entry: {
-        name = entry.binding.request;
-        value = entry.request;
-      })
-      entries);
+    inherit requests;
+    artifactForRequest = requestName: selector: let
+      request =
+        requests.${requestName}
+        or (throw "ability composition: provider requested an artifact for an absent request");
+    in
+      packageArtifactForOwner request.package selector;
     bindings = builtins.listToAttrs (builtins.map (entry: {
         name = entry.bindingName;
         value = entry.binding;

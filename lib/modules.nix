@@ -933,6 +933,11 @@
                     // {provenance = provenanceQueries;}
                     // (
                       if moduleOutputs == null
+                      then {inherit packageArtifactForOwner;}
+                      else {}
+                    )
+                    // (
+                      if moduleOutputs == null
                       then {}
                       else {outputs = moduleOutputs;}
                     )
@@ -1140,6 +1145,24 @@
         then throw "evalModules: selected provider module for '${record.name}' has an invalid resolver-supplied version"
         else record)
       selectedProviderModules;
+
+      packageOutputsForOwner = owner: let
+        matches = builtins.filter (
+          record: record.name == owner && record.outputs != null
+        ) (validatedPackageModules ++ validatedProviderModules);
+        selected =
+          if matches == []
+          then throw "evalModules: package '${owner}' has no authenticated output record"
+          else builtins.head matches;
+      in
+        if !builtins.all (record: record.outputs == selected.outputs) matches
+        then throw "evalModules: package '${owner}' has conflicting authenticated output records"
+        else selected.outputs;
+
+      packageArtifactForOwner = owner: selector:
+        if !builtins.isString owner || builtins.match "[a-z0-9][a-z0-9._+-]*" owner == null
+        then throw "evalModules: artifact request has no authenticated package owner"
+        else packageArtifactFor owner (packageOutputsForOwner owner) selector;
 
       packageOwnedRoots = lists.unique (builtins.map
         (decl: builtins.head decl.path)
