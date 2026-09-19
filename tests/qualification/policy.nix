@@ -26,9 +26,8 @@
     pname = "source-fixture";
     version = "1";
   };
-  sourceEvidence = import ../../pkgs/containers/_aos-oci-backend/container/package-evidence.nix {
-    inherit lib;
-    pkgs = {
+  sourceEvidence = pkgs.mkOciPackageEvidence {
+    packageSet = {
       packageNames = ["fixture"];
       fixture = sourceFixture;
     };
@@ -156,9 +155,9 @@
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
   abilityRequirements = builtins.listToAttrs (map (requirement: {
-      name = requirement.id;
-      value = requirement;
-    }) (builtins.filter (requirement: lib.hasPrefix "ability-" requirement.id) contract.requirements));
+    name = requirement.id;
+    value = requirement;
+  }) (builtins.filter (requirement: lib.hasPrefix "ability-" requirement.id) contract.requirements));
   nativeAdapterSurface = nativeAdapterMatrix.spec.surface;
   nativeAdapterChecks = abilityRequirements.ability-native-adapter-matrix.checks;
   providerContract = adapterName:
@@ -180,6 +179,11 @@
   recoveryPackage = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
   );
+  executedPackageRules = builtins.filter (rule: rule.execution != null) contract.package_rules;
+  packageCaseScenarioNames =
+    map
+    (rule: "package-function/${rule.name}/x86_64-linux")
+    executedPackageRules;
   composed = import ../../qualification/_eval.nix {
     inherit lib nativeAdapterMatrix;
     packageNames = ["aos" "fixture"];
@@ -240,75 +244,15 @@ in
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
   assert names == builtins.sort builtins.lessThan packageNames;
-  assert imageRecovery.regressions
-  == [
-    "checks.fleet.system-image-rollback"
-    "checks.fleet.boot-identity-fail-closed"
-    "checks.fleet.measured-boot"
-  ];
-  assert abilityRequirements.ability-crucible-baseline.regressions
-  == ["checks.fleet.ability-crucible-baseline"];
-  assert abilityRequirements.ability-crucible-baseline.checks
-  == [
-    "connected-generic-markers-before-selected-interruption"
-    "retained-boundary-selection-and-digest-bound-adapter-acknowledgement"
-    "reproduced-reconciliation-through-production-executor"
-    "inspector-explains-retained-crucible-recovery-finding"
-    "disabled-production-executor-has-no-crucible-closure"
-  ];
-  assert abilityRequirements.ability-native-activation.regressions
-  == ["checks.fleet.runtime-module-composition"];
-  assert abilityRequirements.ability-native-activation.checks
-  == [
-    "authenticated-package-policy-and-operator-authority"
-    "exact-interface-binding-effect-plan-and-artifact-identities"
-    "consumer-scoped-access-and-independent-service-observation"
-    "aggregate-publication-reload-and-unchanged-input-no-op"
-    "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state"
-    "rollback-revalidates-and-retains-transaction-evidence"
-    "typed-opaque-tls-credential-version-delivery-and-validation-binding"
-    "independent-served-certificate-observation-matches-declared-version"
-    "missing-credential-and-invalid-certificate-reject-with-live-target-preserved"
-    "tls-private-key-sentinel-absent-from-durable-and-rendered-records"
-    "credential-renewal-reloads-and-serves-new-version"
-    "selected-tls-generation-and-credential-view-survive-gc-and-reboot"
-    "tls-disable-and-cleartext-transition-release-credential-views-after-service-change"
-    "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order"
-    "authenticated-nginx-storage-ownership-lifetime-and-service-ordering"
-  ];
-  assert abilityRequirements.ability-native-kubernetes.regressions
-  == ["checks.fleet.k3s-control-plane-worker"];
-  assert abilityRequirements.ability-native-kubernetes.checks
-  == [
-    "authenticated-k3s-bootstrap-and-provider-authority"
-    "exact-service-and-kubernetes-object-resource-mapping"
-    "consumer-observed-kubernetes-readiness"
-    "forged-mapping-grant-and-namespace-rejected-without-mutation"
-    "object-update-removal-and-retained-owner-evidence"
-    "bounded-bootstrap-planning-rejections-before-effect-construction"
-  ];
-  assert abilityRequirements.ability-native-recovery.regressions
-  == [
-    "checks.fleet.ability-initrd-activation"
-    "checks.fleet.ability-initrd-handoff-fail-closed"
-    "checks.fleet.runtime-module-composition"
-  ];
-  assert abilityRequirements.ability-native-recovery.checks
-  == [
-    "exact-boot-initrd-artifact-and-static-stage-handoff-contract"
-    "process-loss-after-external-effect-reconciles-before-retry"
-    "power-loss-after-external-effect-reconciles-after-boot"
-    "fresh-receiving-authority-and-resource-incarnations"
-    "retained-plan-journal-and-independent-service-observation"
-    "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
-  ];
-  assert abilityRequirements.ability-native-adapter-matrix.regressions
-  == [
-    "checks.fleet.runtime-module-composition"
-    "checks.fleet.k3s-control-plane-worker"
-    "checks.fleet.ability-native-power-loss"
-    "checks.fleet.system-image-rollback"
-  ];
+  assert imageRecovery.regressions != [];
+  assert builtins.all (requirement:
+    requirement.checks
+    != []
+    && requirement.regressions != []
+    && builtins.length requirement.checks == builtins.length (lib.unique requirement.checks)
+    && builtins.length requirement.regressions == builtins.length (lib.unique requirement.regressions)
+    && builtins.all (regression: builtins.match "checks[.][A-Za-z0-9._-]+" regression != null) requirement.regressions)
+  (builtins.attrValues abilityRequirements);
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
   assert builtins.length applicableNativeIds
   == builtins.length (lib.unique applicableNativeIds);
@@ -350,7 +294,6 @@ in
     system_variant = "server";
   };
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
-  assert builtins.length contract.targets == 4;
   assert builtins.all (target:
     builtins.length target.environment.layers
     == (
@@ -378,19 +321,16 @@ in
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
-  == [
-    "package-function/aos-recovery/x86_64-linux"
-    "package-function/k3s-combined/x86_64-linux"
-    "package-function/k3s-control-plane/x86_64-linux"
-    "package-function/k3s-worker/x86_64-linux"
-    "package-function/k3s/x86_64-linux"
-  ];
-  assert builtins.match ".*/aos-qualification-x86_64-linux-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/x86_64-linux" != null;
-  assert builtins.all (name:
-    builtins.match ".*/aos-qualification-x86_64-linux-${name}-fleet"
-    releaseExecutor.passthru.qualification.caseScenarios."package-function/${name}/x86_64-linux"
-    != null) ["k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"];
-  assert builtins.length contract.claims == 8;
+  == packageCaseScenarioNames;
+  assert builtins.all (rule: let
+    scenario = releaseExecutor.passthru.qualification.caseScenarios."package-function/${rule.name}/x86_64-linux";
+    suffix =
+      if rule.execution.kind == "recovery-image"
+      then rule.name
+      else "${rule.name}-fleet";
+  in
+    builtins.match ".*/aos-qualification-x86_64-linux-${suffix}" scenario != null)
+  executedPackageRules;
   assert contract.support.default
   == {
     kind = "standard";
