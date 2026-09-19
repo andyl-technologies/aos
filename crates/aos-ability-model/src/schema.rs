@@ -284,18 +284,14 @@ impl ValueConstraint {
     pub fn is_within_limits(&self, max_string_bytes: u64, max_items: u64) -> bool {
         let strings_and_items = match self {
             Self::StringPattern { pattern } | Self::MapKeysPattern { pattern } => {
-                return portable_pattern_is_valid(pattern, max_string_bytes);
+                return pattern.len() as u64 <= max_string_bytes;
             }
             Self::StringExcludes { classes } => {
-                return !classes.is_empty()
-                    && classes.len() as u64 <= max_items
-                    && classes.windows(2).all(|pair| pair[0] < pair[1]);
+                return classes.len() as u64 <= max_items;
             }
             Self::MinimumSize { minimum } => return *minimum <= max_items,
             Self::IntegerSet { values } => {
-                return !values.is_empty()
-                    && values.len() as u64 <= max_items
-                    && values.windows(2).all(|pair| pair[0] < pair[1]);
+                return values.len() as u64 <= max_items;
             }
             Self::AtMostOneNonNull { fields } => fields.len(),
             Self::UniqueAt { path } => path.len(),

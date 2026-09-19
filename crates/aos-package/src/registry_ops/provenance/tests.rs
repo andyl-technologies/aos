@@ -449,7 +449,7 @@ fn validate_staged_package_provenance_transparency_log_rejects_statement_body_mi
 }
 
 #[test]
-fn validate_staged_package_provenance_transparency_log_rejects_manifest_measurement_mismatch() {
+fn validate_staged_package_provenance_transparency_log_rejects_binding_measurement_mismatch() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("repo");
     fs::create_dir(&repo).unwrap();
@@ -506,7 +506,7 @@ fn validate_staged_package_provenance_transparency_log_rejects_manifest_measurem
 
     let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
 
-    assert!(format!("{err:#}").contains("measurement does not match permissions manifest"));
+    assert!(format!("{err:#}").contains("measurement does not match runtime binding digest"));
 }
 
 #[test]

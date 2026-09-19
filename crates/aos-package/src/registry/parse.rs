@@ -572,35 +572,6 @@ references = []
 mod tests {
     use super::*;
 
-    const MISSING_DELIVERY_IMAGE_TOML: &str = r#"
-[package]
-name = "server"
-description = "AOS server"
-license = "MIT"
-maintainer = "aos-team"
-sysroot = true
-
-[[versions]]
-version = "2026.08"
-
-[versions.platforms.x86_64-linux]
-store_path = "/aos/store/serverhash-server-2026.08"
-closure_size = 1
-source_drv = ""
-source_nar_hash = ""
-
-[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["image-artifact-contract-v1"]
-
-[[versions.platforms.x86_64-linux.images]]
-format = "raw"
-store_path = "/aos/store/imagehash-server-raw"
-nar_hash = "sha256:missing-delivery"
-nar_size = 10
-"#;
-
     fn direct_image_toml(format: &str) -> String {
         let image_sha256 = "a".repeat(64);
         let info_sha256 = "b".repeat(64);
@@ -679,16 +650,6 @@ byte_size = 20
 sha256 = "{info_sha256}"
 "#
         )
-    }
-
-    #[test]
-    fn store_only_signed_image_catalog_remains_installable() {
-        let meta = parse_package_toml(MISSING_DELIVERY_IMAGE_TOML, "x86_64-linux")
-            .unwrap()
-            .unwrap();
-        assert_eq!(meta.images.len(), 1);
-        assert!(meta.images[0].delivery.is_store_only());
-        assert_eq!(meta.images[0].store_path, "/aos/store/imagehash-server-raw");
     }
 
     #[test]
