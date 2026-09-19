@@ -345,8 +345,8 @@
     runtimeDeps = [provider];
   };
 
-  positive = import ../../lib/build/artifact-consumption-audit.nix {
-    inherit pkgs lib consumer provider loader;
+  positive = lib.mkArtifactConsumptionAudit {
+    inherit pkgs consumer provider loader;
     name = "fixture-linkage";
     consumerPath = "/bin/consumer";
     providerPath = "/lib/${soname}";
@@ -377,8 +377,8 @@
     arguments,
     expectedOutput,
   }:
-    import ../../lib/build/artifact-consumption-audit.nix {
-      inherit pkgs lib name mechanism consumer consumerPath provider providerPath arguments;
+    lib.mkArtifactConsumptionAudit {
+      inherit pkgs name mechanism consumer consumerPath provider providerPath arguments;
       targetPlatform = {
         system = platform.constraints.os;
         inherit architecture;

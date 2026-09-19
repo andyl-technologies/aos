@@ -158,6 +158,11 @@
         lib = finalLib;
         inherit abilities;
       };
+      selectBindings = abilityConfiguration:
+        import ./build/select-ability-bindings.nix {
+          lib = finalLib;
+          abilities = abilityConfiguration;
+        };
     };
   qualification = import ./qualification.nix {inherit abilities;};
   packagePlatform = import ./package-platform.nix {
@@ -193,6 +198,7 @@
           lib = finalLib;
         }
       );
+    storeView = import ./build/store-view.nix {lib = finalLib;};
   };
 
   platformMod = import ./platform.nix;
