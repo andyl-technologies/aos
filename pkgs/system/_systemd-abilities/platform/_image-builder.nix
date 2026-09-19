@@ -119,11 +119,11 @@
   # role-bound external providers, and constructs the final disk bytes there.
   # Private material is intentionally neither an argument nor an environment
   # value of this derivation.
-  unsignedAssembly = buildPackages.mkDerivation {
+  unsignedAssembly = pkgs.mkDerivation {
     pname = "aos-image-${name}-unsigned-assembly";
     inherit version;
     src = null;
-    buildDeps = [buildPackages.coreutils buildPackages.findutils buildPackages.jq buildPackages.tar];
+    buildDeps = [pkgs.coreutils pkgs.findutils pkgs.jq pkgs.tar];
     runtimeDeps = [];
     propagatedDeps = [];
     phases = [
@@ -185,7 +185,7 @@
             exit 1
           }
 
-          ${buildPackages.jq}/bin/jq -cS -n \
+          ${pkgs.jq}/bin/jq -cS -n \
             --arg schema aos.image.assembly-recipe/v2 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
@@ -299,7 +299,7 @@
     meta.description = "Public-only unsigned AOS image assembly for ${targetPlatform.system}";
   };
 
-  imageDrv = buildPackages.mkDerivation ({
+  imageDrv = pkgs.mkDerivation ({
       inherit targetPlatform;
       name = "aos-image-${name}";
       src = null;
@@ -309,19 +309,19 @@
       # release budget even when callers do not build the focused check.
       buildDeps =
         [
-          buildPackages.util-linux # sfdisk
-          buildPackages.e2fsprogs
-          buildPackages.dosfstools # mkfs.vfat
-          buildPackages.mtools # mcopy
-          buildPackages.coreutils
-          buildPackages.jq
-          buildPackages.zstd
+          pkgs.util-linux # sfdisk
+          pkgs.e2fsprogs
+          pkgs.dosfstools # mkfs.vfat
+          pkgs.mtools # mcopy
+          pkgs.coreutils
+          pkgs.jq
+          pkgs.zstd
           runtimeClosureAudit
         ]
-        ++ lib.optional localSecureBootSigning buildPackages.sbsigntools
+        ++ lib.optional localSecureBootSigning pkgs.sbsigntools
         ++ lib.optionals recoveryEnabled [
           pkgs.stdenv.binutils # Native executable with target PE support.
-          buildPackages.openssl
+          pkgs.openssl
         ];
 
       ROOT_IMG = "${rootfs}/root.img";
@@ -610,7 +610,7 @@
               exit 1
             fi
             disk_sha256=$(sha256sum "$out/$IMAGE_FILENAME" | cut -d ' ' -f1)
-            ${buildPackages.jq}/bin/jq -S -n \
+            ${pkgs.jq}/bin/jq -S -n \
               --arg name "$IMAGE_NAME" \
               --arg version "$IMAGE_VERSION" \
               --arg architecture "$IMAGE_ARCHITECTURE" \
@@ -750,7 +750,7 @@
                 path=$2
                 size=$(stat -c %s "$out/$path")
                 digest=$(sha256sum "$out/$path" | cut -d ' ' -f1)
-                ${buildPackages.jq}/bin/jq -n \
+                ${pkgs.jq}/bin/jq -n \
                   --arg id "$id" --arg path "$path" \
                   --argjson byteSize "$size" --arg sha256 "$digest" \
                   '{id: $id, path: $path, byte_size: $byteSize, sha256: $sha256}'
@@ -769,7 +769,7 @@
                   component image-metadata ${lib.escapeShellArg rawMetadataFilename}
                 } | ${pkgs.jq}/bin/jq -s .
               )
-              ${buildPackages.jq}/bin/jq -S -n \
+              ${pkgs.jq}/bin/jq -S -n \
                 --arg schema aos.recovery-bundle/v1 \
                 --arg release "$IMAGE_VERSION" \
                 --arg architecture "$IMAGE_ARCHITECTURE" \
@@ -781,13 +781,13 @@
                   platform: $platform, module_abi: $module_abi,
                   recovery_abi: $recovery_abi, components: $components}' \
                 > $out/recovery-bundle.json
-              ${buildPackages.openssl}/bin/openssl dgst -sha256 \
+              ${pkgs.openssl}/bin/openssl dgst -sha256 \
                 -sign ${sb.dbKey} \
                 -out $out/recovery-bundle.json.sig \
                 $out/recovery-bundle.json
-              ${buildPackages.openssl}/bin/openssl x509 -pubkey -noout \
+              ${pkgs.openssl}/bin/openssl x509 -pubkey -noout \
                 -in ${dbCertificate} > recovery-bundle-public.pem
-              ${buildPackages.openssl}/bin/openssl dgst -sha256 \
+              ${pkgs.openssl}/bin/openssl dgst -sha256 \
                 -verify recovery-bundle-public.pem \
                 -signature $out/recovery-bundle.json.sig \
                 $out/recovery-bundle.json
@@ -807,11 +807,11 @@
   recoveryBundle =
     if recoveryEnabled
     then
-      buildPackages.mkDerivation {
+      pkgs.mkDerivation {
         pname = "aos-recovery-bundle";
         inherit version;
         src = null;
-        buildDeps = [buildPackages.coreutils];
+        buildDeps = [pkgs.coreutils];
         runtimeDeps = [];
         propagatedDeps = [];
         phases = [
