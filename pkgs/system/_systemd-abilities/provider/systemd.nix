@@ -470,6 +470,10 @@
         "${milestones.hostStageReceived}" = "aos-ability-host-receiver.service";
         "${milestones.imageBootCommitted}" = "aos-image-boot-commit.service";
         "${milestones.espReady}" = "aos-mount-esp.service";
+        "${milestones.deviceSettle}" = "systemd-udev-settle.service";
+        "${milestones.deviceManager}" = "systemd-udevd.service";
+        "${milestones.deviceEventsTriggered}" = "systemd-udev-trigger.service";
+        "${milestones.kernelModules}" = "systemd-modules-load.service";
       };
       initrdUnits = {
         "${milestones.initrdFilesystems}" = "initrd-fs.target";
@@ -1154,7 +1158,9 @@
   };
   nativeResourceProviderImplementations = import ./_systemd-native-resource-provider.nix {
     inherit config lib packageName;
+    resolveResourceReference = resolveReference;
     unitIdentityForReference = unitIdentityForPlannedReference;
+    unitIdentityForResource = unitIdentityForPlannedResource;
   };
 in {
   imports = [

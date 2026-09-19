@@ -23,7 +23,6 @@
   # The harness attaches blank devices in declaration order after the root
   # disk, so the pool's single vdev is the first of them.
   poolDevice = "/dev/vdb";
-  poolTools = [config.aos.filesystems.zfs.package pkgs.coreutils];
   poolDiskSizeMiB = 2048;
 in {
   imports = [./server-test.nix];
@@ -52,7 +51,6 @@ in {
 
   aos.filesystems.zfs = {
     enable = true;
-    poolName = "aostest";
 
     # Data-only pool; see the header for why /var stays on the image.
     systemState = false;
@@ -92,46 +90,18 @@ in {
     reservedSpace.size = "64M";
   };
 
+  environment.systemPackages = [pkgs.aos-zfs-test-pool];
+  aos.tests.zfsPool = {
+    enable = true;
+    device = poolDevice;
+  };
+  aos.filesystems.zfs.poolName = config.aos.tests.zfsPool.poolName;
+
   # A production host's pool is created by the installer against real disks,
   # under an operator's explicit confirmation. Nothing in the modules creates a
   # pool on its own, because auto-creating one on a blank device is how data on
   # an unrelated disk gets destroyed. This unit is test scaffolding and lives
   # in the fixture for exactly that reason.
-  systemd.services."aos-zfs-test-pool" = {
-    description = "Create the test ZFS pool on ${poolDevice}";
-    wantedBy = ["local-fs.target"];
-    before = ["local-fs.target" "zfs-import.service"];
-    after = ["systemd-udev-settle.service" "systemd-modules-load.service"];
-    requires = ["systemd-modules-load.service"];
-    unitConfig.DefaultDependencies = "no";
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-    };
-    script = ''
-      set -euo pipefail
-      # zpool lives in sbin, so a bin-only path would find nothing.
-      PATH=${lib.concatStringsSep ":" [
-        (lib.makeBinPath poolTools)
-        (lib.makeSearchPath "sbin" poolTools)
-      ]}''${PATH:+:$PATH}
-
-      if zpool list -H aostest >/dev/null 2>&1; then
-        exit 0
-      fi
-      if zpool import -N -f aostest >/dev/null 2>&1; then
-        exit 0
-      fi
-
-      # Mirrors the installer's pool geometry and inherited properties so the
-      # checks observe the same defaults a real installation produces.
-      zpool create -f -o ashift=12 -o autotrim=on -o compatibility=openzfs-2.3 \
-        -O compression=zstd-3 -O atime=off -O mountpoint=none \
-        -O recordsize=128K -O dedup=off -O xattr=sa -O acltype=posixacl \
-        aostest ${poolDevice}
-    '';
-  };
-
   # Enabling ZFS turns on hardware monitoring, which a storage host wants on
   # real disks. This guest's devices are virtio-blk and report no SMART data,
   # so smartd would fail and restart for the life of the test. The watchdog
