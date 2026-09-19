@@ -187,6 +187,14 @@
         oci = ociTools;
       }
     );
+  mkOciPackageEvidence = {packageSet ? self, ...} @ args:
+    import ./containers/_aos-oci-backend/container/package-evidence.nix (
+      (builtins.removeAttrs args ["packageSet"])
+      // {
+        inherit lib;
+        pkgs = packageSet;
+      }
+    );
 
   packageContractDocument = {
     packageName,
@@ -1560,7 +1568,7 @@
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
-      inherit mkOciTools ociTools mkOciMultiPlatformContainer;
+      inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
