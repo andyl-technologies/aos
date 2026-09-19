@@ -195,14 +195,15 @@ human-readable output, or a private copy of the provider inventory.
 ## Package construction
 
 `abilities` is a first-class AOS package field whose value is an authenticated,
-path-backed standard module artifact:
+path-backed standard module directory. The directory contains `module.nix` and
+any package-owned implementation files that it imports:
 
 ```nix
 mkDerivation {
   pname = "example";
   version = "1.0";
 
-  abilities = ./_example-package-module.nix;
+  abilities = ./_example-package-module;
 };
 ```
 
@@ -328,7 +329,7 @@ Every implementation is exposed by the package that ships it:
 ```nix
 systemd = mkDerivation {
   # Ordinary package fields are omitted from this example.
-  abilities = ./_systemd-package-module.nix;
+  abilities = ./_systemd-package-module;
 };
 ```
 
