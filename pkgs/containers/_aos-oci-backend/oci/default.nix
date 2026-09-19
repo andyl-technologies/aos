@@ -1,15 +1,10 @@
 ##! Hermetic OCI builder API owned by the AOS OCI backend package.
 ##!
-##! Import this file with explicit AOS package arguments; it never imports
-##! nixpkgs or discovers host tools:
+##! The package fixed point exposes this API as `pkgs.ociTools`; consumers do
+##! not import backend implementation files or assemble its tool splice.
 ##!
 ##! ```nix
-##! oci = import ./oci {
-##!   inherit lib;
-##!   inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
-##!   abilityContractValidator = pkgs.aos-ability-contract-validator;
-##!   inherit mkReferenceGraph;
-##! };
+##! image = pkgs.ociTools.mkImageLayout { ... };
 ##! ```
 ##!
 ##! The returned builders perform no import-from-derivation.  Closure discovery
@@ -41,6 +36,7 @@ in rec {
   inherit mkReferenceGraph;
 
   layerAbi = "aos.container.layer/v2";
+  evidencePlatformsScript = ./evidence-platforms.sh;
   archivePolicy = {
     tar = "GNU tar 1.35";
     gzip = "gzip 1.14";

@@ -163,6 +163,22 @@
     inherit lib mkDerivation;
   };
 
+  # The selected OCI backend owns its artifact constructors. Package recipes
+  # receive this API through callPackage instead of importing backend-private
+  # implementation files or rebuilding the tool splice themselves.
+  mkOciTools = {
+    buildPackages ? resolvedBuildPackages,
+    abilityContractValidator ? buildPackages.aos-ability-contract-validator,
+    mkReferenceGraph ? lib.build.referenceGraph {
+      inherit (buildPackages) mkDerivation coreutils jq;
+    },
+  }:
+    import ./containers/_aos-oci-backend/oci {
+      inherit lib abilityContractValidator mkReferenceGraph;
+      inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
+    };
+  ociTools = mkOciTools {};
+
   packageContractDocument = {
     packageName,
     version,
@@ -1535,6 +1551,7 @@
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
+      inherit mkOciTools ociTools;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;

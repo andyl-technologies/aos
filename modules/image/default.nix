@@ -25,8 +25,8 @@
   runtimeRoots =
     [config.system.build.toplevel config.aos.kernel.selected.package]
     ++ cfg.hostConfigClosures;
-  runtimeClosureAudit = import ../../lib/build/runtime-closure-audit.nix {
-    inherit pkgs lib;
+  runtimeClosureAudit = lib.build.runtimeClosureAudit {
+    inherit pkgs;
     roots = runtimeRoots;
     name = config.aos.system.name;
     maxClosureMiB = cfg.budgets.maxRuntimeClosureMiB;

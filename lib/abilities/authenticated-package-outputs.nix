@@ -6,27 +6,38 @@
     else package.pname or package.name or (throw "selected dependency has no package identity");
 
   dependencyClosureFor = owner: let
-    visit = seen: pending:
+    ownerName = packageNameFor owner;
+    selectedDependencyNames = builtins.filter
+      (name: !builtins.elem name ["self" ownerName])
+      (builtins.map
+        (selector: selector.package)
+        (owner.contract.selectors or []));
+    visit = outputs: visited: pending:
       if pending == []
-      then seen
+      then outputs
       else let
         package = builtins.head pending;
         remaining = builtins.tail pending;
+        path = builtins.toString package;
         dependencies = remaining ++ (package.runtimeDeps or []);
+        name = packageNameFor package;
+        # The native contract is the authority for addressable outputs. Walk
+        # through every runtime dependency to find its declared selectors, but
+        # do not silently turn unrelated transitive packages into selectors.
+        authenticated = builtins.elem name selectedDependencyNames;
       in
-        if !(package ? contract)
-        then visit seen dependencies
-        else let
-          name = packageNameFor package;
-        in
-          if builtins.hasAttr name seen
-          then
-            if builtins.toString seen.${name} == builtins.toString package
-            then visit seen remaining
-            else throw "package '${packageNameFor owner}' has ambiguous authenticated dependency outputs for '${name}'"
-          else visit (seen // {${name} = package;}) dependencies;
+        if builtins.elem path visited
+        then visit outputs visited remaining
+        else if !authenticated
+        then visit outputs (visited ++ [path]) dependencies
+        else if builtins.hasAttr name outputs
+        then
+          if builtins.toString outputs.${name} == path
+          then visit outputs (visited ++ [path]) dependencies
+          else throw "package '${ownerName}' has ambiguous authenticated dependency outputs for '${name}'"
+        else visit (outputs // {${name} = package;}) (visited ++ [path]) dependencies;
   in
-    visit {} [owner];
+    visit {${ownerName} = owner;} [builtins.toString owner] (owner.runtimeDeps or []);
 
   authenticatedPackageOutputFor = {
     package,

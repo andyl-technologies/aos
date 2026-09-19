@@ -66,7 +66,7 @@ in
             actual=rejected
             if (
               cd "$label"
-              "$CONFIG_SHELL" ${../../lib/build/oci/evidence-platforms.sh} \
+              "$CONFIG_SHELL" ${pkgs.ociTools.evidencePlatformsScript} \
                 "$fixture_root/$index" "$fixture_root/layout" "$fixture_root/$layers"
             ) > "$label.log" 2>&1; then
               actual=accepted

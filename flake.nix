@@ -95,16 +95,7 @@
       ];
       qualificationCheck = args:
         import ./tests/containers/production-multi-platform.nix args;
-      mkReferenceGraph = import ./lib/build/reference-graph.nix {
-        inherit (coordinator) lib;
-        inherit (coordinator.pkgs) mkDerivation coreutils jq;
-      };
-      oci = import ./pkgs/containers/_aos-oci-backend/oci {
-        inherit (coordinator) lib;
-        inherit mkReferenceGraph;
-        inherit (coordinator.pkgs) mkDerivation coreutils findutils gzip jq tar;
-        abilityContractValidator = coordinator.pkgs.aos-ability-contract-validator;
-      };
+      oci = coordinator.pkgs.ociTools;
     in
       import ./pkgs/containers/_aos-oci-backend/container/multi-platform.nix {
         inherit (coordinator) lib pkgs;

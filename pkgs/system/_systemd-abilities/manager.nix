@@ -24,15 +24,38 @@
     && selectedBinding.implementation.value.provide != null;
 
   packageOutput = package: lib.abilities.packageOutput {inherit package;};
+  managerArtifactNames = [
+    "aos-systemd-provider"
+    "bash"
+    "coreutils"
+    "cpio"
+    "cryptsetup"
+    "e2fsprogs"
+    "findutils"
+    "gawk"
+    "gptfdisk"
+    "grep"
+    "iproute2"
+    "jq"
+    "kmod"
+    "less"
+    "linux-pam"
+    "sed"
+    "util-linux"
+    "zstd"
+  ];
+  managerArtifactSelectors = builtins.map packageOutput managerArtifactNames;
+  managerArtifacts = builtins.listToAttrs (builtins.map
+    (name: {
+      inherit name;
+      value = packageArtifactFor (packageOutput name);
+    })
+    managerArtifactNames);
   systemdPackage = packageArtifactFor (lib.abilities.packageOutput {});
-  providerPackage = packageArtifactFor (packageOutput "aos-systemd-provider");
+  providerPackage = managerArtifacts.aos-systemd-provider;
   rendererPackages = buildContext: {
     inherit (buildContext) runCommand writeTextFile;
-    bash = packageArtifactFor (packageOutput "bash");
-    coreutils = packageArtifactFor (packageOutput "coreutils");
-    findutils = packageArtifactFor (packageOutput "findutils");
-    grep = packageArtifactFor (packageOutput "grep");
-    sed = packageArtifactFor (packageOutput "sed");
+    inherit (managerArtifacts) bash coreutils findutils grep sed;
     systemd = systemdPackage;
   };
 
@@ -95,7 +118,9 @@
       ''}
     '';
   buildInitrd = import ./platform/build-initrd.nix {
-    inherit config initrdAbilityEvaluation initrdStaticContract lib packageArtifactFor;
+    inherit config initrdAbilityEvaluation initrdStaticContract lib;
+    artifacts = managerArtifacts;
+    systemdArtifact = systemdPackage;
   };
   selectedManagerOutput =
     config.aos.abilities.compositionOutputs.${selectedBinding.binding.request}."selected-manager".value or null;
@@ -143,6 +168,7 @@ in {
         description = "Realizes systemd host and initrd manager artifacts.";
         interface = managerInterface.alias;
         artifact = managerArtifact;
+        artifacts = managerArtifactSelectors;
         methods = [];
         guarantees = [];
         providerModule = {

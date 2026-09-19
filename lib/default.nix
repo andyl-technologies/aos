@@ -186,6 +186,13 @@
           lib = finalLib;
         }
       );
+    runtimeClosureAudit = args:
+      import ./build/runtime-closure-audit.nix (
+        args
+        // {
+          lib = finalLib;
+        }
+      );
   };
 
   platformMod = import ./platform.nix;

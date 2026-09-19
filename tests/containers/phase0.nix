@@ -8,7 +8,7 @@
   lib,
   goldenRoots,
 }: let
-  archive = import ../../pkgs/containers/_aos-oci-backend/oci/common.nix {inherit lib;};
+  archive = pkgs.ociTools.common;
   expectedRootCount = builtins.length goldenRoots;
   goldenRootList = builtins.concatStringsSep "\n" (map builtins.toString goldenRoots);
   closureInfo = import ../../lib/build/closure-info.nix {inherit pkgs lib;} {
