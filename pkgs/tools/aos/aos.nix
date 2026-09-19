@@ -189,6 +189,10 @@
   applicationTestFlags = builtins.concatStringsSep " " (
     map (package: "-p ${package}") applicationTestPackages
   );
+  releaseBuildCommands = [
+    "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos --features release-fleet-fixture"
+    "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-package --bins"
+  ];
   cargoDeps = aosWorkspaceVendor;
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
@@ -214,10 +218,11 @@
     };
     cargoRoot = "crates";
     checkType = "debug";
-    cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos --features release-fleet-fixture"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --features release-fleet-fixture ${applicationTestFlags}"
-    ];
+    cargoBuildCommands =
+      releaseBuildCommands
+      ++ [
+        "test --no-run --frozen --offline -j$NIX_BUILD_CORES --features release-fleet-fixture ${applicationTestFlags}"
+      ];
     inherit cargoEnv;
     buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
     runtimeDeps = [openssl sqlite libssh2 zlib];
@@ -322,7 +327,7 @@ in
       apr.disallowedReferences = aprForbiddenRuntimeDeps;
     };
 
-    cargoFlags = "-p aos --features release-fleet-fixture";
+    cargoBuildCommands = releaseBuildCommands;
 
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
@@ -739,6 +744,16 @@ in
               if grep -aFq "$out" "$binary"; then
                 echo "$binary retains the aos output" >&2
                 exit 1
+              fi
+            done
+
+            find "$packageRuntime" -type f -perm -0100 | while IFS= read -r binary; do
+              if rpath=$(patchelf --print-rpath "$binary" 2>/dev/null); then
+                rpath=$(printf '%s' "$rpath" | sed \
+                  -e "s|$out/lib:||g" \
+                  -e "s|:$out/lib||g" \
+                  -e "s|^$out/lib$||")
+                patchelf --set-rpath "$rpath" "$binary"
               fi
             done
 
