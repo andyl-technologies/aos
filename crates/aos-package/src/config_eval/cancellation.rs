@@ -117,7 +117,7 @@ mod tests {
 
     const PROBE_READY_ENV: &str = "AOS_NATIVE_CANCELLATION_PROBE_READY";
     const PROBE_CANCELLED_ENV: &str = "AOS_NATIVE_CANCELLATION_PROBE_CANCELLED";
-    const PROBE_TEST: &str = "config_eval::native_cancellation::tests::signal_probe";
+    const PROBE_TEST: &str = "config_eval::cancellation::tests::signal_probe";
     const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
     #[test]

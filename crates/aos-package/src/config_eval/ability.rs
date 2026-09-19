@@ -1019,6 +1019,17 @@ mod tests {
     }
 
     fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplementation {
+        let artifact = ArtifactReference {
+            content: digest(2),
+            store_path: store_path.to_string(),
+            nar_hash,
+            closure: digest(4),
+        };
+        let provider_module = ModuleLocator {
+            artifact: artifact.clone(),
+            path: RelativePath::new("default.nix").unwrap(),
+        };
+
         ProviderImplementation {
             name: LocalKey::new("provider").unwrap(),
             description: "Ability evaluation test provider.".to_string(),
@@ -1029,16 +1040,11 @@ mod tests {
             },
             methods: Vec::new(),
             guarantees: Vec::new(),
-            artifact: ArtifactReference {
-                content: digest(2),
-                store_path: store_path.to_string(),
-                nar_hash,
-                closure: digest(4),
-            },
+            artifact,
             requirements: Vec::<RequirementDeclaration>::new(),
             desired_schema: None,
             composition_schema: None,
-            provider_module: None,
+            provider_module: Some(provider_module),
             handler: None,
             owns_resource_kinds: Vec::new(),
             state_format: None,
@@ -1056,7 +1062,11 @@ mod tests {
         }
     }
 
-    fn executable_on_test_path(name: &str) -> PathBuf {
+    fn test_executable(environment: &str, name: &str) -> PathBuf {
+        if let Some(path) = std::env::var_os(environment) {
+            return PathBuf::from(path);
+        }
+
         std::env::split_paths(&std::env::var_os("PATH").expect("test PATH"))
             .map(|directory| directory.join(name))
             .find(|path| path.is_file())
@@ -1253,8 +1263,8 @@ mod tests {
         .expect("alternate selected store view");
         let cache = tempfile::tempdir().expect("temporary ability evaluator cache");
         let evaluator = RestrictedAbilityEvaluator::new(
-            executable_on_test_path("nix-instantiate"),
-            executable_on_test_path("prlimit"),
+            test_executable("AOS_NIX_INSTANTIATE", "nix-instantiate"),
+            test_executable("AOS_PRLIMIT", "prlimit"),
             cache.path(),
             AbilityEvaluationLimits::default(),
         )

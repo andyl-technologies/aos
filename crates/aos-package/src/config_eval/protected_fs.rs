@@ -378,7 +378,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::{MetadataExt, symlink};
 
     #[test]
     fn child_directory_rejects_multicomponent_names_before_lookup() {

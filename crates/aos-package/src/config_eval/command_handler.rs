@@ -1828,7 +1828,10 @@ mod tests {
                 .expect("handler interface key is valid"),
             method: LocalKey::new("apply").expect("method name is valid"),
         };
-        let target = resource_reference("service", &["apply"]);
+        let mut target = resource_reference("service", &["apply"]);
+        target.interface = resource_interface
+            .interface_key()
+            .expect("resource interface key is valid");
         let spec = resource_spec(serde_json::json!({"enabled": true}));
 
         authenticate_method_target(

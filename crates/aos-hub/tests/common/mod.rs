@@ -932,7 +932,7 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
         fixture.trust_key,
     ));
     let mut package: toml::Value = toml::from_str(
-        "[package]\nname = \"aos-system\"\ndescription = \"AOS system image\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/aos-system-1.0.0\"\nnar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\nsource_drv = \"/var/lib/store/aos-system-1.0.0.drv\"\nsource_nar_hash = \"sha256:bb\"\nreferences = []\n",
+        "[package]\nname = \"aos-system\"\ndescription = \"AOS system image\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/aos-system-1.0.0\"\nnar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\nsource_drv = \"/var/lib/store/aos-system-1.0.0.drv\"\nsource_nar_hash = \"sha256:bb\"\n\n[versions.platforms.x86_64-linux.references]\nhashes = []\nmin-format = 1\nrequires-features = [\"image-artifact-contract-v1\"]\n",
     )
     .unwrap();
     package["versions"][0]["platforms"][platform]

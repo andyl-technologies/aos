@@ -16,7 +16,7 @@ fn config_generation_record_keeps_all_replay_identities() {
     );
     assert_eq!(
         modules[0]["nar_hash"],
-        json!("sha256:0000000000000000000000000000000000000000000000000000000000000000")
+        json!("sha256:0000000000000000000000000000000000000000000000000000")
     );
     assert!(
         fixture["inputs"]["host_nix"]["store_path"]

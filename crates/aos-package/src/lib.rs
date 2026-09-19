@@ -5014,7 +5014,38 @@ pub async fn run_apr(
         ProfileScope::User
     };
     let config = config::ApmConfig::load(scope)?;
+    let _dry_run_guard = dry_run.then(dry_run::ScopedDryRun::enter);
+
     run_registry(&config, command, dry_run, printer).await
+}
+
+/// Reports whether a registry subcommand implements the global preview mode.
+fn implements_global_dry_run(command: &RegistryCommand) -> bool {
+    matches!(
+        command,
+        RegistryCommand::Add { .. }
+            | RegistryCommand::Branch { .. }
+            | RegistryCommand::Cache { .. }
+            | RegistryCommand::Change { .. }
+            | RegistryCommand::Channel { .. }
+            | RegistryCommand::Commit { .. }
+            | RegistryCommand::Create { .. }
+            | RegistryCommand::Disable { .. }
+            | RegistryCommand::Enable { .. }
+            | RegistryCommand::Keys { .. }
+            | RegistryCommand::Merge { .. }
+            | RegistryCommand::Origin { .. }
+            | RegistryCommand::Publish { .. }
+            | RegistryCommand::Pull { .. }
+            | RegistryCommand::Push { .. }
+            | RegistryCommand::Remove { .. }
+            | RegistryCommand::Sign { .. }
+            | RegistryCommand::Store { .. }
+            | RegistryCommand::Tag { .. }
+            | RegistryCommand::Trust { .. }
+            | RegistryCommand::Unpublish { .. }
+            | RegistryCommand::Web { .. }
+    )
 }
 
 /// Dispatch an `apr` subcommand to its handler.
@@ -5027,6 +5058,10 @@ async fn run_registry(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
+    if dry_run && !implements_global_dry_run(command) {
+        bail!("--dry-run is not implemented for this apr subcommand");
+    }
+
     match command {
         RegistryCommand::List => registry_list(config, printer).await,
         RegistryCommand::Add {

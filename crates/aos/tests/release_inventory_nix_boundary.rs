@@ -1,5 +1,6 @@
 //! End-to-end checks for the Nix release inventory consumed by Rust.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
@@ -33,9 +34,25 @@ fn decode_and_validate(bytes: &[u8]) -> Result<PackageInventoryV1> {
     Ok(inventory)
 }
 
+fn nix_runner() -> Result<NixRunner> {
+    let command_environment = [
+        ("AOS_TEST_ABILITY_NIX_STORE_DIR", "NIX_STORE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_STATE_DIR", "NIX_STATE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_LOG_DIR", "NIX_LOG_DIR"),
+        ("AOS_TEST_ABILITY_NIX_REMOTE", "NIX_REMOTE"),
+    ]
+    .into_iter()
+    .filter_map(|(source, target)| {
+        std::env::var_os(source).map(|value| (OsString::from(target), value))
+    });
+
+    Ok(NixRunner::for_root(repository_root()?, 0, true)?
+        .with_command_environment(command_environment))
+}
+
 #[test]
 fn semantic_nix_input_crosses_the_rust_inventory_boundary() -> Result<()> {
-    let nix = NixRunner::for_root(repository_root()?, 0, true)?;
+    let nix = nix_runner()?;
     let bytes = nix.eval_expr_json_bytes(SEMANTIC_FIXTURE_EXPRESSION)?;
     let inventory = decode_and_validate(&bytes)?;
 
@@ -48,7 +65,7 @@ fn semantic_nix_input_crosses_the_rust_inventory_boundary() -> Result<()> {
 
 #[test]
 fn production_nix_inventory_crosses_the_rust_inventory_boundary() -> Result<()> {
-    let nix = NixRunner::for_root(repository_root()?, 0, true)?;
+    let nix = nix_runner()?;
     let release_platforms = Platform::ALL.map(Platform::as_str);
     let bytes = nix.eval_release_json_bytes("releasePackageInventory", None, &release_platforms)?;
     let inventory = decode_and_validate(&bytes)?;

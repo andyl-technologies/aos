@@ -1380,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_package_statement_rejects_manifest_measurement_mismatch() {
+    fn verify_package_statement_rejects_runtime_binding_measurement_mismatch() {
         let key = test_key();
         let meta = sample_meta();
         let mut statement = statement_for(&meta);
@@ -1393,7 +1393,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("manifest digest does not match registry measurement")
+                .contains("runtime binding digest does not match registry measurement")
         );
     }
 

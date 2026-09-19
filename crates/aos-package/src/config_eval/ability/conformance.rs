@@ -219,6 +219,17 @@ fn diagnostic_code(code: DiagnosticCode) -> &'static str {
 }
 
 fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplementation {
+    let artifact = ArtifactReference {
+        content: digest('2'),
+        store_path: store_path.to_string(),
+        nar_hash,
+        closure: digest('3'),
+    };
+    let provider_module = ModuleLocator {
+        artifact: artifact.clone(),
+        path: RelativePath::new("default.nix").unwrap(),
+    };
+
     ProviderImplementation {
         name: aos_ability_model::LocalKey::new("provider").unwrap(),
         description: "Conformance test provider.".to_string(),
@@ -229,16 +240,11 @@ fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplem
         },
         methods: Vec::new(),
         guarantees: Vec::new(),
-        artifact: ArtifactReference {
-            content: digest('2'),
-            store_path: store_path.to_string(),
-            nar_hash,
-            closure: digest('3'),
-        },
+        artifact,
         requirements: Vec::new(),
         desired_schema: None,
         composition_schema: None,
-        provider_module: None,
+        provider_module: Some(provider_module),
         handler: None,
         owns_resource_kinds: Vec::new(),
         state_format: None,

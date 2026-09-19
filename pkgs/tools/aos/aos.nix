@@ -1,6 +1,7 @@
 ##! aos — AOS build tool
 {
   lib,
+  mkDerivation,
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
@@ -118,6 +119,29 @@
   abilityEvaluatorFixture = builtins.path {
     path = ../../../tests/abilities/evaluator-provider;
     name = "aos-ability-evaluator-fixture";
+  };
+  abilityConformanceCorpus = builtins.toFile "aos-ability-authoring-conformance-v1.json" (
+    builtins.toJSON {
+      schema = "aos.ability.authoring-conformance/v1";
+      cases = import ../../../tests/abilities/conformance/vectors.nix;
+    }
+  );
+  abilityConformanceFixture = mkDerivation {
+    pname = "aos-ability-authoring-conformance-fixture";
+    version = "1";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp ${../../../tests/abilities/conformance/evaluator.nix} "$out/default.nix"
+          cp ${../../../lib/abilities/schema.nix} "$out/schema.nix"
+          cp ${../../../lib/abilities/diagnostic.nix} "$out/diagnostic.nix"
+          cp ${abilityConformanceCorpus} "$out/corpus.json"
+        '';
+      }
+    ];
   };
   abilityEvaluatorIfdFixture = builtins.derivation {
     name = "aos-ability-forbidden-ifd";
@@ -445,6 +469,9 @@ in
       export AOS_NIX_INSTANTIATE="${buildNix}/bin/nix-instantiate"
       export AOS_TEST_ABILITY_FIXTURE="${abilityEvaluatorFixture}"
       export AOS_TEST_ABILITY_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityEvaluatorFixture})"
+      export AOS_TEST_ABILITY_CONFORMANCE_FIXTURE="${abilityConformanceFixture}"
+      export AOS_TEST_ABILITY_CONFORMANCE_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityConformanceFixture})"
+      export AOS_TEST_ABILITY_CONFORMANCE_CORPUS="${abilityConformanceFixture}/corpus.json"
       export AOS_TEST_ABILITY_BUILD_SYSTEM=${lib.escapeShellArg stdenv.buildPlatform.system}
       export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
       ${lib.optionalString (!isCross) ''

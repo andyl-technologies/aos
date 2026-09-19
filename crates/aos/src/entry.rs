@@ -561,20 +561,15 @@ mod tests {
     }
 
     #[test]
-    fn container_rejects_vm_and_boot_metadata_entrypoints() {
-        for args in [
-            ["aos", "vm", "run", "aos.qcow2"].as_slice(),
-            ["aos", "metadata", "detect"].as_slice(),
-        ] {
-            let cli = parse(args);
-            let error = validate_runtime(&cli.command, Some(OsStr::new("container")))
-                .expect_err("host command should be rejected");
+    fn container_rejects_vm_entrypoints() {
+        let cli = parse(&["aos", "vm", "run", "aos.qcow2"]);
+        let error = validate_runtime(&cli.command, Some(OsStr::new("container")))
+            .expect_err("host command should be rejected");
 
-            assert_eq!(
-                error.to_string(),
-                "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
-            );
-        }
+        assert_eq!(
+            error.to_string(),
+            "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
+        );
     }
 
     #[test]

@@ -957,6 +957,12 @@ mod tests {
             ],
             "module_abi": 7,
             "inputs": {
+                "store_view": {
+                    "schema": "aos.package-store.read-view-locator/v1",
+                    "identity_root": "/nix/store",
+                    "read_root": "/immutable/store",
+                    "static_contract": "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-static-contract/contract.json"
+                },
                 "base_lib": {
                     "store_path": "/nix/store/dddddddddddddddddddddddddddddddd-base-lib",
                     "abi_hash": format!("sha256:{}", "0".repeat(64)),

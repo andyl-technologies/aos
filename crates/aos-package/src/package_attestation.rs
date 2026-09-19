@@ -564,8 +564,8 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
 }
 
 #[cfg(test)]
-fn measured_package(_root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
-    let root_digest = package_root_digest(entry, apm);
+fn measured_package(_root: &Path, _entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
+    let root_digest = package_root_digest(apm)?;
     let manifest_digest = package_manifest_digest(apm)?;
     let package = MeasuredPackage {
         name: apm.name.clone(),
@@ -594,21 +594,17 @@ fn measured_package(_root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Resul
 }
 
 #[cfg(test)]
-fn package_root_digest(entry: &InstalledMeta, apm: &ApmMeta) -> String {
-    if let Some(root_digest) = &apm.attestation.root_digest {
-        return canonical_digest(root_digest);
-    }
-
-    if let Some(root_hash) = &apm.attestation.root_hash {
-        return canonical_digest(root_hash);
-    }
-
-    package_store_path_root_digest(&entry.store_path)
-}
-
-#[cfg(test)]
-fn package_store_path_root_digest(store_path: &str) -> String {
-    format!("sha256:{}", digest_hex(store_path.as_bytes()))
+fn package_root_digest(apm: &ApmMeta) -> Result<String> {
+    let contract = apm.contract.as_ref().with_context(|| {
+        format!(
+            "package '{}' has no authenticated package contract",
+            apm.name
+        )
+    })?;
+    Ok(format!(
+        "sha256:{}",
+        aos_registry_surface::store::canonical_digest_hex(&contract.payload.nar_hash)?,
+    ))
 }
 
 #[cfg(test)]
@@ -2647,7 +2643,7 @@ mod tests {
         let retained_artifact = PackageContractArtifactMeta {
             content: format!("sha256:{}", "c".repeat(64)),
             store_path: "/nix/store/hash-web-1.0".into(),
-            nar_hash: "sha256:nar".into(),
+            nar_hash: format!("sha256:{}", "a".repeat(64)),
             nar_size: 1,
             closure_digest: format!("sha256:{}", "d".repeat(64)),
             closure: Vec::new(),
@@ -2733,17 +2729,17 @@ mod tests {
     fn measured_fixture_log(tmp: &TempDir, manifest: &[u8]) -> (String, String, String) {
         let installed = installed_fixture(manifest);
         let apm = installed.apm.as_ref().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash = package_root_digest(apm).expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement =
-            package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
+            package_measurement_digest(&apm.name, &apm.version, &root_hash, &manifest_digest);
         append_event_log(
             tmp.path(),
             &measurement_events(tmp.path(), &[installed]).expect("events"),
         )
         .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
-        (log, root_hash.into(), measurement)
+        (log, root_hash, measurement)
     }
 
     fn legacy_event_log_without_pcr_event_fields(log: &str) -> String {
@@ -2810,6 +2806,9 @@ mod tests {
     fn package_measurement_includes_root_and_manifest_digests() {
         let tmp = TempDir::new().expect("tempdir");
         let installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
+        let expected_root_digest =
+            package_root_digest(installed.apm.as_ref().expect("apm metadata"))
+                .expect("package root digest");
 
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
@@ -2817,10 +2816,7 @@ mod tests {
         assert_eq!(events[0].event_type, PACKAGE_SET_EVENT_TYPE);
         let package = events[1].package.as_ref().expect("package event");
         assert_eq!(package.name, "web");
-        assert_eq!(
-            package.root_digest,
-            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
+        assert_eq!(package.root_digest, expected_root_digest);
         assert_eq!(
             package.manifest_digest,
             format!(
@@ -2832,14 +2828,12 @@ mod tests {
     }
 
     #[test]
-    fn package_measurement_uses_store_path_digest_without_signed_root() {
+    fn package_measurement_uses_authenticated_contract_payload_digest() {
         let tmp = TempDir::new().expect("tempdir");
-        let mut installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
-        let expected_root_digest = package_store_path_root_digest(&installed.store_path);
-        let attestation = &mut installed.apm.as_mut().expect("apm metadata").attestation;
-        attestation.root_digest = None;
-        attestation.root_hash = None;
-        attestation.root_hash_sig = None;
+        let installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
+        let expected_root_digest =
+            package_root_digest(installed.apm.as_ref().expect("apm metadata"))
+                .expect("package root digest");
 
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
@@ -2871,17 +2865,17 @@ mod tests {
         let manifest = br#"{"package":"web","network":"private"}"#;
         let mut installed = installed_fixture(manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash = package_root_digest(apm).expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
         apm.attestation = AttestationMeta {
-            root_digest: Some(root_hash.into()),
-            root_hash: Some(root_hash.into()),
+            root_digest: Some(root_hash.clone()),
+            root_hash: Some(root_hash.clone()),
             root_hash_sig: Some("root.roothash.p7s".into()),
             provenance: None,
             measurement: Some(package_measurement_digest(
                 &apm.name,
                 &apm.version,
-                root_hash,
+                &root_hash,
                 &manifest_digest,
             )),
         };
@@ -2998,10 +2992,10 @@ mod tests {
         let manifest = br#"{"package":"web","network":"private"}"#;
         let installed = installed_fixture(manifest);
         let apm = installed.apm.as_ref().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash = package_root_digest(apm).expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement =
-            package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
+            package_measurement_digest(&apm.name, &apm.version, &root_hash, &manifest_digest);
         let baseline = format!("sha256:{}", "11".repeat(32));
         let mut events = vec![pcr_baseline_event(&baseline)];
         events.extend(measurement_events(tmp.path(), &[installed]).expect("events"));
@@ -3009,7 +3003,7 @@ mod tests {
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog =
-            package_measurement_catalog_from_package_meta(&[catalog_meta(root_hash, &measurement)])
+            package_measurement_catalog_from_package_meta(&[catalog_meta(&root_hash, &measurement)])
                 .expect("catalog");
 
         let verified = verify_package_event_log_against_measurement_catalog(
@@ -3160,12 +3154,12 @@ mod tests {
     fn package_measurement_catalog_entries_round_trip_through_json() {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"package":"web","network":"private"}"#;
-        let mut installed = installed_fixture(manifest);
-        let apm = installed.apm.as_mut().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let installed = installed_fixture(manifest);
+        let apm = installed.apm.as_ref().expect("apm metadata");
+        let root_hash = package_root_digest(apm).expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement =
-            package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
+            package_measurement_digest(&apm.name, &apm.version, &root_hash, &manifest_digest);
 
         append_event_log(
             tmp.path(),
@@ -3177,7 +3171,7 @@ mod tests {
         let json = serde_json::to_string(&vec![PackageMeasurementCatalogEntry {
             name: "web".into(),
             version: "1.0".into(),
-            root_digest: root_hash.into(),
+            root_digest: root_hash,
             measurement,
         }])
         .expect("serialize catalog");
@@ -3385,9 +3379,10 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"package":"web","network":"private"}"#;
         let installed = installed_fixture(manifest);
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash = package_root_digest(installed.apm.as_ref().expect("apm metadata"))
+            .expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
-        let measurement = package_measurement_digest("web", "1.0", root_hash, &manifest_digest);
+        let measurement = package_measurement_digest("web", "1.0", &root_hash, &manifest_digest);
         append_event_log(
             tmp.path(),
             &measurement_events(tmp.path(), &[installed]).expect("events"),
