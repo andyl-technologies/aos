@@ -1123,32 +1123,6 @@ mod tests {
         }
     }
 
-    fn sample_package_meta(name: &str, version: &str, store_path: &str) -> PackageMeta {
-        PackageMeta {
-            name: name.to_string(),
-            version: version.to_string(),
-            description: String::new(),
-            homepage: None,
-            license: "MIT".to_string(),
-            maintainer: "test".to_string(),
-            platform: "x86_64-linux".to_string(),
-            store_path: store_path.to_string(),
-            nar_hash: "sha256:root".to_string(),
-            nar_size: 1,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: None,
-            requires_features: Vec::new(),
-            documentation: None,
-            contract: None,
-            attestation: Default::default(),
-        }
-    }
     #[test]
     fn verify_secondary_artifact_downloads_rejects_image_references() {
         let result = crate::download::DownloadResult {

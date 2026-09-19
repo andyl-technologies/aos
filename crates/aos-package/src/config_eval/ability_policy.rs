@@ -380,7 +380,6 @@ pub(crate) struct PublishingNativeAdmissionPolicy {
 /// publication must correspond exactly to a provider selected by that plan.
 #[derive(Clone, Debug)]
 pub(crate) struct SourceStageAdmissionPolicy {
-    authority: Sha256Digest,
     plan: PlanId,
     bindings: Vec<Binding>,
     provider_assignments: Vec<ProviderAssignment>,
@@ -389,17 +388,13 @@ pub(crate) struct SourceStageAdmissionPolicy {
 
 impl SourceStageAdmissionPolicy {
     /// Constructs source admission from the checked bundle authority.
-    pub(crate) fn new(
-        authority: Sha256Digest,
-        plan: &CheckedEffectPlan,
-    ) -> Result<Self, CurrentAuthorityError> {
+    pub(crate) fn new(plan: &CheckedEffectPlan) -> Result<Self, CurrentAuthorityError> {
         let mut bindings = plan.binding_plan().document().bindings.clone();
         bindings.sort_by(|left, right| left.id.cmp(&right.id));
         if bindings.windows(2).any(|pair| pair[0].id == pair[1].id) {
             return Err(invalid("source plan repeats a binding identity"));
         }
         Ok(Self {
-            authority,
             plan: plan.id(),
             bindings,
             provider_assignments: Vec::new(),

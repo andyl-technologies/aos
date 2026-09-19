@@ -714,18 +714,6 @@ fn validate_sha256_hex(label: &str, digest: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_account_name(name: &str) -> Result<()> {
-    let mut chars = name.chars();
-    if !chars
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
-        || !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
-        bail!("invalid account artifact name '{name}'");
-    }
-    Ok(())
-}
-
 /// Validate runtime integrity, attestation, and provenance metadata.
 ///
 /// # Errors
@@ -879,24 +867,6 @@ fn store_path_hash_component(path: &str) -> Option<&str> {
     } else {
         None
     }
-}
-
-pub(crate) fn validate_security_label(label: &str) -> Result<()> {
-    if label.is_empty()
-        || !label
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-    {
-        bail!("invalid security label '{label}'");
-    }
-    Ok(())
-}
-
-fn validate_display_ascii(kind: &str, value: &str) -> Result<()> {
-    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ') {
-        bail!("invalid {kind} '{value}'");
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2089,20 +2059,6 @@ pub struct ConfigGenerationState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_attestation() -> AttestationMeta {
-        AttestationMeta {
-            root_digest: Some(
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            ),
-            root_hash: None,
-            root_hash_sig: None,
-            provenance: Some("attestation/test.provenance.jsonl".into()),
-            measurement: Some(
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
-            ),
-        }
-    }
 
     #[test]
     fn registry_name_validation_accepts_path_safe_names() {

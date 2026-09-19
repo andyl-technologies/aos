@@ -409,6 +409,7 @@ impl StageExecutionEvidence {
     }
 
     /// Returns the exact retained resource published by one checked operation.
+    #[cfg(test)]
     pub(crate) fn retained_resource(
         &self,
         operation_key: &str,
@@ -906,10 +907,7 @@ fn execute_source_initrd_stage(
     )
     .context("opening durable initrd ability transaction")?;
 
-    let current_policy = super::ability_policy::SourceStageAdmissionPolicy::new(
-        checked.bundle().authority(),
-        checked.plan(),
-    )?;
+    let current_policy = super::ability_policy::SourceStageAdmissionPolicy::new(checked.plan())?;
     let cancellation = super::cancellation::AbilityCancellationGuard::install()
         .context("installing initrd ability cancellation listeners")?;
     let mut observer = super::execution_observer::AbilityExecutionBoundaryObserver::load(

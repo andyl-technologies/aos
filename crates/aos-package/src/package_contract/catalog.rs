@@ -23,18 +23,6 @@ pub struct VerifiedPackagePlanningCatalog {
 }
 
 impl VerifiedPackagePlanningCatalog {
-    /// Constructs a planning catalog from authenticated package contracts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when an interface disagrees with its package declaration,
-    /// package contracts conflict, or package validation fails.
-    pub(crate) fn from_resolved_contracts(
-        documents: impl IntoIterator<Item = (PackageDocument, Vec<InterfaceDocument>)>,
-    ) -> Result<Self> {
-        Self::from_documents(documents)
-    }
-
     fn from_documents(
         documents: impl IntoIterator<Item = (PackageDocument, Vec<InterfaceDocument>)>,
     ) -> Result<Self> {

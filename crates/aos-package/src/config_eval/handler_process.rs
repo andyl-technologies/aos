@@ -53,21 +53,11 @@ pub(crate) struct ProcessOutput {
     pub(crate) stdout: Vec<u8>,
 }
 
-/// Defines whether a successful launcher may leave its daemon descendants alive.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DescendantPolicy {
-    /// Kills any descendant that survives the admitted helper process.
-    Reap,
-    /// Preserves descendants only after a successful helper exit.
-    PreserveOnSuccess,
-}
-
 /// Runs one preconfigured command within the caller's remaining runtime budget.
 pub(crate) fn run_bounded(
     command: &mut Command,
     input: Option<&[u8]>,
     output_limit: usize,
-    descendants: DescendantPolicy,
     control: &dyn RuntimeControl,
     environment: &[(OsString, OsString)],
 ) -> Result<ProcessOutput, io::Error> {
@@ -117,7 +107,6 @@ pub(crate) fn run_bounded(
         group,
         input,
         output_limit,
-        descendants,
         control,
         deadline,
     );
@@ -133,7 +122,6 @@ fn exchange_io(
     group: rustix::process::Pid,
     input: Option<&[u8]>,
     output_limit: usize,
-    descendants: DescendantPolicy,
     control: &dyn RuntimeControl,
     deadline: Instant,
 ) -> Result<ProcessOutput, io::Error> {
@@ -208,10 +196,7 @@ fn exchange_io(
         if leader_succeeded.is_none() {
             leader_succeeded = observe_child_exit(leader)?;
         }
-        if let Some(succeeded) = leader_succeeded
-            && !group_terminated
-            && (descendants == DescendantPolicy::Reap || !succeeded)
-        {
+        if leader_succeeded.is_some() && !group_terminated {
             // The pidfd-observed leader remains waitable, pinning the PGID while
             // every descendant is terminated and closes inherited pipes.
             let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
@@ -295,15 +280,8 @@ mod tests {
         let mut command = helper_command();
         let control = FixedBudgetControl::new(2_000);
 
-        let output = run_bounded(
-            &mut command,
-            None,
-            16 * 1024,
-            DescendantPolicy::Reap,
-            &control,
-            &[],
-        )
-        .expect("bounded native handler completes");
+        let output = run_bounded(&mut command, None, 16 * 1024, &control, &[])
+            .expect("bounded native handler completes");
 
         let marker = b"postcondition-established";
         assert!(output.status.success());
