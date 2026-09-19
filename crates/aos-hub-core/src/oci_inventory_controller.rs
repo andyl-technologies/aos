@@ -18,12 +18,13 @@ use sha2::Digest as _;
 
 use crate::db::{
     AppendOciProviderInventoryPage, BeginOciProviderInventory, CompleteOciProviderInventory,
-    Database, OciProviderInventoryEntryInput, OciProviderInventoryGenerationRecord,
-    OCI_GC_INVENTORY_BATCH_SIZE, OCI_GC_MAX_INVENTORY_KEY_BYTES, OCI_GC_MAX_INVENTORY_OBJECTS,
+    Database, OCI_GC_INVENTORY_BATCH_SIZE, OCI_GC_MAX_INVENTORY_KEY_BYTES,
+    OCI_GC_MAX_INVENTORY_OBJECTS, OciProviderInventoryEntryInput,
+    OciProviderInventoryGenerationRecord,
 };
 use crate::fetch::{
-    SurfaceFetch, SurfaceListingBudget, SurfaceProvider, MAX_SURFACE_LIST_CURSOR_BYTES,
-    MAX_SURFACE_LIST_OBJECTS, MAX_SURFACE_LIST_PATH_BYTES, WORKER_MAX_SURFACE_LIST_CURSOR_BYTES,
+    MAX_SURFACE_LIST_CURSOR_BYTES, MAX_SURFACE_LIST_OBJECTS, MAX_SURFACE_LIST_PATH_BYTES,
+    SurfaceFetch, SurfaceListingBudget, SurfaceProvider, WORKER_MAX_SURFACE_LIST_CURSOR_BYTES,
     WORKER_MAX_SURFACE_LIST_OBJECTS, WORKER_MAX_SURFACE_LIST_PATH_BYTES,
 };
 
@@ -1275,7 +1276,7 @@ mod tests {
 
     use aos_oci_types::RepositoryName;
     use async_trait::async_trait;
-    use sha2::{Digest as _, Sha256};
+    use sha2::Sha256;
 
     use super::*;
     use crate::db::{
@@ -2048,10 +2049,12 @@ mod tests {
         let tampered = serde_json::to_string(&decoded).unwrap();
         let ranges_before = provider.fetch.requested_ranges.lock().unwrap().clone();
 
-        assert!(controller
-            .run_due_bounded("worker", "ignored", now + 1, 1, Some(&tampered), budget,)
-            .await
-            .is_err());
+        assert!(
+            controller
+                .run_due_bounded("worker", "ignored", now + 1, 1, Some(&tampered), budget,)
+                .await
+                .is_err()
+        );
         assert_eq!(
             *provider.fetch.requested_ranges.lock().unwrap(),
             ranges_before
@@ -2147,11 +2150,12 @@ mod tests {
             *provider.fetch.requested_ranges.lock().unwrap(),
             vec![(0, 7)]
         );
-        assert!(db
-            .active_oci_provider_inventory(placement.id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.active_oci_provider_inventory(placement.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2351,8 +2355,8 @@ mod tests {
         db.claim_oci_provider_inventory(&generation.id, "worker", &resume_token, now + 2, 1)
             .await
             .unwrap();
-        assert!(db
-            .append_oci_provider_inventory_page(&AppendOciProviderInventoryPage {
+        assert!(
+            db.append_oci_provider_inventory_page(&AppendOciProviderInventoryPage {
                 generation_id: generation.id.clone(),
                 collector_id: "crashed".into(),
                 collector_claim_token: "old-token".into(),
@@ -2365,7 +2369,8 @@ mod tests {
                 lease_seconds: 1,
             })
             .await
-            .is_err());
+            .is_err()
+        );
         provider.fetch.requested_cursors.lock().unwrap().clear();
 
         let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
@@ -2387,10 +2392,11 @@ mod tests {
                 .state,
             "complete"
         );
-        assert!(db
-            .active_oci_provider_inventory(placement.id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.active_oci_provider_inventory(placement.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

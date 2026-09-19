@@ -4,7 +4,7 @@
 //! within SQL. No query fans out per placement, route, policy, or grant. Callers
 //! retain their existing surface authorization before using these read models.
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
 use super::*;
 
@@ -220,8 +220,8 @@ impl Database {
 pub(crate) mod tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     struct CountingBackend {
@@ -349,16 +349,18 @@ pub(crate) mod tests {
             );
         }
         assert!(actual.is_empty());
-        assert!(db
-            .endpoint_grant_pins_by_consumer("endpoint:route-probes", 2)
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(db
-            .endpoint_grant_pins_by_consumer("endpoint:unrelated", 1)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.endpoint_grant_pins_by_consumer("endpoint:route-probes", 2)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.endpoint_grant_pins_by_consumer("endpoint:unrelated", 1)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -416,26 +418,30 @@ pub(crate) mod tests {
             .unwrap();
         queries.store(0, Ordering::Relaxed);
         let foreign = SurfaceTarget::Registry(other.id);
-        assert!(db
-            .surface_topology_routes(foreign)
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(db
-            .surface_topology_placements(foreign)
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(db
-            .surface_topology_policies(foreign)
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(db
-            .surface_topology_advertisements(foreign)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.surface_topology_routes(foreign)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.surface_topology_placements(foreign)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.surface_topology_policies(foreign)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.surface_topology_advertisements(foreign)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(queries.load(Ordering::Relaxed), 4);
     }
 }

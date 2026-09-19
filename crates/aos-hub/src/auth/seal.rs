@@ -23,7 +23,7 @@
 
 use std::fs;
 use std::io::Read as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use rand::Rng as _;
