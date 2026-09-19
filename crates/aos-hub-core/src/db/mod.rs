@@ -4308,8 +4308,30 @@ impl Database {
                         catalog_artifacts
                             .push(("documentation", documentation.store_path.as_str()));
                     }
+                    let mut catalog_artifacts_by_identity =
+                        std::collections::BTreeMap::<(String, String), String>::new();
                     for (artifact_kind, store_path) in catalog_artifacts {
                         let store_hash = store_hash_component(store_path);
+                        let identity = (artifact_kind.to_string(), store_hash.clone());
+                        if let Some(existing_store_path) =
+                            catalog_artifacts_by_identity.get(&identity)
+                        {
+                            if existing_store_path != store_path {
+                                bail!(
+                                    "catalog artifact kind '{}' and store hash '{}' name both '{}' and '{}'",
+                                    artifact_kind,
+                                    store_hash,
+                                    existing_store_path,
+                                    store_path
+                                );
+                            }
+                            continue;
+                        }
+                        catalog_artifacts_by_identity.insert(identity, store_path.to_string());
+                    }
+                    for ((artifact_kind, store_hash), store_path) in
+                        catalog_artifacts_by_identity
+                    {
                         let metadata_digest = hex::encode(sha2::Sha256::digest(
                             serde_json::to_vec(&serde_json::json!({
                                 "package_name": package.package.name,

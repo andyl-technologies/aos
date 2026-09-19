@@ -406,7 +406,9 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert!(body_text.contains(&raw_sha256));
     assert!(body_text.contains(&qcow2_sha256));
     assert!(body_text.contains("\"releaseVerification\":\"verified\""));
-    assert!(body_text.contains("\"bootVerification\":\"unsigned\""));
+    assert!(
+        body_text.contains("\"bootVerification\":\"provider-contract:aos.test.boot-artifacts/v1\"")
+    );
     assert!(body_text.contains("\"storePath\":\"/var/lib/store/"));
     assert!(body_text.contains("\"narHash\":\"sha256:"));
     assert!(body_text.contains("\"narSize\":"));
@@ -513,7 +515,8 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert!(page.contains("qemu-kvm"));
     assert!(page.contains(&format!("{} B", public_fixture.raw.len())));
     assert!(page.contains(&raw_sha256));
-    assert!(page.contains("unsigned"));
+    assert!(page.contains("provider contract"));
+    assert!(page.contains("aos.test.boot-artifacts/v1"));
     assert!(page.contains("verified"));
     assert!(page.contains("aos image download"));
 

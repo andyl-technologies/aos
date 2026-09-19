@@ -35,7 +35,7 @@ fn decode_and_validate(bytes: &[u8]) -> Result<PackageInventoryV1> {
 }
 
 fn nix_runner() -> Result<NixRunner> {
-    let command_environment = [
+    let mut command_environment = [
         ("AOS_TEST_ABILITY_NIX_STORE_DIR", "NIX_STORE_DIR"),
         ("AOS_TEST_ABILITY_NIX_STATE_DIR", "NIX_STATE_DIR"),
         ("AOS_TEST_ABILITY_NIX_LOG_DIR", "NIX_LOG_DIR"),
@@ -44,7 +44,14 @@ fn nix_runner() -> Result<NixRunner> {
     .into_iter()
     .filter_map(|(source, target)| {
         std::env::var_os(source).map(|value| (OsString::from(target), value))
-    });
+    })
+    .collect::<Vec<_>>();
+
+    if let Some(state_dir) = std::env::var_os("AOS_TEST_ABILITY_NIX_STATE_DIR") {
+        let cache_dir = PathBuf::from(state_dir).join("cache");
+        std::fs::create_dir_all(&cache_dir).context("creating the isolated Nix cache directory")?;
+        command_environment.push((OsString::from("XDG_CACHE_HOME"), cache_dir.into_os_string()));
+    }
 
     Ok(NixRunner::for_root(repository_root()?, 0, true)?
         .with_command_environment(command_environment))

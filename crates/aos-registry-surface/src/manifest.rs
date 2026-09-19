@@ -678,6 +678,36 @@ pub fn immutable_image_contract_object_key(
     format!("images/sha256/{image_sha256}/contracts/{contract_sha256}/{filename}")
 }
 
+/// Returns the content digest encoded by a canonical immutable image object key.
+///
+/// Disk keys encode the disk digest. Contract keys encode both the parent disk
+/// digest and the contract digest, and return the latter because it authenticates
+/// the bytes stored at that key.
+///
+/// # Errors
+///
+/// Returns an error when an image key has a non-canonical shape, digest, or
+/// filename.
+pub fn immutable_image_object_sha256(object_key: &str) -> anyhow::Result<Option<String>> {
+    let Some(rest) = object_key.strip_prefix("images/sha256/") else {
+        return Ok(None);
+    };
+    let parts = rest.split('/').collect::<Vec<_>>();
+    let (image_sha256, content_sha256, filename) = match parts.as_slice() {
+        [image_sha256, filename] => (*image_sha256, *image_sha256, *filename),
+        [image_sha256, "contracts", contract_sha256, filename] => {
+            (*image_sha256, *contract_sha256, *filename)
+        }
+        _ => anyhow::bail!("non-canonical immutable image object key '{object_key}'"),
+    };
+
+    validate_sha256(image_sha256, "image object")?;
+    validate_sha256(content_sha256, "image object content")?;
+    validate_image_filename(filename)?;
+
+    Ok(Some(content_sha256.to_string()))
+}
+
 fn validate_sha256(value: &str, label: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         value.len() == 64
