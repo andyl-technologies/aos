@@ -17,8 +17,8 @@
 ##!   6. Minimal `/etc/{os-release,initrd-release,passwd,group,shadow}`.
 ##!   7. Upstream systemd initrd units symlinked from ${systemd}/lib/systemd/
 ##!      system/ into /etc/systemd/system/. (AOS systemd ships units at
-##!      lib/systemd/system/, not example/; generateUnits can't fold these
-##!      in automatically for initrd — see the TODO in pkgs/system/_systemd-abilities/platform/render.nix:510.)
+##!      lib/systemd/system/, while generateUnits renders the package-owned
+##!      unit declarations composed through the selected provider.)
 ##!   8. The output of `generateUnits` for the rendered initrd units —
 ##!      `boot.initrd.systemd.services` etc. resolved through the stage-1
 ##!      ToUnit renderers.

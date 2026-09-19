@@ -41,18 +41,6 @@
   };
   hostStageReceivedReadiness = resultOf "host-stage-received" "resource";
   storeDatabase = {
-    requirementTemplates.nix-store-database =
-      lib.abilities.interfaceSelector {
-        name = "aos.nix.store-database";
-        abi = 1;
-      }
-      // {
-        description = "Require the booted image closure in the local Nix store database.";
-        methods = ["converge" "observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
     requests.nix-store-database = {
       requirement = "nix-store-database";
       consumer = consumerInstance;

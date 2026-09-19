@@ -43,6 +43,13 @@
     builtins.filter
     (path: hasLegacyInitrdIntent (builtins.readFile path))
     productionNixFiles;
+  fixturePackage = pkgs.mkDerivation {
+    pname = "staged-environment-fixture";
+    version = "1";
+    src = null;
+    abilities = ./fixtures/staged-environment-package;
+    phases = [];
+  };
   system = mkSystem {
     systemName = "staged-environment-test";
     modules = [
@@ -50,27 +57,9 @@
       ../../systems/_kernel.nix
       ../../systems/_system-manager.nix
       {
-        aos.boot.initrd.packageRoots = [pkgs.aos-boot-preparation-provider];
-        aos.abilities.stages.initrd.modules = [
-          ({config, ...}: {
-            config.aos.abilities = lib.mkMerge [
-              {instances."system:preparation-consumer" = {};}
-              (lib.abilities.interfaces.serviceManagement.forProducer {
-                consumerInstance = "system:preparation-consumer";
-                key = "fixture-preparation";
-                interface = lib.abilities.interfaces.bootPreparation.interfaces.preparation;
-                methods = ["observe" "prepare"];
-                parameters = {
-                  execution = {
-                    artifact = lib.abilities.packageOutput {};
-                    entry_point = "libexec/fixture-preparation";
-                    arguments = [];
-                  };
-                  prerequisites = [];
-                };
-              })
-            ];
-          })
+        aos.boot.initrd.packageRoots = [
+          fixturePackage
+          pkgs.aos-boot-preparation-provider
         ];
       }
     ];
@@ -91,9 +80,9 @@ in
     key = "staged-environment-test";
     stage = "initrd";
   };
-  assert initrd.requests ? "system:fixture-preparation";
-  assert initrd.requests."system:fixture-preparation".parameters.execution.entry_point
+  assert initrd.requests ? "staged-environment-fixture:fixture-preparation";
+  assert initrd.requests."staged-environment-fixture:fixture-preparation".parameters.execution.entry_point
   == "libexec/fixture-preparation";
-  assert !(host.requests ? "system:fixture-preparation");
+  assert !(host.requests ? "staged-environment-fixture:fixture-preparation");
   assert !(builtins.any (name: lib.hasPrefix "chrony:" name) (builtins.attrNames initrd.requests));
   assert !(builtins.any (name: lib.hasPrefix "openssh:" name) (builtins.attrNames initrd.requests)); true
