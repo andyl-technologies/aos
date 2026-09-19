@@ -95,11 +95,9 @@
       ];
       qualificationCheck = args:
         import ./tests/containers/production-multi-platform.nix args;
-      oci = coordinator.pkgs.ociTools;
     in
-      import ./pkgs/containers/_aos-oci-backend/container/multi-platform.nix {
-        inherit (coordinator) lib pkgs;
-        inherit oci platformBuilds releaseTargets qualificationCheck;
+      coordinator.pkgs.mkOciMultiPlatformContainer {
+        inherit platformBuilds releaseTargets qualificationCheck;
         name = "aos";
       };
 
