@@ -3,7 +3,9 @@
   config,
   lib,
   packageName,
+  resolveResourceReference,
   unitIdentityForReference,
+  unitIdentityForResource,
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
@@ -53,14 +55,14 @@
   in {
     unit_name = "aos-${name}-${identity}.timer";
   };
-  triggerFor = allResources: resource: let
+  triggerFor = planningOutputs: allResources: resource: let
     matches = builtins.filter (candidate:
       candidate.kind
       == "aos.service.instance"
       && builtins.any (binding:
         binding.relationship
         == "resource-triggers-service"
-        && binding.resource.resource == resource.resource)
+        && (resolveResourceReference planningOutputs binding.resource).resource == resource.resource)
       ((candidate.value.activation or {bindings = [];}).bindings))
     allResources;
   in
@@ -112,10 +114,10 @@
         inherit (specification) backend;
       }
       // lib.optionalAttrs (kind == "schedule") (let
-        trigger = triggerFor allResources resource;
+        trigger = triggerFor planningOutputs allResources resource;
       in {
         systemd_unit = scheduleUnitFor resource;
-        target = trigger.realization.systemd_unit;
+        target = unitIdentityForResource planningOutputs allResources trigger;
       })
       // lib.optionalAttrs (kind == "activation-group") {
         systemd_unit = {

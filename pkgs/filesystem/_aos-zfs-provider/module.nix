@@ -217,7 +217,7 @@
     properties = lib.optionalAttrs (cfg.deduplicationTableQuota != null) {
       dedup_table_quota = cfg.deduplicationTableQuota;
     };
-    prerequisites = [(resultOf "memory-policy" "resource")];
+    prerequisites = [(resultOf "zfs-memory-policy-lifecycle" "resource")];
   };
   datasetKey = name: "dataset-${lib.abilities.identityKeyFor "aos.zfs.dataset-request/v1" {
     pool = cfg.poolName;

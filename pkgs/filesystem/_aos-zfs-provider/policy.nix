@@ -133,7 +133,7 @@
     (resultOf "zfs-kernel-tunables" "resource")
   ];
   verification = service "zfs-verify-parameters" "Verify the running OpenZFS memory and failure policy" (["verify"] ++ policyArguments) [
-    (resultOf "zfs-memory-policy" "resource")
+    (resultOf "zfs-memory-policy-lifecycle" "resource")
   ];
   fragments = [kernelModules tunables memoryPolicy] ++ lib.optional failure.verifyParameters verification;
   contributions = builtins.map serviceManagement.splitContribution fragments;
