@@ -9,8 +9,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-#[cfg(test)]
-use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::num::NonZeroUsize;
@@ -40,7 +38,7 @@ use aos_ability_validate::CheckedEffectPlan;
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
-use super::activation::{SwitchLockGuard, acquire_switch_lock_pub, default_switch_lock_path};
+use super::activation::{SwitchLockGuard, acquire_switch_lock_pub};
 use super::protected_fs::RootedDirectory;
 pub use crate::package_contract::NativePackageContractRetentionVerifier;
 use crate::package_contract::VerifiedPackageContractSet;
@@ -138,18 +136,6 @@ pub struct SessionPersistenceFailure<T> {
 }
 
 impl<T> SessionPersistenceFailure<T> {
-    /// Returns the operation outcome whose ownership remains with the caller.
-    #[must_use]
-    pub const fn outcome(&self) -> &T {
-        &self.outcome
-    }
-
-    /// Returns the terminal-marker publication failure.
-    #[must_use]
-    pub const fn marker_error(&self) -> &GenerationTransactionStoreError {
-        &self.marker_error
-    }
-
     /// Separates the owned operation outcome from its marker failure.
     #[must_use]
     pub fn into_parts(self) -> (T, GenerationTransactionStoreError) {
@@ -189,7 +175,7 @@ struct GenerationTransactionStore<Verifier> {
     pending_bundle: Option<RetainedPlanAuthority>,
     supported_features: BTreeSet<RequiredFeature>,
     verifier: Verifier,
-    switch_lock: Arc<SwitchLockGuard>,
+    _switch_lock: Arc<SwitchLockGuard>,
 }
 
 #[derive(Clone)]
@@ -373,98 +359,6 @@ impl RetainedAbilityDiagnosticSource {
         })
     }
 
-    pub(in crate::config_eval::transaction_store) fn operation_succeeded(
-        self,
-        limits: JournalLimits,
-        operation: &aos_ability_model::OperationId,
-        attempt: u32,
-        terminal: TerminalResult,
-    ) -> Result<bool, GenerationTransactionStoreError> {
-        let expected_transaction = self.transaction.clone();
-        let expected_bundle = self.plan_bundle;
-        let snapshot = CheckedExecutionJournalSnapshot::read_file(
-            &self.plan,
-            self.journal,
-            self.journal_path,
-            limits,
-        )
-        .map_err(GenerationTransactionStoreError::Transaction)?;
-        if snapshot.transaction() != &expected_transaction
-            || snapshot.plan_bundle() != expected_bundle
-            || snapshot.incomplete_tail_bytes() != 0
-            || snapshot.terminal() != Some(terminal)
-        {
-            return Err(GenerationTransactionStoreError::Conflict(
-                "retained native consumer journal differs from its protected terminal selection"
-                    .to_string(),
-            ));
-        }
-        let matching = snapshot
-            .operations()
-            .iter()
-            .filter(|summary| summary.operation() == operation)
-            .collect::<Vec<_>>();
-        let [summary] = matching.as_slice() else {
-            return Err(GenerationTransactionStoreError::Conflict(
-                "retained native consumer operation is absent or ambiguous in its checked journal"
-                    .to_string(),
-            ));
-        };
-        Ok(
-            summary.status() == aos_ability_runtime::execution::OperationStatus::Succeeded
-                && summary.attempt().map(std::num::NonZeroU32::get) == Some(attempt),
-        )
-    }
-
-    pub(in crate::config_eval::transaction_store) fn operation_reached_effect_intent(
-        self,
-        limits: JournalLimits,
-        claimed_operation: &aos_ability_model::OperationId,
-        claimed_attempt: u32,
-        terminal: TerminalResult,
-    ) -> Result<bool, GenerationTransactionStoreError> {
-        let expected_transaction = self.transaction.clone();
-        let expected_bundle = self.plan_bundle;
-        let snapshot = CheckedExecutionJournalSnapshot::read_file(
-            &self.plan,
-            self.journal,
-            self.journal_path,
-            limits,
-        )
-        .map_err(GenerationTransactionStoreError::Transaction)?;
-        if snapshot.transaction() != &expected_transaction
-            || snapshot.plan_bundle() != expected_bundle
-            || snapshot.incomplete_tail_bytes() != 0
-            || snapshot.terminal() != Some(terminal)
-        {
-            return Err(GenerationTransactionStoreError::Conflict(
-                "retained native owner claim journal differs from its protected terminal selection"
-                    .to_string(),
-            ));
-        }
-        let matching = snapshot
-            .operations()
-            .iter()
-            .filter(|summary| summary.operation() == claimed_operation)
-            .collect::<Vec<_>>();
-        let [_summary] = matching.as_slice() else {
-            return Err(GenerationTransactionStoreError::Conflict(
-                "retained native owner claim operation is absent or ambiguous in its checked journal"
-                    .to_string(),
-            ));
-        };
-        Ok(snapshot.records().iter().any(|record| {
-            matches!(
-                record.body().body(),
-                aos_ability_runtime::execution::ExecutionEventKind::EffectIntent {
-                    operation: event_operation,
-                    attempt: event_attempt,
-                    ..
-                } if event_operation == claimed_operation && event_attempt.get() == claimed_attempt
-            )
-        }))
-    }
-
     /// Returns the freshly replayed exact checked plan.
     #[must_use]
     pub const fn plan(&self) -> &CheckedEffectPlan {
@@ -558,98 +452,6 @@ impl<'plan> AbilityTransactionSession<'plan> {
         let directory = self.store.prepare_transaction_dir(transaction)?;
         super::transaction_blob::TransactionBlobStore::open(&directory, transaction).map_err(
             |source| io_error("opening ability transaction blob store", &directory, source),
-        )
-    }
-
-    /// Opens or recovers an exact checked plan beneath one config generation.
-    ///
-    /// `packages` must contain freshly verified seals for every desired and
-    /// retained package needed by the plan. Their complete authenticated live
-    /// closure catalogs are rechecked before journal recovery. `bundle` is
-    /// rechecked against any immutable bundle already retained for the transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when lock acquisition, artifact verification, plan
-    /// retention, journal recovery, or checked transaction initialization fails.
-    pub fn open(
-        plan: &'plan CheckedEffectPlan,
-        transaction: TransactionId,
-        limits: JournalLimits,
-        generation: impl Into<PathBuf>,
-        supported_features: BTreeSet<RequiredFeature>,
-        bundle: ReloadablePlanBundle,
-        packages: VerifiedPackageContractSet,
-    ) -> Result<Self, GenerationTransactionStoreError> {
-        let generation = generation.into();
-        let expected_profile = ProfileScope::System.profile_path();
-        if generation.parent() != Some(expected_profile.as_path()) {
-            return Err(GenerationTransactionStoreError::Conflict(format!(
-                "native ability generation {} is outside the canonical system profile {}",
-                generation.display(),
-                expected_profile.display()
-            )));
-        }
-        let journal = generation
-            .join(TRANSACTION_ROOT)
-            .join(transaction.0.as_str())
-            .join(EXECUTION_JOURNAL_FILE);
-        let paths = SessionPaths {
-            generation,
-            journal,
-            switch_lock: default_switch_lock_path(),
-        };
-        Self::open_at(
-            plan,
-            transaction,
-            limits,
-            supported_features,
-            bundle,
-            packages,
-            paths,
-        )
-    }
-
-    /// Opens or recovers a checked stage transaction beneath a durable image root.
-    ///
-    /// Unlike [`Self::open`], this path is not a numbered configuration
-    /// generation. The caller supplies a protected stage directory whose
-    /// lifetime spans the initrd-to-host handoff, and the transaction store
-    /// retains the exact plan bundle, artifact roots, blobs, and journal there.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stage directory or lock is unsafe, package
-    /// artifacts differ, plan retention fails, or journal recovery fails.
-    pub(crate) fn open_stage(
-        plan: &'plan CheckedEffectPlan,
-        transaction: TransactionId,
-        limits: JournalLimits,
-        stage_directory: impl Into<PathBuf>,
-        supported_features: BTreeSet<RequiredFeature>,
-        bundle: ReloadablePlanBundle,
-        packages: VerifiedPackageContractSet,
-    ) -> Result<Self, GenerationTransactionStoreError> {
-        let generation = stage_directory.into();
-        create_private_directory(&generation)?;
-        let journal = generation
-            .join(TRANSACTION_ROOT)
-            .join(transaction.0.as_str())
-            .join(EXECUTION_JOURNAL_FILE);
-        let switch_lock = generation.join("execution.lock");
-        let paths = SessionPaths {
-            generation,
-            journal,
-            switch_lock,
-        };
-        Self::open_at(
-            plan,
-            transaction,
-            limits,
-            supported_features,
-            bundle,
-            packages,
-            paths,
         )
     }
 
@@ -757,26 +559,6 @@ impl<'plan> AbilityTransactionSession<'plan> {
         Ok(Self { transaction, store })
     }
 
-    fn open_at(
-        plan: &'plan CheckedEffectPlan,
-        transaction: TransactionId,
-        limits: JournalLimits,
-        supported_features: BTreeSet<RequiredFeature>,
-        bundle: ReloadablePlanBundle,
-        packages: VerifiedPackageContractSet,
-        paths: SessionPaths,
-    ) -> Result<Self, GenerationTransactionStoreError> {
-        Self::open_at_with_authority(
-            plan,
-            transaction,
-            limits,
-            supported_features,
-            RetainedPlanAuthority::Policy(bundle),
-            packages,
-            paths,
-        )
-    }
-
     fn open_at_with_authority(
         plan: &'plan CheckedEffectPlan,
         transaction: TransactionId,
@@ -816,107 +598,6 @@ impl<'plan> AbilityTransactionSession<'plan> {
         let transaction =
             ExecutionTransaction::open(plan, transaction, &journal, limits, &mut store)
                 .map_err(GenerationTransactionStoreError::Transaction)?;
-        Ok(Self { transaction, store })
-    }
-
-    /// Opens a real journal around a checked test plan.
-    #[cfg(test)]
-    pub(crate) fn open_for_dispatch_test(
-        plan: &'plan CheckedEffectPlan,
-        transaction: TransactionId,
-        generation: impl Into<PathBuf>,
-        packages: VerifiedPackageContractSet,
-    ) -> Result<Self, GenerationTransactionStoreError> {
-        struct TestRetentionStore;
-
-        impl TrustedPlanStore for TestRetentionStore {
-            type Error = io::Error;
-
-            fn retain_plan(
-                &mut self,
-                transaction: &TransactionId,
-                plan: &CheckedEffectPlan,
-            ) -> Result<PlanRetentionReceipt, Self::Error> {
-                Ok(PlanRetentionReceipt::new(
-                    transaction.clone(),
-                    plan.id(),
-                    Sha256Digest::of_bytes(b"native dispatcher test bundle"),
-                    AbilityValue::new(serde_json::Value::Bool(true)).map_err(io::Error::other)?,
-                ))
-            }
-        }
-
-        impl TrustedRootStore for TestRetentionStore {
-            type Error = io::Error;
-
-            fn retain(
-                &mut self,
-                transaction: &TransactionId,
-                artifacts: &[ArtifactReference],
-            ) -> Result<RootRetentionReceipt, Self::Error> {
-                Ok(RootRetentionReceipt::new(
-                    transaction.clone(),
-                    artifacts.iter().map(|artifact| artifact.closure).collect(),
-                    AbilityValue::new(serde_json::Value::Bool(true)).map_err(io::Error::other)?,
-                ))
-            }
-        }
-
-        require_local_effect_plan(plan)?;
-        let generation = generation.into();
-        fs::create_dir_all(&generation).map_err(|source| {
-            io_error(
-                "creating native dispatcher test generation",
-                &generation,
-                source,
-            )
-        })?;
-        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).map_err(|source| {
-            io_error(
-                "protecting native dispatcher test generation",
-                &generation,
-                source,
-            )
-        })?;
-        let switch_lock = generation
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("native-dispatch-test.lock");
-        let (planning, transition) =
-            aos_ability_plan::test_support::verified_planning_transition_plan();
-        let bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)
-            .map_err(GenerationTransactionStoreError::Bundle)?;
-        let verifier = NativeAbilityArtifactVerifier {
-            authenticated: packages,
-            platform: plan.binding_plan().environment().platform.clone(),
-        };
-        let store = GenerationTransactionStore::with_bundle_at(
-            &generation,
-            bundle,
-            BTreeSet::new(),
-            verifier,
-            &switch_lock,
-        )?;
-        let journal = generation
-            .join(TRANSACTION_ROOT)
-            .join(transaction.0.as_str())
-            .join(EXECUTION_JOURNAL_FILE);
-        let transaction_directory = journal.parent().ok_or_else(|| {
-            GenerationTransactionStoreError::Conflict(
-                "native dispatcher test journal has no parent directory".to_string(),
-            )
-        })?;
-        create_private_directory(transaction_directory)?;
-        let mut retention = TestRetentionStore;
-        let transaction = ExecutionTransaction::open(
-            plan,
-            transaction,
-            &journal,
-            JournalLimits::default(),
-            &mut retention,
-        )
-        .map_err(GenerationTransactionStoreError::Transaction)?;
-
         Ok(Self { transaction, store })
     }
 
@@ -992,32 +673,6 @@ impl<'plan> AbilityTransactionSession<'plan> {
         self.preserve_outcome_on_marker_failure(result)
     }
 
-    /// Advances one admitted token through effect dispatch or reconciliation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an outer error when terminal-marker publication fails. Checked
-    /// execution failures remain in the inner result.
-    pub fn drive_admitted<Adapter, Policy, Clock>(
-        &mut self,
-        admitted: &AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
-        adapter: &mut Adapter,
-        policy: &mut Policy,
-        clock: &Clock,
-        cancellation: &CancellationToken,
-    ) -> Result<Result<ExecutionStep, ExecutionError>, GenerationTransactionStoreError>
-    where
-        Adapter: TrustedAdapter,
-        Policy: TrustedAdmissionPolicy,
-        Clock: MonotonicClock,
-    {
-        let result =
-            self.transaction
-                .drive_admitted(admitted, adapter, policy, clock, cancellation);
-        self.persist_terminal_marker()?;
-        Ok(result)
-    }
-
     /// Advances one admitted token while reporting exact execution boundaries.
     ///
     /// # Errors
@@ -1047,32 +702,6 @@ impl<'plan> AbilityTransactionSession<'plan> {
             cancellation,
             observer,
         );
-        self.persist_terminal_marker()?;
-        Ok(result)
-    }
-
-    /// Requests checked cancellation for one current admitted attempt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an outer error when terminal-marker publication fails. Checked
-    /// cancellation failures remain in the inner result.
-    pub fn cancel_admitted<Adapter, Policy, Clock>(
-        &mut self,
-        admitted: &AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
-        adapter: &mut Adapter,
-        policy: &mut Policy,
-        clock: &Clock,
-        cancellation: &CancellationToken,
-    ) -> Result<Result<ExecutionStep, ExecutionError>, GenerationTransactionStoreError>
-    where
-        Adapter: TrustedAdapter,
-        Policy: TrustedAdmissionPolicy,
-        Clock: MonotonicClock,
-    {
-        let result =
-            self.transaction
-                .cancel_admitted(admitted, adapter, policy, clock, cancellation);
         self.persist_terminal_marker()?;
         Ok(result)
     }
@@ -1320,54 +949,6 @@ fn terminal_is_prune_eligible(terminal: aos_ability_model::document::TerminalRes
 }
 
 impl<Verifier> GenerationTransactionStore<Verifier> {
-    /// Opens an existing store under an explicit switch lock.
-    ///
-    /// This variant is used by rooted VM tests and callers whose AOS root has
-    /// already resolved the concrete lock path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the lock cannot be acquired.
-    #[cfg(test)]
-    fn open_at(
-        generation: impl Into<PathBuf>,
-        verifier: Verifier,
-        switch_lock: impl AsRef<Path>,
-    ) -> Result<Self, GenerationTransactionStoreError> {
-        let switch_lock = Arc::new(
-            acquire_switch_lock_pub(switch_lock.as_ref())
-                .map_err(GenerationTransactionStoreError::SwitchLock)?,
-        );
-        Ok(Self {
-            generation: generation.into(),
-            pending_bundle: None,
-            supported_features: BTreeSet::new(),
-            verifier,
-            switch_lock,
-        })
-    }
-
-    /// Opens a new transaction store under an explicit switch lock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the lock cannot be acquired.
-    fn with_bundle_at(
-        generation: impl Into<PathBuf>,
-        bundle: ReloadablePlanBundle,
-        supported_features: BTreeSet<RequiredFeature>,
-        verifier: Verifier,
-        switch_lock: impl AsRef<Path>,
-    ) -> Result<Self, GenerationTransactionStoreError> {
-        Self::with_authority_at(
-            generation,
-            RetainedPlanAuthority::Policy(bundle),
-            supported_features,
-            verifier,
-            switch_lock,
-        )
-    }
-
     fn with_authority_at(
         generation: impl Into<PathBuf>,
         bundle: RetainedPlanAuthority,
@@ -1416,27 +997,8 @@ impl<Verifier> GenerationTransactionStore<Verifier> {
             pending_bundle: Some(bundle),
             supported_features,
             verifier,
-            switch_lock,
+            _switch_lock: switch_lock,
         }
-    }
-
-    /// Reloads and semantically validates one transaction's retained plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the generation or bundle is unavailable,
-    /// noncanonical, corrupt, or no longer valid for the supplied feature set.
-    #[cfg(test)]
-    fn load_plan(
-        &self,
-        transaction: &TransactionId,
-        supported_features: std::collections::BTreeSet<RequiredFeature>,
-    ) -> Result<CheckedEffectPlan, GenerationTransactionStoreError> {
-        let path = self.bundle_path(transaction);
-        let bytes = read_file(&path)?;
-        ReloadablePlanBundle::decode(&bytes)
-            .and_then(|bundle| bundle.revalidate(supported_features))
-            .map_err(GenerationTransactionStoreError::Bundle)
     }
 
     fn transaction_dir(&self, transaction: &TransactionId) -> PathBuf {

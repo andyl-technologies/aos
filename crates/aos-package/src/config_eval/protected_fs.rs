@@ -13,7 +13,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aos_ability_model::ArtifactReference;
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -137,19 +136,6 @@ impl RootedDirectory {
         target.validate_optional_target()?;
         Ok(target)
     }
-
-    /// Resolves a canonical relative file path beneath this directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::resolve`].
-    pub(super) fn child(&self, name: String) -> Result<RootedFile, io::Error> {
-        self.resolve(Path::new(&name))
-    }
-
-    pub(super) fn display(&self) -> &Path {
-        &self.display
-    }
 }
 
 /// Retains a protected parent descriptor and one validated relative file name.
@@ -170,23 +156,6 @@ impl RootedFile {
         }
     }
 
-    /// Reports whether the target is a trusted singly linked regular file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the target cannot be opened or violates its type,
-    /// link-count, ownership, or mode invariants.
-    pub(super) fn exists(&self) -> Result<bool, io::Error> {
-        match fs::openat(&*self.directory, &self.name, read_flags(), Mode::empty()) {
-            Ok(descriptor) => {
-                validate_regular(&descriptor, self.trusted_owner)?;
-                Ok(true)
-            }
-            Err(error) if error == rustix::io::Errno::NOENT => Ok(false),
-            Err(error) => Err(io::Error::from(error)),
-        }
-    }
-
     /// Opens the validated target read-only without releasing its parent anchor.
     ///
     /// # Errors
@@ -199,20 +168,6 @@ impl RootedFile {
             .map_err(io::Error::from)?;
         validate_regular(&descriptor, self.trusted_owner)?;
         Ok(File::from(descriptor))
-    }
-
-    /// Reads the bounded target when it exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the target is unsafe, cannot be read, or exceeds
-    /// `limit`.
-    pub(super) fn read_optional(&self, limit: u64) -> Result<Option<Vec<u8>>, io::Error> {
-        match self.read(limit) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
     }
 
     /// Reads at most `limit` bytes from the trusted target.
@@ -238,20 +193,6 @@ impl RootedFile {
             return Err(invalid("native ability state grew beyond its size bound"));
         }
         Ok(bytes)
-    }
-
-    /// Returns the validated target's raw Unix mode.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the target cannot be opened or violates the
-    /// trusted regular-file invariants.
-    pub(super) fn mode(&self) -> Result<u32, io::Error> {
-        let descriptor = fs::openat(&*self.directory, &self.name, read_flags(), Mode::empty())
-            .map_err(io::Error::from)?;
-        validate_regular(&descriptor, self.trusted_owner)?;
-        let metadata = fs::fstat(&descriptor).map_err(io::Error::from)?;
-        Ok(metadata.st_mode)
     }
 
     /// Atomically replaces the target and makes its parent entry durable.
@@ -296,19 +237,6 @@ impl RootedFile {
         result
     }
 
-    /// Removes the named target without following it; absence is successful.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when unlinking an existing target fails.
-    pub(super) fn remove(&self) -> Result<(), io::Error> {
-        match fs::unlinkat(&*self.directory, &self.name, AtFlags::empty()) {
-            Ok(()) => Ok(()),
-            Err(error) if error == rustix::io::Errno::NOENT => Ok(()),
-            Err(error) => Err(io::Error::from(error)),
-        }
-    }
-
     /// Synchronizes the retained parent directory.
     ///
     /// # Errors
@@ -321,72 +249,6 @@ impl RootedFile {
     pub(super) fn display(&self) -> &Path {
         &self.display
     }
-}
-
-/// Verifies that this process is the exact native executor selected by an artifact.
-///
-/// # Errors
-///
-/// Returns an error when the current executable cannot be resolved to the
-/// artifact's exact Nix store path and entry point.
-pub(super) fn authenticate_native_executor(
-    artifact: &ArtifactReference,
-    entry_point: &str,
-    subject: &str,
-) -> Result<(), io::Error> {
-    let executable = std::env::current_exe()
-        .map_err(|error| invalid(format!("resolving {subject} native executor path: {error}")))?;
-    authenticate_native_executor_path(artifact, entry_point, subject, &executable)
-}
-
-/// Applies native-executor authentication to an explicit path for focused tests.
-///
-/// # Errors
-///
-/// Returns an error when `executable` is outside the Nix store or differs from
-/// the artifact's exact store path and entry point.
-pub(super) fn authenticate_native_executor_path(
-    artifact: &ArtifactReference,
-    entry_point: &str,
-    subject: &str,
-    executable: &Path,
-) -> Result<(), io::Error> {
-    let (root, suffix) = super::stock::store_root_and_suffix(executable).map_err(|error| {
-        invalid(format!(
-            "{subject} native executor is outside the Nix store: {error}"
-        ))
-    })?;
-    let expected = Path::new(&artifact.store_path).join(entry_point);
-    let (expected_root, expected_suffix) =
-        super::stock::store_root_and_suffix(&expected).map_err(|error| {
-            invalid(format!(
-                "signed {subject} native executor entry point is invalid: {error}"
-            ))
-        })?;
-    if expected_root.as_os_str() != OsStr::new(&artifact.store_path)
-        || expected_suffix.as_os_str() != OsStr::new(entry_point)
-    {
-        return Err(invalid(format!(
-            "signed {subject} native executor entry point is not canonical"
-        )));
-    }
-
-    let exact_entry_point = root.as_os_str() == OsStr::new(&artifact.store_path)
-        && suffix.as_os_str() == OsStr::new(entry_point);
-    if !exact_entry_point && !paths_resolve_to_same_executable(&expected, executable)? {
-        return Err(invalid(format!(
-            "signed {subject} handler artifact does not identify the running package runtime"
-        )));
-    }
-    Ok(())
-}
-
-/// Compares an installed entry-point link with the executable it selects.
-fn paths_resolve_to_same_executable(expected: &Path, executable: &Path) -> Result<bool, io::Error> {
-    let expected = std::fs::canonicalize(expected)?;
-    let executable = std::fs::canonicalize(executable)?;
-
-    Ok(expected == executable)
 }
 
 fn is_canonical_absolute(path: &str) -> bool {
@@ -516,7 +378,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{MetadataExt, symlink};
+    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn child_directory_rejects_multicomponent_names_before_lookup() {
@@ -561,26 +423,5 @@ mod tests {
         assert!(owner_has_native_authority(0, 1000));
         assert!(owner_has_native_authority(1000, 1000));
         assert!(!owner_has_native_authority(65534, 1000));
-    }
-
-    #[test]
-    fn installed_entry_point_may_link_to_the_shared_executable() {
-        let root = tempfile::tempdir().expect("temporary root is created");
-        let executable = root.path().join("shared-executable");
-        let entry_point = root.path().join("private-entry-point");
-        let different_executable = root.path().join("different-executable");
-        std::fs::write(&executable, b"shared executable").expect("executable is written");
-        std::fs::write(&different_executable, b"different executable")
-            .expect("different executable is written");
-        symlink(&executable, &entry_point).expect("private entry point is linked");
-
-        assert!(
-            paths_resolve_to_same_executable(&entry_point, &executable)
-                .expect("entry point is resolved")
-        );
-        assert!(
-            !paths_resolve_to_same_executable(&entry_point, &different_executable)
-                .expect("different executable is resolved")
-        );
     }
 }

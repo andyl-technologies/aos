@@ -35,7 +35,7 @@ use aos_provider_protocol::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::handler_process::{DescendantPolicy, FixedBudgetControl, run_bounded};
+use super::handler_process::{FixedBudgetControl, run_bounded};
 use super::transaction_blob::TransactionBlobStore;
 use crate::package_contract::{VerifiedPackageContract, VerifiedPackageContractSet};
 
@@ -560,19 +560,6 @@ pub(crate) struct CommandHandlerAdapter {
     interface: InterfaceDocument,
     handler: AuthenticatedCommandHandler,
     blobs: TransactionBlobStore,
-}
-
-/// Authenticates the terminal handler selected by one provider assignment.
-///
-/// # Errors
-///
-/// Returns an error when the package does not contain the exact implementation,
-/// handler, artifact, and executable selected by the assignment.
-pub(crate) fn preflight_command_handler(
-    package: &VerifiedPackageContract,
-    assignment: &ProviderAssignment,
-) -> Result<(), io::Error> {
-    authenticate(package, &assignment.interface, &assignment.implementation).map(|_| ())
 }
 
 /// Authenticates a selected implementation before its live incarnation exists.
@@ -1213,7 +1200,6 @@ fn invoke(
         &mut command,
         Some(input),
         MAX_HANDLER_RESULT_BYTES,
-        DescendantPolicy::Reap,
         control,
         environment,
     )?;
@@ -1724,7 +1710,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
-    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::os::unix::fs::symlink;
 
     use aos_ability_model::{
         AggregationContract, AggregationScope, IndeterminateSemantics, InterfaceDescriptor,

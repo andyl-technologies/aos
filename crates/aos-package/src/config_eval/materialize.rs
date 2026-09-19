@@ -1842,51 +1842,6 @@ fn write_file_beneath(root: &OwnedFd, path: &str, contents: &[u8], mode: &str) -
     Ok(())
 }
 
-/// Writes one relative file beneath a filesystem root without following any
-/// symlink in the path.
-///
-/// This is the shared boundary used by transaction staging as well as the
-/// final `/etc` materializer. The caller supplies an already-created root;
-/// parent directories below it are created with mode `0755`.
-///
-/// # Errors
-///
-/// Returns an error for an unsafe relative path, invalid mode, symlinked path
-/// component, or filesystem failure.
-pub(crate) fn write_bytes_beneath(
-    root_path: &Path,
-    path: &str,
-    contents: &[u8],
-    mode: &str,
-) -> Result<()> {
-    validate_relative_path(path, "staged file")?;
-    std::fs::create_dir_all(root_path)
-        .with_context(|| format!("creating staging root {}", root_path.display()))?;
-    let root = openat(
-        rustix::fs::CWD,
-        root_path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .with_context(|| format!("opening staging root {}", root_path.display()))?;
-    write_file_beneath(&root, path, contents, mode)
-}
-
-/// Reads one regular file beneath a filesystem root without following any
-/// symlink in the path.
-///
-/// # Errors
-///
-/// Returns an error for an unsafe relative path, a symlink/non-directory path
-/// component, a non-regular final entry, or an I/O failure.
-pub(crate) fn read_bytes_beneath(root_path: &Path, path: &str) -> Result<Vec<u8>> {
-    let mut file = open_regular_file_beneath(root_path, path)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .with_context(|| format!("reading {path:?} beneath {}", root_path.display()))?;
-    Ok(bytes)
-}
-
 /// Reads one bounded regular file beneath a filesystem root without following
 /// any symlink in the path.
 ///

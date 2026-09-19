@@ -2642,7 +2642,7 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    fn installed_fixture(tmp: &TempDir, manifest: &[u8]) -> InstalledMeta {
+    fn installed_fixture(manifest: &[u8]) -> InstalledMeta {
         let document_digest = package_manifest_digest_bytes(manifest);
         let retained_artifact = PackageContractArtifactMeta {
             content: format!("sha256:{}", "c".repeat(64)),
@@ -2731,7 +2731,7 @@ mod tests {
     }
 
     fn measured_fixture_log(tmp: &TempDir, manifest: &[u8]) -> (String, String, String) {
-        let installed = installed_fixture(tmp, manifest);
+        let installed = installed_fixture(manifest);
         let apm = installed.apm.as_ref().expect("apm metadata");
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let manifest_digest = package_manifest_digest_bytes(manifest);
@@ -2809,7 +2809,7 @@ mod tests {
     #[test]
     fn package_measurement_includes_root_and_manifest_digests() {
         let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"package":"web","network":"private"}"#);
+        let installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
 
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
@@ -2834,7 +2834,7 @@ mod tests {
     #[test]
     fn package_measurement_uses_store_path_digest_without_signed_root() {
         let tmp = TempDir::new().expect("tempdir");
-        let mut installed = installed_fixture(&tmp, br#"{"package":"web","network":"private"}"#);
+        let mut installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
         let expected_root_digest = package_store_path_root_digest(&installed.store_path);
         let attestation = &mut installed.apm.as_mut().expect("apm metadata").attestation;
         attestation.root_digest = None;
@@ -2853,11 +2853,11 @@ mod tests {
     #[test]
     fn package_measurement_changes_when_manifest_changes() {
         let tmp = TempDir::new().expect("tempdir");
-        let first = installed_fixture(&tmp, br#"{"package":"web","network":"private"}"#);
+        let first = installed_fixture(br#"{"package":"web","network":"private"}"#);
         let first_digest = measurement_events(tmp.path(), &[first]).expect("first")[1]
             .digest
             .clone();
-        let second = installed_fixture(&tmp, br#"{"package":"web","network":"host"}"#);
+        let second = installed_fixture(br#"{"package":"web","network":"host"}"#);
         let second_digest = measurement_events(tmp.path(), &[second]).expect("second")[1]
             .digest
             .clone();
@@ -2869,7 +2869,7 @@ mod tests {
     fn package_measurement_accepts_matching_registry_measurement() {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"package":"web","network":"private"}"#;
-        let mut installed = installed_fixture(&tmp, manifest);
+        let mut installed = installed_fixture(manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let manifest_digest = package_manifest_digest_bytes(manifest);
@@ -2893,7 +2893,7 @@ mod tests {
     fn package_measurement_rejects_mismatched_registry_measurement() {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"package":"web","network":"private"}"#;
-        let mut installed = installed_fixture(&tmp, manifest);
+        let mut installed = installed_fixture(manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
         apm.attestation = AttestationMeta {
             root_digest: Some(
@@ -2996,7 +2996,7 @@ mod tests {
     fn package_event_log_verifier_replays_from_pcr_baseline() {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"package":"web","network":"private"}"#;
-        let installed = installed_fixture(&tmp, manifest);
+        let installed = installed_fixture(manifest);
         let apm = installed.apm.as_ref().expect("apm metadata");
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let manifest_digest = package_manifest_digest_bytes(manifest);
@@ -3032,7 +3032,7 @@ mod tests {
     fn append_event_log_continues_sequence_numbers() {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"package":"web","network":"private"}"#;
-        let installed = installed_fixture(&tmp, manifest);
+        let installed = installed_fixture(manifest);
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
         append_event_log(tmp.path(), &events[..1]).expect("append first event");
@@ -3160,7 +3160,7 @@ mod tests {
     fn package_measurement_catalog_entries_round_trip_through_json() {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"package":"web","network":"private"}"#;
-        let mut installed = installed_fixture(&tmp, manifest);
+        let mut installed = installed_fixture(manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let manifest_digest = package_manifest_digest_bytes(manifest);
@@ -3384,7 +3384,7 @@ mod tests {
     fn package_event_log_verifier_reports_latest_package_set() {
         let tmp = TempDir::new().expect("tempdir");
         let manifest = br#"{"package":"web","network":"private"}"#;
-        let installed = installed_fixture(&tmp, manifest);
+        let installed = installed_fixture(manifest);
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement = package_measurement_digest("web", "1.0", root_hash, &manifest_digest);
