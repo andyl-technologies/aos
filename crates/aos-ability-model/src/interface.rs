@@ -525,7 +525,7 @@ fn consume_provider_implementation_items(
 ) -> anyhow::Result<()> {
     // Count the fixed provider, interface-key, and artifact record members
     // alongside every dynamic collection below.
-    consume_items(remaining_items, 7)?;
+    consume_items(remaining_items, 8)?;
     consume_items(remaining_items, 3)?;
     consume_items(remaining_items, 4)?;
     consume_items(remaining_items, implementation.guarantees.len())?;
