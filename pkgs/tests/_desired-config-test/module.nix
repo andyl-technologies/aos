@@ -82,7 +82,6 @@
         stop = [];
         post_stop = [];
         restart = "never";
-        restart_token = null;
         restart_delay_millis = 0;
         configuration_change_action = "restart";
         remain_after_exit = true;

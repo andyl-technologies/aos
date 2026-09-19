@@ -30,7 +30,6 @@
         stop = [];
         post_stop = [];
         restart = "never";
-        restart_token = null;
         restart_delay_millis = 0;
         configuration_change_action = "restart";
         remain_after_exit = true;
@@ -78,7 +77,6 @@
             stop = [];
             post_stop = [];
             restart = "on-failure";
-            restart_token = null;
             restart_delay_millis = 1000;
             configuration_change_action =
               if reload == null
