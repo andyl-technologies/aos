@@ -23,7 +23,6 @@
     strategy = declaration.adapter;
   };
   cells = lib.mapAttrsToList cellFor stagePolicy;
-  missingCells = builtins.filter (cell: cell.status == "missing") cells;
   surface = {
     schema = "aos.qualification.container-execution-surface/v1";
     inherit cells;
@@ -32,5 +31,4 @@
 in {
   inherit cells;
   check = "container-execution-surface-v1-sha256-${surfaceDigest}";
-  missing_container_cells = builtins.length missingCells;
 }

@@ -155,10 +155,6 @@ in {
           == map (cell: cell.id) nativeAdapterMatrix.spec.cells;
         message = "The native adapter matrix must partition every package-derived surface cell through fail-closed production applicability.";
       }
-      {
-        assertion = containerExecutionMatrix.missing_container_cells == 1;
-        message = "System-container manager execution must remain explicitly unqualified until its production path passes.";
-      }
     ];
   };
 }

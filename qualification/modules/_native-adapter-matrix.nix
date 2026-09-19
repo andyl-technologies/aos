@@ -180,7 +180,11 @@
     adapterMethods
   );
   providerContractFor = cell:
-    builtins.head (builtins.filter (adapter: adapter.adapter == cell.adapter) selectedSurface.adapters);
+    selectExact "native qualification contract '${cell.id}'"
+    (adapter:
+      adapter.adapter == cell.adapter
+      && adapter.interface_descriptor == cell.interface.descriptor)
+    selectedSurface.adapters;
   inapplicableReason = cell: let
     contract = (providerContractFor cell).provider_contract;
   in
