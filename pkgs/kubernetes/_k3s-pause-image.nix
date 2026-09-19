@@ -6,10 +6,19 @@
   buildPackages,
   stdenv,
   lib,
+  ociTools,
 }: let
   kubernetes = import ./_source.nix {inherit fetchurl;};
-  buildPkgs = buildPackages;
   reference = "aos.invalid/k3s/pause";
+  platform = {
+    os = "linux";
+    architecture =
+      if stdenv.hostPlatform.isAarch64
+      then "arm64"
+      else if stdenv.hostPlatform.isx86_64
+      then "amd64"
+      else throw "K3s pod sandboxes require a supported Linux architecture";
+  };
   pause = mkDerivation {
     pname = "k3s-pause";
     inherit (kubernetes) version src;
@@ -44,42 +53,33 @@
       license = "Apache-2.0";
     };
   };
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (buildPkgs) mkDerivation coreutils findutils gzip jq tar;
-  };
-  payload = oci.mkClosureLayer {
+  payload = ociTools.mkClosureLayer {
     roots = [pause];
     pname = "k3s-pause-payload";
   };
-  metadata = oci.mkRootMetadataLayer {
+  metadata = ociTools.mkRootMetadataLayer {
     storeLayers = [payload];
     directories = map (path: {inherit path;}) ["/dev" "/proc" "/sys"];
     pname = "k3s-pause-metadata";
   };
-  runtimeAudit = import ../../lib/build/runtime-closure-audit.nix {
-    inherit lib;
-    pkgs = buildPkgs;
+  runtimeAudit = lib.build.runtimeClosureAudit {
+    pkgs = buildPackages;
     name = "k3s-pause";
     roots = [pause];
     maxClosureMiB = 128;
     maxDevelopmentPayloadMiB = 1;
   };
+  abilityContract = ociTools.mkStaticAbilityContract {
+    pname = "k3s-pause-static-abilities";
+    inherit platform;
+    runtimeRoots = [pause];
+  };
 in {
   inherit reference;
-  image = oci.mkImageLayout {
+  image = ociTools.mkImageLayout {
     pname = "k3s-pause-image";
     layers = [payload metadata];
-    inherit runtimeAudit;
-    platform = {
-      os = "linux";
-      architecture =
-        if stdenv.hostPlatform.isAarch64
-        then "arm64"
-        else if stdenv.hostPlatform.isx86_64
-        then "amd64"
-        else throw "K3s pod sandboxes require a supported Linux architecture";
-    };
+    inherit runtimeAudit abilityContract;
     referenceName = "${reference}:${kubernetes.version}";
     config = {
       entrypoint = ["${pause}/bin/pause"];

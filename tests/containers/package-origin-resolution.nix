@@ -1,12 +1,9 @@
 ##! Package artifact resolution remains scoped to authenticated provenance.
-{lib}: let
-  common = import ../../pkgs/containers/_aos-oci-backend/oci/common.nix {
-    inherit lib;
-  };
-  packageOrigins = import ../../pkgs/containers/_aos-oci-backend/oci/checked-package-origin.nix {
-    abilities = lib.abilities;
-    inherit common;
-  };
+{
+  pkgs,
+  lib,
+}: let
+  packageOrigins = pkgs.ociTools.checkedPackageOrigin;
   localHelper = {
     _type = "aos-package-output-selector";
     package = "helper";

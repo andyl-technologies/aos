@@ -8,18 +8,11 @@
   pkgs,
   lib,
 }: let
-  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
-    inherit lib;
-    inherit (pkgs) mkDerivation coreutils jq;
-  };
-  oci = import ../../pkgs/containers/_aos-oci-backend/oci {
-    inherit lib mkReferenceGraph;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
-    abilityContractValidator = pkgs.aos-ability-contract-validator;
-  };
-  originResolution = import ./package-origin-resolution.nix {inherit lib;};
+  oci = pkgs.ociTools;
+  originResolution = import ./package-origin-resolution.nix {inherit pkgs lib;};
   malformedBackend = builtins.tryEval (builtins.deepSeq
     ((lib.evalModules {
+        inherit lib;
         modules = [
           ../../modules/base/artifact-backend.nix
           {
@@ -128,16 +121,16 @@
     ];
     storeLayers = [baseLayerA applicationDelta abilityLayer];
   };
-  runtimeAudit = import ../../lib/build/runtime-closure-audit.nix {
-    inherit pkgs lib;
+  runtimeAudit = lib.build.runtimeClosureAudit {
+    inherit pkgs;
     name = "oci-builder-fixture";
     roots = [application pkgs.ability-package-smoke];
     maxClosureMiB = 32;
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
   };
-  changedRuntimeAudit = import ../../lib/build/runtime-closure-audit.nix {
-    inherit pkgs lib;
+  changedRuntimeAudit = lib.build.runtimeClosureAudit {
+    inherit pkgs;
     name = "oci-builder-changed-fixture";
     roots = [changedApplication pkgs.ability-package-smoke];
     maxClosureMiB = 32;
@@ -332,9 +325,7 @@
       touch "''${outputs[out]}/semantic-validator-observed-forged-marker"
     fi
   '';
-  probeOci = import ../../pkgs/containers/_aos-oci-backend/oci {
-    inherit lib mkReferenceGraph;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+  probeOci = pkgs.mkOciTools {
     abilityContractValidator = semanticValidationProbe;
   };
 

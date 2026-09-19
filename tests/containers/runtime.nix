@@ -12,15 +12,7 @@
   goldenRoots,
   forbiddenRuntimeRoots,
 }: let
-  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
-    inherit lib;
-    inherit (pkgs) mkDerivation coreutils jq;
-  };
-  oci = import ../../pkgs/containers/_aos-oci-backend/oci {
-    inherit lib mkReferenceGraph;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
-    abilityContractValidator = pkgs.aos-ability-contract-validator;
-  };
+  oci = pkgs.ociTools;
   firstPackage = pkgs.runCommand "container-runtime-first-package" {} ''
     mkdir -p "$out/bin" "$out/sbin"
     printf '#!${pkgs.bash}/bin/bash\nprintf first-only\\n\n' > "$out/bin/first-only"

@@ -27,12 +27,7 @@
     abi = pkgs.stdenv.hostPlatform.constraints.abi;
     features = pkgs.stdenv.hostPlatform.constraints.features;
   };
-  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
-    inherit lib;
-    inherit (pkgs.buildPackages) mkDerivation coreutils jq;
-  };
-  runtimeClosureAudit = args:
-    import ../../lib/build/runtime-closure-audit.nix args;
+  runtimeClosureAudit = lib.build.runtimeClosureAudit;
   defaultDefinition =
     if enabled
     then
@@ -74,7 +69,6 @@
             pkgs
             container
             systemIdentity
-            mkReferenceGraph
             runtimeClosureAudit
             ;
           buildPackages = pkgs.buildPackages;

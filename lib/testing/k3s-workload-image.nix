@@ -3,9 +3,15 @@
   pkgs,
   lib,
 }: let
-  oci = import ../build/oci {
-    inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+  oci = pkgs.ociTools;
+  platform = {
+    os = "linux";
+    architecture =
+      if pkgs.stdenv.hostPlatform.isAarch64
+      then "arm64"
+      else if pkgs.stdenv.hostPlatform.isx86_64
+      then "amd64"
+      else throw "K3s workload requires a supported Linux architecture";
   };
   payload = oci.mkClosureLayer {
     roots = [pkgs.coreutils];
@@ -16,27 +22,23 @@
     directories = map (path: {inherit path;}) ["/dev" "/proc" "/sys" "/tmp" "/work"];
     pname = "k3s-workload-metadata";
   };
-  runtimeAudit = import ../build/runtime-closure-audit.nix {
-    inherit pkgs lib;
+  runtimeAudit = lib.build.runtimeClosureAudit {
+    inherit pkgs;
     name = "k3s-workload";
     roots = [pkgs.coreutils];
     maxClosureMiB = 256;
     maxDevelopmentPayloadMiB = 1;
   };
+  abilityContract = oci.mkStaticAbilityContract {
+    pname = "k3s-workload-static-abilities";
+    inherit platform;
+    runtimeRoots = [pkgs.coreutils];
+  };
 in
   oci.mkImageLayout {
     pname = "k3s-workload-image";
     layers = [payload metadata];
-    inherit runtimeAudit;
-    platform = {
-      os = "linux";
-      architecture =
-        if pkgs.stdenv.hostPlatform.isAarch64
-        then "arm64"
-        else if pkgs.stdenv.hostPlatform.isx86_64
-        then "amd64"
-        else throw "K3s workload requires a supported Linux architecture";
-    };
+    inherit runtimeAudit abilityContract;
     referenceName = "aos.invalid/qualification:fixture";
     config = {
       entrypoint = ["${pkgs.coreutils}/bin/printf"];

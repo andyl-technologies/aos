@@ -12,6 +12,7 @@
   jq,
   iptables,
   ca-certificates,
+  ociTools,
 }: let
   programs = callPackage ./_k3s-addon-programs.nix {};
   traefik = callPackage ./_k3s-traefik.nix {};
@@ -21,15 +22,6 @@
     pkgs = {
       inherit mkDerivation fetchurl bash coreutils grep jq iptables;
     };
-  };
-  mkReferenceGraph = lib.build.referenceGraph {
-    inherit (buildPackages) mkDerivation coreutils jq;
-  };
-  oci = import ../containers/_aos-oci-backend/oci {
-    inherit lib;
-    inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
-    inherit mkReferenceGraph;
-    abilityContractValidator = buildPackages.aos-ability-contract-validator;
   };
   architecture =
     if stdenv.hostPlatform.isAarch64
@@ -49,11 +41,11 @@
   }: let
     reference = "aos.invalid/k3s/${name}";
     imageRoots = lib.unique (roots ++ [ca-certificates]);
-    payload = oci.mkClosureLayer {
+    payload = ociTools.mkClosureLayer {
       roots = imageRoots;
       pname = "k3s-${name}-payload";
     };
-    metadata = oci.mkRootMetadataLayer {
+    metadata = ociTools.mkRootMetadataLayer {
       pname = "k3s-${name}-metadata";
       storeLayers = [payload];
       directories =
@@ -81,8 +73,8 @@
         }
       ];
     };
-    runtimeAudit = import ../../lib/build/runtime-closure-audit.nix {
-      inherit lib name maxClosureMiB;
+    runtimeAudit = lib.build.runtimeClosureAudit {
+      inherit name maxClosureMiB;
       pkgs = buildPackages;
       roots = imageRoots;
       maxDevelopmentPayloadMiB = 1;
@@ -97,7 +89,7 @@
           && package ? module
           && package.contract.value.package_module != null)
         imageRoots);
-    abilityContract = oci.mkStaticAbilityContract {
+    abilityContract = ociTools.mkStaticAbilityContract {
       pname = "k3s-${name}-static-abilities";
       platform = {
         os = "linux";
@@ -117,7 +109,7 @@
       then root.src
       else [root.src])
     imageRoots);
-    image = oci.mkImageLayout {
+    image = ociTools.mkImageLayout {
       pname = "k3s-${name}-image";
       layers = [payload metadata];
       inherit runtimeAudit abilityContract;

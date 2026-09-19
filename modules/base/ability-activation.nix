@@ -109,7 +109,6 @@
       };
     };
   };
-  buildPkgs = pkgs.buildPackages;
   selectedArtifactBackend = config.aos.artifacts.backend;
   artifactBackend =
     if
@@ -123,13 +122,9 @@
     abi = pkgs.stdenv.hostPlatform.constraints.abi;
     features = pkgs.stdenv.hostPlatform.constraints.features;
   };
-  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
-    inherit lib;
-    inherit (buildPkgs) mkDerivation coreutils jq;
-  };
   staticAbilityContractBuild = artifactBackend.buildStaticContract {
-    inherit lib targetPlatform mkReferenceGraph;
-    buildPackages = buildPkgs;
+    inherit lib targetPlatform;
+    inherit (pkgs) ociTools;
     pname = "aos-host-static-abilities";
     artifactClass = "bootable";
     executionStage = "host";

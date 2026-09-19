@@ -4,34 +4,36 @@
   initrdAbilityEvaluation,
   initrdStaticContract,
   lib,
-  packageArtifactFor,
+  artifacts,
+  systemdArtifact,
 }: buildContext: let
-  packageOutput = package: lib.abilities.packageOutput {inherit package;};
-  artifactFor = package: packageArtifactFor (packageOutput package);
   runtimePackages = {
-    bash = artifactFor "bash";
-    coreutils = artifactFor "coreutils";
-    cpio = artifactFor "cpio";
-    cryptsetup = artifactFor "cryptsetup";
-    e2fsprogs = artifactFor "e2fsprogs";
-    findutils = artifactFor "findutils";
-    gawk = artifactFor "gawk";
-    gptfdisk = artifactFor "gptfdisk";
-    grep = artifactFor "grep";
-    iproute2 = artifactFor "iproute2";
-    jq = artifactFor "jq";
-    kmod = artifactFor "kmod";
-    less = artifactFor "less";
-    systemd = packageArtifactFor (lib.abilities.packageOutput {});
-    util-linux = artifactFor "util-linux";
-    zstd = artifactFor "zstd";
+    inherit
+      (artifacts)
+      bash
+      coreutils
+      cpio
+      cryptsetup
+      e2fsprogs
+      findutils
+      gawk
+      gptfdisk
+      grep
+      iproute2
+      jq
+      kmod
+      less
+      util-linux
+      zstd
+      ;
+    systemd = systemdArtifact;
   };
-  providerPackage = artifactFor "aos-systemd-provider";
+  providerPackage = artifacts.aos-systemd-provider;
   rendererPackages =
     runtimePackages
     // {
       inherit (buildContext) runCommand writeTextFile;
-      sed = artifactFor "sed";
+      inherit (artifacts) sed;
     };
   systemdLib = import ./render.nix {
     inherit lib;
@@ -76,14 +78,10 @@
       && (selectedArtifactBackend._type or null) == "aos-package-artifact-backend"
     then selectedArtifactBackend
     else throw "systemd initrd requires one selected package-owned artifact backend";
-  mkReferenceGraph = lib.build.referenceGraph {
-    inherit (buildContext) mkDerivation;
-    inherit (buildContext.buildTools) coreutils jq;
-  };
   staticContractBuild = artifactBackend.buildStaticContract {
-    inherit lib mkReferenceGraph;
+    inherit lib;
     inherit (buildContext) targetPlatform;
-    buildPackages = buildContext.buildTools;
+    inherit (buildContext) ociTools;
     pname = "aos-initrd-static-abilities";
     artifactClass = "bootable";
     executionStage = "initrd";

@@ -55,16 +55,6 @@
     else
       throw
       "aos-oci-backend does not support target ${targetPlatform.cpu}-${targetPlatform.os}";
-  mkOci = {
-    lib,
-    buildPackages,
-    mkReferenceGraph,
-  }:
-    import ./oci {
-      inherit lib mkReferenceGraph;
-      inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
-      abilityContractValidator = buildPackages.aos-ability-contract-validator;
-    };
   selectedBackendOutput =
     config.aos.abilities.compositionOutputs.${selectedBinding.binding.request}.artifact-reference.value
     or null;
@@ -73,12 +63,8 @@
     name = "oci";
     package = packageArtifactFor backendArtifact;
 
-    buildStaticContract = args: let
-      oci = mkOci {
-        inherit (args) lib buildPackages mkReferenceGraph;
-      };
-    in
-      oci.mkStaticAbilityContract {
+    buildStaticContract = args:
+      args.ociTools.mkStaticAbilityContract {
         inherit
           (args)
           pname
@@ -101,11 +87,7 @@
         platform = platformFor args.targetPlatform;
       };
 
-    buildContainer = args: let
-      oci = mkOci {
-        inherit (args) lib buildPackages mkReferenceGraph;
-      };
-    in
+    buildContainer = args:
       import ./container/build.nix {
         buildPkgs = args.buildPackages;
         inherit
@@ -118,7 +100,7 @@
           definitionAttribute
           ;
         packageProjections = packageProjectionsFor args.container.packageRoots;
-        inherit oci;
+        oci = args.pkgs.ociTools;
       };
   };
   backendProjectionReady =
