@@ -714,12 +714,12 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     }
 
     let mut seed_set = load_host_selection(cmd, &prepared)?;
-    for legacy_seed in load_seed_set(cmd.desired.as_deref())? {
+    for desired_package in load_desired_packages(cmd.desired.as_deref())? {
         if !seed_set
             .iter()
-            .any(|member| member.package == legacy_seed.package)
+            .any(|member| member.package == desired_package.package)
         {
-            seed_set.push(legacy_seed);
+            seed_set.push(desired_package);
         }
     }
 
@@ -2253,12 +2253,12 @@ fn load_host_selection_in(
         .collect())
 }
 
-/// Load seed package names from a `desired.toml`, as bare working-set members.
+/// Loads package names from `desired.toml` as working-set members.
 ///
-/// Only the top-level `packages` array is read; seed config-module metadata
-/// (package module artifacts, ABI bands) is discovered by the loop, so seeds carry no
-/// package module artifact here.
-fn load_seed_set(desired: Option<&Path>) -> Result<Vec<WorkingSetMember>> {
+/// Only the top-level `packages` array is read. The authenticated package
+/// contracts and module artifacts are attached before the fixed-point
+/// evaluation begins.
+fn load_desired_packages(desired: Option<&Path>) -> Result<Vec<WorkingSetMember>> {
     let Some(path) = desired else {
         return Ok(Vec::new());
     };
