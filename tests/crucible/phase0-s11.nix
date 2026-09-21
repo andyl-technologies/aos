@@ -195,146 +195,130 @@
           }
           SMP_C
 
-          cc -std=c11 -O2 -pthread smp-contended.c -o "$out/bin/smp-contended"
+          cc -static -std=c11 -O2 -pthread smp-contended.c -o "$out/bin/smp-contended"
+          if readelf -l "$out/bin/smp-contended" | grep -q INTERP; then
+            echo "S11 workload unexpectedly requires a dynamic interpreter" >&2
+            exit 1
+          fi
         '';
       }
     ];
   };
 
-  rebootHelper = pkgs.mkDerivation {
-    pname = "crucible-phase0-s11-reboot";
+  initramfs = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-initramfs";
     version = "0";
     src = null;
 
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.cpio
+      pkgs.pigz
+    ];
+
     phases = [
       {
-        name = "build-reboot-helper";
+        name = "build-initramfs";
         script = ''
-          mkdir -p "$out/bin"
+          set -eu
 
-          cat > reboot.c <<'REBOOT_C'
+          mkdir -p root/bin root/dev root/proc root/sys root/tmp
+          cp ${workload}/bin/smp-contended root/bin/smp-contended
+
+          cat > s11-init.c <<'INIT_C'
+          #define _GNU_SOURCE
+
+          #include <errno.h>
           #include <stdio.h>
           #include <sys/reboot.h>
+          #include <sys/types.h>
+          #include <sys/wait.h>
           #include <unistd.h>
 
+          enum {
+            SUSTAIN_WORKLOAD = ${
+            if stopAt == null
+            then "0"
+            else "1"
+          }
+          };
+
           int main(void) {
+            int status;
+            pid_t child;
+
+            puts("CRUCIBLE_S11_READY");
+            fflush(stdout);
+
+            child = fork();
+            if (child < 0) {
+              perror("fork");
+              puts("TEST_RESULT:FAIL");
+              return 1;
+            }
+            if (child == 0) {
+              if (SUSTAIN_WORKLOAD) {
+                execl(
+                  "/bin/smp-contended",
+                  "smp-contended",
+                  "--sustain",
+                  (char *)0);
+              } else {
+                execl("/bin/smp-contended", "smp-contended", (char *)0);
+              }
+              perror("exec smp-contended");
+              _exit(127);
+            }
+
+            while (waitpid(child, &status, 0) < 0) {
+              if (errno != EINTR) {
+                perror("waitpid");
+                puts("TEST_RESULT:FAIL");
+                return 1;
+              }
+            }
+
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+              puts("TEST_RESULT:PASS");
+            } else {
+              puts("TEST_RESULT:FAIL");
+            }
+            fflush(stdout);
+
             sync();
+            usleep(500000);
             if (reboot(RB_AUTOBOOT) != 0) {
               perror("reboot");
               return 1;
             }
             return 0;
           }
-          REBOOT_C
+          INIT_C
 
-          cc reboot.c -o "$out/bin/s11-reboot"
+          cc -static -std=c11 -O2 s11-init.c -o root/init
+          strip root/init
+          if readelf -l root/init | grep -q INTERP; then
+            echo "S11 init unexpectedly requires a dynamic interpreter" >&2
+            exit 1
+          fi
+
+          mkdir -p "$out"
+          (
+            cd root
+            find . -print0 \
+              | LC_ALL=C sort -z \
+              | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
+              | pigz -9 -n -p "''${NIX_BUILD_CORES:-1}" > "$out/initrd.img"
+          )
         '';
       }
     ];
-  };
 
-  initramfs = let
-    initramfsDeps = [
-      pkgs.bash
-      pkgs.coreutils
-      workload
-      rebootHelper
-    ];
-    depPaths = builtins.concatStringsSep ":" (
-      builtins.concatMap (
-        dep: let
-          base = builtins.toString dep;
-        in [
-          "${base}/bin"
-          "${base}/sbin"
-        ]
-      )
-      initramfsDeps
-    );
-    graphPairs =
-      lib.concatLists
-      (lib.imap (i: dep: [
-          "closure-${builtins.toString i}"
-          dep
-        ])
-        initramfsDeps);
-  in
-    pkgs.mkDerivation {
-      pname = "crucible-phase0-s11-initramfs";
-      version = "0";
-      src = null;
-
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.findutils
-        pkgs.cpio
-        pkgs.pigz
-      ];
-
-      exportReferencesGraph = graphPairs;
-
-      phases = [
-        {
-          name = "build-initramfs";
-          script = ''
-            set -eu
-
-            grep -h '^/nix/store/' closure-* | sort -u > closure-paths
-
-            mkdir -p root/bin root/sbin root/nix/store root/tmp root/proc root/sys root/dev root/run
-            while IFS= read -r p; do
-              cp -a "$p" root"$p"
-            done < closure-paths
-
-            ln -sfn ${pkgs.bash}/bin/bash root/bin/sh
-            ln -sfn ${pkgs.bash}/bin/bash root/bin/bash
-            ln -sfn ${rebootHelper}/bin/s11-reboot root/sbin/reboot
-
-            cat > root/init <<'INIT'
-            #!${pkgs.bash}/bin/bash
-            export PATH="/bin:/sbin:${depPaths}"
-            export HOME=/tmp
-
-            echo "CRUCIBLE_S11_READY"
-            test_result=0
-            if [ "${
-              if stopAt == null
-              then "0"
-              else "1"
-            }" -eq 1 ]; then
-              smp-contended --sustain || test_result=1
-            else
-              smp-contended || test_result=1
-            fi
-
-            if [ "$test_result" -eq 0 ]; then
-              echo 'TEST_RESULT:PASS'
-            else
-              echo 'TEST_RESULT:FAIL'
-            fi
-
-            sync
-            sleep 0.5
-            reboot
-            INIT
-            chmod +x root/init
-
-            mkdir -p "$out"
-            (
-              cd root
-              find . -print0 \
-                | LC_ALL=C sort -z \
-                | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
-                | pigz -9 -n -p "''${NIX_BUILD_CORES:-1}" > "$out/initrd.img"
-            )
-          '';
-        }
-      ];
-
-      meta = {
-        description = "Crucible Phase 0 S11 diskless initramfs";
-      };
+    meta = {
+      description = "Crucible Phase 0 S11 diskless initramfs";
     };
+  };
 in
   assert runTimeoutSeconds > 60;
     pkgs.mkDerivation {

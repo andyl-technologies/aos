@@ -1,4 +1,4 @@
-From e8dbfae70173c550bf06ceed994783e2b4132adc Mon Sep 17 00:00:00 2001
+From 460d15bba8cc2c2e83f18b57abdb27af518e7709 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -29660,10 +29660,10 @@ index c7f388f487d7057665c5fd03e723ea4c62c0daed..9271adc4e4682deddd4ff60a3ac86308
  void ram_block_notifier_remove(RAMBlockNotifier *n);
  void ram_block_notify_add(void *host, size_t size, size_t max_size);
 diff --git a/include/system/replay.h b/include/system/replay.h
-index 3b00386821b6b99c8f4d88a85ffc36d8ffd773f7..54c54229aa2a7e85e8b81beaf51f28b355f4c36a 100644
+index 3b00386821b6b99c8f4d88a85ffc36d8ffd773f7..c62bf27bc5c259136634b3aa6f7a34fc3bcf67af 100644
 --- a/include/system/replay.h
 +++ b/include/system/replay.h
-@@ -51,13 +51,15 @@ extern char *replay_snapshot;
+@@ -51,13 +51,16 @@ extern char *replay_snapshot;
  /* Replay locking
   *
   * The locks are needed to protect the shared structures and log file
@@ -29678,6 +29678,7 @@ index 3b00386821b6b99c8f4d88a85ffc36d8ffd773f7..54c54229aa2a7e85e8b81beaf51f28b3
   */
  
 +void replay_mutex_enable(void);
++bool replay_mutex_locked(void);
  void replay_mutex_lock(void);
  void replay_mutex_unlock(void);
  
@@ -80133,17 +80134,22 @@ index 4839f2b63213898461922c9d5e6fcd3c7704c2f7..78572a8afb905b4bb44b35ae8787a827
          qemu_mutex_lock(&lock);
          ++mutex_head;
 diff --git a/replay/replay-internal.h b/replay/replay-internal.h
-index 42c393542eb3151564c62a7383788502782d4b2f..a48f6800a3191ef44bf124bfe150a70fa4317b7e 100644
+index 42c393542eb3151564c62a7383788502782d4b2f..3e0dfcd42de4cf86aaa07127efd77c21000b139a 100644
 --- a/replay/replay-internal.h
 +++ b/replay/replay-internal.h
-@@ -125,7 +125,6 @@ void replay_get_array_alloc(uint8_t **buf, size_t *size);
- /* Mutex functions for protecting replay log file and ensuring
-  * synchronisation between vCPU and main-loop threads. */
+@@ -122,12 +122,6 @@ int64_t replay_get_qword(void);
+ void replay_get_array(uint8_t *buf, size_t *size);
+ void replay_get_array_alloc(uint8_t **buf, size_t *size);
  
+-/* Mutex functions for protecting replay log file and ensuring
+- * synchronisation between vCPU and main-loop threads. */
+-
 -void replay_mutex_init(void);
- bool replay_mutex_locked(void);
- 
+-bool replay_mutex_locked(void);
+-
  /*! Checks error status of the file. */
+ void replay_check_error(void);
+ 
 diff --git a/replay/replay.c b/replay/replay.c
 index 14437b32566b71f2b889215be45eaef22a93b781..d3119bb7d0d49faea64333604c20b8526dbbe013 100644
 --- a/replay/replay.c
@@ -80365,10 +80371,10 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..e61cdff16c13ef33899dd2ff3322df7d
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5edee23b70d8bd170c2b984568f4e804672..3ba597fe5afbc18fad05ab6bd8fbf18cfae8ef1b 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a1868fd61 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
-@@ -25,6 +25,7 @@
+@@ -25,11 +25,13 @@
  #include "qemu/osdep.h"
  #include "monitor/monitor.h"
  #include "qemu/coroutine-tls.h"
@@ -80376,7 +80382,13 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..3ba597fe5afbc18fad05ab6bd8fbf18c
  #include "qapi/error.h"
  #include "qapi/qapi-commands-machine.h"
  #include "qapi/qapi-commands-misc.h"
-@@ -318,6 +319,9 @@ static int do_vm_stop(RunState state, bool send_stop)
+ #include "qapi/qapi-events-run-state.h"
+ #include "qapi/qmp/qerror.h"
++#include "exec/icount.h"
+ #include "exec/gdbstub.h"
+ #include "accel/accel-cpu-ops.h"
+ #include "system/hw_accel.h"
+@@ -318,6 +320,9 @@ static int do_vm_stop(RunState state, bool send_stop)
       */
      ret |= bdrv_flush_all();
      trace_vm_stop_flush_all(ret);
@@ -80386,7 +80398,36 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..3ba597fe5afbc18fad05ab6bd8fbf18c
  
      return ret;
  }
-@@ -506,6 +510,12 @@ void qemu_cpu_kick(CPUState *cpu)
+@@ -438,7 +443,28 @@ void qemu_init_cpu_loop(void)
+ 
+ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
+ {
++    bool handoff_replay = !qemu_cpu_is_self(cpu) &&
++        icount_crucible_rr_switch_quantum() != 0 &&
++        replay_mutex_locked();
++
++    /*
++     * Finite-quantum RR uses replay as the fair dispatch token.  A main-loop
++     * caller that retains it while do_run_on_cpu() drops the BQL can wait on
++     * qemu_work_cond while the target RR thread waits for replay, preventing
++     * that thread from draining the queued work.  The BQL remains held until
++     * do_run_on_cpu() publishes that work, so the target cannot pass it after
++     * acquiring replay.  Yield the token for exactly the synchronous CPU
++     * handoff, then restore replay-before-BQL ordering.
++     */
++    if (handoff_replay) {
++        replay_mutex_unlock();
++    }
+     do_run_on_cpu(cpu, func, data, &bql);
++    if (handoff_replay) {
++        bql_unlock();
++        replay_mutex_lock();
++        bql_lock();
++    }
+ }
+ 
+ static void qemu_cpu_stop(CPUState *cpu, bool exit)
+@@ -506,6 +532,12 @@ void qemu_cpu_kick(CPUState *cpu)
      } else { /* default */
          cpus_kick_thread(cpu);
      }
@@ -80399,7 +80440,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..3ba597fe5afbc18fad05ab6bd8fbf18c
  }
  
  void qemu_cpu_kick_self(void)
-@@ -611,6 +621,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
+@@ -611,6 +643,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
      qemu_cond_signal(&qemu_cpu_cond);
  }
  
@@ -80421,7 +80462,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..3ba597fe5afbc18fad05ab6bd8fbf18c
  void cpu_pause(CPUState *cpu)
  {
      if (qemu_cpu_is_self(cpu)) {
-@@ -683,11 +708,34 @@ void resume_all_vcpus(void)
+@@ -683,11 +730,34 @@ void resume_all_vcpus(void)
      }
  }
  
@@ -80456,7 +80497,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..3ba597fe5afbc18fad05ab6bd8fbf18c
      bql_unlock();
      qemu_thread_join(cpu->thread);
      bql_lock();
-@@ -768,6 +816,10 @@ int vm_prepare_start(bool step_pending)
+@@ -768,6 +838,10 @@ int vm_prepare_start(bool step_pending)
      RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
      RunState requested;
  
@@ -80467,7 +80508,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..3ba597fe5afbc18fad05ab6bd8fbf18c
      qemu_vmstop_requested(&requested);
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
          return -1;
-@@ -797,9 +849,11 @@ int vm_prepare_start(bool step_pending)
+@@ -797,9 +871,11 @@ int vm_prepare_start(bool step_pending)
      runstate_set(state);
      vm_state_notify(1, state);
      vm_was_suspended = false;
@@ -80479,7 +80520,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..3ba597fe5afbc18fad05ab6bd8fbf18c
  void vm_start(void)
  {
      if (!vm_prepare_start(false)) {
-@@ -928,4 +982,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -928,4 +1004,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }
@@ -92489,10 +92530,10 @@ index 0000000000000000000000000000000000000000..1e727093ffc2f3fb50186183e3ee1671
 +    main()
 diff --git a/tests/qtest/crucible-idle-wait-liveness.py b/tests/qtest/crucible-idle-wait-liveness.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f295668d00
+index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad4937ccb3
 --- /dev/null
 +++ b/tests/qtest/crucible-idle-wait-liveness.py
-@@ -0,0 +1,1781 @@
+@@ -0,0 +1,1891 @@
 +# Copyright (c) Andyl, Inc.
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises Crucible's idle futex bridge through live sim-RR QMP work."""
@@ -92519,6 +92560,7 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +TIME_ADVANCE_VCPU_COUNT = 4
 +CONTROL_BOUNDARY_RUNS = 8
 +TIME_ADVANCE_REENTRY_RUNS = 16
++CONTROL_TIME_ADVANCE_RUNS = 16
 +HOTPLUG_SHUTDOWN_RUNS = 64
 +LATE_CEILING_RUNS = 64
 +EXACT_BOUNDARY_RUNS = 16
@@ -92573,6 +92615,7 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +        dispatch_ceiling=None,
 +        vmstop_at_observer=None,
 +        time_advance_target=None,
++        control_time_advance_target=None,
 +        control_nonfirst_wait=False,
 +        control_at_first_dispatch=False,
 +        active_host_ready=False,
@@ -92636,6 +92679,11 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +                    else ""
 +                )
 +                + (
++                    f",control-time-advance-target={control_time_advance_target}"
++                    if control_time_advance_target is not None
++                    else ""
++                )
++                + (
 +                    ",control-nonfirst-wait=true"
 +                    if control_nonfirst_wait
 +                    else ""
@@ -92654,7 +92702,10 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +            command.extend(["-plugin", plugin_options])
 +        if dispatch_ceiling is not None:
 +            command.extend(["-trace", "crucible_sim_rr_dispatch_ceiling_wait"])
-+        if time_advance_target is not None:
++        if (
++            time_advance_target is not None or
++            control_time_advance_target is not None
++        ):
 +            command.extend([
 +                "-trace", "crucible_sim_determinism_timer",
 +                "-trace", "crucible_sim_determinism_idle",
@@ -92882,6 +92933,15 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +            )
 +            del self.marker_buffer[:17]
 +            return ("advance", (status, target))
++        if self.marker_buffer[:1] == b"Q" and len(self.marker_buffer) >= 13:
++            status = int.from_bytes(
++                self.marker_buffer[1:5], byteorder=sys.byteorder, signed=True
++            )
++            icount = int.from_bytes(
++                self.marker_buffer[5:13], byteorder=sys.byteorder
++            )
++            del self.marker_buffer[:13]
++            return ("control-work", (status, icount))
 +        if self.marker_buffer[:1] == b"E":
 +            del self.marker_buffer[:1]
 +            return ("ordering-error", None)
@@ -93689,6 +93749,85 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +    )
 +
 +
++def run_control_time_advance_test(qemu, plugin, bios):
++    target = 1_000_000_000
++    busy_bios = bytearray(open(bios, "rb").read())
++    busy_bios[-16:-13] = bytes((0xFA, 0xEB, 0xFD))
++    with tempfile.NamedTemporaryFile(
++        prefix="control-time-advance-bios-"
++    ) as bios_file:
++        bios_file.write(busy_bios)
++        bios_file.flush()
++        live = LiveQemu(
++            qemu,
++            plugin,
++            bios_file.name,
++            control_time_advance_target=target,
++            control_at_first_dispatch=True,
++            rr_switch_quantum=RR_SWITCH_QUANTUM,
++            x86_smp="1,maxcpus=1",
++        )
++
++    try:
++        if live.marker() != ("work", 0):
++            raise AssertionError("control time advance omitted vCPU setup")
++
++        deadline = time.monotonic() + TIMEOUT_SECONDS
++        control = None
++        work = None
++        completion = None
++        while completion is None:
++            event = live.marker(deadline)
++            if event[0] == "control":
++                if control is not None:
++                    raise AssertionError(
++                        f"control time advance repeated its boundary: {event!r}"
++                    )
++                control = event[1]
++            elif event[0] == "control-work":
++                if control is None or work is not None:
++                    raise AssertionError(
++                        "synchronous control work crossed its control boundary: "
++                        f"control={control!r} work={event!r}"
++                    )
++                work = event[1]
++            elif event[0] == "advance":
++                if work is None:
++                    raise AssertionError(
++                        "time advance completed before synchronous control work"
++                    )
++                completion = event[1]
++            elif event[0] == "park" or (
++                event[0] == "result" and event[1] == 9
++            ):
++                continue
++            else:
++                raise AssertionError(
++                    f"unexpected control time-advance marker: {event!r}"
++                )
++
++        control_icount, generation = control
++        work_status, work_icount = work
++        if generation != 1 or work_status != 0 or work_icount != control_icount:
++            raise AssertionError(
++                "synchronous control work changed its exact RR coordinate: "
++                f"control={control!r} work={work!r}"
++            )
++        if completion != (0, target):
++            raise AssertionError(
++                f"unexpected control time-advance completion: {completion!r}"
++            )
++        status = live.qmp("query-status", deadline=deadline)
++        if status != {"status": "running", "running": True}:
++            raise AssertionError(
++                f"main loop did not survive synchronous RR work: {status!r}"
++            )
++    finally:
++        live.close()
++
++    return control_icount, work_icount, completion[1]
++
++
 +def run_hlt_at_ceiling_test(qemu, plugin, bios):
 +    live = LiveQemu(
 +        qemu,
@@ -94112,6 +94251,10 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +        run_time_advance_reentry_test(args.qemu, args.plugin, args.bios)
 +        for _ in range(TIME_ADVANCE_REENTRY_RUNS)
 +    ]
++    control_time_advance_results = [
++        run_control_time_advance_test(args.qemu, args.plugin, args.bios)
++        for _ in range(CONTROL_TIME_ADVANCE_RUNS)
++    ]
 +    hlt_boundary_results = [
 +        run_hlt_at_ceiling_test(args.qemu, args.plugin, args.bios)
 +        for _ in range(EXACT_BOUNDARY_RUNS)
@@ -94182,6 +94325,11 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +            "time-advance completion evidence varied: "
 +            f"{completion_records!r}"
 +        )
++    if len(set(control_time_advance_results)) != 1:
++        raise AssertionError(
++            "synchronous control time-advance coordinates varied: "
++            f"{control_time_advance_results!r}"
++        )
 +    if len(set(hlt_boundary_results)) != 1:
 +        raise AssertionError(
 +            f"HLT-at-ceiling events varied: {hlt_boundary_results!r}"
@@ -94228,6 +94376,9 @@ index 0000000000000000000000000000000000000000..8b687ebd83e1d5f2937aaf43a575f2f2
 +    print(f"time_advance_direct_reentry_runs={TIME_ADVANCE_REENTRY_RUNS}")
 +    print("time_advance_reentry_order=work,advance,park")
 +    print("time_advance_global_virtual_timer_owner=rr")
++    print(f"control_time_advance_runs={CONTROL_TIME_ADVANCE_RUNS}")
++    print("control_time_advance_sync_work_returned=true")
++    print("control_time_advance_raw_icount_unchanged=true")
 +    print(f"hlt_at_ceiling_runs={len(hlt_boundary_results)}")
 +    print("hlt_at_ceiling_dispatches=1")
 +    print(f"vmstop_at_ceiling_runs={len(vmstop_boundary_results)}")
@@ -94877,10 +95028,10 @@ index 0000000000000000000000000000000000000000..c1633c777c0c92a8f353bddd70b8de45
 +}
 diff --git a/tests/tcg/plugins/crucible-idle-wait-liveness.c b/tests/tcg/plugins/crucible-idle-wait-liveness.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4f9791f3021df5ed1e8f6c84923f125ab953a9d
+index 0000000000000000000000000000000000000000..38e826043fb58ce05b1201e6c7e16eefa5b6b459
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-idle-wait-liveness.c
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,322 @@
 +/*
 + * Crucible idle-wait liveness test plugin
 + *
@@ -94909,6 +95060,7 @@ index 0000000000000000000000000000000000000000..b4f9791f3021df5ed1e8f6c84923f125
 +static _Atomic bool control_nonfirst_owner_published;
 +static _Atomic bool control_nonfirst_arm_observed;
 +static _Atomic bool control_at_first_dispatch_requested;
++static _Atomic bool control_time_advance_requested;
 +static _Atomic uint32_t active_host_ready_dispatches;
 +
 +struct SharedState {
@@ -94924,6 +95076,7 @@ index 0000000000000000000000000000000000000000..b4f9791f3021df5ed1e8f6c84923f125
 +static bool dispatch_ceiling_mode;
 +static uint64_t observer_vmstop_icount = UINT64_MAX;
 +static uint64_t time_advance_target = UINT64_MAX;
++static uint64_t control_time_advance_target = UINT64_MAX;
 +static bool control_at_first_dispatch;
 +static bool active_host_ready;
 +static int marker_fd = -1;
@@ -95051,6 +95204,22 @@ index 0000000000000000000000000000000000000000..b4f9791f3021df5ed1e8f6c84923f125
 +    memcpy(&marker[9], &generation, sizeof(generation));
 +    write_marker(marker, sizeof(marker));
 +    atomic_store_explicit(&control_observed, true, memory_order_release);
++    if (control_time_advance_target != UINT64_MAX &&
++        !atomic_exchange_explicit(&control_time_advance_requested, true,
++                                  memory_order_acq_rel)) {
++        int32_t status = qemu_plugin_advance_time_ns(
++            (int64_t)control_time_advance_target);
++        uint64_t completion_icount = qemu_plugin_icount_raw();
++        char completion[13] = {'Q'};
++
++        memcpy(&completion[1], &status, sizeof(status));
++        memcpy(&completion[5], &completion_icount,
++               sizeof(completion_icount));
++        write_marker(completion, sizeof(completion));
++        if (status != 0) {
++            _exit(95);
++        }
++    }
 +}
 +
 +static void publish_icount_callback(uint64_t icount, void *userdata)
@@ -95147,6 +95316,9 @@ index 0000000000000000000000000000000000000000..b4f9791f3021df5ed1e8f6c84923f125
 +            observer_vmstop_icount = strtoull(argv[index] + 19, NULL, 0);
 +        } else if (strncmp(argv[index], "time-advance-target=", 20) == 0) {
 +            time_advance_target = strtoull(argv[index] + 20, NULL, 0);
++        } else if (strncmp(argv[index], "control-time-advance-target=",
++                           28) == 0) {
++            control_time_advance_target = strtoull(argv[index] + 28, NULL, 0);
 +        } else if (strcmp(argv[index], "active-host-ready=true") == 0) {
 +            active_host_ready = true;
 +        } else if (strcmp(argv[index],
@@ -95175,7 +95347,8 @@ index 0000000000000000000000000000000000000000..b4f9791f3021df5ed1e8f6c84923f125
 +    qemu_plugin_register_vcpu_idle_resume_cb(idle_callback, resume_callback,
 +                                             NULL);
 +    qemu_plugin_register_control_boundary_cb(control_callback, NULL);
-+    if (time_advance_target != UINT64_MAX &&
++    if ((time_advance_target != UINT64_MAX ||
++         control_time_advance_target != UINT64_MAX) &&
 +        qemu_plugin_register_time_advance_cb(time_advance_callback, NULL) != 0) {
 +        return -1;
 +    }
@@ -103799,10 +103972,10 @@ index 0000000000000000000000000000000000000000..118d1778a4dc88077a56e15648cf174a
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..eac665718a0a21cc700e4c31d513007d4c0ae841
+index 0000000000000000000000000000000000000000..fc75645df2e1ca7c76d293c845fa61f6d209df49
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-child.c
-@@ -0,0 +1,3195 @@
+@@ -0,0 +1,3197 @@
 +/*
 + * Crucible hot-fork child resource disposition tests
 + *
@@ -106921,6 +107094,8 @@ index 0000000000000000000000000000000000000000..eac665718a0a21cc700e4c31d513007d
 +
 +int main(int argc, char **argv)
 +{
++    /* Match system startup before retained hot-fork owns RCU disposition. */
++    rcu_disable_atfork();
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/crucible/hot-fork-child/registry-rebuild",
 +                    test_child_registry_rebuild_preserves_parent);

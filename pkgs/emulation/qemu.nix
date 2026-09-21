@@ -2246,8 +2246,8 @@ in
                    r"time_advance_exit_retirement|"
                    r"time_advance_idle_callbacks|"
                    r"qemu_plugin_force_vcpu_exit", 0),
-                  ("idle qtest has seven scoped nonzero RR quantum cases",
-                   idle_test, r"rr_switch_quantum=RR_SWITCH_QUANTUM", 7),
+                  ("idle qtest has eight scoped nonzero RR quantum cases",
+                   idle_test, r"rr_switch_quantum=RR_SWITCH_QUANTUM", 8),
                   ("idle qtest has no global fixed RR quantum",
                    idle_test,
                    r'f"rr_switch_quantum=\{RR_SWITCH_QUANTUM\}"', 0),
