@@ -10,6 +10,7 @@
   llvm,
   binutils,
   nodejs,
+  openjdk,
   bash,
   coreutils,
   findutils,
@@ -49,6 +50,22 @@
     "rules_python++pip+v8_python_deps_314_jinja2_py3_none_any_85ece445" = "${pythonRepositories}/jinja2";
     "rules_python++pip+v8_python_deps_314_markupsafe_sdist_594c6780" = "${pythonRepositories}/markupsafe";
     "+pyodide+pyodide-314.0.0" = pyodide;
+  };
+
+  # Keep the dependency archive independent of the source-built tool outputs.
+  # The build phase restores these placeholders using the same map.
+  scrub = builtins.unsafeDiscardStringContext;
+  scrubMap = {
+    "${scrub python3}" = "__AOS_PYTHON__";
+    "${scrub bash}" = "__AOS_BASH__";
+    "${scrub binutils}" = "__AOS_BINUTILS__";
+    "${scrub openjdk}" = "__AOS_JDK__";
+    "${scrub nativeClang}" = "__AOS_CLANG_WRAPPER__";
+    "${scrub llvm}" = "__AOS_LLVM__";
+    "${scrub rust}" = "__AOS_RUST__";
+    "${scrub cargoBazel}" = "__AOS_CARGO_BAZEL__";
+    "${scrub stdenv.gcc}" = "__AOS_BOOTSTRAP_GCC__";
+    "${scrub stdenv.glibc}" = "__AOS_BOOTSTRAP_GLIBC__";
   };
 
   prepareSource = ''
@@ -98,6 +115,7 @@ in
         gnumake
         pkg-config
       ];
+      inherit scrubMap;
       populateBCR = false;
       depsHash = lib.fakeHash;
       bazelTarget = "//src/workerd/server:workerd";
@@ -106,7 +124,7 @@ in
           # The dependency snapshot owns repository contents. Bazel 9's shared
           # cache otherwise replaces them with temporary external symlinks.
           "--repo_contents_cache="
-          "--extra_toolchains=@protobuf//bazel/private/oss/toolchains:protoc_sources_toolchain"
+          "--extra_toolchains=@@protobuf+//bazel/private/oss/toolchains:protoc_sources_toolchain"
           "--@rules_python//python/config_settings:python_version=3.14"
           "--repo_env=CC=${nativeClang}/bin/clang"
         ]
@@ -114,6 +132,9 @@ in
 
       postPatch = prepareSource;
       fetchPostPatch = configureEnvironment;
+      postFetch = ''
+        ${python3}/bin/python3 ${./clean-bazel-tool-downloads.py} "$bazelOut/external"
+      '';
       preBazelBuild = prepareSource + configureEnvironment;
       bazelBuildFlags = [
         "-c opt"
