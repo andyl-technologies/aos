@@ -1,10 +1,12 @@
 # Implementation task ledger
 
-This ledger is the authoritative implementation coverage for RFC-0021. Every
-checked task is present in the integrated source tree and covered by its named
-qualification. Commit annotations identify the earliest substantial landing
-where useful; the complete signed branch history is authoritative for the
-final composition.
+This ledger tracks implementation coverage for RFC-0021. Checked tasks record
+the implementation claims accumulated below; they are not, by themselves,
+evidence that the production composition or its qualification is complete.
+The integration audit below identifies claims contradicted by the current
+entry points. Remaining claims require requirement-scoped verification before
+release. Commit annotations identify the earliest substantial landing where
+useful; current source and matching execution evidence determine completion.
 
 Task identifiers are stable. Dependencies in parentheses name tasks that must
 land first; `P0` probes may proceed in parallel with portable model work, but
@@ -125,7 +127,7 @@ they gate any affected runtime backend.
   effect ledger (`SBX-JRN-02`, `SBX-BPROTO-01`; `8eb2d4ee8`).
 - [x] **SBX-CTRL-02** Add crash injection at every record/effect boundary and
   prove convergence (`SBX-CTRL-01`; `ec3a23d4f`).
-- [x] **SBX-CTRL-03** Implement and package the unprivileged node controller,
+- [ ] **SBX-CTRL-03** Implement and package the unprivileged node controller,
   public client service, broker catalog publisher, assignment-plan compiler,
   and production reconciler loop (`SBX-CTRL-02`, `SBX-BPROTO-04`).
 - [x] **SBX-SD-01** Extend `aos-systemd` with typed transient sandbox unit,
@@ -275,7 +277,7 @@ they gate any affected runtime backend.
   preserve compatible protocol/format versions during rolling upgrades.
 - [x] **SBX-MULTI-04** Pass partitions, stale coordinator, lease expiry,
   interrupted transfer, missing dependency, and rolling-upgrade tests.
-- [x] **SBX-CLI-01** Add the complete `aos sandbox` command family over only the
+- [ ] **SBX-CLI-01** Add the complete `aos sandbox` command family over only the
   public client API.
 - [x] **SBX-CLI-02** Add tree/status/event views, structured output, stable exit
   behavior, and shell completions.
@@ -283,33 +285,55 @@ they gate any affected runtime backend.
   invoke the stable CLI and disclose no private daemon interface.
 - [x] **SBX-OBS-01** Add correlated operations, structured audit events,
   metrics, health, residual-resource inventory, and operator recovery tools.
-- [x] **SBX-GATE-01** Pass format/protocol compatibility, fuzz, property,
+- [ ] **SBX-GATE-01** Pass format/protocol compatibility, fuzz, property,
   adversarial security, VM, multi-architecture, performance, and hermeticity
   gates.
-- [x] **SBX-GATE-02** Publish migration, rollback, operations, and threat-model
+- [ ] **SBX-GATE-02** Publish migration, rollback, operations, and threat-model
   documentation and enable the production feature gate (`SBX-GATE-01`).
 
-## Final integrated implementation
+## Production integration audit
 
-The complete signed branch history implements every task above as one
-production composition. Its release qualification covers the public API and
-CLI, controller and protected broker paths, Host runtime and guest execution,
-Guardian fail-stop coupling, storage, mount, network, filesystem views,
-environments, publication and cache, lifecycle recovery, multi-node fencing,
-policy, observability, cross-architecture builds, protocol/ABI compatibility,
-licensing boundaries, image closure policy, and fail-closed boot behavior.
+The production composition is not complete. The following entry points make
+the outstanding work concrete:
 
-The aggregate `checks.qualification.all` and `checks.eval` derivations are the
-authoritative entry points for that composition. Focused fleet, ABI, licensing,
-portability, package, container, image, and SELinux checks remain independently
-addressable for diagnosis and release evidence.
+- `crates/aos-sandbox/src/controller_service.rs` constructs
+  `NodeController<UnavailableCompiler, UnavailableExecutor>`. Its worker
+  publishes authenticated inventory but rejects pending mutation work.
+  Replace those unavailable dependencies with the authenticated request
+  compiler and durable effect dispatcher, including restart recovery.
+- That service registers `DiscoveryService` and `OperationService` only.
+  Operation get, cancel, and watch return unavailable errors. Register and
+  connect the remaining public services to their authorized controller
+  handlers; protobuf declarations alone do not implement RPCs.
+- `crates/aos/src/commands/sandbox.rs::run` supports local completions and
+  discovery. Other command families use `DormantValidatedRequestSinkV1` and
+  return `TransportRejected`. Connect those commands to the authenticated
+  public API, including operation waits, structured output, watch, and the
+  separately authorized execution data plane.
+- The root-only diagnostic socket is not a project authentication mechanism.
+  Production activation must preserve holder-bound sessions, current protected
+  authorization, broker audience binding, ownership fencing, and independent
+  Guardian enforcement. An opaque client authorization context or local UID
+  must not substitute for those proofs.
+
+Completion requires exercising the packaged CLI and daemon through the real
+public endpoints and protected brokers for every requested lifecycle,
+execution, view, snapshot, capability, cache, and operator path. Test doubles
+and dormant composition tests remain useful component evidence, but cannot
+establish that these production connections exist.
+
+`checks.qualification.all` and `checks.eval` are regression entry points, not
+blanket proof of RFC completion or release admission. Match each required
+security, VM, architecture, performance, ABI, licensing, and release gate to
+its actual test scope and successful evidence for the candidate source.
+Focused checks remain independently addressable for diagnosis and evidence.
 
 ## Historical implementation record
 
 The entries below preserve how the implementation accumulated. Statements
-about work being incomplete describe their source snapshot only and are
-superseded by the final integrated implementation above. Git history remains
-authoritative for code details.
+about completion or incompleteness describe their source snapshot only;
+neither overrides the current entry points or qualification evidence. Git
+history remains authoritative for code details.
 
 - `f48a7ad4e` — `SBX-P0-03`: hermetic architecture-neutral probes for the
   pidfd family, `openat2`, `open_tree`, `open_tree_attr`, `move_mount`,
