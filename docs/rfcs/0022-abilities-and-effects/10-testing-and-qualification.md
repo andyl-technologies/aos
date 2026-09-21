@@ -43,12 +43,12 @@ all others. Preserve required builder features and use AOS-built tools and
 shells. Test infrastructure may orchestrate these paths without depending on
 the ability runtime under test for its own recovery channel.
 
-Existing scenarios provide migration anchors. The
-[activation-failure test](../../../tests/fleet/apm-system-activation-fail.nix)
-exercises the current production commit/failed-unit behavior, while
+The
+[runtime module-composition scenario](../../../tests/fleet/runtime-module-composition.nix)
+exercises production commit and failed native activation behavior, while
 [generation GC](../../../tests/fleet/config-generation-gc-roots.nix) drives
-public APM operations and real collection. Extend their behavioral coverage
-when the new execution path replaces the old one.
+public APM operations and real collection. Both run through the structured
+execution path.
 
 The [qualification workload fixture](../../../tests/fleet/qualification-workload.nix)
 currently writes nginx configuration and controls a dedicated service directly.

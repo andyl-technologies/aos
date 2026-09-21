@@ -1,9 +1,10 @@
 # RFC-0022: Package abilities, typed consumption, and structured effects
 
-- **Status:** Proposed; implementation requires remediation. The checked model,
-  planning, execution, and inspection work does not yet satisfy the package,
-  provider-discovery, cutover, derivation, and single-source-of-truth rules in
-  the normative [target state](13-target-state.md).
+- **Status:** Implemented. The package/module cutover, checked model, planning,
+  execution, inspection, generated documentation, publication, and
+  qualification paths satisfy the normative [target state](13-target-state.md);
+  the owning mechanisms and executable evidence are recorded in the
+  [completion map](implementation-completeness.md).
 - **Date:** 2026-09-08.
 - **Audience:** package authors; maintainers of APM, AOS, APR, the Nix module
   system, systemd integration, boot and image construction, sandbox runtimes,
@@ -69,7 +70,7 @@ compensation, and checked activation of older generations. Scripts may
 implement individual operations, but do not hide the
 transaction's ordering or failure semantics.
 
-## Decisions proposed for acceptance
+## Accepted decisions
 
 1. Keep packages as distribution and authoring units; distinguish deployed
    instances, exported interfaces, requests, bindings, and concrete handles.

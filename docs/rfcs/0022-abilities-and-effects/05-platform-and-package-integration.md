@@ -53,11 +53,11 @@ alone does not select a manager. `After` ordering does not establish readiness
 or required-success behavior; those are separate dependencies in the plan.
 
 The renderer must know the target environment before adding host-only sandbox
-helpers or unit directives. Current host and initrd renderers are separate
-surfaces in [system.nix](../../../modules/systemd/system.nix) and
-[initrd.nix](../../../modules/systemd/initrd.nix). They should consume
-stage-specific bindings rather than generate one host contract and remove
-unsupported directives afterward.
+helpers or unit directives. The package-owned host and initrd surfaces in
+[system.nix](../../../pkgs/system/_systemd-abilities/platform/system.nix) and
+[initrd.nix](../../../pkgs/system/_systemd-abilities/platform/initrd.nix)
+consume stage-specific bindings instead of generating one host contract and
+removing unsupported directives afterward.
 
 There are two explicit container strategies:
 
@@ -133,9 +133,9 @@ credentials that it must itself unlock. Stage labels, initialization order,
 and bootstrap prerequisites are part of the contract.
 
 The [boot substrate](../../../modules/services/boot-substrate.nix) and
-[initrd builder](../../../modules/base/_initrd-builder.nix) already own
-staged mounts and artifact assembly. Model these relationships explicitly
-without inventing a second independent boot orchestrator.
+package-owned [initrd builder](../../../pkgs/system/_systemd-abilities/platform/_initrd-builder.nix)
+own staged mounts and artifact assembly. Their ability relationships are
+explicit, without a second independent boot orchestrator.
 
 Handoff preserves logical resource identities and defined durable state. It
 does not serialize pointers or blindly reuse a handle from another manager,
