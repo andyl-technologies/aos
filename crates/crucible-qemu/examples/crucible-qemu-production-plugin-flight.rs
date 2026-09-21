@@ -7,6 +7,8 @@
 //! recovery transition, exact settled write, and hot-fork preparation.
 //! Successful runs emit only typed shared-memory and node-level evidence.
 //! Native traces are retained only after clean reap.
+//! Setting `CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY=1` runs the
+//! block-recovery subflight alone for focused failure diagnosis.
 //!
 //! ```text
 //! crucible-qemu-production-plugin-flight QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_OUT
@@ -62,6 +64,8 @@ const READINESS_REPLY_CAPACITY: usize = 128;
 const FLIGHT_NODE_ID: &str = "plugin-flight-node";
 const SETUP_COMPLETE_MARKER: &str = "lifecycle.setup_complete";
 const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
+    "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 
 fn main() -> ExitCode {
     match run() {
@@ -112,6 +116,24 @@ fn run() -> Result<(), Box<dyn Error>> {
         Duration::from_secs(30),
     )?;
     let mut factory = LinuxQemuAttemptHostFactory::open(host)?;
+    if block_recovery_only_requested()? {
+        let evidence = block_recovery_hot_fork::run(
+            &mut factory,
+            qemu,
+            plugin,
+            kernel,
+            block_initrd,
+            firmware,
+            run_root,
+            true,
+        )?;
+
+        println!("PASS");
+        println!("diagnostic_mode=block-recovery-only");
+        print_block_recovery_evidence(evidence);
+        return Ok(());
+    }
+
     let selectable_catalog_plan = readiness_selectable_catalog_plan()?;
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_initrd(idle_initrd)
@@ -177,6 +199,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         block_initrd,
         firmware,
         run_root,
+        false,
     )?;
 
     println!("PASS");
@@ -296,7 +319,30 @@ fn run() -> Result<(), Box<dyn Error>> {
         reference.idle.timer_fire.reserved
     );
     println!("idle_wake_stream_restart_identical=true");
-    let hot_fork = block_recovery_hot_fork;
+    print_block_recovery_evidence(block_recovery_hot_fork);
+    println!("component_failures=0");
+    println!("per_vcpu_register_files_present=true");
+    println!("aggregate_icount_equals_target=true");
+    Ok(())
+}
+
+fn block_recovery_only_requested() -> Result<bool, Box<dyn Error>> {
+    let value = std::env::var_os(BLOCK_RECOVERY_ONLY_ENVIRONMENT);
+    parse_block_recovery_only(value.as_deref())
+}
+
+fn parse_block_recovery_only(value: Option<&std::ffi::OsStr>) -> Result<bool, Box<dyn Error>> {
+    match value {
+        None => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(value) => Err(format!(
+            "{BLOCK_RECOVERY_ONLY_ENVIRONMENT} must be unset or exactly 1, got {value:?}"
+        )
+        .into()),
+    }
+}
+
+fn print_block_recovery_evidence(hot_fork: block_recovery_hot_fork::BlockRecoveryHotForkEvidence) {
     println!("block_recovery_hot_fork_subflight=true");
     println!(
         "block_recovery_start_nanos={}",
@@ -319,10 +365,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     println!("hot_fork_template_draining=true");
     println!("hot_fork_template_prepared=true");
     println!("hot_fork_preparation_order=block-recovery-settled,draining,prepared");
-    println!("component_failures=0");
-    println!("per_vcpu_register_files_present=true");
-    println!("aggregate_icount_equals_target=true");
-    Ok(())
 }
 
 struct FlightRun {

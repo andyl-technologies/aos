@@ -90,6 +90,7 @@ pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
 pub const QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME: &str = "crucible-runtime-determinism.trace";
 pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
     "enable=crucible_sim_determinism_*";
+pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=crucible_sim_*";
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES: usize = 131_072;
 /// Stable QEMU chardev identifier for fork-time debug guest activation.
@@ -633,6 +634,7 @@ pub struct QemuLaunchCommandBuilder {
     debug_guest_activation_endpoint: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
+    runtime_liveness_trace: bool,
 }
 
 impl QemuLaunchCommandBuilder {
@@ -659,6 +661,7 @@ impl QemuLaunchCommandBuilder {
             debug_guest_activation_endpoint: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
+            runtime_liveness_trace: false,
         }
     }
 
@@ -748,6 +751,7 @@ impl QemuLaunchCommandBuilder {
     pub(crate) const fn with_rr_control_boundary_trace(mut self) -> Self {
         self.rr_control_boundary_trace = true;
         self.runtime_determinism_trace = false;
+        self.runtime_liveness_trace = false;
         self
     }
 
@@ -761,6 +765,20 @@ impl QemuLaunchCommandBuilder {
     pub(crate) const fn with_runtime_determinism_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
         self.runtime_determinism_trace = true;
+        self.runtime_liveness_trace = false;
+        self
+    }
+
+    /// Enables the fixed scheduler-liveness trace in the launch directory.
+    ///
+    /// This diagnostic adds main-loop poll and RR dispatch events to the
+    /// determinism trace. Its fixed wildcard covers only the six
+    /// `crucible_sim_*` events compiled into the patched QEMU binary.
+    #[must_use]
+    pub(crate) const fn with_runtime_liveness_trace(mut self) -> Self {
+        self.rr_control_boundary_trace = false;
+        self.runtime_determinism_trace = false;
+        self.runtime_liveness_trace = true;
         self
     }
 
@@ -852,7 +870,7 @@ impl QemuLaunchCommandBuilder {
         if self.rr_control_boundary_trace {
             resource_requirements = resource_requirements
                 .with_diagnostic_trace_bytes(MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES);
-        } else if self.runtime_determinism_trace {
+        } else if self.runtime_determinism_trace || self.runtime_liveness_trace {
             resource_requirements = resource_requirements
                 .with_diagnostic_trace_bytes(MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES);
         }
@@ -914,6 +932,13 @@ impl QemuLaunchCommandBuilder {
                 QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME.to_owned(),
                 "-trace".to_owned(),
                 QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION.to_owned(),
+            ]);
+        } else if self.runtime_liveness_trace {
+            args.extend([
+                "-D".to_owned(),
+                QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME.to_owned(),
+                "-trace".to_owned(),
+                QEMU_RUNTIME_LIVENESS_TRACE_SELECTION.to_owned(),
             ]);
         }
         validate_pre_spawn_qemu_launch_args(&args)

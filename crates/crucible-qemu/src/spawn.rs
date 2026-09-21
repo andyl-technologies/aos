@@ -8,7 +8,7 @@
 
 use std::ffi::CString;
 use std::fs::{self, File};
-use std::io::{self, Read, Write as _};
+use std::io::{self, Read, Seek, SeekFrom, Write as _};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -35,6 +35,9 @@ use crate::{
     QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD, QemuLaunchCommand,
     QemuNodeChild,
 };
+
+const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_BYTES: u64 = 60 * 1024;
+const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_LINES: usize = 512;
 
 mod materialization;
 pub(crate) use materialization::QemuProductionExactRestoreSource;
@@ -128,6 +131,14 @@ struct AttemptResourceBinding;
 struct PinnedFileIdentity {
     device: u128,
     inode: u128,
+}
+
+struct AuthenticatedDiagnosticTrace {
+    descriptor: OwnedFd,
+    metadata: rustix::fs::Stat,
+    identity: PinnedFileIdentity,
+    credentials: QemuChildCredentials,
+    bytes: u64,
 }
 
 impl PinnedFileIdentity {
@@ -418,6 +429,87 @@ impl QemuPreparedRunDirectory {
         )
     }
 
+    /// Retains the authenticated tail of an oversized scheduler-liveness trace.
+    ///
+    /// Unlike [`Self::retain_runtime_determinism_trace_after_reap`], this
+    /// diagnostic reads only the final fixed byte window and then retains at
+    /// most the final 512 rows. The returned text begins with the
+    /// original file size and whether earlier bytes were omitted. The complete
+    /// trace still counts against the attempt's aggregate writable admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the trace is absent, empty, not the
+    /// prepared inode, outside aggregate admission, changed during retention,
+    /// or its retained row suffix is not UTF-8.
+    pub fn retain_runtime_liveness_trace_tail_after_reap(&self) -> Result<String, QemuSpawnError> {
+        let file_name = crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME;
+        let authenticated = self.open_authenticated_diagnostic_trace_after_reap(
+            file_name,
+            &self.runtime_determinism_trace_identity,
+            None,
+        )?;
+        let trace_bytes = authenticated.bytes;
+
+        let start = trace_bytes.saturating_sub(MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_BYTES);
+        let mut trace = File::from(authenticated.descriptor);
+        trace
+            .seek(SeekFrom::Start(start))
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "seek scheduler-liveness trace tail",
+                source,
+            })?;
+        let mut bytes = Vec::new();
+        trace
+            .take(MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "read scheduler-liveness trace tail",
+                source,
+            })?;
+        if u64::try_from(bytes.len()) != Ok(trace_bytes - start) {
+            return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
+        }
+        if start != 0 {
+            let first_complete_row = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |index| index + 1);
+            bytes.drain(..first_complete_row);
+        }
+        let retained =
+            String::from_utf8(bytes).map_err(|source| QemuSpawnError::DiagnosticTraceUtf8 {
+                file: file_name,
+                source,
+            })?;
+        let mut rows = retained
+            .lines()
+            .rev()
+            .take(MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_LINES)
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return Err(QemuSpawnError::DiagnosticTraceLines {
+                file: file_name,
+                actual: 0,
+                maximum: MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_LINES,
+            });
+        }
+        rows.reverse();
+
+        self.revalidate_authenticated_diagnostic_trace_after_read(
+            file_name,
+            authenticated.identity,
+            authenticated.metadata.st_size,
+            authenticated.credentials,
+        )?;
+
+        Ok(format!(
+            "trace_original_bytes={trace_bytes} trace_tail_truncated={}\n{}",
+            start != 0 || retained.lines().count() > rows.len(),
+            rows.join("\n")
+        ))
+    }
+
     fn retain_diagnostic_trace_after_reap(
         &self,
         file_name: &'static str,
@@ -425,6 +517,51 @@ impl QemuPreparedRunDirectory {
         maximum_bytes: u64,
         maximum_lines: usize,
     ) -> Result<String, QemuSpawnError> {
+        let authenticated = self.open_authenticated_diagnostic_trace_after_reap(
+            file_name,
+            trace_identity,
+            Some(maximum_bytes),
+        )?;
+
+        let mut bytes = Vec::new();
+        File::from(authenticated.descriptor)
+            .take(maximum_bytes + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "read retained diagnostic trace",
+                source,
+            })?;
+        if u64::try_from(bytes.len()) != Ok(authenticated.bytes) {
+            return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
+        }
+        let lines = bytes.iter().filter(|byte| **byte == b'\n').count();
+        if lines == 0 || lines > maximum_lines {
+            return Err(QemuSpawnError::DiagnosticTraceLines {
+                file: file_name,
+                actual: lines,
+                maximum: maximum_lines,
+            });
+        }
+
+        self.revalidate_authenticated_diagnostic_trace_after_read(
+            file_name,
+            authenticated.identity,
+            authenticated.metadata.st_size,
+            authenticated.credentials,
+        )?;
+
+        String::from_utf8(bytes).map_err(|source| QemuSpawnError::DiagnosticTraceUtf8 {
+            file: file_name,
+            source,
+        })
+    }
+
+    fn open_authenticated_diagnostic_trace_after_reap(
+        &self,
+        file_name: &'static str,
+        trace_identity: &OnceLock<PinnedFileIdentity>,
+        maximum_bytes: Option<u64>,
+    ) -> Result<AuthenticatedDiagnosticTrace, QemuSpawnError> {
         self.revalidate_identity()?;
         let credentials = self.child_credentials.ok_or_else(|| {
             invalid_input(
@@ -462,11 +599,12 @@ impl QemuPreparedRunDirectory {
                 "trace length cannot be represented",
             )
         })?;
-        if trace_bytes == 0 || trace_bytes > maximum_bytes {
+        let fixed_maximum = maximum_bytes.unwrap_or(self.admitted_ceiling.2);
+        if trace_bytes == 0 || maximum_bytes.is_some_and(|maximum| trace_bytes > maximum) {
             return Err(QemuSpawnError::DiagnosticTraceLength {
                 file: file_name,
                 actual: trace_bytes,
-                maximum: maximum_bytes,
+                maximum: fixed_maximum,
             });
         }
 
@@ -499,26 +637,22 @@ impl QemuPreparedRunDirectory {
             });
         }
 
-        let mut bytes = Vec::new();
-        File::from(trace)
-            .take(maximum_bytes + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "read retained diagnostic trace",
-                source,
-            })?;
-        if u64::try_from(bytes.len()) != Ok(trace_bytes) {
-            return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
-        }
-        let lines = bytes.iter().filter(|byte| **byte == b'\n').count();
-        if lines == 0 || lines > maximum_lines {
-            return Err(QemuSpawnError::DiagnosticTraceLines {
-                file: file_name,
-                actual: lines,
-                maximum: maximum_lines,
-            });
-        }
+        Ok(AuthenticatedDiagnosticTrace {
+            descriptor: trace,
+            metadata,
+            identity: expected_identity,
+            credentials,
+            bytes: trace_bytes,
+        })
+    }
 
+    fn revalidate_authenticated_diagnostic_trace_after_read(
+        &self,
+        file_name: &'static str,
+        expected_identity: PinnedFileIdentity,
+        expected_size: i64,
+        credentials: QemuChildCredentials,
+    ) -> Result<(), QemuSpawnError> {
         let named = openat(
             &self.directory,
             file_name,
@@ -534,14 +668,10 @@ impl QemuPreparedRunDirectory {
             source: source.into(),
         })?;
         validate_diagnostic_trace_metadata(file_name, &retained, credentials)?;
-        if !expected_identity.matches(&retained) || retained.st_size != metadata.st_size {
+        if !expected_identity.matches(&retained) || retained.st_size != expected_size {
             return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
         }
-
-        String::from_utf8(bytes).map_err(|source| QemuSpawnError::DiagnosticTraceUtf8 {
-            file: file_name,
-            source,
-        })
+        Ok(())
     }
 
     /// Lends the provisioned empty VMState container as a hot-fork destination.

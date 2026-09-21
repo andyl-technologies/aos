@@ -161,6 +161,7 @@ pub struct QemuLiveNodeStepGateConfig {
     console_capture: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
+    runtime_liveness_trace: bool,
     fault_capabilities: Option<crucible::model::WorldNodeFaultCapabilities>,
     exact_gate_fault_manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
 }
@@ -240,7 +241,7 @@ impl QemuLiveNodeStepGateConfig {
             requirements = requirements.with_diagnostic_trace_bytes(
                 crate::launch::MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES,
             );
-        } else if self.runtime_determinism_trace {
+        } else if self.runtime_determinism_trace || self.runtime_liveness_trace {
             requirements = requirements.with_diagnostic_trace_bytes(
                 crate::launch::MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
             );
@@ -319,6 +320,7 @@ impl QemuLiveNodeStepGateConfig {
             console_capture: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
+            runtime_liveness_trace: false,
             fault_capabilities: None,
             exact_gate_fault_manifests: None,
         }
@@ -377,6 +379,7 @@ impl QemuLiveNodeStepGateConfig {
             console_capture: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
+            runtime_liveness_trace: false,
             fault_capabilities: None,
             exact_gate_fault_manifests: None,
         }
@@ -615,6 +618,7 @@ impl QemuLiveNodeStepGateConfig {
     pub const fn with_rr_control_boundary_trace(mut self) -> Self {
         self.rr_control_boundary_trace = true;
         self.runtime_determinism_trace = false;
+        self.runtime_liveness_trace = false;
         self
     }
 
@@ -627,6 +631,19 @@ impl QemuLiveNodeStepGateConfig {
     pub const fn with_runtime_determinism_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
         self.runtime_determinism_trace = true;
+        self.runtime_liveness_trace = false;
+        self
+    }
+
+    /// Returns this configuration with fixed scheduler-liveness diagnostics.
+    ///
+    /// The trace includes deterministic idle rows plus main-loop poll and RR
+    /// dispatch state needed to localize a bounded advance timeout.
+    #[must_use]
+    pub const fn with_runtime_liveness_trace(mut self) -> Self {
+        self.rr_control_boundary_trace = false;
+        self.runtime_determinism_trace = false;
+        self.runtime_liveness_trace = true;
         self
     }
 
@@ -638,6 +655,8 @@ impl QemuLiveNodeStepGateConfig {
             command.with_rr_control_boundary_trace()
         } else if self.runtime_determinism_trace {
             command.with_runtime_determinism_trace()
+        } else if self.runtime_liveness_trace {
+            command.with_runtime_liveness_trace()
         } else {
             command
         }
@@ -1124,7 +1143,7 @@ fn build_live_node_with_authority(
         run_directory
             .prepare_rr_control_boundary_trace()
             .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-    } else if config.runtime_determinism_trace {
+    } else if config.runtime_determinism_trace || config.runtime_liveness_trace {
         run_directory
             .prepare_runtime_determinism_trace()
             .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
