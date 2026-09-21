@@ -15,6 +15,7 @@
   abilitySelection ? null,
   config,
   lib,
+  packageName ? null,
   packageArtifactFor,
   provenance,
   ...
@@ -94,6 +95,10 @@
     // lib.mapAttrs' (_: withName systemdLib.sliceToUnit) cfg.slices
     // lib.listToAttrs (builtins.map (withName systemdLib.mountToUnit) cfg.mounts)
     // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
+  renderedUnitOwner =
+    if packageName == null
+    then "@base"
+    else packageName;
 in {
   options.systemd = {
     providerUnitPlans = lib.mkOption {
@@ -390,12 +395,12 @@ in {
       builtins.foldl' (checked: name: let
         allDefs = provenance.definitionsOfAttr ["systemd" "units"] name;
         # `config.systemd.units = renderedUnits` contributes exactly one
-        # synthetic @base definition for every typed unit. Remove exactly one
-        # such record; every remaining definition is a genuine raw-unit source,
-        # including a second @base definition from another image module.
+        # definition from this renderer for every typed unit. Remove exactly
+        # one such record; every remaining definition is a genuine raw-unit
+        # source, including another definition from the same owner.
         stripped =
           builtins.foldl' (state: definition:
-            if !state.removed && definition.owner == "@base"
+            if !state.removed && definition.owner == renderedUnitOwner
             then state // {removed = true;}
             else state // {definitions = state.definitions ++ [definition];}) {
             removed = false;
