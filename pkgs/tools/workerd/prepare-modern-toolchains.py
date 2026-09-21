@@ -16,6 +16,7 @@ def replace_exact(path, old, new, count=1):
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--python", required=True, type=Path)
 parser.add_argument("--rust", required=True, type=Path)
+parser.add_argument("--bash", required=True, type=Path)
 args = parser.parse_args()
 
 for executable in [args.python, args.rust / "bin/cargo", args.rust / "bin/rustc"]:
@@ -56,3 +57,19 @@ host_tools = Path("aos-host-rust")
 )
 for executable in ["cargo", "rustc"]:
     (host_tools / "bin" / executable).symlink_to(args.rust / "bin" / executable)
+
+# Repository rules execute this script during compiler auto-detection, before
+# action-level shell overrides can apply.
+module = Path("MODULE.bazel")
+with module.open("a") as stream:
+    stream.write("\nsingle_version_override(\n")
+    stream.write('    module_name = "rules_cc",\n')
+    stream.write('    patches = ["//:aos-rules-cc-shell.patch"],\n')
+    stream.write('    patch_strip = 1,\n)\n')
+Path("aos-rules-cc-shell.patch").write_text(
+    "--- a/cc/private/toolchain/generate_system_module_map.sh\n"
+    "+++ b/cc/private/toolchain/generate_system_module_map.sh\n"
+    "@@ -1 +1 @@\n"
+    "-#!/usr/bin/env bash\n"
+    f"+#!{args.bash}\n"
+)
