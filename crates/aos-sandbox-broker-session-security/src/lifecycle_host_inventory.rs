@@ -496,14 +496,54 @@ impl DormantLifecycleInventorySessionV1 {
         if self.pending.is_some() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        match self.query(method)? {
-            DormantLifecycleInventoryQueryProgressV1::Complete {
-                outcome,
-                currentness,
-            } => Ok((outcome, currentness)),
-            DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(recovery) => {
-                self.pending = Some(recovery);
-                Err(LifecyclePhase6ErrorV1::StaleAuthority)
+        let mut progress = self.query(method)?;
+        loop {
+            match progress {
+                DormantLifecycleInventoryQueryProgressV1::Complete {
+                    outcome,
+                    currentness,
+                } => {
+                    crate::dormant_handshake::check_production_deadline(
+                        outcome.request().deadline_boottime_nanoseconds(),
+                    )
+                    .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+                    return Ok((outcome, currentness));
+                }
+                DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(recovery) => {
+                    // Socket backpressure is not durable ambiguity. Wait on the
+                    // retained session using the original signed deadline, never
+                    // a fresh timeout that could extend the request's lifetime.
+                    let readiness = match &recovery.stage {
+                        DormantLifecycleInventoryQueryStageV1::Send(request) => {
+                            Some((true, request.deadline_boottime_nanoseconds()))
+                        }
+                        DormantLifecycleInventoryQueryStageV1::Receive(request) => {
+                            Some((false, request.deadline_boottime_nanoseconds()))
+                        }
+                        _ => None,
+                    };
+                    let Some((wants_write, deadline)) = readiness else {
+                        self.pending = Some(recovery);
+                        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+                    };
+                    let wait = self.session.as_fd().and_then(|fd| {
+                        crate::dormant_handshake::wait_for_handshake_readiness(
+                            fd,
+                            wants_write,
+                            deadline,
+                        )
+                        .and_then(|()| {
+                            crate::dormant_handshake::check_production_deadline(deadline)
+                        })
+                    });
+                    if wait.is_err() {
+                        // Preserve exact custody on expiry or transport failure;
+                        // no later inventory may overtake this request.
+                        self.pending = Some(recovery);
+                        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+                    }
+                    progress = self.resume_query(recovery)?;
+                }
             }
         }
     }

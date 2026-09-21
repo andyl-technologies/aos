@@ -106,6 +106,7 @@ pub(crate) fn check_production_deadline(
 
 #[cfg(test)]
 mod production_deadline_tests {
+    use std::io::Write as _;
     use std::os::fd::AsFd as _;
     use std::os::unix::net::UnixStream;
 
@@ -141,6 +142,32 @@ mod production_deadline_tests {
             crate::production_deadline_after(std::time::Duration::from_secs(10)).unwrap();
 
         wait_for_handshake_readiness(socket.as_fd(), true, deadline).unwrap();
+    }
+
+    #[test]
+    fn response_readiness_waits_for_peer_data() {
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        let deadline =
+            crate::production_deadline_after(std::time::Duration::from_secs(10)).unwrap();
+        let sender = std::thread::spawn(move || peer.write_all(&[1]).unwrap());
+
+        wait_for_handshake_readiness(socket.as_fd(), false, deadline).unwrap();
+
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn response_readiness_does_not_extend_the_original_deadline() {
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let deadline =
+            crate::production_deadline_after(std::time::Duration::from_millis(10)).unwrap();
+
+        let result = wait_for_handshake_readiness(socket.as_fd(), false, deadline);
+
+        assert!(matches!(
+            result,
+            Err(DormantBrokerSessionHandshakeErrorV1::Deadline)
+        ));
     }
 }
 
@@ -331,9 +358,23 @@ impl DormantBrokerRequestCoordinatesV1 {
 #[must_use = "send or retain the exact protected request"]
 pub struct DormantPreparedBrokerRequestV1(AuthenticatedBrokerMethodRequestV1);
 
+impl DormantPreparedBrokerRequestV1 {
+    /// Returns the signed deadline without releasing request custody.
+    pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.0.deadline_boottime_nanoseconds()
+    }
+}
+
 /// Retains one sent request while its exact terminal response is outstanding.
 #[must_use = "receive or retain the exact outstanding request"]
 pub struct DormantOutstandingBrokerRequestV1(AuthenticatedBrokerMethodRequestV1);
+
+impl DormantOutstandingBrokerRequestV1 {
+    /// Returns the original signed deadline for response readiness polling.
+    pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.0.deadline_boottime_nanoseconds()
+    }
+}
 
 /// Retains a protected request with the exact SCM_RIGHTS table it authenticates.
 #[must_use = "send or retain the exact protected descriptor request"]
