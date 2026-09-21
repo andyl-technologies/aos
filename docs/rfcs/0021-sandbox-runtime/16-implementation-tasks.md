@@ -341,9 +341,11 @@ the outstanding work concrete:
   `aos-sandbox::public_api_session` supplies a TLS 1.3/HTTP/2 transport
   foundation with mandatory client certificates, protected explicit
   certificate-to-principal/project registration, and connection-bound peer
-  evidence. It grants no capability and is not yet connected to a production
-  listener, RPC authorization, or CLI transport. Real handshake and deployed
-  credential-lifecycle qualification remain required.
+  evidence. The controller's internal authorization adapter joins that evidence
+  to current protected capabilities and independently checks the authenticated
+  project, but has no production RPC caller. The transport grants no capability
+  and is not yet connected to a production listener or CLI transport. Real
+  handshake and deployed credential-lifecycle qualification remain required.
   Production activation must preserve holder-bound sessions, current protected
   authorization, broker audience binding, ownership fencing, and independent
   Guardian enforcement. An opaque client authorization context or local UID

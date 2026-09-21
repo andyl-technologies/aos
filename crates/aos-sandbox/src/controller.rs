@@ -50,6 +50,9 @@ use crate::{
 #[cfg(target_os = "linux")]
 mod destination_slot;
 
+#[cfg(target_os = "linux")]
+mod public_api_authorization;
+
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
 const MAXIMUM_ACTIVATION_BYTES: usize = 1024 * 1024;
 const MAXIMUM_PENDING_OPERATIONS: usize = 1_000_000;
@@ -2475,6 +2478,7 @@ impl DormantCliAuthorizationOwnerV1<'_> {
             PublisherAuthorityLimits::default(),
             PublisherPolicyLimits::default(),
             authenticated.capability_id(),
+            authenticated.scope().project,
             &mut self.protected_clock,
             &decoded,
             &identity,
@@ -2619,9 +2623,10 @@ where
     /// Borrows the sole controller journal for dormant authenticated CLI requests.
     ///
     /// This source-only factory registers no public command or route and grants
-    /// no effect authority. The returned owner can only derive CLI provenance
-    /// from an authenticated local-session record, the fixed controller-owned
-    /// paired clock, and current protected state.
+    /// no effect authority. The returned owner derives CLI provenance from
+    /// an authenticated local-session record or a live registered public TLS
+    /// peer, the fixed controller-owned paired clock, and current protected
+    /// state. Both paths bind the capability to the authenticated project.
     ///
     /// # Errors
     ///

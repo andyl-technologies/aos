@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use aos_sandbox_core::{
     AuthorizationContext, CLOCK_PAIR_TOLERANCE_NANOSECONDS, CapabilityId, ChannelBinding,
-    ObjectDigest, Operation, PrincipalId, RawPairedClockSample, ResourceKind, Selector,
+    ObjectDigest, Operation, PrincipalId, ProjectId, RawPairedClockSample, ResourceKind, Selector,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -388,6 +388,9 @@ impl CurrentProtectedCliAuthorizationV1 {
     /// authenticated identity and channel evidence. The closed decoded request
     /// is the sole source of resource kind, operation, selector, surface, and
     /// canonical request bytes.
+    /// The authenticated transport's project must independently match the
+    /// capability's project; a holder cannot cross a registered session boundary
+    /// by selecting a capability issued for another project.
     ///
     /// # Errors
     ///
@@ -398,6 +401,7 @@ impl CurrentProtectedCliAuthorizationV1 {
         capability_limits: PublisherAuthorityLimits,
         policy_limits: PublisherPolicyLimits,
         capability_id: CapabilityId,
+        authenticated_project: ProjectId,
         protected_clock: &mut crate::controller::ControllerProtectedClockV1,
         decoded: &DecodedAuthenticatedCliRequestV1,
         identity: &AuthenticatedCliIdentityEvidenceV1,
@@ -416,6 +420,7 @@ impl CurrentProtectedCliAuthorizationV1 {
                 .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
         };
         let claims = capability.claims();
+        require_authenticated_project(authenticated_project, claims.project)?;
         let (controller, revocation, policy) = {
             let store = PublisherPolicyStore::load(journal, policy_limits)
                 .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
@@ -479,6 +484,38 @@ impl CurrentProtectedCliAuthorizationV1 {
             schema: channel.schema,
             surface: decoded.surface,
         })
+    }
+}
+
+fn require_authenticated_project(
+    authenticated_project: ProjectId,
+    capability_project: ProjectId,
+) -> Result<(), CliAuthorizationAdapterError> {
+    if authenticated_project.as_bytes() == &[0; 16] || authenticated_project != capability_project {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod project_binding_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_the_nonzero_authenticated_project() {
+        let capability = crate::publisher_authority::tests::capability(CapabilityId::new(), 200);
+        let project = capability.claims().project;
+
+        assert!(require_authenticated_project(project, project).is_ok());
+        assert!(require_authenticated_project(ProjectId::from_bytes([99; 16]), project).is_err());
+        assert!(require_authenticated_project(ProjectId::from_bytes([0; 16]), project).is_err());
+        assert!(
+            require_authenticated_project(
+                ProjectId::from_bytes([0; 16]),
+                ProjectId::from_bytes([0; 16]),
+            )
+            .is_err()
+        );
     }
 }
 
