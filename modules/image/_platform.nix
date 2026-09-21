@@ -134,6 +134,10 @@
           type = lib.types.functionTo lib.types.attrs;
           description = "Opaque package-owned immutable image artifact builder.";
         };
+        buildTestDisk = lib.mkOption {
+          type = lib.types.functionTo lib.types.package;
+          description = "Opaque package-owned mutable test-disk builder.";
+        };
         name = lib.mkOption {
           type = lib.types.nonEmptyStr;
           description = "Human-readable selected image-builder name.";

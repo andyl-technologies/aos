@@ -4,19 +4,35 @@
   writeTextFile,
   bash,
   coreutils,
+  socat,
   systemd,
 }: let
   agentBin = writeTextFile {
     name = "aos-test-agent";
     executable = true;
     destination = "/bin/aos-test-agent";
-    text = builtins.readFile ../../lib/testing/agent/aos-test-agent.sh;
+    text =
+      builtins.replaceStrings
+      ["exec socat VSOCK-LISTEN"]
+      ["exec ${socat}/bin/socat VSOCK-LISTEN"]
+      (builtins.readFile ./_aos-test-agent/agent.sh);
   };
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
@@ -78,6 +94,7 @@ in
       agentBin
       bash
       coreutils
+      socat
       systemd
     ];
 

@@ -5,7 +5,7 @@
 # for reusable test assertions.
 #
 # mkVMTest supports two modes:
-#   - System mode (system param): full systemd + agent, for module checks
+#   - System mode (system param): selected platform + agent, for module checks
 #   - Headless mode (rootfsDeps param): test script IS init, for package checks
 #
 # Usage:
