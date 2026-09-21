@@ -7,7 +7,7 @@ pub(super) fn validate_request(
     index: usize,
     context: &ValidationContext,
     in_scope_instances: &BTreeSet<InstanceId>,
-    request_packages: &BTreeMap<InstanceId, aos_ability_model::LocalKey>,
+    request_authorities: &BTreeMap<InstanceId, aos_ability_model::DeclarationAuthority>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     check_strict_order(
@@ -52,9 +52,9 @@ pub(super) fn validate_request(
         item.request = Some(request.id.clone());
         push_diagnostic(diagnostics, item);
     }
-    match request_packages.get(&request.id.consumer) {
-        Some(package) if package == &request.package => {}
-        Some(package) => {
+    match request_authorities.get(&request.id.consumer) {
+        Some(authority) if authority == &request.authority => {}
+        Some(authority) => {
             let mut item = diagnostic(
                 DiagnosticCode::BindingPrincipalMismatch,
                 DiagnosticClass::Unauthorized,
@@ -62,19 +62,18 @@ pub(super) fn validate_request(
                 vec![
                     "requests".to_string(),
                     index.to_string(),
-                    "package".to_string(),
+                    "authority".to_string(),
                 ],
                 format!(
-                    "request package '{}' differs from consumer package '{}'",
-                    request.package.as_str(),
-                    package.as_str()
+                    "request authority '{:?}' differs from consumer authority '{authority:?}'",
+                    request.authority
                 ),
             );
             item.request = Some(request.id.clone());
             push_diagnostic(diagnostics, item);
         }
-        // Environment-only consumers have no desired package record to compare.
-        // Their provenance was already injected by the authenticated module carrier.
+        // Environment-only consumers have no desired declaration record to compare.
+        // Their provenance was already injected by the authenticated environment.
         None => {}
     }
     for accepted in &request.accepted_interfaces {

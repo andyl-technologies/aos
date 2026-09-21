@@ -25,7 +25,9 @@
   }:
     import ./package-projection.nix {inherit lib abilities;};
   sourceStageFixedPoint = abilities:
-    import ./source-stage-fixed-point.nix {inherit abilities;};
+    import ./source-stage-fixed-point.nix {
+      inherit abilities guaranteeIdentity normalizeRequirement;
+    };
   packageAbilitiesFromProjection = projection: {
     inherit (projection) guarantees interfaces;
     implementations = builtins.listToAttrs (map (implementation: {

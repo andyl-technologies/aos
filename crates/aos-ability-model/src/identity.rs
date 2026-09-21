@@ -104,6 +104,34 @@ impl<'de> Deserialize<'de> for LocalKey {
     }
 }
 
+/// Identifies the authenticated configuration authority for one declaration.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum DeclarationAuthority {
+    /// The source-composed system configuration authored the declaration.
+    System,
+    /// The authenticated operator configuration authored the declaration.
+    Operator,
+    /// The generation-pinned runtime configuration authored the declaration.
+    Runtime,
+    /// An authenticated package module authored the declaration.
+    Package {
+        /// Names the package whose authenticated module carried the declaration.
+        package: LocalKey,
+    },
+}
+
+impl DeclarationAuthority {
+    /// Returns the package carrier for package-authored declarations.
+    #[must_use]
+    pub const fn package(&self) -> Option<&LocalKey> {
+        match self {
+            Self::Package { package } => Some(package),
+            Self::System | Self::Operator | Self::Runtime => None,
+        }
+    }
+}
+
 /// Identifies a normalized file below an authenticated artifact root.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RelativePath(String);

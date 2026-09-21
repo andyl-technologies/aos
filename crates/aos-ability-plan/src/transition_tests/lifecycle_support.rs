@@ -236,8 +236,10 @@ pub(super) fn lifecycle_planning_snapshot(
         handler: Some(aos_ability_validate::test_support::test_manager_handler_key()),
     };
     let service_request = BindingRequest {
-        package: aos_ability_model::LocalKey::new("test-package")
-            .expect("valid test package provenance"),
+        authority: DeclarationAuthority::Package {
+            package: aos_ability_model::LocalKey::new("test-package")
+                .expect("valid test package provenance"),
+        },
         id: RequestId {
             consumer: application.clone(),
             scope: ScopePath::root(),
@@ -250,7 +252,9 @@ pub(super) fn lifecycle_planning_snapshot(
         parameters: ability_value(serde_json::json!({"subject": "example.service"})),
     };
     let manager_request = BindingRequest {
-        package: pure_package.package.name.clone(),
+        authority: DeclarationAuthority::Package {
+            package: pure_package.package.name.clone(),
+        },
         id: if operator_enabled {
             crate::child_request_id(service, manager_alias)
                 .expect("enabled root child request must be in scope")
@@ -293,7 +297,10 @@ pub(super) fn lifecycle_planning_snapshot(
         environment: environment_digest,
         instances: vec![DesiredInstance {
             instance: service.clone(),
-            package: pure_package_digest,
+            authority: DeclarationAuthority::Package {
+                package: pure_package.package.name.clone(),
+            },
+            package: Some(pure_package_digest),
             enabled: true,
             configuration: None,
         }],

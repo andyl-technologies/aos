@@ -4,8 +4,8 @@ use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, BindingRequest, ContributionPermission,
-    ExportDeclaration, HandlerDescriptor, InterfaceName, LocalKey, ModuleLocator,
-    PackageImplementation, ProviderAdoptionAuthorization, ProviderImplementation,
+    DeclarationAuthority, ExportDeclaration, HandlerDescriptor, InterfaceName, LocalKey,
+    ModuleLocator, PackageImplementation, ProviderAdoptionAuthorization, ProviderImplementation,
     ProviderImplementationReference, ProviderStateFormat, RelativePath, RequiredFeature,
     ResourcePermission, ScopePath, TeardownBindingAuthorization, ValueSchema,
 };
@@ -385,7 +385,7 @@ fn enabled_multi_export_package_cannot_substitute_an_unselected_owner() {
     assert!(plan.desired_state().instances.iter().any(|instance| {
         instance.enabled
             && instance.instance == endpoint.provider
-            && instance.package == endpoint.package
+            && instance.package == Some(endpoint.package)
     }));
     assert!(!owner_implementation_is_selected(&plan, &endpoint));
 }
@@ -693,7 +693,7 @@ fn adoption_authority_fixture() -> AuthorityFixture {
     for binding in &mut current.document.bindings {
         binding.provider_package = Some(source_package);
     }
-    current.inputs.desired_state.instances[0].package = source_package;
+    current.inputs.desired_state.instances[0].package = Some(source_package);
     current.document.desired_state = current
         .inputs
         .desired_state
@@ -881,13 +881,21 @@ fn multi_export_owner_fixture(
     fixture.binding_inputs.environment.providers[0].implementation = selected_reference.clone();
     fixture.binding_inputs.desired_state.instances = vec![DesiredInstance {
         instance: provider.clone(),
-        package: package_digest,
+        authority: DeclarationAuthority::Package {
+            package: key("multi-export-provider"),
+        },
+        package: Some(package_digest),
         enabled: true,
         configuration: None,
     }];
     fixture.binding_inputs.packages = vec![package];
-    fixture.binding_inputs.desired_state.child_requests[0].package = key("multi-export-provider");
-    fixture.binding_plan.requests[0].package = key("multi-export-provider");
+    fixture.binding_inputs.desired_state.child_requests[0].authority =
+        DeclarationAuthority::Package {
+            package: key("multi-export-provider"),
+        };
+    fixture.binding_plan.requests[0].authority = DeclarationAuthority::Package {
+        package: key("multi-export-provider"),
+    };
     if select_owner {
         let handler_scope =
             ScopePath::new(vec![provider.key.clone(), key("nested")]).expect("nested owner scope");
@@ -915,7 +923,9 @@ fn multi_export_owner_fixture(
             revision: RevisionId(Sha256Digest::of_bytes("owner revision")),
         };
         let owner_request = BindingRequest {
-            package: key("multi-export-provider"),
+            authority: DeclarationAuthority::Package {
+                package: key("multi-export-provider"),
+            },
             id: aos_ability_model::RequestId {
                 consumer: provider.clone(),
                 scope: ScopePath::root(),

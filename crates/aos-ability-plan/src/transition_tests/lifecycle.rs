@@ -463,7 +463,9 @@ fn enabled_root_retirement_fixture() -> EnabledRootRetirementFixture {
         teardown_providers: vec![TeardownProviderAuthorization {
             provider: enabled.instance.clone(),
             implementation: enabled.implementation.clone(),
-            package: enabled_package.package,
+            package: enabled_package
+                .package
+                .expect("enabled provider must retain its package"),
             policy_revision: desired.checked_binding().document().policy_revision,
         }],
         persistent_deletions: Vec::new(),

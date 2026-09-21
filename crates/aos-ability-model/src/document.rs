@@ -19,8 +19,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use crate::identity::{
-    AggregateId, EnvironmentId, IncarnationId, InstanceId, InterfaceKey, InterfaceName, LocalKey,
-    RelativePath, RequestId, ResourceId, RevisionId, ScopedOperationKey, TransactionId,
+    AggregateId, DeclarationAuthority, EnvironmentId, IncarnationId, InstanceId, InterfaceKey,
+    InterfaceName, LocalKey, RelativePath, RequestId, ResourceId, RevisionId, ScopedOperationKey,
+    TransactionId,
 };
 use crate::interface::{
     ExportDeclaration, GuaranteeDeclaration, GuaranteeKey, InterfaceDescriptor,
@@ -468,8 +469,11 @@ pub struct EnvironmentDocument {
 pub struct DesiredInstance {
     /// Identifies the stable deployment-owned instance.
     pub instance: InstanceId,
-    /// Identifies the exact package ability manifest.
-    pub package: Sha256Digest,
+    /// Identifies the authenticated configuration authority that authored the instance.
+    pub authority: DeclarationAuthority,
+    /// Identifies the exact package ability manifest when the instance uses one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<Sha256Digest>,
     /// States explicit operator-owned enablement.
     pub enabled: bool,
     /// Carries configuration owned by the operator for this exact instance.

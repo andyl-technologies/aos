@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
-    AbilityValue, DeploymentObligation, ExportDeclaration, HandlerDescriptor, InterfaceName,
-    LocalKey, ModuleLocator, ObligationKind, PackageDocument, PackageImplementation,
+    AbilityValue, DeclarationAuthority, DeploymentObligation, ExportDeclaration, HandlerDescriptor,
+    InterfaceName, LocalKey, ModuleLocator, ObligationKind, PackageDocument, PackageImplementation,
     ProviderImplementation, ProviderStateFormat, RelativePath, RequiredFeature, TransactionId,
     ValueExpression, ValueSchema, VersionedDocument,
 };
@@ -208,10 +208,14 @@ fn install_package_with_feature(
     };
     binding.provider_package = Some(package.content_digest()?);
     for request in &mut fixture.binding_plan.requests {
-        request.package = package.package.name.clone();
+        request.authority = DeclarationAuthority::Package {
+            package: package.package.name.clone(),
+        };
     }
     for request in &mut fixture.binding_inputs.desired_state.child_requests {
-        request.package = package.package.name.clone();
+        request.authority = DeclarationAuthority::Package {
+            package: package.package.name.clone(),
+        };
     }
     fixture.binding_inputs.packages = vec![package];
     fixture.refresh_commitments();
@@ -344,12 +348,16 @@ fn provider_node_preserves_checked_operator_instance_configuration()
         ]),
         fixture.interfaces.clone(),
     )?;
+    let package_name = fixture.binding_inputs.packages[0].package.name.clone();
     let package = fixture.binding_inputs.packages[0].content_digest()?;
     let provider = fixture.binding_plan.bindings[0].provider.clone();
     let configuration = AbilityValue::new(serde_json::json!(PRIVATE_CONFIGURATION))?;
     fixture.binding_inputs.desired_state.instances = vec![DesiredInstance {
         instance: provider.clone(),
-        package,
+        authority: DeclarationAuthority::Package {
+            package: package_name,
+        },
+        package: Some(package),
         enabled: true,
         configuration: Some(configuration.clone()),
     }];

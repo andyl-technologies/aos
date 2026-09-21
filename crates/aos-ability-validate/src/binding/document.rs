@@ -208,7 +208,7 @@ pub(crate) fn validate_binding_document(
             index,
             context,
             &input_index.in_scope_instances,
-            &input_index.request_packages,
+            &input_index.request_authorities,
             &mut diagnostics,
         );
         let binding_count = request_bindings
@@ -981,7 +981,14 @@ pub(super) fn validate_binding_inputs(
         diagnostics,
     );
     for (index, desired) in inputs.desired_state.instances.iter().enumerate() {
-        if !input_index.packages.contains_key(&desired.package) {
+        input_index
+            .request_authorities
+            .insert(desired.instance.clone(), desired.authority.clone());
+
+        let Some(package_digest) = desired.package else {
+            continue;
+        };
+        if !input_index.packages.contains_key(&package_digest) {
             push_diagnostic(
                 diagnostics,
                 diagnostic(
@@ -999,10 +1006,7 @@ pub(super) fn validate_binding_inputs(
             );
             continue;
         }
-        let package = &inputs.packages[input_index.packages[&desired.package]];
-        input_index
-            .request_packages
-            .insert(desired.instance.clone(), package.package.name.clone());
+        let package = &inputs.packages[input_index.packages[&package_digest]];
         validate_declared_root_requests(
             desired,
             package,

@@ -134,16 +134,18 @@
           if ownerRequest == null
           then []
           else builtins.filter (entry: entry.binding.request == ownerRequest) group.entries;
-        ownerPackage =
+        ownerAuthority =
           if ownerRequest == null
-          then implementationPackage group.implementationKey group.implementation
+          then {
+            kind = "package";
+            package = implementationPackage group.implementationKey group.implementation;
+          }
           else if !builtins.isString ownerRequest
           then fail "child request '${localRequestKey}' has a non-string parent request owner"
           else if builtins.length ownerEntries != 1
           then fail "child request '${localRequestKey}' delegates ownership to an absent or ambiguous parent request '${toString ownerRequest}'"
-          else if (builtins.head ownerEntries).request.package == null
-          then fail "child request '${localRequestKey}' delegates ownership to parent request '${ownerRequest}' without an authenticated package owner"
-          else (builtins.head ownerEntries).request.package;
+          else (builtins.head ownerEntries).request.authority;
+        ownerPackage = ownerAuthority.package or null;
         requirementKey = lib.abilities.compositionRequirementKey {
           implementation = group.implementationKey;
           alias = authored.requirement;
@@ -162,6 +164,7 @@
         slot = authored.slot;
         request = requestKey;
         declaration = {
+          authority = ownerAuthority;
           package = ownerPackage;
           localKey = localRequestKey;
           requirement = requirementKey;

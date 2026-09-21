@@ -732,7 +732,7 @@ impl<'a> TransitionPlanner<'a> {
                                 .any(|instance| {
                                     instance.enabled
                                         && instance.instance == authorization.provider
-                                        && instance.package == authorization.package
+                                        && instance.package == Some(authorization.package)
                                 })
                     })
                 {

@@ -1,5 +1,9 @@
 ##! Canonical runtime projection of one completed source-stage fixed point.
-{abilities}: let
+{
+  abilities,
+  guaranteeIdentity,
+  normalizeRequirement,
+}: let
   implementationReference = context: declaration: let
     implementation =
       abilities.implementations.${declaration}
@@ -10,69 +14,42 @@
     else {
       inherit (implementation) package localKey;
     };
-  unique = values:
-    builtins.attrNames (builtins.listToAttrs (builtins.map (value: {
-        name = value;
-        value = true;
-      })
-      values));
-  allRequests = abilities.requests // abilities.compositionRequests;
-  packageForInstance = name: instance: let
-    authored =
-      if instance.package == null
-      then []
-      else [instance.package];
-    configured =
-      if instance.implementation == null
-      then []
-      else [
-        (implementationReference "instance implementation" instance.implementation).package
-      ];
-    selected = builtins.concatMap (binding:
-      if binding.providerInstance == name
-      then [(implementationReference "binding implementation" binding.implementation).package]
-      else [])
-    (builtins.attrValues abilities.bindings);
-    consumed = builtins.concatMap (request:
-      if request.consumer == name && request.package != null
-      then [request.package]
-      else [])
-    (builtins.attrValues allRequests);
-    candidates = unique (authored ++ configured ++ selected ++ consumed);
-  in
-    if builtins.length candidates == 1
-    then builtins.head candidates
-    else
-      throw
-      "source-stage instance '${name}' must resolve exactly one authenticated package owner; candidates: ${builtins.toJSON candidates}";
+  provenanceFor = context: declaration: let
+    localKey = declaration.localKey or null;
+    inferredLocalKey =
+      if localKey != null
+      then localKey
+      else throw "source-stage declaration '${context}' has no local key";
+  in {
+    inherit (declaration) authority;
+    localKey = inferredLocalKey;
+  };
+  packageForInstance = instance:
+    if instance.implementation != null
+    then (implementationReference "instance implementation" instance.implementation).package
+    else instance.package;
   projectInstance = name: instance: {
-    package = packageForInstance name instance;
-    inherit (instance) localKey configuration;
+    provenance = provenanceFor name instance;
+    package = packageForInstance instance;
+    inherit (instance) configuration;
     implementation =
       if instance.implementation == null
       then null
       else implementationReference "instance implementation" instance.implementation;
   };
   projectRequest = name: request: requirement:
-    if request.package == null || request.localKey == null
-    then throw "source-stage request '${name}' has no package declaration provenance"
-    else {
-      inherit (request) package consumer scope localKey lifetime parameters;
+    {
+      provenance = provenanceFor name request;
+      inherit (request) consumer scope lifetime parameters;
       inherit requirement;
     };
-  projectRootRequest = name: request: let
-    requirement =
-      abilities.requirementTemplates.${request.requirement}
-      or (throw "source-stage request '${name}' references absent package requirement '${request.requirement}'");
-  in
-    if requirement.package == null || requirement.localKey == null
-    then throw "source-stage request '${name}' requirement has no package declaration provenance"
-    else if requirement.package != request.package
-    then throw "source-stage request '${name}' crosses package requirement provenance"
+  projectRootRequest = name: request:
+    if !(builtins.hasAttr request.requirement abilities.requirementTemplates)
+    then throw "source-stage request '${name}' references absent fixed-point requirement '${request.requirement}'"
     else
       projectRequest name request {
-        kind = "package";
-        inherit (requirement) package localKey;
+        kind = "fixed-point";
+        declaration = request.requirement;
       };
   projectCompositionRequest = name: request:
     if !(builtins.hasAttr request.requirement abilities.compositionRequirements)
@@ -91,6 +68,26 @@
     // {
       implementation = implementationReference "composition requirement implementation" requirement.implementation;
     };
+  semanticRequirement = name: requirement: let
+    guaranteeFor = reference:
+      if builtins.hasAttr reference abilities.guarantees
+      then guaranteeIdentity (builtins.removeAttrs abilities.guarantees.${reference} ["package" "localKey"])
+      else throw "source-stage requirement '${name}' references absent guarantee '${reference}'";
+    value =
+      builtins.removeAttrs requirement ["package" "localKey"]
+      // {guarantees = builtins.map guaranteeFor requirement.guarantees;};
+  in
+    normalizeRequirement requirement.localKey value;
+  referencedRootRequirements = builtins.attrNames (builtins.listToAttrs (builtins.map (request: {
+      name = request.requirement;
+      value = true;
+    })
+    (builtins.attrValues abilities.requests)));
+  projectedRequirements = builtins.listToAttrs (builtins.map (name: {
+      inherit name;
+      value = semanticRequirement name abilities.requirementTemplates.${name};
+    })
+    referencedRootRequirements);
 in {
   inherit
     (abilities)
@@ -103,6 +100,7 @@ in {
   bindings = builtins.mapAttrs projectBinding abilities.bindings;
   compositionRequirements =
     builtins.mapAttrs projectCompositionRequirement abilities.compositionRequirements;
+  requirements = projectedRequirements;
   instances = builtins.mapAttrs projectInstance abilities.instances;
   requests = builtins.mapAttrs projectRootRequest abilities.requests;
   compositionRequests = builtins.mapAttrs projectCompositionRequest abilities.compositionRequests;
