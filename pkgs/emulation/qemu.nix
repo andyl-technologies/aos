@@ -668,10 +668,47 @@ in
                 '#!/bin/sh' '#!/bin/sh; unchanged guest configuration template' \
                 >> "$mutation_manifest"
 
+              collect_grep_inventory() {
+                inventory_name=$1
+                output_path=$2
+                grep_options=$3
+                pattern=$4
+                shift 4
+
+                inventory_status=0
+                find "$@" -type f \
+                  -exec ${buildBash}/bin/bash -u -c '
+                    inventory_name=$1
+                    grep_options=$2
+                    pattern=$3
+                    shift 3
+
+                    grep_status=0
+                    grep "$grep_options" "$pattern" "$@" || grep_status=$?
+                    case "$grep_status" in
+                      0 | 1)
+                        ;;
+                      *)
+                        printf "grep failed while collecting %s (status %s)\n" \
+                          "$inventory_name" "$grep_status" >&2
+                        exit "$grep_status"
+                        ;;
+                    esac
+                  ' qemu-test-inventory "$inventory_name" \
+                  "$grep_options" "$pattern" {} + \
+                  | LC_ALL=C sort > "$output_path" \
+                  || inventory_status=$?
+                if [ "$inventory_status" -ne 0 ]; then
+                  echo "failed to collect $inventory_name (status $inventory_status)" >&2
+                  exit "$inventory_status"
+                fi
+              }
+
               forbidden_shebangs=$TMPDIR/forbidden-test-shebangs
-              find tests python scripts -type f \
-                -exec grep -IlE '^#![[:space:]]*(/usr/bin/env|/usr/bin/python3)' {} + \
-                | LC_ALL=C sort > "$forbidden_shebangs"
+              collect_grep_inventory \
+                'forbidden test shebang inventory' "$forbidden_shebangs" \
+                -IlE '^#![[:space:]]*(/usr/bin/env|/usr/bin/python3)' \
+                tests python scripts
               if test -s "$forbidden_shebangs"; then
                 echo 'executable test inputs retain forbidden host interpreter paths:' >&2
                 cat "$forbidden_shebangs" >&2
@@ -679,9 +716,10 @@ in
               fi
               guest_shebangs=$TMPDIR/guest-test-shebangs
               expected_guest_shebangs=$TMPDIR/expected-guest-test-shebangs
-              find tests python scripts -type f \
-                -exec grep -InHE '^#![[:space:]]*/bin/(ba)?sh([[:space:]].*)?$' {} + \
-                | LC_ALL=C sort > "$guest_shebangs"
+              collect_grep_inventory \
+                'guest-valid test shebang inventory' "$guest_shebangs" \
+                -InHE '^#![[:space:]]*/bin/(ba)?sh([[:space:]].*)?$' \
+                tests python scripts
               printf '%s\n' \
                 'tests/functional/aarch64/test_device_passthrough.py:20:#!/bin/bash' \
                 'tests/functional/aarch64/test_device_passthrough.py:60:#!/bin/bash' \
@@ -699,8 +737,9 @@ in
                 tests/migration-stress/guestperf/engine.py
               remaining_var_tmp=$TMPDIR/remaining-test-var-tmp
               expected_var_tmp=$TMPDIR/expected-test-var-tmp
-              find tests python scripts -type f -exec grep -Il '/var/tmp' {} + \
-                | LC_ALL=C sort > "$remaining_var_tmp"
+              collect_grep_inventory \
+                'remaining /var/tmp inventory' "$remaining_var_tmp" \
+                -Il '/var/tmp' tests python scripts
               printf '%s\n' tests/docker/Makefile.include > "$expected_var_tmp"
               if ! diff -u "$expected_var_tmp" "$remaining_var_tmp"; then
                 echo 'test inputs retain an unclassified /var/tmp path' >&2
