@@ -26,7 +26,7 @@ const EXPECTED_INJECTIONS: &[&str] = &[
     "expire-store-credentials",
     "corrupt-tier-copy",
     "interrupt-pack-index-publication",
-    "fail-vm-during-atomic-world-fork",
+    "reject-vm-during-world-fork-preflight",
     "alias-child-ring-or-overlay",
     "exceed-host-resource-budget",
     "cancel-during-child-creation",
@@ -197,6 +197,30 @@ fn contract_validation_rejects_omitted_rows_and_production_fault_hooks() {
     assert!(failures.iter().any(|failure| {
         failure.contains("implemented fault-build hook is not run through its declared feature")
     }));
+
+    let unresolved_gap = CONTRACT_SOURCE.replacen(
+        "observables = [",
+        "recovery_gap = \"restart automation remains incomplete\"\nobservables = [",
+        1,
+    );
+    let failures = validation_failures(&unresolved_gap, NIX_SOURCE, &workspace_root());
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains("retains an unresolved recovery gap"))
+    );
+
+    let required_hook = CONTRACT_SOURCE.replacen(
+        "implementation_state = \"fault-build-hook-available\"",
+        "implementation_state = \"fault-build-hook-required\"",
+        1,
+    );
+    let failures = validation_failures(&required_hook, NIX_SOURCE, &workspace_root());
+    assert!(
+        failures.iter().any(|failure| {
+            failure.contains("retains an unimplemented required fault-build hook")
+        })
+    );
 }
 
 #[test]
@@ -497,13 +521,9 @@ fn validate_injections(contract: &Contract, nix_source: &str, failures: &mut Vec
                 ));
             }
         }
-        if injection
-            .recovery_gap
-            .as_deref()
-            .is_some_and(|gap| !gap.contains("CMAN-16") || !gap.contains("release blocking"))
-        {
+        if injection.recovery_gap.is_some() {
             failures.push(format!(
-                "{} recovery gap is not explicitly CMAN-16 release blocking",
+                "{} retains an unresolved recovery gap",
                 injection.id
             ));
         }
@@ -562,12 +582,10 @@ fn validate_injections(contract: &Contract, nix_source: &str, failures: &mut Vec
                 }
                 match injection.implementation_state.as_str() {
                     "fault-build-hook-required" => {
-                        if injection.fault_build_feature.is_some() {
-                            failures.push(format!(
-                                "{} declares a feature for an unimplemented fault-build hook",
-                                injection.id
-                            ));
-                        }
+                        failures.push(format!(
+                            "{} retains an unimplemented required fault-build hook",
+                            injection.id
+                        ));
                     }
                     "fault-build-hook-available" => {
                         let Some(feature) = injection.fault_build_feature.as_deref() else {

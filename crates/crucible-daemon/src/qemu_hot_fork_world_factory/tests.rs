@@ -51,9 +51,9 @@ use crucible_protocol::selectable_catalog_plan::{
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuChildProcessContract, QemuHotForkChildProcessBasis,
     QemuHotForkChildProcessOwner, QemuLaunchResourceRequirements, QemuNodeChannelError,
-    QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory, QemuTestHotForkOutcome,
-    QemuVmRealizationError, linux_process_identity, scripted_hot_fork_source_for_test,
-    scripted_hot_fork_source_with_state_for_test,
+    QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory, QemuTestHotForkIsolationFault,
+    QemuTestHotForkOutcome, QemuVmRealizationError, linux_process_identity,
+    scripted_hot_fork_source_for_test, scripted_hot_fork_source_with_state_for_test,
 };
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
@@ -92,20 +92,20 @@ mod native_acceptance;
 mod world_fork_atomicity;
 
 #[cfg(feature = "destructive-recovery-faults")]
-const WORLD_FORK_ONE_VM_FAILURE_CHILD_ENVIRONMENT: &str =
-    "CRUCIBLE_DESTRUCTIVE_RECOVERY_WORLD_FORK_ONE_VM_FAILURE_CHILD";
+const WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_WORLD_FORK_PREFLIGHT_FAILURE_CHILD";
 #[cfg(feature = "destructive-recovery-faults")]
 const CHILD_RESOURCE_ALIAS_CHILD_ENVIRONMENT: &str =
     "CRUCIBLE_DESTRUCTIVE_RECOVERY_CHILD_RESOURCE_ALIAS_CHILD";
 #[cfg(feature = "destructive-recovery-faults")]
 const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
 #[cfg(feature = "destructive-recovery-faults")]
-const WORLD_FORK_ONE_VM_FAILURE_TRIGGER: &str =
-    "crucible.destructive-recovery.world-fork-one-vm-failure";
+const WORLD_FORK_PREFLIGHT_FAILURE_TRIGGER: &str =
+    "crucible.destructive-recovery.world-fork-preflight-failure";
 #[cfg(feature = "destructive-recovery-faults")]
 const CHILD_RESOURCE_ALIAS_TRIGGER: &str = "crucible.destructive-recovery.child-resource-alias";
 #[cfg(feature = "destructive-recovery-faults")]
-const WORLD_FORK_ONE_VM_FAILURE_TEST_NAME: &str = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_one_vm_failure_quarantines_partial_world";
+const WORLD_FORK_PREFLIGHT_FAILURE_TEST_NAME: &str = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_preflight_failure_restores_source_world";
 #[cfg(feature = "destructive-recovery-faults")]
 const CHILD_RESOURCE_ALIAS_TEST_NAME: &str = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::child_resource_alias_rejects_before_fork_and_restores_source_world";
 

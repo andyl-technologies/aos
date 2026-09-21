@@ -164,6 +164,16 @@
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_adoption_fails
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry
+    run_case qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_negative_isolation_source_unchanged=true' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness.log
 
     printf '%s\n' \
       'PASS' \
@@ -176,6 +186,9 @@
       'ambient_outputs_rejected=pidfile,export-socket' \
       'native_running_sibling_mutation_isolated=true' \
       'native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation' \
+      'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
+      'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
+      'native_negative_isolation_source_unchanged=true' \
       'failures=fork,adoption,target-cleanup,repository-publication' \
       'check=${attrPath}' \
       'tasks=${builtins.concatStringsSep "," taskIds}' \

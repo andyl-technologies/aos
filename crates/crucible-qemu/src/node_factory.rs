@@ -130,6 +130,12 @@ where
         self.vmstate.query_hot_fork_template()
     }
 
+    fn adopt_hot_fork_child_as_template_source(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.vmstate.adopt_hot_fork_child_as_template_source()
+    }
+
     fn prepare_hot_fork_template_barriers(
         &mut self,
         block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],

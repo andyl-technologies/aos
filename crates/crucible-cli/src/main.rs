@@ -284,7 +284,7 @@ enum Commands {
     /// Coverage-guided fuzzing over a scenario family (22).
     Fuzz(FuzzArgs),
     /// Cluster, dedup, and minimize discovered failures.
-    Triage(TriageArgs),
+    Triage(CampaignTriageRouteArgs),
     /// Open the time-travel debugger.
     Debug(DebugArgs),
     /// Run the daemon hosting the API (21).
@@ -373,6 +373,8 @@ enum CampaignCommand {
     FrontierObject(CampaignFrontierObjectArgs),
     /// Replay one authenticated finding reproduction through its pure oracle.
     Replay(CampaignReplayArgs),
+    /// Project and minimize the authenticated findings retained by one snapshot.
+    Triage(CampaignTriageArgs),
     /// Open an authenticated retained finding checkpoint in the debug relay.
     Debug(CampaignDebugArgs),
     /// Begin issuing work for a newly created campaign.
@@ -412,6 +414,38 @@ struct CampaignReplayArgs {
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignTriageArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact authenticated campaign snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Select the failure-signature policy.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "coarse|default|fine|exact",
+        default_value_t = TriagePolicyArg::Default
+    )]
+    policy: TriagePolicyArg,
+    /// Select representative minimization mode.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "none|representative|all",
+        default_value_t = TriageMinimizeArg::Representative
+    )]
+    minimize: TriageMinimizeArg,
+    /// Write per-cluster reports here.
+    #[arg(long, value_name = "dir")]
+    report: Option<PathBuf>,
+    /// Recompute signatures and fail if retained evidence drifts.
+    #[arg(long, action = ArgAction::SetTrue)]
+    recompute_signatures: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignDebugArgs {
     /// Canonical campaign name.
     #[arg(value_name = "NAME")]
@@ -428,6 +462,9 @@ struct CampaignDebugArgs {
     /// Listen for gdb-protocol clients here.
     #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:0")]
     gdb_listen: String,
+    /// Fork a private non-canonical branch before exposing the GDB relay.
+    #[arg(long, action = ArgAction::SetTrue)]
+    writable: bool,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -748,20 +785,11 @@ struct CampaignFixtureArgs {
 enum CampaignFixtureCommand {
     /// Generate the adaptive network-recovery campaign from RFC-0020.
     WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
-    /// Generate an authenticated offline Finding-triage fixture.
-    FindingTriage(CampaignFindingTriageFixtureArgs),
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignWorkedNetworkFixtureArgs {
     /// New directory that will receive the complete fixture.
-    #[arg(long, value_name = "DIR", required = true)]
-    output: PathBuf,
-}
-
-#[derive(Args, Debug, PartialEq, Eq)]
-struct CampaignFindingTriageFixtureArgs {
-    /// New directory that will receive the ledger, store, and mutations.
     #[arg(long, value_name = "DIR", required = true)]
     output: PathBuf,
 }
@@ -1665,36 +1693,16 @@ impl FuzzCoverageArg {
     }
 }
 
-#[derive(Args, Debug, Default, PartialEq, Eq)]
-struct TriageArgs {
-    /// Read this findings ledger.
-    #[arg(value_name = "FINDINGS")]
-    findings: String,
-    /// Select the failure-signature policy.
-    #[arg(
-        long,
-        value_enum,
-        value_name = "coarse|default|fine|exact",
-        default_value_t = TriagePolicyArg::Default
-    )]
-    policy: TriagePolicyArg,
-    /// Select representative minimization mode.
-    #[arg(
-        long,
-        value_enum,
-        value_name = "none|representative|all",
-        default_value_t = TriageMinimizeArg::Representative
-    )]
-    minimize: TriageMinimizeArg,
-    /// Write per-cluster reports here.
-    #[arg(long, value_name = "dir")]
-    report: Option<PathBuf>,
-    /// Recompute signatures and fail if discovery-time bytes drift.
-    #[arg(long, action = ArgAction::SetTrue)]
-    recompute_signatures: bool,
-    /// Diff against another content-addressed triage result.
-    #[arg(long, value_name = "other-triage-result")]
-    compare: Option<String>,
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignTriageRouteArgs {
+    /// Connected campaign service socket.
+    #[arg(long, value_name = "path", required = true)]
+    campaign_socket: PathBuf,
+    /// Authenticated campaign principal.
+    #[arg(long, value_name = "principal", required = true)]
+    principal: String,
+    #[command(flatten)]
+    campaign: CampaignTriageArgs,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]

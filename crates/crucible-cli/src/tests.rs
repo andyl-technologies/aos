@@ -19,14 +19,11 @@ mod reproduction_footer;
 mod state_workflows;
 #[path = "tests/surface.rs"]
 mod surface;
-#[path = "tests/triage_fixture.rs"]
-mod triage_fixture;
 #[path = "tests/verify_dispatch.rs"]
 mod verify_dispatch;
 
 use graph_support::*;
 use surface::*;
-use triage_fixture::*;
 
 #[derive(Debug)]
 struct TerminalCampaignFailure;

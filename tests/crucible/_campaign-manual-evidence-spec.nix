@@ -79,7 +79,9 @@
     (booleanField "resource_audit_complete" contract.resource_audit.required)
     (minimum "duration_hours" contract.minimum_duration_hours)
     (minimum "duration_hours" contract.release_candidate_duration_hours)
-    (minimum "execution_count" contract.scale.minimum_executions)
+    (minimum "hot_children_created_and_retired" contract.scale.minimum_hot_children)
+    (minimum "promoted_template_generations_reached" contract.scale.minimum_promoted_template_generations)
+    (minimum "admitted_lightweight_attempts" contract.scale.minimum_admitted_attempts)
   ];
   e2eRequirements = [
     (booleanField "physical_cross_host_reproduction" contract.physical_cross_host_required)

@@ -459,9 +459,9 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[3], "execution-model-payload");
     }
     for (schema, version) in [
-        ("crucible.campaign.gc-plan", "2"),
+        ("crucible.campaign.gc-plan", "1"),
         ("crucible.campaign.gc-root-manifest", "1"),
-        ("crucible.campaign.gc-candidate-manifest", "2"),
+        ("crucible.campaign.gc-candidate-manifest", "1"),
         ("crucible.campaign.gc-journal-state", "1"),
     ] {
         let record = rows

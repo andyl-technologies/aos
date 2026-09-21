@@ -39,7 +39,7 @@ struct SingleSchedulerWire {
     control_inbox: Vec<ControlOperation>,
     decision_seed: [u8; 32],
     decision_rng_cursor: DecisionRngState,
-    branch_network_choices: Vec<OverrideDecision>,
+    branch_network_choices: Vec<SelectionDecision>,
     search_frontiers: Vec<SearchRuntimeFrontierWire>,
     event_log: EventLogWire,
     trigger_actions: TriggerActionState,

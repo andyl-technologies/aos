@@ -24,7 +24,9 @@ mod child;
 #[path = "equivalence/evidence.rs"]
 mod evidence;
 
-use self::child::{NativeHotChildStart, run_hot_child, start_hot_child};
+use self::child::{
+    NativeHotChildStart, run_hot_child, start_descendant_hot_child, start_hot_child,
+};
 use self::evidence::{
     BoundaryEvidence, EquivalenceTopology, assert_continuation_equivalent,
     capture_boundary_evidence, continue_from_pending, drain_exact_pending,
@@ -438,38 +440,35 @@ fn production_hot_fork_scales_across_three_semantic_template_depths() {
     let (source, artifacts) =
         scenario::build_single_node_scaling(&fixture, artifacts).expect("build scaling scenario");
 
+    let context = execution_context(&execution_input_for_scenario(source.clone()), 0xc1);
+    let mut lifecycle = begin_fresh(
+        &paths,
+        "depth-1-source",
+        8_200,
+        &source,
+        artifacts,
+        &context,
+    );
+    let boundary = drive_fresh_source_to_semantic_depth(&mut lifecycle, &source, 1);
+    let world = lifecycle
+        .prepare_hot_fork_source_world()
+        .expect("prepare root semantic-depth source world");
+    let mut process_generations = vec![world.continuation().nodes()[0].generation()];
+    let mut source_allocated_bytes =
+        allocated_tree_bytes(&paths.storage_root.join("depth-1-source"));
+    let mut child = start_hot_child(NativeHotChildStart {
+        paths: &paths,
+        lane: "depth-1-target",
+        project_id_start: 8_600,
+        source: source.clone(),
+        expected_boundary: &boundary,
+        checkpoint: None,
+        execution_byte: 0xd1,
+        world,
+        topology: EquivalenceTopology::SingleNode,
+    });
+
     for depth in 1..=3 {
-        let source_lane = format!("depth-{depth}-source");
-        let target_lane = format!("depth-{depth}-target");
-        let context = execution_context(
-            &execution_input_for_scenario(source.clone()),
-            0xc0 + u8::try_from(depth).expect("depth byte"),
-        );
-        let mut lifecycle = begin_fresh(
-            &paths,
-            &source_lane,
-            8_100 + u32::try_from(depth).expect("depth project") * 100,
-            &source,
-            Arc::clone(&artifacts),
-            &context,
-        );
-        let boundary = drive_fresh_source_to_semantic_depth(&mut lifecycle, &source, depth);
-        assert_eq!(boundary.configuration.schedule.len(), depth);
-        let world = lifecycle
-            .prepare_hot_fork_source_world()
-            .expect("prepare semantic-depth source world");
-        let source_allocated_bytes = allocated_tree_bytes(&paths.storage_root.join(&source_lane));
-        let child = start_hot_child(NativeHotChildStart {
-            paths: &paths,
-            lane: &target_lane,
-            project_id_start: 8_500 + u32::try_from(depth).expect("depth project") * 100,
-            source: source.clone(),
-            expected_boundary: &boundary,
-            checkpoint: None,
-            execution_byte: 0xd0 + u8::try_from(depth).expect("depth byte"),
-            world,
-            topology: EquivalenceTopology::SingleNode,
-        });
         let measurement = child.measurement();
         assert_eq!(measurement.processes, 1);
         println!(
@@ -493,10 +492,368 @@ fn production_hot_fork_scales_across_three_semantic_template_depths() {
             measurement.allocated_bytes
         );
         println!("template_depth_{depth}_source_allocated_bytes={source_allocated_bytes}");
+        if depth == 3 {
+            child.finish_without_continuation();
+            break;
+        }
+
+        child.advance_to_next_semantic_depth();
+        let promoted = child.promote();
+        assert_eq!(promoted.boundary.configuration.schedule.len(), depth + 1);
+        let promoted_generation = promoted.world.continuation().nodes()[0].generation();
+        let prior_generation = process_generations
+            .last()
+            .copied()
+            .expect("descendant promotion retains its parent generation");
+        assert_eq!(promoted_generation, prior_generation + 1);
+        process_generations.push(promoted_generation);
+        source_allocated_bytes =
+            allocated_tree_bytes(&paths.storage_root.join(format!("depth-{depth}-target")));
+        let next_lane = format!("depth-{}-target", depth + 1);
+        child = start_descendant_hot_child(
+            NativeHotChildStart {
+                paths: &paths,
+                lane: &next_lane,
+                project_id_start: 8_600 + u32::try_from(depth).expect("depth project") * 100,
+                source: promoted.source,
+                expected_boundary: &promoted.boundary,
+                checkpoint: None,
+                execution_byte: 0xd1 + u8::try_from(depth).expect("depth byte"),
+                world: promoted.world,
+                topology: EquivalenceTopology::SingleNode,
+            },
+            promoted.lineage,
+        );
+    }
+    assert_eq!(process_generations.len(), 3);
+    println!("semantic_template_depth=3");
+    println!("descendant_template_generations=3");
+    println!(
+        "descendant_process_generations={},{},{}",
+        process_generations[0], process_generations[1], process_generations[2]
+    );
+}
+
+#[test]
+#[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
+fn production_hot_fork_scales_across_three_guest_memory_sizes() {
+    let paths = NativeGatePaths::from_environment();
+    let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
+
+    for (index, memory_mib) in [64_u32, 256, 512].into_iter().enumerate() {
+        let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
+        let (source, artifacts) =
+            scenario::build_single_node_equivalence_with_memory(&fixture, artifacts, memory_mib)
+                .expect("build memory scaling scenario");
+        let source_lane = format!("ram-{memory_mib}-source");
+        let target_lane = format!("ram-{memory_mib}-target");
+        let input = execution_input_for_scenario(source.clone());
+        let context = execution_context(
+            &input,
+            0xb0 + u8::try_from(index).expect("memory profile byte"),
+        );
+        let mut lifecycle = begin_fresh(
+            &paths,
+            &source_lane,
+            10_000 + u32::try_from(index).expect("memory profile project") * 100,
+            &source,
+            artifacts,
+            &context,
+        );
+        let boundary =
+            drive_to_pending_boundary(&mut lifecycle, &source, EquivalenceTopology::SingleNode);
+        let world = lifecycle
+            .prepare_hot_fork_source_world()
+            .expect("prepare memory scaling source");
+        let child = start_hot_child(NativeHotChildStart {
+            paths: &paths,
+            lane: &target_lane,
+            project_id_start: 10_050 + u32::try_from(index).expect("memory profile project") * 100,
+            source: source.clone(),
+            expected_boundary: &boundary,
+            checkpoint: None,
+            execution_byte: 0xb8 + u8::try_from(index).expect("memory profile byte"),
+            world,
+            topology: EquivalenceTopology::SingleNode,
+        });
+        let measurement = child.measurement();
+        let private_limit_kib = u64::from(memory_mib) * 256 + 32 * 1024;
+        assert!(measurement.private_rss_kib <= private_limit_kib);
+        println!(
+            "ram_{memory_mib}_child_private_rss_kib={}",
+            measurement.private_rss_kib
+        );
+        println!(
+            "ram_{memory_mib}_child_vm_pte_kib={}",
+            measurement.vm_pte_kib
+        );
         child.finish_without_continuation();
     }
-    println!("semantic_template_depth=3");
-    println!("nested_os_fork=forbidden-by-qemu-child-contract");
+    println!("guest_memory_profiles_mib=64,256,512");
+}
+
+#[test]
+#[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
+fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
+    const LIFECYCLES: usize = 10_000;
+
+    let paths = NativeGatePaths::from_environment();
+    let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
+    let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
+    let (source, artifacts) = scenario::build_single_node_equivalence(&fixture, artifacts)
+        .expect("build production stress scenario");
+    let input = execution_input_for_scenario(source.clone());
+    let context = execution_context(&input, 0xa8);
+    let mut lifecycle = begin_fresh(
+        &paths,
+        "production-stress-source",
+        11_000,
+        &source,
+        artifacts,
+        &context,
+    );
+    let boundary =
+        drive_to_pending_boundary(&mut lifecycle, &source, EquivalenceTopology::SingleNode);
+    let mut world = lifecycle
+        .prepare_hot_fork_source_world()
+        .expect("prepare production stress source");
+    let source_cgroup = paths.cgroup_root.join("production-stress-source");
+    let baseline_processes = cgroup_processes(&source_cgroup);
+    let baseline_threads = process_thread_count(&baseline_processes);
+    let baseline_descriptors = process_descriptor_count(&baseline_processes);
+    let mut midpoint_private_dirty_kib = 0;
+
+    for lifecycle_index in 0..LIFECYCLES {
+        let child = start_hot_child(NativeHotChildStart {
+            paths: &paths,
+            lane: "production-stress-target",
+            project_id_start: 11_100,
+            source: source.clone(),
+            expected_boundary: &boundary,
+            checkpoint: None,
+            execution_byte: 0xa9,
+            world,
+            topology: EquivalenceTopology::SingleNode,
+        });
+        world = child.finish_without_continuation_and_recover();
+
+        let completed = lifecycle_index + 1;
+        if completed % 250 == 0 || completed == LIFECYCLES / 2 || completed == LIFECYCLES {
+            let processes = cgroup_processes(&source_cgroup);
+            assert_eq!(process_thread_count(&processes), baseline_threads);
+            assert_eq!(process_descriptor_count(&processes), baseline_descriptors);
+            let private_dirty_kib = process_memory_evidence(&processes).private_dirty_kib;
+            if completed == LIFECYCLES / 2 {
+                midpoint_private_dirty_kib = private_dirty_kib;
+            }
+            println!("stress_private_dirty_{completed}_kib={private_dirty_kib}");
+        }
+    }
+    let final_processes = cgroup_processes(&source_cgroup);
+    let final_private_dirty_kib = process_memory_evidence(&final_processes).private_dirty_kib;
+    assert!(final_private_dirty_kib.saturating_sub(midpoint_private_dirty_kib) <= 4 * 1024);
+    world.retire().expect("retire production stress source");
+    println!("production_whole_world_lifecycles={LIFECYCLES}");
+    println!("source_threads_leaked=0");
+    println!("source_descriptors_leaked=0");
+    println!("source_private_dirty_late_growth_limit_kib=4096");
+}
+
+#[test]
+#[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
+fn production_hot_fork_meets_whole_world_performance_ratchets() {
+    const CORPUS_SIZE: usize = 3;
+    const KNOWN_DIRTY_KIB: u64 = 1024 * 4;
+    const DIRTY_OVERHEAD_KIB: u64 = 64 * 1024;
+
+    let paths = NativeGatePaths::from_environment();
+    let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
+    let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
+    let (source, artifacts) =
+        scenario::build_equivalence(&fixture, artifacts).expect("build performance scenario");
+    let input = execution_input_for_scenario(source.clone());
+    let checkpoint_context = execution_context(&input, 0xe0);
+    let mut checkpoint_source = begin_fresh(
+        &paths,
+        "performance-checkpoint-source",
+        9_000,
+        &source,
+        Arc::clone(&artifacts),
+        &checkpoint_context,
+    );
+    let checkpoint_boundary = drive_to_pending_boundary(
+        &mut checkpoint_source,
+        &source,
+        EquivalenceTopology::MultiNode,
+    );
+    let checkpoints = checkpoint_store();
+    let capture = QemuFreshAttemptLifecycleOwner::capture_attempt_checkpoint(
+        &mut checkpoint_source,
+        &checkpoint_context,
+    )
+    .expect("capture performance checkpoint");
+    let prepared = checkpoints
+        .prepare_attempt_checkpoint(&capture)
+        .expect("prepare performance checkpoint");
+    let checkpoint = checkpoints
+        .publish_attempt_checkpoint(&prepared)
+        .expect("publish performance checkpoint")
+        .root();
+    QemuFreshAttemptLifecycleOwner::shutdown(&mut checkpoint_source)
+        .expect("shutdown performance checkpoint source");
+
+    let mut hot_setup = 0_u64;
+    let mut exact_setup = 0_u64;
+    let mut hot_steady = 0_u64;
+    let mut exact_steady = 0_u64;
+    for index in 0..CORPUS_SIZE {
+        let source_lane = format!("performance-source-{index}");
+        let hot_lane = format!("performance-hot-{index}");
+        let exact_lane = format!("performance-exact-{index}");
+        let context = execution_context(&input, 0xe1 + u8::try_from(index).expect("corpus byte"));
+        let mut live_source = begin_fresh(
+            &paths,
+            &source_lane,
+            9_100 + u32::try_from(index).expect("corpus project") * 100,
+            &source,
+            Arc::clone(&artifacts),
+            &context,
+        );
+        let boundary =
+            drive_to_pending_boundary(&mut live_source, &source, EquivalenceTopology::MultiNode);
+        assert_eq!(boundary, checkpoint_boundary);
+        let world = live_source
+            .prepare_hot_fork_source_world()
+            .expect("prepare performance source");
+        let child = start_hot_child(NativeHotChildStart {
+            paths: &paths,
+            lane: &hot_lane,
+            project_id_start: 9_200 + u32::try_from(index).expect("corpus project") * 100,
+            source: source.clone(),
+            expected_boundary: &boundary,
+            checkpoint: None,
+            execution_byte: 0xe8 + u8::try_from(index).expect("corpus byte"),
+            world,
+            topology: EquivalenceTopology::MultiNode,
+        });
+        let measurement = child.measurement();
+        hot_setup = hot_setup.saturating_add(measurement.ready_nanoseconds);
+        assert_eq!(measurement.node_launch_count, 2);
+        assert!(measurement.node_launch_sum_nanoseconds > measurement.node_launch_max_nanoseconds);
+        assert!(
+            measurement.world_launch_nanoseconds
+                <= measurement
+                    .node_launch_max_nanoseconds
+                    .saturating_add(250_000_000),
+            "whole-world launch exceeded max-node plus orchestration budget"
+        );
+        let (hot, elapsed, after) = child.finish_measured();
+        hot_steady = hot_steady.saturating_add(elapsed);
+        let dirty_growth = after
+            .private_dirty_kib
+            .saturating_sub(measurement.private_dirty_kib);
+        assert!(dirty_growth >= KNOWN_DIRTY_KIB / 2);
+        assert!(dirty_growth <= KNOWN_DIRTY_KIB + DIRTY_OVERHEAD_KIB);
+
+        let exact_input = execution_input_for_scenario_configuration(
+            source.clone(),
+            checkpoint_boundary.configuration.clone(),
+        );
+        let exact_context = execution_context(
+            &exact_input,
+            0xf0 + u8::try_from(index).expect("corpus byte"),
+        )
+        .with_resume_checkpoint(Some(checkpoint));
+        let exact_started = operational_monotonic_nanoseconds();
+        let mut exact = begin_exact(
+            &paths,
+            &exact_lane,
+            9_300 + u32::try_from(index).expect("corpus project") * 100,
+            &source,
+            Arc::clone(&artifacts),
+            ExactResume {
+                store: &checkpoints,
+                checkpoint,
+                boundary: &checkpoint_boundary.configuration,
+            },
+            &exact_context,
+        );
+        let pending = drain_exact_pending(&mut exact);
+        let exact_boundary = capture_boundary_evidence(
+            &mut exact,
+            &source,
+            checkpoint_boundary.configuration.clone(),
+            pending,
+            EquivalenceTopology::MultiNode,
+        );
+        exact_setup = exact_setup
+            .saturating_add(operational_monotonic_nanoseconds().saturating_sub(exact_started));
+        let steady_started = operational_monotonic_nanoseconds();
+        let exact_evidence = continue_from_pending(
+            &mut exact,
+            &source,
+            exact_boundary.configuration.clone(),
+            exact_boundary.pending.clone(),
+        );
+        exact_steady = exact_steady
+            .saturating_add(operational_monotonic_nanoseconds().saturating_sub(steady_started));
+        assert_continuation_equivalent("performance exact restore", &hot, &exact_evidence);
+        QemuFreshAttemptLifecycleOwner::shutdown(&mut exact).expect("shutdown exact corpus member");
+
+        println!("corpus_{index}_vm_pte_kib={}", measurement.vm_pte_kib);
+        println!("corpus_{index}_vm_data_kib={}", measurement.vm_data_kib);
+        println!(
+            "corpus_{index}_anon_huge_pages_kib={}",
+            measurement.anon_huge_pages_kib
+        );
+        println!(
+            "corpus_{index}_numa_resident_pages={}",
+            measurement.numa_resident_pages
+        );
+        println!("corpus_{index}_numa_nodes={}", measurement.numa_nodes);
+        println!("corpus_{index}_known_dirty_private_growth_kib={dirty_growth}");
+        println!("corpus_{index}_post_dirty_vm_pte_kib={}", after.vm_pte_kib);
+        println!(
+            "corpus_{index}_post_dirty_vm_data_kib={}",
+            after.vm_data_kib
+        );
+        println!(
+            "corpus_{index}_post_dirty_anon_huge_pages_kib={}",
+            after.anon_huge_pages_kib
+        );
+        println!(
+            "corpus_{index}_post_dirty_numa_resident_pages={}",
+            after.numa_resident_pages
+        );
+        println!("corpus_{index}_post_dirty_numa_nodes={}", after.numa_nodes);
+        println!(
+            "corpus_{index}_node_launch_sum_nanoseconds={}",
+            measurement.node_launch_sum_nanoseconds
+        );
+        println!(
+            "corpus_{index}_node_launch_max_nanoseconds={}",
+            measurement.node_launch_max_nanoseconds
+        );
+        println!(
+            "corpus_{index}_node_launch_count={}",
+            measurement.node_launch_count
+        );
+        println!(
+            "corpus_{index}_world_launch_nanoseconds={}",
+            measurement.world_launch_nanoseconds
+        );
+    }
+    assert!(
+        exact_setup >= hot_setup.saturating_mul(5),
+        "hot setup must be at least 5x faster"
+    );
+    assert!(hot_steady.saturating_mul(100) <= exact_steady.saturating_mul(110));
+    println!("exact_restore_corpus_size={CORPUS_SIZE}");
+    println!("setup_speedup_minimum=5x");
+    println!("steady_execution_overhead_limit_percent=10");
+    println!("known_dirty_guest_pages=1024");
+    println!("memory_metrics=VmPTE,VmData,AnonHugePages,numa_maps");
+    println!("multi_node_launch_model=max-plus-bounded-orchestration");
 }
 
 fn drive_fresh_source_to_semantic_depth(

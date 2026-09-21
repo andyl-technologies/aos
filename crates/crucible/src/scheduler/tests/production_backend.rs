@@ -486,51 +486,6 @@ fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
 }
 
 #[test]
-fn branch_prefix_admission_records_only_explorer_overrides() {
-    let mut scheduler = test_scheduler(
-        vec![test_scenario_node(
-            "node-a",
-            0,
-            SchedulerNodeActivity::Halted,
-            NetworkLookahead::Infinite,
-            ExactLocalEvent::NoArmedTimer,
-        )],
-        Vec::new(),
-    );
-    let decision = Decision::Override(crate::OverrideDecision {
-        point: crate::SchedulingPoint {
-            key: String::from("fuzz/sample"),
-        },
-        choice: crate::ChoiceTag {
-            name: String::from("candidate-7"),
-        },
-    });
-
-    let (configuration, append) = scheduler
-        .append_branch_prefix_overrides(vec![decision.clone()])
-        .expect("an explorer override must be admitted");
-
-    assert_eq!(
-        configuration.schedule.decisions(),
-        std::slice::from_ref(&decision)
-    );
-    assert_eq!(scheduler.configuration(), &configuration);
-    assert!(
-        append.entries.iter().any(|entry| {
-            entry.payload() == &SchedulerEventLogPayload::Decision(decision.clone())
-        })
-    );
-
-    let error = scheduler
-        .append_branch_prefix_overrides(vec![Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("not-an-override"),
-            value: 1,
-        })])
-        .expect_err("raw RNG choices must use their owning resolution path");
-    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
-}
-
-#[test]
 fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let parent = scheduler.configuration().clone();
@@ -545,17 +500,8 @@ fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
         selected_index: None,
         overridden: false,
     };
-    let selectable = crate::SignalFaultSelectable::from_frontier(&crate::SearchRuntimeFrontier {
-        configuration: parent.clone(),
-        at: frontier,
-        choices: crate::SearchFrontierChoices::from_decisions(
-            choice
-                .override_decisions(parent.id())
-                .into_iter()
-                .map(Decision::Override),
-        ),
-    })
-    .expect("typed signal selectable");
+    let selectable = crate::SignalFaultSelectable::from_binding_choice(&parent, frontier, &choice)
+        .expect("typed signal selectable");
     let selection = selectable
         .branch_selection(&parent, 1)
         .expect("typed signal selection");

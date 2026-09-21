@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   testing,
+  campaignReleaseEvidence ? null,
 }: let
   redGate = import ./red-gate-placeholder.nix {inherit pkgs;};
   greenBeforeAdvance = {
@@ -72,6 +73,20 @@
     inherit pkgs lib testing;
     compositions = campaignModeAuthorities;
   };
+  campaignReleaseEvidenceFields = [
+    "operatorEvidence"
+    "destructiveRecoveryEvidence"
+    "dogfoodEvidence"
+    "e2eEvidence"
+    "trustedAllowedSigners"
+  ];
+  missingCampaignReleaseEvidenceFields =
+    if campaignReleaseEvidence == null
+    then []
+    else
+      builtins.filter
+      (field: !(builtins.hasAttr field campaignReleaseEvidence))
+      campaignReleaseEvidenceFields;
 in rec {
   phase0 = {
     gates = rec {
@@ -1904,24 +1919,10 @@ in rec {
       attrPath = "checks.crucible.phase6.qemuHotForkChildVm";
       taskIds = ["T-CAM-6.3"];
     };
-    # The same comparison at the larger guest RAM sizes the task names.
     qemuPatchLicenseLedger = import ./phase6-qemu-patch-license-ledger.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase6.qemuPatchLicenseLedger";
       taskIds = ["T-CAM-6.8"];
-    };
-    qemuHotForkChildStressVm = import ./phase6-qemu-hot-fork-child-stress-vm.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase6.qemuHotForkChildStressVm";
-      taskIds = ["T-CAM-6.7"];
-    };
-    # The ten-thousand-lifecycle run the stress task names; built on demand.
-    qemuHotForkChildStress10kVm = import ./phase6-qemu-hot-fork-child-stress-vm.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase6.qemuHotForkChildStress10kVm";
-      taskIds = ["T-CAM-6.7"];
-      lifecycles = 10000;
-      lateGrowthBoundKib = 4096;
     };
     advancedDependencyLadder = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.advancedDependencyLadder";
@@ -2881,7 +2882,7 @@ in rec {
           attrPath = "checks.crucible.phase7.gates.hotForkScaling.rawGate";
           taskIds = ["T-CAM-7.1" "T-CAM-7.3" "T-CAM-7.6"];
         };
-        dependencies = [phase7.qemuHotForkAtomicWorldVm phase6.qemuHotForkChildStress10kVm];
+        dependencies = [phase7.qemuHotForkAtomicWorldVm];
         phase = "phase7";
         reason = "canonical production QEMU scaling evidence has not passed on the frozen artifact";
         taskIds = ["T-CAM-7.1" "T-CAM-7.3" "T-CAM-7.6"];
@@ -3041,6 +3042,13 @@ in rec {
         inherit campaignMidpointDebug;
         dependencies = [];
       };
+      campaignFindingPortability = import ./phase9-campaign-finding-portability.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase9.gates.campaignFindingPortability";
+        taskIds = ["T-CAM-9.4"];
+        packagedReplay = phase4.gates.campaignReplay.rawGate;
+        dependencies = [];
+      };
       campaignDogfoodContract = import ./phase9-campaign-dogfood-contract.nix {
         inherit pkgs;
         attrPath = "checks.crucible.phase9.gates.campaignDogfoodContract";
@@ -3059,6 +3067,216 @@ in rec {
         taskIds = ["T-CAM-0.5" "T-CAM-8.6" "T-CAM-9.7"];
         dependencies = [];
       };
+      campaignReleaseAcceptanceContract = import ./phase9-campaign-release-acceptance-contract.nix {
+        inherit pkgs;
+        attrPath = "checks.crucible.phase9.gates.campaignReleaseAcceptanceContract";
+        taskIds = [
+          "T-CAM-9.1"
+          "T-CAM-9.2"
+          "T-CAM-9.3"
+          "T-CAM-9.4"
+          "T-CAM-9.5"
+          "T-CAM-9.6"
+          "T-CAM-9.7"
+        ];
+        dependencies = [];
+      };
+      campaignRequiredGates = import ./phase9-campaign-required-gates.nix {
+        inherit pkgs lib;
+        requiredStatuses = [
+          phase1.gates.campaignModel
+          phase1.gates.licenseBoundary
+          phase2.gates.abiConformance
+          phase2.gates.typedChoice
+          phase2.gates.typedChoiceProductCheckpoint
+          phase4.gates.attemptIdempotence
+          phase4.gates.branchPointModel
+          phase4.gates.campaignMutationScaling
+          phase4.gates.campaignReplay
+          phase4.gates.campaignStatistics
+          phase4.gates.controlResponsiveness
+          phase4.gates.lazyFrontier
+          phase5.gates.campaignColdContinuity
+          phase5.gates.campaignStoreComposition
+          phase5.gates.campaignStoreEquivalence
+          phase5.gates.exactClosureStreaming
+          phase7.gates.hotForkIsolation
+          phase7.gates.hotForkScaling
+          phase7.gates.worldForkAtomicity
+        ];
+        requiredClaims = [
+          {
+            gate = "gate:campaign-model";
+            result = phase1.gates.campaignModel.rawGate;
+            requiredLines = ["gate=gate:campaign-model"];
+          }
+          {
+            gate = "gate:campaign-component-contract";
+            result = phase5.gates.campaignStoreComposition.rawGate;
+            requiredLines = [
+              "gate=gate:campaign-store-composition"
+              "same_campaign_direct_and_split_process=true"
+              "accepted_cancellation_completion_race=true"
+              "stale_assignment_rejection=true"
+              "planner_raw_golden_vectors=true"
+              "branch_edge_credit_exactly_once=true"
+            ];
+          }
+          {
+            gate = "gate:branch-point-model";
+            result = phase4.gates.branchPointModel.rawGate;
+            requiredLines = ["gate=gate:branch-point-model"];
+          }
+          {
+            gate = "gate:typed-choice";
+            result = phase2.gates.typedChoice.rawGate;
+            requiredLines = ["gate=gate:typed-choice"];
+          }
+          {
+            gate = "gate:typed-choice-product-checkpoint";
+            result = phase2.gates.typedChoiceProductCheckpoint.rawGate;
+            requiredLines = ["gate=gate:typed-choice-product-checkpoint"];
+          }
+          {
+            gate = "gate:campaign-replay";
+            result = phase4.gates.campaignReplay.rawGate;
+            requiredLines = ["gate=gate:campaign-replay"];
+          }
+          {
+            gate = "gate:lazy-frontier";
+            result = phase4.gates.lazyFrontier.rawGate;
+            requiredLines = ["gate=gate:lazy-frontier"];
+          }
+          {
+            gate = "gate:attempt-idempotence";
+            result = phase4.gates.attemptIdempotence.rawGate;
+            requiredLines = ["gate=gate:attempt-idempotence"];
+          }
+          {
+            gate = "gate:hot-fork-equivalence";
+            result = phase7.qemuHotForkEquivalenceVm;
+            requiredLines = ["gate=gate:hot-fork-equivalence"];
+          }
+          {
+            gate = "gate:hot-fork-isolation";
+            result = phase7.gates.hotForkIsolation.rawGate;
+            requiredLines = ["gate=gate:hot-fork-isolation"];
+          }
+          {
+            gate = "gate:hot-fork-scaling";
+            result = phase7.gates.hotForkScaling.rawGate;
+            requiredLines = ["gate=gate:hot-fork-scaling"];
+          }
+          {
+            gate = "gate:world-fork-atomicity";
+            result = phase7.qemuHotForkAtomicWorldVm;
+            requiredLines = ["gate=gate:world-fork-atomicity"];
+          }
+          {
+            gate = "gate:exact-closure-streaming";
+            result = phase5.gates.exactClosureStreaming.rawGate;
+            requiredLines = ["gate=gate:exact-closure-streaming"];
+          }
+          {
+            gate = "gate:campaign-store-equivalence";
+            result = phase5.gates.campaignStoreEquivalence.rawGate;
+            requiredLines = ["gate=gate:campaign-store-equivalence"];
+          }
+          {
+            gate = "gate:campaign-store-composition";
+            result = phase5.gates.campaignStoreComposition.rawGate;
+            requiredLines = ["gate=gate:campaign-store-composition"];
+          }
+          {
+            gate = "gate:campaign-cold-continuity";
+            result = phase5.gates.campaignColdContinuity.rawGate;
+            requiredLines = ["gate=gate:campaign-cold-continuity"];
+          }
+          {
+            gate = "gate:campaign-statistics";
+            result = phase4.gates.campaignStatistics.rawGate;
+            requiredLines = ["gate=gate:campaign-statistics"];
+          }
+          {
+            gate = "gate:campaign-operational-continuity";
+            result = campaignOperationalContinuity;
+            requiredLines = ["gate=gate:campaign-operational-continuity"];
+          }
+          {
+            gate = "gate:license-boundary";
+            result = phase1.gates.licenseBoundary.rawGate;
+            requiredLines = ["gate=gate:license-boundary"];
+          }
+          {
+            gate = "gate:abi-conformance";
+            result = phase2.gates.abiConformance.rawGate;
+            requiredLines = ["gate=gate:abi-conformance"];
+          }
+          {
+            gate = "gate:control-responsiveness";
+            result = phase4.gates.controlResponsiveness.rawGate;
+            requiredLines = ["gate=gate:control-responsiveness"];
+          }
+          {
+            gate = "gate:campaign-mutation-scaling";
+            result = phase4.gates.campaignMutationScaling.rawGate;
+            requiredLines = [
+              "gate=gate:campaign-mutation-scaling"
+              "mutations=10000"
+            ];
+          }
+          {
+            gate = "gate:campaign-rfc-traceability";
+            result = phase4.campaignRfcTraceability;
+            requiredLines = [
+              "check=checks.crucible.phase4.campaignRfcTraceability"
+              "scope=catalog,cargo-targets,manual-artifact-contracts,nix-wiring"
+            ];
+          }
+        ];
+      };
+      campaignReleaseAcceptance =
+        if missingCampaignReleaseEvidenceFields != []
+        then throw "campaign release evidence is missing required fields: ${builtins.concatStringsSep ", " missingCampaignReleaseEvidenceFields}"
+        else if campaignReleaseEvidence == null
+        then
+          redGate {
+            attrPath = "checks.crucible.phase9.gates.campaignReleaseAcceptance";
+            gateName = "gate:campaign-release-acceptance";
+            owner = "crucible-cli";
+            phase = "phase9";
+            reason = "signed operator, destructive-recovery, dogfood, and e2e evidence was not supplied";
+            taskIds = [
+              "T-CAM-9.1"
+              "T-CAM-9.2"
+              "T-CAM-9.3"
+              "T-CAM-9.4"
+              "T-CAM-9.5"
+              "T-CAM-9.6"
+              "T-CAM-9.7"
+            ];
+            dependencies = [campaignReleaseAcceptanceContract];
+          }
+        else
+          import ./phase9-campaign-release-acceptance.nix {
+            inherit
+              pkgs
+              lib
+              campaignGateMatrix
+              campaignOperationalContinuity
+              campaignFindingPortability
+              ;
+            operatorEvidence = campaignReleaseEvidence.operatorEvidence;
+            destructiveRecoveryEvidence = campaignReleaseEvidence.destructiveRecoveryEvidence;
+            dogfoodEvidence = campaignReleaseEvidence.dogfoodEvidence;
+            e2eEvidence = campaignReleaseEvidence.e2eEvidence;
+            trustedAllowedSigners = campaignReleaseEvidence.trustedAllowedSigners;
+            hotForkScaling = phase7.gates.hotForkScaling;
+            requiredGates = campaignRequiredGates;
+            cruciblePackage = pkgs.crucible;
+            releaseManifest = phase7.crucibleReleaseManifest;
+            releaseAcceptanceContract = campaignReleaseAcceptanceContract;
+          };
     };
   };
 }

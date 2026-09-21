@@ -39,29 +39,29 @@ where
     }
     let dispatch = {
         let control_plane = state.control_plane.lock().await;
-        for capability in [
-            DebugCapability::Control,
-            DebugCapability::Mutate,
-            DebugCapability::Shell,
-        ] {
-            if let Err(error) = control_plane
-                .authorize_debug_controller_operation(session, &lease, &role, capability)
-            {
-                return lifecycle_error_response(error);
-            }
+        if let Err(error) = control_plane.authorize_debug_branch_fork(session, &lease, &role) {
+            return lifecycle_error_response(error);
         }
-        match control_plane.guest_introspection_dispatch(session) {
+        match control_plane.debug_branch_fork_dispatch(session) {
             Ok(dispatch) => dispatch,
             Err(error) => return lifecycle_error_response(error),
         }
     };
-    let result =
-        match complete_debug_operation(operation_guard, async move { dispatch.fork(node).await })
+    let operation_state = state.clone();
+    let result = match complete_debug_operation(operation_guard, async move {
+        let report = dispatch.fork(node).await?;
+        operation_state
+            .control_plane
+            .lock()
             .await
-        {
-            Ok(result) => result,
-            Err(error) => return lifecycle_error_response(error),
-        };
+            .commit_writable_debug_branch(session, &report)?;
+        Ok(report)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return lifecycle_error_response(error),
+    };
     match result {
         Ok(report) => match (
             report.guest_introspection_features,

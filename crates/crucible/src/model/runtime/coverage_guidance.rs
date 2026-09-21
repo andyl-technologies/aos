@@ -26,8 +26,13 @@ pub(in crate::model) fn run_coverage_guided_fuzz(
         let scenario = family.instantiate_sample(sample_index)?;
         let params = scenario.params();
         let root = scenario.genesis_configuration();
-        let mutation =
-            coverage_guided_fuzz_override_decision(config, sequence, sample_index, params);
+        let mutation = coverage_guided_fuzz_selection_decision(
+            root.configuration(),
+            config,
+            sequence,
+            sample_index,
+            params,
+        )?;
         let configuration = try_step(root.configuration(), mutation.clone())?;
         let new_coverage = coverage_fingerprint != ContentHash::default()
             && seen_coverage.insert(coverage_fingerprint);
@@ -159,8 +164,17 @@ where
         })?;
         let params = scenario.params();
         let root = scenario.genesis_configuration();
-        let mutation =
-            coverage_guided_fuzz_override_decision(config, sequence, sample_index, params);
+        let mutation = coverage_guided_fuzz_selection_decision(
+            root.configuration(),
+            config,
+            sequence,
+            sample_index,
+            params,
+        )
+        .map_err(|source| CoverageGuidedCorpusError::Engine {
+            operation: "construct-fuzz-selection",
+            source: Box::new(source),
+        })?;
         let configuration = try_step(root.configuration(), mutation.clone()).map_err(|source| {
             CoverageGuidedCorpusError::Engine {
                 operation: "mutate-fuzz-candidate",
@@ -480,12 +494,13 @@ pub(in crate::model) fn coverage_guided_fuzz_sample_index(
     bias.wrapping_add(sequence) % cardinality
 }
 
-pub(in crate::model) fn coverage_guided_fuzz_override_decision(
+pub(in crate::model) fn coverage_guided_fuzz_selection_decision(
+    parent: &Configuration,
     config: CoverageGuidedFuzzConfig,
     sequence: u64,
     sample_index: u64,
     params: FamilyParams,
-) -> Decision {
+) -> Result<Decision, EngineError> {
     let material = format!(
         "meta_seed={}\nsequence={sequence}\nsample_index={sample_index}\nseed={}\ntopology_size={}\ntopology_shape={:?}",
         config.meta_seed.to_hex(),
@@ -493,18 +508,60 @@ pub(in crate::model) fn coverage_guided_fuzz_override_decision(
         params.topology_size,
         params.topology_shape
     );
-    let choice = content_hash_low_u64(ContentHash::from_canonical_material(
-        COVERAGE_GUIDED_FUZZ_OVERRIDE_DOMAIN,
-        &material,
-    ));
-    Decision::Override(OverrideDecision {
-        point: SchedulingPoint {
-            key: format!("coverage-guided-fuzz/{sequence:016}"),
+    let producer = crucible_campaign::CampaignHash::from_bytes(
+        ContentHash::from_canonical_material(COVERAGE_GUIDED_FUZZ_SELECTION_DOMAIN, &material)
+            .bytes,
+    );
+    let domain = crucible_campaign::ChoiceDomain::Boolean(
+        crucible_campaign::BooleanDomain::new(1).map_err(coverage_guided_choice_error)?,
+    );
+    let declaration = crucible_campaign::SelectableDeclaration::new(
+        "coverage-guided-fuzz-mutation",
+        crucible_campaign::ChoiceSource::Scheduler {
+            producer: String::from("crucible.coverage-guided-fuzz.v1"),
         },
-        choice: ChoiceTag {
-            name: format!("mutant-{choice:016x}"),
+        domain.clone(),
+        crucible_campaign::ChoiceValue::Boolean(false),
+        crucible_campaign::ChoiceClassContext::new(BTreeSet::from([
+            String::from("coverage-guided"),
+            String::from("per-iteration"),
+        ]))
+        .map_err(coverage_guided_choice_error)?,
+        BTreeSet::from([String::from("fuzz-mutation")]),
+        false,
+    )
+    .map_err(coverage_guided_choice_error)?;
+    let opportunity = crucible_campaign::ChoiceOpportunity::new(
+        crucible_campaign::ScenarioDefId::from_hash(crucible_campaign::CampaignHash::from_bytes(
+            parent.def.id().bytes,
+        )),
+        &declaration,
+        &domain,
+        crucible_campaign::ChoiceCoordinate {
+            scheduler: crucible_campaign::CampaignHash::from_bytes(parent.id().bytes),
+            producer,
         },
-    })
+        format!("iteration-{sequence:016}"),
+        None,
+    )
+    .map_err(coverage_guided_choice_error)?;
+    let selection = crucible_campaign::Selection::new_campaign_branch(
+        &opportunity,
+        &domain,
+        crucible_campaign::ChoiceValue::Boolean(true),
+        opportunity.branch_point_id(crucible_campaign::ConfigurationId::from_hash(
+            crucible_campaign::CampaignHash::from_bytes(parent.id().bytes),
+        )),
+    )
+    .map_err(coverage_guided_choice_error)?;
+
+    Ok(Decision::Selection(SelectionDecision::new(&selection)))
+}
+
+fn coverage_guided_choice_error(error: crucible_campaign::CampaignCodecError) -> EngineError {
+    EngineError::ScenarioSerialization {
+        reason: format!("coverage-guided choice protocol rejected its producer records: {error}"),
+    }
 }
 
 pub(in crate::model) fn coverage_guided_fuzz_order(

@@ -42,7 +42,7 @@ fn aio_proof_still_requires_closed_quiescent_admission() {
 /// Reproduces the complete prepared response used by the typed QMP fixture.
 pub(super) fn prepared_report() -> Value {
     json!({
-        "schema-version": 26,
+        "schema-version": 27,
         "generation": 4,
         "outcome": "prepared",
         "transaction-active": true,

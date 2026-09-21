@@ -29,7 +29,7 @@ use crate::{
 
 mod lifecycle;
 pub(crate) use lifecycle::QemuHotForkProductionLifecycleContext;
-pub use lifecycle::QemuProductionHotForkWorldLifecycle;
+pub use lifecycle::{QemuProductionHotForkRetainedLineage, QemuProductionHotForkWorldLifecycle};
 
 /// Unforgeable process-local identity of one atomic world assembly attempt.
 ///

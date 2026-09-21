@@ -38,6 +38,7 @@ struct CampaignTriageReplayAuthenticationContext<'a> {
     bundle: crucible_campaign::FindingCandidateBundleId,
 }
 
+#[cfg(test)]
 pub(crate) fn capture_campaign_triage_finding<S>(
     client: &crucible_campaign::CampaignClient<S>,
     principal: crucible_campaign::CampaignPrincipal,
@@ -45,6 +46,44 @@ pub(crate) fn capture_campaign_triage_finding<S>(
     snapshot: crucible_campaign::CampaignSnapshotId,
     finding_id: crucible_campaign::FindingId,
     report: TriageFindingEvidence,
+) -> Result<CampaignTriageFindingEvidence, CliError>
+where
+    S: crucible_campaign::CampaignFindingOccurrenceService,
+    S::Error: crucible_campaign::CampaignServiceFailureSource,
+{
+    capture_campaign_triage_finding_with_report(
+        client,
+        principal,
+        campaign,
+        snapshot,
+        finding_id,
+        Some(report),
+    )
+}
+
+pub(crate) fn capture_campaign_triage_finding_from_service<S>(
+    client: &crucible_campaign::CampaignClient<S>,
+    principal: crucible_campaign::CampaignPrincipal,
+    campaign: crucible_campaign::CampaignName,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+    finding_id: crucible_campaign::FindingId,
+) -> Result<CampaignTriageFindingEvidence, CliError>
+where
+    S: crucible_campaign::CampaignFindingOccurrenceService,
+    S::Error: crucible_campaign::CampaignServiceFailureSource,
+{
+    capture_campaign_triage_finding_with_report(
+        client, principal, campaign, snapshot, finding_id, None,
+    )
+}
+
+fn capture_campaign_triage_finding_with_report<S>(
+    client: &crucible_campaign::CampaignClient<S>,
+    principal: crucible_campaign::CampaignPrincipal,
+    campaign: crucible_campaign::CampaignName,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+    finding_id: crucible_campaign::FindingId,
+    report: Option<TriageFindingEvidence>,
 ) -> Result<CampaignTriageFindingEvidence, CliError>
 where
     S: crucible_campaign::CampaignFindingOccurrenceService,
@@ -147,7 +186,7 @@ where
             snapshot,
             finding_id,
             occurrence_after,
-            crucible_campaign::MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS,
+            1,
         )
         .map_err(|error| artifact_error(format!("build campaign occurrence query: {error}")))?;
         let response = client
@@ -200,6 +239,10 @@ where
         });
     }
 
+    let report = match report {
+        Some(report) => report,
+        None => campaign_triage_report_from_occurrences(&occurrence_proofs)?,
+    };
     let evidence = CampaignTriageFindingEvidence {
         campaign,
         snapshot,
@@ -217,6 +260,61 @@ where
     authenticate_campaign_triage_finding(0, finding_id, &evidence)?;
     validate_campaign_triage_finding(0, finding_id, &evidence)?;
     Ok(evidence)
+}
+
+fn campaign_triage_report_from_occurrences(
+    occurrences: &[CampaignFindingOccurrenceProof],
+) -> Result<TriageFindingEvidence, CliError> {
+    for occurrence in occurrences {
+        let Some(triage) = occurrence.triage_evidence.as_ref() else {
+            continue;
+        };
+        let bundle = campaign_occurrence_bundle(occurrence)?;
+        let expected = bundle
+            .triage_evidence()
+            .ok_or_else(|| artifact_error("campaign occurrence has no triage evidence set"))?
+            .minimization_original();
+        let reproduction = campaign_occurrence_reproduction(occurrence)?;
+        let record = reassemble_campaign_triage_replay_proof(&triage.minimization_original)?;
+        if triage.minimization_original.segments.iter().any(|segment| {
+            segment.request.role()
+                != crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal
+                || segment.request.evidence() != expected
+        }) || record.id().ok() != Some(expected)
+            || record.reproduction()
+                != reproduction.id().map_err(|error| {
+                    artifact_error(format!("campaign reproduction ID is invalid: {error}"))
+                })?
+            || record.payload_schema() != crucible::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
+        {
+            return Err(artifact_error(
+                "campaign occurrence triage payload has an incompatible semantic binding",
+            ));
+        }
+        let artifact = crucible::ReproductionArtifact::from_compact_binary(reproduction.payload())
+            .map_err(|error| {
+                artifact_error(format!("campaign reproduction is invalid: {error}"))
+            })?;
+        let replay = crucible::FailureTriageReplayEvidence::from_compact_binary_for_reproduction(
+            crucible::ContentHash {
+                bytes: reproduction.finding_fingerprint().as_bytes(),
+            },
+            artifact,
+            record.payload(),
+        )
+        .map_err(|error| {
+            artifact_error(format!(
+                "campaign occurrence triage payload is invalid: {error}"
+            ))
+        })?;
+        validate_campaign_native_signature_binding(&record, reproduction, &replay)?;
+
+        return Ok(triage_finding_evidence_from_replay(&replay));
+    }
+
+    Err(artifact_error(
+        "campaign finding has no retained native triage replay evidence",
+    ))
 }
 
 fn capture_campaign_finding_object<S>(

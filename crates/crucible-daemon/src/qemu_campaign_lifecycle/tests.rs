@@ -21,10 +21,9 @@ use crucible::{
     NodeTemplate, ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
     ReadyPoint, RngDecision, RngStreamId, ScenarioDef, ScenarioDefForm, ScenarioSelectableLimits,
     ScenarioSelectables, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint, SearchFrontierChoices,
-    SearchRuntimeFrontier, SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths,
-    Seed, SelectionDecision, SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode,
-    try_step,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint,
+    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, Seed, SelectionDecision,
+    SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode, try_step,
 };
 
 fn accepted_step(configuration: &Configuration, decision: Decision) -> Configuration {
@@ -190,16 +189,9 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
         selected_index: None,
         overridden: false,
     };
-    let frontier = SearchRuntimeFrontier {
-        configuration: parent.clone(),
-        at: VirtualTime { ticks: 91 },
-        choices: SearchFrontierChoices::from_decisions(
-            choice
-                .override_decisions(parent.id())
-                .into_iter()
-                .map(Decision::Override),
-        ),
-    };
+    let frontier =
+        SignalFaultSelectable::runtime_frontier(&parent, VirtualTime { ticks: 91 }, &choice)
+            .expect("typed signal-fault frontier");
     let selectable = SignalFaultSelectable::from_frontier(&frontier)
         .expect("signal-fault frontier should normalize");
     let selection = selectable
@@ -2991,16 +2983,9 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
         selected_index: None,
         overridden: false,
     };
-    let frontier = SearchRuntimeFrontier {
-        configuration: parent.clone(),
-        at: VirtualTime { ticks: 17 },
-        choices: SearchFrontierChoices::from_decisions(
-            choice
-                .override_decisions(parent.id())
-                .into_iter()
-                .map(Decision::Override),
-        ),
-    };
+    let frontier =
+        SignalFaultSelectable::runtime_frontier(&parent, VirtualTime { ticks: 17 }, &choice)
+            .expect("typed signal-fault frontier");
     let selectable =
         SignalFaultSelectable::from_frontier(&frontier).expect("signal-fault selectable");
     let selection = selectable

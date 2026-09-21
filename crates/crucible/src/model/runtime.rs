@@ -296,32 +296,47 @@ pub fn lint_guidance_determinism_source(source: &str) -> GuidanceDeterminismLint
     GuidanceDeterminismLintReport { forbidden_hits }
 }
 
-/// Generates bounded preemption branch decisions.
-#[must_use]
-pub fn preemption_branch_decisions(config: &PreemptionBranchConfig) -> Vec<Decision> {
+/// Generates bounded typed preemption branch choices at an exact parent.
+///
+/// # Errors
+///
+/// Returns [`EngineError::ScenarioSerialization`] if the finite typed choice
+/// records cannot be represented canonically.
+pub fn preemption_branch_choices(
+    parent: &Configuration,
+    config: &PreemptionBranchConfig,
+) -> Result<
+    (
+        crucible_campaign::ChoiceDiscovery,
+        Vec<SearchFrontierChoice>,
+    ),
+    EngineError,
+> {
     if config.step == 0 || config.deadline.retired > config.horizon.retired {
-        return Vec::new();
+        return Err(EngineError::ScenarioSerialization {
+            reason: String::from("preemption branch domain is empty"),
+        });
     }
 
     let mut retired = config.deadline.retired;
-    let mut decisions = Vec::new();
+    let mut preemptions = Vec::new();
     while retired <= config.horizon.retired {
-        decisions.push(Decision::Preemption(PreemptionDecision {
+        preemptions.push(PreemptionDecision {
             node: config.node.clone(),
             at: Icount { retired },
             kind: PreemptionKind::VcpuSwitch {
                 from_vcpu: config.switch_from_vcpu,
                 to_vcpu: config.switch_to_vcpu,
             },
-        }));
-        decisions.push(Decision::Preemption(PreemptionDecision {
+        });
+        preemptions.push(PreemptionDecision {
             node: config.node.clone(),
             at: Icount { retired },
             kind: PreemptionKind::InterruptAt {
                 target_vcpu: config.target_vcpu,
                 irq: config.irq,
             },
-        }));
+        });
         let Some(next) = retired.checked_add(config.step) else {
             break;
         };
@@ -330,7 +345,108 @@ pub fn preemption_branch_decisions(config: &PreemptionBranchConfig) -> Vec<Decis
         }
         retired = next;
     }
-    decisions
+
+    use crucible_campaign::{
+        AlternativeId, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+        ChoiceSource, ChoiceValue, ConfigurationId, DiscreteAlternative, DiscreteDomain,
+        ScenarioDefId, SelectableDeclaration, Selection,
+    };
+
+    let mut alternatives = BTreeMap::new();
+    let mut alternative_ids = Vec::with_capacity(preemptions.len());
+    for preemption in &preemptions {
+        let bytes = Schedule::from_decisions([Decision::Preemption(preemption.clone())])
+            .to_compact_binary();
+        let alternative = AlternativeId::from_hash(CampaignHash::derive(
+            "crucible.preemption.alternative.v1",
+            &bytes,
+        ));
+        let label = match preemption.kind {
+            PreemptionKind::VcpuSwitch { .. } => format!("vcpu-switch-{}", preemption.at.retired),
+            PreemptionKind::InterruptAt { .. } => format!("interrupt-{}", preemption.at.retired),
+        };
+        alternatives.insert(
+            alternative,
+            DiscreteAlternative::new(alternative, label, None).map_err(preemption_choice_error)?,
+        );
+        alternative_ids.push(alternative);
+    }
+    let Some(default) = alternative_ids.first().copied() else {
+        return Err(EngineError::ScenarioSerialization {
+            reason: String::from("preemption branch domain is empty"),
+        });
+    };
+    let domain = ChoiceDomain::Discrete(
+        DiscreteDomain::new(1, alternatives).map_err(preemption_choice_error)?,
+    );
+    let declaration = SelectableDeclaration::new(
+        "scheduler-preemption",
+        ChoiceSource::Scheduler {
+            producer: String::from("crucible.preemption.v1"),
+        },
+        domain.clone(),
+        ChoiceValue::Discrete(default),
+        ChoiceClassContext::new(BTreeSet::from([
+            String::from("per-event"),
+            String::from("preemption"),
+        ]))
+        .map_err(preemption_choice_error)?,
+        BTreeSet::from([
+            String::from("bounded"),
+            String::from("scheduler-interleaving"),
+        ]),
+        false,
+    )
+    .map_err(preemption_choice_error)?;
+    let producer = CampaignHash::derive(
+        "crucible.preemption.opportunity.v1",
+        &Schedule::from_decisions(preemptions.iter().cloned().map(Decision::Preemption))
+            .to_compact_binary(),
+    );
+    let opportunity = crucible_campaign::ChoiceOpportunity::new(
+        ScenarioDefId::from_hash(CampaignHash::from_bytes(parent.def.id().bytes)),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::from_bytes(parent.id().bytes),
+            producer,
+        },
+        "bounded-window",
+        None,
+    )
+    .map_err(preemption_choice_error)?;
+    let branch_point = opportunity.branch_point_id(ConfigurationId::from_hash(
+        CampaignHash::from_bytes(parent.id().bytes),
+    ));
+    let sequences = preemptions
+        .into_iter()
+        .zip(alternative_ids)
+        .map(|(preemption, alternative)| {
+            let selection = Selection::new_campaign_branch(
+                &opportunity,
+                &domain,
+                ChoiceValue::Discrete(alternative),
+                branch_point,
+            )
+            .map_err(preemption_choice_error)?;
+            Ok([
+                Decision::Selection(SelectionDecision::new(&selection)),
+                Decision::Preemption(preemption),
+            ])
+        })
+        .collect::<Result<Vec<_>, EngineError>>()?;
+    let choices = SearchFrontierChoices::from_decision_sequences(sequences)
+        .choices()
+        .to_vec();
+    let discovery = crucible_campaign::ChoiceDiscovery::new(declaration, domain, opportunity)
+        .map_err(preemption_choice_error)?;
+    Ok((discovery, choices))
+}
+
+fn preemption_choice_error(error: crucible_campaign::CampaignCodecError) -> EngineError {
+    EngineError::ScenarioSerialization {
+        reason: format!("preemption choice protocol rejected its producer records: {error}"),
+    }
 }
 
 /// Materializes `config` into a live runtime through `graph`.

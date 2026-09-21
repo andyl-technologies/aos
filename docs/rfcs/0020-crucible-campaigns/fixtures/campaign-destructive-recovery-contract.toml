@@ -37,7 +37,7 @@ required_operations = [
   "expire-store-credentials",
   "corrupt-tier-copy",
   "interrupt-pack-index-publication",
-  "fail-vm-during-atomic-world-fork",
+  "reject-vm-during-world-fork-preflight",
   "alias-child-ring-or-overlay",
   "exceed-host-resource-budget",
   "cancel-during-child-creation",
@@ -86,7 +86,6 @@ prior_state = "The attempt assignment and completion facts are durable while obs
 symptom = "The campaign head remains at the prior snapshot and the restarted coordinator reports recovered incomplete publication."
 automatic_response = "Restart reconstructs work from authenticated facts, discards stale volatile reservations, and resubmits safely."
 recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} snapshot {campaign} --snapshot {prior_snapshot}"]
-recovery_gap = "No repository-owned coordinator restart command is exposed; CMAN-16 remains release blocking."
 observables = ["prior snapshot", "assignment ledger", "completion facts", "reservation count", "resubmission identity", "observation count"]
 post_recovery_invariant = "Exactly one modeled observation may be incorporated and the attempt is never credited twice."
 backend_scope = "constrained-host-and-each-targeted-backend"
@@ -103,7 +102,6 @@ prior_state = "The coordinator retains an authenticated current head and a durab
 symptom = "Campaign status distinguishes executor unavailability from a modeled scenario result."
 automatic_response = "The coordinator reports operational failure and idempotently resubmits the assignment after executor recovery."
 recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} explain-attempt {campaign} --snapshot {snapshot} --attempt {attempt}"]
-recovery_gap = "No repository-owned executor restart command is exposed; CMAN-16 remains release blocking."
 observables = ["executor endpoint state", "assignment identity", "attempt accounting", "modeled result absence", "retry incarnation"]
 post_recovery_invariant = "The same semantic attempt completes at most once and no executor-owned resource survives unexplained."
 backend_scope = "constrained-host-and-each-targeted-backend"
@@ -124,7 +122,6 @@ prior_state = "The complete old snapshot is authenticated and all prospective ne
 symptom = "After restart, the campaign name resolves to the complete old or complete new authenticated snapshot."
 automatic_response = "Repository recovery discards unreachable staging or completes only a valid conditional ref publication."
 recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} snapshot {campaign} --snapshot {resolved_snapshot}"]
-recovery_gap = "No repository-owned daemon restart command is exposed; CMAN-16 remains release blocking."
 observables = ["old snapshot", "new snapshot", "resolved ref", "reachable object closure", "staging inventory"]
 post_recovery_invariant = "The named ref never exposes a mixed or incomplete snapshot and unreachable staging is reclaimable."
 backend_scope = "constrained-host-and-each-targeted-backend"
@@ -141,7 +138,6 @@ prior_state = "The exact-pause snapshot and every required cold fallback are dur
 symptom = "The restarted service identifies exact resumable attempts and reports former live templates as non-live."
 automatic_response = "Startup reconstructs durable catalog state without claiming that an ephemeral process survived."
 recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} status {campaign}", "crucible --format jsonl campaign --socket {campaign_socket} --principal {principal} resume {campaign} --expected {snapshot} --command {command_id}"]
-recovery_gap = "No repository-owned service start command is exposed; CMAN-16 remains release blocking."
 observables = ["campaign lifecycle", "resumable roots", "cold fallback inventory", "live template count", "attempt accounting"]
 post_recovery_invariant = "Resume uses an authenticated retained root and does not infer live process state from the pre-reboot epoch."
 backend_scope = "constrained-host-and-each-targeted-backend"
@@ -152,9 +148,10 @@ id = "enospc-during-exact-capture"
 title = "Exhaust campaign-store space during exact capture"
 failure_class = "storage-capacity"
 surface = "fault-build-trigger"
-implementation_state = "fault-build-hook-required"
+implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
 trigger = "crucible.destructive-recovery.exact-capture-enospc"
+fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
 action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.exact-capture-enospc {fault_build_command}"
 prior_state = "The prior campaign ref, finding, and capture source are authenticated before any exact-capture write."
@@ -247,16 +244,16 @@ backend_scope = "constrained-host-and-each-targeted-backend"
 prerequisites = ["pack-index-interruption-recovery", "pack-staging-lifecycle-exclusion", "pack-generation-restart", "unindexed-pack-cleanup"]
 
 [[injections]]
-id = "fail-vm-during-atomic-world-fork"
-title = "Fail one VM during atomic world fork"
+id = "reject-vm-during-world-fork-preflight"
+title = "Reject one VM during atomic world-fork preflight"
 failure_class = "world-fork-atomicity"
 surface = "fault-build-trigger"
 implementation_state = "fault-build-hook-available"
 external_command_bindings = ["fault_build_command"]
-trigger = "crucible.destructive-recovery.world-fork-one-vm-failure"
+trigger = "crucible.destructive-recovery.world-fork-preflight-failure"
 fault_build_feature = "destructive-recovery-faults"
 production_artifact_state = "absent"
-action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.world-fork-one-vm-failure {fault_build_command}"
+action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.world-fork-preflight-failure {fault_build_command}"
 prior_state = "The source world, its template identity, and all target resource reservations are authenticated before checkout."
 symptom = "Campaign status exposes no partial child world or modeled result."
 automatic_response = "A proven no-child failure rolls back its exact slot; an ambiguous partial failure quarantines the aggregate world."
@@ -264,7 +261,7 @@ recovery_commands = ["crucible --format jsonl campaign --socket {campaign_socket
 observables = ["source world identity", "target generations", "published child world count", "quarantine state", "template availability"]
 post_recovery_invariant = "No partial world is visible; the template is either explicitly reusable or explicitly invalidated."
 backend_scope = "constrained-host-and-each-targeted-backend"
-prerequisites = ["world-fork-one-vm-failure", "partial-world-quarantine", "world-resource-preflight"]
+prerequisites = ["world-fork-preflight-failure", "partial-world-quarantine", "world-resource-preflight"]
 
 [[injections]]
 id = "alias-child-ring-or-overlay"
@@ -455,10 +452,10 @@ source = "crates/crucible-cas/src/content_store/tests/packed.rs"
 selector = "content_store::tests::packed::packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs"
 
 [[prerequisite_tests]]
-id = "world-fork-one-vm-failure"
+id = "world-fork-preflight-failure"
 package = "crucible-daemon"
 source = "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/reconciliation/lifecycle.rs"
-selector = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_one_vm_failure_quarantines_partial_world"
+selector = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_preflight_failure_restores_source_world"
 
 [[prerequisite_tests]]
 id = "partial-world-quarantine"

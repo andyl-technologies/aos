@@ -953,10 +953,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
     let signal_plan = source.plan().fault_signals().clone();
-    let fault_search_overrides = production_fault_search_overrides(
-        config.branch.as_ref(),
-        config.signal_fault_replay.as_ref(),
-    )?;
+    let fault_search_overrides =
+        production_fault_search_overrides(config.signal_fault_replay.as_ref())?;
     let signal_artifact_objects = if signal_plan.programs().is_empty() {
         BTreeMap::new()
     } else if let Some(checkpoint) = &restore_checkpoint {

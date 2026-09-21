@@ -104,7 +104,7 @@ pub enum ManagedQemuHotForkSourceWorldAdmissionError<E> {
     },
     /// Exact/thin fallback authentication failed.
     #[error("source-world fallback authentication failed")]
-    Fallback(E),
+    Fallback(#[source] E),
     /// A planned victim is checked out, invalidated, or missing.
     #[error("planned source-world victim is unavailable")]
     VictimUnavailable {
@@ -123,6 +123,7 @@ pub enum ManagedQemuHotForkSourceWorldAdmissionError<E> {
     #[error("source-world victim demotion failed")]
     Demotion {
         /// Demotion-sink failure.
+        #[source]
         source: E,
         /// Accounting reconciliation for earlier completed victims.
         reconciliation: Result<Vec<HotCheckpointDemotion>, HotCheckpointInventoryError>,
@@ -160,10 +161,10 @@ pub enum ManagedQemuHotForkSourceWorldDemotionError<E> {
     Catalog(#[source] DurableHotCheckpointCatalogError),
     /// Fallback preflight failed before source transfer.
     #[error("managed source-world fallback authentication failed")]
-    Fallback(E),
+    Fallback(#[source] E),
     /// Reauthentication or complete source reap failed.
     #[error("managed source-world demotion failed")]
-    Demotion(E),
+    Demotion(#[source] E),
 }
 
 /// Complete failure report from orderly process-wide source shutdown.

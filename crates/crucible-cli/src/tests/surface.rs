@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn campaign_debug_route_is_public_and_forced_read_only() {
+fn campaign_debug_route_exposes_explicit_writable_branch_opt_in() {
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -32,6 +32,34 @@ fn campaign_debug_route_is_public_and_forced_read_only() {
     assert_eq!(debug.name, "midpoint");
     assert_eq!(debug.node, "vm-a");
     assert_eq!(debug.gdb_listen, "127.0.0.1:0");
+    assert!(!debug.writable);
+
+    let writable = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "https://127.0.0.1:9443",
+        "campaign",
+        "--socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "debugger",
+        "debug",
+        "midpoint",
+        "--snapshot",
+        "snapshot-id",
+        "--finding",
+        "finding-id",
+        "--node",
+        "vm-a",
+        "--writable",
+    ]);
+    let Commands::Campaign(campaign) = writable.command else {
+        panic!("writable campaign debug must remain a campaign command");
+    };
+    let CampaignCommand::Debug(debug) = campaign.command else {
+        panic!("writable campaign debug must use the owner-backed route");
+    };
+    assert!(debug.writable);
 }
 
 use clap::CommandFactory;
@@ -487,24 +515,17 @@ pub(super) fn search_retained_evidence_world() -> Result<crucible::World, Box<dy
 }
 
 pub(super) fn search_frontier_decisions() -> Vec<crucible::Decision> {
-    vec![
-        crucible::Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId::from_name("cli-search/packet-loss"),
-            value: 1,
-        }),
-        crucible::Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId::from_name("cli-search/decision-rng"),
-            value: 0xa5a5_5a5a,
-        }),
-        crucible::Decision::Override(crucible::OverrideDecision {
-            point: crucible::SchedulingPoint {
-                key: String::from("cli-search/scheduler-point"),
-            },
-            choice: crucible::ChoiceTag {
-                name: String::from("non-default-choice"),
-            },
-        }),
+    [
+        "cli-search/packet-loss",
+        "cli-search/decision-rng",
+        "cli-search/scheduler-point",
     ]
+    .into_iter()
+    .map(|label| {
+        crucible_core::test_support::typed_search_decision_for_test(label)
+            .unwrap_or_else(|error| panic!("typed search fixture should build: {error}"))
+    })
+    .collect()
 }
 
 pub(super) fn property_selector_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>>
@@ -2608,7 +2629,17 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         ),
         (
             CliSubcommand::Triage,
-            vec!["crucible", "triage", "findings"],
+            vec![
+                "crucible",
+                "triage",
+                "--campaign-socket",
+                "/tmp/campaign.sock",
+                "--principal",
+                "operator",
+                "findings",
+                "--snapshot",
+                "snapshot-id",
+            ],
         ),
         (
             CliSubcommand::Debug,

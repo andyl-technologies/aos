@@ -5,12 +5,12 @@ use crucible::{
     BackendNetworkOutputInterceptor, BackendNetworkRoute, BackendQuantumLoop, BackendSnapshot,
     Configuration, ContentHash, Decision, EventLogOffset, ExactLocalEvent, FingerprintSample,
     Icount, LinkDef, LinkId, LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection,
-    NetworkLookahead, NodeCounter, NodeId, NodeTemplate, OverrideDecision, Plan, Properties,
-    QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm,
-    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, Seed,
-    Shift, SimDuration, SimInstant, SimulationBackend, SingleScheduler, StepObservation,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    NetworkLookahead, NodeCounter, NodeId, NodeTemplate, Plan, Properties, QuantumLoop,
+    QuantumOutcome, QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, Seed, SelectionDecision, Shift,
+    SimDuration, SimInstant, SimulationBackend, SingleScheduler, StepObservation, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 fn world_node(name: &str) -> WorldNode {
@@ -530,16 +530,16 @@ fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() 
         .unwrap_or_else(|| panic!("probabilistic live link should publish a search frontier"));
     let mut selected = Vec::new();
     for choice in frontier.choices.choices() {
-        let Some(Decision::Override(override_decision)) = choice.decisions().first() else {
+        let Some(Decision::Selection(selection)) = choice.decisions().first() else {
             continue;
         };
-        selected.push((override_decision.clone(), choice.decisions().to_vec()));
+        selected.push((selection.clone(), choice.decisions().to_vec()));
     }
     assert_eq!(selected.len(), 2);
 
     let mut delivery_counts = Vec::new();
-    for (override_decision, expected_decisions) in selected {
-        let (outcome, loop_impl) = network_branch_fixture(Some(override_decision.clone()), 0);
+    for (selection, expected_decisions) in selected {
+        let (outcome, loop_impl) = network_branch_fixture(Some(selection), 0);
         assert_eq!(
             outcome.decisions.get(
                 outcome
@@ -564,16 +564,10 @@ fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() 
             )
             .map(crucible_device::NetLink::inflight_len)
             .unwrap_or_else(|| panic!("branch replay should preserve the directed link"));
-        delivery_counts.push((override_decision.choice.name, delivery_count));
+        delivery_counts.push(delivery_count);
     }
     delivery_counts.sort();
-    assert_eq!(
-        delivery_counts,
-        vec![
-            (String::from("loss-fire"), 0),
-            (String::from("loss-pass"), 1),
-        ]
-    );
+    assert_eq!(delivery_counts, vec![0, 1]);
     assert!(
         default_outcome
             .decisions
@@ -596,10 +590,8 @@ fn live_world_network_branch_identity_uses_the_causal_emission_ordinal() {
         .choices()
         .iter()
         .find_map(|choice| match choice.decisions().first() {
-            Some(Decision::Override(override_decision))
-                if override_decision.choice.name == "loss-fire" =>
-            {
-                Some((override_decision.clone(), choice.decisions().to_vec()))
+            Some(Decision::Selection(selection)) => {
+                Some((selection.clone(), choice.decisions().to_vec()))
             }
             _ => None,
         })
@@ -620,7 +612,7 @@ fn live_world_network_branch_identity_uses_the_causal_emission_ordinal() {
 }
 
 fn network_branch_fixture(
-    selected: Option<OverrideDecision>,
+    selected: Option<SelectionDecision>,
     ready_counter: u64,
 ) -> (
     QuantumOutcome,

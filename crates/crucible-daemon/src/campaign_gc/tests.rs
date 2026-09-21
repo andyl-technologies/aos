@@ -663,7 +663,7 @@ fn plan_with(
 }
 
 #[test]
-fn plan_header_round_trips_without_changing_current_v2_bytes() {
+fn plan_header_round_trips_without_changing_current_bytes() {
     let plan = plan_with(
         0x21,
         0x31,
@@ -672,14 +672,14 @@ fn plan_header_round_trips_without_changing_current_v2_bytes() {
     let bytes = plan.canonical_bytes().expect("canonical plan");
     let decoded = CampaignGcPlan::from_canonical_bytes(&bytes).expect("decode canonical plan");
 
-    assert!(bytes.starts_with(b"crucible.campaign.gc-plan.v2\0"));
+    assert!(bytes.starts_with(b"crucible.campaign.gc-plan.v1\0"));
     assert_eq!(decoded, plan);
     assert_eq!(decoded.id(), plan.id());
     assert_eq!(plan.candidates().candidates(), 3);
     assert_eq!(plan.physical().len(), 2);
     assert_eq!(
         plan.id().expect("plan identity").to_hex(),
-        "f4513a728c77b6b2af290051af7f19dffdb7b14e77193d7f139cb202271317a1"
+        "2393e1330ec0ae19da4aee2f68e39b905cb1f404f337e06ba4d0414497cc2e75"
     );
 }
 
@@ -849,9 +849,9 @@ fn root_and_candidate_manifests_round_trip_with_stable_identity() {
     candidates
         .write_canonical(&mut candidate_bytes)
         .expect("encode candidates");
-    assert!(candidate_bytes.starts_with(b"crucible.campaign.gc-candidate-manifest.v2\0"));
+    assert!(candidate_bytes.starts_with(b"crucible.campaign.gc-candidate-manifest.v1\0"));
     let decoded_candidates =
-        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(candidate_bytes))
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(&candidate_bytes))
             .expect("decode candidates");
     assert_eq!(decoded_candidates, candidates);
     assert_eq!(decoded_candidates.summary(), summary);
@@ -861,6 +861,15 @@ fn root_and_candidate_manifests_round_trip_with_stable_identity() {
         decoded_candidates.iter().next().expect("first").backend(),
         "a-tier"
     );
+
+    let mut wrong_candidate_schema = candidate_bytes;
+    wrong_candidate_schema[0] ^= 1;
+    assert!(matches!(
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(
+            wrong_candidate_schema
+        )),
+        Err(CampaignGcManifestError::UnsupportedSchema)
+    ));
 }
 
 #[test]
@@ -1088,9 +1097,9 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
             if required_backend == source.as_str()
     ));
 
-    let plan_bytes = prepared.plan().canonical_bytes().expect("encode v2 plan");
+    let plan_bytes = prepared.plan().canonical_bytes().expect("encode plan");
     assert_eq!(
-        CampaignGcPlan::from_canonical_bytes(&plan_bytes).expect("decode v2 plan"),
+        CampaignGcPlan::from_canonical_bytes(&plan_bytes).expect("decode plan"),
         *prepared.plan()
     );
     let mut trailing_plan = plan_bytes;
@@ -1104,10 +1113,10 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
     prepared
         .candidates()
         .write_canonical(&mut candidate_bytes)
-        .expect("encode v2 candidates");
+        .expect("encode candidates");
     assert_eq!(
         CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(&candidate_bytes))
-            .expect("decode v2 candidates"),
+            .expect("decode candidates"),
         *prepared.candidates()
     );
     candidate_bytes.push(0);

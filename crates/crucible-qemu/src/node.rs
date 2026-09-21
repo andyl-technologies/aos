@@ -1262,6 +1262,23 @@ impl QemuNode {
         self.channels.qmp_machine_control.query_hot_fork_template()
     }
 
+    /// Re-adopts this reconstructed child as a fresh template source.
+    ///
+    /// The operation consumes the inherited reconstruction records. It does
+    /// not prepare a descendant template or stage any resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the child is incomplete, the VM is
+    /// outside the exact paused boundary, or QEMU rejects its parent rebinding.
+    pub fn adopt_hot_fork_child_as_template_source(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .adopt_hot_fork_child_as_template_source()
+    }
+
     /// Aborts QEMU's retained hot-fork template transaction.
     ///
     /// A draining response leaves restoration pending. The owner must keep the
@@ -2665,8 +2682,9 @@ fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownT
 mod test_support;
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use test_support::hot_fork::{
-    QemuTestHotForkOutcome, QemuTestHotForkSourceError, QemuTestQuantumBoundary,
-    scripted_hot_fork_source_for_test, scripted_hot_fork_source_with_observations_for_test,
+    QemuTestHotForkIsolationFault, QemuTestHotForkOutcome, QemuTestHotForkSourceError,
+    QemuTestQuantumBoundary, scripted_hot_fork_source_for_test,
+    scripted_hot_fork_source_with_observations_for_test,
     scripted_hot_fork_source_with_script_for_test, scripted_hot_fork_source_with_state_for_test,
 };
 

@@ -1874,6 +1874,7 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         | LifecycleApiError::LoopFactory { .. }
         | LifecycleApiError::AttemptOperational { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
+        | LifecycleApiError::SessionRetention { .. }
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }
         | LifecycleApiError::ActorFailed { .. } => typed_rpc_status_response(

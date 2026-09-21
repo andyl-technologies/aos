@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::model::{BindingSearchChoice, FaultCoordinate};
-use crate::{SelectionDecision, SignalFaultCampaignBranch};
+use crate::{SelectionDecision, SignalFaultCampaignBranch, SignalFaultSelectable};
 use crucible_protocol::app_random_branch_plan::MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES;
 
 impl SingleScheduler {
@@ -103,38 +103,40 @@ impl SingleScheduler {
 
     /// Installs explorer-selected World-network outcomes for exact frame emissions.
     ///
-    /// Only overrides created by the scheduler's live network frontier are
-    /// accepted. Each override is consumed at the matching link, frame, stream
-    /// cursor, and source boundary.
+    /// Each campaign selection is consumed only after the scheduler reconstructs
+    /// and validates the matching live-network opportunity at the exact parent.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when an override does not
-    /// name a live World-network choice or duplicates an installed point.
+    /// Returns [`SchedulerError::BoundaryViolation`] when a selection is not a
+    /// campaign branch or duplicates an installed opportunity.
     pub fn install_branch_network_choices(
         &mut self,
-        choices: Vec<OverrideDecision>,
+        choices: Vec<SelectionDecision>,
     ) -> Result<(), SchedulerError> {
         for choice in &choices {
-            if !choice.point.key.starts_with("live-world-network/")
-                || !liveness::is_live_network_branch_choice_name(&choice.choice.name)
-            {
+            if !choice.is_campaign_branch() {
                 return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "unsupported live World-network branch choice `{}` at `{}`",
-                        choice.choice.name, choice.point.key
+                    message: String::from(
+                        "live World-network replay input is not a campaign-branch selection",
                     ),
                 });
             }
+            let selection =
+                choice
+                    .selection()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("live World-network replay selection is invalid: {error}"),
+                    })?;
             if self
                 .branch_network_choices
                 .iter()
-                .any(|existing| existing.point == choice.point)
+                .filter_map(|existing| existing.selection().ok())
+                .any(|existing| existing.opportunity() == selection.opportunity())
             {
                 return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "duplicate live World-network branch point `{}`",
-                        choice.point.key
+                    message: String::from(
+                        "duplicate live World-network branch selection opportunity",
                     ),
                 });
             }
@@ -172,20 +174,19 @@ impl SingleScheduler {
             });
         }
         for choice in choices.iter().filter(|choice| !choice.overridden) {
-            let decisions = choice
-                .override_decisions(parent.id())
-                .into_iter()
-                .map(Decision::Override)
-                .collect::<Vec<_>>();
-            if decisions.is_empty() {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from("signal-fault search choice has no finite candidates"),
-                });
-            }
+            let selectable = SignalFaultSelectable::from_binding_choice(parent, at, choice)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("invalid signal-fault search choice: {error}"),
+                })?;
+            let decisions = selectable.frontier_decision_sequences().map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("invalid signal-fault search choice: {error}"),
+                }
+            })?;
             self.search_frontiers.push(SearchRuntimeFrontier {
                 configuration: parent.clone(),
                 at,
-                choices: SearchFrontierChoices::from_decisions(decisions),
+                choices: SearchFrontierChoices::from_decision_sequences(decisions),
             });
         }
         Ok(())
@@ -215,47 +216,25 @@ impl SingleScheduler {
         Ok(())
     }
 
-    /// Appends explorer-selected override decisions at the current boundary.
-    ///
-    /// This admission path is intentionally narrower than normal scheduler
-    /// resolution. It accepts only [`Decision::Override`] values, records them
-    /// in the authoritative configuration and event log, and does not advance a
-    /// backend node. Concrete fault, delivery, RNG, and preemption choices must
-    /// still be resolved by their owning scheduler paths.
+    /// Records an exact continuation boundary without applying a choice.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when any supplied decision
-    /// is not an explorer override, or when event-log recording fails.
-    pub fn append_branch_prefix_overrides(
-        &mut self,
-        decisions: Vec<Decision>,
-    ) -> Result<(Configuration, SchedulerEventLogAppend), SchedulerError> {
-        if decisions
-            .iter()
-            .any(|decision| !matches!(decision, Decision::Override(_)))
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "branch-prefix admission accepts only explorer override decisions",
-                ),
-            });
-        }
-        let configuration = self.step_quantum(&decisions)?;
+    /// Returns [`SchedulerError`] when event-log recording fails.
+    pub fn append_branch_boundary(&mut self) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let at = SimInstant {
             nanos: self.frontier.ticks,
         };
-        let append = self.emit_quantum_event_log(&[], &decisions, &[], at, true)?;
-        self.configuration = configuration.clone();
+        let append = self.emit_quantum_event_log(&[], &[], &[], at, true)?;
         self.quanta = self.quanta.saturating_add(1);
         self.yield_to_control_inbox();
-        Ok((configuration, append))
+        Ok(append)
     }
 
     /// Appends one authenticated promoted signal-fault campaign branch.
     ///
-    /// Unlike [`Self::append_branch_prefix_overrides`], this path admits the
-    /// typed campaign `Selection` and its optional producer override together.
+    /// This path admits the typed campaign `Selection` and its optional
+    /// producer override together.
     /// The opaque branch can only be constructed from the standardized
     /// signal-fault producer contract, and must name this scheduler's exact
     /// configuration and frontier before any decision is recorded.

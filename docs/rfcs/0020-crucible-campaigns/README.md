@@ -54,8 +54,8 @@ caches. They affect cost, never branch identity.
 RFC-0010 established the deterministic execution model, temporal graph,
 guided exploration, content-addressed campaign storage, and a shared-work
 foundation. RFC-0014 adds exact cross-process checkpoint closures and stable,
-typed signal-fault opportunities. Those foundations are necessary but do not
-yet provide the cohesive production model required for extremely wide,
+typed signal-fault opportunities. Before this RFC, those foundations did not
+provide the cohesive production model required for extremely wide,
 feedback-directed campaigns:
 
 - the current search frontier enumerates a finite set of concrete decisions
@@ -64,7 +64,7 @@ feedback-directed campaigns:
   than typed integral and discrete selectables;
 - environmental parameter selection and guest application selection have
   different authoring and runtime surfaces;
-- adaptive guidance chooses broad search strategies but does not yet own a
+- adaptive guidance chose broad search strategies but did not own a
   uniform typed candidate-generation model;
 - a large integral domain cannot be enumerated and requires lazy sampling,
   progressive widening, and feedback from descendants;
@@ -74,7 +74,7 @@ feedback-directed campaigns:
 - the existing shared frontier reserves checkpoint nodes, while progressive
   widening must revisit one checkpoint many times and therefore needs
   idempotent attempt-level work;
-- the campaign manifest does not yet name the exploration facts, lazy frontier,
+- the campaign manifest did not name the exploration facts, lazy frontier,
   objectives, measurements, pins, and accounting needed to stop and resume a
   complete adaptive campaign.
 

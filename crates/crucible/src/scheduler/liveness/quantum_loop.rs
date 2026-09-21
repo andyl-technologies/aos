@@ -2,6 +2,22 @@
 
 use super::*;
 
+struct LiveNetworkFrameResolutionRequest<'a> {
+    link: &'a LinkId,
+    direction: NetworkLinkDirection,
+    seed: Seed,
+    frame: &'a crucible_device::Frame,
+    policy: crucible_device::PastDeliveryPolicy,
+    parent: &'a Configuration,
+    at: VirtualTime,
+}
+
+struct LiveNetworkFrameResolution {
+    record: crate::LinkEmitDecisionRecord,
+    branch_choices: Vec<Vec<Decision>>,
+    discovery: Option<crucible_campaign::ChoiceDiscovery>,
+}
+
 impl SingleScheduler {
     /// Resolves and validates every directed World route for one backend frame.
     ///
@@ -279,7 +295,15 @@ impl QuantumLoop for SingleScheduler {
     fn append_backend_network_outputs(
         &mut self,
         mut outputs: Vec<BackendNetworkOutput>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<crucible_campaign::ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         if !self.world_network_decisions.is_empty() {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -311,6 +335,7 @@ impl QuantumLoop for SingleScheduler {
             .frontier
             .max(self.event_log.condition_prefix().point().at());
         let mut recorded = Vec::new();
+        let mut discovered_choices = Vec::new();
         for output in outputs {
             let source_index = self.vm_node_index(&output.source)?;
             let source_counter = self.nodes[source_index].counter.ticks;
@@ -334,6 +359,7 @@ impl QuantumLoop for SingleScheduler {
                     ),
                 })?;
             for route in routes {
+                let branch_configuration = self.step_quantum(&recorded)?;
                 let emit_time = self
                     .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
                     .max(SimInstant {
@@ -347,21 +373,31 @@ impl QuantumLoop for SingleScheduler {
                 )
                 .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
                 let seed = self.decision_seed;
-                let (record, branch_choices) = self.resolve_live_world_network_frame(
-                    &route.link,
-                    route.direction,
-                    seed,
-                    &frame,
-                    crucible_device::PastDeliveryPolicy::FailLoud,
-                )?;
+                let resolution =
+                    self.resolve_live_world_network_frame(LiveNetworkFrameResolutionRequest {
+                        link: &route.link,
+                        direction: route.direction,
+                        seed,
+                        frame: &frame,
+                        policy: crucible_device::PastDeliveryPolicy::FailLoud,
+                        parent: &branch_configuration,
+                        at: admission_boundary,
+                    })?;
+                let LiveNetworkFrameResolution {
+                    record,
+                    branch_choices,
+                    discovery,
+                } = resolution;
                 let projected = record.decisions;
                 if !branch_choices.is_empty() {
-                    let branch_configuration = self.step_quantum(&recorded)?;
                     self.search_frontiers.push(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
                         choices: SearchFrontierChoices::from_decision_sequences(branch_choices),
                     });
+                }
+                if let Some(discovery) = discovery {
+                    discovered_choices.push(discovery);
                 }
                 recorded.extend(projected);
             }
@@ -378,19 +414,24 @@ impl QuantumLoop for SingleScheduler {
         };
         let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
         self.configuration = configuration.clone();
-        Ok((recorded, configuration, append))
+        Ok((recorded, discovered_choices, configuration, append))
     }
 }
 
 impl SingleScheduler {
     fn resolve_live_world_network_frame(
         &mut self,
-        link: &LinkId,
-        direction: NetworkLinkDirection,
-        seed: Seed,
-        frame: &crucible_device::Frame,
-        policy: crucible_device::PastDeliveryPolicy,
-    ) -> Result<(crate::LinkEmitDecisionRecord, Vec<Vec<Decision>>), SchedulerError> {
+        request: LiveNetworkFrameResolutionRequest<'_>,
+    ) -> Result<LiveNetworkFrameResolution, SchedulerError> {
+        let LiveNetworkFrameResolutionRequest {
+            link,
+            direction,
+            seed,
+            frame,
+            policy,
+            parent,
+            at,
+        } = request;
         let runtime_key = self
             .world_network_links
             .iter()
@@ -453,68 +494,132 @@ impl SingleScheduler {
                     "World network link disappeared while reading its fault table",
                 ),
             })?;
-        let branch_choices = live_network_branch_choices(&faults, &preview.draws)
-            .into_iter()
+        let choices = live_network_branch_choices(&faults, &preview.draws);
+        let selectable = if choices.is_empty() {
+            None
+        } else {
+            Some(
+                LiveNetworkSelectable::new(parent, at, &point, &choices, &faults, &preview.draws)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("live World-network choice could not be typed: {error}"),
+                })?,
+            )
+        };
+        let branch_choices = choices
+            .iter()
             .map(|choice| {
+                let selection = selectable
+                    .as_ref()
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: String::from("live World-network selectable disappeared"),
+                    })?
+                    .branch_selection(parent, &choice.name)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "live World-network branch selection could not be built: {error}"
+                        ),
+                    })?;
                 self.preview_live_network_choice(
                     &runtime_key,
                     rng_position,
                     frame,
                     policy,
-                    point.clone(),
-                    choice,
+                    choice.clone(),
+                    selection,
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let installed = self
-            .branch_network_choices
-            .iter()
-            .position(|choice| choice.point == point)
-            .map(|index| self.branch_network_choices.remove(index));
-        let record = match installed {
-            Some(override_decision) => {
-                let draws = live_network_branch_draws(
-                    &faults,
-                    &preview.draws,
-                    &override_decision.choice.name,
-                )
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "live World-network choice `{}` is impossible for point `{}`",
-                        override_decision.choice.name, override_decision.point.key
-                    ),
+        let installed = match &selectable {
+            Some(selectable) => {
+                let opportunity = selectable.opportunity_id().map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!("live World-network opportunity is invalid: {error}"),
+                    }
                 })?;
-                let mut record = self.emit_live_network_injected(
-                    &runtime_key,
-                    rng_position,
-                    frame,
-                    draws,
-                    policy,
-                )?;
-                record
-                    .decisions
-                    .insert(0, Decision::Override(override_decision));
-                record
+                self.branch_network_choices
+                    .iter()
+                    .position(|decision| {
+                        decision
+                            .selection()
+                            .is_ok_and(|selection| selection.opportunity() == opportunity)
+                    })
+                    .map(|index| self.branch_network_choices.remove(index))
             }
-            None => {
-                let runtime = self
-                    .world_network_links
-                    .get_mut(&runtime_key)
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "World network link disappeared during live emission",
-                        ),
+            None => None,
+        };
+        let record =
+            match (installed, &selectable) {
+                (Some(selection_decision), Some(selectable)) => {
+                    let selection = selection_decision.selection().map_err(|error| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!("live World-network selection is invalid: {error}"),
+                        }
                     })?;
-                runtime
+                    let name = selectable
+                        .selected_name(parent, &selection)
+                        .map_err(|error| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "live World-network branch selection was rejected: {error}"
+                            ),
+                        })?;
+                    let draws = live_network_branch_draws(&faults, &preview.draws, name)
+                        .ok_or_else(|| SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "live World-network choice `{}` is impossible for point `{}`",
+                                name, point.key
+                            ),
+                        })?;
+                    let mut record = self.emit_live_network_injected(
+                        &runtime_key,
+                        rng_position,
+                        frame,
+                        draws,
+                        policy,
+                    )?;
+                    record
+                        .decisions
+                        .insert(0, Decision::Selection(selection_decision));
+                    record
+                }
+                (None, selectable) => {
+                    let runtime =
+                        self.world_network_links
+                            .get_mut(&runtime_key)
+                            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                                message: String::from(
+                                    "World network link disappeared during live emission",
+                                ),
+                            })?;
+                    let mut record = runtime
                     .emit_from_position(seed, rng_position, frame, policy)
                     .map_err(|source| SchedulerError::BoundaryViolation {
                         message: format!(
                             "World network link {:?} ({direction:?}) rejected a frame: {source}",
                             runtime.canonical_id.name
                         ),
-                    })?
-            }
-        };
+                    })?;
+                    if let Some(selectable) = selectable {
+                        let selection = selectable.default_selection().map_err(|error| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "live World-network default selection could not be built: {error}"
+                            ),
+                        }
+                    })?;
+                        record
+                            .decisions
+                            .insert(0, Decision::Selection(SelectionDecision::new(&selection)));
+                    }
+                    record
+                }
+                (Some(_), None) => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "live World-network selection exists without an explorable opportunity",
+                        ),
+                    });
+                }
+            };
         let next_rng_position = self
             .world_network_links
             .get(&runtime_key)
@@ -527,7 +632,11 @@ impl SingleScheduler {
         self.world_network_rng_positions
             .insert(runtime_key.0, next_rng_position);
         self.refresh_device_horizons()?;
-        Ok((record, branch_choices))
+        Ok(LiveNetworkFrameResolution {
+            record,
+            branch_choices,
+            discovery: selectable.map(|selectable| selectable.discovery()),
+        })
     }
 
     fn preview_live_network_choice(
@@ -536,8 +645,8 @@ impl SingleScheduler {
         rng_position: u64,
         frame: &crucible_device::Frame,
         policy: crucible_device::PastDeliveryPolicy,
-        point: SchedulingPoint,
         choice: LiveNetworkBranchChoice,
+        selection: crucible_campaign::Selection,
     ) -> Result<Vec<Decision>, SchedulerError> {
         let mut runtime = self
             .world_network_links
@@ -557,10 +666,7 @@ impl SingleScheduler {
                 ),
             })?;
         let mut decisions = Vec::with_capacity(record.decisions.len().saturating_add(1));
-        decisions.push(Decision::Override(OverrideDecision {
-            point,
-            choice: ChoiceTag { name: choice.name },
-        }));
+        decisions.push(Decision::Selection(SelectionDecision::new(&selection)));
         decisions.extend(record.decisions);
         Ok(decisions)
     }

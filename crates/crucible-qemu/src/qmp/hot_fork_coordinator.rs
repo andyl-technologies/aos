@@ -247,6 +247,23 @@ where
         self.hot_fork_template(HotForkTemplateAction::Query, None)
     }
 
+    /// Re-adopts one reconstructed immediate child as a fresh template source.
+    ///
+    /// This transaction consumes the inherited child resource plan. It does
+    /// not prepare a descendant: callers must subsequently run the complete
+    /// template-barrier preparation before staging any child resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the process is not an active reconstructed
+    /// child at an exact paused boundary or QEMU cannot detach its immediate
+    /// parent contract.
+    pub fn adopt_hot_fork_child_as_template_source(
+        &mut self,
+    ) -> Result<QmpHotForkTemplateState, QmpError> {
+        self.hot_fork_template(HotForkTemplateAction::AdoptChild, None)
+    }
+
     /// Aborts QEMU's retained hot-fork template transaction.
     ///
     /// A draining reply retains ownership while main-loop barrier release or

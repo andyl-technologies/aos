@@ -311,7 +311,7 @@ where
         let (decisions, configuration) = if network_outputs.is_empty() {
             (Vec::new(), None)
         } else {
-            let (decisions, configuration, append) = self
+            let (decisions, _discoveries, configuration, append) = self
                 .loop_impl
                 .append_backend_network_outputs(network_outputs)?;
             appends.push(append);
@@ -610,9 +610,10 @@ where
         }
     }
     if !network_outputs.is_empty() {
-        let (recorded, configuration, append) =
+        let (recorded, discovered_choices, configuration, append) =
             loop_impl.append_backend_network_outputs(network_outputs)?;
         outcome.decisions.extend(recorded);
+        outcome.discovered_choices.extend(discovered_choices);
         outcome.configuration = configuration;
         outcome.event_log_entries.extend(append.entries);
         outcome.event_log_segment_bytes = append.segment_bytes;
@@ -825,7 +826,15 @@ where
     fn append_backend_network_outputs(
         &mut self,
         outputs: Vec<BackendNetworkOutput>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<crucible_campaign::ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         self.loop_impl.append_backend_network_outputs(outputs)
     }
 
@@ -880,7 +889,7 @@ where
             let outputs = std::mem::take(&mut self.pending_network_outputs);
             self.loop_impl
                 .append_backend_network_outputs(outputs)
-                .map(|(_recorded, _configuration, append)| append.entries)
+                .map(|(_recorded, _discoveries, _configuration, append)| append.entries)
                 .map_err(|error| BackendError::Rejected {
                     message: error.to_string(),
                 })

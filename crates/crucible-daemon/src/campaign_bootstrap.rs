@@ -22,8 +22,8 @@ use crucible::{ScenarioDefForm, Schedule};
 use crucible_campaign::{
     CampaignAuthorizationError, CampaignCodecError, CampaignHash, CampaignName, CampaignPrincipal,
     CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError,
-    CampaignServiceOperation, CandidateGeneratorSpec, CandidateGeneratorSpecId,
-    ConfigurationArtifactId, DebuggerAuthorityKey, PlannerAuthorityKey,
+    CampaignServiceFailure, CampaignServiceOperation, CandidateGeneratorSpec,
+    CandidateGeneratorSpecId, ConfigurationArtifactId, DebuggerAuthorityKey, PlannerAuthorityKey,
 };
 use crucible_cas::content_store::{
     DirectoryRefBackend, GraphViolation, ImmutableBlobBackend, MutableRefBackend, ObjectKind,
@@ -1186,13 +1186,27 @@ impl PreparedCampaignLocalService {
         {
             server = server.with_operational_status(operational_status);
         }
+        let debug_inventory = Arc::new(
+            crate::CampaignDebugSessionInventory::open(state.debug_session_inventory_path())
+                .map_err(CampaignLocalServiceError::DebugSessionInventory)?,
+        );
         if let (Some(lifecycle), Some(executor)) = (campaign_debug_lifecycle, executor.as_ref()) {
             let controller = crate::CanonicalCampaignDebugController::new(
                 Arc::clone(&repository),
                 executor.campaign_debug_capability(),
                 lifecycle,
-            );
+                Arc::clone(&debug_inventory),
+            )
+            .map_err(CampaignLocalServiceError::DebugSessionRecovery)?;
             server = server.with_debug_control(Arc::new(controller));
+        } else if !debug_inventory
+            .records()
+            .map_err(CampaignLocalServiceError::DebugSessionInventory)?
+            .is_empty()
+        {
+            return Err(CampaignLocalServiceError::DebugSessionRecovery(
+                CampaignServiceFailure::Unavailable,
+            ));
         }
         let packaged_scope = executor.as_ref().map(|executor| {
             (
@@ -1310,6 +1324,19 @@ pub struct CampaignLocalService {
 }
 
 impl CampaignLocalService {
+    /// Installs a deployment-owned operational diagnostic sink before serving.
+    ///
+    /// The sink receives validated request failures and closed connection
+    /// failure categories without gaining repository or runtime authority.
+    #[must_use]
+    pub fn with_diagnostic_sink(
+        mut self,
+        diagnostic_sink: Arc<dyn crate::CampaignServiceDiagnosticSink>,
+    ) -> Self {
+        self.server = self.server.with_diagnostic_sink(diagnostic_sink);
+        self
+    }
+
     /// Returns a weak capability for bounded post-bind runtime attachment.
     ///
     /// The handle exposes no repository or component-authority access and
@@ -1395,6 +1422,12 @@ pub enum CampaignLocalServiceError {
     /// The canonical durable archive-transfer journal could not be opened.
     #[error(transparent)]
     CampaignTransfer(#[from] crate::CampaignTransferJournalError),
+    /// The durable campaign debug-session inventory could not be opened.
+    #[error(transparent)]
+    DebugSessionInventory(#[from] crate::CampaignDebugSessionInventoryError),
+    /// A durable campaign debug session could not be recovered into the lifecycle registry.
+    #[error("campaign debug-session recovery failed: {0}")]
+    DebugSessionRecovery(CampaignServiceFailure),
     /// Store maintenance was requested through a read-only service profile.
     #[error("campaign store maintenance is unavailable in read-only mode")]
     StoreMaintenanceReadOnly,
@@ -1518,6 +1551,7 @@ pub enum CampaignLocalServiceError {
 struct CampaignStateOwner {
     _root: File,
     lock: File,
+    root_path: PathBuf,
     transfer_identity: String,
 }
 
@@ -1601,12 +1635,17 @@ impl CampaignStateOwner {
         Ok(Self {
             _root: root,
             lock,
+            root_path: path.to_owned(),
             transfer_identity,
         })
     }
 
     fn transfer_identity(&self) -> &str {
         &self.transfer_identity
+    }
+
+    fn debug_session_inventory_path(&self) -> PathBuf {
+        self.root_path.join("debug-sessions.v1")
     }
 }
 

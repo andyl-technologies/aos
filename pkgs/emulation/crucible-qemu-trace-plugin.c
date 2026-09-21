@@ -78,16 +78,14 @@ static uint64_t pending_sample_icount;
 static unsigned int tracked_vcpus = 1;
 static bool initialized_vcpus[MAX_TRACKED_VCPUS];
 static uint64_t per_vcpu_retired[MAX_TRACKED_VCPUS];
-static uint64_t last_switch_per_vcpu_retired[MAX_TRACKED_VCPUS];
-static uint64_t last_rr_current_vcpu = UINT64_MAX;
-static uint64_t last_rr_cursor_position = UINT64_MAX;
+static uint64_t rr_handoff_per_vcpu_retired[MAX_TRACKED_VCPUS];
+static uint64_t rr_handoff_retired;
 static uint64_t last_rr_switch_quantum;
 static uint64_t last_valid_rr_current_vcpu = UINT64_MAX;
 static uint64_t last_valid_rr_cursor_position = UINT64_MAX;
 static uint64_t last_valid_rr_switch_quantum;
 static bool last_valid_rr_cursor_available;
 static uint64_t rr_switch_events;
-static bool rr_switch_trace_initialized;
 static const char *launch_definition_digest = ZERO_SHA256_HEX;
 static const char *qemu_build_digest = ZERO_SHA256_HEX;
 static const char *trace_plugin_build_digest = ZERO_SHA256_HEX;
@@ -873,42 +871,36 @@ record_sample(unsigned int vcpu_index, bool final)
 }
 
 static void
-record_rr_switch_event(void)
+on_rr_handoff(unsigned int from_vcpu, unsigned int to_vcpu,
+              uint64_t rr_switch_quantum, uint64_t source_retired_delta,
+              void *userdata)
 {
-  if (trace_file == NULL) {
+  (void)userdata;
+
+  if (trace_file == NULL || from_vcpu >= tracked_vcpus ||
+      to_vcpu >= tracked_vcpus || rr_switch_quantum == 0) {
     return;
   }
 
-  uint64_t rr_current_vcpu;
-  uint64_t rr_cursor_position;
-  uint64_t rr_switch_quantum;
-
-  if (!read_rr_cursor_snapshot(
-          &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum)) {
-    rr_switch_trace_initialized = false;
-    last_rr_current_vcpu = UINT64_MAX;
-    last_rr_cursor_position = UINT64_MAX;
-    last_rr_switch_quantum = 0;
+  if (source_retired_delta == 0) {
+    return;
+  }
+  if (source_retired_delta > rr_switch_quantum ||
+      UINT64_MAX - rr_handoff_retired < source_retired_delta ||
+      UINT64_MAX - rr_handoff_per_vcpu_retired[from_vcpu] <
+          source_retired_delta) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: invalid RR handoff accounting\n");
+    qemu_plugin_request_shutdown(1);
     return;
   }
 
-  if (rr_current_vcpu == UINT64_MAX || rr_current_vcpu >= tracked_vcpus) {
-    return;
-  }
+  rr_handoff_retired += source_retired_delta;
+  rr_handoff_per_vcpu_retired[from_vcpu] += source_retired_delta;
 
-  if (!rr_switch_trace_initialized) {
-    rr_switch_trace_initialized = true;
-    last_rr_current_vcpu = rr_current_vcpu;
-    last_rr_cursor_position = rr_cursor_position;
-    last_rr_switch_quantum = rr_switch_quantum;
-    return;
-  }
-
-  if (rr_current_vcpu == last_rr_current_vcpu) {
-    last_rr_cursor_position = rr_cursor_position;
-    last_rr_switch_quantum = rr_switch_quantum;
-    return;
-  }
+  const uint64_t previous_rr_switch_quantum =
+      last_rr_switch_quantum == 0 ? rr_switch_quantum
+                                  : last_rr_switch_quantum;
 
   rr_switch_events++;
   fprintf(
@@ -923,11 +915,11 @@ record_rr_switch_event(void)
       ",\"rr_switch_quantum\":%" PRIu64
       ",\"per_vcpu_retired\":[",
       rr_switch_events,
-      retired,
-      last_rr_current_vcpu,
-      rr_current_vcpu,
-      rr_cursor_position,
-      last_rr_switch_quantum,
+      rr_handoff_retired,
+      from_vcpu,
+      to_vcpu,
+      UINT64_C(0),
+      previous_rr_switch_quantum,
       rr_switch_quantum);
 
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
@@ -935,21 +927,17 @@ record_rr_switch_event(void)
         trace_file,
         "%s%" PRIu64,
         vcpu == 0 ? "" : ",",
-        per_vcpu_retired[vcpu]);
+        rr_handoff_per_vcpu_retired[vcpu]);
   }
 
   fprintf(trace_file, "],\"per_vcpu_delta\":[");
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
-    const uint64_t delta =
-        per_vcpu_retired[vcpu] - last_switch_per_vcpu_retired[vcpu];
+    const uint64_t delta = vcpu == from_vcpu ? source_retired_delta : 0;
     fprintf(trace_file, "%s%" PRIu64, vcpu == 0 ? "" : ",", delta);
-    last_switch_per_vcpu_retired[vcpu] = per_vcpu_retired[vcpu];
   }
 
   fprintf(trace_file, "]}\n");
   fflush(trace_file);
-  last_rr_current_vcpu = rr_current_vcpu;
-  last_rr_cursor_position = rr_cursor_position;
   last_rr_switch_quantum = rr_switch_quantum;
 }
 
@@ -1008,8 +996,6 @@ on_insn(unsigned int vcpu_index, void *userdata)
     last_valid_rr_switch_quantum = rr_switch_quantum;
     last_valid_rr_cursor_available = true;
   }
-  record_rr_switch_event();
-
   reached_stop = stop_at != 0 && retired >= stop_at && !stop_requested;
   if (reached_stop) {
     stop_requested = true;
@@ -1295,6 +1281,7 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init, NULL);
   qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate, NULL);
   qemu_plugin_register_control_boundary_cb(on_control_boundary, NULL);
+  qemu_plugin_register_rr_handoff_cb(on_rr_handoff, NULL);
   qemu_plugin_register_sim_shmem_observer_cb(
       on_sim_observe_icount, on_sim_observer_max_advance_icount, NULL);
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);

@@ -92,7 +92,6 @@ const DECISION_RNG_MARKERS: &[&str] = &[
     "app_random_draw_cap_round_trips_through_scenario_form_serialization",
     "decision_recorder_resumes_stream_positions_from_existing_schedule",
     "decision_recorder_derives_default_rr_preemption_without_recording_schedule",
-    "decision_recorder_records_preemption_overrides_in_schedule",
     "decision_recorder_rejects_invalid_default_preemption_shape",
     "decision_recorder_derives_default_rr_preemption_without_overflow",
     "assert_decision_rng_branch_coverage(",

@@ -1,4 +1,4 @@
-//! Validates the executable Phase 9 gates and opt-in release acceptance layer.
+//! Validates the executable Phase 9 gates and fail-closed release acceptance layer.
 
 #![forbid(unsafe_code)]
 
@@ -16,6 +16,9 @@ const ACCEPTANCE_RUNNER: &str =
     include_str!("../../../tests/crucible/_phase9-campaign-release-acceptance.sh");
 const EVIDENCE_SPEC_NIX: &str =
     include_str!("../../../tests/crucible/_campaign-manual-evidence-spec.nix");
+const DOGFOOD_CONTRACT_SOURCE: &str = include_str!(
+    "../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-dogfood-contract.toml"
+);
 const FINDING_PORTABILITY_NIX: &str =
     include_str!("../../../tests/crucible/phase9-campaign-finding-portability.nix");
 const DEFAULT_NIX: &str = include_str!("../../../tests/crucible/default.nix");
@@ -25,6 +28,32 @@ const EXECUTABLE_GATES: &[&str] = &[
     "gate:campaign-operational-continuity",
     "gate:campaign-replay",
     "gate:hot-fork-scaling",
+    "gate:campaign-required-gates",
+];
+const REQUIRED_CLAIM_GATES: &[&str] = &[
+    "gate:campaign-model",
+    "gate:campaign-component-contract",
+    "gate:branch-point-model",
+    "gate:typed-choice",
+    "gate:typed-choice-product-checkpoint",
+    "gate:campaign-replay",
+    "gate:lazy-frontier",
+    "gate:attempt-idempotence",
+    "gate:hot-fork-equivalence",
+    "gate:hot-fork-isolation",
+    "gate:hot-fork-scaling",
+    "gate:world-fork-atomicity",
+    "gate:exact-closure-streaming",
+    "gate:campaign-store-equivalence",
+    "gate:campaign-store-composition",
+    "gate:campaign-cold-continuity",
+    "gate:campaign-statistics",
+    "gate:campaign-operational-continuity",
+    "gate:license-boundary",
+    "gate:abi-conformance",
+    "gate:control-responsiveness",
+    "gate:campaign-mutation-scaling",
+    "gate:campaign-rfc-traceability",
 ];
 const MANUAL_GATES: &[&str] = &[
     "gate:campaign-operator-acceptance",
@@ -53,6 +82,7 @@ struct AcceptanceContract {
 #[serde(deny_unknown_fields)]
 struct ExecutableEvidence {
     required_gates: Vec<String>,
+    required_claim_gates: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +168,40 @@ struct OutputContract {
     accepted_result: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DogfoodContract {
+    schema: String,
+    gate: String,
+    rfc_section: String,
+    acceptance_state: String,
+    actual_product_workload_required: bool,
+    public_surfaces_only: bool,
+    independent_handoff_required: bool,
+    minimum_duration_hours: u64,
+    release_candidate_duration_hours: u64,
+    implementation_tasks: Vec<String>,
+    provenance: toml::Value,
+    command_journal: toml::Value,
+    scale: DogfoodScale,
+    resource_audit: toml::Value,
+    artifacts: toml::Value,
+    sign_offs: toml::Value,
+    acceptance: toml::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DogfoodScale {
+    required: bool,
+    minimum_hot_children: u64,
+    minimum_promoted_template_generations: u64,
+    minimum_admitted_attempts: u64,
+    exercises_backpressure: bool,
+    exercises_resource_pressure: bool,
+    exercises_policy_revision: bool,
+}
+
 #[test]
 fn release_acceptance_contract_requires_executable_and_signed_manual_evidence()
 -> Result<(), Box<dyn Error>> {
@@ -158,6 +222,10 @@ fn release_acceptance_contract_requires_executable_and_signed_manual_evidence()
     assert_eq!(
         contract.executable_evidence.required_gates,
         EXECUTABLE_GATES
+    );
+    assert_eq!(
+        contract.executable_evidence.required_claim_gates,
+        REQUIRED_CLAIM_GATES
     );
     assert_eq!(contract.manual_evidence.required_gates, MANUAL_GATES);
     assert_eq!(
@@ -289,7 +357,7 @@ fn release_acceptance_contract_requires_executable_and_signed_manual_evidence()
 }
 
 #[test]
-fn release_acceptance_is_opt_in_and_fails_closed() {
+fn release_acceptance_is_explicitly_wired_and_fails_closed() {
     for required_argument in [
         "operatorEvidence,",
         "destructiveRecoveryEvidence,",
@@ -299,14 +367,35 @@ fn release_acceptance_is_opt_in_and_fails_closed() {
         "campaignOperationalContinuity,",
         "campaignFindingPortability,",
         "hotForkScaling,",
+        "requiredGates,",
         "cruciblePackage,",
         "releaseManifest,",
+        "releaseAcceptanceContract,",
         "trustedAllowedSigners,",
     ] {
         assert!(ACCEPTANCE_NIX.contains(required_argument));
     }
 
-    assert!(!DEFAULT_NIX.contains("phase9-campaign-release-acceptance.nix"));
+    for wiring in [
+        "campaignReleaseEvidence ? null,",
+        "campaignFindingPortability = import ./phase9-campaign-finding-portability.nix",
+        "packagedReplay = phase4.gates.campaignReplay.rawGate;",
+        "campaignReleaseAcceptanceContract = import ./phase9-campaign-release-acceptance-contract.nix",
+        "campaignReleaseAcceptance =",
+        "else if campaignReleaseEvidence == null",
+        "gateName = \"gate:campaign-release-acceptance\";",
+        "import ./phase9-campaign-release-acceptance.nix",
+        "hotForkScaling = phase7.gates.hotForkScaling;",
+        "releaseAcceptanceContract = campaignReleaseAcceptanceContract;",
+    ] {
+        assert!(
+            DEFAULT_NIX.contains(wiring),
+            "missing Phase 9 wiring: {wiring}"
+        );
+    }
+    assert!(DEFAULT_NIX.contains(
+        "signed operator, destructive-recovery, dogfood, and e2e evidence was not supplied"
+    ));
     assert!(CONTRACT_NIX.contains("acceptance=not-evaluated"));
     assert!(!CONTRACT_NIX.contains("acceptance=pass"));
 
@@ -327,6 +416,8 @@ fn release_acceptance_is_opt_in_and_fails_closed() {
         "--probe-evidence-file",
         "--probe-distinct-fingerprints",
         "--probe-command-journal",
+        "--probe-manifest-requirements",
+        "--probe-required-gates",
         "--probe-evidence-tree",
         "contains undeclared operation",
         "contains duplicate operation",
@@ -336,11 +427,18 @@ fn release_acceptance_is_opt_in_and_fails_closed() {
         "crucible_package_store_path",
         "signer_key_bindings_sha256",
         "spec_values signer_role",
+        "required_claim_count",
+        "all_required_claims_authenticated",
+        "campaign_required_gates_result_sha256",
+        "campaign_required_gates_manifest_sha256",
+        "campaign_required_gates_inventory_sha256",
+        "required-claim-gates.txt",
+        "does not contain the exact required gate inventory",
     ] {
         assert!(ACCEPTANCE_RUNNER.contains(required_check));
     }
     assert!(ACCEPTANCE_NIX.contains("$out/contracts"));
-    assert!(ACCEPTANCE_NIX.contains("releaseAcceptanceContract = import"));
+    assert!(!ACCEPTANCE_NIX.contains("releaseAcceptanceContract = import"));
     assert!(ACCEPTANCE_NIX.contains("release-acceptance.toml"));
     assert!(ACCEPTANCE_RUNNER.contains("release_acceptance_contract_result_sha256"));
     assert!(!ACCEPTANCE_RUNNER.contains("sign-offs/allowed-signers"));
@@ -350,7 +448,9 @@ fn release_acceptance_is_opt_in_and_fails_closed() {
         "maximum \"duration_hours\" contract.maximum_duration_hours",
         "minimum \"duration_hours\" contract.minimum_duration_hours",
         "minimum \"duration_hours\" contract.release_candidate_duration_hours",
-        "minimum \"execution_count\" contract.scale.minimum_executions",
+        "minimum \"hot_children_created_and_retired\" contract.scale.minimum_hot_children",
+        "minimum \"promoted_template_generations_reached\" contract.scale.minimum_promoted_template_generations",
+        "minimum \"admitted_lightweight_attempts\" contract.scale.minimum_admitted_attempts",
         "contract.varied_core_counts",
         "contract.hostile_profiles",
         "contract.provenance.fields",
@@ -371,6 +471,43 @@ fn release_acceptance_is_opt_in_and_fails_closed() {
     ] {
         assert!(ACCEPTANCE_RUNNER.contains(enforcement));
     }
+    assert!(CONTRACT_NIX.contains("release acceptance accepted a substituted required gate"));
+    assert!(!EVIDENCE_SPEC_NIX.contains("minimum_executions"));
+    assert!(!EVIDENCE_SPEC_NIX.contains("execution_count"));
+}
+
+#[test]
+fn dogfood_contract_requires_every_normative_scale_measurement() -> Result<(), Box<dyn Error>> {
+    let contract: DogfoodContract = toml::from_str(DOGFOOD_CONTRACT_SOURCE)?;
+
+    assert_eq!(contract.schema, "aos.crucible.campaign-dogfood-contract.v2");
+    assert_eq!(contract.gate, "gate:campaign-dogfood");
+    assert_eq!(contract.rfc_section, "RFC-0020 sections 14.9 and 14.11");
+    assert_eq!(contract.acceptance_state, "manual-evidence-required");
+    assert!(contract.actual_product_workload_required);
+    assert!(contract.public_surfaces_only);
+    assert!(contract.independent_handoff_required);
+    assert!(contract.minimum_duration_hours >= 24);
+    assert!(contract.release_candidate_duration_hours >= 72);
+    assert_eq!(
+        contract.implementation_tasks,
+        ["T-CAM-0.5", "T-CAM-7.7", "T-CAM-9.7"]
+    );
+    assert!(contract.provenance.is_table());
+    assert!(contract.command_journal.is_table());
+    assert!(contract.resource_audit.is_table());
+    assert!(contract.artifacts.is_table());
+    assert!(contract.sign_offs.is_table());
+    assert!(contract.acceptance.is_table());
+    assert!(contract.scale.required);
+    assert!(contract.scale.minimum_hot_children >= 10_000);
+    assert!(contract.scale.minimum_promoted_template_generations >= 3);
+    assert!(contract.scale.minimum_admitted_attempts >= 1_000_000);
+    assert!(contract.scale.exercises_backpressure);
+    assert!(contract.scale.exercises_resource_pressure);
+    assert!(contract.scale.exercises_policy_revision);
+
+    Ok(())
 }
 
 #[test]
@@ -384,4 +521,6 @@ fn finding_portability_binds_current_public_replay_evidence() {
     ] {
         assert!(FINDING_PORTABILITY_NIX.contains(needle));
     }
+
+    assert!(DEFAULT_NIX.contains("taskIds = [\"T-CAM-9.4\"];"));
 }

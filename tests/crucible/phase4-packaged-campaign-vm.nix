@@ -75,7 +75,7 @@
   };
   deployment = builtins.toFile "campaign-executor.toml" ''
     schema = "crucible.campaign-packaged-executor"
-    version = 1
+    version = 2
     cgroup_root = "/sys/fs/cgroup/crucible"
     run_root = "/tmp/attempts/run"
     attempt_namespace = "packaged-flight"
@@ -99,6 +99,20 @@
     worker_count = 1
     host_architecture = "x86_64"
     qemu_profile = "deterministic-tcg-v1"
+
+    [operations]
+    listener_workers = 4
+    pending_connections = 16
+    requests_per_connection = 4096
+    accept_poll_interval_ms = 10
+    exchange_read_timeout_ms = 30000
+    exchange_write_timeout_ms = 30000
+    runtime_poll_interval_ms = 100
+    planner_scan_limit = 1024
+    planner_input_bytes = 16777216
+    planner_fuel = 1025
+    executor_scan_limit = 1024
+    worker_slots_per_campaign = 1
 
     ${lib.optionalString guestChoice ''
       [guest_selectable_boundary_diagnostics]

@@ -44,6 +44,8 @@ use crate::{
     AttemptExecutionRuntimeBasis, AttemptStateCas, AttemptWorkResult, AttemptWorkerFailure,
     CompletedFindingCandidate, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
     EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, ExactPinMaterializationSelection,
+    HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
+    HotCheckpointFallbackRetentionStore, HotCheckpointFallbackSlot, HotCheckpointPoolKey,
     HotCheckpointResourceProfile, LocalAttemptWorker, LoopbackExecutorService,
     QemuAttemptCancellationSignal, QemuFreshAttemptLifecycleFactory,
     QemuFreshAttemptLifecycleOwner, QueuedAttempt,

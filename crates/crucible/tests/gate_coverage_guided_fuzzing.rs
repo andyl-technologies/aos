@@ -43,7 +43,7 @@ fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible() -> Result<(), Box<d
             iteration.schedule().decisions(),
             std::slice::from_ref(&iteration.mutation)
         );
-        assert!(matches!(iteration.mutation, Decision::Override(_)));
+        assert!(matches!(iteration.mutation, Decision::Selection(_)));
         assert_eq!(iteration.coverage_fingerprint, expected_feedback);
         assert_ne!(
             iteration.selected_corpus_entry,

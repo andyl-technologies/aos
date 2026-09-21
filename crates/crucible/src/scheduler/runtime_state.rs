@@ -489,7 +489,7 @@ pub struct SingleScheduler {
     pub(super) decision_seed: Seed,
     pub(super) decision_rng_cursor: DecisionRngState,
     /// Explorer-selected live World-network outcomes awaiting exact emissions.
-    pub(super) branch_network_choices: Vec<OverrideDecision>,
+    pub(super) branch_network_choices: Vec<SelectionDecision>,
     /// Authenticated app-random branch selections keyed by their exact parent.
     ///
     /// The parent includes the seeded raw RNG draw. A selection is removed only

@@ -20,20 +20,16 @@ pub(crate) use debug_terminal::parse_debug_reverse_condition;
 pub(crate) use debug_terminal::{
     GUEST_TRANSCRIPT_HEADER, GuestTranscriptDirection, GuestTranscriptWriter,
 };
-pub(crate) use ledger_format::{
-    format_content_hash_ref, ledger_hex, load_triage_findings_ledger, parse_hex_content_hash,
-    write_reproduction_findings_ledger,
-};
 #[cfg(test)]
-pub(crate) use ledger_format::{
-    parse_failure_findings_ledger_bytes, reproduction_findings_ledger_bytes,
-};
+pub(crate) use ledger_format::ledger_hex;
+pub(crate) use ledger_format::{format_content_hash_ref, write_reproduction_findings_ledger};
 #[cfg(test)]
 pub(crate) use triage::{
-    build_triage_minimization, build_triage_report_set, plan_triage_invocation,
+    build_triage_minimization, build_triage_report_set, triage_evidence_for_finding,
+    triage_property_evidence_for_violation,
 };
 pub(crate) use triage::{
-    run_triage_invocation, triage_evidence_for_finding, triage_property_evidence_for_violation,
+    emit_triage_report, run_campaign_triage_invocation,
     triage_property_evidence_for_violation_with_recording, triage_timeout_evidence,
 };
 
