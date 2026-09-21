@@ -2165,8 +2165,8 @@
           cp -a "$bazelOut/external" "$out"
 
           # Normalize permissions for reproducibility
-          find "$out" -type f -exec chmod 644 {} \;
-          find "$out" -type d -exec chmod 755 {} \;
+          find "$out" -type f -exec chmod 644 {} +
+          find "$out" -type d -exec chmod 755 {} +
         ''
       ];
 
