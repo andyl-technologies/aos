@@ -18,7 +18,8 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceSource,
+  aosWorkspaceVendor,
   openssl,
   perl,
   pkg-config,
@@ -43,33 +44,8 @@
     if isDarwinCross
     then buildPackages.protobuf
     else protobuf;
-  repoRoot = ../../..;
-  repoRootString = toString repoRoot;
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-hub-workspace-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != "target"
-      && base != ".git"
-      && (
-        pathString
-        == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
-  };
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-4G8waM8fsmqSjIgkaitrG3HmPy2e6KShpDDJn7THqZc=";
-  };
+  src = aosWorkspaceSource;
+  cargoDeps = aosWorkspaceVendor;
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
     OPENSSL_LIB_DIR = "${openssl}/lib";
@@ -103,9 +79,36 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
     pname = "aos-hub";

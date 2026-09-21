@@ -21,7 +21,7 @@
     runtimeDeps = [];
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-d6m9n6mxZaol5ZS62JsuyztZDTKG7tJriTmMaWe+R+o=";
+    outputHash = "sha256-uFGOa+nVRUlBviFBHmE1ZSomqq63zd6h+HgBkUTYszM=";
     phases = [
       {
         name = "fetch";
@@ -65,7 +65,7 @@ in
         script = ''
           # Yarn's flat layout exposed this transitive dependency to the app.
           # Match that visibility without changing its locked router version.
-          ln -s .pnpm/react-router@6.22.1_react@18.3.1/node_modules/react-router \
+          ln -s .pnpm/react-router@6.30.4_react@18.3.1/node_modules/react-router \
             node_modules/react-router
 
           # Bind each esbuild JS interface to its matching source-built binary.

@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use connectrpc::{ConnectError, Context, ErrorCode};
+use connectrpc::{
+    ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
+};
 
 use aos_proto::aos::auth::v1::*;
 
@@ -27,11 +29,11 @@ impl AuthService for AuthServiceImpl {
     /// an unknown/revoked/expired secret and `internal` on token-store or
     /// JWT-encoding errors. The response mirrors the OAuth2 token shape:
     /// access token, `Bearer` type, TTL, and space-joined scope.
-    async fn get_token(
-        &self,
-        ctx: Context,
-        req: buffa::view::OwnedView<TokenRequestView<'static>>,
-    ) -> Result<(TokenResponse, Context), ConnectError> {
+    async fn get_token<'a>(
+        &'a self,
+        _ctx: RequestContext,
+        req: ServiceRequest<'_, TokenRequest>,
+    ) -> ServiceResult<impl Encodable<TokenResponse> + Send + use<'a>> {
         let provisioning_token: &str = req.provisioning_token;
 
         // Validate the provisioning secret against the token store.
@@ -55,15 +57,12 @@ impl AuthService for AuthServiceImpl {
 
         let scope = token_record.permissions.join(" ");
 
-        Ok((
-            TokenResponse {
-                access_token,
-                token_type: "Bearer".into(),
-                expires_in: ttl,
-                scope,
-                ..Default::default()
-            },
-            ctx,
-        ))
+        Response::ok(TokenResponse {
+            access_token,
+            token_type: "Bearer".into(),
+            expires_in: ttl,
+            scope,
+            ..Default::default()
+        })
     }
 }

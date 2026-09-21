@@ -169,9 +169,10 @@
   mkOciTools = {
     buildPackages ? resolvedBuildPackages,
     abilityContractValidator ? buildPackages.aos-ability-contract-validator,
-    mkReferenceGraph ? lib.build.referenceGraph {
-      inherit (buildPackages) mkDerivation coreutils jq;
-    },
+    mkReferenceGraph ?
+      lib.build.referenceGraph {
+        inherit (buildPackages) mkDerivation coreutils jq;
+      },
   }:
     import ./containers/_aos-oci-backend/oci {
       inherit lib abilityContractValidator mkReferenceGraph;
@@ -260,16 +261,16 @@
       else lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
   in
     (builtins.removeAttrs package ["abilities" "module"])
-      // {
-        pname = packageName;
-        inherit version;
-        contract = probeOnlyPackageContract {
-          inherit packageName version packageProbe;
-        };
-      }
-      // lib.optionalAttrs (normalizedPlatformSupport != null) {
-        platformSupport = normalizedPlatformSupport;
+    // {
+      pname = packageName;
+      inherit version;
+      contract = probeOnlyPackageContract {
+        inherit packageName version packageProbe;
       };
+    }
+    // lib.optionalAttrs (normalizedPlatformSupport != null) {
+      platformSupport = normalizedPlatformSupport;
+    };
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -330,7 +331,8 @@
       (name: let
         type = (builtins.readDir path).${name};
       in
-        type == "regular"
+        type
+        == "regular"
         || (type == "directory" && validAbilityModuleTree (path + "/${name}")))
       (builtins.attrNames (builtins.readDir path));
     abilityModuleArtifact =
@@ -1157,7 +1159,7 @@
     src = aosWorkspaceSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source/crates";
-    hash = "sha256-lxX52CDtxFb8nm9+KekWeMHMi1jWP9N7ubCUc+EzQ6A=";
+    hash = "sha256-E4/96185yRJymHSuqEI9Mgws4Q8DaPON+EqL5wDCruw=";
   };
 
   # Auto-discover packages from subdirectories.
@@ -1311,8 +1313,19 @@
     };
   };
   darwinRuntimePlatformSupport = lib.packagePlatform.normalize "package 'darwin-runtimes' platformSupport" {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["darwin"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["darwin"];
+      }
+    ];
     target = [];
     role = "public-package";
   };
@@ -1584,16 +1597,28 @@
       # nuke-references uses the raw (un-wrapped) mkDerivation so it can't
       # depend on itself. Every other package gets nuke-references injected
       # into buildDeps automatically via the wrapped mkDerivation above.
-      nuke-references = withProbeOnlyPackageContract {
-        packageName = "nuke-references";
-        platformSupport = {
-          build = [{abi = ["gnu"]; os = ["linux"];}];
-          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
-          target = [];
-          role = "build-input";
-        };
-        version = "0";
-        packageProbe = lib.qualification.commandProbe {
+      nuke-references =
+        withProbeOnlyPackageContract {
+          packageName = "nuke-references";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+            ];
+            target = [];
+            role = "build-input";
+          };
+          version = "0";
+          packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [
                 {
@@ -1650,12 +1675,12 @@
                 }
               ];
             };
-        };
-      } (import ../lib/build-support/nuke-references {
-        mkDerivation = args:
-          withDefaultMaintainers (rawMkDerivation args);
-        inherit (self) bash coreutils grep sed;
-      });
+          };
+        } (import ../lib/build-support/nuke-references {
+          mkDerivation = args:
+            withDefaultMaintainers (rawMkDerivation args);
+          inherit (self) bash coreutils grep sed;
+        });
     }
     // discoveredPackages
     // {
@@ -1952,16 +1977,44 @@
         else callPackage ./toolchain/java/java-native-foundation.nix {declarationOnly = true;};
 
       # --- stdenv packages (linked, not rebuilt) ---
-      gcc = withProbeOnlyPackageContract {
-        packageName = "gcc";
-        platformSupport = {
-          build = [{abi = ["gnu"]; os = ["linux"];}];
-          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-          role = "public-package";
-        };
-        version = "16.2.0";
-        packageProbe = lib.qualification.commandProbe {
+      gcc =
+        withProbeOnlyPackageContract {
+          packageName = "gcc";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            target = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            role = "public-package";
+          };
+          version = "16.2.0";
+          packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
               "expected" = "The compiler succeeds and the binary prints the fixed result.";
@@ -2024,34 +2077,46 @@
                 }
               ];
             };
-        };
-      } (
-        (withDistributionMeta {
-            description = "GNU Compiler Collection with AOS target and runtime defaults";
-            homepage = "https://gcc.gnu.org/";
-            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-          }
-          (
-            if stdenv.hostPlatform.isDarwin
-            then darwinGcc
-            else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            # Preserve the public package identity so build dependencies
-            # resolve to native GCC rather than the target-hosted wrapper.
-            then linuxHostedCc // {pname = "gcc";}
-            else stdenv.gcc
-          ))
-        // {version = "16.2.0";}
-      );
-      glibc = withProbeOnlyPackageContract {
-        packageName = "glibc";
-        platformSupport = {
-          build = [{abi = ["gnu"]; os = ["linux"];}];
-          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
-          target = [];
-          role = "public-package";
-        };
-        version = "2.39.0";
-        packageProbe = lib.qualification.commandProbe {
+          };
+        } (
+          (withDistributionMeta {
+              description = "GNU Compiler Collection with AOS target and runtime defaults";
+              homepage = "https://gcc.gnu.org/";
+              license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+            }
+            (
+              if stdenv.hostPlatform.isDarwin
+              then darwinGcc
+              else if stdenv.isCross && stdenv.hostPlatform.isLinux
+              # Preserve the public package identity so build dependencies
+              # resolve to native GCC rather than the target-hosted wrapper.
+              then linuxHostedCc // {pname = "gcc";}
+              else stdenv.gcc
+            ))
+          // {version = "16.2.0";}
+        );
+      glibc =
+        withProbeOnlyPackageContract {
+          packageName = "glibc";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+            ];
+            target = [];
+            role = "public-package";
+          };
+          version = "2.39.0";
+          packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
               "expected" = "The AOS libc sorts the vector into the exact ascending sequence.";
@@ -2133,36 +2198,64 @@
                 }
               ];
             };
-        };
-      } (
-        (withDistributionMeta {
-            description = "GNU C Library for the AOS target runtime";
-            homepage = "https://www.gnu.org/software/libc/";
-            license = "LGPL-2.1-or-later";
-          }
-          (
-            (
-              if stdenv.isCross && stdenv.hostPlatform.isLinux
-              then linuxHostedGlibc
-              else stdenv.glibc
-            )
-            // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
-              dev = stdenv.glibc;
-              static = stdenv.glibc;
+          };
+        } (
+          (withDistributionMeta {
+              description = "GNU C Library for the AOS target runtime";
+              homepage = "https://www.gnu.org/software/libc/";
+              license = "LGPL-2.1-or-later";
             }
-          ))
-        // {version = "2.39.0";}
-      );
-      binutils = withProbeOnlyPackageContract {
-        packageName = "binutils";
-        platformSupport = {
-          build = [{abi = ["gnu"]; os = ["linux"];}];
-          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-          role = "public-package";
-        };
-        version = "2.41.0";
-        packageProbe = lib.qualification.commandProbe {
+            (
+              (
+                if stdenv.isCross && stdenv.hostPlatform.isLinux
+                then linuxHostedGlibc
+                else stdenv.glibc
+              )
+              // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
+                dev = stdenv.glibc;
+                static = stdenv.glibc;
+              }
+            ))
+          // {version = "2.39.0";}
+        );
+      binutils =
+        withProbeOnlyPackageContract {
+          packageName = "binutils";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            target = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            role = "public-package";
+          };
+          version = "2.41.0";
+          packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
               "expected" = "Strings emits exactly the two qualifying runs.";
@@ -2211,34 +2304,62 @@
                 }
               ];
             };
-        };
-      } (
-        (withDistributionMeta {
-            description = "GNU binary utilities for the AOS target toolchain";
-            license = "GPL-3.0-or-later";
-          }
-          (
-            if stdenv.hostPlatform.isDarwin
-            then darwinBinutils
-            else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedBinutils
-            else stdenv.binutils
-          ))
-        // {version = "2.41.0";}
-      );
+          };
+        } (
+          (withDistributionMeta {
+              description = "GNU binary utilities for the AOS target toolchain";
+              license = "GPL-3.0-or-later";
+            }
+            (
+              if stdenv.hostPlatform.isDarwin
+              then darwinBinutils
+              else if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedBinutils
+              else stdenv.binutils
+            ))
+          // {version = "2.41.0";}
+        );
       inherit darwinDtraceCompiler;
       inherit appleLibTapi;
       inherit darwinCctoolsLinker;
-      cc = withProbeOnlyPackageContract {
-        packageName = "cc";
-        platformSupport = {
-          build = [{abi = ["gnu"]; os = ["linux"];}];
-          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-          role = "public-package";
-        };
-        version = "0.1.0";
-        packageProbe = lib.qualification.commandProbe {
+      cc =
+        withProbeOnlyPackageContract {
+          packageName = "cc";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            target = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            role = "public-package";
+          };
+          version = "0.1.0";
+          packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
               "expected" = "The compiler succeeds and the binary prints the fixed result.";
@@ -2301,35 +2422,63 @@
                 }
               ];
             };
-        };
-      } (
-        (withDistributionMeta {
-            description = "AOS C and C++ compiler wrapper toolchain";
-            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-          }
-          (
-            if stdenv.hostPlatform.isDarwin
-            then darwinCc
-            else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedCc
-            else stdenv.cc
-          ))
-        // {version = "0.1.0";}
-      );
+          };
+        } (
+          (withDistributionMeta {
+              description = "AOS C and C++ compiler wrapper toolchain";
+              license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+            }
+            (
+              if stdenv.hostPlatform.isDarwin
+              then darwinCc
+              else if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedCc
+              else stdenv.cc
+            ))
+          // {version = "0.1.0";}
+        );
       # The unwrapped gcc-16.2.0-stage2. `pkgs.gcc` is the wrapped
       # gcc-16.2.0-wrapped; the perl Config scrub needs to substitute
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
-      gccUnwrapped = withProbeOnlyPackageContract {
-        packageName = "gccUnwrapped";
-        platformSupport = {
-          build = [{abi = ["gnu"]; os = ["linux"];}];
-          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-          role = "public-package";
-        };
-        version = "16.2.0";
-        packageProbe = lib.qualification.commandProbe {
+      gccUnwrapped =
+        withProbeOnlyPackageContract {
+          packageName = "gccUnwrapped";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            target = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            role = "public-package";
+          };
+          version = "16.2.0";
+          packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
               "expected" = "The compiler succeeds and the binary prints the fixed result.";
@@ -2392,23 +2541,23 @@
                 }
               ];
             };
-        };
-      } (
-        (withDistributionMeta {
-            description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
-            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-          }
-          (
-            if stdenv.hostPlatform.isDarwin
-            then darwinGcc
-            else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedGcc
-            else if stdenv ? gccStage2
-            then stdenv.gccStage2
-            else stdenv.gcc
-          ))
-        // {version = "16.2.0";}
-      );
+          };
+        } (
+          (withDistributionMeta {
+              description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
+              license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+            }
+            (
+              if stdenv.hostPlatform.isDarwin
+              then darwinGcc
+              else if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedGcc
+              else if stdenv ? gccStage2
+              then stdenv.gccStage2
+              else stdenv.gcc
+            ))
+          // {version = "16.2.0";}
+        );
       gcc-libs = withContractFrom discoveredPackages.gcc-libs (
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
@@ -2416,16 +2565,28 @@
         then withDefaultMaintainers linuxTargetGccLibs
         else discoveredPackages.gcc-libs
       );
-      getent = withProbeOnlyPackageContract {
-        packageName = "getent";
-        platformSupport = {
-          build = [{abi = ["gnu"]; os = ["linux"];}];
-          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
-          target = [];
-          role = "public-package";
-        };
-        version = "2.39.0";
-        packageProbe = lib.qualification.commandProbe {
+      getent =
+        withProbeOnlyPackageContract {
+          packageName = "getent";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+            ];
+            target = [];
+            role = "public-package";
+          };
+          version = "2.39.0";
+          packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
               "expected" = "Getent returns the protocol number 6 record for TCP.";
@@ -2473,19 +2634,19 @@
                 }
               ];
             };
-        };
-      } (
-        (withDistributionMeta {
-            description = "Name service database lookup utility from GNU C Library";
-            homepage = "https://www.gnu.org/software/libc/";
-            license = "LGPL-2.1-or-later";
+          };
+        } (
+          (withDistributionMeta {
+              description = "Name service database lookup utility from GNU C Library";
+              homepage = "https://www.gnu.org/software/libc/";
+              license = "LGPL-2.1-or-later";
+            }
+            (lib.getOutput "getent" stdenv.glibc))
+          // {
+            version = "2.39.0";
+            passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
           }
-          (lib.getOutput "getent" stdenv.glibc))
-        // {
-          version = "2.39.0";
-          passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
-        }
-      );
+        );
       # Native package sets retain the final stdenv tools. Cross package roots
       # must be actual target builds; scheduler-native tools remain available
       # only through buildPackages and build-dependency splicing.

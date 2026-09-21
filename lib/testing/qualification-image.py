@@ -68,6 +68,18 @@ REBOOT_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 720
 REBOOT_READY_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 420
 
 
+def execution_host_platform() -> str:
+    """Records the real Linux host separately from the emulated image subject."""
+
+    host = os.uname()
+    architecture = {"arm64": "aarch64"}.get(host.machine, host.machine)
+    if host.sysname != "Linux" or architecture not in {"x86_64", "aarch64"}:
+        raise RuntimeError("image qualification requires a supported Linux host")
+    if PLATFORM == "x86_64-linux" and architecture != "x86_64":
+        raise RuntimeError("x86_64 KVM qualification requires an x86_64 host")
+    return f"{architecture}-linux"
+
+
 def canonical(value: Any) -> bytes:
     """Encodes the canonical JSON form used by release evidence."""
 
@@ -622,10 +634,11 @@ class Scenario:
     def validate_inputs(self) -> None:
         if PLATFORM not in {"x86_64-linux", "aarch64-linux"}:
             raise RuntimeError(
-                "image scenario supports only native Linux release platforms"
+                "image scenario supports only Linux release platforms"
             )
+        execution_host_platform()
         if self.request["platform"] != PLATFORM:
-            raise RuntimeError("request platform differs from native executor")
+            raise RuntimeError("request platform differs from the image subject platform")
         if self.package_mode:
             if (
                 self.case.get("schema_version")
@@ -1676,10 +1689,7 @@ http {
             raise RuntimeError("executed kernel differs from image capability metadata")
         qemu_version = run([QEMU, "--version"]).stdout.splitlines()[0]
         host_kernel = os.uname().release
-        host_machine = os.uname().machine
-        expected_machine = "x86_64" if PLATFORM == "x86_64-linux" else "aarch64"
-        if host_machine != expected_machine:
-            raise RuntimeError("executor host architecture differs from the qualification platform")
+        host_platform = execution_host_platform()
         host_board = first_identity(
             ["/sys/class/dmi/id/product_name", "/proc/device-tree/model"],
             os.uname().nodename,
@@ -1743,7 +1753,7 @@ http {
             "schema_version": "aos.release.environment-inventory/v1",
             "layers": [
                 {
-                    "platform": PLATFORM,
+                    "platform": host_platform,
                     "backend": {"kind": "physical", "board": host_board, "chipset": host_chipset},
                     "cpu": host_cpu,
                     "kernel_release": host_kernel,

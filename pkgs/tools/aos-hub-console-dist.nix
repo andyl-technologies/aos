@@ -9,16 +9,14 @@
   mkDerivation,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceSource,
+  aosWorkspaceVendor,
   rust,
   wasm-bindgen-cli,
   stdenv,
   buildPackages,
 }: let
   version = "0.1.0";
-  repoRoot = ../..;
-  repoRootString = toString repoRoot;
-
   # Protobuf and the C toolchain execute on Linux while producing the
   # target-independent WebAssembly distribution.
   buildProtobuf = buildPackages.protobuf;
@@ -72,31 +70,8 @@
     "RANLIB_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/ranlib";
   };
   mkHubDerivation = args: mkDerivation (args // nativeRustToolchainEnv // consoleReleaseEnv);
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-hub-console-workspace-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != "target"
-      && base != ".git"
-      && (
-        pathString
-        == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
-  };
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-4G8waM8fsmqSjIgkaitrG3HmPy2e6KShpDDJn7THqZc=";
-  };
+  src = aosWorkspaceSource;
+  cargoDeps = aosWorkspaceVendor;
   # Optimize the browser download without changing native Hub or CLI profiles.
   # Keep dependency artifacts and the final application on the same profile.
   consoleReleaseEnv = {
@@ -129,8 +104,24 @@
 in
   mkHubDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };

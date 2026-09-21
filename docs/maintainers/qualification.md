@@ -737,6 +737,12 @@ aos release qualification respond \
   --identity linux-x86-v1
 ```
 
+Linux disk scenarios run QEMU and their other executables from the AOS build-host
+package set while using firmware from the image's target package set. ARM64 TCG
+images can therefore run on an x86_64 Linux host, and their inventory records
+that outer host separately from the ARM64 guest. x86_64 disk qualification still
+requires an x86_64 host with KVM.
+
 The x86_64 Linux executor includes a native program for its staging
 container claim. It reconstructs an OCI layout only from the anonymously
 downloaded objects, imports that layout into a private AOS-built containerd and
@@ -749,7 +755,11 @@ from the executing machine.
 The ARM64 container claim uses the report-import adapter. Provision the ARM64
 TCG guest on the recorded x86_64 host, execute the same lifecycle checks with
 the exact downloaded candidate, and retain a report containing all three
-observed layers. A guest-local two-layer report cannot satisfy this profile;
+observed layers. Build `mkQualificationContainerScenario` with `reportOnly = true`
+for the guest-side collector. It writes the raw `scenario-report.json` after
+all lifecycle checks and does not issue a qualification response. The host
+collector must attach its observed physical and QEMU inventory, then bind and
+validate the combined report through `qualification respond`. A guest-local two-layer report cannot satisfy this profile;
 report import does not synthesize the missing outer host or QEMU evidence.
 Missing reports fail closed. Automated guest provisioning and collection of
 this combined inventory remain operator setup work before release readiness.
@@ -860,6 +870,15 @@ requires successful observations for both; a local check on one architecture
 does not satisfy the other. Package publication support policy determines
 which cells apply. The package probe schema has no architecture selector that
 can silently exempt an otherwise published cell.
+
+Recovery and K3s package cases also bind their published execution image. The
+shared policy's `qualification.packageExecutionImageVariant` defaults to
+`aos-testing`, whose canonical image contains the public release profile and
+trust inputs. Recovery and fleet executors derive their image variant from the
+same package rule. Alternate reviewed contracts can select another canonical
+published variant; a fixture image name is not an implicit substitute. Plan
+validation rejects a missing execution image or platform before builds and
+signing, rather than waiting for staging case expansion.
 
 `qualify-run` routes each case to its platform's `--executor` mapping. The
 package executor runs natively and validates the requested platform; it does

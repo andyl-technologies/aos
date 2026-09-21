@@ -158,14 +158,15 @@ tower = { version = "0.5", features = ["util"] }
 
 # Cache backends
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
-aws-sdk-s3 = "1"
+# Keep the modern HTTPS client and signing features without the SDK's legacy
+# rustls 0.21 compatibility connector; clients use BehaviorVersion::latest().
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 aws-config = "1"
 suppaftp = { version = "6", features = ["async-rustls"] }
 
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
-atty = "0.2"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -208,8 +209,8 @@ tempfile = "3"
 libc = "0.2"
 
 # ConnectRPC
-connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "axum"] }
-buffa = "0.3"
+connectrpc = { version = "0.9", features = ["server", "client", "client-tls", "axum"] }
+buffa = "0.9.2"
 prost = "0.13"
 prost-build = "0.13"
 pbjson = "0.7"
