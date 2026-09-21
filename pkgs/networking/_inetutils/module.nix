@@ -4,7 +4,10 @@
   lib,
   ...
 }: let
-  enabled = lib.attrByPath ["aos" "profiles" "development" "enable"] false config;
+  configured =
+    config.aos.abilities.environment
+    != null
+    && config.aos.profiles.development.enable;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   wrapper = name:
     serviceManagement.forProducer {
@@ -39,7 +42,7 @@
 in {
   config = lib.mkMerge [
     {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
-    (lib.mkIf (enabled && config.aos.abilities.environment != null) {
+    (lib.mkIf configured {
       aos.abilities = lib.mkMerge (
         [{instances.runtime = {};}]
         ++ builtins.map (entry: entry.configured) contributions

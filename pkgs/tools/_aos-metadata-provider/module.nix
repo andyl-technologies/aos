@@ -227,10 +227,11 @@
     inherit entryPoint arguments result;
   };
   configured =
-    lib.hasAttrByPath ["aos" "config" "evalAtBoot" "trust"] config
-    && lib.hasAttrByPath ["aos" "config" "evalAtBoot" "baseLib"] config
-    && lib.hasAttrByPath ["aos" "config" "evalAtBoot" "baseLibAbiHash"] config
-    && lib.hasAttrByPath ["aos" "apm" "configKeys"] config;
+    config.aos.abilities.environment
+    != null
+    && config.aos.config.evalAtBoot.trust != null
+    && config.aos.config.evalAtBoot.baseLib != null
+    && config.aos.config.evalAtBoot.baseLibAbiHash != null;
   trust = config.aos.config.evalAtBoot.trust;
   configKeys = config.aos.apm.configKeys;
   keyFileContent = keys: "${lib.concatStringsSep "\n" keys}\n";
@@ -340,8 +341,8 @@ in {
       then path
       else throw "aos-metadata-provider derived invalid initrd runtime artifact path '${path}'")
     (builtins.sort builtins.lessThan [
-    (builtins.toString configTrustAnchors)
-    (builtins.toString config.aos.config.evalAtBoot.baseLib)
+      (builtins.toString configTrustAnchors)
+      (builtins.toString config.aos.config.evalAtBoot.baseLib)
     ])
   );
 }
