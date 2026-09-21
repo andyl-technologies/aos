@@ -633,7 +633,7 @@ impl CheckedOperationResourceV1 {
 
 impl ClientStateItem for CheckedOperationResourceV1 {
     fn encoded_byte_cost(&self) -> usize {
-        self.wire.compute_size() as usize
+        self.wire.compute_size(&mut buffa::SizeCache::new()) as usize
     }
 }
 
@@ -834,7 +834,7 @@ impl CheckedSandboxResourceV1 {
 
 impl ClientStateItem for CheckedSandboxResourceV1 {
     fn encoded_byte_cost(&self) -> usize {
-        self.wire.compute_size() as usize
+        self.wire.compute_size(&mut buffa::SizeCache::new()) as usize
     }
 }
 
@@ -1037,7 +1037,7 @@ pub(crate) fn exact_nonzero_id(value: &[u8]) -> Result<[u8; 16], InvalidPublicRe
 pub(crate) fn validate_resource_size<T: buffa::Message>(
     value: &T,
 ) -> Result<(), InvalidPublicResource> {
-    if value.compute_size() as usize > MAXIMUM_PUBLIC_RESOURCE_BYTES {
+    if value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PUBLIC_RESOURCE_BYTES {
         Err(InvalidPublicResource::ResourceTooLarge)
     } else {
         Ok(())

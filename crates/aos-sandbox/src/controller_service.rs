@@ -28,17 +28,19 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use aos_proto::aos::sandbox::v1::{
-    CancelOperationRequestView, CancelOperationResponse, DiscoveryService, DiscoveryServiceExt,
-    Event, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse, GetOperationRequestView,
-    GetOperationResponse, GetPublicFeatureRegistryRequestView, GetPublicFeatureRegistryResponse,
-    NodeCapabilities, OperationService, OperationServiceExt, Timestamp, WatchRequestView,
+    CancelOperationRequest, CancelOperationResponse, DiscoveryService, DiscoveryServiceExt, Event,
+    GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
+    GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
+    GetPublicFeatureRegistryResponse, NodeCapabilities, OperationService, OperationServiceExt,
+    Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::seqpacket::SeqpacketError;
-use buffa::view::OwnedView;
-use connectrpc::{ConnectError, Context, ErrorCode};
+use connectrpc::{
+    ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
+};
 use futures::Stream;
 use rustix::net::{
     AddressFamily, SendAncillaryBuffer, SendFlags, SocketAddrUnix, SocketFlags, SocketType,
@@ -955,36 +957,35 @@ struct CapabilityService {
     capabilities: Arc<Mutex<CapabilityState>>,
 }
 
+/// Carries the generated service's owned server-streaming responses.
+type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
+
 impl DiscoveryService for CapabilityService {
-    async fn get_public_feature_registry(
-        &self,
-        context: Context,
-        _request: OwnedView<GetPublicFeatureRegistryRequestView<'static>>,
-    ) -> Result<(GetPublicFeatureRegistryResponse, Context), ConnectError> {
-        Ok((
-            GetPublicFeatureRegistryResponse {
-                registry: Some(crate::controller_query::public_feature_registry_v1()).into(),
-                ..Default::default()
-            },
-            context,
-        ))
+    async fn get_public_feature_registry<'a>(
+        &'a self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, GetPublicFeatureRegistryRequest>,
+    ) -> ServiceResult<impl Encodable<GetPublicFeatureRegistryResponse> + Send + use<'a>> {
+        Response::ok(GetPublicFeatureRegistryResponse {
+            registry: Some(crate::controller_query::public_feature_registry_v1()).into(),
+            ..Default::default()
+        })
     }
 
-    async fn get_node_capabilities(
-        &self,
-        context: Context,
-        request: OwnedView<GetNodeCapabilitiesRequestView<'static>>,
-    ) -> Result<(GetNodeCapabilitiesResponse, Context), ConnectError> {
-        self.node_capabilities(context, &request)
+    async fn get_node_capabilities<'a>(
+        &'a self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, GetNodeCapabilitiesRequest>,
+    ) -> ServiceResult<impl Encodable<GetNodeCapabilitiesResponse> + Send + use<'a>> {
+        Response::ok(self.node_capabilities(request.view())?)
     }
 }
 
 impl CapabilityService {
     fn node_capabilities(
         &self,
-        context: Context,
         request: &GetNodeCapabilitiesRequestView<'_>,
-    ) -> Result<(GetNodeCapabilitiesResponse, Context), ConnectError> {
+    ) -> Result<GetNodeCapabilitiesResponse, ConnectError> {
         let capabilities = self.capabilities.lock().map_err(|_| {
             ConnectError::new(
                 ErrorCode::Internal,
@@ -997,47 +998,41 @@ impl CapabilityService {
                 "requested node does not match this controller",
             ));
         }
-        Ok((capabilities.response()?, context))
+        capabilities.response()
     }
 }
 
 impl OperationService for CapabilityService {
-    async fn get_operation(
-        &self,
-        _context: Context,
-        _request: OwnedView<GetOperationRequestView<'static>>,
-    ) -> Result<(GetOperationResponse, Context), ConnectError> {
-        Err(mutation_unavailable())
+    async fn get_operation<'a>(
+        &'a self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, GetOperationRequest>,
+    ) -> ServiceResult<impl Encodable<GetOperationResponse> + Send + use<'a>> {
+        Err::<Response<GetOperationResponse>, _>(mutation_unavailable())
     }
 
-    async fn cancel_operation(
-        &self,
-        _context: Context,
-        _request: OwnedView<CancelOperationRequestView<'static>>,
-    ) -> Result<(CancelOperationResponse, Context), ConnectError> {
-        Err(mutation_unavailable())
+    async fn cancel_operation<'a>(
+        &'a self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, CancelOperationRequest>,
+    ) -> ServiceResult<impl Encodable<CancelOperationResponse> + Send + use<'a>> {
+        Err::<Response<CancelOperationResponse>, _>(mutation_unavailable())
     }
 
     async fn watch(
         &self,
-        _context: Context,
-        _request: OwnedView<WatchRequestView<'static>>,
-    ) -> Result<
-        (
-            Pin<Box<dyn Stream<Item = Result<Event, ConnectError>> + Send>>,
-            Context,
-        ),
-        ConnectError,
-    > {
-        Err(mutation_unavailable())
+        _context: RequestContext,
+        _request: ServiceRequest<'_, WatchRequest>,
+    ) -> ServiceResult<ResponseStream<impl Encodable<Event> + Send + use<>>> {
+        Err::<Response<ResponseStream<Event>>, _>(mutation_unavailable())
     }
 
-    async fn get_node_capabilities(
-        &self,
-        context: Context,
-        request: OwnedView<GetNodeCapabilitiesRequestView<'static>>,
-    ) -> Result<(GetNodeCapabilitiesResponse, Context), ConnectError> {
-        self.node_capabilities(context, &request)
+    async fn get_node_capabilities<'a>(
+        &'a self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, GetNodeCapabilitiesRequest>,
+    ) -> ServiceResult<impl Encodable<GetNodeCapabilitiesResponse> + Send + use<'a>> {
+        Response::ok(self.node_capabilities(request.view())?)
     }
 }
 
@@ -1242,6 +1237,8 @@ mod tests {
         use aos_proto::aos::sandbox::v1::{
             GetNodeCapabilitiesRequest, GetPublicFeatureRegistryRequest,
         };
+        use buffa::{Message, view::HasMessageView};
+        use connectrpc::CodecFormat;
 
         let mut state = CapabilityState::starting([7; 16]);
         state.record_success(9, ObjectDigest::from_bytes([8; 32]));
@@ -1249,17 +1246,24 @@ mod tests {
             capabilities: Arc::new(Mutex::new(state)),
         };
 
-        let registry_request =
-            OwnedView::<GetPublicFeatureRegistryRequestView<'static>>::from_owned(
-                &GetPublicFeatureRegistryRequest::default(),
-            )
-            .unwrap();
-        let (registry_response, _) = DiscoveryService::get_public_feature_registry(
+        let registry_body: axum::body::Bytes = GetPublicFeatureRegistryRequest::default()
+            .encode_to_vec()
+            .into();
+        let registry_view = GetPublicFeatureRegistryRequest::decode_view(&registry_body).unwrap();
+        let registry_response = DiscoveryService::get_public_feature_registry(
             &service,
-            Context::default(),
-            registry_request,
+            RequestContext::new(Default::default()),
+            ServiceRequest::from_parts(&registry_view, &registry_body),
         )
         .await
+        .unwrap();
+        let registry_response = GetPublicFeatureRegistryResponse::decode(
+            registry_response
+                .body
+                .encode(CodecFormat::Proto)
+                .unwrap()
+                .as_ref(),
+        )
         .unwrap();
         let expected_registry = crate::controller_query::public_feature_registry_v1();
         assert_eq!(
@@ -1267,20 +1271,28 @@ mod tests {
             Some(&expected_registry)
         );
 
-        let capabilities_request =
-            OwnedView::<GetNodeCapabilitiesRequestView<'static>>::from_owned(
-                &GetNodeCapabilitiesRequest {
-                    node_id: vec![7; 16],
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        let (capabilities_response, _) = DiscoveryService::get_node_capabilities(
+        let capabilities_body: axum::body::Bytes = GetNodeCapabilitiesRequest {
+            node_id: vec![7; 16],
+            ..Default::default()
+        }
+        .encode_to_vec()
+        .into();
+        let capabilities_view =
+            GetNodeCapabilitiesRequest::decode_view(&capabilities_body).unwrap();
+        let capabilities_response = DiscoveryService::get_node_capabilities(
             &service,
-            Context::default(),
-            capabilities_request,
+            RequestContext::new(Default::default()),
+            ServiceRequest::from_parts(&capabilities_view, &capabilities_body),
         )
         .await
+        .unwrap();
+        let capabilities_response = GetNodeCapabilitiesResponse::decode(
+            capabilities_response
+                .body
+                .encode(CodecFormat::Proto)
+                .unwrap()
+                .as_ref(),
+        )
         .unwrap();
         let capabilities = capabilities_response.capabilities.as_option().unwrap();
         assert_eq!(capabilities.node_id, [7; 16]);

@@ -133,7 +133,7 @@ impl TryFrom<ExecutionControlResult> for CheckedExecutionControlResultV1 {
         if value.execution_id.len() != 16
             || value.execution_id.iter().all(|byte| *byte == 0)
             || !(1..=3).contains(&value.action.to_i32())
-            || value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES
+            || value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PROTO_JSON_BYTES
         {
             Err(InvalidProtoJson::InvalidResource)
         } else {
@@ -176,7 +176,7 @@ impl TryFrom<OperatorRecoveryResult> for CheckedOperatorRecoveryResultV1 {
             || value.resource_version.iter().all(|byte| *byte == 0)
             || !(1..=4).contains(&value.action.to_i32())
             || value.conditions.len() != 1
-            || value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES
+            || value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PROTO_JSON_BYTES
         {
             return Err(InvalidProtoJson::InvalidResource);
         }
@@ -253,7 +253,7 @@ impl CheckedSandboxTreeV1 {
         if !value.descendants.is_empty()
             || value.nodes.len() > MAXIMUM_PROTO_JSON_LIST_ITEMS
             || value.nodes.len() > request.page_size as usize
-            || value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES
+            || value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PROTO_JSON_BYTES
         {
             return Err(InvalidProtoJson::InvalidResource);
         }
@@ -380,7 +380,7 @@ impl CheckedSandboxTreeV1 {
                 .ok_or(InvalidProtoJson::InvalidResource)?
                 .next_page_token = continuation.encode_cli_token();
         }
-        if value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES {
+        if value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PROTO_JSON_BYTES {
             return Err(InvalidProtoJson::InvalidResource);
         }
         Ok(Self {
@@ -758,7 +758,7 @@ impl TryFrom<PolicyPlan> for CheckedPolicyPlanV1 {
     type Error = InvalidProtoJson;
 
     fn try_from(value: PolicyPlan) -> Result<Self, Self::Error> {
-        if value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES
+        if value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PROTO_JSON_BYTES
             || value.plan_digest.len() != 32
             || value.plan_digest.iter().all(|byte| *byte == 0)
             || value.reasons.len() > crate::controller_query::MAXIMUM_RESOURCE_CONDITIONS
@@ -951,7 +951,8 @@ macro_rules! checked_list_conversion {
 
             fn try_from(value: $message) -> Result<Self, Self::Error> {
                 if value.$field.len() > MAXIMUM_PROTO_JSON_LIST_ITEMS
-                    || value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES
+                    || value.compute_size(&mut buffa::SizeCache::new()) as usize
+                        > MAXIMUM_PROTO_JSON_BYTES
                 {
                     return Err(InvalidProtoJson::InvalidResource);
                 }
@@ -1001,7 +1002,7 @@ impl TryFrom<ListExecutionsResponse> for CheckedListProtoJsonV1 {
 
     fn try_from(mut value: ListExecutionsResponse) -> Result<Self, Self::Error> {
         if value.executions.len() > MAXIMUM_PROTO_JSON_LIST_ITEMS
-            || value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES
+            || value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PROTO_JSON_BYTES
         {
             return Err(InvalidProtoJson::InvalidResource);
         }

@@ -32,7 +32,7 @@ macro_rules! checked_public_resource {
 
         impl ClientStateItem for $name {
             fn encoded_byte_cost(&self) -> usize {
-                self.0.compute_size() as usize
+                self.0.compute_size(&mut buffa::SizeCache::new()) as usize
             }
         }
 
@@ -64,7 +64,10 @@ impl std::fmt::Debug for CheckedExecutionResourceV1 {
         formatter
             .debug_struct("CheckedExecutionResourceV1")
             .field("phase", &self.public_wire.phase)
-            .field("encoded_bytes", &self.wire.compute_size())
+            .field(
+                "encoded_bytes",
+                &self.wire.compute_size(&mut buffa::SizeCache::new()),
+            )
             .field("holder_credentials", &"<redacted>")
             .finish_non_exhaustive()
     }
@@ -203,7 +206,7 @@ impl super::client_state_sealed::Sealed for CheckedExecutionResourceV1 {}
 
 impl ClientStateItem for CheckedExecutionResourceV1 {
     fn encoded_byte_cost(&self) -> usize {
-        self.wire.compute_size() as usize
+        self.wire.compute_size(&mut buffa::SizeCache::new()) as usize
     }
 }
 

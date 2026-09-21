@@ -134,7 +134,10 @@ impl std::fmt::Debug for CheckedWatchEventV1 {
             .debug_struct("CheckedWatchEventV1")
             .field("sequence", &self.sequence)
             .field("kind", &self.kind)
-            .field("encoded_bytes", &self.wire.compute_size())
+            .field(
+                "encoded_bytes",
+                &self.wire.compute_size(&mut buffa::SizeCache::new()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -148,7 +151,8 @@ impl CheckedWatchEventV1 {
     /// inconsistent watermark fields, required extensions, or byte-bound
     /// violations.
     pub fn from_response(binding: QueryBindingV1, wire: Event) -> Result<Self, InvalidWatchEvent> {
-        if wire.compute_size() as usize > MAXIMUM_PUBLIC_RESOURCE_BYTES {
+        if wire.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PUBLIC_RESOURCE_BYTES
+        {
             return Err(InvalidWatchEvent::EventTooLarge);
         }
         let event_id: [u8; 16] = wire
@@ -323,6 +327,6 @@ impl CheckedWatchEventV1 {
     }
 
     pub(crate) fn encoded_byte_cost(&self) -> usize {
-        self.wire.compute_size() as usize
+        self.wire.compute_size(&mut buffa::SizeCache::new()) as usize
     }
 }

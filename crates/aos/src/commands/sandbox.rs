@@ -99,9 +99,9 @@ async fn discovery_client(socket: &Path) -> Result<DiscoveryServiceClient<Shared
         .with_context(|| format!("cannot connect to controller socket {}", socket.display()))?
         .shared(8);
     let config = ClientConfig::new(authority)
-        .protocol(Protocol::Grpc)
-        .default_timeout(DISCOVERY_TIMEOUT)
-        .default_max_message_size(MAXIMUM_DISCOVERY_RESPONSE_BYTES);
+        .with_protocol(Protocol::Grpc)
+        .with_default_timeout(DISCOVERY_TIMEOUT)
+        .with_default_max_message_size(MAXIMUM_DISCOVERY_RESPONSE_BYTES);
 
     Ok(DiscoveryServiceClient::new(connection, config))
 }

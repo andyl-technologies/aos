@@ -397,8 +397,8 @@ fn resync_binding_follows_cursor(binding: NodeWatchBindingV1, cursor: NodeWatchC
 fn validate_generated_batch(
     batch: &wire::OrderedWatchBatch,
 ) -> Result<(), InvalidMultiNodeProtocol> {
-    if batch.compute_size() == 0
-        || batch.compute_size() > super::MAX_NODE_RESPONSE_BYTES
+    if batch.compute_size(&mut buffa::SizeCache::new()) == 0
+        || batch.compute_size(&mut buffa::SizeCache::new()) > super::MAX_NODE_RESPONSE_BYTES
         || (batch.resync_binding.is_set()
             && (!batch.events.is_empty() || batch.next_cursor.is_set()))
         || (batch.resync_binding.is_unset() && batch.next_cursor.is_unset())

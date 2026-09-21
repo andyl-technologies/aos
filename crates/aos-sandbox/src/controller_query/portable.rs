@@ -15,7 +15,8 @@ impl TryFrom<ObjectDescriptor> for CheckedObjectDescriptorV1 {
     type Error = InvalidPublicResource;
 
     fn try_from(value: ObjectDescriptor) -> Result<Self, Self::Error> {
-        if value.compute_size() as usize > MAXIMUM_PUBLIC_RESOURCE_BYTES {
+        if value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PUBLIC_RESOURCE_BYTES
+        {
             return Err(InvalidPublicResource::ResourceTooLarge);
         }
         validate_descriptor(&value)?;
@@ -35,7 +36,7 @@ impl super::client_state_sealed::Sealed for CheckedObjectDescriptorV1 {}
 
 impl ClientStateItem for CheckedObjectDescriptorV1 {
     fn encoded_byte_cost(&self) -> usize {
-        self.0.compute_size() as usize
+        self.0.compute_size(&mut buffa::SizeCache::new()) as usize
     }
 }
 
@@ -49,7 +50,9 @@ macro_rules! checked_descriptor_role {
             type Error = InvalidPublicResource;
 
             fn try_from(value: ObjectDescriptor) -> Result<Self, Self::Error> {
-                if value.compute_size() as usize > MAXIMUM_PUBLIC_RESOURCE_BYTES {
+                if value.compute_size(&mut buffa::SizeCache::new()) as usize
+                    > MAXIMUM_PUBLIC_RESOURCE_BYTES
+                {
                     return Err(InvalidPublicResource::ResourceTooLarge);
                 }
                 validate_descriptor_media(&value, $media_type)?;

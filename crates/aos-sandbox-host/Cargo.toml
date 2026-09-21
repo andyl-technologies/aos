@@ -22,7 +22,7 @@ aos-sandbox-linux = { path = "../aos-sandbox-linux" }
 aos-sandbox-protocol = { path = "../aos-sandbox-protocol" }
 aos-systemd = { path = "../aos-systemd" }
 async-trait.workspace = true
-buffa = "0.3"
+buffa.workspace = true
 ed25519-dalek.workspace = true
 rand.workspace = true
 serde.workspace = true

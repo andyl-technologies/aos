@@ -1752,7 +1752,7 @@ impl<T> RequiredValue<T> for Option<T> {
     }
 }
 
-impl<T: Default> RequiredValue<T> for MessageField<T> {
+impl<T: Default, P: buffa::ProtoBox<T>> RequiredValue<T> for MessageField<T, P> {
     fn into_option(self) -> Option<T> {
         MessageField::into_option(self)
     }
