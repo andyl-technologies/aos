@@ -270,6 +270,8 @@ in
           "--linkopt=-lc++abi"
           "--linkopt=-lunwind"
         ]
+        # Rust links C++ bridge archives with implicit driver libraries disabled.
+        ++ lib.optionals isArmCross ["--linkopt=-lstdc++"]
         ++ [
           "--host_linkopt=-lc++abi"
           "--host_linkopt=-lunwind"
