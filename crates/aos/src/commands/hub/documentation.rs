@@ -234,34 +234,36 @@ async fn fetch_documentation(
 
 fn verify_documentation_response(
     response: &hub_types::GetPackageDocumentationResponse,
-) -> Result<aos_doc_model::PackageDocumentation> {
+) -> Result<aos_doc_model::PackageDocumentationProjection> {
     let identity = response
         .identity
         .as_ref()
         .context("Hub omitted package documentation identity")?;
-    let document =
-        aos_doc_model::PackageDocumentation::from_canonical_json(&response.canonical_json)
-            .context("Hub returned invalid canonical package documentation")?;
+    let projection = aos_doc_model::PackageDocumentationProjection::from_canonical_json(
+        &response.canonical_json,
+    )
+    .context("Hub returned an invalid canonical package reference")?;
+    let document = &projection.document;
     anyhow::ensure!(
         document.package.name == identity.package
             && document.package.version == identity.version
             && document.package.platform == identity.platform
-            && document.document_sha256()? == identity.document_sha256
+            && projection.document_sha256()? == identity.document_sha256
             && response.etag == identity.document_sha256,
         "Hub documentation identity does not match canonical bytes"
     );
-    Ok(document)
+    Ok(projection)
 }
 
 fn print_documentation_response(
     printer: &Printer,
     response: &hub_types::GetPackageDocumentationResponse,
 ) -> Result<()> {
-    let document = verify_documentation_response(response)?;
+    let projection = verify_documentation_response(response)?;
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::from_slice(&response.canonical_json)?);
     } else {
-        print!("{}", document.render_plain());
+        print!("{}", projection.render_plain());
     }
     Ok(())
 }
