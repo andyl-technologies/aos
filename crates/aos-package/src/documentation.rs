@@ -724,16 +724,29 @@ async fn remote_schema(
     let documentation_identity = response
         .documentation_identity
         .context("Hub package reference response omitted its signed identity")?;
+    let ability_reference_identity = response
+        .ability_reference_identity
+        .context("Hub package reference response omitted its checked ability identity")?;
     crate::types::validate_commit_hash(&documentation_identity.registry_commit)
         .context("Hub package reference response has an invalid registry commit")?;
+    crate::types::validate_commit_hash(&ability_reference_identity.registry_commit)
+        .context("Hub package reference response has an invalid ability registry commit")?;
     let projection = PackageDocumentationProjection::from_canonical_json(&response.canonical_json)
         .context("validating Hub package reference")?;
+    let ability_reference = &projection.ability_reference;
     if documentation_identity.package != projection.document.package.name
         || documentation_identity.version != projection.document.package.version
         || documentation_identity.platform != projection.document.package.platform
         || documentation_identity.document_sha256 != projection.document_sha256()?
         || documentation_identity.semantic_schema_sha256
             != projection.document.identity.semantic_schema_sha256
+        || ability_reference_identity.registry_commit != documentation_identity.registry_commit
+        || ability_reference_identity.package != projection.document.package.name
+        || ability_reference_identity.version != projection.document.package.version
+        || ability_reference_identity.platform != projection.document.package.platform
+        || ability_reference_identity.manifest_sha256
+            != ability_reference.manifest_sha256.to_string()
+        || ability_reference_identity.package_digest != ability_reference.package_digest.to_string()
         || response.etag != projection.response_sha256()?
     {
         bail!("Hub package reference response identity mismatch");
