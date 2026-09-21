@@ -12,6 +12,7 @@
 }: {
   imports = [
     ./_artifact-backend.nix
+    ./_base-packages.nix
     ./_image-builder.nix
     ./_kernel.nix
     ./_system-manager.nix

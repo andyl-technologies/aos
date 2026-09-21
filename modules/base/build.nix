@@ -341,10 +341,10 @@ in {
         '';
       };
 
-      ## The kernel derivation providing bzImage.
+      ## The kernel artifact selected by the system composition.
       kernel = lib.mkOption {
         type = lib.types.package;
-        description = "The kernel derivation providing bzImage.";
+        description = "The kernel package selected by the system composition.";
       };
 
       ## The initrd derivation providing initrd.img.
@@ -996,52 +996,12 @@ in {
         inherit ownership;
       };
 
-      system.build.kernel = pkgs.linux;
+      system.build.kernel = config.aos.kernel.packageRoot;
       system.build.systemPath =
         "/run/wrappers/bin:"
         + makeBinPath config.environment.systemPackages
         + ":"
         + makeSbinPath config.environment.systemPackages;
-
-      # The minimal-distro baseline on the interactive PATH. This is the single
-      # intentional place for it; feature modules must NOT add to systemPackages
-      # (their services reference tools by absolute store path), so the login
-      # PATH stays a deliberate core set rather than an accretion of every
-      # feature's tools. Anything beyond this is an apm install.
-      environment.systemPackages = [
-        pkgs.bash
-        pkgs.coreutils
-        pkgs.findutils
-        pkgs.grep
-        pkgs.sed
-        pkgs.gawk
-        pkgs.util-linux
-        pkgs.kmod
-        # The provider installs only libexec/module artifacts. Selecting it here
-        # makes the four shared filesystem implementations available to the
-        # final ability fixed point without adding commands to the login PATH.
-        pkgs.aos-filesystem-provider
-        # Block-storage controllers and their terminal effects are selected
-        # through the packages that ship their authenticated provider modules.
-        # cryptsetup also owns the default encrypted-swap consumer module.
-        pkgs.cryptsetup
-        pkgs.aos-cryptsetup-provider
-        pkgs.aos-storage-format-provider
-        pkgs.aos-storage-provisioning-provider
-        pkgs.aos-zfs-provider
-        # Kernel-tunable effects are selected through the provider package that
-        # ships both its authenticated module and handler.
-        pkgs.aos-kernel-tunable-provider
-        # The package owns the Nix store-database contract, provider module, and
-        # handler while selecting the exact Nix executable symbolically.
-        pkgs.aos-nix-store-provider
-        # Boot preparations are selected through this package's authenticated
-        # module and transaction-scoped command handler.
-        pkgs.aos-boot-preparation-provider
-        pkgs.aos-boot-preparations
-        pkgs.e2fsprogs
-        pkgs.less
-      ];
 
       environment.etc."profile" = {
         text = ''

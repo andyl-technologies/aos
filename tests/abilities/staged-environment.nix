@@ -54,6 +54,7 @@
     systemName = "staged-environment-test";
     modules = [
       ../../systems/_artifact-backend.nix
+      ../../systems/_base-packages.nix
       ../../systems/_kernel.nix
       ../../systems/_system-manager.nix
       {

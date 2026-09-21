@@ -355,16 +355,6 @@ in {
       default = true;
       description = "Report datasets outside the package-owned declared dataset set.";
     };
-    readinessResources = lib.mkOption {
-      type = abilityTypes.list {
-        element = abilityTypes.deferredResult abilityTypes.resourceReference;
-        maxItems = 1025;
-      };
-      default = [];
-      readOnly = true;
-      internal = true;
-      description = "Derived readiness outputs for the configured pool and datasets.";
-    };
   };
 
   config = lib.mkMerge [
@@ -396,7 +386,7 @@ in {
         };
         "var/lib".mountPoint = "/var/lib";
       };
-      aos.filesystems.zfs.readinessResources = lib.mkIf cfg.enable readinessResources;
+      aos.storage.readinessContributions.zfs = lib.mkIf cfg.enable readinessResources;
     }
     {
       aos.abilities = lib.mkMerge ([

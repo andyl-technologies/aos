@@ -471,10 +471,10 @@ in {
         }
       ];
 
-      # Swap in the lockdown kernel. The base sets system.build.kernel
-      # with normal priority, so mkForce is required to replace it. The
-      # initrd and UKI are built from this kernel's (signed) modules.
-      system.build.kernel = lib.mkForce lockdownKernel;
+      # Select the package variant through the same kernel-provider input as
+      # every other system. Its native module then projects the exact artifact
+      # into the checked ability fixed point used by the initrd and image.
+      aos.kernel.packageRoot = lib.mkForce lockdownKernel;
 
       # Belt-and-suspenders cmdline: lockdown auto-engages under SB but
       # this pins the mode; module.sig_enforce reinforces MODULE_SIG_FORCE.
