@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 #[cfg(test)]
 use aos_ability_inspect::{GraphQuery, ReferenceGraphSlice};
 use aos_ability_inspect::{ReferenceInspectionInput, ReferenceInspectionView};
@@ -10,11 +10,7 @@ use aos_ability_inspect::{ReferenceInspectionInput, ReferenceInspectionView};
 use super::ability_reference_page::PackageAbilityReferencePanel;
 use super::render::escape;
 
-/// Queries the shared public inspector after rechecking the panel's locator.
-///
-/// The locator came from the selected signed registry commit. This function
-/// binds its retained canonical bytes and identities to the graph input before
-/// adding the external input-digest anchor.
+/// Queries the shared public inspector after rechecking the signed projection.
 ///
 /// # Errors
 ///
@@ -29,22 +25,11 @@ pub(super) fn checked_slice(
 }
 
 fn checked_view(panel: &PackageAbilityReferencePanel) -> Result<ReferenceInspectionView> {
-    let reference_bytes = panel
-        .reference
-        .canonical_json()
-        .context("encoding authenticated package ability reference")?;
-    ensure!(
-        panel.locator.indexed_commit == panel.indexed_commit
-            && panel.locator.platform == panel.platform
-            && panel.locator.package_name == panel.reference.package.as_str()
-            && panel.locator.package_version == panel.reference.version
-            && panel.locator.manifest_sha256 == panel.reference.manifest_sha256.to_string()
-            && panel.locator.package_digest == panel.reference.package_digest.to_string()
-            && panel.locator.canonical_json == reference_bytes,
-        "ability reference panel differs from its authenticated registry locator"
-    );
-
-    let input = ReferenceInspectionInput::new(panel.reference.clone())?;
+    panel
+        .projection
+        .validate()
+        .context("validating authenticated package reference")?;
+    let input = ReferenceInspectionInput::new(panel.projection.ability_reference.clone())?;
     let digest = aos_contract::Sha256Digest::of_bytes(&input.canonical_bytes()?);
     let checked = input.check(Some(digest))?;
     ReferenceInspectionView::from_checked(&checked).map_err(Into::into)

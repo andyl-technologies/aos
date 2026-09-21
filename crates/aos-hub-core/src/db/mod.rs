@@ -1746,25 +1746,6 @@ pub struct IndexedPackageDocumentation {
     pub options: Vec<IndexedDocumentationOption>,
 }
 
-/// Derived view of the ability reference inside one signed package reference.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct PackageAbilityReferenceLocator {
-    /// Registry commit that authenticated the enclosing package reference.
-    pub indexed_commit: String,
-    /// Package name.
-    pub package_name: String,
-    /// Package version.
-    pub package_version: String,
-    /// Platform triple.
-    pub platform: String,
-    /// SHA-256 of the exact ability package manifest.
-    pub manifest_sha256: String,
-    /// Domain-separated package identity.
-    pub package_digest: String,
-    /// Canonical derived ability-reference bytes.
-    pub canonical_json: Vec<u8>,
-}
-
 /// One option's structural navigation metadata, derived from verified bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedDocumentationOption {
