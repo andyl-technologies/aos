@@ -50,7 +50,6 @@ tracing = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
-atty = { workspace = true }
 humantime = { workspace = true }
 futures-util = { workspace = true }
 indicatif = { workspace = true }
