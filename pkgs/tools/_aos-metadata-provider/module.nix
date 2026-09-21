@@ -333,8 +333,15 @@ in {
     configKeys
   );
 
-  config.aos.contributions.initrdRuntimeArtifacts.aos-metadata-provider = lib.mkIf configured [
+  config.aos.contributions.initrdRuntimeArtifacts.aos-metadata-provider = lib.mkIf configured (
+    map
+    (path:
+      if abilityTypes.executionPath.check path
+      then path
+      else throw "aos-metadata-provider derived invalid initrd runtime artifact path '${path}'")
+    (builtins.sort builtins.lessThan [
     (builtins.toString configTrustAnchors)
     (builtins.toString config.aos.config.evalAtBoot.baseLib)
-  ];
+    ])
+  );
 }

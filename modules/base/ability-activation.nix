@@ -175,7 +175,7 @@ in {
   config = {
     system.build.staticAbilityContract = staticAbilityContract;
     aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [
-      pkgs.aos.packageRuntime
+      pkgs.aos
     ];
   };
 }

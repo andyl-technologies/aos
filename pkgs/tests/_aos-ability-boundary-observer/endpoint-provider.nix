@@ -39,7 +39,7 @@
       else !hasServiceResource;
   in
     if binding.slot != "observer"
-    then throw "the fleet observation endpoint accepts only its canonical observer slot"
+    then throw "the fleet observation endpoint accepts only its canonical observer slot, received '${binding.slot}'"
     else if !hostingIsValid
     then throw "the fleet observation endpoint hosting mode does not match its service resource"
     else entry;

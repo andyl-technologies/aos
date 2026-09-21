@@ -124,10 +124,11 @@
       else resolution.evaluation.config.aos.boot.initrd.packageRoots;
   in
     resolution // {packages = selectedAbilityPackagesFrom evaluatedStagePackages;};
+  hostConfigurationModules = selectionEvaluation.config.aos.abilities.stages.host.modules;
   hostEnvironment = abilityEnvironment "host";
   hostResolution = resolveStage {
     environment = hostEnvironment;
-    configurationModules = [];
+    configurationModules = hostConfigurationModules;
     initialPackages = hostSelectedAbilityPackages;
   };
   finalPackageModules = hostResolution.packageModules;
@@ -168,6 +169,7 @@ in {
     hostAbilityBindings
     hostAbilityRequests
     hostAbilityRequirements
+    hostConfigurationModules
     hostProviderModules
     hostEnvironment
     initrdPackageModules
@@ -176,6 +178,7 @@ in {
     initrdAbilityBindings
     initrdAbilityRequests
     initrdAbilityRequirements
+    initrdConfigurationModules
     initrdEnvironment
     initrdAbilityEvaluation
     ;

@@ -12,7 +12,7 @@
   mkSystem,
   pkgs,
   qualificationImage ? false,
-  observerForwardEndpoint ? null,
+  forwardObserverToCrucible ? false,
   extraRuntimeModules ? [],
   extraHostModule ? "",
   additionalClosures ? [],
@@ -20,7 +20,7 @@
 }: let
   observerFixture = import ./_ability-execution-observer.nix {
     inherit lib pkgs;
-    forwardEndpoint = observerForwardEndpoint;
+    forwardToCrucible = forwardObserverToCrucible;
   };
   runtimeSystem = mkSystem (
     [
@@ -175,9 +175,9 @@ in {
         else builtins.toJSON "${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped"
       }
       OBSERVER_FORWARD_ENABLED = ${
-        if observerForwardEndpoint == null
-        then "False"
-        else "True"
+        if forwardObserverToCrucible
+        then "True"
+        else "False"
       }
 
 

@@ -12,16 +12,12 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
-  forwardEndpointInterface = {
-    name = "aos.execution.observation-endpoint";
-    abi = 1;
-    descriptor = null;
-  };
+  forwardEndpointInterface = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
   forwardEndpointRequirement = {
     description = "Discovers the selected protected execution observer endpoint.";
-    interface = forwardEndpointInterface.name;
-    inherit (forwardEndpointInterface) abi descriptor;
-    methods = ["observe"];
+    interface = forwardEndpointInterface.identity.name;
+    inherit (forwardEndpointInterface.identity) abi descriptor;
+    inherit (forwardEndpointInterface) methods;
     guarantees = [];
     strength = "required";
     fallback = null;

@@ -11,7 +11,7 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = nativeAdapterMatrix;
+  matrix = nativeAdapterMatrix.spec;
   cells = import ./_ability-effect-boundary-cells.nix {
     inherit lib matrix;
   };
@@ -85,6 +85,8 @@ in
           if adapter == "credential-delivery":
               return "shared-credential", "nginx-main-credential-view"
           if adapter == "managed-configuration":
+              return "shared-configuration", "nginx-main-configuration"
+          if adapter == "configuration-materialization":
               return "shared-configuration", "nginx-main-configuration"
           if adapter == "service-management":
               return "shared-service", "nginx-main-service"

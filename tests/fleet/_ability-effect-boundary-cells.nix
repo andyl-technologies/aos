@@ -20,16 +20,16 @@
   matrix.cells;
   byAdapters = adapters:
     map (cell: cell.id) (builtins.filter (cell: builtins.elem cell.adapter adapters) selected);
-  groups = {
-    reference = byAdapters [
-      "credential-delivery"
-      "host-network-policy"
-      "host-storage"
-      "managed-configuration"
-      "network-endpoint"
-      "nginx-validation"
-      "service-management"
+  specializedAdapters = [
+    "image-rollout"
+    "kubernetes-object"
+    "systemd-bootstrap"
+    "systemd-manager"
     ];
+  groups = {
+    reference = map (cell: cell.id) (
+      builtins.filter (cell: !builtins.elem cell.adapter specializedAdapters) selected
+    );
     systemdManager = byAdapters ["systemd-manager"];
     kubernetes = byAdapters ["kubernetes-object" "systemd-bootstrap"];
     rollout = byAdapters ["image-rollout"];

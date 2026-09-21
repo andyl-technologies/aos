@@ -28,7 +28,6 @@
   authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
     inherit lib;
     packages = selectedPackages;
-    bindings = qualificationProjection.bindings;
     regressions = [
       "checks.fleet.runtime-module-composition"
       "checks.fleet.k3s-control-plane-worker"

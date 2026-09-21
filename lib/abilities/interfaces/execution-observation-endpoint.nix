@@ -1,8 +1,10 @@
-##! Ability Crucible observation-endpoint contract.
-{lib, ...}: let
-  inherit (lib.abilities) declareInterface types;
-
-  alias = "execution-observer-endpoint";
+##! Provider-neutral execution-observation endpoint interface.
+{
+  types,
+  declareInterface,
+  interfaceDocumentFromDeclaration,
+  interfaceIdentity,
+}: let
   interfaceName = "aos.execution.observation-endpoint";
   requestType = types.record {
     fields.endpoint = types.enum ["default"];
@@ -20,7 +22,7 @@
   };
   declaration = declareInterface {
     name = interfaceName;
-    description = "Discovers the provider-owned protected endpoint for observing ability execution boundaries.";
+    description = "Discovers the selected protected endpoint for observing ability execution boundaries.";
     abi = 1;
     inherit requestType;
     methods.observe = {
@@ -60,34 +62,30 @@
         "Returns the protected local endpoint path."
         types.executionPath;
     };
-    lifecycle = {
-      persistentDeleteMethod = null;
-    };
+    lifecycle.persistentDeleteMethod = null;
     aggregation = {
       scope = "provider-instance";
       key = "slot";
       rejectSlotCollisions = true;
       mergeContract = null;
-      controllerGroup = alias;
+      controllerGroup = "execution-observation-endpoint";
     };
     guarantees = [];
   };
-in {
-  config.aos.abilities = {
-    interfaces.${alias} = declaration;
-    implementations.${alias} = {
-      description = "Publishes the package-owned Ability Crucible observer endpoint.";
-      interface = alias;
-      artifact = lib.abilities.packageOutput {};
-      methods = ["observe"];
-      guarantees = [];
-      requirements = {};
-      providerModule = {
-        artifact = lib.abilities.packageOutput {output = "module";};
-        path = "endpoint-provider.nix";
-      };
-      desiredType = null;
-      requiredFeatures = [];
-    };
+  document = interfaceDocumentFromDeclaration declaration;
+  endpoint = {
+    alias = "execution-observation-endpoint";
+    name = declaration.name;
+    inherit declaration document requestType observationType;
+    identity = interfaceIdentity document;
+    methods = builtins.attrNames declaration.methods;
   };
+  libraryView = {
+    interfaces = {inherit endpoint;};
+    declarations.${endpoint.alias} = endpoint.declaration;
+  };
+in {
+  name = "executionObservationEndpoint";
+  readView = libraryView;
+  module.config.aos.abilities.interfaces = libraryView.declarations;
 }

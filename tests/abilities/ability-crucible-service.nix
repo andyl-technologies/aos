@@ -36,8 +36,9 @@
   lifecycle = requests."aos-ability-crucible:adapter-lifecycle".parameters;
   command = builtins.head lifecycle.start;
   configuration = requests."aos-ability-crucible:configuration-file".parameters;
-  endpointDeclaration = abilities.interfaces."aos-ability-crucible:execution-observer-endpoint";
-  provide = abilities.implementations."aos-ability-crucible:execution-observer-endpoint".provide;
+  endpointInterface = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
+  endpointDeclaration = endpointInterface.declaration;
+  provide = abilities.implementations."aos-ability-crucible:execution-observation-endpoint".provide;
   outputReference = request: output: {
     _type = "aos-request-output-reference";
     inherit request output;
@@ -66,7 +67,7 @@
           };
           bindings."test:observer-endpoint" = {
             request = "aos-ability-crucible:observer-endpoint";
-            implementation = "aos-ability-crucible:execution-observer-endpoint";
+            implementation = "aos-ability-crucible:execution-observation-endpoint";
             providerInstance = "aos-ability-crucible:ability-crucible";
             slot = "observer";
           };
@@ -84,9 +85,7 @@
   resolvedResources = builtins.attrValues composedAbilities.resolvedResources;
   endpointReference = {
     _type = "aos-resource-reference";
-    interface = lib.abilities.interfaceIdentity (
-      lib.abilities.interfaceDocumentFromDeclaration endpointDeclaration
-    );
+    interface = endpointInterface.identity;
     resource = {
       provider = providerInstance;
       key = "observer";

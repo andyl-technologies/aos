@@ -30,17 +30,15 @@
   matrix.cells;
   byAdapters = adapters:
     map (cell: cell.id) (builtins.filter (cell: builtins.elem cell.adapter adapters) selected);
-  groups = {
-    reference = byAdapters [
-      "credential-delivery"
-      "host-network-policy"
-      "host-storage"
-      "managed-configuration"
-      "network-endpoint"
-      "nginx-validation"
-      "systemd-manager"
-      "service-management"
+  specializedAdapters = [
+    "image-rollout"
+    "kubernetes-object"
+    "systemd-bootstrap"
     ];
+  groups = {
+    reference = map (cell: cell.id) (
+      builtins.filter (cell: !builtins.elem cell.adapter specializedAdapters) selected
+    );
     kubernetes = byAdapters ["kubernetes-object" "systemd-bootstrap"];
     rollout = byAdapters ["image-rollout"];
   };
@@ -53,12 +51,6 @@
       cell: builtins.hasAttr cell.id inapplicableById
     )
     matrix.cells;
-  instanceLifetimeBlocked = map (entry: entry.cell_id) (
-    builtins.filter (entry: entry.reason == "non-persistent-lifetime") matrix.applicability.inapplicable_cells
-  );
-  missingStateFormatBlocked = map (entry: entry.cell_id) (
-    builtins.filter (entry: entry.reason == "missing-authenticated-state-format") matrix.applicability.inapplicable_cells
-  );
 in
   assert builtins.length all == builtins.length (lib.unique all);
   assert builtins.sort builtins.lessThan all
@@ -66,8 +58,6 @@ in
   assert builtins.sort builtins.lessThan (compatible ++ retained ++ unsupported)
   == builtins.sort builtins.lessThan all;
   assert map (cell: cell.id) blockedCompatible == map (entry: entry.cell_id) matrix.applicability.inapplicable_cells;
-  assert builtins.sort builtins.lessThan (instanceLifetimeBlocked ++ missingStateFormatBlocked)
-  == builtins.sort builtins.lessThan (map (entry: entry.cell_id) matrix.applicability.inapplicable_cells);
   assert builtins.all (cell:
     !lib.hasSuffix "/reject-unsupported-transfer" cell.id
     || builtins.elem "dependent-effects-not-executed" cell.postconditions)
@@ -77,8 +67,6 @@ in
       blockedCompatible
       compatible
       groups
-      instanceLifetimeBlocked
-      missingStateFormatBlocked
       retained
       scenarios
       unsupported

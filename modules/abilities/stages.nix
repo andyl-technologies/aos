@@ -11,8 +11,18 @@
   ...
 }: {
   options = {
-    aos.abilities.stages.initrd = {
-      modules = lib.mkOption {
+    aos.abilities.stages = {
+      host.modules = lib.mkOption {
+        type = lib.types.listOf lib.types.anything;
+        default = [];
+        internal = true;
+        description = ''
+          Ordinary modules evaluated in the authenticated host ability
+          environment after the parent system selects its package modules.
+        '';
+      };
+
+      initrd.modules = lib.mkOption {
         type = lib.types.listOf lib.types.anything;
         default = [];
         internal = true;

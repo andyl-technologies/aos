@@ -145,16 +145,13 @@
       };
     };
   };
-  endpointInterface = {
-    alias = "execution-observer-endpoint";
-    declaration = config.aos.abilities.interfaces."${packageName}:execution-observer-endpoint";
-  };
+  endpointInterface = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
   endpoint = producer "observer-endpoint" endpointInterface {endpoint = "default";};
   fragments = [runtimeStorage adapterConfiguration service endpoint];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   imports = [
-    ./endpoint-interface.nix
+    ./endpoint-implementation.nix
     ./endpoint-provider.nix
   ];
 
