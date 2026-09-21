@@ -78,21 +78,7 @@ impl PublicApiSessionAcceptor {
                 .map_err(|_| PublicApiSessionError::Configuration)?;
         }
 
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-        let verifier =
-            WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
-                .build()
-                .map_err(|_| PublicApiSessionError::Configuration)?;
-        let mut config = rustls::ServerConfig::builder_with_provider(provider)
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|_| PublicApiSessionError::Configuration)?
-            .with_client_cert_verifier(verifier.clone())
-            .with_single_cert(server_certificates, key)
-            .map_err(|_| PublicApiSessionError::Configuration)?;
-        config.alpn_protocols = vec![b"h2".to_vec()];
-        config.send_tls13_tickets = 0;
-        config.max_early_data_size = 0;
-        config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+        let (config, verifier) = tls_configuration(server_certificates, key, roots)?;
         credentials.recheck()?;
 
         Ok(Self {
@@ -122,11 +108,7 @@ impl PublicApiSessionAcceptor {
             .map_err(|_| PublicApiSessionError::Authentication)?
             .map_err(|_| PublicApiSessionError::Authentication)?;
         let connection = stream.get_ref().1;
-        if connection.alpn_protocol() != Some(b"h2")
-            || connection.protocol_version() != Some(rustls::ProtocolVersion::TLSv1_3)
-        {
-            return Err(PublicApiSessionError::Authentication);
-        }
+        require_public_protocol(connection)?;
         let chain = connection
             .peer_certificates()
             .ok_or(PublicApiSessionError::Authentication)?;
@@ -241,6 +223,39 @@ impl PublicApiPeer {
     }
 }
 
+fn tls_configuration(
+    server_certificates: Vec<CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+    roots: rustls::RootCertStore,
+) -> Result<(rustls::ServerConfig, Arc<dyn ClientCertVerifier>), PublicApiSessionError> {
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .build()
+        .map_err(|_| PublicApiSessionError::Configuration)?;
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|_| PublicApiSessionError::Configuration)?
+        .with_client_cert_verifier(verifier.clone())
+        .with_single_cert(server_certificates, key)
+        .map_err(|_| PublicApiSessionError::Configuration)?;
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    config.send_tls13_tickets = 0;
+    config.max_early_data_size = 0;
+    config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+    Ok((config, verifier))
+}
+
+fn require_public_protocol(
+    connection: &rustls::ServerConnection,
+) -> Result<(), PublicApiSessionError> {
+    if connection.alpn_protocol() != Some(b"h2")
+        || connection.protocol_version() != Some(rustls::ProtocolVersion::TLSv1_3)
+    {
+        return Err(PublicApiSessionError::Authentication);
+    }
+    Ok(())
+}
+
 fn certificates(bytes: &[u8]) -> Result<Vec<CertificateDer<'static>>, PublicApiSessionError> {
     let certificates = rustls_pemfile::certs(&mut bytes.as_ref())
         .collect::<Result<Vec<_>, _>>()
@@ -259,4 +274,195 @@ fn boottime() -> Result<u64, PublicApiSessionError> {
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanos))
         .ok_or(PublicApiSessionError::Stale)
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+    use rcgen::{
+        BasicConstraints, Certificate, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer,
+        KeyPair, KeyUsagePurpose,
+    };
+    use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
+    use tokio::io::DuplexStream;
+
+    struct Authority {
+        certificate: Certificate,
+        issuer: Issuer<'static, KeyPair>,
+    }
+
+    impl Authority {
+        fn new() -> Self {
+            let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+            params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            params.key_usages = vec![
+                KeyUsagePurpose::KeyCertSign,
+                KeyUsagePurpose::DigitalSignature,
+            ];
+            let key = KeyPair::generate().unwrap();
+            let certificate = params.self_signed(&key).unwrap();
+            Self {
+                certificate,
+                issuer: Issuer::new(params, key),
+            }
+        }
+
+        fn leaf(
+            &self,
+            usage: ExtendedKeyUsagePurpose,
+        ) -> (
+            CertificateDer<'static>,
+            rustls::pki_types::PrivateKeyDer<'static>,
+        ) {
+            let mut params = CertificateParams::new(vec!["sandbox.test".to_owned()]).unwrap();
+            params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+            params.extended_key_usages = vec![usage];
+            let key = KeyPair::generate().unwrap();
+            let certificate = params.signed_by(&key, &self.issuer).unwrap();
+            (
+                certificate.der().clone(),
+                PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+            )
+        }
+
+        fn roots(&self) -> rustls::RootCertStore {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(self.certificate.der().clone()).unwrap();
+            roots
+        }
+
+        fn server(&self) -> rustls::ServerConfig {
+            let (certificate, key) = self.leaf(ExtendedKeyUsagePurpose::ServerAuth);
+            tls_configuration(vec![certificate], key, self.roots())
+                .unwrap()
+                .0
+        }
+
+        fn client(
+            &self,
+            identity: Option<&Authority>,
+            usage: ExtendedKeyUsagePurpose,
+            tls12: bool,
+        ) -> rustls::ClientConfig {
+            let versions = if tls12 {
+                vec![&rustls::version::TLS12]
+            } else {
+                vec![&rustls::version::TLS13]
+            };
+            let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::aws_lc_rs::default_provider(),
+            ))
+            .with_protocol_versions(&versions)
+            .unwrap()
+            .with_root_certificates(self.roots());
+            let mut config = match identity {
+                Some(authority) => {
+                    let (certificate, key) = authority.leaf(usage);
+                    builder
+                        .with_client_auth_cert(vec![certificate], key)
+                        .unwrap()
+                }
+                None => builder.with_no_client_auth(),
+            };
+            config.alpn_protocols = vec![b"h2".to_vec()];
+            config
+        }
+    }
+
+    type ServerStream = tokio_rustls::server::TlsStream<DuplexStream>;
+    type ClientStream = tokio_rustls::client::TlsStream<DuplexStream>;
+
+    async fn handshake(
+        server: rustls::ServerConfig,
+        client: rustls::ClientConfig,
+    ) -> (std::io::Result<ServerStream>, std::io::Result<ClientStream>) {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let acceptor = TlsAcceptor::from(Arc::new(server));
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                acceptor.accept(server_io),
+                connector.connect(ServerName::try_from("sandbox.test").unwrap(), client_io),
+            )
+        })
+        .await
+        .expect("TLS handshake must terminate within its test bound")
+    }
+
+    #[tokio::test]
+    async fn authenticates_both_peers_and_binds_exporters_to_each_connection() {
+        let authority = Authority::new();
+        let server = authority.server();
+        let client = authority.client(Some(&authority), ExtendedKeyUsagePurpose::ClientAuth, false);
+        let mut bindings = Vec::new();
+
+        for _ in 0..2 {
+            let (server, client) = handshake(server.clone(), client.clone()).await;
+            let server = server.unwrap();
+            let client = client.unwrap();
+            let connection = server.get_ref().1;
+            require_public_protocol(connection).unwrap();
+            let certificate = connection.peer_certificates().unwrap().first().unwrap();
+            let digest: [u8; 32] = Sha256::digest(certificate.as_ref()).into();
+            let server_binding = connection
+                .export_keying_material([0; 32], EXPORTER_LABEL, Some(&digest))
+                .unwrap();
+            let client_binding = client
+                .get_ref()
+                .1
+                .export_keying_material([0; 32], EXPORTER_LABEL, Some(&digest))
+                .unwrap();
+
+            assert_eq!(server_binding, client_binding);
+            assert_ne!(server_binding, [0; 32]);
+            bindings.push(server_binding);
+        }
+        assert_ne!(bindings[0], bindings[1]);
+    }
+
+    #[tokio::test]
+    async fn rejects_absent_untrusted_and_wrong_usage_client_certificates() {
+        let authority = Authority::new();
+        let unrelated = Authority::new();
+        for (identity, usage) in [
+            (None, ExtendedKeyUsagePurpose::ClientAuth),
+            (Some(&unrelated), ExtendedKeyUsagePurpose::ClientAuth),
+            (Some(&authority), ExtendedKeyUsagePurpose::ServerAuth),
+        ] {
+            let client = authority.client(identity, usage, false);
+            let (server, _) = handshake(authority.server(), client).await;
+
+            assert!(server.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_tls12_and_non_http2_sessions() {
+        let authority = Authority::new();
+        let client = authority.client(Some(&authority), ExtendedKeyUsagePurpose::ClientAuth, true);
+        let (server, _) = handshake(authority.server(), client).await;
+        assert!(server.is_err());
+
+        for protocols in [vec![], vec![b"http/1.1".to_vec()]] {
+            let mut client =
+                authority.client(Some(&authority), ExtendedKeyUsagePurpose::ClientAuth, false);
+            client.alpn_protocols = protocols;
+            let (server, _) = handshake(authority.server(), client).await;
+
+            if let Ok(server) = server {
+                assert!(require_public_protocol(server.get_ref().1).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn disables_resumption_and_early_data() {
+        let authority = Authority::new();
+        let server = authority.server();
+
+        assert_eq!(server.send_tls13_tickets, 0);
+        assert_eq!(server.max_early_data_size, 0);
+        assert!(!server.session_storage.can_cache());
+        assert!(!server.ticketer.enabled());
+    }
 }

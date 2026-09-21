@@ -36,6 +36,7 @@ tokio-rustls.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -344,8 +344,11 @@ the outstanding work concrete:
   evidence. The controller's internal authorization adapter joins that evidence
   to current protected capabilities and independently checks the authenticated
   project, but has no production RPC caller. The transport grants no capability
-  and is not yet connected to a production listener or CLI transport. Real
-  handshake and deployed credential-lifecycle qualification remain required.
+  and is not yet connected to a production listener or CLI transport. Shared
+  production TLS configuration has in-memory client/server handshake coverage
+  for mandatory client proof, trust and certificate usage, TLS 1.3/HTTP/2,
+  disabled resumption, and fresh connection exporters. Deployed credential
+  lifecycle, registered-peer admission, and RPC qualification remain required.
   Production activation must preserve holder-bound sessions, current protected
   authorization, broker audience binding, ownership fencing, and independent
   Guardian enforcement. An opaque client authorization context or local UID
