@@ -3,53 +3,35 @@
   lib,
   pkgs,
 }: let
-  packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
+  evaluateBase = import ./base-module-evaluation.nix {inherit lib pkgs;};
   evaluate = enabled:
-    lib.evalModules {
-      inherit lib;
-      modules = [
-        lib.abilities.module
-        ../../modules/abilities/storage.nix
-        ../../modules/base/_manager-contributions.nix
+    evaluateBase {
+      name = "zfstools";
+      module = {
+        aos.filesystems.zfs = {
+          enable = true;
+          poolName = "tank";
+          systemState = false;
+          reservedSpace.enable = false;
+          datasets.data = {
+            mountPoint = "/tank/data";
+            compression = "zstd";
+          };
+        };
+        aos.services.zfsAutoSnapshot = {
+          enable = enabled;
+          datasets = ["tank/data"];
+          intervals.hourly = {
+            calendar = "hourly";
+            keep = 24;
+          };
+        };
+      };
+      packages = [pkgs.aos-zfs-provider pkgs.systemd pkgs.zfstools];
+      extraModules = [
         ../../modules/image/_platform.nix
-        {
-          options = {
-            assertions = lib.mkOption {
-              type = lib.types.listOf lib.types.anything;
-              default = [];
-            };
-            environment.systemPackages = lib.mkOption {
-              type = lib.types.listOf lib.types.package;
-              default = [];
-            };
-          };
-          aos.abilities.environment = {
-            authority = "test";
-            key = "zfstools";
-            stage = "host";
-          };
-          aos.filesystems.zfs = {
-            enable = true;
-            poolName = "tank";
-            systemState = false;
-            reservedSpace.enable = false;
-            datasets.data = {
-              mountPoint = "/tank/data";
-              compression = "zstd";
-            };
-          };
-          aos.services.zfsAutoSnapshot = {
-            enable = enabled;
-            datasets = ["tank/data"];
-            intervals.hourly = {
-              calendar = "hourly";
-              keep = 24;
-            };
-          };
-        }
       ];
       enableAbilitySelection = true;
-      packageModules = builtins.map packageModule [pkgs.aos-zfs-provider pkgs.systemd pkgs.zfstools];
     };
   disabled = evaluate false;
   enabled = evaluate true;

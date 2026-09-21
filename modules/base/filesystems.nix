@@ -1,24 +1,19 @@
 ##! modules/base/filesystems.nix — Immutable filesystem layout module
 ##!
-##! Defines the AOS filesystem hierarchy: read-only root (ext4), FAT32 ESP,
-##! ZFS datasets for persistent state, overlay /etc, and tmpfs for /tmp and
-##! /run. This is the core of the immutable OS design — the root filesystem
-##! is mounted read-only and all mutable state lives on ZFS or tmpfs.
+##! Defines the AOS filesystem hierarchy: read-only root, FAT32 ESP,
+##! provider-managed persistent state, overlay /etc, and tmpfs for /tmp and
+##! /run.
 ##!
 ##! Absorbed TOML config values:
 ##!   [filesystems] root_read_only, root_device, root_fstype, esp_device
-##!   [filesystems.zfs] enable, pool_name, datasets
 ##!   [filesystems.overlay] etc_overlay
 {
   config,
-  pkgs,
   lib,
   ...
 }: let
   cfg = config.aos.filesystems;
-  zfsForRunningKernel = pkgs.zfsForKernel config.system.build.kernel;
-  zfsSelected = lib.hasAttrByPath ["aos" "filesystems" "zfs" "enable"] config;
-  zfsEnabled = zfsSelected && config.aos.filesystems.zfs.enable;
+  varManaged = builtins.elem "/var" config.aos.storage.managedMountPoints;
 
   # Build fstab entries from the filesystem configuration.
   #
@@ -54,7 +49,7 @@
     "${cfg.espDevice}  /boot  vfat  noauto,nofail,ro,noatime,fmask=0077,dmask=0077  0  0"
     ""
     (
-      if zfsEnabled && config.aos.filesystems.zfs.systemState
+      if varManaged
       then ''
         # /var is a native storage dataset mounted by the selected provider.
       ''
@@ -72,8 +67,6 @@ in {
   options.aos.filesystems = {
     ## Mount the root filesystem read-only (immutable OS foundation).
     ##
-    ## # See Also
-    ## - `aos.filesystems.zfs.enable`
     rootReadOnly = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -111,15 +104,6 @@ in {
       description = "Stable block-device path for the EFI System Partition.";
     };
 
-    zfs = {
-      package = lib.mkOption {
-        type = lib.types.package;
-        default = pkgs.zfs;
-        internal = true;
-        description = "OpenZFS userland and optional exact-kernel module package.";
-      };
-    };
-
     # `aos.filesystems.overlayEtc` was removed in spec v12: the
     # composefs-backed /etc overlay is now unconditional. See
     # `modules/services/boot-substrate.nix:etc-overlay-setup.service` for the
@@ -128,15 +112,6 @@ in {
   };
 
   config = {
-    assertions = [
-      {
-        assertion =
-          !(zfsEnabled && config.aos.filesystems.zfs.systemState)
-          || config.aos.boot.storage.backend == "zfs-zvol";
-        message = "aos.filesystems.zfs.systemState requires the zfs-zvol boot backend so /var can be unlocked before switch-root; set systemState = false for a data-only pool";
-      }
-    ];
-
     system.checks.filesystem = {
       description = "Filesystem layout checks";
       checks = [
@@ -196,20 +171,5 @@ in {
     environment.etc."fstab" = {
       text = fstabEntries + "\n";
     };
-
-    # ZFS userland and its module must come from one kernel-bound build. The
-    # same closure is retained in recovery so pool repair never mixes releases.
-    aos.filesystems.zfs.package = lib.mkIf zfsEnabled (lib.mkDefault zfsForRunningKernel);
-    aos.filesystems.zfs.packagedVersion =
-      lib.mkIf zfsEnabled config.aos.filesystems.zfs.package.version;
-    aos.services.zfsMaintenance.enable = lib.mkIf zfsEnabled (lib.mkDefault true);
-    aos.kernel.modulePackages = lib.mkIf zfsEnabled [config.aos.filesystems.zfs.package];
-    aos.kernel.modules = lib.mkIf zfsEnabled ["zfs"];
-    aos.boot.recovery.extraPackages = lib.mkIf zfsEnabled [config.aos.filesystems.zfs.package];
-    aos.boot.kernelParams = lib.mkIf zfsEnabled config.aos.filesystems.zfs.moduleParameters;
-    aos.monitoring.hardware.enable = lib.mkIf zfsEnabled (lib.mkDefault true);
-    aos.zram.enable = lib.mkIf zfsEnabled (lib.mkDefault true);
-    aos.zram.size = lib.mkIf zfsEnabled (lib.mkDefault "min(ram / 8, 2048)");
-    environment.systemPackages = lib.mkIf zfsEnabled [config.aos.filesystems.zfs.package];
   };
 }

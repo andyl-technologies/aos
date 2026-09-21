@@ -240,6 +240,10 @@ in {
 
   config = lib.mkMerge [
     {
+      aos.zram = {
+        enable = lib.mkDefault config.aos.storage.compressedSwapRecommended;
+        size = lib.mkIf config.aos.storage.compressedSwapRecommended (lib.mkDefault "min(ram / 8, 2048)");
+      };
       aos.abilities = lib.mkMerge (
         builtins.map (contribution: contribution.declarations) contributions
       );
