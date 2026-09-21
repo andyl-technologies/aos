@@ -801,6 +801,8 @@ let
     "kubernetes/_k3s-dashboard/pnpm-lock.yaml" = "linux-only-source";
     "kubernetes/_k3s-dashboard/remove-precompiled.py" = "linux-only-build-helper";
     "kubernetes/_k3s-helm-locks/README.md" = "linux-only-source";
+    "kubernetes/_k3s-helm-locks/helm/go.mod" = "linux-only-source";
+    "kubernetes/_k3s-helm-locks/helm/go.sum" = "linux-only-source";
     "kubernetes/_k3s-helm-locks/mapkubeapis/go.mod" = "linux-only-source";
     "kubernetes/_k3s-helm-locks/mapkubeapis/go.sum" = "linux-only-source";
     "kubernetes/_k3s-helm-locks/set-status/go.mod" = "linux-only-source";
