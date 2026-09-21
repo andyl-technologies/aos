@@ -3,7 +3,7 @@
   mkDerivation,
   fetchurl,
 }: let
-  pluginSource = {
+  sourceWithLocks = {
     pname,
     version,
     repository,
@@ -35,9 +35,8 @@
         {
           name = "install";
           script = ''
-            # Klipper Helm upgrades both plugins to the job's Helm library
-            # before compiling them. Retain the resolved graph so the build
-            # needs neither network access nor a new dependency resolution.
+            # Keep Helm and its plugins on reviewed dependency graphs. Builds
+            # consume the retained locks without network access or resolution.
             cp ${locks}/go.mod ${locks}/go.sum .
             mkdir -p "$out"
             cp -R . "$out/"
@@ -46,13 +45,15 @@
       ];
     };
 in {
-  helm = fetchurl {
-    name = "helm-v3.19.5.tar.gz";
-    urls = ["https://github.com/helm/helm/archive/refs/tags/v3.19.5.tar.gz"];
-    hash = "sha256-z+9Gxgj5/3B0smTXvQUo3aTWxG/3pSXOOL40FEd7D3s=";
+  helm = sourceWithLocks {
+    pname = "helm";
+    version = "3.22.0";
+    repository = "helm/helm";
+    hash = "sha256-AqMklxy3CLfTKrdRdy+3Zbgd9tPpPAw+hFs/W6r4DGU=";
+    locks = ./_k3s-helm-locks/helm;
   };
 
-  set-status = pluginSource {
+  set-status = sourceWithLocks {
     pname = "helm-set-status";
     version = "0.3.0";
     repository = "k3s-io/helm-set-status";
@@ -60,7 +61,7 @@ in {
     locks = ./_k3s-helm-locks/set-status;
   };
 
-  mapkubeapis = pluginSource {
+  mapkubeapis = sourceWithLocks {
     pname = "helm-mapkubeapis";
     version = "0.6.1";
     repository = "helm/helm-mapkubeapis";
