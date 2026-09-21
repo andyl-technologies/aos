@@ -380,8 +380,11 @@ fn campaign_loopback_rejects_concurrent_exchange_without_waiting() {
 
     let second_service = Arc::clone(&service);
     let (second_tx, second_rx) = mpsc::channel();
-    let second_thread =
-        thread::spawn(move || second_tx.send(second_service.get_campaign(&get_request("second"))));
+    let second_thread = thread::spawn(move || {
+        second_tx
+            .send(second_service.get_campaign(&get_request("second")))
+            .map_err(|_| ())
+    });
     assert!(matches!(
         second_rx
             .recv_timeout(std::time::Duration::from_millis(100))
