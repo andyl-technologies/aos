@@ -123,6 +123,9 @@ in
         gnumake
         pkg-config
       ];
+      # The linked runtime uses LLVM's C++ ABI and unwind shared libraries.
+      # Preserve their runpaths when build-only references are scrubbed.
+      runtimeDeps = [llvm];
       inherit scrubMap;
       populateBCR = false;
       captureModuleLock = true;

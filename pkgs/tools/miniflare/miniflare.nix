@@ -81,6 +81,7 @@
     inherit nodeModules;
     vips = sharpVips;
   };
+  modernWorkerd = callPackage ../workerd/_modern.nix {};
 
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
@@ -135,7 +136,8 @@ in
       else [nodejs python3 gnumake];
     runtimeDeps =
       [nodejs sharpAddon targetEsbuild]
-      ++ lib.optionals (isDarwinCross || isLinuxCross) [bash workerd];
+      ++ [bash workerd]
+      ++ lib.optionals (!stdenv.isCross) [modernWorkerd];
 
     phases = [
       {
@@ -420,6 +422,21 @@ in
               > $out/bin/miniflare
             chmod +x $out/bin/miniflare
           '';
+      }
+      {
+        name = "install-source-workerd";
+        script = lib.optionalString (!stdenv.isCross) ''
+          NM="$out/lib/node_modules"
+          # Each npm resolver must retain its matching runtime version: Wrangler
+          # and the standalone Miniflare command use different protocol releases.
+          rm -rf "$NM"/@cloudflare/workerd-* \
+            "$NM"/wrangler/node_modules/@cloudflare/workerd-*
+          mkdir -p "$NM/@cloudflare/workerd-linux-64/bin" \
+            "$NM/wrangler/node_modules/@cloudflare/workerd-linux-64/bin"
+          ln -s ${workerd}/bin/workerd "$NM/@cloudflare/workerd-linux-64/bin/workerd"
+          ln -s ${modernWorkerd}/bin/workerd \
+            "$NM/wrangler/node_modules/@cloudflare/workerd-linux-64/bin/workerd"
+        '';
       }
       {
         name = "install-source-esbuild";
