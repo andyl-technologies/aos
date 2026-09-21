@@ -7,12 +7,11 @@
 use std::error::Error;
 
 use crucible::{
-    ChoiceTag, Configuration, ContentHash, Decision, EngineError, FleetEquivalenceReport,
+    Configuration, ContentHash, Decision, EngineError, FleetEquivalenceReport,
     FleetWorkStealingConfig, GenesisCheckpoint, Icount, MaterializationPolicy,
-    MaterializationTrigger, NodeId, NodeTemplate, OverrideDecision, Plan, Properties, ReadyPoint,
-    RngDecision, RngStreamId, ScenarioDefForm, SchedulingPoint, SearchBudget, SearchFailureOracle,
-    SearchFrontierChoices, SearchStrategy, Seed, TemporalGraph, WhiteBoxPolicy, World, WorldNode,
-    bake, try_step,
+    MaterializationTrigger, NodeId, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioDefForm,
+    SearchBudget, SearchFailureOracle, SearchFrontierChoices, SearchStrategy, Seed, TemporalGraph,
+    WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 use crucible_harness::adversarial::{canonical_host_adversary_matrix, run_profiled_tasks};
 
@@ -227,7 +226,7 @@ fn fleet_equivalence_fixture() -> Result<FleetEquivalenceFixture, EngineError> {
     )?;
     let scenario_def = scenario.scenario_def();
     let root = Configuration::genesis(scenario_def.clone());
-    let root_decisions = fleet_root_decisions();
+    let root_decisions = fleet_root_decisions()?;
     let baked = bake_with_search_frontier_choices(&world, root_decisions.clone())?;
     let graph = TemporalGraph::empty().with_baked_genesis(&scenario_def, baked)?;
     let mut children = Vec::new();
@@ -257,7 +256,8 @@ fn bake_with_search_frontier_choices(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(
         crucible::MaterializedState::from_components_with_event_log_segments(
             state.vm_snapshots.clone(),
@@ -296,28 +296,15 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
     }])
 }
 
-fn fleet_root_decisions() -> Vec<Decision> {
-    vec![
-        rng_decision("fleet-equivalence/packet-loss", 1),
-        rng_decision("fleet-equivalence/decision-rng", 0xdce8_0001),
-        override_decision("fleet-equivalence/scheduler-point", "fleet-choice"),
+fn fleet_root_decisions() -> Result<Vec<Decision>, EngineError> {
+    [
+        "fleet-equivalence-packet-loss",
+        "fleet-equivalence-decision-rng",
+        "fleet-equivalence-scheduler-point",
     ]
-}
-
-fn rng_decision(stream: impl Into<String>, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(stream),
-        value,
-    })
-}
-
-fn override_decision(point: impl Into<String>, choice: impl Into<String>) -> Decision {
-    Decision::Override(OverrideDecision {
-        point: SchedulingPoint { key: point.into() },
-        choice: ChoiceTag {
-            name: choice.into(),
-        },
-    })
+    .into_iter()
+    .map(crucible::test_support::typed_search_decision_for_test)
+    .collect()
 }
 
 fn node_id(name: impl Into<String>) -> NodeId {

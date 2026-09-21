@@ -1716,9 +1716,8 @@ where
             Some(signal_fault_replay),
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
-        let config =
-            production_lifecycle_config_for_continuations(config, source, &self.continuations)
-                .map_err(AttemptWorkerFailure::Terminal)?;
+        let config = production_lifecycle_config_for_continuations(config, &self.continuations)
+            .map_err(AttemptWorkerFailure::Terminal)?;
         self.begin_fresh_with_config(scenario, source, context, config)
             .map_err(classify_production_lifecycle_failure)
     }

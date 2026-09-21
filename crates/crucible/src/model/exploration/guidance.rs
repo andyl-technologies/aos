@@ -303,8 +303,10 @@ pub struct PreemptionBranchConfig {
 }
 
 /// Result of preemption branch expansion.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreemptionBranchRun {
+    /// Typed scheduler opportunity that owns these alternatives.
+    pub discovery: crucible_campaign::ChoiceDiscovery,
     /// Decisions considered for branching.
     pub decisions: Vec<Decision>,
     /// Reduced frontier report for the generated children.

@@ -16,6 +16,32 @@
     "gate:campaign-operational-continuity"
     "gate:campaign-replay"
     "gate:hot-fork-scaling"
+    "gate:campaign-required-gates"
+  ];
+  expectedRequiredClaimGates = [
+    "gate:campaign-model"
+    "gate:campaign-component-contract"
+    "gate:branch-point-model"
+    "gate:typed-choice"
+    "gate:typed-choice-product-checkpoint"
+    "gate:campaign-replay"
+    "gate:lazy-frontier"
+    "gate:attempt-idempotence"
+    "gate:hot-fork-equivalence"
+    "gate:hot-fork-isolation"
+    "gate:hot-fork-scaling"
+    "gate:world-fork-atomicity"
+    "gate:exact-closure-streaming"
+    "gate:campaign-store-equivalence"
+    "gate:campaign-store-composition"
+    "gate:campaign-cold-continuity"
+    "gate:campaign-statistics"
+    "gate:campaign-operational-continuity"
+    "gate:license-boundary"
+    "gate:abi-conformance"
+    "gate:control-responsiveness"
+    "gate:campaign-mutation-scaling"
+    "gate:campaign-rfc-traceability"
   ];
   expectedManualGates = [
     "gate:campaign-operator-acceptance"
@@ -36,6 +62,7 @@
     && contract.gate == "gate:campaign-release-acceptance"
     && contract.acceptance_state == "manual-evidence-required"
     && contract.executable_evidence.required_gates == expectedExecutableGates
+    && contract.executable_evidence.required_claim_gates == expectedRequiredClaimGates
     && contract.manual_evidence.required_gates == expectedManualGates
     && contract.manual_evidence.schema == "aos.crucible.campaign-manual-evidence.v1"
     && contract.manual_evidence.required_files == requiredFiles
@@ -106,7 +133,7 @@ in
       pname = "crucible-phase9-campaign-release-acceptance-contract";
       version = "0";
       src = contractPath;
-      buildDeps = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep] ++ dependencies;
+      buildDeps = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.sed] ++ dependencies;
 
       phases = [
         {
@@ -134,6 +161,132 @@ in
             printf '%s\n' 'SHA256:first' 'SHA256:second' > "$test_root/distinct-keys"
             ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
               --probe-distinct-fingerprints "$test_root/distinct-keys"
+
+            mkdir -p "$test_root/dogfood"
+            cat > "$test_root/dogfood/manifest.env" <<'MANIFEST'
+            hot_children_created_and_retired=10000
+            promoted_template_generations_reached=3
+            admitted_lightweight_attempts=1000000
+            MANIFEST
+            cat > "$test_root/dogfood.spec" <<'SPEC'
+            minimum	hot_children_created_and_retired	10000
+            minimum	promoted_template_generations_reached	3
+            minimum	admitted_lightweight_attempts	1000000
+            SPEC
+            ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
+              --probe-manifest-requirements "$test_root/dogfood" \
+              "$test_root/dogfood.spec"
+
+            while IFS="$(printf '\t')" read -r measurement below_minimum; do
+              grep -v "^$measurement=" "$test_root/dogfood/manifest.env" \
+                > "$test_root/dogfood-missing.env"
+              cp "$test_root/dogfood-missing.env" "$test_root/dogfood/manifest.env.test"
+              mv "$test_root/dogfood/manifest.env.test" "$test_root/dogfood/manifest.env"
+              if ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
+                --probe-manifest-requirements "$test_root/dogfood" \
+                "$test_root/dogfood.spec"
+              then
+                echo "release acceptance accepted missing dogfood measurement: $measurement" >&2
+                exit 1
+              fi
+              cp "$test_root/dogfood-missing.env" "$test_root/dogfood/manifest.env"
+              printf '%s=%s\n' "$measurement" "$below_minimum" \
+                >> "$test_root/dogfood/manifest.env"
+              if ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
+                --probe-manifest-requirements "$test_root/dogfood" \
+                "$test_root/dogfood.spec"
+              then
+                echo "release acceptance accepted under-threshold dogfood measurement: $measurement" >&2
+                exit 1
+              fi
+              cat > "$test_root/dogfood/manifest.env" <<'MANIFEST'
+            hot_children_created_and_retired=10000
+            promoted_template_generations_reached=3
+            admitted_lightweight_attempts=1000000
+            MANIFEST
+            done <<'MEASUREMENTS'
+            hot_children_created_and_retired	9999
+            promoted_template_generations_reached	2
+            admitted_lightweight_attempts	999999
+            MEASUREMENTS
+
+            sed '/^hot_children_created_and_retired=/d' \
+              "$test_root/dogfood/manifest.env" \
+              > "$test_root/dogfood/legacy-manifest.env"
+            printf 'execution_count=1000000\n' \
+              >> "$test_root/dogfood/legacy-manifest.env"
+            cp "$test_root/dogfood/legacy-manifest.env" \
+              "$test_root/dogfood/manifest.env"
+            if ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
+              --probe-manifest-requirements "$test_root/dogfood" \
+              "$test_root/dogfood.spec"
+            then
+              echo 'release acceptance accepted legacy execution_count dogfood evidence' >&2
+              exit 1
+            fi
+
+            mkdir -p "$test_root/required-gates/results"
+            cat > "$test_root/required-claim-gates.txt" <<'GATES'
+            ${builtins.concatStringsSep "\n" expectedRequiredClaimGates}
+            GATES
+            cp "$test_root/required-claim-gates.txt" \
+              "$test_root/required-gates/required-claim-gates.txt"
+            printf 'gate\tresult_sha256\n' \
+              > "$test_root/required-gates/manifest.tsv"
+            while IFS= read -r required_gate; do
+              result_name=$(printf '%s\n' "$required_gate" | sed 's/:/-/')
+              printf 'PASS\ngate=%s\n' "$required_gate" \
+                > "$test_root/required-gates/results/$result_name.result"
+              result_sha=$(sha256sum \
+                "$test_root/required-gates/results/$result_name.result" \
+                | cut -d ' ' -f 1)
+              printf '%s\t%s\n' "$required_gate" "$result_sha" \
+                >> "$test_root/required-gates/manifest.tsv"
+            done < "$test_root/required-claim-gates.txt"
+            required_gates_manifest_sha=$(sha256sum \
+              "$test_root/required-gates/manifest.tsv" | cut -d ' ' -f 1)
+            required_claim_gates_sha=$(sha256sum \
+              "$test_root/required-gates/required-claim-gates.txt" | cut -d ' ' -f 1)
+            cat > "$test_root/required-gates/result" <<RESULT
+            PASS
+            gate=gate:campaign-required-gates
+            required_claim_count=23
+            all_required_claims_authenticated=true
+            manifest_sha256=$required_gates_manifest_sha
+            required_claim_gates_sha256=$required_claim_gates_sha
+            RESULT
+            cp "$test_root/required-gates/result" \
+              "$test_root/required-gates/result.valid"
+            ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
+              --probe-required-gates "$test_root/required-gates" \
+              "$test_root/required-claim-gates.txt"
+            sed -i 's/^required_claim_count=23$/required_claim_count=22/' \
+              "$test_root/required-gates/result"
+            if ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
+              --probe-required-gates "$test_root/required-gates" \
+              "$test_root/required-claim-gates.txt"
+            then
+              echo 'release acceptance accepted an incomplete required-gates aggregate' >&2
+              exit 1
+            fi
+            mv "$test_root/required-gates/result.valid" \
+              "$test_root/required-gates/result"
+            sed '2s/^gate:campaign-model/gate:wrong-claim/' \
+              "$test_root/required-gates/manifest.tsv" \
+              > "$test_root/required-gates/manifest.wrong.tsv"
+            mv "$test_root/required-gates/manifest.wrong.tsv" \
+              "$test_root/required-gates/manifest.tsv"
+            required_gates_manifest_sha=$(sha256sum \
+              "$test_root/required-gates/manifest.tsv" | cut -d ' ' -f 1)
+            sed -i "s/^manifest_sha256=.*/manifest_sha256=$required_gates_manifest_sha/" \
+              "$test_root/required-gates/result"
+            if ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
+              --probe-required-gates "$test_root/required-gates" \
+              "$test_root/required-claim-gates.txt"
+            then
+              echo 'release acceptance accepted a substituted required gate' >&2
+              exit 1
+            fi
 
             mkdir -p "$test_root/journal"
             printf 'structured\n' > "$test_root/journal/structured.out"
@@ -202,6 +355,9 @@ in
             fi
             mkdir -p "$out"
             cp "$src" "$out/campaign-release-acceptance-contract.toml"
+            cat > "$out/required-claim-gates.txt" <<'GATES'
+            ${builtins.concatStringsSep "\n" expectedRequiredClaimGates}
+            GATES
             cat > "$out/result" <<RESULT
             CONTRACT_VALIDATED
             check=${attrPath}
@@ -211,6 +367,9 @@ in
             manual_evidence=required
             detached_signatures=required
             external_trusted_signers=required
+            dogfood_scale_measurements=required
+            required_claim_count=23
+            required_claim_gates_sha256=$(sha256sum "$out/required-claim-gates.txt" | cut -d ' ' -f 1)
             acceptance=not-evaluated
             RESULT
           '';

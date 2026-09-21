@@ -42,9 +42,7 @@ use crucible_qemu::{
 use thiserror::Error;
 
 use crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken;
-use crate::qemu_hot_fork_world_resource::{
-    QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner,
-};
+use crate::qemu_hot_fork_world_resource::QemuHotForkWorldNodeTarget;
 use crate::supervision::ProcessDeadline;
 
 /// Authenticated installed-node and source-template basis retained by one child.

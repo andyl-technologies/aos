@@ -109,6 +109,14 @@ enum PackagedDemandedQemuHotForkSourceProviderError {
         #[source]
         Box<ManagedQemuHotForkAuthenticatedAdmissionError<PackagedQemuHotForkDemotionError>>,
     ),
+    #[error("retire exact hot-fork source after binding rejection: {binding}")]
+    BindingCleanup {
+        binding: Box<
+            crate::managed_qemu_hot_fork_source_world_pool::ManagedQemuHotForkSourceWorldBindingError,
+        >,
+        #[source]
+        retirement: Box<crucible_api::LifecycleApiError>,
+    },
     #[error("retain demanded exact hot-fork fallback")]
     Retention(
         #[source]
@@ -199,9 +207,9 @@ where
             Self::Error::Pool(_) | Self::Error::AdmissionPoisoned | Self::Error::Retention(_) => {
                 crucible::SchedulerOperationalFailureClass::Retryable
             }
-            Self::Error::Admission(_) | Self::Error::Retirement(_) => {
-                crucible::SchedulerOperationalFailureClass::Terminal
-            }
+            Self::Error::Admission(_)
+            | Self::Error::BindingCleanup { .. }
+            | Self::Error::Retirement(_) => crucible::SchedulerOperationalFailureClass::Terminal,
         }
     }
 }
@@ -225,9 +233,12 @@ where
             ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding(failure) => {
                 let (source, error) = failure.into_parts();
                 if let Err(retirement) = source.retire() {
-                    return Err(PackagedDemandedQemuHotForkSourceProviderError::Retirement(
-                        retirement,
-                    ));
+                    return Err(
+                        PackagedDemandedQemuHotForkSourceProviderError::BindingCleanup {
+                            binding: Box::new(error),
+                            retirement: Box::new(retirement),
+                        },
+                    );
                 }
                 return Err(PackagedDemandedQemuHotForkSourceProviderError::Admission(
                     Box::new(ManagedQemuHotForkAuthenticatedAdmissionError::Binding(
@@ -686,12 +697,18 @@ where
         ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission(failure) => failure,
         ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding(failure) => {
             let (source_world, error) = failure.into_parts();
-            let _retained_for_process_lifetime = Box::leak(Box::new(source_world));
-            let source = PackagedQemuExecutorError::HotForkSourceAdmission {
-                lineage,
-                source: Box::new(ManagedQemuHotForkAuthenticatedAdmissionError::Binding(
-                    error,
-                )),
+            let source = match source_world.retire() {
+                Ok(()) => PackagedQemuExecutorError::HotForkSourceAdmission {
+                    lineage,
+                    source: Box::new(ManagedQemuHotForkAuthenticatedAdmissionError::Binding(
+                        error,
+                    )),
+                },
+                Err(retirement) => PackagedQemuExecutorError::HotForkSourceBindingCleanup {
+                    lineage,
+                    binding: Box::new(error),
+                    retirement: Box::new(retirement),
+                },
             };
             return Err(cleanup_captured_sources(source, pool));
         }

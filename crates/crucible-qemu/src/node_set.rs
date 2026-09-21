@@ -6,6 +6,10 @@
 //! the corresponding live [`QemuNode`].
 
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::panic::{AssertUnwindSafe, catch_unwind};
+#[cfg(target_os = "linux")]
+use std::thread;
 
 use crucible::{
     BackendEffect, BackendError, BackendNetworkOutput, BackendRngEvidence, BackendSnapshot,
@@ -491,6 +495,92 @@ impl QemuNodeSet {
         self.nodes.remove(node)
     }
 
+    /// Re-adopts one reconstructed child as a fresh template source.
+    ///
+    /// The operation preserves the process and current plugin generation while
+    /// consuming inherited staging records. A separate preparation must still
+    /// revalidate every supported barrier before descendant resource staging.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent, is not one active
+    /// reconstructed generation, or changes identity during re-adoption.
+    #[cfg(target_os = "linux")]
+    pub fn adopt_hot_fork_child_as_template_source(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<u64, BackendError> {
+        let process = self.process_identity(node)?;
+        let backend = self.node_mut(node)?;
+        let before =
+            backend
+                .query_hot_fork_child_runtime()
+                .map_err(|error| BackendError::Rejected {
+                    message: format!("query reconstructed hot-fork child: {error}"),
+                })?;
+        if !before.registered()
+            || !before.manifest_consistent()
+            || !before.active()
+            || before.failed()
+            || before.process_generation() == 0
+            || before.process_generation() != before.child_process_generation()
+            || before.parent_process_generation().checked_add(1)
+                != Some(before.child_process_generation())
+        {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` is not one complete reconstructed child generation",
+                    node.name
+                ),
+            });
+        }
+
+        let adopted = backend
+            .adopt_hot_fork_child_as_template_source()
+            .map_err(|error| BackendError::Rejected {
+                message: format!("adopt hot-fork child as template source: {error}"),
+            })?;
+        if adopted.outcome() != crate::QmpHotForkTemplateOutcome::ChildAdopted
+            || adopted.transaction_active()
+            || !adopted.rollback_complete()
+            || adopted.ready()
+        {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` returned an invalid child-adoption state",
+                    node.name
+                ),
+            });
+        }
+        let after =
+            backend
+                .query_hot_fork_child_runtime()
+                .map_err(|error| BackendError::Rejected {
+                    message: format!("revalidate adopted hot-fork child runtime: {error}"),
+                })?;
+        if after.process_generation() != before.process_generation()
+            || !after.registered()
+            || !after.manifest_consistent()
+            || !after.active()
+        {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` changed plugin generation during child adoption",
+                    node.name
+                ),
+            });
+        }
+        if self.process_identity(node)? != process {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` changed process incarnation during child adoption",
+                    node.name
+                ),
+            });
+        }
+        Ok(before.process_generation())
+    }
+
     /// Prepares one installed paused node as a retained hot-fork template.
     ///
     /// The node remains installed in this authoritative set. Callers can thus
@@ -696,6 +786,114 @@ impl QemuNodeSet {
             })?;
         validate_prepared_hot_fork_token(prepared, &current_process, &state)?;
         Ok(QemuNodeSetPreparedHotForkSource { source, prepared })
+    }
+
+    /// Runs one operation per prepared source on concurrent host workers.
+    ///
+    /// Every source is authenticated before any node leaves the authoritative
+    /// set. Nodes remain unpublished and are restored to the set before an
+    /// operation result or worker failure is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the operation roster differs from the
+    /// prepared source roster, a prepared source is stale, or a worker panics.
+    #[cfg(target_os = "linux")]
+    pub fn map_prepared_hot_fork_sources_concurrent<D, T, O>(
+        &mut self,
+        prepared: &[QemuNodeSetPreparedHotForkTemplate],
+        operations: Vec<(NodeId, D)>,
+        operation: O,
+    ) -> Result<Vec<(NodeId, T)>, BackendError>
+    where
+        D: Send,
+        T: Send,
+        O: for<'a> Fn(QemuNodeSetPreparedHotForkSource<'a>, D) -> T + Send + Sync,
+    {
+        if operations.len() != prepared.len() {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "concurrent hot-fork operation count differs from prepared sources",
+                ),
+            });
+        }
+        let mut selected = std::collections::BTreeSet::new();
+        for (node, _) in &operations {
+            if !selected.insert(node.clone()) {
+                return Err(BackendError::Rejected {
+                    message: format!("concurrent hot-fork operation repeats node `{}`", node.name),
+                });
+            }
+            let token = prepared
+                .iter()
+                .find(|token| token.node() == node)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!("concurrent hot-fork node `{}` is not prepared", node.name),
+                })?;
+            self.validate_retained_hot_fork_template(token)?;
+        }
+
+        let mut owned = Vec::with_capacity(operations.len());
+        for (node, data) in operations {
+            let backend = self
+                .nodes
+                .remove(&node)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!("concurrent hot-fork source `{}` disappeared", node.name),
+                })?;
+            let token = prepared
+                .iter()
+                .find(|token| token.node() == &node)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!("concurrent hot-fork token `{}` disappeared", node.name),
+                })?;
+            owned.push((node, backend, token, data));
+        }
+
+        let completed = thread::scope(|scope| {
+            owned
+                .into_iter()
+                .map(|(node, mut backend, token, data)| {
+                    let operation = &operation;
+                    scope.spawn(move || {
+                        let outcome = catch_unwind(AssertUnwindSafe(|| {
+                            operation(
+                                QemuNodeSetPreparedHotForkSource {
+                                    source: &mut backend,
+                                    prepared: token,
+                                },
+                                data,
+                            )
+                        }));
+                        (node, backend, outcome)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|worker| worker.join())
+                .collect::<Vec<_>>()
+        });
+
+        let mut outcomes = Vec::with_capacity(completed.len());
+        let mut worker_failed = false;
+        for joined in completed {
+            let Ok((node, backend, outcome)) = joined else {
+                worker_failed = true;
+                continue;
+            };
+            self.nodes.insert(node.clone(), backend);
+            match outcome {
+                Ok(outcome) => outcomes.push((node, outcome)),
+                Err(_) => worker_failed = true,
+            }
+        }
+        if worker_failed || outcomes.len() != selected.len() {
+            return Err(BackendError::Rejected {
+                message: String::from("concurrent hot-fork source worker failed"),
+            });
+        }
+        outcomes.sort_by(|(left, _), (right, _)| left.cmp(right));
+        Ok(outcomes)
     }
 
     /// Borrows one source while its authenticated transaction is reconciling.

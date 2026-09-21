@@ -69,15 +69,38 @@ fn competing_packaged_startup_preserves_live_native_catalogs() {
 #[test]
 fn packaged_native_catalog_recovery_is_crash_safe_and_idempotent() {
     let directory = tempfile::tempdir().expect("packaged native catalog root");
-    let workers = directory.path().join("campaign-workers");
-    let promotions = directory.path().join("campaign-checkpoint-promotions");
-    std::fs::create_dir_all(workers.join("worker-0/scenario")).expect("active worker catalog");
-    std::fs::write(workers.join("worker-0/scenario/native"), b"worker")
-        .expect("worker catalog sentinel");
-    std::fs::create_dir_all(promotions.join("worker-0/scenario"))
-        .expect("active promotion catalog");
-    std::fs::write(promotions.join("worker-0/scenario/native"), b"promotion")
-        .expect("promotion catalog sentinel");
+    for namespace in PACKAGED_NATIVE_NAMESPACES {
+        let lifecycle = directory.path().join(namespace).join("owner/scenario");
+        std::fs::create_dir_all(&lifecycle).expect("active native lifecycle catalog");
+        std::fs::write(lifecycle.join("native"), namespace.as_bytes())
+            .expect("native lifecycle sentinel");
+    }
+
+    let fallback_root = directory.path().join("hot-checkpoint-fallbacks");
+    let retention = DirectoryHotCheckpointFallbackRetentionStore::open(&fallback_root)
+        .expect("durable fallback catalog");
+    let lineage = CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@campaign-fact.1.{}",
+        "a7".repeat(32)
+    ))
+    .expect("fallback lineage");
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        4,
+        b"packaged restart fallback",
+    ))
+    .expect("fallback checkpoint");
+    let record = HotCheckpointFallbackRecord::new(
+        HotCheckpointPoolKey::new(lineage, ContentHash::from_bytes(b"restart configuration")),
+        HotCheckpointFallback::Exact(checkpoint),
+    );
+    let slot = HotCheckpointFallbackSlot::new(7).expect("fallback slot");
+    assert_eq!(
+        retention
+            .compare_exchange_fallback(slot, None, Some(record))
+            .expect("root fallback before restart cleanup"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
 
     reconcile_packaged_native_catalogs(directory.path()).expect("retire active catalogs");
     for namespace in PACKAGED_NATIVE_NAMESPACES {
@@ -89,8 +112,36 @@ fn packaged_native_catalog_recovery_is_crash_safe_and_idempotent() {
                 .exists()
         );
     }
+    assert_eq!(
+        retention
+            .load_fallback(slot)
+            .expect("load retained durable fallback"),
+        Some(record)
+    );
 
     reconcile_packaged_native_catalogs(directory.path()).expect("idempotent catalog recovery");
+}
+
+#[test]
+fn packaged_native_catalog_recovery_covers_hot_source_lifecycles() {
+    let directory = tempfile::tempdir().expect("packaged hot-source catalog root");
+    for namespace in ["campaign-hot-fork-sources", "campaign-hot-fork-demanded"] {
+        let active = directory.path().join(namespace);
+        std::fs::create_dir_all(active.join("lineage/generation"))
+            .expect("abandoned hot-source lifecycle");
+    }
+
+    reconcile_packaged_native_catalogs(directory.path()).expect("retire hot-source lifecycles");
+
+    for namespace in ["campaign-hot-fork-sources", "campaign-hot-fork-demanded"] {
+        assert!(!directory.path().join(namespace).exists());
+        assert!(
+            !directory
+                .path()
+                .join(format!(".retired-{namespace}"))
+                .exists()
+        );
+    }
 }
 
 #[test]

@@ -180,6 +180,9 @@ in
                     selection=$(crucible-guest selectable choose-u64 \
                       1 hot-fork.retry-quanta continuation/one 1 9 2)
                     test "$selection" = u64=7
+                    mkdir -p /known-dirty
+                    mount -t tmpfs -o size=8m tmpfs /known-dirty
+                    dd if=/dev/zero of=/known-dirty/pages bs=4096 count=1024 2>/dev/null
                     crucible-guest metric-sample \
                       hot-fork-window instance-1 selected-retry u64 7
                     crucible-guest measurement-end hot-fork-window instance-1
@@ -241,6 +244,9 @@ in
               selection=$(crucible-guest selectable choose-u64 \
                 1 hot-fork.retry-quanta continuation/one 1 9 2)
               test "$selection" = u64=7
+              mkdir -p /known-dirty
+              mount -t tmpfs -o size=8m tmpfs /known-dirty
+              dd if=/dev/zero of=/known-dirty/pages bs=4096 count=1024 2>/dev/null
               crucible-guest metric-sample \
                 hot-fork-window instance-1 selected-retry u64 7
               crucible-guest measurement-end hot-fork-window instance-1

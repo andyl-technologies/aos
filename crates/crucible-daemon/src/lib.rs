@@ -21,6 +21,8 @@
 //! [`campaign_loopback`] provides the strict local
 //! user-facing service transport; [`campaign_server`] owns its bounded
 //! authenticated listener and fixed connection workers;
+//! [`campaign_diagnostics`] routes bounded, path-free operational failures to
+//! a deployment-owned sink without changing semantic state or wire responses;
 //! [`campaign_policy`] owns its immutable Unix identity and operation grants;
 //! [`campaign_retention`] composes snapshot-bound semantic pins with durable
 //! executor publication roots for local garbage-collection inventory;
@@ -81,7 +83,7 @@
 //! [`planner_loopback`] owns
 //! the strict local pure-planner component transport; [`planner_process`]
 //! owns the killable packaged canonical-planner worker.
-//! Future modules split session hosting, API transport, and diagnostics.
+//! Future modules split session hosting and API transport.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -93,7 +95,9 @@ pub mod automatic_finding_runner;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
 pub mod campaign_debug_control;
+mod campaign_debug_inventory;
 pub mod campaign_debug_session;
+pub mod campaign_diagnostics;
 pub mod campaign_endpoint;
 pub mod campaign_gc;
 pub mod campaign_loopback;
@@ -202,9 +206,14 @@ pub use campaign_debug_control::{
     CampaignDebugCheckpointRole, CampaignDebugControlCodecError, CampaignDebugControlService,
     OpenCampaignDebugSessionRequest, OpenCampaignDebugSessionResponse,
 };
+pub(crate) use campaign_debug_inventory::CampaignDebugSessionInventory;
+pub use campaign_debug_inventory::CampaignDebugSessionInventoryError;
 pub use campaign_debug_session::{
     CampaignDebugLifecycleAdmission, CampaignDebugLifecycleBuildError, CampaignDebugQemuCapability,
     CanonicalCampaignDebugController, PreparedCampaignDebugLifecycle,
+};
+pub use campaign_diagnostics::{
+    CampaignConnectionDiagnostic, CampaignServiceDiagnostic, CampaignServiceDiagnosticSink,
 };
 pub use campaign_endpoint::{
     CampaignLoopbackEndpointConfig, ExecutorLoopbackEndpointConfig, LocalComponentEndpointError,
@@ -339,11 +348,12 @@ pub use exact_pin_retention::{
     MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS, PreparedExactPinMaterializationSelection,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
+#[cfg(test)]
+pub(crate) use executor_loopback::serve_loopback_executor_component_once;
 pub use executor_loopback::{
     DEFAULT_EXECUTOR_REQUESTS_PER_CONNECTION, LoopbackExecutorProtocolError,
     LoopbackExecutorServerError, LoopbackExecutorService, LoopbackExecutorTimeouts,
     MAX_EXECUTOR_REQUESTS_PER_CONNECTION, serve_loopback_executor_component_connection_with_limits,
-    serve_loopback_executor_component_once,
 };
 pub(crate) use executor_pool::{
     LocalCheckpointPromotionWorker, ProductionCheckpointPromotionWorker,
@@ -575,8 +585,10 @@ pub use qemu_hot_fork_source_capture::{
     ProductionQemuHotForkExactSourceCaptureError, ProductionQemuHotForkSourceCaptureError,
 };
 #[cfg(target_os = "linux")]
-pub(crate) use qemu_hot_fork_world::{
-    QemuHotForkWorldAssembly, QemuProductionHotForkWorldLifecycle,
+pub(crate) use qemu_hot_fork_world::QemuHotForkWorldAssembly;
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_world::{
+    QemuProductionHotForkRetainedLineage, QemuProductionHotForkWorldLifecycle,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use qemu_hot_fork_world_factory::QemuProductionHotForkWorldLifecycleFactory;

@@ -4,11 +4,10 @@ use super::*;
 
 pub(super) fn production_lifecycle_config_for_continuations(
     mut config: ProductionVmLifecycleConfig,
-    source: &ScenarioDefForm,
     continuations: &[OwnedQemuAttemptContinuation],
 ) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
     for continuation in continuations {
-        config = production_continuation_plan(source, Some(continuation))?.apply(config);
+        config = production_continuation_plan(Some(continuation))?.apply(config);
     }
     Ok(config)
 }
@@ -21,10 +20,10 @@ pub(super) enum ProductionContinuationPlan {
         frontier: VirtualTime,
         seed: Seed,
     },
-    NetworkOverrides {
+    NetworkSelections {
         base: Configuration,
         frontier: VirtualTime,
-        overrides: Vec<crucible::OverrideDecision>,
+        selections: Vec<crucible::SelectionDecision>,
     },
 }
 
@@ -37,19 +36,18 @@ impl ProductionContinuationPlan {
                 frontier,
                 seed,
             } => config.append_branch_reseed(base, frontier, seed),
-            Self::NetworkOverrides {
+            Self::NetworkSelections {
                 base,
                 frontier,
-                overrides,
+                selections,
             } => config
-                .append_branch_prefix_overrides(base, frontier, Vec::new())
-                .append_branch_network_choices(overrides),
+                .append_branch_boundary(base, frontier)
+                .append_branch_network_choices(selections),
         }
     }
 }
 
 pub(super) fn production_continuation_plan(
-    source: &ScenarioDefForm,
     continuation: Option<&OwnedQemuAttemptContinuation>,
 ) -> Result<ProductionContinuationPlan, QemuAttemptProductionVmLifecycleError> {
     let Some(continuation) = continuation else {
@@ -68,32 +66,39 @@ pub(super) fn production_continuation_plan(
                 seed: Seed::from_bytes(*seed),
             })
         }
-        AttemptContinuationInput::SchedulerOverrides { decisions, .. } => {
-            let mut overrides = Vec::new();
-            overrides
-                .try_reserve(decisions.len())
+        AttemptContinuationInput::SchedulerSelections {
+            selections: records,
+            ..
+        } => {
+            let mut selections = Vec::new();
+            selections
+                .try_reserve(records.len())
                 .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
-            let mut points = BTreeSet::new();
-            for bytes in decisions {
+            let mut opportunities = BTreeSet::new();
+            for bytes in records {
                 let schedule = Schedule::from_compact_binary(bytes)
                     .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
                 if schedule.to_compact_binary() != *bytes {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 }
-                let [Decision::Override(decision)] = schedule.decisions() else {
+                let [Decision::Selection(decision)] = schedule.decisions() else {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 };
-                if !crucible::live_world_network_override_matches_world(source.world(), decision)
-                    || !points.insert(decision.point.key.clone())
+                let selection = decision
+                    .selection()
+                    .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
+                if !decision.is_campaign_branch()
+                    || !crucible::is_live_world_network_selection(&selection)
+                    || !opportunities.insert(selection.opportunity())
                 {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 }
-                overrides.push(decision.clone());
+                selections.push(decision.clone());
             }
-            Ok(ProductionContinuationPlan::NetworkOverrides {
+            Ok(ProductionContinuationPlan::NetworkSelections {
                 base: continuation.source.clone(),
                 frontier,
-                overrides,
+                selections,
             })
         }
     }

@@ -277,6 +277,17 @@ fn authenticated_sink_rechecks_at_release_and_preserves_factory_on_failure() {
     assert_eq!(demotion_calls.get(), 0);
 }
 
+#[test]
+fn authenticated_demotion_preserves_the_exact_fallback_diagnostic_chain() {
+    let error =
+        AuthenticatedHotCheckpointDemotionError::<ScriptedFailure, ScriptedFailure>::Fallback(
+            ScriptedFailure,
+        );
+    let source = std::error::Error::source(&error).expect("fallback diagnostic source");
+
+    assert_eq!(source.to_string(), "scripted fallback failure");
+}
+
 fn demotion_plan() -> HotCheckpointPlannedDemotion {
     let limits = HotCheckpointLimits::new(1, resources(), 1, 1).expect("limits");
     let mut manager = HotCheckpointManager::new(limits);

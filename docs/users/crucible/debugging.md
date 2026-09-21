@@ -231,6 +231,23 @@ available at subsequent scheduler boundaries.
 fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.
 
+For a retained campaign finding, `campaign debug ... --writable` performs that
+fork as one owner-backed operation before opening the relay. The lifecycle
+registry keeps the finding proof, exact checkpoint, private runtime resources,
+and non-canonical branch identity for the complete session lifetime. The
+printed `id:epoch:seed` can therefore be reused by later `debug --session`
+commands; disconnecting GDB does not discard the derivative. Without
+`--writable`, campaign debug remains exclusive and read-only.
+
+Campaign-owned sessions survive daemon restart through the campaign owner's
+bounded durable inventory. Restart reauthenticates the original snapshot-bound
+finding proof and exact checkpoint before creating a replacement lifecycle
+session. Use the ordinary session list to obtain its new `id:epoch:seed` and
+the ordinary session destroy operation to remove both the live session and its
+durable inventory entry. Recovery returns to the authenticated canonical
+checkpoint read-only. A prior non-canonical branch is ephemeral and must be
+forked again after restart.
+
 The shipped debug fixture keeps the guest agent inactive on canonical execution.
 Its content-addressed launch includes a fixed activation-only port and a single
 blocking guest reader, but no token is sent and no agent runs. `fork-debug` first

@@ -63,10 +63,9 @@ pub mod engine {
         VcpuId, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency,
         WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldNinePLatency, WorldNode,
         WorldNodeDef, bake, built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
-        happy_path_scenario, is_supported_live_world_network_override,
-        live_world_network_override_matches_world, live_world_network_override_point_prefixes,
-        materialize_search_plans, partition_recovery_scenario, run_fault_campaign_example,
-        try_step, verify_example_scenario_runs,
+        happy_path_scenario, is_live_world_network_selection, materialize_search_plans,
+        partition_recovery_scenario, run_fault_campaign_example, try_step,
+        verify_example_scenario_runs,
     };
 }
 

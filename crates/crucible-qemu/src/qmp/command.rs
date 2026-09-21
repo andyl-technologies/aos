@@ -41,6 +41,7 @@ pub(super) enum HotForkBlockBarrierAction {
 pub(super) enum HotForkTemplateAction {
     Prepare,
     Query,
+    AdoptChild,
     Abort,
 }
 
@@ -84,6 +85,7 @@ impl HotForkTemplateAction {
         match self {
             Self::Prepare => "prepare",
             Self::Query => "query",
+            Self::AdoptChild => "adopt-child",
             Self::Abort => "abort",
         }
     }

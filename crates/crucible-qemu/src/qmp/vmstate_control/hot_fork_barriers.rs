@@ -283,6 +283,20 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Re-adopts an active reconstructed child as a fresh template source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU rejects the complete child
+    /// resource profile or the typed response is malformed.
+    pub fn adopt_hot_fork_child_as_template_source(
+        &mut self,
+    ) -> Result<QmpHotForkTemplateState, QemuNodeChannelError> {
+        self.client
+            .adopt_hot_fork_child_as_template_source()
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Aborts QEMU's retained hot-fork template transaction.
     ///
     /// A draining response requires another abort exchange while retaining the

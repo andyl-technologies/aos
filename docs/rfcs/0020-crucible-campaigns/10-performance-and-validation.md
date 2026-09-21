@@ -84,6 +84,9 @@ Before child resume it verifies:
 - child-private RSS does not scale with full guest RAM;
 - dirtying a known set of guest pages increases private RSS approximately with
   the dirtied set plus bounded allocator/page-table overhead;
+- the production whole-world owner records `VmPTE`, `VmData`,
+  `AnonHugePages`, and `/proc/PID/numa_maps` evidence before continuation and
+  private-dirty growth after a fixed 1,024-page guest dirty set;
 - parent state remains byte/fingerprint-identical after every child exits;
 - repeated child creation does not leak descriptors, threads, overlays, or
   shared-memory objects;
@@ -105,13 +108,15 @@ with RFC-0010's performance policy. Initial engineering targets are:
 - multi-node world-fork latency bounded by the slowest node plus orchestration,
   not the sum of serialized node restores;
 - at least 5x setup-throughput improvement over fresh exact restore for a
-  short sibling-branch corpus before hot fork becomes the default;
+  short sibling-branch corpus before hot fork becomes the default; the gate
+  compares three identical semantic boundaries and records every raw sample;
 - sustained creation and retirement of at least 10,000 short children from a
   stable template without unbounded resource growth, with the useful concurrent
   population limited only by the declared host resource budget;
 - no more than 10% regression in steady-state guest execution throughput when
   a non-template child runs versus the same launch profile without hot-fork
-  capability armed;
+  capability armed; the gate times the identical post-boundary continuation
+  against exact restore;
 - planner and queue overhead below 5% of host time for the short-branch corpus;
 - campaign metadata for one million admitted lightweight attempts bounded by a
   measured compact-object/index budget established in the implementation spike,

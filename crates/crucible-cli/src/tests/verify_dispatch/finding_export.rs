@@ -370,16 +370,27 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         published.finding,
         report,
     )?;
+    let service_evidence =
+        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding_from_service(
+            &client,
+            CampaignPrincipal::new("operator:cli-campaign-findings")?,
+            CampaignName::new(CAMPAIGN)?,
+            published.new_snapshot,
+            published.finding,
+        )?;
+    assert_eq!(service_evidence.report, evidence.report);
 
     let artifact_dir = tempfile::tempdir()?;
-    let (_, _, bytes) = crate::cli_triage_debug::campaign_evidence::write_campaign_findings_ledger(
-        artifact_dir.path(),
-        None,
+    let bytes = crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
         std::slice::from_ref(&evidence),
     )?;
     let store_temp = tempfile::tempdir()?;
     let store = crucible::LocalDagStore::new(store_temp.path().join("store"));
-    let loaded = parse_failure_findings_ledger_bytes(&store, &bytes)?;
+    let loaded = crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
+        &store,
+        &bytes,
+        std::str::from_utf8(&bytes)?,
+    )?;
     assert_eq!(loaded.campaign_evidence, vec![evidence.clone()]);
     assert_eq!(loaded.ledger.signed_findings().len(), 1);
     assert_eq!(
@@ -397,27 +408,12 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         loaded.ledger.signed_findings().iter().cloned(),
     )?;
     let triage_plan = TriageInvocationPlan {
-        findings: TriageFindingsSource::Path(artifact_dir.path().join("unused")),
         policy,
         minimize: TriageMinimizeArg::All,
         report_dir: artifact_dir.path().join("reports"),
         format: crucible::FailureClusterReportFormat::JsonLines,
         recompute_signatures: true,
-        compare: None,
         store_root: store_temp.path().join("triage-store"),
-        pipeline: vec![
-            TriagePipelineStep::LoadFindingsLedger,
-            TriagePipelineStep::RecomputeSignatureSelfCheck,
-            TriagePipelineStep::Cluster,
-            TriagePipelineStep::MinimizeAll,
-            TriagePipelineStep::EmitReports,
-            TriagePipelineStep::StoreTriageResult,
-        ],
-        failure_exit_code: 1,
-        thin_driver: true,
-        owns_run_state: false,
-        offline: true,
-        scheduler_started: false,
     };
     let minimization = build_triage_minimization(&triage_plan, &clustering, &loaded)?;
     assert_eq!(minimization.runs.len(), 1);
@@ -477,7 +473,14 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     );
     assert_ne!(response, wrong_response);
     let tampered = text.replacen(&response, &wrong_response, 1);
-    assert!(parse_failure_findings_ledger_bytes(&store, tampered.as_bytes()).is_err());
+    assert!(
+        crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
+            &store,
+            tampered.as_bytes(),
+            &tampered,
+        )
+        .is_err()
+    );
 
     let mut alternate_selected_failure = minimized_report.failure.clone();
     let crucible::FailureClusterReportFailure::Property(alternate_property) =
@@ -538,13 +541,16 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
             evidence.report.clone(),
         )?;
     assert_eq!(duplicate_evidence.occurrence_proofs.len(), 2);
-    let (_, _, duplicate_bytes) =
-        crate::cli_triage_debug::campaign_evidence::write_campaign_findings_ledger(
-            artifact_dir.path(),
-            None,
+    let duplicate_bytes =
+        crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
             std::slice::from_ref(&duplicate_evidence),
         )?;
-    let duplicate_loaded = parse_failure_findings_ledger_bytes(&store, &duplicate_bytes)?;
+    let duplicate_loaded =
+        crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
+            &store,
+            &duplicate_bytes,
+            std::str::from_utf8(&duplicate_bytes)?,
+        )?;
     assert_eq!(duplicate_loaded.ledger.signed_findings().len(), 1);
     assert_eq!(
         duplicate_loaded.campaign_evidence[0]
@@ -598,14 +604,16 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
             conflicting_published.finding,
             evidence.report.clone(),
         )?;
-    let (_, _, conflicting_bytes) =
-        crate::cli_triage_debug::campaign_evidence::write_campaign_findings_ledger(
-            artifact_dir.path(),
-            None,
+    let conflicting_bytes =
+        crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
             std::slice::from_ref(&conflicting_evidence),
         )?;
     assert!(matches!(
-        parse_failure_findings_ledger_bytes(&store, &conflicting_bytes),
+        crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
+            &store,
+            &conflicting_bytes,
+            std::str::from_utf8(&conflicting_bytes)?,
+        ),
         Err(CliError::Artifact(message))
             if message.contains("conflicting authenticated native signatures")
     ));

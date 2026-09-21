@@ -179,12 +179,17 @@ in
           run_exact_feature_lib_test \
             crucible-daemon \
             destructive-recovery-faults \
-            qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_one_vm_failure_quarantines_partial_world
+            qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_preflight_failure_restores_source_world
 
           run_exact_feature_lib_test \
             crucible-daemon \
             destructive-recovery-faults \
             qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::child_resource_alias_rejects_before_fork_and_restores_source_world
+
+          run_exact_feature_lib_test \
+            crucible-daemon \
+            destructive-recovery-faults \
+            exact_checkpoint_store::production::tests::production_exact_capture_enospc_restart_retries_root_last_publication
 
           for cas_test in \
             content_store::tests::tier::changing_and_failing_sources_leave_no_published_object_or_staging_file \
@@ -200,7 +205,6 @@ in
           done
 
           for daemon_test in \
-            exact_checkpoint_store::production::tests::production_exact_capture_enospc_restart_retries_root_last_publication \
             exact_checkpoint_store::production::tests::production_exact_capture_cancellation_after_preparation_stops_before_first_write \
             executor_worker::tests::operational_worker_failure_requeues_without_growing_the_bounded_queue \
             assignment_ledger::tests::memory_ledger_matches_conditional_publish_contract \
@@ -226,8 +230,7 @@ in
           injection_classes=14
           prerequisite_tests=29
           operator_commands=contract-validated
-          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication,multipart-remove-leaf,store-credential-expiry,corrupt-tier-copy,pack-index-interruption,world-fork-one-vm-failure,child-resource-alias
-          required_fault_build_hooks=exact-capture-enospc
+          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication,exact-capture-enospc,multipart-remove-leaf,store-credential-expiry,corrupt-tier-copy,pack-index-interruption,world-fork-preflight-failure,child-resource-alias
           manual_evidence=required
           acceptance=not-evaluated
           RESULT

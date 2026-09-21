@@ -730,7 +730,13 @@ where
         &self,
         request: crucible_daemon::PreparedCampaignDebugLifecycle,
     ) -> Result<crucible_api::ResumeSessionResponse, crucible_api::LifecycleApiError> {
-        self.runtime.block_on(request.admit(&self.lifecycle))
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Startup recovery runs while the daemon's multithreaded runtime is
+            // active; campaign RPC workers call this outside that runtime.
+            tokio::task::block_in_place(|| self.runtime.block_on(request.admit(&self.lifecycle)))
+        } else {
+            self.runtime.block_on(request.admit(&self.lifecycle))
+        }
     }
 }
 
@@ -860,11 +866,15 @@ pub(super) fn open_local_campaign_service(
         let planner = runtime_control_planner.clone().ok_or_else(|| {
             serve_error("campaign runtime attachment requires the planner control profile")
         })?;
-        let runtime_config =
-            crucible_daemon::CanonicalCampaignRuntimeConfig::canonical_defaults(campaign, planner)
-                .map_err(|error| {
-                    serve_error(format!("campaign runtime configuration error: {error}"))
-                })?;
+        let runtime_config = match packaged_executor.as_ref() {
+            Some(packaged) => packaged.runtime_config(campaign, planner)?,
+            None => crucible_daemon::CanonicalCampaignRuntimeConfig::canonical_defaults(
+                campaign, planner,
+            )
+            .map_err(|error| {
+                serve_error(format!("campaign runtime configuration error: {error}"))
+            })?,
+        };
         runtimes.push(
             prepared
                 .prepare_runtime_endpoint(endpoint, &runtime_config)
@@ -884,8 +894,8 @@ pub(super) fn open_local_campaign_service(
     if let Some(lifecycle) = campaign_debug_lifecycle {
         prepared = prepared.with_campaign_debug_lifecycle(lifecycle);
     }
-    let service = if let Some(executor) = packaged_executor {
-        prepared.bind_with_runtimes_and_executor(runtimes, executor)
+    let service = if let Some(packaged) = packaged_executor {
+        prepared.bind_with_runtimes_and_executor(runtimes, packaged.executor)
     } else if runtimes.is_empty() {
         prepared.bind()
     } else {

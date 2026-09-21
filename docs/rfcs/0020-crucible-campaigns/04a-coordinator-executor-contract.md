@@ -800,11 +800,11 @@ lookahead, and exact used-node sets to reject substitution or false EOF. The
 same 65-node lookup and 641-node page-proof bounds as `QueryChoices` keep the
 complete message below 64 MiB.
 
-Finite requests are reported as `Ready`, `Open`, `Exhausted`, or `Closed` from
-their owner-projected source and disposition state. Generated requests are
-reported `Open` at this checkpoint; deterministic generated enumeration and
-feedback-driven readiness remain open and MUST replace that conservative state
-before generated work is advertised as executable.
+Finite and generated requests are reported as `Ready`, `Open`, `Exhausted`, or
+`Closed` from their owner-projected source, generator cursor, feedback, and
+disposition state. Generated work is advertised as executable only after the
+deterministic generator and progressive-widening owner prove the next candidate
+at the anchored snapshot.
 
 `GetFrontierObject` is the separately authorized body read for one exact
 `BranchRequestId` returned by `QueryFrontier`. The response repeats the
@@ -884,7 +884,8 @@ admission ordinal, branch selection and proposal, optional completion, and the
 coordinator-accepted planner step with its exact fixed-point guidance terms and
 resource accounting. The planner-step proof is bound to the proposal's exact
 invocation in the anchoring coordination root. Arbitrary non-graph object reads
-remain open. `campaign rankings` begins at one accepted planner step,
+are deliberately outside this capability. `campaign rankings` begins at one
+accepted planner step,
 authenticates that exact step through `coordination.planner-step(step)` under
 the requested snapshot's coordination root, reloads the step's complete
 retained request, and recomputes every PUCT score from its by-value policy and
@@ -915,7 +916,7 @@ The strict
 local transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV20 = "CRUCCS20" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV21 = "CRUCCS21" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -1216,15 +1217,24 @@ the same strict file and semantic checks without opening a socket or repository
 and requires a self-contained dependency-ordered generator set. It retains one
 body at a time plus bounded derived identities and emits no campaign content.
 
-Structured operational diagnostic routing remains open. The pre-bound
-constructor remains useful for embedded/test deployments, but constructing it
-without equivalent path ownership and parsed policy does not make an endpoint
+The local listener accepts an optional deployment-owned structured diagnostic
+sink. Every validated service failure is routed as the public operation, exact
+request digest, and stable failure returned to the caller. Capacity, stream
+configuration, peer-authentication, protocol, worker, and listener failures use
+a separate closed connection vocabulary. Diagnostic records contain no backend
+paths, private error text, peer process identifiers, or campaign object bodies,
+and a panicking sink cannot terminate serving. These records remain operational
+and never enter campaign state or transport responses. The pre-bound constructor
+remains useful for embedded/test deployments, but constructing it without
+equivalent path ownership and parsed policy does not make an endpoint
 production-authorized.
 
 The stable error envelope preserves authorization, stale/conflict, invalid
 transition, resource, availability, and integrity meaning across direct and
 loopback calls without exposing backend paths or private diagnostics. The
-nested CLI and remaining service operations are still open.
+nested CLI routes ordinary campaign operations through the same checked client
+abstraction. Administrative executor and store operations remain on their
+separate authority surface.
 
 - **[CCOMP-10]** The CLI MUST target `CampaignService` through a client
   abstraction and MUST behave identically whether the endpoint is embedded,
@@ -1654,14 +1664,6 @@ GetHealth
 The bounded current assignment messages are:
 
 ```text
-SubmitAttemptRequestV6 = version | assignment_id | daemon_epoch | lineage_id |
-                         attempt_id | resource_limits | retention_intent |
-                         start_mode | finding_retention_policy_disposition
-
-SubmitAttemptRequestV5 = version | assignment_id | daemon_epoch | lineage_id |
-                         attempt_id | resource_limits | retention_intent |
-                         selected_savepoint_start_mode
-
 SubmitAttemptRequestV6 = version | assignment_id | daemon_epoch | lineage_id |
                          attempt_id | resource_limits | retention_intent |
                          start_mode | finding_retention_policy_basis
@@ -2839,8 +2841,9 @@ version-nine exact-resume driver, and one concrete packaged replay-oracle
 factory per semantic worker in a fixed worker pool with a shared aggregate
 resource owner and disjoint stable worker recovery roots. The exact-origin
 router never sends a retained root through fresh reconstruction. An
-independently admitted debugger world remains open; no unsupported mode falls
-back to the packaged authority. The
+independently admitted debugger world uses the durable debug-session owner and
+remains outside the semantic worker pool; no unsupported mode falls back to
+the packaged authority. The
 concrete modeled driver accepts an already-materialized authenticated discovery
 child or selected branch child and advances only empty-control scheduler quanta. It
 checks cancellation and the exact-checkpoint request before and after each
@@ -3118,204 +3121,78 @@ one-shot child runtime status, and authenticated private-channel query. A
 changed or foreign generation fails closed. The inventory and binding remain
 observational prerequisites and do not satisfy the separate child monitor
 reconstruction or fork authority.
-The current monitor ownership basis retains the exact admitted `MonitorQMP`, monitor `IOThread`, and
-dispatcher coroutine with that generation as one QEMU-private ownership basis.
-Staging revalidates the complete profile and exact objects immediately before
-commit and on an idempotent restage; release clears the basis. QAPI exposes only
-whether the basis is bound, never its process-private pointers. This closes an
-ownership prerequisite for future monitor reconstruction but still does not
-dispose or recreate a monitor, invoke `fork(2)`, release input, or acknowledge
-readiness bit 7 or 8.
-The same ownership basis retains the exact inherited `Chardev` and require that it remain
-the admitted monitor's connected GMainContext-capable frontend with backend
-disconnect and add-client operations. QAPI exposes only
-`monitor-disposition-bound`. This authenticates the concrete endpoint owner and
-operations that a future child transition must consume; it still does not call
-those operations or advance either readiness bit.
-The current socket ownership basis binds the exact supported connected Unix-socket backend:
-frontend, address, channel, socket, listener, read and HUP sources,
-`GMainContext`, and a positive monotonic connection generation. Staging rejects
-non-Unix and non-listening endpoints, TLS, telnet, TN3270, WebSocket, reconnect
-and connect-task state, queued descriptor transfers, replay mode, and
-non-GMainContext dispatch. Commit and restage compare that private basis under
-the chardev write lock, and disconnect or reconnect invalidates its generation.
-Only `monitor-socket-resources-bound` crosses QAPI. No source is removed and no
-socket, monitor, dispatcher, or private endpoint is reconstructed in this
-checkpoint; `fork(2)`, input release, and readiness bits 7 and 8 remain open.
+The monitor ownership basis retains the exact admitted `MonitorQMP`, monitor
+IOThread, dispatcher coroutine, Unix-socket chardev, parser, capability state,
+read and HUP sources, and positive connection generation. The supported profile
+has one OOB-enabled I/O-thread QMP monitor, no HMP monitor, no partial parser or
+queued request, and no TLS, WebSocket, reconnect, replay, or descriptor-transfer
+state. Staging and every later query revalidate the same private basis under the
+chardev lock. QAPI exposes only checked scalar identities and completion flags.
 
-The subsequent private child transition consumes that exact held socket basis,
-replaces the inherited JSON parser, and resets capability negotiation. It now
-also requires the copied dispatcher to be idle, retires it by waking it once
-with dispatcher shutdown asserted, waits for its normal coroutine exit, and
-installs one fresh dispatcher before any replacement input is released. This
-transition now also binds the exact source monitor-I/O-thread identity and
-contexts, proves that copied worker is absent from the child process, refreshes
-its initialization semaphore, and starts one replacement worker over the
-retained quiescent contexts. At that checkpoint it does not emit the one child
-greeting, release input, reconstruct the global child-thread registry, invoke
-`fork(2)`, admit guest work, or acknowledge readiness bit 7 or 8.
+The QEMU runtime transaction composes the thread, registered-mutex, RCU,
+AioContext, AIO-handler, coroutine, bottom-half, timer, block, plugin, monitor,
+descriptor, and mapping owners. It closes admission, rejects an in-flight thread
+start or nonquiescent registered mutex, and retains the complete barriers across
+one fork. Parent disposition preserves the immutable prepared template. The
+immediate child rebuilds the registries around the surviving coordinator,
+discards vanished readers and callbacks, installs every branch-private
+resource, starts fresh classified workers, and releases input only after the
+complete child resource transaction commits.
 
-A following pair of child-only operations now closes the greeting/input
-primitive while preserving the resource-transaction boundary. The first enters
-through a guarded synchronous bottom half on that exact replacement IOThread,
-revalidates the complete held protocol and socket basis, and emits exactly one
-QMP open event while replacement input remains held. The child runtime may then
-report its complete state with both greeting-sent and input-held asserted. Only
-after the complete child resource transaction commits may the owner invoke the
-second operation. It flushes the greeting, returns `-EAGAIN` without mutation
-while any greeting bytes remain buffered, and otherwise attaches exactly one
-read and HUP source. Input therefore cannot dispatch before the greeting has
-been accepted by the replacement socket. These operations remain unwired to
-the fork owner. The current child-QMP contract binds the exact concrete
-monitor callback and private monitor basis into the one-shot reinitializer at
-staging. That callback composes held socket, protocol, dispatcher, monitor
-IOThread, and greeting reconstruction, and the resource transaction no longer
-accepts a substitute runtime after descriptor mutation starts. Production fork
-invocation, post-commit input release, guest admission, and readiness bits 7
-and 8 remain open.
+Template schema 27, resource-stage schema 13, and fork schema 3 expose that
+transaction through the public `crucible-hot-fork` QMP command. Its request is
+derived from the prepared template and binds all fifteen template, resource,
+process, runtime, descriptor, monitor, child-file, and branch-private channel
+generations. QEMU revalidates that basis on the source main loop and returns a
+positive child PID together with the exact authenticated child basis. Child-QMP
+schema 8 and child-console schema 1 acknowledge readiness only after resource
+and descriptor disposition, runtime and plugin reconstruction, greeting, and
+replacement input are complete.
 
-An explicit QEMU-internal registry transaction now supplies the thread and
-registered-`QemuMutex` part of that future fork owner. It holds both registries
-across one fork, rejects in-flight QEMU thread starts and any nonquiescent
-registered mutex, preserves the exact parent registry on release, and rebuilds
-the immediate child's registry around only the surviving coordinator. It is a
-bounded internal prerequisite, not a fork command or a complete subsystem
-barrier: raw/library locks, all remaining subsystem reinitializers,
-host-continuation pairing, and guest admission remain required before readiness
-bit 8 can be acknowledged.
+The response cannot admit a child by itself. The Rust node boundary constructs
+the request only from linear private-ring, plugin-endpoint, diagnostics,
+child-QMP, child-console, process-contract, and child-file authorities bracketed
+by unchanged template reports. It returns those authorities with the
+parent-owned child-process record; there is no PID-only success state. An
+explicit pre-fork QMP rejection leaves the source reusable. Any other transport,
+response, disposition, endpoint-transfer, or retention ambiguity quarantines
+the source until retained-status reconciliation proves the child outcome.
 
-The explicit runtime transaction now composes RCU outside that registry
-transaction. It closes new reader, callback, and reader-registry admission and
-requires the exact coordinator reader plus callback/drain state to be quiescent
-before acquiring the inner registry. Parent release preserves both exact
-registries. Immediate-child reconstruction first makes the QEMU thread registry
-authoritative, then drops vanished RCU readers, rebinds the coordinator reader,
-resets the proven-empty callback state, reopens admission, and starts one fresh
-callback worker before returning. Any pre-fork acquisition failure rolls the
-outer RCU barrier back.
+The source QEMU retains the request's unique child-process generation in its
+bounded 4,096-record table. Schema 2 query and release operations report the
+exact positive PID and `running`, normal exit, or signal termination. Final
+status remains retained and immune to PID reuse until explicit release, which
+fails while the child is running. The daemon pairs that record with exact
+pidfd, cgroup, quota, and aggregate attempt-guard authority before admitting
+the child; it never synthesizes `std::process::Child` authority from the numeric
+PID.
 
-Template contract version 25, resource-stage version 13, and fork-result schema
-version 2 expose the composed transaction through the public
-`crucible-hot-fork` QMP command. Its request binds the exact fourteen template,
-resource, process, runtime, descriptor, monitor, and branch-private console
-generations. QEMU revalidates that basis on the source main loop, forks once,
-preserves the parent template, and completes the supported descriptor, runtime,
-plugin, private child-QMP, and child-console dispositions in the immediate
-child. Its schema-version-2
-parent response returns the positive child PID even when parent disposition
-fails. Child-QMP contract version 8 acknowledges readiness only after the
-resource plan, descriptor disposition, child runtime, plugin endpoints,
-greeting, and replacement input are complete. Child-console contract version 1
-retains an independently duplicated nonblocking Unix stream by standard-QMP
-descriptor name and Linux `SO_COOKIE`; it binds the exact source console,
-sealed child plan, and one-shot chardev reinitializer, and acknowledges its
-disposition only after replacement input is active. The response alone never admits
-the child: the executor MUST retain direct-child authority and authenticate the
-private child QMP and console channels against the same generations before
-treating it as live.
-An explicit pre-fork QMP rejection is safe to retry on the parent connection;
-any other transport or response failure is fork-indeterminate and poisons that
-connection. The daemon-side process guard, resource accounting,
-direct-child/quarantine lifecycle, private-channel promotion, and campaign
-observation integration remain mandatory before the executor may report
-`hot-fork`.
+The production daemon composes each authenticated QEMU child with one sealed
+process-neutral scheduler continuation. That continuation carries the private
+plugin control plane, shared-memory cursors, child QMP, cloned host I/O runtime,
+private-ring descriptor, child console, logical time, completed-step state,
+pending preemption, network and fault cursors, fault manifests, and ready
+markers. Capture rejects unsettled network output, mutable debug or checkpoint
+work, unresolved lifecycle ownership, or changing source process and time
+inventories.
 
-The Rust node boundary enforces that rule with a linear launch token. A caller
-cannot provide a raw generation tuple to the daemon launch boundary. The node
-brackets exact QMP queries for every retained child contribution with an
-unchanged prepared-template report, matches them to its linear host-side ring,
-endpoint, diagnostic, console, and process-contract authorities, and constructs
-the request only from that authenticated basis. A successful result contains
-the exact parent response, one nonduplicable
-child-process authority, the single branch-private QMP endpoint, the sole
-bounded diagnostic reader, and the branch-private console continuation; the
-node cannot return success with only a PID. The source console reader is
-duplicated into retry-safe private host state
-before the QMP fork, but its original endpoint is consumed only after a known
-successful ownership transfer. The returned host continuation owns the child
-observation spool, and attaching it to the child node cannot expose source
-console bytes. Explicit pre-fork rejection retains the
-reusable source owner, while an indeterminate exchange, a failed parent
-disposition, endpoint transfer failure, or process-retention failure
-quarantines the source. The Linux host-resource facade now delegates child-
-process retention only while it still owns both the live cgroup and aggregate
-filesystem quota. The composed attempt guard carries that delegation together
-with sticky cancellation and quantum accounting; the process-only owner is not
-an accepted reconciliation target. The daemon reconciliation launch derives
-that request internally and consumes the launch token without exposing a
-PID-only success state and retains the source, complete target guard, private QMP and
-console channels, exact attempt/execution basis, and semantic publication
-disposition through ordered cleanup. It lends modeled execution only the child QMP channel
-and a non-releasing operational boundary, so modeled code cannot finish the
-guard early. The concrete hot-fork semantic driver now reuses the fresh/exact
-bounded scheduler and candidate projection only through the narrow assembled
-lifecycle above, treats the hot start as the beginning of the attempt-local
-scheduler segment, and rejects checkpoint handoff until the lifecycle supplies
-an exact hot-child capture operation. The worker-pool post-execution contract
-now carries the exact basis and durable disposition through bounded cleanup
-before worker reuse. The production lifecycle can now capture the complete
-process-neutral half of an atomic world fork at an exact global boundary. The
-opaque continuation carries the same scheduler, event-log closure,
-fault/network, trigger, assertion, selectable, terminal, and node-generation
-state used by durable checkpoint restore. Capture rejects unsettled network
-output, mutable debug/checkpoint work, unresolved lifecycle ownership, and a
-source process/time inventory that changes across the capture. It performs no
-fork and exposes no partial child world. The daemon now also owns an
-all-or-nothing child-world assembly transaction. It withholds every admitted
-child until the complete running-node set is present and exact-checks each
-child's installed node coordinate, source process incarnation, configuration,
-event prefix, private channel admission, scheduler-node installation, and unforgeable process-local
-assembly incarnation against that continuation. An unexpected, duplicate, or
-mismatched child is returned unchanged, while
-dropping an incomplete assembly quarantines every child already admitted. The
-transaction publishes only an opaque complete-world capability; it never lends
-one node during assembly. The launch path now places every child reservation
-behind one bounded aggregate target owner. Each reconciliation receives only a
-non-releasing node share; explicit no-child rejection reopens that exact slot,
-while an ambiguous/post-fork failure or abandoned share quarantines the whole
-attempt guard. Final guard release is permitted only after every issued node
-has recorded exact cleanup. Installing the complete-world capability as the
-authoritative `ProductionVmLifecycleLoop`, transferring those shares without
-splitting aggregate ownership, using one unified event log across all node
-children, complete private-channel driving, hot-child checkpoint capture, and
-a real modeled QEMU flight remain open.
+One aggregate target owner reserves every running node before launch. Bounded
+workers fork the running nodes concurrently, while permanently failed and
+non-VM nodes are installed from the same source continuation. An all-or-nothing
+assembly authenticates every child coordinate, source incarnation,
+configuration, event prefix, private channel, scheduler installation, and
+process-local assembly incarnation before publishing the opaque complete-world
+lifecycle. Duplicate, foreign, incomplete, or abandoned assemblies expose no
+partial world and transfer every admitted child to ordered cleanup or
+quarantine. The same lifecycle owns private-channel driving, unified event-log
+progress, exact hot-child capture, descendant template adoption, and final
+resource release.
 
-The successful node transaction now retains the exact state needed for one
-linear process-neutral scheduler-node sealing transition. That transition
-moves the authenticated private plugin control plane, shared-memory cursor
-state, child QMP channel, cloned host-I/O runtime, private-ring descriptor, and
-child-only console spool into a single opaque value. The same value carries the
-exact scheduler mirror captured before process creation: logical time,
-completed-step state, pending preemption, network and fault sequence cursors,
-fault manifests, and ready markers. A fork is
-rejected before process creation when the source retains uncommitted network or
-priming observations, any operator debug endpoint, or a terminal fault-transport
-failure. The continuation deliberately has no raw-parts constructor and no
-`std::process::Child`; installing it still requires the source-QEMU status owner
-and target pidfd/cgroup authority as part of the atomic world transaction.
-
-The source QEMU now reserves the request's unique nonzero child-process
-generation in a fixed 4,096-record table before forking. The version-1
-`crucible-hot-fork-child-process(query|release, generation)` protocol binds that
-generation to the exact positive child PID and reports `running`, normal exit
-plus its `u8` code, or signal termination plus its nonzero `u8` signal. Each
-operation performs at most one nonblocking `waitpid(pid, WNOHANG)` while the
-record is running. Final status remains retained and immune to PID reuse until
-explicit release; release fails while running. No ambient child watcher is
-installed or inherited across subsequent forks.
-
-The daemon MUST pair that parent-owned record with exact child-generation
-cgroup/pidfd retention before admitting the child, use the independent process
-authority to observe or terminate it, and query the source QEMU until final
-wait status is retained. Only after branch reconciliation may it release the
-reaped record. Branch-resource transfer and this daemon composition remain
-required. A daemon MUST NOT synthesize a direct-child wait handle from the
-numeric PID.
-
-The driver owns selection application, stop-boundary execution, and candidate
-construction but never assignment or daemon-epoch identity. This adapter
-cannot report `hot-fork` until it is composed with the QEMU-owned protocol and
-the daemon-side lifecycle obligations above and their conformance gates pass.
+A paused child may be promoted through the same supported-profile preparation
+transaction. Promotion consumes inherited staging state, assigns fresh process
+and template generations, and retains the ancestor status-owner chain until all
+descendants are retired. Direct reuse of an ancestor identity and mismatched
+host-continuation pairing fail before guest admission.
 
 - **[CCOMP-20]** Capability reports MUST distinguish immutable compatibility
   facts from volatile capacity and locality hints, and consumers MUST treat

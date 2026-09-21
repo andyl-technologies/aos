@@ -44,6 +44,19 @@ mod admission;
 #[path = "tests/leases.rs"]
 mod leases;
 
+#[test]
+fn managed_demotion_preserves_the_concrete_source_failure_diagnostic() {
+    let error = ManagedQemuHotForkSourceWorldDemotionError::Demotion(
+        QemuHotForkSourceWorldDemotionError::Unavailable,
+    );
+    let source = std::error::Error::source(&error).expect("demotion diagnostic source");
+
+    assert_eq!(
+        source.to_string(),
+        "source world is unavailable for orderly demotion"
+    );
+}
+
 fn compatibility_profile() -> ExecutorCompatibilityProfile {
     ExecutorCompatibilityProfile::new(
         "crucible-test",

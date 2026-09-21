@@ -1570,7 +1570,6 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
         branch: Some(BranchWire {
             base_schedule: schedule.clone(),
             frontier: 7,
-            decisions: Vec::new(),
             seed: Some(Seed::from_u64(9).bytes()),
         }),
         recorded_controls: vec![RecordedControlWire {

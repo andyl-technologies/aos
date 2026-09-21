@@ -107,10 +107,11 @@ use crucible_campaign::{
     SubmitCampaignDiscoveryResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 
+use crate::campaign_diagnostics::route_campaign_service_diagnostic;
 use crate::{
     AttachCampaignRuntimeRequest, AttachCampaignRuntimeResponse, CampaignDebugControlService,
-    CampaignRuntimeControlService, OpenCampaignDebugSessionRequest,
-    OpenCampaignDebugSessionResponse,
+    CampaignRuntimeControlService, CampaignServiceDiagnostic, CampaignServiceDiagnosticSink,
+    OpenCampaignDebugSessionRequest, OpenCampaignDebugSessionResponse,
 };
 
 mod server;
@@ -1070,7 +1071,8 @@ where
     S: CampaignService + CampaignFindingOccurrenceService,
     S::Error: CampaignServiceFailureSource,
 {
-    let result = serve_loopback_campaign_inner_with_controls(stream, service, None, None, timeouts);
+    let result =
+        serve_loopback_campaign_inner_with_controls(stream, service, None, None, None, timeouts);
     if result.is_err() {
         let _ = stream.shutdown(Shutdown::Both);
     }
@@ -1082,6 +1084,7 @@ fn serve_loopback_campaign_inner_with_controls<S>(
     service: &S,
     runtime_control: Option<&dyn RuntimeControlDispatch>,
     debug_control: Option<&dyn DebugControlDispatch>,
+    diagnostics: Option<&dyn CampaignServiceDiagnosticSink>,
     timeouts: LoopbackCampaignTimeouts,
 ) -> Result<(), LoopbackCampaignServerError>
 where
@@ -1957,8 +1960,83 @@ where
             .into());
         }
     };
+    if response_kind == SERVICE_ERROR_RESPONSE_KIND {
+        let error = CampaignServiceErrorResponse::from_canonical_bytes(&response)?;
+        let operation = campaign_operation_for_request_kind(kind).ok_or(
+            LoopbackCampaignProtocolError::InvalidFrame {
+                reason: "unroutable-campaign-service-error",
+            },
+        )?;
+        if let Some(sink) = diagnostics {
+            route_campaign_service_diagnostic(
+                Some(sink),
+                CampaignServiceDiagnostic::RequestFailure {
+                    operation,
+                    request_digest: error.request_digest(),
+                    failure: error.failure(),
+                },
+            );
+        }
+    }
     write_frame(stream, response_kind, &response, timeouts.write)?;
     Ok(())
+}
+
+fn campaign_operation_for_request_kind(kind: u8) -> Option<CampaignServiceOperation> {
+    match kind {
+        LIST_CAMPAIGNS_REQUEST_KIND => Some(CampaignServiceOperation::ListCampaigns),
+        CREATE_CAMPAIGN_REQUEST_KIND => Some(CampaignServiceOperation::CreateCampaign),
+        DERIVE_CAMPAIGN_REQUEST_KIND => Some(CampaignServiceOperation::DeriveCampaign),
+        GET_CAMPAIGN_REQUEST_KIND => Some(CampaignServiceOperation::GetCampaign),
+        GET_CAMPAIGN_STATUS_REQUEST_KIND => Some(CampaignServiceOperation::GetCampaignStatus),
+        GET_CAMPAIGN_SNAPSHOT_REQUEST_KIND => Some(CampaignServiceOperation::GetCampaignSnapshot),
+        WATCH_CAMPAIGN_REQUEST_KIND => Some(CampaignServiceOperation::WatchCampaign),
+        QUERY_CAMPAIGN_GRAPH_REQUEST_KIND => Some(CampaignServiceOperation::QueryCampaignGraph),
+        GET_CAMPAIGN_GRAPH_OBJECT_REQUEST_KIND => {
+            Some(CampaignServiceOperation::GetCampaignGraphObject)
+        }
+        QUERY_CAMPAIGN_CHOICES_REQUEST_KIND => Some(CampaignServiceOperation::QueryCampaignChoices),
+        QUERY_CAMPAIGN_FRONTIER_REQUEST_KIND => {
+            Some(CampaignServiceOperation::QueryCampaignFrontier)
+        }
+        QUERY_CAMPAIGN_REPORT_REQUEST_KIND => Some(CampaignServiceOperation::QueryCampaignReport),
+        QUERY_CAMPAIGN_FINDINGS_REQUEST_KIND => {
+            Some(CampaignServiceOperation::QueryCampaignFindings)
+        }
+        QUERY_CAMPAIGN_FINDING_OCCURRENCES_REQUEST_KIND => {
+            Some(CampaignServiceOperation::QueryCampaignFindingOccurrences)
+        }
+        GET_CAMPAIGN_FINDING_OCCURRENCE_OBJECT_REQUEST_KIND => {
+            Some(CampaignServiceOperation::GetCampaignFindingOccurrenceObject)
+        }
+        GET_CAMPAIGN_FINDING_TRIAGE_REPLAY_SEGMENT_REQUEST_KIND => {
+            Some(CampaignServiceOperation::GetCampaignFindingTriageReplaySegment)
+        }
+        GET_CAMPAIGN_FINDING_OBJECT_REQUEST_KIND => {
+            Some(CampaignServiceOperation::GetCampaignFindingObject)
+        }
+        EXPLAIN_CAMPAIGN_ATTEMPT_REQUEST_KIND => {
+            Some(CampaignServiceOperation::ExplainCampaignAttempt)
+        }
+        GET_CAMPAIGN_PLANNER_RANKINGS_REQUEST_KIND => {
+            Some(CampaignServiceOperation::GetCampaignPlannerRankings)
+        }
+        GET_CAMPAIGN_FRONTIER_OBJECT_REQUEST_KIND => {
+            Some(CampaignServiceOperation::GetCampaignFrontierObject)
+        }
+        GET_CAMPAIGN_CHOICE_OBJECT_REQUEST_KIND => {
+            Some(CampaignServiceOperation::GetCampaignChoiceObject)
+        }
+        APPLY_COMMAND_REQUEST_KIND => Some(CampaignServiceOperation::ApplyCampaignCommand),
+        PIN_CAMPAIGN_REQUEST_KIND => Some(CampaignServiceOperation::PinCampaign),
+        SUBMIT_DISCOVERY_REQUEST_KIND => Some(CampaignServiceOperation::SubmitDiscoveryRequest),
+        SUBMIT_BRANCH_REQUEST_KIND => Some(CampaignServiceOperation::SubmitBranchRequest),
+        ATTACH_CAMPAIGN_RUNTIME_REQUEST_KIND => {
+            Some(CampaignServiceOperation::AttachCampaignRuntime)
+        }
+        OPEN_CAMPAIGN_DEBUG_SESSION_REQUEST_KIND => Some(CampaignServiceOperation::DebugCampaign),
+        _ => None,
+    }
 }
 
 fn service_error_response(

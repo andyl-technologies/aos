@@ -84,8 +84,6 @@ crucible-daemon	src/supervision	std::thread::sleep	1
 crucible-daemon	src/supervision	thread::sleep	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests/fresh_execution	retry	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests/host_parallel_native	retry	1
-crucible-daemon	src/qemu_hot_fork_reconciliation/launch/tests	std::thread::sleep	1
-crucible-daemon	src/qemu_hot_fork_reconciliation/launch/tests	thread::sleep	1
 crucible-daemon	src/qemu_resource_guard/tests	retry	1
 crucible-qemu	src/linux_attempt_host	retry	1
 crucible-qemu	src/unix_socket_path	thread::sleep	1

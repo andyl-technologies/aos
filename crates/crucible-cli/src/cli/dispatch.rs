@@ -73,6 +73,21 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     if let Commands::Campaign(args) = &cli.command {
         return run_campaign_invocation(cli, args);
     }
+    if let Commands::Triage(args) = &cli.command {
+        let campaign = CampaignArgs {
+            socket: Some(args.campaign_socket.clone()),
+            principal: Some(args.principal.clone()),
+            command: CampaignCommand::Triage(CampaignTriageArgs {
+                name: args.campaign.name.clone(),
+                snapshot: args.campaign.snapshot.clone(),
+                policy: args.campaign.policy,
+                minimize: args.campaign.minimize,
+                report: args.campaign.report.clone(),
+                recompute_signatures: args.campaign.recompute_signatures,
+            }),
+        };
+        return run_campaign_invocation(cli, &campaign);
+    }
     if let Commands::Store(args) = &cli.command {
         return run_store_invocation(cli, args);
     }
@@ -422,35 +437,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             write_completions(args.shell, &mut io::stdout());
             Ok(())
         }
-        Commands::Triage(args) => {
-            let report = run_triage_invocation(cli, args)?;
-            if !cli.quiet {
-                println!(
-                    "crucible: triage findings={} findings_count={} ledger={} ledger_cache_hit={} policy={} minimize={} clusters={} report={} format={} store={} result={} cache_hit={} compare={}",
-                    report.plan.findings.label(),
-                    report.ledger.artifact_count(),
-                    format_content_hash_ref(report.stored_ledger.key),
-                    report.stored_ledger.cache_hit,
-                    report.plan.policy_label(),
-                    report.plan.minimize_label(),
-                    report.result.clustering.cluster_count(),
-                    report.report_path.display(),
-                    report.plan.format_label(),
-                    report.plan.store_root.display(),
-                    format_content_hash_ref(report.stored_result.key),
-                    report.stored_result.cache_hit,
-                    report
-                        .compare
-                        .as_ref()
-                        .map(|diff| diff.status_label())
-                        .unwrap_or("none")
-                );
-                if let Some(diff) = &report.compare {
-                    println!("{}", diff.content_diff());
-                }
-            }
-            Ok(())
-        }
+        Commands::Triage(_) => Ok(()),
     }
 }
 

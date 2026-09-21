@@ -42,9 +42,6 @@
           mkdir -p "$CARGO_HOME" .cargo
           sed "s|@vendor@|${cargoDeps}|g" \
             "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo build --frozen --offline --release \
-            --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --example crucible-qemu-live-hot-fork-child-stress
           cargo test --frozen --offline --release --no-run \
             --message-format=json-render-diagnostics \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
@@ -54,8 +51,6 @@
             "$TMPDIR/messages.jsonl")
           test -f "$daemon_test"
           mkdir -p "$out/bin"
-          cp "$TMPDIR/target/release/examples/crucible-qemu-live-hot-fork-child-stress" \
-            "$out/bin/qemu-hot-fork-stress"
           cp "$daemon_test" "$out/bin/crucible-daemon-scaling"
         '';
       }
@@ -75,7 +70,6 @@ in
       pkgs.linux
       pkgs.e2fsprogs
       pkgs.coreutils
-      pkgs.findutils
       pkgs.util-linux
       pkgs.grep
       pkgs.gawk
@@ -126,6 +120,20 @@ in
         setup_lane "depth-$depth-source" 536870912
         setup_lane "depth-$depth-target" 335544320
       done
+      for memory_mib in 64 256 512; do
+        setup_lane "ram-$memory_mib-source" 1073741824
+        setup_lane "ram-$memory_mib-target" 1073741824
+      done
+      setup_lane production-stress-source 1073741824
+      setup_lane production-stress-target 1073741824
+      setup_lane performance-checkpoint-source 1073741824
+      for index in 0 1 2; do
+        setup_lane "performance-source-$index" 1073741824
+        setup_lane "performance-hot-$index" 1073741824
+        setup_lane "performance-exact-$index" 1073741824
+      done
+
+      mkdir -m 700 /tmp/checkpoints
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do
         export CRUCIBLE_ATOMIC_WORLD_KERNEL="$kernel"
       done
@@ -139,6 +147,7 @@ in
       export CRUCIBLE_ATOMIC_WORLD_RUN_STATE=/tmp/run-state
       export CRUCIBLE_ATOMIC_WORLD_UID=65534
       export CRUCIBLE_ATOMIC_WORLD_GID=65534
+      export CRUCIBLE_ATOMIC_WORLD_CHECKPOINTS=/tmp/checkpoints
 
       run_exact_lib_test() {
         package="$1"
@@ -191,7 +200,14 @@ in
         /tmp/depth-scaling-result
       ${pkgs.grep}/bin/grep -Fxq 'semantic_template_depth=3' /tmp/depth-scaling-result
       ${pkgs.grep}/bin/grep -Fxq \
-        'nested_os_fork=forbidden-by-qemu-child-contract' /tmp/depth-scaling-result
+        'descendant_template_generations=3' /tmp/depth-scaling-result
+      ${pkgs.gawk}/bin/awk -F= \
+        '$1 == "descendant_process_generations" {
+          count = split($2, generation, ",");
+          if (count == 3 && generation[2] == generation[1] + 1 &&
+              generation[3] == generation[2] + 1) found = 1;
+        }
+        END { exit found ? 0 : 1 }' /tmp/depth-scaling-result
       for depth in 1 2 3; do
         depth_private=$(${pkgs.gawk}/bin/awk -F= \
           -v key="template_depth_''${depth}_private_rss_kib" \
@@ -209,93 +225,52 @@ in
         [ "$depth_disk" -le "$depth_disk_limit" ]
       done
 
-      run_profile() {
-        ram_mib="$1"
-        siblings="$2"
-        label="ram-$ram_mib-siblings-$siblings"
-        # Forked guest RAM remains charged once while shared. The 3/2-RAM cap
-        # leaves 128 MiB for QEMU metadata at the smallest profile and prevents
-        # a complete second RAM image at the largest profile.
-        memory_max=$((ram_mib * 1572864 + 134217728))
-        setup_lane "$label" "$memory_max"
-        ${pkgs.coreutils}/bin/timeout -k 15 $((300 + siblings * 2)) \
-          ${flight}/bin/qemu-hot-fork-stress \
-          ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-          ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-          ${pkgs.linux}/boot/vmlinuz-* \
-          ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
-          "/sys/fs/cgroup/crucible/$label" "/tmp/attempts/run/$label" \
-          "$siblings" "$ram_mib" > "/tmp/$label.result"
-        cat "/tmp/$label.result"
-        ${pkgs.grep}/bin/grep -Fxq PASS "/tmp/$label.result"
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_guest_memory_sizes \
+        /tmp/memory-scaling-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'guest_memory_profiles_mib=64,256,512' /tmp/memory-scaling-result
 
-        private_kib=$(${pkgs.gawk}/bin/awk -F= \
-          '/^max_child_private_rss_kib=/{print $2}' "/tmp/$label.result")
-        # One quarter of guest RAM plus 32 MiB is below full-RAM scaling at
-        # every profile while covering the pinned platform's fixed overhead.
-        private_limit_kib=$((ram_mib * 256 + 32768))
-        [ "$private_kib" -le "$private_limit_kib" ]
-        source_bytes=$(${pkgs.gawk}/bin/awk -F= \
-          '/^source_allocated_bytes=/{print $2}' "/tmp/$label.result")
-        allocated_bytes=$(${pkgs.gawk}/bin/awk -F= \
-          '/^max_child_allocated_bytes=/{print $2}' "/tmp/$label.result")
-        # Half the physical source allocation plus 16 MiB rejects a complete
-        # disk-state clone while allowing branch-private metadata.
-        disk_limit=$((source_bytes / 2 + 16777216))
-        [ "$allocated_bytes" -le "$disk_limit" ]
-        ${pkgs.gawk}/bin/awk -F= '/^ready_latency_ms=/{
-          count = split($2, values, ",");
-          for (i = 1; i <= count; i++) ordered[i] = values[i];
-          asort(ordered);
-          percentile_index = int((95 * count + 99) / 100);
-          print ordered[percentile_index];
-        }' "/tmp/$label.result" > "/tmp/$label.p95"
-      }
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_whole_world_survives_ten_thousand_lifecycles_without_leaks \
+        /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'production_whole_world_lifecycles=10000' /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq 'source_threads_leaked=0' /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq 'source_descriptors_leaked=0' /tmp/production-stress-result
 
-      # Sixteen samples make the small-guest p95 a distribution rather than a
-      # renamed single observation. Larger guests use fewer siblings so this
-      # routine matrix stays bounded; the 10k profile below owns long churn.
-      run_profile 64 16
-      run_profile 256 4
-      run_profile 512 1
-      small_p95=$(cat /tmp/ram-64-siblings-16.p95)
-      [ "$small_p95" -lt 100 ]
-
-      # The expensive canonical profile executes ten thousand actual
-      # fork/QMP-ready/kill/reap/resource-release cycles from one retained QEMU.
-      setup_lane ten-thousand 536870912
-      ${pkgs.coreutils}/bin/timeout -k 30 10800 \
-        ${flight}/bin/qemu-hot-fork-stress \
-        ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-        ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-        ${pkgs.linux}/boot/vmlinuz-* \
-        ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
-        /sys/fs/cgroup/crucible/ten-thousand \
-        /tmp/attempts/run/ten-thousand 10000 128 \
-        > /tmp/ten-thousand.result
-      cat /tmp/ten-thousand.result
-      ${pkgs.grep}/bin/grep -Fxq lifecycles=10000 /tmp/ten-thousand.result
-      ${pkgs.grep}/bin/grep -Fxq source_threads_leaked=0 /tmp/ten-thousand.result
-      ${pkgs.grep}/bin/grep -Fxq source_descriptors_leaked=0 /tmp/ten-thousand.result
-      [ -z "$(${pkgs.findutils}/bin/find /sys/fs/cgroup/crucible/ten-thousand \
-        -name cgroup.procs -exec ${pkgs.coreutils}/bin/cat {} \;)" ]
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets \
+        /tmp/performance-ratchet-result
+      for evidence in \
+        exact_restore_corpus_size=3 \
+        setup_speedup_minimum=5x \
+        steady_execution_overhead_limit_percent=10 \
+        known_dirty_guest_pages=1024 \
+        memory_metrics=VmPTE,VmData,AnonHugePages,numa_maps \
+        multi_node_launch_model=max-plus-bounded-orchestration; do
+        ${pkgs.grep}/bin/grep -Fxq "$evidence" /tmp/performance-ratchet-result
+      done
 
       cat /tmp/daemon-scaling-result \
         /tmp/depth-scaling-result \
-        /tmp/ram-64-siblings-16.result \
-        /tmp/ram-256-siblings-4.result \
-        /tmp/ram-512-siblings-1.result \
-        /tmp/ten-thousand.result > /tmp/hot-fork-scaling-measurements
+        /tmp/memory-scaling-result \
+        /tmp/production-stress-result \
+        /tmp/performance-ratchet-result > /tmp/hot-fork-scaling-measurements
       printf '%s\n' \
         PASS \
         'gate=gate:hot-fork-scaling' \
         'scope=production-native-qemu' \
-        'ram_mib=64,256,512' \
-        'sibling_lifecycles=16,4,1' \
+        'performance_owner=production-whole-world' \
+        'guest_memory_profiles_mib=64,256,512' \
+        'production_whole_world_lifecycles=10000' \
         'semantic_template_depth=3' \
-        'native_process_lifecycles=10000' \
+        'standalone_stress_path=removed' \
         'pressure=cgroup-memory,pids,project-quota' \
-        'nested_os_fork=forbidden-by-qemu-child-contract' \
+        'descendant_template_generations=3' \
         'check=${attrPath}' \
         'tasks=${builtins.concatStringsSep "," taskIds}' \
         >> /tmp/hot-fork-scaling-measurements

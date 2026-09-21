@@ -8,20 +8,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use crucible::{
-    AssertionDef, AssertionId, ChoiceTag, CodePoint, Configuration, ContentHash, Decision,
+    AssertionDef, AssertionId, CodePoint, Configuration, ContentHash, Decision,
     DeliveryOrderDecision, EngineError, EventLogOffset, FindingDiscoveryPath, FrontierChild,
     FrontierReductionReport, GenesisCheckpoint, GuestAssertionDetail, GuestAssertionKind,
     GuestAssertionMarker, Icount, MarkerId, MaterializationPolicy, MaterializationTrigger,
-    MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate, ObservableEvent, OverrideDecision,
-    Plan, Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition,
-    ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace, RngDecision,
-    RngStreamId, RuntimeState, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
-    SchedulerQuiescence, SchedulerQuiescenceBlocker, SchedulerState, SchedulingPoint, SearchBudget,
-    SearchExpansion, SearchFailureOracle, SearchFrontierChoices, SearchReplayOracleSamplingConfig,
-    SearchRetainedLogAssertionEvidence, SearchRetainedLogPredicateResolutions,
-    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
-    TemporalGraph, TemporalGraphRuntime, TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime,
-    WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate, ObservableEvent, Plan, Predicate,
+    Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint,
+    RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId,
+    RuntimeState, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerQuiescence,
+    SchedulerQuiescenceBlocker, SchedulerState, SearchBudget, SearchExpansion, SearchFailureOracle,
+    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
+    SearchRetainedLogPredicateResolutions, SearchScheduleNamedPredicateKey,
+    SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph, TemporalGraphRuntime,
+    TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    bake, try_step,
 };
 
 #[test]
@@ -1660,7 +1660,7 @@ fn strategy_fixture_with_coverage_mode(
     )?;
     let scenario_def = scenario.scenario_def();
     let root = Configuration::genesis(scenario_def.clone());
-    let root_decisions = strategy_root_decisions();
+    let root_decisions = strategy_root_decisions()?;
     let baked = bake_with_search_frontier_choices(&world, root_decisions.clone())?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario_def, baked)?;
     let mut children = Vec::new();
@@ -1709,7 +1709,8 @@ fn bake_with_search_frontier_choices(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(
         crucible::MaterializedState::from_components_with_event_log_segments(
             state.vm_snapshots.clone(),
@@ -1748,27 +1749,21 @@ fn single_node_world_with_white_box(
     }])
 }
 
-fn strategy_root_decisions() -> Vec<Decision> {
-    vec![
-        rng_decision("search-strategy/packet-loss", 1),
-        rng_decision("search-strategy/decision-rng", 0xa5a5_5a5a),
-        override_decision("search-strategy/scheduler-point", "non-default-choice"),
+fn strategy_root_decisions() -> Result<Vec<Decision>, EngineError> {
+    [
+        "search-strategy-packet-loss",
+        "search-strategy-decision-rng",
+        "search-strategy-scheduler-point",
     ]
+    .into_iter()
+    .map(crucible::test_support::typed_search_decision_for_test)
+    .collect()
 }
 
 fn rng_decision(stream: impl Into<String>, value: u64) -> Decision {
     Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name(stream),
         value,
-    })
-}
-
-fn override_decision(point: impl Into<String>, choice: impl Into<String>) -> Decision {
-    Decision::Override(OverrideDecision {
-        point: SchedulingPoint { key: point.into() },
-        choice: ChoiceTag {
-            name: choice.into(),
-        },
     })
 }
 

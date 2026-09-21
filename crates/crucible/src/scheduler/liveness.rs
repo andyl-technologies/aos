@@ -5,8 +5,8 @@ use super::*;
 mod network_branch;
 mod quantum_loop;
 pub(super) use network_branch::{
-    LiveNetworkBranchChoice, is_live_network_branch_choice_name, live_network_branch_choices,
-    live_network_branch_draws,
+    LiveNetworkBranchChoice, LiveNetworkSelectable, live_network_alternative_id,
+    live_network_branch_choices, live_network_branch_draws,
 };
 impl SchedulerSendAuthorizer for SingleScheduler {
     fn authorize_cross_node_send(

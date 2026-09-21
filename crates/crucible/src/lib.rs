@@ -197,7 +197,7 @@ pub use model::{
     WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldLookaheadEdge, WorldNinePLatency,
     WorldNode, WorldNodeDef, WorldStaticTopology, WorldVmNodes, WorldWorkloadConfigTree,
     app_random_branch_decisions, bake, instantiate, lint_guidance_determinism_source,
-    materialize_search_plans, preemption_branch_decisions, reduce, run_adaptive_strategy_selection,
+    materialize_search_plans, preemption_branch_choices, reduce, run_adaptive_strategy_selection,
     try_step,
 };
 pub use node_time::NodeTimeMapping;
@@ -249,8 +249,7 @@ pub use scheduler::{
     event_log_coverage_projection, exact_local_event_from_io_completion,
     exact_local_event_from_scheduled_event, exact_local_event_from_timer_deadline_ns,
     horizon_from_exact_local_event, horizon_from_network_lookahead,
-    is_supported_live_world_network_override, live_world_network_override_matches_world,
-    live_world_network_override_point_prefixes, lookahead_for_node, network_horizon_from_lookahead,
+    is_live_world_network_selection, lookahead_for_node, network_horizon_from_lookahead,
     next_exact_local_event, next_scheduled_event_key, ordered_scheduled_events,
     ordered_timeline_keys, rendezvous_cap_for, resolve_due_scheduled_events,
     scheduled_event_delivery_time, scheduled_event_resolve_class, scheduler_rr_run_subdivision,
@@ -371,6 +370,70 @@ pub mod test_support {
         content_hash: ContentHash,
     ) -> SchedulerEventLogEntry {
         entry.with_content_hash_for_test(content_hash)
+    }
+
+    /// Builds one synthetic typed scheduler selection for graph-search tests.
+    ///
+    /// The label derives every semantic identity, so identical labels produce
+    /// identical decisions and distinct labels produce distinct opportunities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineError`] if the typed campaign choice cannot be
+    /// constructed under the current protocol.
+    pub fn typed_search_decision_for_test(
+        label: &str,
+    ) -> Result<crate::Decision, crate::EngineError> {
+        let choice_error = |error: crucible_campaign::CampaignCodecError| {
+            crate::EngineError::ScenarioSerialization {
+                reason: format!("test search choice protocol rejected `{label}`: {error}"),
+            }
+        };
+        let identity =
+            ContentHash::from_canonical_material("crucible.test.typed-search-choice.v1", label);
+        let domain = crucible_campaign::ChoiceDomain::Boolean(
+            crucible_campaign::BooleanDomain::new(1).map_err(choice_error)?,
+        );
+        let declaration = crucible_campaign::SelectableDeclaration::new(
+            "test-search-choice",
+            crucible_campaign::ChoiceSource::Scheduler {
+                producer: String::from("crucible.test.typed-search-choice.v1"),
+            },
+            domain.clone(),
+            crucible_campaign::ChoiceValue::Boolean(false),
+            crucible_campaign::ChoiceClassContext::new(std::collections::BTreeSet::new())
+                .map_err(choice_error)?,
+            std::collections::BTreeSet::new(),
+            false,
+        )
+        .map_err(choice_error)?;
+        let campaign_identity = crucible_campaign::CampaignHash::from_bytes(identity.bytes);
+        let opportunity = crucible_campaign::ChoiceOpportunity::new(
+            crucible_campaign::ScenarioDefId::from_hash(campaign_identity),
+            &declaration,
+            &domain,
+            crucible_campaign::ChoiceCoordinate {
+                scheduler: campaign_identity,
+                producer: campaign_identity,
+            },
+            format!("choice-{}", identity.to_hex()),
+            None,
+        )
+        .map_err(choice_error)?;
+        let branch_point = opportunity.branch_point_id(
+            crucible_campaign::ConfigurationId::from_hash(campaign_identity),
+        );
+        let selection = crucible_campaign::Selection::new_campaign_branch(
+            &opportunity,
+            &domain,
+            crucible_campaign::ChoiceValue::Boolean(true),
+            branch_point,
+        )
+        .map_err(choice_error)?;
+
+        Ok(crate::Decision::Selection(crate::SelectionDecision::new(
+            &selection,
+        )))
     }
 
     /// Replaces an entry's icount stamp while keeping its content hash consistent.

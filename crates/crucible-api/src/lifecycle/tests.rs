@@ -214,6 +214,166 @@ async fn owner_admitted_debug_session_rejects_canonical_mutation() {
     ));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn durable_owner_cleanup_runs_on_destroy_but_not_control_plane_shutdown() {
+    let source = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    let configuration = Configuration::genesis(source.scenario_def());
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("genesis checkpoint should build: {error}"));
+    let cleanup_calls = Arc::new(AtomicUsize::new(0));
+
+    let mut shutdown_plane = LifecycleControlPlane::new(
+        "crucible-durable-owner-shutdown-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    let shutdown_counter = Arc::clone(&cleanup_calls);
+    shutdown_plane
+        .admit_authenticated_read_only_session(
+            source.clone(),
+            configuration.clone(),
+            checkpoint.clone(),
+            source.scenario_def().seed(),
+            SessionLifetimeRetention::new(Box::new(())).with_destroy_callback(move || {
+                shutdown_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            || Ok::<_, std::convert::Infallible>(QuiescentLifecycleLoop::new()),
+        )
+        .unwrap_or_else(|error| panic!("owner admission should succeed: {error}"));
+    drop(shutdown_plane);
+    assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+
+    let mut destroy_plane = LifecycleControlPlane::new(
+        "crucible-durable-owner-destroy-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    let destroy_counter = Arc::clone(&cleanup_calls);
+    let admitted = destroy_plane
+        .admit_authenticated_read_only_session(
+            source.clone(),
+            configuration,
+            checkpoint,
+            source.scenario_def().seed(),
+            SessionLifetimeRetention::new(Box::new(())).with_destroy_callback(move || {
+                destroy_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            || Ok::<_, std::convert::Infallible>(QuiescentLifecycleLoop::new()),
+        )
+        .unwrap_or_else(|error| panic!("owner admission should succeed: {error}"));
+    destroy_plane
+        .destroy_session(DestroySessionRequest::new(admitted.session))
+        .await
+        .unwrap_or_else(|error| panic!("owner destroy should succeed: {error}"));
+    assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn owner_admitted_debug_session_becomes_writable_only_after_branch_provenance() {
+    let source = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    let scenario = source.scenario_def();
+    let configuration = Configuration::genesis(scenario.clone());
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .unwrap_or_else(|error| panic!("genesis checkpoint should build: {error}"));
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(
+            &scenario,
+            debug_genesis_checkpoint(&configuration, &source)
+                .unwrap_or_else(|error| panic!("debug genesis should bake: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("debug graph should build: {error}"));
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-writable-debug-provenance-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    );
+    let admitted = control_plane
+        .admit_authenticated_read_only_session(
+            source,
+            configuration.clone(),
+            checkpoint,
+            scenario.seed(),
+            SessionLifetimeRetention::new(Box::new(())),
+            || Ok::<_, std::convert::Infallible>(QuiescentLifecycleLoop::new()),
+        )
+        .unwrap_or_else(|error| panic!("owner admission should succeed: {error}"));
+
+    let node = NodeId {
+        name: String::from("server"),
+    };
+    let attach_request = crucible::DebugAttachRequest::new(
+        configuration.clone(),
+        node,
+        "unix:/tmp/crucible-writable-debug.sock,server=on,wait=off",
+        "127.0.0.1:9000",
+    )
+    .unwrap_or_else(|error| panic!("debug attach request should build: {error}"));
+    let attach = graph
+        .debug_attach(&attach_request)
+        .unwrap_or_else(|error| panic!("debug graph should attach: {error}"));
+    let branch_request = crucible::DebugNonCanonicalBranchRequest::new(
+        configuration,
+        VirtualTime::default(),
+        crucible::DebugNonCanonicalBranchTrigger::OperatorContinue,
+    )
+    .with_action(crucible::DebugNonCanonicalBranchAction::operator_control(
+        crucible::DebugOperatorControlKind::Continue,
+    ));
+    let report = graph
+        .debug_non_canonical_branch(&attach, &branch_request, &[])
+        .unwrap_or_else(|error| panic!("non-canonical branch should build: {error}"));
+
+    let mut foreign = report.clone();
+    foreign.branch.fork_point = ContentHash::default();
+    assert!(matches!(
+        control_plane.commit_writable_debug_branch(admitted.session, &foreign),
+        Err(LifecycleApiError::SessionCommandRejected { .. })
+    ));
+    assert_eq!(
+        control_plane
+            .writable_debug_branch(admitted.session)
+            .unwrap_or_else(|error| panic!("read-only provenance should be readable: {error}")),
+        None
+    );
+
+    control_plane
+        .commit_writable_debug_branch(admitted.session, &report)
+        .unwrap_or_else(|error| panic!("provenance transition should succeed: {error}"));
+
+    assert_eq!(
+        control_plane
+            .writable_debug_branch(admitted.session)
+            .unwrap_or_else(|error| panic!("branch provenance should be readable: {error}")),
+        Some(report.branch.id)
+    );
+    assert!(
+        control_plane
+            .debug_reposition_dispatch(admitted.session)
+            .is_ok(),
+        "writable derivative should expose ordinary mutable debug dispatch"
+    );
+}
+
 fn observation_resume_request() -> ResumeSessionRequest {
     let scenario = crucible::happy_path_scenario()
         .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))

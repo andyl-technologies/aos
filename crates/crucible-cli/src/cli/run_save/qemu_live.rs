@@ -536,7 +536,7 @@ fn execute_qemu_fuzz_iterations(
                 iteration.sequence,
             )));
         }
-        let recorded_overrides = report
+        let recorded_selections = report
             .terminal_configuration
             .as_ref()
             .ok_or_else(|| {
@@ -550,28 +550,26 @@ fn execute_qemu_fuzz_iterations(
             .decisions()
             .iter()
             .filter_map(|decision| match decision {
-                // crucible-lint: allow host-nondeterminism-state -- this projection selects only scheduler-authored override values.
-                crucible::Decision::Override(override_decision) => Some(override_decision),
+                crucible::Decision::Selection(selection) => Some(selection),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let expected_overrides = iteration
+        let expected_selections = iteration
             .schedule()
             // crucible-lint: allow host-nondeterminism-state -- the authored iteration schedule is immutable canonical input.
             .decisions()
             .iter()
             .filter_map(|decision| match decision {
-                // crucible-lint: allow host-nondeterminism-state -- this projection selects only authored override values.
-                crucible::Decision::Override(override_decision) => Some(override_decision),
+                crucible::Decision::Selection(selection) => Some(selection),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        if recorded_overrides != expected_overrides {
+        if recorded_selections != expected_selections {
             return Err(backend_error(format!(
-                "QEMU fuzz {phase} iteration {} recorded {} exact overrides, expected {}",
+                "QEMU fuzz {phase} iteration {} recorded {} exact selections, expected {}",
                 iteration.sequence,
-                recorded_overrides.len(),
-                expected_overrides.len(),
+                recorded_selections.len(),
+                expected_selections.len(),
             )));
         }
         let finding = qemu_fuzz_finding_evidence(
@@ -579,7 +577,6 @@ fn execute_qemu_fuzz_iterations(
             &report,
             phase,
             iteration.sequence,
-            iteration.schedule().len(),
             context.backend_plan,
             campaign_completion,
         )?;
@@ -609,7 +606,6 @@ fn qemu_fuzz_finding_evidence(
     report: &RunWorkflowReport,
     phase: &str,
     sequence: u64,
-    branch_decisions: usize,
     backend_plan: &BackendSelectionPlan,
     campaign_completion: bool,
 ) -> Result<Option<(crate::cli_report::TriageFindingEvidence, Vec<u8>)>, CliError> {
@@ -683,12 +679,7 @@ fn qemu_fuzz_finding_evidence(
         "fuzz",
         &qemu_fuzz_iteration_plan(sequence, form.clone()),
         report,
-        LiveQemuReplayBranch::PrefixOverrides {
-            base_decisions: 0,
-            frontier_ticks: 0,
-            decision_start: 0,
-            decision_end: branch_decisions as u64,
-        },
+        LiveQemuReplayBranch::None,
     )?;
     Ok(Some((evidence, reproduction)))
 }

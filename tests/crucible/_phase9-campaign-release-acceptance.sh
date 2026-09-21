@@ -497,6 +497,71 @@ require_gate_result() {
     digest_file "$gate_path/result"
 }
 
+verify_required_gates() {
+    required_gates=$1
+    expected_gates=$2
+    result_sha256=$(require_gate_result \
+        "$required_gates" gate:campaign-required-gates)
+    manifest="$required_gates/manifest.tsv"
+    declared_gates="$required_gates/required-claim-gates.txt"
+    require_file "$manifest"
+    require_file "$declared_gates"
+    require_file "$expected_gates"
+
+    test "$(field required_claim_count "$required_gates/result")" -eq 23 \
+        || fail "required-gates aggregate does not authenticate 23 claims"
+    test "$(field all_required_claims_authenticated "$required_gates/result")" = true \
+        || fail "required-gates aggregate did not authenticate every claim"
+    test "$(field manifest_sha256 "$required_gates/result")" \
+        = "$(digest_file "$manifest")" \
+        || fail "required-gates aggregate manifest digest does not match"
+    test "$(field required_claim_gates_sha256 "$required_gates/result")" \
+        = "$(digest_file "$declared_gates")" \
+        || fail "required-gates aggregate claim inventory digest does not match"
+    test "$(digest_file "$declared_gates")" = "$(digest_file "$expected_gates")" \
+        || fail "required-gates aggregate differs from the release contract"
+
+    tab=$(printf '\t')
+    test "$(sed -n '1p' "$manifest")" = "gate${tab}result_sha256" \
+        || fail "$manifest has an unsupported schema"
+    observed_gates="$TMPDIR/campaign-release-required-gates"
+    : > "$observed_gates"
+    cut -f1 "$manifest" | sed -n '2,$p' > "$observed_gates"
+    test "$(digest_file "$observed_gates")" = "$(digest_file "$expected_gates")" \
+        || fail "$manifest does not contain the exact required gate inventory"
+    test -d "$required_gates/results" \
+        && test ! -L "$required_gates/results" \
+        || fail "required-gates aggregate has no regular results directory"
+    test -z "$(find "$required_gates/results" -mindepth 1 -type l -print -quit)" \
+        || fail "required-gates aggregate results contain a symlink"
+    test -z "$(find "$required_gates/results" -mindepth 1 ! -type f -print -quit)" \
+        || fail "required-gates aggregate results contain a nonregular entry"
+    test "$(find "$required_gates/results" -mindepth 1 -type f | wc -l | tr -d ' ')" -eq 23 \
+        || fail "required-gates aggregate does not retain exactly 23 results"
+
+    : > "$observed_gates"
+    sed -n '2,$p' "$manifest" |
+        while IFS="$tab" read -r gate result_digest extra; do
+            test -n "$gate" || fail "$manifest contains an empty gate"
+            test -z "$extra" || fail "$manifest contains an unexpected field"
+            printf '%s\n' "$gate" | grep -Eq '^gate:[a-z0-9][a-z0-9._-]*$' \
+                || fail "$manifest contains an invalid gate: $gate"
+            require_digest "$result_digest"
+            grep -Fqx "$gate" "$observed_gates" \
+                && fail "$manifest lists one gate more than once: $gate"
+            printf '%s\n' "$gate" >> "$observed_gates"
+            result_name=$(printf '%s\n' "$gate" | sed 's/:/-/')
+            require_file "$required_gates/results/$result_name.result"
+            test "$(digest_file "$required_gates/results/$result_name.result")" \
+                = "$result_digest" \
+                || fail "$manifest result digest does not match: $gate"
+        done
+    test "$(wc -l < "$observed_gates" | tr -d ' ')" -eq 23 \
+        || fail "$manifest does not contain exactly 23 required gates"
+
+    printf '%s\n' "$result_sha256"
+}
+
 verify_release_manifest() {
     crucible_package=$1
     release_manifest=$2
@@ -568,12 +633,20 @@ if test "$#" -eq 3 && test "$1" = --probe-command-journal; then
     verify_command_journal "$2" "$3"
     exit 0
 fi
+if test "$#" -eq 3 && test "$1" = --probe-manifest-requirements; then
+    verify_manifest_requirements "$2" "$3"
+    exit 0
+fi
+if test "$#" -eq 3 && test "$1" = --probe-required-gates; then
+    verify_required_gates "$2" "$3" > /dev/null
+    exit 0
+fi
 if test "$#" -eq 3 && test "$1" = --probe-evidence-tree; then
     verify_complete_evidence_tree "$2" "$3"
     exit 0
 fi
 
-test "$#" -eq 17 || fail "expected seventeen release-acceptance inputs"
+test "$#" -eq 18 || fail "expected eighteen release-acceptance inputs"
 
 operator_evidence=$1
 operator_spec=$2
@@ -587,11 +660,12 @@ gate_matrix=$9
 operational_continuity=${10}
 finding_portability=${11}
 hot_fork_scaling=${12}
-crucible_package=${13}
-release_manifest=${14}
-release_acceptance_contract=${15}
-trusted_allowed_signers=${16}
-output=${17}
+required_gates=${13}
+crucible_package=${14}
+release_manifest=${15}
+release_acceptance_contract=${16}
+trusted_allowed_signers=${17}
+output=${18}
 
 verify_release_manifest "$crucible_package" "$release_manifest"
 require_file "$release_acceptance_contract/result"
@@ -660,6 +734,8 @@ continuity_sha256=$(require_gate_result \
     "$operational_continuity" gate:campaign-operational-continuity)
 portability_sha256=$(require_gate_result "$finding_portability" gate:campaign-replay)
 scaling_sha256=$(require_gate_result "$hot_fork_scaling" gate:hot-fork-scaling)
+required_gates_sha256=$(verify_required_gates \
+    "$required_gates" "$release_acceptance_contract/required-claim-gates.txt")
 
 mkdir -p "$output/evidence" "$output/executable" "$output/release-manifest"
 cp -R "$operator_evidence" "$output/evidence/operator"
@@ -678,6 +754,13 @@ cp "$operational_continuity/result" \
     "$output/executable/campaign-operational-continuity.result"
 cp "$finding_portability/result" "$output/executable/campaign-replay.result"
 cp "$hot_fork_scaling/result" "$output/executable/hot-fork-scaling.result"
+cp "$required_gates/result" "$output/executable/campaign-required-gates.result"
+cp "$required_gates/manifest.tsv" \
+    "$output/executable/campaign-required-gates-manifest.tsv"
+cp "$required_gates/required-claim-gates.txt" \
+    "$output/executable/campaign-required-claim-gates.txt"
+cp -R "$required_gates/results" \
+    "$output/executable/campaign-required-gate-results"
 
 cat > "$output/release-acceptance.env" <<RESULT
 schema=aos.crucible.campaign-release-acceptance.v1
@@ -698,6 +781,9 @@ campaign_gate_matrix_result_sha256=$matrix_sha256
 campaign_operational_continuity_result_sha256=$continuity_sha256
 campaign_finding_portability_result_sha256=$portability_sha256
 hot_fork_scaling_result_sha256=$scaling_sha256
+campaign_required_gates_result_sha256=$required_gates_sha256
+campaign_required_gates_manifest_sha256=$(digest_file "$required_gates/manifest.tsv")
+campaign_required_gates_inventory_sha256=$(digest_file "$required_gates/required-claim-gates.txt")
 operator_evidence_result_sha256=$operator_sha256
 operator_evidence_manifest_sha256=$operator_manifest_sha256
 destructive_recovery_evidence_result_sha256=$destructive_sha256

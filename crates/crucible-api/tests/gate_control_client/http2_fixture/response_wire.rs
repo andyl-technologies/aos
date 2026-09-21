@@ -155,6 +155,7 @@ pub(crate) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::ResourceLimit(..)
+        | LifecycleApiError::SessionRetention { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }

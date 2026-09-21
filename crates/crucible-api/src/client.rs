@@ -2558,7 +2558,7 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
 }
 
 mod debug;
-pub use debug::{DebugControllerAccess, DebugControllerAcquisition};
+pub use debug::{DebugControllerAccess, DebugControllerAcquisition, WritableDebugBranch};
 mod query_result;
 
 use query_result::*;

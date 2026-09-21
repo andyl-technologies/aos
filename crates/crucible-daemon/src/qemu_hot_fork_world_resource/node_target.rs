@@ -1,6 +1,10 @@
 //! Linear resource ownership for one exact hot-fork child generation.
 
 use super::*;
+use crucible_qemu::{
+    LinuxQemuHotForkChildProcessAuthority, QemuHotForkChildProcessBasis,
+    QemuHotForkChildProcessOwner, QemuNodeChannelError,
+};
 
 /// Linear target-resource share for one exact child generation.
 ///
@@ -18,6 +22,7 @@ where
     pub(super) resources: AttemptResourceLimits,
     pub(super) cancellation: ExecutionCancellation,
     pub(super) released: bool,
+    pub(super) process_contract: Option<QemuChildProcessContract>,
 }
 
 impl<G> fmt::Debug for QemuHotForkWorldNodeTarget<G>
@@ -135,6 +140,88 @@ where
             quarantine_world_state(&self.state);
             self.released = true;
         }
+    }
+}
+
+impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldNodeTarget<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        if self.released {
+            return Err(world_resource_error(
+                "hot-fork node launch target is already released",
+            ));
+        }
+        self.process_contract.as_ref().ok_or_else(|| {
+            world_resource_error("hot-fork node target has no concurrent process contract")
+        })
+    }
+
+    fn prepare_generation_run_directory(
+        &mut self,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+            return Err(world_resource_error(
+                "hot-fork node launch target is not operational",
+            ));
+        }
+        state.guard.prepare_generation_run_directory(requirements)
+    }
+
+    fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.guard.retain_failed_launch_child(child);
+                state.guard.quarantine();
+                state.terminal = true;
+                state.terminal_failure = Some(String::from(
+                    "concurrent hot-fork node retained an unreaped launch child",
+                ));
+            }
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                state.guard.retain_failed_launch_child(child);
+                state.guard.quarantine();
+                state.terminal = true;
+                state.terminal_failure = Some(String::from(
+                    "concurrent hot-fork node resource registry was poisoned",
+                ));
+            }
+        }
+        self.released = true;
+    }
+}
+
+impl<G> QemuHotForkChildProcessOwner for QemuHotForkWorldNodeTarget<G>
+where
+    G: QemuAttemptProcessResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
+{
+    type Authority = LinuxQemuHotForkChildProcessAuthority;
+
+    fn retain_hot_fork_child(
+        &mut self,
+        basis: QemuHotForkChildProcessBasis,
+    ) -> Result<Self::Authority, QemuNodeChannelError> {
+        let mut state = self.state.lock().map_err(|_| {
+            QemuNodeChannelError::new(
+                "retain concurrent hot-fork child",
+                "hot-fork world resource registry is poisoned",
+            )
+        })?;
+        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+            return Err(QemuNodeChannelError::new(
+                "retain concurrent hot-fork child",
+                "hot-fork node launch target is not operational",
+            ));
+        }
+        state.guard.retain_hot_fork_child(basis)
     }
 }
 

@@ -50,7 +50,7 @@ zeroize = { workspace = true }
 [dev-dependencies]
 crucible-api = { path = "../crucible-api", features = ["test-support"] }
 crucible-cas = { path = "../crucible-cas" }
-crucible-core = { package = "crucible", path = "../crucible" }
+crucible-core = { package = "crucible", path = "../crucible", features = ["test-support"] }
 crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
 crucible-device = { path = "../crucible-device" }
 crucible-harness = { path = "../crucible-harness" }

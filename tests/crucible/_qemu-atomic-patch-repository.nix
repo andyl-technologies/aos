@@ -123,9 +123,15 @@ in
           test "$bundle_hash" = "${atomicPatch.bundleSha256}" \
             || fail "bundle hash $bundle_hash does not match ${atomicPatch.bundleSha256}"
           git bundle verify ${atomicPatch.bundle} > "$out/atomic-patch-bundle.verify" 2>&1
-          grep -Fxq 'The bundle records a complete history.' \
+          grep -Fxq 'The bundle requires this ref:' \
             "$out/atomic-patch-bundle.verify" \
-            || fail "bundle does not carry complete QEMU history"
+            || fail "bundle does not declare its pinned QEMU base"
+          grep -Fxq '${atomicPatch.baseCommit} ' \
+            "$out/atomic-patch-bundle.verify" \
+            || fail "bundle prerequisite is not the pinned QEMU base"
+          test "$(grep -Ec '^[0-9a-f]{40} $' \
+            "$out/atomic-patch-bundle.verify")" -eq 1 \
+            || fail "bundle must have exactly one prerequisite"
           git fetch -q ${atomicPatch.bundle} \
             "refs/heads/${atomicPatch.branchRef}:refs/heads/bundled-atomic-patch"
           test "$(git rev-parse refs/heads/bundled-atomic-patch)" = "$patch_commit" \

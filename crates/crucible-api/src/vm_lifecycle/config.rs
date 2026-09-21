@@ -327,22 +327,12 @@ impl ProductionVmLifecycleConfig {
         self.debug.is_some()
     }
 
-    /// Returns this configuration with explorer overrides admitted at `frontier`.
-    ///
-    /// The lifecycle waits until deterministic replay reaches both the exact
-    /// base configuration and saved frontier, then records the supplied
-    /// overrides before any further backend advance.
+    /// Returns this configuration with an exact branch boundary at `frontier`.
     #[must_use]
-    pub fn with_branch_prefix_overrides(
-        mut self,
-        base: Configuration,
-        frontier: VirtualTime,
-        decisions: Vec<Decision>,
-    ) -> Self {
+    pub fn with_branch_boundary(mut self, base: Configuration, frontier: VirtualTime) -> Self {
         self.branch = Some(ProductionVmBranchConfig {
             base,
             frontier,
-            decisions,
             seed: None,
         });
         self
@@ -364,7 +354,6 @@ impl ProductionVmLifecycleConfig {
         self.branch = Some(ProductionVmBranchConfig {
             base,
             frontier,
-            decisions: Vec::new(),
             seed: Some(seed),
         });
         self
@@ -385,24 +374,17 @@ impl ProductionVmLifecycleConfig {
         self.continuation_branches.push(ProductionVmBranchConfig {
             base,
             frontier,
-            decisions: Vec::new(),
             seed: Some(seed),
         });
         self
     }
 
-    /// Appends an override boundary to an ordered cold-replay branch plan.
+    /// Appends an exact boundary to an ordered cold-replay branch plan.
     #[must_use]
-    pub fn append_branch_prefix_overrides(
-        mut self,
-        base: Configuration,
-        frontier: VirtualTime,
-        decisions: Vec<Decision>,
-    ) -> Self {
+    pub fn append_branch_boundary(mut self, base: Configuration, frontier: VirtualTime) -> Self {
         self.continuation_branches.push(ProductionVmBranchConfig {
             base,
             frontier,
-            decisions,
             seed: None,
         });
         self
@@ -426,7 +408,10 @@ impl ProductionVmLifecycleConfig {
 
     /// Returns this configuration with exact live World-network branch choices.
     #[must_use]
-    pub fn with_branch_network_choices(mut self, choices: Vec<crucible::OverrideDecision>) -> Self {
+    pub fn with_branch_network_choices(
+        mut self,
+        choices: Vec<crucible::SelectionDecision>,
+    ) -> Self {
         self.branch_network_choices = choices;
         self
     }
@@ -435,7 +420,7 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub fn append_branch_network_choices(
         mut self,
-        choices: impl IntoIterator<Item = crucible::OverrideDecision>,
+        choices: impl IntoIterator<Item = crucible::SelectionDecision>,
     ) -> Self {
         self.branch_network_choices.extend(choices);
         self

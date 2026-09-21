@@ -31,19 +31,25 @@ const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-replay-contract.v4+text";
 
 #[test]
-fn public_campaign_debug_help_exposes_only_read_only_exact_session_inputs()
+fn public_campaign_debug_help_exposes_exact_source_and_explicit_writable_opt_in()
 -> Result<(), Box<dyn Error>> {
     let output = command().args(["campaign", "debug", "--help"]).output()?;
     require_success(&output, "campaign debug help")?;
     let stdout = String::from_utf8(output.stdout)?;
 
-    for required in ["--snapshot", "--finding", "--node", "--gdb-listen"] {
+    for required in [
+        "--snapshot",
+        "--finding",
+        "--node",
+        "--gdb-listen",
+        "--writable",
+    ] {
         assert!(
             stdout.contains(required),
             "missing campaign debug input {required}"
         );
     }
-    for forbidden in ["--allow-mutate", "--write", "--fork"] {
+    for forbidden in ["--allow-mutate", "--fork"] {
         assert!(
             !stdout.contains(forbidden),
             "campaign debug exposed mutable input {forbidden}"

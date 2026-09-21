@@ -37,6 +37,32 @@ pub(super) enum ParsedCandidateSemantics {
     Parameter(MappedEffectParameter, CampaignHash),
 }
 
+pub(super) fn semantics_from_runtime(
+    semantics: &BindingSearchCandidateSemantics,
+) -> SignalFaultChoiceSemantics {
+    match semantics {
+        BindingSearchCandidateSemantics::Outcome => SignalFaultChoiceSemantics::Outcome,
+        BindingSearchCandidateSemantics::Transition(candidates) => {
+            SignalFaultChoiceSemantics::Transition(
+                candidates
+                    .iter()
+                    .map(|candidate| CampaignHash::from_bytes(candidate.bytes))
+                    .collect(),
+            )
+        }
+        BindingSearchCandidateSemantics::Parameter {
+            parameter,
+            candidates,
+        } => SignalFaultChoiceSemantics::Parameter {
+            parameter: *parameter,
+            candidates: candidates
+                .iter()
+                .map(|candidate| CampaignHash::from_bytes(candidate.bytes))
+                .collect(),
+        },
+    }
+}
+
 impl SignalFaultChoiceSemantics {
     pub(super) fn declaration_name(&self) -> &'static str {
         match self {

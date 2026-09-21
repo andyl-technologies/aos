@@ -884,9 +884,5 @@ pub(in crate::model) fn search_frontier_choices(
 }
 
 pub(in crate::model) fn is_genuine_search_frontier_decision(decision: &Decision) -> bool {
-    match decision {
-        Decision::DeliveryOrder(_) => false,
-        Decision::RngDraw(_) | Decision::Override(_) => true,
-        Decision::Preemption(_) | Decision::Selection(_) => false,
-    }
+    matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
 }

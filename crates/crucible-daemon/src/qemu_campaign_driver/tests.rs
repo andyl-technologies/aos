@@ -3015,16 +3015,9 @@ fn signal_fault_choice_discovery(parent: &Configuration, ticks: u64) -> ChoiceDi
         selected_index: None,
         overridden: false,
     };
-    let frontier = crucible::SearchRuntimeFrontier {
-        configuration: parent.clone(),
-        at: VirtualTime { ticks },
-        choices: crucible::SearchFrontierChoices::from_decisions(
-            choice
-                .override_decisions(parent.id())
-                .into_iter()
-                .map(crucible::Decision::Override),
-        ),
-    };
+    let frontier =
+        crucible::SignalFaultSelectable::runtime_frontier(parent, VirtualTime { ticks }, &choice)
+            .expect("typed signal-fault frontier");
     crucible::SignalFaultSelectable::from_frontier(&frontier)
         .and_then(|selectable| selectable.discovery())
         .expect("signal-fault discovery")

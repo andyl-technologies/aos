@@ -78,8 +78,8 @@ use thiserror::Error;
 use crate::HotCheckpointFallbackRetentionAdmin;
 use crate::{AssignmentRetentionGeneration, AssignmentRetentionSummary, ExactPinRetentionAdmin};
 
-const GC_PLAN_MAGIC: &[u8] = b"crucible.campaign.gc-plan.v2\0";
-const GC_PLAN_ID_DOMAIN: &str = "crucible.campaign.gc-plan.v2";
+const GC_PLAN_MAGIC: &[u8] = b"crucible.campaign.gc-plan.v1\0";
+const GC_PLAN_ID_DOMAIN: &str = "crucible.campaign.gc-plan.v1";
 
 /// Maximum canonical byte length of one GC plan header.
 pub const MAX_CAMPAIGN_GC_PLAN_BYTES: usize = 64 * 1024;

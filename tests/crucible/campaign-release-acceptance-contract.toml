@@ -9,6 +9,32 @@ required_gates = [
   "gate:campaign-operational-continuity",
   "gate:campaign-replay",
   "gate:hot-fork-scaling",
+  "gate:campaign-required-gates",
+]
+required_claim_gates = [
+  "gate:campaign-model",
+  "gate:campaign-component-contract",
+  "gate:branch-point-model",
+  "gate:typed-choice",
+  "gate:typed-choice-product-checkpoint",
+  "gate:campaign-replay",
+  "gate:lazy-frontier",
+  "gate:attempt-idempotence",
+  "gate:hot-fork-equivalence",
+  "gate:hot-fork-isolation",
+  "gate:hot-fork-scaling",
+  "gate:world-fork-atomicity",
+  "gate:exact-closure-streaming",
+  "gate:campaign-store-equivalence",
+  "gate:campaign-store-composition",
+  "gate:campaign-cold-continuity",
+  "gate:campaign-statistics",
+  "gate:campaign-operational-continuity",
+  "gate:license-boundary",
+  "gate:abi-conformance",
+  "gate:control-responsiveness",
+  "gate:campaign-mutation-scaling",
+  "gate:campaign-rfc-traceability",
 ]
 
 [manual_evidence]

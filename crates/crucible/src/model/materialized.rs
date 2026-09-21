@@ -342,25 +342,6 @@ impl SearchFrontierChoices {
         }
     }
 
-    /// Builds a frontier-choice set from scheduler-derived candidate decisions.
-    ///
-    /// The retained decisions are limited to the closed search taxonomy:
-    /// decision-RNG draws and search overrides. Delivery order is excluded here
-    /// because RESOLVE already imposes a total order over scheduled events.
-    #[must_use]
-    pub fn from_decisions<I>(decisions: I) -> Self
-    where
-        I: IntoIterator<Item = Decision>,
-    {
-        Self::from_choices(decisions.into_iter().filter_map(|decision| {
-            if is_genuine_search_frontier_decision(&decision) {
-                Some(SearchFrontierChoice::single(decision))
-            } else {
-                None
-            }
-        }))
-    }
-
     /// Builds a frontier-choice set from candidate decision sequences.
     #[must_use]
     pub fn from_decision_sequences<I, J>(choices: I) -> Self
@@ -414,13 +395,6 @@ pub struct SearchFrontierChoice {
 }
 
 impl SearchFrontierChoice {
-    fn single(decision: Decision) -> Self {
-        Self {
-            decision: decision.clone(),
-            decisions: vec![decision],
-        }
-    }
-
     fn from_decisions<I>(decisions: I) -> Option<Self>
     where
         I: IntoIterator<Item = Decision>,
@@ -428,17 +402,15 @@ impl SearchFrontierChoice {
         let decisions = decisions.into_iter().collect::<Vec<_>>();
         let decision = match decisions.as_slice() {
             [decision] if is_genuine_search_frontier_decision(decision) => decision.clone(),
-            [
-                decision @ Decision::Override(override_decision),
-                causal @ ..,
-            ] if override_decision
-                .point
-                .key
-                .starts_with("live-world-network/")
-                && causal
-                    .iter()
-                    .all(|decision| matches!(decision, Decision::RngDraw(_)))
-                && !causal.is_empty() =>
+            [decision @ Decision::Selection(selection), causal @ ..]
+                if selection.is_campaign_branch()
+                    && causal.iter().all(|decision| {
+                        matches!(
+                            decision,
+                            Decision::RngDraw(_) | Decision::Override(_) | Decision::Preemption(_)
+                        )
+                    })
+                    && !causal.is_empty() =>
             {
                 decision.clone()
             }

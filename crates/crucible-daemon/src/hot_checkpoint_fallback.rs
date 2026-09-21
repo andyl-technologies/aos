@@ -421,10 +421,10 @@ where
 pub enum AuthenticatedHotCheckpointDemotionError<A, S> {
     /// The exact fallback identity was unavailable or inconsistent.
     #[error("hot-checkpoint fallback authentication failed")]
-    Fallback(A),
+    Fallback(#[source] A),
     /// The source could not be reaped or its resources released.
     #[error("hot-checkpoint source demotion failed")]
-    Source(S),
+    Source(#[source] S),
 }
 
 #[cfg(test)]

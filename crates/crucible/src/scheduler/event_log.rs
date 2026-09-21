@@ -536,7 +536,15 @@ pub trait QuantumLoop {
     fn append_backend_network_outputs(
         &mut self,
         _outputs: Vec<BackendNetworkOutput>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("quantum loop cannot route live-backend network outputs"),
         })

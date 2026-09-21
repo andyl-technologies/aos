@@ -35,7 +35,7 @@ use crucible::{
     PreemptionKind, Properties, ReadyPoint, RngDecision, RngStreamId, ScenarioDef, ScenarioDefForm,
     SearchBudget, SearchFailureOracle, SearchStrategy, Seed, SelectionDecision, TemporalGraph,
     VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions, bake,
-    lint_guidance_determinism_source, preemption_branch_decisions, reduce,
+    lint_guidance_determinism_source, preemption_branch_choices, reduce,
     run_adaptive_strategy_selection, try_step,
 };
 
@@ -106,7 +106,9 @@ fn gate_guidance_signals_are_fixed_point_readers_only_in_integrated_search()
     let world = single_node_world("integrated-guidance")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
-    let decisions = (0..3).map(guidance_decision).collect::<Vec<_>>();
+    let decisions = (0..3)
+        .map(guidance_decision)
+        .collect::<Result<Vec<_>, _>>()?;
     let baked = bake_with_search_frontier_choices(&world, decisions.clone())?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let mut state = GuidanceSearchState::default();
@@ -341,32 +343,45 @@ fn gate_preemption_branching_records_oracle_validated_children() -> Result<(), B
         target_vcpu: VcpuId { index: 0 },
         irq: IrqVector { vector: 32 },
     };
-    let decisions = preemption_branch_decisions(&config);
+    let (discovery, choices) = preemption_branch_choices(&root, &config)?;
+    let decisions = choices
+        .iter()
+        .map(|choice| choice.decision().clone())
+        .collect::<Vec<_>>();
     let run = graph.branch_preemptions(&root, &config, FrontierReductionPolicy::none())?;
 
     assert_eq!(decisions.len(), 6);
     assert_eq!(run.decisions, decisions);
+    assert_eq!(run.discovery, discovery);
     assert_eq!(run.report.explored.len(), 6);
     assert_eq!(run.materialized.len(), run.report.explored.len());
     assert!(run.report.covered.is_empty());
     for child in &run.report.explored {
-        assert!(matches!(child.decision, Decision::Preemption(_)));
+        assert!(
+            matches!(child.decision, Decision::Selection(ref selection) if selection.is_campaign_branch())
+        );
         assert_eq!(child.configuration.id(), child.configuration.content_hash());
         assert!(reduce(&child.configuration.def, &child.configuration.schedule).is_ok());
     }
-    assert!(run.decisions.iter().any(|decision| matches!(
-        decision,
-        Decision::Preemption(crucible::PreemptionDecision {
-            kind: PreemptionKind::VcpuSwitch { .. },
-            ..
-        })
+    assert!(choices.iter().any(|choice| matches!(
+        choice.decisions(),
+        [
+            Decision::Selection(_),
+            Decision::Preemption(crucible::PreemptionDecision {
+                kind: PreemptionKind::VcpuSwitch { .. },
+                ..
+            })
+        ]
     )));
-    assert!(run.decisions.iter().any(|decision| matches!(
-        decision,
-        Decision::Preemption(crucible::PreemptionDecision {
-            kind: PreemptionKind::InterruptAt { .. },
-            ..
-        })
+    assert!(choices.iter().any(|choice| matches!(
+        choice.decisions(),
+        [
+            Decision::Selection(_),
+            Decision::Preemption(crucible::PreemptionDecision {
+                kind: PreemptionKind::InterruptAt { .. },
+                ..
+            })
+        ]
     )));
     assert_eq!(
         run.materialized
@@ -384,7 +399,7 @@ fn gate_preemption_branching_records_oracle_validated_children() -> Result<(), B
 }
 
 #[test]
-fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
+fn gate_preemption_branching_keeps_parent_bound_typed_selections_distinct()
 -> Result<(), Box<dyn Error>> {
     let world = two_single_vcpu_node_world("preemption-por")?;
     let scenario = world.scenario_def();
@@ -392,14 +407,20 @@ fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
     let config_a = single_vcpu_preemption_config("guest-a");
     let config_b = single_vcpu_preemption_config("guest-b");
-    let decision_a = preemption_branch_decisions(&config_a)
+    let decision_a = preemption_branch_choices(&root, &config_a)?
+        .1
         .into_iter()
         .next()
-        .ok_or("guest-a should produce a preemption branch")?;
-    let decision_b = preemption_branch_decisions(&config_b)
+        .ok_or("guest-a should produce a preemption branch")?
+        .decisions()[1]
+        .clone();
+    let decision_b = preemption_branch_choices(&root, &config_b)?
+        .1
         .into_iter()
         .next()
-        .ok_or("guest-b should produce a preemption branch")?;
+        .ok_or("guest-b should produce a preemption branch")?
+        .decisions()[1]
+        .clone();
     let (frontier_decision, branch_decision, branch_config) =
         if decision_a.reduction_order_key() > decision_b.reduction_order_key() {
             (decision_a, decision_b, config_b)
@@ -415,21 +436,22 @@ fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
     let run = graph.branch_preemptions(&frontier, &branch_config, policy)?;
 
     assert_eq!(run.decisions.len(), 2);
-    assert_eq!(run.report.covered.len(), 1);
-    assert_eq!(run.report.covered[0].decision, branch_decision);
-    assert_eq!(
-        run.report.covered[0].reason,
-        crucible::FrontierReductionReason::PartialOrder
-    );
-    assert_eq!(run.report.explored.len(), 1);
+    assert!(run.report.covered.is_empty());
+    assert_eq!(run.report.explored.len(), 2);
     assert_eq!(run.materialized.len(), 2);
     let materialized = run
         .materialized
         .iter()
         .map(|checkpoint| checkpoint.id)
         .collect::<BTreeSet<_>>();
-    assert!(materialized.contains(&run.report.covered[0].representative));
-    assert!(materialized.contains(&run.report.explored[0].configuration.id()));
+    assert_eq!(
+        materialized,
+        run.report
+            .explored
+            .iter()
+            .map(|child| child.configuration.id())
+            .collect::<BTreeSet<_>>()
+    );
     assert!(
         run.materialized
             .iter()

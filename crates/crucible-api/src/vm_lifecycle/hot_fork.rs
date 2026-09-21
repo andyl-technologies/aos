@@ -137,6 +137,59 @@ impl ProductionVmHotForkSourceWorld {
             })
     }
 
+    /// Runs one operation for every prepared source on concurrent host workers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the lifecycle owner is unavailable, an
+    /// operation does not name the exact prepared roster, source validation
+    /// fails, or a worker panics.
+    pub fn map_prepared_sources_concurrent<D, T, O>(
+        &mut self,
+        operations: Vec<(NodeId, D)>,
+        operation: O,
+    ) -> Result<Vec<(NodeId, T)>, SchedulerError>
+    where
+        D: Send,
+        T: Send,
+        O: for<'a> Fn(QemuNodeSetPreparedHotForkSource<'a>, D) -> T + Send + Sync,
+    {
+        let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
+            hot_fork_boundary_error("production hot-fork source world lost its lifecycle owner")
+        })?;
+        lifecycle
+            .inner
+            .backend_mut()
+            .map_prepared_hot_fork_sources_concurrent(&self.prepared, operations, operation)
+            .map_err(|error| {
+                hot_fork_boundary_error(format!(
+                    "launch prepared hot-fork sources concurrently: {error}"
+                ))
+            })
+    }
+
+    /// Returns the launch resource profile bound to one prepared source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when `node` is absent from the prepared
+    /// source-world roster.
+    pub fn prepared_launch_resources(
+        &self,
+        node: &NodeId,
+    ) -> Result<QemuLaunchResourceRequirements, SchedulerError> {
+        self.prepared
+            .iter()
+            .find(|prepared| prepared.node() == node)
+            .map(QemuNodeSetPreparedHotForkTemplate::launch_resources)
+            .ok_or_else(|| {
+                hot_fork_boundary_error(format!(
+                    "production hot-fork source world has no prepared node `{}`",
+                    node.name
+                ))
+            })
+    }
+
     /// Borrows one source during ordered child reconciliation.
     ///
     /// The loan authenticates the same source process and active transaction
@@ -988,6 +1041,85 @@ impl ProductionVmLifecycleLoop {
                 ));
             }
         };
+        self.prepare_hot_fork_source_world_from_continuation(continuation)
+    }
+
+    /// Re-adopts a reconstructed child world and prepares it as a descendant template.
+    ///
+    /// The method captures the immutable host continuation before mutating any
+    /// QEMU lifecycle identity. Every live child must then authenticate and
+    /// consume its inherited reconstruction plan. Only after all nodes retain
+    /// the same process and boundary identities does ordinary template
+    /// preparation re-run the complete barrier and resource validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionVmHotForkSourceWorldPreparationFailure`] with the
+    /// lifecycle when continuation capture, child re-adoption, boundary
+    /// revalidation, template preparation, or rollback fails.
+    pub fn promote_hot_fork_child_source_world(
+        mut self,
+    ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure>
+    {
+        let continuation = match self.capture_hot_fork_world_continuation() {
+            Ok(continuation) => continuation,
+            Err(error) => {
+                return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                    self,
+                    error.to_string(),
+                    Vec::new(),
+                ));
+            }
+        };
+        let retained_nodes = continuation
+            .nodes()
+            .iter()
+            .filter(|boundary| {
+                boundary.service_state() != ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            })
+            .map(|boundary| boundary.node().clone())
+            .collect::<Vec<_>>();
+        if let Err(error) = validate_retained_source_ownership(&self, &retained_nodes) {
+            return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                self,
+                error.to_string(),
+                Vec::new(),
+            ));
+        }
+        for node in &retained_nodes {
+            if let Err(error) = self
+                .inner
+                .backend_mut()
+                .adopt_hot_fork_child_as_template_source(node)
+            {
+                return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                    self,
+                    format!("re-adopt reconstructed child `{}`: {error}", node.name),
+                    retained_nodes.clone(),
+                ));
+            }
+        }
+        let after = self.hot_fork_node_boundaries();
+        if after.as_ref() != Ok(&continuation.nodes) {
+            let message = after.map_or_else(
+                |error| format!("revalidate re-adopted child world: {error}"),
+                |_boundaries| String::from("child world changed during re-adoption"),
+            );
+            return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                self,
+                message,
+                retained_nodes,
+            ));
+        }
+
+        self.prepare_hot_fork_source_world_from_continuation(continuation)
+    }
+
+    fn prepare_hot_fork_source_world_from_continuation(
+        mut self,
+        continuation: ProductionVmHotForkWorldContinuation,
+    ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure>
+    {
         let retained_nodes = continuation
             .nodes()
             .iter()

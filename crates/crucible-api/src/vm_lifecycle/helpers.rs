@@ -825,7 +825,6 @@ mod tests {
         let branch = ProductionVmBranchConfig {
             base: typed_branch,
             frontier: scheduler.frontier(),
-            decisions: Vec::new(),
             seed: Some(Seed::from_u64(0x00b1_2ac4)),
         };
         let relaunched =
@@ -906,7 +905,6 @@ mod tests {
         let remaining = ProductionVmBranchConfig {
             base: scheduler.configuration().clone(),
             frontier: scheduler.frontier(),
-            decisions: Vec::new(),
             seed: Some(Seed::from_u64(47)),
         };
         let Ok(()) = scheduler.set_branch_frontier_cap(remaining.frontier) else {

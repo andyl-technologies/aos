@@ -32,6 +32,7 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
                 runtime: None,
                 debug: None,
                 status: None,
+                diagnostics: None,
                 timeouts: LoopbackCampaignTimeouts::default(),
                 maximum_requests: 2,
             },
@@ -105,6 +106,7 @@ fn authenticated_runtime_control_binds_peer_policy_and_exact_response() {
                 runtime: Some(&control),
                 debug: None,
                 status: None,
+                diagnostics: None,
                 timeouts: LoopbackCampaignTimeouts::default(),
                 maximum_requests: 2,
             },
@@ -158,6 +160,7 @@ fn authenticated_connection_rejects_an_invalid_request_ceiling_before_policy() {
             runtime: None,
             debug: None,
             status: None,
+            diagnostics: None,
             timeouts: LoopbackCampaignTimeouts::default(),
             maximum_requests: 0,
         },
@@ -484,6 +487,9 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
     let snapshot = publication.new_snapshot;
     let finding = publication.finding;
 
+    let findings_request =
+        QueryCampaignFindingsRequest::new(principal(), campaign.clone(), snapshot, None, 1)
+            .expect("retained finding membership request");
     let occurrence_request = QueryCampaignFindingOccurrencesRequest::new(
         principal(),
         campaign.clone(),
@@ -555,13 +561,19 @@ fn campaign_loopback_round_trips_retained_finding_occurrence_dependencies() {
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
         let service = RepositoryCampaignService::new(&repository, AllowAll);
-        for _ in 0..7 {
+        for _ in 0..8 {
             serve_loopback_campaign_once(&mut server_stream, &service)
                 .expect("serve retained finding occurrence request");
         }
     });
     let client =
         CampaignClient::new(LoopbackCampaignService::new(client_stream).expect("loopback service"));
+
+    let findings = client
+        .query_campaign_findings(&findings_request)
+        .expect("query retained finding membership over loopback");
+    assert_eq!(findings.entries().len(), 1);
+    assert_eq!(findings.entries()[0].id(), Ok(finding));
 
     let page = client
         .query_campaign_finding_occurrences(&occurrence_request)

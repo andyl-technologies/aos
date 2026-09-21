@@ -125,8 +125,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     let branch_start = match &recipe.branch {
         LiveQemuReplayBranch::None => 0,
         LiveQemuReplayBranch::Resume { base_decisions, .. }
-        | LiveQemuReplayBranch::Reseed { base_decisions, .. }
-        | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
+        | LiveQemuReplayBranch::Reseed { base_decisions, .. } => *base_decisions,
     };
     network_choice_indices.retain(|index| *index >= branch_start);
     let controls = report
@@ -593,11 +592,11 @@ pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> Vec<u64> {
     let decisions = schedule.decisions();
     let mut network = Vec::new();
     for (index, decision) in decisions.iter().enumerate() {
-        if matches!(
-            decision,
-            crucible::Decision::Override(override_decision)
-                if override_decision.point.key.starts_with("live-world-network/")
-        ) {
+        if matches!(decision, crucible::Decision::Selection(selection)
+        if selection.selection().is_ok_and(|value| {
+            selection.is_campaign_branch()
+                && crucible::is_live_world_network_selection(&value)
+        })) {
             network.push(index as u64);
         }
     }

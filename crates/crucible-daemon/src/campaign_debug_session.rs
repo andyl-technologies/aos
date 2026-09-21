@@ -12,14 +12,15 @@ use crucible::{Checkpoint, Configuration, ScenarioDef, ScenarioDefForm};
 use crucible_api::{
     InProcessLifecycleClient, LifecycleApiError, ProductionVmLifecycleConfig,
     ProductionVmLifecycleLoop, ResumeSessionResponse, SessionLifetimeRetention, SessionRef,
+    SessionRetentionUpdateError,
 };
 use crucible_campaign::{
     AttemptResourceLimits, AttemptRetentionPolicyDisposition, CampaignFindingObject, CampaignHash,
     CampaignName, CampaignRepository, CampaignServiceFailure, CampaignSnapshotId,
-    ExactCheckpointId, ExecutionRetentionIntent, FindingId, GetCampaignFindingObjectRequest,
-    GetCampaignFindingObjectResponse,
+    ExactCheckpointId, ExecutionRetentionIntent, FindingId, GetCampaignFindingObjectResponse,
 };
 
+use crate::campaign_debug_inventory::CampaignDebugSessionInventory;
 use crate::crucible_artifact::{
     campaign_configuration_id, campaign_scenario_id,
     decode_crucible_configuration_artifact_from_repository,
@@ -282,23 +283,38 @@ pub struct CanonicalCampaignDebugController {
     repository: Arc<CampaignRepository>,
     qemu: Arc<CampaignDebugQemuCapability>,
     lifecycle: Arc<dyn CampaignDebugLifecycleAdmission>,
+    inventory: Arc<CampaignDebugSessionInventory>,
     reservations: Arc<DebugSessionReservations>,
 }
 
 impl CanonicalCampaignDebugController {
-    /// Creates a controller over one repository, exact store, and lifecycle plane.
-    #[must_use]
-    pub fn new(
+    /// Creates a controller and recovers every durable debug session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a campaign service failure when a retained proof, checkpoint,
+    /// artifact, or lifecycle admission cannot be recovered exactly.
+    pub(crate) fn new(
         repository: Arc<CampaignRepository>,
         qemu: Arc<CampaignDebugQemuCapability>,
         lifecycle: Arc<dyn CampaignDebugLifecycleAdmission>,
-    ) -> Self {
-        Self {
+        inventory: Arc<CampaignDebugSessionInventory>,
+    ) -> Result<Self, CampaignServiceFailure> {
+        let controller = Self {
             repository,
             qemu,
             lifecycle,
+            inventory,
             reservations: Arc::new(DebugSessionReservations::new()),
+        };
+        for record in controller
+            .inventory
+            .records()
+            .map_err(map_inventory_failure)?
+        {
+            controller.open(record.request(), record.finding().clone())?;
         }
+        Ok(controller)
     }
 
     fn open(
@@ -416,16 +432,26 @@ impl CanonicalCampaignDebugController {
         } = self.select_checkpoint(&source, &reproduction_configuration, &finding)?;
         let response_encoding = OpenCampaignDebugSessionResponse::prepare_encoding(checkpoint)
             .map_err(|_| CampaignServiceFailure::InvalidRequest)?;
+        self.inventory
+            .retain(request, &finding)
+            .map_err(map_inventory_failure)?;
         let build_resume = Arc::clone(&self.qemu.build_resume);
         let build_source = source.clone();
         let build_configuration = configuration.clone();
         let scenario = source.scenario_def();
         let build_scenario = scenario.clone();
+        let destroy_inventory = Arc::clone(&self.inventory);
+        let destroy_request = request.clone();
         let retention = SessionLifetimeRetention::new(Box::new(DebugSessionRetention {
             _finding_proof: finding,
             _checkpoint: loaded,
             _reservation: Arc::clone(&reservation),
-        }));
+        }))
+        .with_destroy_callback(move || {
+            destroy_inventory
+                .remove(&destroy_request)
+                .map_err(|error| SessionRetentionUpdateError::new(error.to_string()))
+        });
         let lifecycle = PreparedCampaignDebugLifecycle {
             source,
             configuration: configuration.clone(),
@@ -565,17 +591,31 @@ fn authenticate_finding_response(
     request: &OpenCampaignDebugSessionRequest,
     finding: &GetCampaignFindingObjectResponse,
 ) -> Result<(), CampaignServiceFailure> {
-    let proof_request = GetCampaignFindingObjectRequest::new(
-        request.principal().clone(),
-        request.campaign().clone(),
-        request.snapshot(),
-        request.finding(),
-        crucible_campaign::CampaignFindingObjectKind::Reproduction,
-    )
-    .map_err(|_| CampaignServiceFailure::InvalidRequest)?;
+    let proof_request = request
+        .finding_object_request()
+        .map_err(|_| CampaignServiceFailure::InvalidRequest)?;
     finding
         .validate_for(&proof_request)
         .map_err(|_| CampaignServiceFailure::ProtocolViolation)
+}
+
+fn map_inventory_failure(
+    error: crate::CampaignDebugSessionInventoryError,
+) -> CampaignServiceFailure {
+    match error {
+        crate::CampaignDebugSessionInventoryError::Capacity => {
+            CampaignServiceFailure::ResourceExhausted
+        }
+        crate::CampaignDebugSessionInventoryError::Io(_)
+        | crate::CampaignDebugSessionInventoryError::Poisoned => {
+            CampaignServiceFailure::Unavailable
+        }
+        crate::CampaignDebugSessionInventoryError::Invalid
+        | crate::CampaignDebugSessionInventoryError::InvalidRecord
+        | crate::CampaignDebugSessionInventoryError::Conflict => {
+            CampaignServiceFailure::IntegrityFailure
+        }
+    }
 }
 
 fn map_lifecycle_failure(error: LifecycleApiError) -> CampaignServiceFailure {
