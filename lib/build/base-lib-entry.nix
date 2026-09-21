@@ -84,6 +84,18 @@ let
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-evaluation-inputs.json));
   storeViewLib = import ./lib/build/store-view.nix {inherit lib;};
+
+  baseLibraryModule = {
+    aos.config.frozenArtifacts = frozenArtifacts;
+    # Keep the full stage-2 projection self-referential. A path value asks the
+    # evaluator to import this already-realized directory as a new store
+    # object, yielding a nonexistent doubled-name path in the manifest.
+    # Discarding the path context records the exact immutable store path
+    # supplied via --base-lib instead.
+    aos.config.evalAtBoot.baseLib =
+      builtins.unsafeDiscardStringContext (builtins.toString ./.);
+    aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
+  };
 in rec {
   inherit lib imageManifest;
   inherit (storeViewLib) readPathFor;
@@ -105,6 +117,24 @@ in rec {
       pkgs = frozenPkgs;
       inherit lib operatorModules runtimeModules;
       enforceRuntimeDeclarations = false;
+    };
+
+  ## Replays the image constructor's package/stage selection pass.
+  ##
+  ## Stage contributions are ordinary module values and may close over current
+  ## operator, runtime, fact, and package configuration. Derive them again from
+  ## those authoritative inputs instead of serializing a second representation
+  ## into the base library.
+  evalConfigurationSelection = {
+    operatorModules ? [],
+    runtimeModules ? [],
+    packageModules ? [],
+    factsModules ? [],
+  }:
+    lib.evalModules {
+      modules = baseModules ++ systemModules ++ factsModules ++ [baseLibraryModule];
+      pkgs = frozenPkgs;
+      inherit lib operatorModules runtimeModules packageModules;
     };
 
   ## Evaluates one complete authenticated configuration fixed point.
@@ -133,19 +163,7 @@ in rec {
         baseModules
         ++ systemModules
         ++ factsModules
-        ++ [
-          {
-            aos.config.frozenArtifacts = frozenArtifacts;
-            # Keep the full stage-2 projection self-referential. A path value
-            # asks the evaluator to import this already-realized directory as
-            # a new store object, yielding a nonexistent doubled-name path in
-            # the manifest. Discarding the path context records the exact
-            # immutable store path supplied via --base-lib instead.
-            aos.config.evalAtBoot.baseLib =
-              builtins.unsafeDiscardStringContext (builtins.toString ./.);
-            aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
-          }
-        ]
+        ++ [baseLibraryModule]
         ++ configurationModules
         ++ lib.optional (environment != null) {
           aos.abilities.environment = environment;
@@ -183,6 +201,11 @@ in rec {
       (record: !(builtins.hasAttr record.name dynamicNames))
       hostPackageModules;
     initialPackageModules = imageModules ++ packageModules;
+    selectionEvaluation = evalConfigurationSelection {
+      inherit operatorModules runtimeModules factsModules;
+      packageModules = initialPackageModules;
+    };
+    configurationModules = selectionEvaluation.config.aos.abilities.stages.host.modules;
     resolution = import ./lib/build/resolve-ability-configuration.nix {
       inherit lib initialPackageModules;
       evaluate = {
@@ -193,6 +216,7 @@ in rec {
         evalCompleteConfig {
           environment = frozenHostEvaluationInputs.environment;
           inherit operatorModules runtimeModules packageModules factsModules;
+          inherit configurationModules;
           selectedProviderModules = providerModules;
           abilityInstances = selectionModule.module.aos.abilities.instances;
           abilityBindings = selectionModule.module.aos.abilities.bindings;
@@ -228,8 +252,14 @@ in rec {
     configurationModules ? [],
   }: let
     frozen = initrdEvaluationInputs storeView;
+    selectionEvaluation = evalConfigurationSelection {
+      inherit operatorModules runtimeModules factsModules;
+      packageModules = hostPackageModules;
+    };
+    stageConfigurationModules = selectionEvaluation.config.aos.abilities.stages.initrd.modules;
     evaluated = evalCompleteConfig {
-      inherit operatorModules runtimeModules factsModules configurationModules;
+      inherit operatorModules runtimeModules factsModules;
+      configurationModules = stageConfigurationModules ++ configurationModules;
       inherit (frozen) environment abilityInstances abilityBindings abilityRequests abilityRequirements packageModules selectedProviderModules;
     };
   in
