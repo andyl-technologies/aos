@@ -154,6 +154,8 @@ in rec {
     abilityBindings ? {},
     abilityRequests ? {},
     abilityRequirements ? {},
+    abilitySelectionBindings ? abilityBindings,
+    enableAbilitySelection ? true,
     factsModules ? [],
     configurationModules ? [],
   }:
@@ -175,9 +177,10 @@ in rec {
         };
       pkgs = frozenPkgs;
       inherit lib operatorModules packageModules selectedProviderModules;
-      enableAbilitySelection = true;
+      inherit enableAbilitySelection;
       inherit runtimeModules;
       specialArgs.abilityResolution = {
+        bindings = abilitySelectionBindings;
         requests = abilityRequests;
         requirements = abilityRequirements;
       };
@@ -211,6 +214,8 @@ in rec {
         packageModules,
         providerModules,
         selectionModule,
+        enableAbilitySelection,
+        selectionBindings,
       }:
         evalCompleteConfig {
           environment = frozenHostEvaluationInputs.environment;
@@ -219,8 +224,10 @@ in rec {
           selectedProviderModules = providerModules;
           abilityInstances = selectionModule.module.aos.abilities.instances;
           abilityBindings = selectionModule.module.aos.abilities.bindings;
+          abilitySelectionBindings = selectionBindings;
           abilityRequests = selectionModule.requests;
           abilityRequirements = selectionModule.requirements;
+          inherit enableAbilitySelection;
         };
     };
   in

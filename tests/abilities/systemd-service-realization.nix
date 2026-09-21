@@ -371,6 +371,7 @@
     inherit lib;
     serviceFacets = [];
     unitNameForReference = _: null;
+    resolvePlanningOutput = value: value;
   };
   resourceWithDependencies = prerequisites:
     resource

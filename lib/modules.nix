@@ -809,40 +809,42 @@
             foreignPackageRoots);
 
       abilitySelectionFor = package: packageConfig: let
+        selectedBindings =
+          (specialArgs.abilityResolution or {}).bindings
+          or packageConfig.aos.abilities.bindings;
         declarationFor = collection: kind: localKey: let
-          matches =
-            attrsets.filterAttrs
-            (_: declaration:
-              declaration.package
-              == package
-              && declaration.localKey == localKey)
-            packageConfig.aos.abilities.${collection};
-          declarations = builtins.attrNames matches;
+          declaration = "${package}:${localKey}";
+          value =
+            packageConfig.aos.abilities.${
+              collection
+            }.${
+              declaration
+            }
+            or (throw
+              "evalModules: package '${package}' local ${kind} '${localKey}' has no authenticated declaration '${declaration}'");
         in
-          if builtins.length declarations != 1
+          if value.package != package || value.localKey != localKey
           then
             throw
-            "evalModules: package '${package}' local ${kind} '${localKey}' does not identify exactly one authenticated declaration"
-          else let
-            declaration = builtins.head declarations;
-          in {
-            inherit declaration localKey package;
-            value = matches.${declaration};
+            "evalModules: package '${package}' local ${kind} '${localKey}' has mismatched declaration provenance"
+          else {
+            inherit declaration localKey package value;
           };
         interfaceFor = declarationFor "interfaces" "interface";
         requestFor = declarationFor "requests" "request";
         implementationFor = declarationFor "implementations" "implementation";
         bindingsForImplementation = localKey: let
-          implementation = implementationFor localKey;
+          implementationDeclaration = "${package}:${localKey}";
           bindingNames =
             builtins.filter
             (name:
-              packageConfig.aos.abilities.bindings.${name}.implementation
-              == implementation.declaration)
-            (builtins.attrNames packageConfig.aos.abilities.bindings);
+              selectedBindings.${name}.implementation
+              == implementationDeclaration)
+            (builtins.attrNames selectedBindings);
         in
           builtins.map (navigationKey: let
-            binding = packageConfig.aos.abilities.bindings.${navigationKey};
+            implementation = implementationFor localKey;
+            binding = selectedBindings.${navigationKey};
             providerDeclaration = binding.providerInstance;
             requestDeclaration = binding.request;
             requestValue =

@@ -245,8 +245,11 @@ in
       evaluated = mkSystem {
         systemName = "bind-package-check";
         modules = [
+          ../../systems/_artifact-backend.nix
+          ../../systems/_base-packages.nix
+          ../../systems/_system-manager.nix
           {
-            environment.systemPackages = [self];
+            aos.kernel.packageRoot = pkgs.linux;
             aos.services.bind = {
               enable = true;
               port = 5353;
@@ -256,6 +259,32 @@ in
           }
         ];
       };
+      conflictingListenerClaims = builtins.tryEval (builtins.deepSeq (
+          (mkSystem {
+            systemName = "conflicting-listener-claims";
+            modules = [
+              ../../systems/_artifact-backend.nix
+              ../../systems/_base-packages.nix
+              ../../systems/_system-manager.nix
+              {
+                aos.kernel.packageRoot = pkgs.linux;
+                aos.services.bind = {
+                  enable = true;
+                  port = 5353;
+                };
+                aos.services.dnsmasq = {
+                  enable = true;
+                  port = 5353;
+                };
+              }
+            ];
+          })
+          .config
+          .aos
+          .abilities
+          .compositionOutputs
+        )
+        true);
       requests = evaluated.config.aos.abilities.requests;
       configuration = requests."bind:server-configuration".parameters.source;
       dependencies = requests."bind:named-dependencies".parameters;
@@ -270,7 +299,9 @@ in
         && self.abilities ? requirementTemplates
         && self.abilities ? guarantees
         && !(self.abilities ? contract)
+        && builtins.hasAttr "listener-claim" self.abilities.requirementTemplates
         && builtins.hasAttr "network-ingress-policy" self.abilities.requirementTemplates
+        && !conflictingListenerClaims.success
         && builtins.all (assertion: assertion.assertion) evaluated.config.assertions
         && configuration.kind == "interpolated-text"
         && !(lib.hasInfix "/var/lib/" (builtins.toJSON configuration))
@@ -289,7 +320,11 @@ in
         && builtins.map
         (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
         dependencies.prerequisites
-        == [(expectedRequestOutput "dns-ingress" "resource")]
+        == [
+          (expectedRequestOutput "dns-ingress" "resource")
+          (expectedRequestOutput "listener-tcp-5353" "resource")
+          (expectedRequestOutput "listener-udp-5353" "resource")
+        ]
         && dependencies.after == []
         && dependencies.requires == [];
     in {

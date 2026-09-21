@@ -130,6 +130,7 @@
       specialArgs =
         {
           abilityResolution = {
+            bindings = abilityBindings;
             requests = abilityRequests;
             requirements = abilityRequirements;
           };

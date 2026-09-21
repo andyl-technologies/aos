@@ -8,6 +8,7 @@
   inherit (lib.abilities) resultOf;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceListener = lib.abilities.interfaces.serviceListener;
   serviceTypes = serviceManagement.types;
 
   port = abilityTypes.integer {
@@ -127,6 +128,22 @@
       transport = "udp";
       port = 67;
     };
+  listenerRequestKey = endpoint: "listener-${serviceListener.slotFor endpoint}";
+  listenerRequests = builtins.listToAttrs (builtins.map (endpoint: {
+      name = listenerRequestKey endpoint;
+      value = {
+        requirement = "listener-claim";
+        consumer = "service";
+        scope = ["listener" (serviceListener.slotFor endpoint)];
+        parameters = endpoint;
+      };
+    })
+    ingressEndpoints);
+  listenerPrerequisites =
+    builtins.map (
+      endpoint: resultOf (listenerRequestKey endpoint) "resource"
+    )
+    ingressEndpoints;
 
   runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
     name = "runtime";
@@ -234,7 +251,7 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        prerequisites = [(resultOf "network-ingress" "resource")];
+        prerequisites = [(resultOf "network-ingress" "resource")] ++ listenerPrerequisites;
         after = [];
         before = [];
         requires = [];
@@ -340,11 +357,31 @@ in {
           message = "aos.services.dnsmasq.listenAddresses must contain at least one address";
         }
       ];
-      aos.abilities = lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions);
+      aos.abilities = lib.mkMerge (
+        [
+          {
+            requirementTemplates.listener-claim = {
+              interface = serviceListener.interface.identity.name;
+              inherit (serviceListener.interface.identity) abi descriptor;
+              description = "Requires exclusive ownership of each host listener used by dnsmasq.";
+              methods = ["observe"];
+              guarantees = [];
+              strength = "required";
+              fallback = null;
+            };
+          }
+        ]
+        ++ builtins.map (contribution: contribution.declarations) contributions
+      );
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
-        [{instances.service = {};}]
+        [
+          {
+            instances.service = {};
+            requests = listenerRequests;
+          }
+        ]
         ++ builtins.map (contribution: contribution.configured) contributions
       );
       aos.contributions.runtimeChecks.dnsmasq = {
