@@ -51,9 +51,10 @@ use crucible_protocol::selectable_catalog_plan::{
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuChildProcessContract, QemuHotForkChildProcessBasis,
     QemuHotForkChildProcessOwner, QemuLaunchResourceRequirements, QemuNodeChannelError,
-    QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory, QemuTestHotForkIsolationFault,
-    QemuTestHotForkOutcome, QemuVmRealizationError, linux_process_identity,
-    scripted_hot_fork_source_for_test, scripted_hot_fork_source_with_state_for_test,
+    QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory, QemuProcessIdentity,
+    QemuTestHotForkIsolationFault, QemuTestHotForkOutcome, QemuVmRealizationError,
+    linux_process_identity, scripted_hot_fork_source_for_test,
+    scripted_hot_fork_source_with_state_for_test,
 };
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
@@ -120,6 +121,7 @@ struct ScriptedWorldGuard {
     quarantines: Arc<AtomicUsize>,
     prepared_run_directories: Arc<Mutex<Vec<PathBuf>>>,
     retained_child_processes: Arc<Mutex<Vec<u32>>>,
+    retained_child_identities: Arc<Mutex<Vec<QemuProcessIdentity>>>,
     retained_child_requests: Arc<Mutex<Vec<crucible_qemu::QmpHotForkRequest>>>,
     _liveness: Arc<()>,
     terminal: bool,
@@ -256,6 +258,15 @@ impl QemuHotForkChildProcessOwner for ScriptedWorldGuard {
                 )
             })?
             .push(basis.child_process_id());
+        self.retained_child_identities
+            .lock()
+            .map_err(|_error| {
+                QemuNodeChannelError::new(
+                    "record scripted child identity",
+                    "scripted child identity registry is poisoned",
+                )
+            })?
+            .push(identity.clone());
         self.retained_child_requests
             .lock()
             .map_err(|_error| {
@@ -285,6 +296,7 @@ struct ScriptedWorldObservations {
     quarantines: Arc<AtomicUsize>,
     prepared_run_directories: Arc<Mutex<Vec<PathBuf>>>,
     retained_child_processes: Arc<Mutex<Vec<u32>>>,
+    retained_child_identities: Arc<Mutex<Vec<QemuProcessIdentity>>>,
     retained_child_requests: Arc<Mutex<Vec<crucible_qemu::QmpHotForkRequest>>>,
     guard_liveness: Arc<Mutex<Option<Weak<()>>>>,
 }
@@ -298,6 +310,7 @@ impl ScriptedWorldObservations {
             quarantines: Arc::new(AtomicUsize::new(0)),
             prepared_run_directories: Arc::new(Mutex::new(Vec::new())),
             retained_child_processes: Arc::new(Mutex::new(Vec::new())),
+            retained_child_identities: Arc::new(Mutex::new(Vec::new())),
             retained_child_requests: Arc::new(Mutex::new(Vec::new())),
             guard_liveness: Arc::new(Mutex::new(None)),
         }
@@ -359,6 +372,7 @@ impl QemuAttemptResourceGuardFactory for ScriptedWorldGuardFactory {
             quarantines: Arc::clone(&self.observations.quarantines),
             prepared_run_directories: Arc::clone(&self.observations.prepared_run_directories),
             retained_child_processes: Arc::clone(&self.observations.retained_child_processes),
+            retained_child_identities: Arc::clone(&self.observations.retained_child_identities),
             retained_child_requests: Arc::clone(&self.observations.retained_child_requests),
             _liveness: liveness,
             terminal: false,

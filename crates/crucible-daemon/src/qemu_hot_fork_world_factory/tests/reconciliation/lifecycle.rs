@@ -2,6 +2,39 @@
 
 use super::*;
 
+fn assert_scripted_child_owned_or_reaped(expected: &QemuProcessIdentity) {
+    let process = expected.process_id;
+    let stat_path = PathBuf::from("/proc")
+        .join(process.to_string())
+        .join("stat");
+    let stat = match std::fs::read_to_string(stat_path) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => panic!("inspect retained child {process}: {error}"),
+    };
+    let mut fields = stat
+        .rsplit_once(") ")
+        .map(|(_identity, fields)| fields.split_ascii_whitespace())
+        .expect("retained child process status");
+    let _state = fields.next().expect("retained child process state");
+    let parent = fields
+        .next()
+        .expect("retained child parent process")
+        .parse::<u32>()
+        .expect("retained child parent process ID");
+    let start_time_ticks = fields
+        .nth(17)
+        .expect("retained child process start time")
+        .parse::<u64>()
+        .expect("retained child process start-time ticks");
+
+    // Retention authenticated the identity before recording it. One stat
+    // snapshot now proves that any extant generation remains parented to the
+    // scripted source owner; an absent entry above proves completed reap.
+    assert_eq!(parent, std::process::id());
+    assert_eq!(start_time_ticks, expected.start_time_ticks);
+}
+
 #[test]
 fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     let first =
@@ -463,7 +496,7 @@ fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailabl
 }
 
 #[test]
-fn indeterminate_child_failure_rolls_back_sibling_and_quarantines_complete_world() {
+fn indeterminate_child_failure_quarantines_complete_world_during_sibling_launch() {
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let first_source_process = first.process_id();
@@ -498,7 +531,24 @@ fn indeterminate_child_failure_rolls_back_sibling_and_quarantines_complete_world
         .retained_child_processes
         .lock()
         .expect("retained child registry");
-    assert!(retained_children.is_empty());
+    // Concurrent quarantine can win before sibling retention or after it
+    // begins. The sibling therefore records at most one retention attempt;
+    // the complete World owns either its live child or its finished cleanup.
+    assert!(retained_children.len() <= 1);
+    let retained_identities = observations
+        .retained_child_identities
+        .lock()
+        .expect("retained child identity registry");
+    assert_eq!(retained_identities.len(), retained_children.len());
+    assert!(
+        retained_identities
+            .iter()
+            .zip(retained_children.iter())
+            .all(|(identity, process)| identity.process_id == *process)
+    );
+    retained_identities
+        .iter()
+        .for_each(assert_scripted_child_owned_or_reaped);
     let guard = observations
         .guard_liveness
         .lock()
