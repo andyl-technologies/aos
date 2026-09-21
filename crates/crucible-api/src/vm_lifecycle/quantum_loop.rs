@@ -19,8 +19,8 @@ pub(super) use checkpoint_capture::ExactCheckpointPublicationState;
 use checkpoint_capture::{
     ExactCaptureDisposition, ExactCheckpointTransactionError, PendingExactCapture,
     PendingExactCheckpointCandidate, PreparedExactCheckpointTarget,
-    combine_exact_checkpoint_transaction, prepare_exact_checkpoint_targets,
-    retained_exact_ram_parent_for_committed,
+    combine_exact_checkpoint_transaction, exact_ram_capture_kind_for_parent,
+    prepare_exact_checkpoint_targets, retained_exact_ram_parent_for_committed,
 };
 use crucible::BackendRngEvidence;
 use debug_policy::trusted_debug_listener;
@@ -1770,10 +1770,7 @@ impl ProductionVmLifecycleLoop {
                     &node,
                     committed,
                 )?;
-                let compact = parent_checkpoint
-                    .as_ref()
-                    .is_some_and(ProductionExactRamCheckpoint::requires_direct_compaction);
-                let direct_capture = committed.is_none() || compact;
+                let capture_kind = exact_ram_capture_kind_for_parent(parent_checkpoint.as_ref());
                 let capture_boundary = || crucible_qemu::QemuExactCheckpointCaptureBoundary {
                     configuration,
                     immutable_root_image,
@@ -1790,12 +1787,14 @@ impl ProductionVmLifecycleLoop {
                     ram: &ram_output,
                     device: &device_output,
                 };
-                let admission = match (committed, compact) {
-                    (Some(parent), false) => QemuExactCheckpointCaptureAdmission::admit_delta(
-                        capture_boundary(),
-                        parent,
-                        capture_outputs(),
-                    ),
+                let admission = match (committed, capture_kind) {
+                    (Some(parent), ProductionExactRamKind::Delta) => {
+                        QemuExactCheckpointCaptureAdmission::admit_delta(
+                            capture_boundary(),
+                            parent,
+                            capture_outputs(),
+                        )
+                    }
                     _ => QemuExactCheckpointCaptureAdmission::admit_direct(
                         capture_boundary(),
                         capture_outputs(),
@@ -1953,34 +1952,14 @@ impl ProductionVmLifecycleLoop {
                     ram_content_sha256,
                     ram_artifact,
                 )?;
-                let exact_ram = if direct_capture {
-                    ProductionExactRamCheckpoint::new(
-                        None,
-                        device_content_sha256,
-                        device_artifact.clone(),
-                        vec![layer],
-                    )?
-                } else {
-                    let mut layers = parent_checkpoint
-                        .ok_or_else(|| SchedulerError::BoundaryViolation {
-                            message: String::from(
-                                "delta exact checkpoint lost its authenticated parent chain",
-                            ),
-                        })?
-                        .layers;
-                    layers.try_reserve_exact(1).map_err(|error| {
-                        SchedulerError::BoundaryViolation {
-                            message: format!("extend exact RAM checkpoint layers: {error}"),
-                        }
-                    })?;
-                    layers.push(layer);
-                    ProductionExactRamCheckpoint::new(
-                        parent_closure,
-                        device_content_sha256,
-                        device_artifact.clone(),
-                        layers,
-                    )?
-                };
+                let exact_ram = ProductionExactRamCheckpoint::from_captured_layer(
+                    parent_closure,
+                    parent_checkpoint,
+                    capture_kind,
+                    device_content_sha256,
+                    device_artifact.clone(),
+                    layer,
+                )?;
                 capture.exact_ram = Some(exact_ram);
                 boundary()?;
             }
