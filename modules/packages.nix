@@ -16,8 +16,18 @@
       package = lib.mkOption {
         type = lib.types.package;
         description = ''
-          Package derivation selected as `aos.packages.${name}`. The package
-          must carry its authenticated contract and native module outputs.
+          Package derivation admitted as `aos.packages.${name}`. Its
+          authenticated native module participates in the target fixed point
+          whether or not the payload is bundled.
+        '';
+      };
+
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Whether this package's authenticated native module participates in
+          the target fixed point. Bundling the payload also admits the module.
         '';
       };
 
@@ -25,8 +35,9 @@
         type = lib.types.bool;
         default = false;
         description = ''
-          Whether this package participates in the image's checked package and
-          ability selection. Package-owned options determine runtime behavior.
+          Whether this package's payload is retained in the image. The native
+          module is admitted by the package declaration itself, so
+          package-owned options remain available without bundling executables.
         '';
       };
     };
@@ -39,8 +50,9 @@ in {
     type = lib.types.attrsOf packageType;
     default = {};
     description = ''
-      Packages selected into the image's authenticated package-module fixed
-      point. Each selected package is retained through its native contract.
+      Packages available to the target. `enable` admits a native module without
+      retaining its payload, while `bundle` admits the module and retains the
+      payload in the image.
     '';
   };
 
@@ -65,7 +77,8 @@ in {
             assertion =
               !(package.package ? contract)
               || (
-                package.package.contract.value.package.name == package.package.pname
+                package.package.contract.value.package.name
+                == package.package.pname
                 && package.package.contract.value.package.name == name
               );
             message = ''
@@ -73,7 +86,8 @@ in {
               does not match the selection key and payload.
             '';
           }
-        ])
+        ]
+      )
       config.aos.packages);
 
     environment.systemPackages =

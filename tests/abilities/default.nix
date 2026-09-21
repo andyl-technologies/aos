@@ -452,6 +452,23 @@
     systemName = "selected-chrony";
   };
   selectedChronyAbilities = selectedChronySystem.config.aos.abilities;
+  unbundledPackageModuleSystem = mkSystem {
+    modules = [
+      ../../systems/_artifact-backend.nix
+      ../../systems/_base-packages.nix
+      ../../systems/_kernel.nix
+      ../../systems/_system-manager.nix
+      {
+        aos.packages.postgresql = {
+          package = pkgs.postgresql;
+          enable = true;
+          bundle = false;
+        };
+        postgresql.enable = false;
+      }
+    ];
+    systemName = "unbundled-package-module";
+  };
 in
   assert canonicalListType.check ["alpha" "beta"];
   assert canonicalListSchema.unique && canonicalListSchema.canonical_order;
@@ -673,6 +690,8 @@ in
   assert selectedChronyAbilities.instances ? "chrony:service";
   assert selectedChronyAbilities.requests ? "chrony:chronyd-lifecycle";
   assert selectedChronyAbilities.requests ? "chrony:chrony-configuration";
+  assert !unbundledPackageModuleSystem.config.postgresql.enable;
+  assert !(builtins.elem pkgs.postgresql unbundledPackageModuleSystem.config.environment.systemPackages);
   assert dockerService;
   assert tailscaleService;
   assert nftablesFirewall;
