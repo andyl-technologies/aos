@@ -1409,7 +1409,7 @@ pub async fn package(
                 .load_package_ability_deployments_for_browser(
                     registry.id,
                     &panel.locator,
-                    &panel.reference,
+                    &panel.projection,
                 )
                 .await
             {
@@ -1502,28 +1502,15 @@ async fn package_reference_projection(
         anyhow::bail!("package reference is unavailable for the selected release commit");
     }
     let projection = svc
-        .load_package_documentation_projection_locator(registry_id, &documentation_locator)
+        .load_package_documentation_locator(registry_id, &documentation_locator)
         .await?;
-    let reference = projection.ability_reference;
-    let canonical_json = reference.canonical_json()?;
-    let locator = crate::db::PackageAbilityReferenceLocator {
-        indexed_commit: documentation_locator.indexed_commit.clone(),
-        package_name: documentation_locator.package_name.clone(),
-        package_version: documentation_locator.package_version.clone(),
-        platform: documentation_locator.platform.clone(),
-        manifest_sha256: reference.manifest_sha256.to_string(),
-        package_digest: reference.package_digest.to_string(),
-        canonical_json,
-    };
 
     Ok(Some((
-        documentation_locator,
+        documentation_locator.clone(),
         super::ability_reference_page::PackageAbilityReferencePanel {
             release: release.to_string(),
-            indexed_commit: locator.indexed_commit.clone(),
-            platform: locator.platform.clone(),
-            reference,
-            locator,
+            projection,
+            locator: documentation_locator,
         },
     )))
 }

@@ -10,14 +10,10 @@ use super::render::{escape, hash_value};
 pub struct PackageAbilityReferencePanel {
     /// Exact release shown by the enclosing package page.
     pub release: String,
-    /// Registry commit that authenticated the generated reference.
-    pub indexed_commit: String,
-    /// Exact target platform carrying the signed package projection.
-    pub platform: String,
-    /// Bounded public projection of the checked signed package document.
-    pub reference: aos_doc_model::PackageAbilityReference,
-    /// Exact retained locator used when matching private deployment overlays.
-    pub locator: crate::db::PackageAbilityReferenceLocator,
+    /// Exact signed package reference decoded from the retained object.
+    pub projection: aos_doc_model::PackageDocumentationProjection,
+    /// Signed retained-object locator used when matching deployment overlays.
+    pub locator: crate::db::PackageDocumentationLocator,
 }
 
 /// One authenticated, fresh private deployment assertion prepared for rendering.
@@ -69,13 +65,13 @@ pub fn section(
         }
     };
 
-    let reference = &panel.reference;
+    let reference = &panel.projection.ability_reference;
     let _ = write!(
         html,
         "<p>Public contract for <strong>{}</strong> <code>{}</code> on <code>{}</code>, authenticated by release <a href=\"/{}/-/releases/{}\">{}</a>.</p>",
         escape(reference.package.as_str()),
         escape(&reference.version),
-        escape(&panel.platform),
+        escape(&panel.locator.platform),
         escape(slug),
         urlencode(&panel.release),
         escape(&panel.release),
@@ -83,8 +79,8 @@ pub fn section(
     let _ = write!(
         html,
         "<dl class=\"meta\"><dt>Supported environment</dt><dd>{}</dd><dt>Release commit</dt><dd>{}</dd></dl>",
-        escape(&panel.platform),
-        hash_value(&panel.indexed_commit),
+        escape(&panel.locator.platform),
+        hash_value(&panel.locator.indexed_commit),
     );
     let _ = write!(
         html,
@@ -92,7 +88,7 @@ pub fn section(
         escape(slug),
         urlencode(reference.package.as_str()),
         urlencode(&reference.version),
-        urlencode(&panel.platform),
+        urlencode(&panel.locator.platform),
         urlencode(&panel.release),
     );
 
@@ -219,26 +215,71 @@ mod tests {
 
     use super::*;
 
+    fn reference_panel(
+        reference: aos_doc_model::PackageAbilityReference,
+        indexed_commit: &str,
+        platform: &str,
+        release: &str,
+    ) -> PackageAbilityReferencePanel {
+        let mut document = aos_doc_model::PackageDocumentation {
+            schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
+            package: aos_doc_model::DocumentedPackage {
+                name: reference.package.as_str().to_string(),
+                version: reference.version.clone(),
+                platform: platform.to_string(),
+                summary: "Test package reference.".to_string(),
+                homepage: None,
+                license: "Apache-2.0".to_string(),
+            },
+            identity: aos_doc_model::DocumentationIdentity {
+                semantic_schema_sha256: Sha256Digest::of_bytes(b"pending").to_string(),
+                runtime_nar_hash: Sha256Digest::of_bytes(b"runtime").to_string(),
+                source_nar_hash: Sha256Digest::of_bytes(b"source").to_string(),
+            },
+        };
+        document.identity.semantic_schema_sha256 = document
+            .computed_semantic_schema_sha256()
+            .expect("semantic documentation identity");
+        let projection = aos_doc_model::PackageDocumentationProjection::new(document, reference)
+            .expect("valid package reference");
+        let canonical_json = projection
+            .canonical_json()
+            .expect("canonical package reference");
+        let locator = crate::db::PackageDocumentationLocator {
+            indexed_commit: indexed_commit.to_string(),
+            package_name: projection.document.package.name.clone(),
+            package_version: projection.document.package.version.clone(),
+            platform: platform.to_string(),
+            artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
+                format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
+                store_path: "/nix/store/00000000000000000000000000000000-documentation".to_string(),
+                nar_hash: Sha256Digest::of_bytes(b"nar").to_string(),
+                nar_size: canonical_json.len() as u64,
+                document_sha256: projection
+                    .document_sha256()
+                    .expect("package reference identity"),
+                document_size: canonical_json.len() as u64,
+                semantic_schema_sha256: projection.document.identity.semantic_schema_sha256.clone(),
+                references: Vec::new(),
+            },
+            release: Some(release.to_string()),
+            verified_tag_oid: None,
+            release_snapshot_id: None,
+        };
+
+        PackageAbilityReferencePanel {
+            release: release.to_string(),
+            projection,
+            locator,
+        }
+    }
+
     #[test]
     fn hub_uses_the_cross_frontend_golden_graph_slice() -> Result<(), Box<dyn std::error::Error>> {
         let fixture = aos_ability_inspect::test_support::reference_inspection_fixture()?;
         let reference = fixture.reference;
-        let canonical_json = reference.canonical_json()?;
-        let panel = PackageAbilityReferencePanel {
-            release: reference.version.clone(),
-            indexed_commit: "b".repeat(64),
-            platform: "x86_64-linux".to_string(),
-            locator: crate::db::PackageAbilityReferenceLocator {
-                indexed_commit: "b".repeat(64),
-                package_name: reference.package.as_str().to_string(),
-                package_version: reference.version.clone(),
-                platform: "x86_64-linux".to_string(),
-                manifest_sha256: reference.manifest_sha256.to_string(),
-                package_digest: reference.package_digest.to_string(),
-                canonical_json,
-            },
-            reference,
-        };
+        let release = reference.version.clone();
+        let panel = reference_panel(reference, &"b".repeat(64), "x86_64-linux", &release);
         let query = aos_ability_inspect::GraphQuery::decode(&fixture.query)?;
 
         let slice = super::super::ability_reference_inspection::checked_slice(&panel, &query)?;
@@ -348,22 +389,7 @@ mod tests {
             }],
             handlers: Vec::new(),
         };
-        let canonical_json = reference.canonical_json().expect("canonical reference");
-        PackageAbilityReferencePanel {
-            release: "1.2.3".into(),
-            indexed_commit: "a".repeat(64),
-            platform: "x86_64-linux".into(),
-            reference,
-            locator: crate::db::PackageAbilityReferenceLocator {
-                indexed_commit: "a".repeat(64),
-                package_name: "demo".into(),
-                package_version: "1.2.3".into(),
-                platform: "x86_64-linux".into(),
-                manifest_sha256: Sha256Digest::of_bytes(b"manifest").to_string(),
-                package_digest: Sha256Digest::of_bytes(b"package").to_string(),
-                canonical_json,
-            },
-        }
+        reference_panel(reference, &"a".repeat(64), "x86_64-linux", "1.2.3")
     }
 
     fn deployment_panel(reference: &PackageAbilityReferencePanel) -> PackageAbilityDeploymentPanel {
@@ -376,7 +402,8 @@ mod tests {
             environment: environment.clone(),
             key: key("demo-east"),
         };
-        let export = &reference.reference.exports[0];
+        let ability_reference = &reference.projection.ability_reference;
+        let export = &ability_reference.exports[0];
         let interface = export.interface.clone();
         let revision = RevisionId(Sha256Digest::of_bytes(b"revision"));
 
@@ -391,11 +418,11 @@ mod tests {
                 sequence: 7,
                 package: aos_doc_model::AbilityDeploymentPackage {
                     registry_commit: reference.locator.indexed_commit.clone(),
-                    package: reference.reference.package.clone(),
-                    version: reference.reference.version.clone(),
-                    platform: reference.platform.clone(),
-                    manifest_sha256: reference.reference.manifest_sha256,
-                    package_digest: reference.reference.package_digest,
+                    package: ability_reference.package.clone(),
+                    version: ability_reference.version.clone(),
+                    platform: reference.locator.platform.clone(),
+                    manifest_sha256: ability_reference.manifest_sha256,
+                    package_digest: ability_reference.package_digest,
                 },
                 plan: aos_doc_model::AbilityDeploymentPlan {
                     environment,
@@ -455,14 +482,10 @@ mod tests {
     #[test]
     fn shared_inspector_rejection_hides_contract_and_deployment_projections() {
         let mut reference = panel();
-        reference.reference.required_features = vec![
+        reference.projection.ability_reference.required_features = vec![
             RequiredFeature::new("abilities-v1").expect("abilities feature"),
             RequiredFeature::new("future-reference-semantics-v1").expect("future feature"),
         ];
-        reference.locator.canonical_json = reference
-            .reference
-            .canonical_json()
-            .expect("canonical unsupported reference");
         let deployment = deployment_panel(&reference);
 
         let html = section("demo", Some(&reference), false, Some(&[deployment]), false);
@@ -496,26 +519,24 @@ mod tests {
     fn states_when_an_interface_declares_no_operator_configuration() {
         let mut panel = panel();
         let interface = panel
-            .reference
+            .projection
+            .ability_reference
             .interfaces
             .values_mut()
             .next()
             .expect("retained interface");
         interface.interface.configuration = None;
         let interface_key = interface.interface_key().expect("interface key");
-        let implementation = &mut panel.reference.implementations[0];
+        let implementation = &mut panel.projection.ability_reference.implementations[0];
         implementation.interface = interface_key.clone();
         implementation.requirements[0].accepted_interfaces = vec![interface_key.clone().into()];
         let implementation_key = implementation
             .descriptor_digest()
             .expect("implementation identity");
-        panel.reference.exports[0].interface = interface_key.clone();
-        panel.reference.exports[0].implementation = implementation_key;
-        panel.reference.requirements[0].accepted_interfaces = vec![interface_key.into()];
-        panel.locator.canonical_json = panel
-            .reference
-            .canonical_json()
-            .expect("canonical reference without configuration");
+        panel.projection.ability_reference.exports[0].interface = interface_key.clone();
+        panel.projection.ability_reference.exports[0].implementation = implementation_key;
+        panel.projection.ability_reference.requirements[0].accepted_interfaces =
+            vec![interface_key.into()];
 
         let html = section("demo", Some(&panel), false, None, false);
 

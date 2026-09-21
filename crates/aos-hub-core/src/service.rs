@@ -1139,8 +1139,8 @@ fn stored_ability_deployment_response(
 
 fn decode_stored_package_ability_deployment(
     stored: &crate::db::StoredAbilityDeploymentOverlay,
-    locator: &crate::db::PackageAbilityReferenceLocator,
-    reference: &aos_doc_model::PackageAbilityReference,
+    locator: &crate::db::PackageDocumentationLocator,
+    projection: &aos_doc_model::PackageDocumentationProjection,
 ) -> anyhow::Result<aos_doc_model::PackageAbilityDeploymentOverlay> {
     let overlay = aos_doc_model::PackageAbilityDeploymentOverlay::from_canonical_json(
         &stored.canonical_json,
@@ -1149,7 +1149,11 @@ fn decode_stored_package_ability_deployment(
         overlay.deployment.as_str() == stored.deployment && overlay.sequence == stored.sequence,
         "stored package ability deployment identity mismatch"
     );
-    overlay.validate_against_reference(&locator.indexed_commit, &locator.platform, reference)?;
+    overlay.validate_against_reference(
+        &locator.indexed_commit,
+        &locator.platform,
+        &projection.ability_reference,
+    )?;
     Ok(overlay)
 }
 
@@ -11910,7 +11914,7 @@ impl RpcService {
                 "deployment overlay does not match its reporter slot",
             ));
         }
-        let (locator, reference) = self
+        let (locator, projection) = self
             .load_exact_package_ability_reference(
                 registry.id,
                 &overlay.package.registry_commit,
@@ -11920,7 +11924,11 @@ impl RpcService {
             )
             .await?;
         overlay
-            .validate_against_reference(&locator.indexed_commit, &locator.platform, &reference)
+            .validate_against_reference(
+                &locator.indexed_commit,
+                &locator.platform,
+                &projection.ability_reference,
+            )
             .map_err(|error| RpcError::invalid(error.to_string()))?;
 
         let now = clock::now_unix_secs();
@@ -11942,6 +11950,9 @@ impl RpcService {
             ));
         }
 
+        let reference = &projection.ability_reference;
+        let manifest_sha256 = reference.manifest_sha256.to_string();
+        let package_digest = reference.package_digest.to_string();
         self.db
             .accept_package_ability_deployment_overlay(
                 registry.id,
@@ -11954,8 +11965,8 @@ impl RpcService {
                 &locator.package_name,
                 &locator.package_version,
                 &locator.platform,
-                &locator.manifest_sha256,
-                &locator.package_digest,
+                &manifest_sha256,
+                &package_digest,
                 &req.canonical_json,
                 overlay.reported_at_unix_seconds,
                 now,
@@ -12000,7 +12011,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         self.require_permission(&claims, Permission::AuditRead, &Scope::parse(&scope_key))
             .await?;
-        let (locator, reference) = self
+        let (locator, projection) = self
             .load_exact_package_ability_reference(
                 registry.id,
                 &req.registry_commit,
@@ -12023,7 +12034,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("fresh package ability deployment overlay"))?;
-        self.verify_stored_package_ability_deployment(&stored, &locator, &reference)
+        self.verify_stored_package_ability_deployment(&stored, &locator, &projection)
             .await?;
         Ok(stored_ability_deployment_response(stored))
     }
@@ -12037,8 +12048,8 @@ impl RpcService {
         platform: &str,
     ) -> Result<
         (
-            crate::db::PackageAbilityReferenceLocator,
-            aos_doc_model::PackageAbilityReference,
+            crate::db::PackageDocumentationLocator,
+            aos_doc_model::PackageDocumentationProjection,
         ),
         RpcError,
     > {
@@ -12055,28 +12066,17 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("exact package reference"))?;
         let projection = self
-            .load_package_documentation_projection_locator(registry_id, &documentation_locator)
+            .load_package_documentation_locator(registry_id, &documentation_locator)
             .await
             .map_err(RpcError::internal)?;
-        let reference = projection.ability_reference;
-        let canonical_json = reference.canonical_json().map_err(RpcError::internal)?;
-        let locator = crate::db::PackageAbilityReferenceLocator {
-            indexed_commit: documentation_locator.indexed_commit,
-            package_name: documentation_locator.package_name,
-            package_version: documentation_locator.package_version,
-            platform: documentation_locator.platform,
-            manifest_sha256: reference.manifest_sha256.to_string(),
-            package_digest: reference.package_digest.to_string(),
-            canonical_json,
-        };
-        Ok((locator, reference))
+        Ok((documentation_locator, projection))
     }
 
     pub(crate) async fn verify_stored_package_ability_deployment(
         &self,
         stored: &crate::db::StoredAbilityDeploymentOverlay,
-        locator: &crate::db::PackageAbilityReferenceLocator,
-        reference: &aos_doc_model::PackageAbilityReference,
+        locator: &crate::db::PackageDocumentationLocator,
+        projection: &aos_doc_model::PackageDocumentationProjection,
     ) -> Result<(), RpcError> {
         if !self
             .db
@@ -12088,7 +12088,7 @@ impl RpcService {
                 "fresh package ability deployment overlay",
             ));
         }
-        decode_stored_package_ability_deployment(stored, locator, reference)
+        decode_stored_package_ability_deployment(stored, locator, projection)
             .map(|_| ())
             .map_err(RpcError::internal)
     }
@@ -12104,8 +12104,8 @@ impl RpcService {
     pub(crate) async fn load_package_ability_deployments_for_browser(
         &self,
         registry_id: i64,
-        locator: &crate::db::PackageAbilityReferenceLocator,
-        reference: &aos_doc_model::PackageAbilityReference,
+        locator: &crate::db::PackageDocumentationLocator,
+        projection: &aos_doc_model::PackageDocumentationProjection,
     ) -> anyhow::Result<
         Vec<(
             crate::db::StoredAbilityDeploymentOverlay,
@@ -12132,7 +12132,7 @@ impl RpcService {
             {
                 continue;
             }
-            let overlay = decode_stored_package_ability_deployment(&item, locator, reference)?;
+            let overlay = decode_stored_package_ability_deployment(&item, locator, projection)?;
             overlays.push((item, overlay));
         }
         Ok(overlays)
@@ -12170,24 +12170,9 @@ impl RpcService {
             return Ok(None);
         };
         let projection = self
-            .load_package_documentation_projection_locator(registry_id, &locator)
+            .load_package_documentation_locator(registry_id, &locator)
             .await?;
         Ok(Some((locator, projection)))
-    }
-
-    /// Loads one checked derived documentation view for an exact signed locator.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for object verification, reference validation, or
-    /// cross-artifact coordinate mismatches.
-    pub(crate) async fn load_package_documentation_projection_locator(
-        &self,
-        registry_id: i64,
-        locator: &crate::db::PackageDocumentationLocator,
-    ) -> anyhow::Result<aos_doc_model::PackageDocumentationProjection> {
-        self.load_package_documentation_locator(registry_id, locator)
-            .await
     }
 
     /// Fetches and verifies a previously authorized indexed documentation reference.
