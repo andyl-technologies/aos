@@ -301,6 +301,15 @@ the outstanding work concrete:
   publishes authenticated inventory but rejects pending mutation work.
   Replace those unavailable dependencies with the authenticated request
   compiler and durable effect dispatcher, including restart recovery.
+- The controller's Mount, Storage, and Network inventory clients still send
+  a plain `BrokerClientHello` (`mount_attempt/inventory.rs` and
+  `resource_inventory.rs`). The packaged broker entry points instead accept
+  sessions through `ProductionBrokerSessionActivationV1::accept_authenticated`.
+  Connect readiness inventory and catalog publication through the protected
+  session protocol before claiming the deployed controller can become ready.
+  The session-security crate already depends on `aos-sandbox`; compose these
+  owners above that dependency boundary rather than introducing a crate cycle
+  or accepting legacy unauthenticated traffic in the brokers.
 - That service registers `DiscoveryService` and `OperationService` only.
   Operation get, cancel, and watch return unavailable errors. Register and
   connect the remaining public services to their authorized controller
