@@ -10,7 +10,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use connectrpc::{ConnectError, Context, ErrorCode};
+use connectrpc::{
+    ConnectError, Encodable, ErrorCode, InboundStream, RequestContext, Response, ServiceRequest,
+    ServiceResult,
+};
 use futures_util::{Stream, StreamExt};
 
 use aos_core::nar::info as core_narinfo;
@@ -27,9 +30,6 @@ use crate::views::ViewManager;
 
 /// Boxed server-streaming response used by the generated service traits.
 type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
-/// Boxed client-streaming request used by the generated service traits.
-type RequestStream<V> =
-    Pin<Box<dyn Stream<Item = Result<buffa::view::OwnedView<V>, ConnectError>> + Send>>;
 
 /// ConnectRPC cache service backed by the shared [`AppState`].
 pub struct CacheServiceImpl {
@@ -42,11 +42,11 @@ impl CacheService for CacheServiceImpl {
     ///
     /// Allowed anonymously when the view has `anonymous_read = true`,
     /// otherwise requires a JWT with the `read` permission on the view.
-    async fn get_cache_info(
-        &self,
-        ctx: Context,
-        req: buffa::view::OwnedView<GetCacheInfoRequestView<'static>>,
-    ) -> Result<(CacheInfo, Context), ConnectError> {
+    async fn get_cache_info<'a>(
+        &'a self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetCacheInfoRequest>,
+    ) -> ServiceResult<impl Encodable<CacheInfo> + Send + use<'a>> {
         let view: &str = req.view;
 
         let view_config = self
@@ -71,7 +71,7 @@ impl CacheService for CacheServiceImpl {
             ..Default::default()
         };
 
-        Ok((response, ctx))
+        Response::ok(response)
     }
 
     /// `GetNarInfo` — structured narinfo for a store hash.
@@ -81,11 +81,11 @@ impl CacheService for CacheServiceImpl {
     /// path's access metadata for eviction scoring. Internally the narinfo
     /// text is rendered (and signed) exactly as for REST, then parsed back
     /// into the proto message.
-    async fn get_nar_info(
-        &self,
-        ctx: Context,
-        req: buffa::view::OwnedView<GetNarInfoRequestView<'static>>,
-    ) -> Result<(NarInfo, Context), ConnectError> {
+    async fn get_nar_info<'a>(
+        &'a self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetNarInfoRequest>,
+    ) -> ServiceResult<impl Encodable<NarInfo> + Send + use<'a>> {
         let view: &str = req.view;
         let store_hash: &str = req.store_hash;
 
@@ -124,7 +124,7 @@ impl CacheService for CacheServiceImpl {
         // Parse the narinfo text back into structured fields.
         let response = parse_narinfo_to_proto(&narinfo_text)?;
 
-        Ok((response, ctx))
+        Response::ok(response)
     }
 
     /// `QueryMissing` — reports which of the given store paths the server
@@ -133,11 +133,11 @@ impl CacheService for CacheServiceImpl {
     /// Requires a JWT authorized for the view. Paths are matched by store
     /// hash as well as exact path, so client and server store roots may
     /// differ.
-    async fn query_missing(
-        &self,
-        ctx: Context,
-        req: buffa::view::OwnedView<QueryMissingRequestView<'static>>,
-    ) -> Result<(QueryMissingResponse, Context), ConnectError> {
+    async fn query_missing<'a>(
+        &'a self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, QueryMissingRequest>,
+    ) -> ServiceResult<impl Encodable<QueryMissingResponse> + Send + use<'a>> {
         let view: &str = req.view;
 
         if self.state.views.get_view(view).is_none() {
@@ -161,13 +161,10 @@ impl CacheService for CacheServiceImpl {
             }
         }
 
-        Ok((
-            QueryMissingResponse {
-                missing,
-                ..Default::default()
-            },
-            ctx,
-        ))
+        Response::ok(QueryMissingResponse {
+            missing,
+            ..Default::default()
+        })
     }
 
     /// `Upload` — client-streamed NAR upload of a single store path.
@@ -177,16 +174,17 @@ impl CacheService for CacheServiceImpl {
     /// with the `build` permission on the view (checked after the stream
     /// is consumed). The imported path must pass the `.drv`-or-CA safety
     /// check and receives a temporary GC root.
-    async fn upload(
-        &self,
-        ctx: Context,
-        mut requests: RequestStream<UploadChunkView<'static>>,
-    ) -> Result<(UploadResponse, Context), ConnectError> {
+    async fn upload<'a>(
+        &'a self,
+        ctx: RequestContext,
+        mut requests: InboundStream<UploadChunk>,
+    ) -> ServiceResult<impl Encodable<UploadResponse> + Send + use<'a>> {
         let mut all_data = Vec::new();
         let mut view_name = String::new();
 
         while let Some(chunk_result) = requests.next().await {
             let chunk = chunk_result?;
+            let chunk = chunk.view();
             if view_name.is_empty() {
                 view_name = chunk.view.to_string();
             }
@@ -219,13 +217,10 @@ impl CacheService for CacheServiceImpl {
                 .create_tmp_root(&view_name, hash, &imported);
         }
 
-        Ok((
-            UploadResponse {
-                store_path: imported,
-                ..Default::default()
-            },
-            ctx,
-        ))
+        Response::ok(UploadResponse {
+            store_path: imported,
+            ..Default::default()
+        })
     }
 
     /// `Download` — server-streamed NAR download.
@@ -237,9 +232,9 @@ impl CacheService for CacheServiceImpl {
     /// unknown while streaming.
     async fn download(
         &self,
-        ctx: Context,
-        req: buffa::view::OwnedView<DownloadRequestView<'static>>,
-    ) -> Result<(ResponseStream<DownloadChunk>, Context), ConnectError> {
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DownloadRequest>,
+    ) -> ServiceResult<ResponseStream<impl Encodable<DownloadChunk> + Send + use<>>> {
         let view: &str = req.view;
         let filename: &str = req.filename;
 
@@ -306,7 +301,7 @@ impl CacheService for CacheServiceImpl {
             )),
         });
 
-        Ok((Box::pin(chunk_stream), ctx))
+        Response::ok(Box::pin(chunk_stream))
     }
 
     /// `UploadPack` — client-streamed batched upload in the AOSP pack
@@ -316,16 +311,17 @@ impl CacheService for CacheServiceImpl {
     /// and parsed ([`pack::parse_pack`]) before its entries are imported.
     /// Requires a JWT with the `build` permission on the view (from the
     /// first chunk). Every imported path gets a temporary GC root.
-    async fn upload_pack(
-        &self,
-        ctx: Context,
-        mut requests: RequestStream<PackChunkView<'static>>,
-    ) -> Result<(UploadPackResponse, Context), ConnectError> {
+    async fn upload_pack<'a>(
+        &'a self,
+        ctx: RequestContext,
+        mut requests: InboundStream<PackChunk>,
+    ) -> ServiceResult<impl Encodable<UploadPackResponse> + Send + use<'a>> {
         let mut all_data = Vec::new();
         let mut view_name = String::new();
 
         while let Some(chunk_result) = requests.next().await {
             let chunk = chunk_result?;
+            let chunk = chunk.view();
             if view_name.is_empty() {
                 view_name = chunk.view.to_string();
             }
@@ -362,15 +358,12 @@ impl CacheService for CacheServiceImpl {
             }
         }
 
-        Ok((
-            UploadPackResponse {
-                accepted: count as i32,
-                rejected: 0,
-                paths,
-                ..Default::default()
-            },
-            ctx,
-        ))
+        Response::ok(UploadPackResponse {
+            accepted: count as i32,
+            rejected: 0,
+            paths,
+            ..Default::default()
+        })
     }
 }
 

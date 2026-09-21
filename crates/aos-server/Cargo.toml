@@ -45,4 +45,5 @@ tokio-rustls = { workspace = true }
 rcgen = { workspace = true }
 
 [dev-dependencies]
+aos-remote = { workspace = true }
 tempfile = { workspace = true }

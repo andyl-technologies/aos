@@ -7,7 +7,9 @@
 use std::process::Stdio;
 use std::sync::Arc;
 
-use connectrpc::{ConnectError, Context, ErrorCode};
+use connectrpc::{
+    ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
+};
 use tokio::process::Command;
 
 use aos_core::nix::aos_nix_env;
@@ -31,11 +33,11 @@ impl GcService for GcServiceImpl {
     /// `nix-store --gc` when `collect_store` is set and `dry_run` is not.
     /// Returns expiry/eviction counts, the scored candidates, and the
     /// freed byte count when the store GC ran.
-    async fn collect(
-        &self,
-        ctx: Context,
-        req: buffa::view::OwnedView<GcRequestView<'static>>,
-    ) -> Result<(GcResponse, Context), ConnectError> {
+    async fn collect<'a>(
+        &'a self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GcRequest>,
+    ) -> ServiceResult<impl Encodable<GcResponse> + Send + use<'a>> {
         let view: &str = req.view;
         let dry_run: bool = req.dry_run;
         let collect_store: bool = req.collect_store;
@@ -117,16 +119,13 @@ impl GcService for GcServiceImpl {
 
         let evicted_count = evicted_candidates.len() as u64;
 
-        Ok((
-            GcResponse {
-                expired: expired.len() as u64,
-                evicted: evicted_count,
-                eviction_candidates: evicted_candidates,
-                dry_run,
-                collected_bytes,
-                ..Default::default()
-            },
-            ctx,
-        ))
+        Response::ok(GcResponse {
+            expired: expired.len() as u64,
+            evicted: evicted_count,
+            eviction_candidates: evicted_candidates,
+            dry_run,
+            collected_bytes,
+            ..Default::default()
+        })
     }
 }

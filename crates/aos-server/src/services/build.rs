@@ -11,7 +11,9 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use connectrpc::{ConnectError, Context, ErrorCode};
+use connectrpc::{
+    ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
+};
 use futures_util::Stream;
 use tokio_stream::StreamExt;
 
@@ -40,9 +42,9 @@ impl BuildService for BuildServiceImpl {
     /// events before switching to live ones.
     async fn build(
         &self,
-        ctx: Context,
-        req: buffa::view::OwnedView<BuildRequestView<'static>>,
-    ) -> Result<(ResponseStream<BuildEvent>, Context), ConnectError> {
+        ctx: RequestContext,
+        req: ServiceRequest<'_, BuildRequest>,
+    ) -> ServiceResult<ResponseStream<impl Encodable<BuildEvent> + Send + use<>>> {
         let view: &str = req.view;
         let drv_path: String = req.derivation.to_string();
 
@@ -110,7 +112,7 @@ impl BuildService for BuildServiceImpl {
 
         let combined = replay_stream.chain(live_stream);
 
-        Ok((Box::pin(combined), ctx))
+        Response::ok(Box::pin(combined))
     }
 
     /// `BuildClosure` — realises multiple derivations and streams a merged
@@ -123,9 +125,9 @@ impl BuildService for BuildServiceImpl {
     /// terminal event.
     async fn build_closure(
         &self,
-        ctx: Context,
-        req: buffa::view::OwnedView<ClosureRequestView<'static>>,
-    ) -> Result<(ResponseStream<BuildEvent>, Context), ConnectError> {
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ClosureRequest>,
+    ) -> ServiceResult<ResponseStream<impl Encodable<BuildEvent> + Send + use<>>> {
         let view: &str = req.view;
         let drvs: Vec<String> = req.derivations.iter().map(|s| s.to_string()).collect();
 
@@ -216,7 +218,7 @@ impl BuildService for BuildServiceImpl {
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(merged_rx).map(Ok);
 
-        Ok((Box::pin(stream), ctx))
+        Response::ok(Box::pin(stream))
     }
 }
 
