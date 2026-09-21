@@ -1,10 +1,17 @@
 ##! Package-owned polkit authorization service.
 {
+  abilitySelection ? null,
   config,
   lib,
   ...
 }: let
   cfg = config.aos.security.polkit;
+  availabilityAlias = "authorization-service-availability";
+  availabilitySelected =
+    abilitySelection
+    != null
+    && abilitySelection.isImplementationSelected availabilityAlias;
+  active = cfg.enable || availabilitySelected;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -337,7 +344,10 @@
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
-  imports = [./dbus-registration.nix];
+  imports = [
+    ./availability-interface.nix
+    ./dbus-registration.nix
+  ];
 
   options.aos.security.polkit = {
     enable = lib.mkOption {
@@ -360,7 +370,7 @@ in {
 
   config = lib.mkMerge [
     {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
-    (lib.mkIf cfg.enable {
+    (lib.mkIf active {
       aos.contributions = {
         pamServices."polkit-1" = {
           unixAuth = true;
@@ -394,7 +404,14 @@ in {
         };
       };
       aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
+        [
+          {
+            instances = {
+              ${availabilityAlias} = {};
+              ${consumerInstance} = {};
+            };
+          }
+        ]
         ++ builtins.map (entry: entry.configured) contributions
       );
     })

@@ -129,8 +129,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -453,8 +464,11 @@ in
       evaluated = mkSystem {
         systemName = "libvirt-package-check";
         modules = [
+          ../../systems/_artifact-backend.nix
+          ../../systems/_base-packages.nix
+          ../../systems/_system-manager.nix
           {
-            environment.systemPackages = [pkgs.dbus self];
+            aos.kernel.packageRoot = pkgs.linux;
             aos.services.libvirt = {
               enable = true;
               allowedUsers = ["operator"];
@@ -463,6 +477,8 @@ in
         ];
       };
       requests = evaluated.config.aos.abilities.requests;
+      bindings = builtins.attrValues evaluated.config.aos.abilities.bindings;
+      libvirtRequests = lib.filterAttrs (name: _: lib.hasPrefix "libvirt:" name) requests;
       sockets = requests."libvirt:libvirtd-socket_activation".parameters.sockets;
       socketModes = builtins.listToAttrs (
         builtins.map (socket: lib.nameValuePair socket.manager_name socket.mode) sockets
@@ -472,21 +488,33 @@ in
       requestsHaveAutomaticIdentities =
         builtins.all
         (request: !(request.parameters ? requested_id))
-        (builtins.attrValues requests);
-      contractHolds =
-        requests ? "libvirt:libvirtd-lifecycle"
-        && requests ? "libvirt:virtlogd-lifecycle"
-        && requests ? "libvirt:virtlockd-lifecycle"
-        && requests ? "libvirt:access-membership"
-        && socketModes
-        == {
-          libvirtd = "0660";
-          "libvirtd-admin" = "0660";
-          "libvirtd-ro" = "0660";
-        }
-        && socketDependencies.after == ["libvirtd" "libvirtd-admin" "libvirtd-ro"]
-        && socketDependencies.wants == ["libvirtd" "libvirtd-admin" "libvirtd-ro"]
-        && requestsHaveAutomaticIdentities;
+        (builtins.attrValues libvirtRequests);
+      contractChecks = {
+        libvirtd = requests ? "libvirt:libvirtd-lifecycle";
+        virtlogd = requests ? "libvirt:virtlogd-lifecycle";
+        virtlockd = requests ? "libvirt:virtlockd-lifecycle";
+        accessMembership = requests ? "libvirt:access-membership";
+        authorizationRequest = requests ? "libvirt:authorization-service-availability";
+        polkitActivated = requests ? "polkit:polkit-lifecycle";
+        authorizationBound =
+          lib.any
+          (binding:
+            binding.request
+            == "libvirt:authorization-service-availability"
+            && binding.implementation == "polkit:authorization-service-availability")
+          bindings;
+        socketModes =
+          socketModes
+          == {
+            libvirtd = "0660";
+            "libvirtd-admin" = "0600";
+            "libvirtd-ro" = "0660";
+          };
+        socketAfter = socketDependencies.after == ["libvirtd" "libvirtd-admin" "libvirtd-ro"];
+        socketWants = socketDependencies.wants == ["libvirtd" "libvirtd-admin" "libvirtd-ro"];
+        automaticIdentities = requestsHaveAutomaticIdentities;
+      };
+      contractHolds = lib.all (value: value) (builtins.attrValues contractChecks);
     in {
       link = testing.mkLinkCheck {
         pname = "libvirt";
