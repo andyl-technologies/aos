@@ -332,7 +332,8 @@ pub use crucible_qemu_session::{
 pub(crate) use exact_checkpoint_restore::{
     PreparedProductionAttemptReplayOraclePromotion, ProductionAttemptCheckpointRestoreError,
     acquire_production_exact_checkpoint_replay_oracle_promotion,
-    install_attempt_production_exact_checkpoint, install_attempt_production_resume_checkpoint,
+    authenticate_attempt_production_resume_boundary, install_attempt_production_exact_checkpoint,
+    install_attempt_production_resume_checkpoint,
     prepare_attempt_production_replay_oracle_promotion,
 };
 pub use exact_checkpoint_store::{
@@ -485,8 +486,6 @@ pub use packaged_qemu_executor::{
     PackagedQemuExecutorStartError, PackagedQemuHotForkConfig, PackagedQemuHotForkConfigError,
     PackagedQemuHotForkSourceShutdownError,
 };
-#[cfg(all(target_os = "linux", test))]
-pub(crate) use paused_checkpoint_promotion::resolve_production_paused_checkpoint_promotion_recovery;
 #[cfg(target_os = "linux")]
 pub(crate) use paused_checkpoint_promotion::{
     PausedCheckpointPromotionPreparationError, PausedCheckpointPromotionRecoveryResolutionError,
@@ -501,6 +500,10 @@ pub(crate) use paused_checkpoint_promotion::{
 pub(crate) use paused_checkpoint_promotion::{
     ProductionPausedCheckpointReplayFactory, ProductionPausedCheckpointReplaySession,
     prepare_production_paused_checkpoint_promotion_restart,
+};
+#[cfg(all(target_os = "linux", test))]
+pub(crate) use paused_checkpoint_promotion::{
+    promote_test_checkpoint_for_resume, resolve_production_paused_checkpoint_promotion_recovery,
 };
 pub use pending_finding::{
     AcknowledgedFindingCandidate, FindingCandidateHandoffError, FindingCandidateHandoffResult,

@@ -1538,7 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn live_replay_promotion_claim_is_retryable_once_and_not_reopened() {
+    fn live_replay_promotion_supports_inspection_then_exactly_one_launch() {
         let backend = Arc::new(DurableMemoryBackend::new());
         let store = ExactCheckpointStore::new(backend.clone(), 1024 * 1024)
             .expect("admit production store");
@@ -1557,23 +1557,23 @@ mod tests {
             .retain_live_replay_promotion(root, evidence)
             .expect("retain live replay result");
 
-        let first = store
+        let inspection = store
             .acquire_live_replay_promotion(root, evidence)
-            .expect("acquire first replay claim")
-            .expect("first replay claim is available");
+            .expect("acquire boundary-inspection claim")
+            .expect("boundary-inspection claim is available");
         assert!(
             store
                 .acquire_live_replay_promotion(root, evidence)
-                .expect("inspect concurrent replay claim")
+                .expect("inspect concurrent claim during boundary validation")
                 .is_none()
         );
-        drop(first);
+        drop(inspection);
 
-        let retry = store
+        let launch = store
             .acquire_live_replay_promotion(root, evidence)
-            .expect("retry replay claim after transient failure")
-            .expect("dropped replay claim is restored");
-        retry.commit().expect("commit replay claim");
+            .expect("acquire launch claim after boundary validation")
+            .expect("released boundary claim is available to launch");
+        launch.commit().expect("commit launch claim");
         assert!(
             store
                 .acquire_live_replay_promotion(root, evidence)
