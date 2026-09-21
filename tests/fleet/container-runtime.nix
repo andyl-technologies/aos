@@ -201,9 +201,11 @@ in {
         timeout=30,
     )
 
+    # Importing the multi-gigabyte hermetic image is CPU and storage bound on
+    # contended builders, while nerdctl remains silent until unpack completes.
     runtime.succeed(
         "${nerdctl} load --input ${dockerArchive}/image.docker.tar",
-        timeout=360,
+        timeout=1200,
     )
     images = runtime.succeed("${nerdctl} images --format '{{.Repository}}:{{.Tag}}'")
     assert "aos:latest" in images.splitlines(), images
