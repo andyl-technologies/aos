@@ -2040,14 +2040,26 @@
       # already-evaluated system without threading its original module list
       # back to the caller — e.g. the fleet test harness bakes per-VM identity
       # (`environment.etc` for hostname/network/ssh key) onto a machine's
-      # system. `pkgs`/`lib`/`extraArgs`/`specialArgs`/`operatorModules` are
-      # inherited from this evaluation unless overridden.
+      # system. All resolver-authenticated module lanes and evaluation policy
+      # are inherited from this evaluation unless overridden.
       extendModules = args: let
         extraModules = args.modules or [];
       in
         evalModules ({
             modules = modules ++ extraModules;
-            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enableAbilitySelection enforcePackageAuthorship enforceRuntimeDeclarations;
+            inherit
+              pkgs
+              lib
+              extraArgs
+              specialArgs
+              operatorModules
+              runtimeModules
+              packageModules
+              selectedProviderModules
+              enableAbilitySelection
+              enforcePackageAuthorship
+              enforceRuntimeDeclarations
+              ;
           }
           // builtins.removeAttrs args ["modules"]);
 

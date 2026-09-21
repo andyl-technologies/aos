@@ -64,6 +64,8 @@
   };
   healthyTryBuild = builtins.tryEval healthySystem.config.system.build.toplevel.name;
   healthyBuildSucceeds = healthyTryBuild.success;
+  extendedSystem = healthySystem.extendModules {modules = [{}];};
+  extendedSystemRetainsSelectedProviders = extendedSystem.config.aos.image.platform != null;
   imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
   serverRootPartitionHasHeadroom =
     healthySystem.config.aos.image.rootPartitionMiB
@@ -1337,6 +1339,10 @@
       {
         ok = healthyBuildSucceeds;
         message = "healthy build must succeed";
+      }
+      {
+        ok = extendedSystemRetainsSelectedProviders;
+        message = "extendModules must retain resolver-selected provider modules";
       }
       {
         ok = imageBudgetCheckWired;
