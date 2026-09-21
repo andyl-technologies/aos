@@ -37,6 +37,8 @@ async function main() {
     const { Miniflare } = load('miniflare');
     const instance = new Miniflare({
       modules: true,
+      // Request metadata is irrelevant here; avoid fetching and caching it.
+      cf: false,
       compatibilityDate: tree.date,
       script: 'export default { fetch(request) { return Response.json({ answer: 42, pathname: new URL(request.url).pathname }); } };',
     });
