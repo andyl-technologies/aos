@@ -759,6 +759,14 @@ in
                   bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
                     || fail "QEMU guest $label scheduler adversary was incomplete"
                 fi
+                # Preserve the terminal CPU locations before QMP quit. This is
+                # read-only evidence for failures that occur before userspace
+                # can report through the serial console.
+                qmp_cmd \
+                  "$qmp_socket" \
+                  '{"execute":"human-monitor-command","arguments":{"command-line":"info registers -a"}}' \
+                  "$TMPDIR/qmp-registers-$label.json" \
+                  || true
                 qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
                 bounded_preemption_wait_qemu \
                   || fail "QEMU guest $label exited unsuccessfully"
@@ -793,6 +801,60 @@ in
 
             run_one a
             run_one b
+
+            diagnose_guest_completion() {
+              label="$1"
+              serial="$TMPDIR/serial-$label.log"
+              trace="$TMPDIR/trace-$label.jsonl"
+              registers="$TMPDIR/qmp-registers-$label.json"
+
+              echo "S11 guest completion diagnostic for run $label" >&2
+              echo "serial_bytes=$(wc -c < "$serial")" >&2
+              echo "serial_first_4096_bytes:" >&2
+              head -c 4096 "$serial" >&2 || true
+              echo "serial_final_4096_bytes:" >&2
+              tail -c 4096 "$serial" >&2 || true
+
+              if [ -s "$registers" ]; then
+                echo "terminal_cpu_registers:" >&2
+                jq -r -s \
+                  '[.[] | select(has("return"))][-1].return // "unavailable"' \
+                  "$registers" >&2 || true
+              else
+                echo "terminal_cpu_registers=unavailable" >&2
+              fi
+
+              echo "first_trace_record:" >&2
+              head -1 "$trace" | jq -c \
+                '{
+                  kind: (.kind // "sample"),
+                  retired,
+                  observed_icount,
+                  final,
+                  register_retired,
+                  rr_current_vcpu,
+                  rr_cursor_position,
+                  rr_switch_quantum
+                }' >&2 || true
+              echo "final_trace_record:" >&2
+              tail -1 "$trace" | jq -c \
+                '{
+                  kind: (.kind // "sample"),
+                  retired,
+                  observed_icount,
+                  final,
+                  stop_at,
+                  stop_requested,
+                  register_retired,
+                  rr_current_vcpu,
+                  rr_cursor_position,
+                  rr_switch_quantum,
+                  sample_register_failures,
+                  register_read_failures,
+                  ram_status,
+                  device_state_status
+                }' >&2 || true
+            }
 
             diagnose_trace_structure() {
               label="$1"
@@ -908,8 +970,7 @@ in
             for label in a b; do
               if [ "$REQUIRE_GUEST_PASS" -eq 1 ]; then
                 if ! grep -q "TEST_RESULT:PASS" "$TMPDIR/serial-$label.log"; then
-                  cat "$TMPDIR/serial-$label.log" >&2
-                  diagnose_trace_structure "$label"
+                  diagnose_guest_completion "$label"
                   fail "guest $label did not report TEST_RESULT:PASS"
                 fi
                 grep -q "CRUCIBLE_S11_DONE" "$TMPDIR/serial-$label.log" \

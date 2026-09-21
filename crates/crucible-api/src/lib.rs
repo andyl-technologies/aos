@@ -22,10 +22,6 @@
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
-#![expect(
-    clippy::result_large_err,
-    reason = "Axum responses are the handler error path; boxing them would allocate on rejected requests"
-)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod client;

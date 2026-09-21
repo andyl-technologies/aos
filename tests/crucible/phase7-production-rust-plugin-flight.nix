@@ -89,11 +89,7 @@
     pkgs.util-linux
     pkgs.grep
   ];
-  testScript = ''
-    set -eu
-    for option in CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
-      ${pkgs.grep}/bin/grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
-    done
+  attemptHostSetupScript = ''
     mkdir -p /sys/fs/cgroup
     if ! ${pkgs.util-linux}/bin/mountpoint -q /sys/fs/cgroup; then
       ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
@@ -109,9 +105,8 @@
     ${pkgs.util-linux}/bin/mount -o loop,prjquota \
       /tmp/attempts.img /tmp/attempts
     mkdir -m 700 /tmp/attempts/run
-
-    result=/tmp/production-plugin-result
-    runtime_trace=/tmp/production-reference-runtime-determinism.trace
+  '';
+  productionFlightCommand = ''
     ${pkgs.coreutils}/bin/timeout -k 15 600 \
       ${flight}/bin/crucible-qemu-production-plugin-flight \
       ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
@@ -121,7 +116,17 @@
       ${blockGuest}/initrd.img \
       ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
       /sys/fs/cgroup/crucible /tmp/attempts/run \
-      "$runtime_trace" > "$result"
+  '';
+  testScript = ''
+    set -eu
+    for option in CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
+      ${pkgs.grep}/bin/grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
+    done
+    ${attemptHostSetupScript}
+
+    result=/tmp/production-plugin-result
+    runtime_trace=/tmp/production-reference-runtime-determinism.trace
+    ${productionFlightCommand} "$runtime_trace" > "$result"
     test -f "$runtime_trace"
     test ! -L "$runtime_trace"
     test -s "$runtime_trace"
@@ -320,18 +325,69 @@
     ${pkgs.util-linux}/bin/umount /tmp/attempts
     echo "check=${attrPath}"
   '';
+  blockRecoveryTestScript = ''
+    set -eu
+    ${attemptHostSetupScript}
+
+    result=/tmp/block-recovery-diagnostic-result
+    set +e
+    CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY=1 \
+      ${productionFlightCommand} /tmp/unused-reference-runtime-trace > "$result"
+    flight_status=$?
+    set -e
+
+    cat "$result"
+    ${pkgs.util-linux}/bin/umount /tmp/attempts
+    if test "$flight_status" -ne 0; then
+      exit "$flight_status"
+    fi
+    for evidence in \
+      PASS \
+      diagnostic_mode=block-recovery-only \
+      block_recovery_hot_fork_subflight=true \
+      block_recovery_nanos=${toString blockRecoveryNanos} \
+      block_recovery_write_completed=true \
+      hot_fork_template_draining=true \
+      hot_fork_template_prepared=true \
+      hot_fork_preparation_order=block-recovery-settled,draining,prepared; do
+      test "$(${pkgs.grep}/bin/grep -Fxc "$evidence" "$result")" -eq 1
+    done
+    for numeric_evidence in \
+      block_recovery_pause_logical_icount \
+      block_recovery_pause_raw_icount \
+      hot_fork_template_generation; do
+      test "$(${pkgs.grep}/bin/grep -Ec "^$numeric_evidence=[1-9][0-9]*$" "$result")" -eq 1
+    done
+    test "$(${pkgs.grep}/bin/grep -Ec '^block_recovery_start_nanos=[0-9]+$' "$result")" -eq 1
+  '';
   gate = testing.mkVMTest {
     name = "crucible-production-rust-plugin-flight";
     memory = 8192;
     inherit rootfsDeps testScript;
   };
+  blockRecoveryDiagnostic = testing.mkVMTest {
+    name = "crucible-production-rust-plugin-block-recovery-diagnostic";
+    memory = 8192;
+    inherit rootfsDeps;
+    testScript = blockRecoveryTestScript;
+  };
   exposedGate =
     gate
     // {
+      inherit blockRecoveryDiagnostic;
       passthru =
         (gate.passthru or {})
         // {
-          inherit flight guest idleGuest blockGuest rootfsDeps testScript;
+          inherit
+            flight
+            guest
+            idleGuest
+            blockGuest
+            rootfsDeps
+            testScript
+            blockRecoveryDiagnostic
+            blockRecoveryTestScript
+            ;
         };
     };
 in

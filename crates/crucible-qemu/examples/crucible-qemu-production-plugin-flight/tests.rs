@@ -4,6 +4,21 @@ use super::*;
 use crucible::{ContentHash, MarkerId};
 use crucible_device::block::BlockTransportRequestIds;
 
+#[test]
+fn block_recovery_selector_accepts_only_the_documented_value() {
+    assert!(
+        !parse_block_recovery_only(None).expect("an absent selector should run the full flight")
+    );
+    assert!(
+        parse_block_recovery_only(Some(std::ffi::OsStr::new("1")))
+            .expect("the documented selector should run the focused flight")
+    );
+
+    let error = parse_block_recovery_only(Some(std::ffi::OsStr::new("true")))
+        .expect_err("an undocumented selector value must fail closed");
+    assert!(error.to_string().contains("must be unset or exactly 1"));
+}
+
 fn runtime_trace(target_ns: i64) -> String {
     format!(
         "crucible_sim_determinism_idle phase=request seq=1 raw=7999999 virtual_ns=7999999 target_ns=8000000 deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\

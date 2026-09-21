@@ -8,7 +8,8 @@ use super::{
     QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
     QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
     QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
-    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION, entropy::GUEST_ENTROPY_RNG_ID,
+    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION, QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+    entropy::GUEST_ENTROPY_RNG_ID,
 };
 
 mod values;
@@ -443,7 +444,11 @@ pub(in crate::launch) fn validate_optional_diagnostic_trace(
         QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
         QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
     );
-    if ![control, runtime].contains(&(*log_file, *selection)) {
+    let liveness = (
+        QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+        QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+    );
+    if ![control, runtime, liveness].contains(&(*log_file, *selection)) {
         return Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
             option: "-D/-trace",
             value: format!("{log_file} {selection}"),
@@ -958,4 +963,45 @@ fn validate_pre_spawn_rtc(rtc: &str) -> Result<(), QemuPreSpawnLaunchValidationE
         Some(_) => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_liveness_trace_is_one_fixed_whitelisted_pair() {
+        let accepted = [
+            "-D",
+            QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+        ]
+        .map(str::to_owned);
+        assert_eq!(validate_optional_diagnostic_trace(&accepted), Ok(()));
+
+        for rejected in [
+            [
+                "-D",
+                "other.trace",
+                "-trace",
+                QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+            ],
+            [
+                "-D",
+                QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+                "-trace",
+                "enable=crucible_sim_main_loop_*",
+            ],
+        ] {
+            let rejected = rejected.map(str::to_owned);
+            assert!(matches!(
+                validate_optional_diagnostic_trace(&rejected),
+                Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
+                    option: "-D/-trace",
+                    ..
+                })
+            ));
+        }
+    }
 }
