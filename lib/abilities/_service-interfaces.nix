@@ -1145,6 +1145,48 @@
         "Returns the exact destination selected for this filesystem entry before materialization."
         serviceTypes.executionPath;
     };
+    privilegedExecutable = let
+      alias = "privileged-executable";
+      declaration = declareInterface {
+        name = "aos.runtime.privileged-executable";
+        description = "Composes one package-owned executable through the selected privileged runtime layout.";
+        abi = 1;
+        requestType = serviceTypes.privilegedExecutable;
+        methods.observe =
+          method
+          serviceTypes.privilegedExecutable
+          serviceTypes.producerObservations.privilegedExecutable
+          "aos.filesystem.entry"
+          "observe"
+          "Observes the exact filesystem resource selected for this privileged executable."
+          read;
+        outputs = {
+          planned-path =
+            output "planning" "instance"
+            "Returns the runtime path selected for this privileged executable before materialization."
+            serviceTypes.executionPath;
+          resource =
+            output "planning" "instance"
+            "References the exact filesystem resource that materializes this privileged executable."
+            serviceTypes.resourceReference;
+        };
+        lifecycle = lifecyclePolicy;
+        guarantees = [];
+        aggregation = {
+          scope = "provider-instance";
+          key = "slot";
+          rejectSlotCollisions = true;
+          mergeContract = null;
+          controllerGroup = alias;
+        };
+      };
+      document = interfaceDocumentFromDeclaration declaration;
+    in {
+      inherit alias declaration document;
+      requestType = serviceTypes.privilegedExecutable;
+      identity = interfaceIdentity document;
+      methods = ["observe"];
+    };
     hostPathView = producer {
       alias = "host-path-view";
       name = "aos.filesystem.host-view";

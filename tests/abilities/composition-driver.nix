@@ -506,6 +506,7 @@ args @ {lib, ...}: let
     address_families = ["ipv4"];
   };
   childRequest = {
+    owner_request = "consumer:lifecycle";
     requirement = "network";
     scope = ["child"];
     slot = "network-child";
@@ -545,6 +546,17 @@ args @ {lib, ...}: let
         config.aos.abilities.implementations.service-lifecycle.provide = context:
           (provideFacet "lifecycle" context)
           // {conditionalRequirements = ["network"];};
+      }
+    ];
+  };
+  invalidOwnerChild = evaluate {
+    providerAdditions = [
+      {
+        config.aos.abilities.implementations.service-lifecycle.provide = context:
+          (provideFacet "lifecycle" context)
+          // {
+            requests.child = childRequest // {owner_request = "consumer:absent";};
+          };
       }
     ];
   };
@@ -748,6 +760,7 @@ in
     assert pendingRequest.implementation == "provider:service-lifecycle";
     assert pendingRequest.providerInstance == "provider:manager";
     assert pendingRequest.requirement == "network";
+    assert pendingRequest.declaration.package == "consumer";
     assert pendingRequest.declaration.requirement == childRequirementKey;
     assert lib.abilities.types.declarationKey.check childRequirementKey;
     assert lib.abilities.types.declarationKey.check childRequestKey;
@@ -777,6 +790,7 @@ in
     assert resolvedChild.config.aos.abilities.compositionRequests.${childRequestKey}.parameters == childParameters;
     assert builtins.length (builtins.attrNames resolvedChild.config.aos.abilities.desiredResources) == 1;
     assert rejects authoredConditionalRequirement.config.aos.abilities.compositionPendingRequirements;
+    assert rejects invalidOwnerChild.config.aos.abilities.compositionPendingRequests;
     assert rejects collidingAuthoredChild.config.aos.abilities.desiredResources;
     assert rejects forgedAuthoredChild.config.aos.abilities.requests;
     assert rejects orphanChildBinding.config.aos.abilities.desiredResources;

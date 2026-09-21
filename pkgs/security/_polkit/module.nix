@@ -128,29 +128,21 @@
   };
   privilegedWrappers = serviceManagement.forProducers {
     inherit consumerInstance;
-    interface = interfaces.filesystemEntry;
-    methods = ["materialize" "observe" "release"];
+    interface = interfaces.privilegedExecutable;
+    methods = ["observe"];
     producers =
       builtins.map (wrapper: {
         key = "wrapper-${wrapper.name}";
         parameters = {
           inherit (wrapper) name;
-          entry = {
-            kind = "copied-file";
-            source = {
-              kind = "artifact-file";
-              reference = {
-                artifact = lib.abilities.packageOutput {};
-                path = wrapper.path;
-              };
-            };
-            maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
+          source = {
+            artifact = lib.abilities.packageOutput {};
+            path = wrapper.path;
           };
-          destination = "/run/wrappers/bin/${wrapper.name}";
           owner = "root";
           group = "root";
           mode = "4755";
-          prerequisites = [(resultOf "aos:wrapper-bin" "resource")];
+          maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
         };
       }) [
         {

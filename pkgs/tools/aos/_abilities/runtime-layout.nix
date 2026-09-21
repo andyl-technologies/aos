@@ -100,41 +100,9 @@
       group = "root";
     }
   ];
-  wrapperDirectories = serviceManagement.forProducers {
-    consumerInstance = "wrapper-layout";
-    interface = serviceManagement.interfaces.filesystemEntry;
-    methods = ["materialize" "observe" "release"];
-    producers = [
-      {
-        key = "wrapper-root";
-        parameters = {
-          name = "wrappers";
-          entry.kind = "directory";
-          destination = "/run/wrappers";
-          owner = "root";
-          group = "root";
-          mode = "0755";
-          prerequisites = [];
-        };
-      }
-      {
-        key = "wrapper-bin";
-        parameters = {
-          name = "wrapper-bin";
-          entry.kind = "directory";
-          destination = "/run/wrappers/bin";
-          owner = "root";
-          group = "root";
-          mode = "0755";
-          prerequisites = [(lib.abilities.resultOf "wrapper-root" "resource")];
-        };
-      }
-    ];
-  };
   contributions = builtins.map serviceManagement.splitContribution [
     abilityRuntime
     apmRuntime
-    wrapperDirectories
   ];
 in {
   config = lib.mkMerge [
@@ -148,7 +116,6 @@ in {
           [
             {instances.ability-runtime = {};}
             {instances.apm-runtime = {};}
-            {instances.wrapper-layout = {};}
           ]
           ++ builtins.map (entry: entry.configured) contributions
         );

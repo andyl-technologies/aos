@@ -41,28 +41,20 @@
     key = "wrapper-${name}";
     parameters = {
       inherit name;
-      entry = {
-        kind = "copied-file";
-        source = {
-          kind = "artifact-file";
-          reference = {
-            artifact = lib.abilities.packageOutput {};
-            inherit path;
-          };
-        };
-        maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
+      source = {
+        artifact = lib.abilities.packageOutput {};
+        inherit path;
       };
-      destination = "/run/wrappers/bin/${name}";
       owner = "root";
       group = "root";
       mode = "4755";
-      prerequisites = [(lib.abilities.resultOf "aos:wrapper-bin" "resource")];
+      maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
     };
   };
   wrappers = serviceManagement.forProducers {
     consumerInstance = "runtime";
-    interface = serviceManagement.interfaces.filesystemEntry;
-    methods = ["materialize" "observe" "release"];
+    interface = serviceManagement.interfaces.privilegedExecutable;
+    methods = ["observe"];
     producers = [
       (wrapper "sudo" "bin/sudo")
       (wrapper "sudoedit" "bin/sudo")

@@ -119,11 +119,31 @@
   childEntriesForGroups = groups:
     builtins.concatLists (builtins.map (group:
       builtins.map (localRequestKey: let
+        rawAuthored = group.result.requests.${localRequestKey};
         authored =
           exactAttrs
           "child request '${localRequestKey}' from '${group.implementationKey}'"
-          ["parameters" "requirement" "scope" "slot"]
-          group.result.requests.${localRequestKey};
+          (
+            if rawAuthored ? owner_request
+            then ["owner_request" "parameters" "requirement" "scope" "slot"]
+            else ["parameters" "requirement" "scope" "slot"]
+          )
+          rawAuthored;
+        ownerRequest = authored.owner_request or null;
+        ownerEntries =
+          if ownerRequest == null
+          then []
+          else builtins.filter (entry: entry.binding.request == ownerRequest) group.entries;
+        ownerPackage =
+          if ownerRequest == null
+          then implementationPackage group.implementationKey group.implementation
+          else if !builtins.isString ownerRequest
+          then fail "child request '${localRequestKey}' has a non-string parent request owner"
+          else if builtins.length ownerEntries != 1
+          then fail "child request '${localRequestKey}' delegates ownership to an absent or ambiguous parent request '${toString ownerRequest}'"
+          else if (builtins.head ownerEntries).request.package == null
+          then fail "child request '${localRequestKey}' delegates ownership to parent request '${ownerRequest}' without an authenticated package owner"
+          else (builtins.head ownerEntries).request.package;
         requirementKey = lib.abilities.compositionRequirementKey {
           implementation = group.implementationKey;
           alias = authored.requirement;
@@ -134,7 +154,7 @@
           key = localRequestKey;
         };
       in {
-        inherit authored localRequestKey requirementKey;
+        inherit authored localRequestKey ownerPackage ownerRequest requirementKey;
         originGroup = group.groupKey;
         implementation = group.implementationKey;
         inherit (group) providerInstance;
@@ -142,7 +162,7 @@
         slot = authored.slot;
         request = requestKey;
         declaration = {
-          package = implementationPackage group.implementationKey group.implementation;
+          package = ownerPackage;
           localKey = localRequestKey;
           requirement = requirementKey;
           consumer = group.providerInstance;

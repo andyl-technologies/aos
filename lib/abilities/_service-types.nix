@@ -1332,6 +1332,25 @@
       };
     };
   };
+  privilegedExecutable = types.record {
+    fields = {
+      name = localKey;
+      source = types.artifactPathReference;
+      owner = {
+        type = types.optional (types.deferredResult principalName);
+        optional = true;
+      };
+      group = {
+        type = types.optional (types.deferredResult groupName);
+        optional = true;
+      };
+      mode = types.fileMode;
+      maximum_size_bytes = types.integer {
+        minimum = 1;
+        maximum = types.limits.maxSafeInteger;
+      };
+    };
+  };
   hostPathView = types.record {
     fields =
       referencedViewFields
@@ -1438,6 +1457,11 @@
       producerObservation
       (types.enum ["aos.ability.filesystem-entry-observation/v1"])
       filesystemEntry
+      executionPath;
+    privilegedExecutable =
+      producerObservation
+      (types.enum ["aos.ability.privileged-executable-observation/v1"])
+      privilegedExecutable
       executionPath;
     hostPathView =
       producerObservation
@@ -1706,6 +1730,7 @@ in {
     storageView
     storageAllocation
     filesystemEntry
+    privilegedExecutable
     hostPathView
     deviceView
     rootDirectoryView
