@@ -141,12 +141,8 @@ in {
     };
   };
 
-  config = {
-    aos.kernel.targetPlatform = {
-      inherit (pkgs.stdenv.hostPlatform) system;
-      inherit (pkgs.stdenv.hostPlatform.constraints) abi cpu os;
-    };
-    environment.systemPackages = [config.aos.kernel.packageRoot];
-    aos.boot.initrd.packageRoots = [config.aos.kernel.packageRoot];
+  config.aos.kernel.targetPlatform = {
+    inherit (pkgs.stdenv.hostPlatform) system;
+    inherit (pkgs.stdenv.hostPlatform.constraints) abi cpu os;
   };
 }

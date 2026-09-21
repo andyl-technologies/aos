@@ -222,39 +222,39 @@
     host_paths = [];
     permit_core_dumps = false;
   };
-  linuxIsolation = networked: {
+  hardening = networked: {
     allow_privilege_escalation = false;
-    ambient_capabilities = [];
-    capability_bounds = {
+    ambient_privileges = [];
+    privilege_bounds = {
       kind = "restricted";
-      capabilities = [];
+      privileges = [];
     };
-    control_group_delegation = false;
-    control_group_access = "read-only";
-    device_namespace = "shared";
-    kernel_clock_mutation = false;
-    kernel_hostname_mutation = false;
-    kernel_log_access = false;
-    kernel_module_access = false;
-    kernel_tunable_access = false;
-    lock_personality = true;
-    memory_write_execute = false;
-    namespace_creation = "denied";
-    namespace_isolation = [];
-    network_address_families =
+    resource_control_delegation = false;
+    resource_control_access = "read-only";
+    device_access_scope = "shared";
+    host_clock_mutation = false;
+    host_name_mutation = false;
+    operating_system_log_access = false;
+    operating_system_extension_access = false;
+    operating_system_tunable_access = false;
+    lock_execution_personality = true;
+    writable_executable_memory = false;
+    isolation_domain_creation = "denied";
+    isolation_domains = [];
+    network_families =
       if networked
-      then ["ipv4" "ipv6" "unix"]
-      else ["unix"];
-    oom_score_adjust = 0;
+      then ["ipv4" "ipv6" "local"]
+      else ["local"];
+    memory_pressure_adjustment = 0;
     permit_realtime = false;
-    permit_suid_sgid = false;
+    permit_elevated_file_identity = false;
     process_visibility = "all";
-    syscall_architectures = ["native"];
-    syscall_allow = [];
-    syscall_deny = ["@mount" "@reboot" "@swap"];
-    syscall_denial_action = "return-permission-denied";
-    syscall_profile = "system-service";
-    user_namespace_ownership = "none";
+    operation_architectures = ["native"];
+    operation_allow = [];
+    operation_deny = ["mount" "reboot" "swap"];
+    denied_operation_action = "return-permission-denied";
+    operation_profile = "system-service";
+    isolated_identity_mapping = "none";
   };
   logging = {
     standard_output = "structured";
@@ -307,15 +307,15 @@
   service = declaration:
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
-      declaration = builtins.removeAttrs declaration ["linux_isolation"];
-      featureContributions = lib.optional (declaration ? linux_isolation) (
+      declaration = builtins.removeAttrs declaration ["hardening"];
+      featureContributions = lib.optional (declaration ? hardening) (
         serviceManagement.featureContribution {
-          key = "linux_isolation";
-          requirementAlias = "linux-service-isolation";
-          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-          interface = "aos.platform.linux.service-isolation";
+          key = "hardening";
+          requirementAlias = "service-hardening";
+          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+          interface = "aos.service.hardening";
           abi = 1;
-          parameters = declaration.linux_isolation;
+          parameters = declaration.hardening;
         }
       );
     };
@@ -349,7 +349,7 @@
       inherit logging;
       identity = identity "aos-release";
       isolation = isolation "host";
-      linux_isolation = linuxIsolation true;
+      hardening = hardening true;
     };
   timestampService = programs: credentials:
     service {
@@ -378,7 +378,7 @@
       inherit logging;
       identity = identity "aos-release-timestamp";
       isolation = isolation "host";
-      linux_isolation = linuxIsolation true;
+      hardening = hardening true;
     };
   backupService = programs: credentials:
     service {
@@ -409,7 +409,7 @@
       inherit logging;
       identity = identity "aos-release-backup";
       isolation = isolation "host";
-      linux_isolation = linuxIsolation true;
+      hardening = hardening true;
     };
   restoreService = programs:
     service {
@@ -440,7 +440,7 @@
       inherit logging;
       identity = identity "aos-release-backup";
       isolation = isolation "none";
-      linux_isolation = linuxIsolation false;
+      hardening = hardening false;
     };
   alertService = programs: credentials: failedService:
     service {
@@ -460,7 +460,7 @@
       inherit logging;
       identity = identity "aos-release-monitor";
       isolation = isolation "host";
-      linux_isolation = linuxIsolation true;
+      hardening = hardening true;
     };
 
   fragmentsFor = programs: credentials:

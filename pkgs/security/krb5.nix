@@ -488,7 +488,7 @@ in
       kdcIngress = requests."krb5:kdc-ingress".parameters;
       administrationIngress =
         administrationRequests."krb5:administration-ingress".parameters;
-      kdcLinuxIsolation = requests."krb5:kdc-linux_isolation".parameters;
+      kdcHardening = requests."krb5:kdc-hardening".parameters;
       contractHolds =
         assertionsHold enabled
         && assertionsHold withAdministration
@@ -577,7 +577,7 @@ in
             port = 749;
           }
         ]
-        && kdcLinuxIsolation.ambient_capabilities == ["CAP_NET_BIND_SERVICE"]
+        && kdcHardening.ambient_privileges == ["bind-privileged-network-port"]
         && !(requests."krb5:service-group".parameters ? requested_id)
         && !(requests."krb5:service-principal".parameters ? requested_id);
       krb5Conf = builtins.toFile "krb5-lifecycle.conf" ''

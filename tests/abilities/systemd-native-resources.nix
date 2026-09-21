@@ -281,7 +281,13 @@ in
   assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
   assert abilities.implementations."systemd:device-presence".providerModule == null;
   assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
-  assert abilities.implementations."systemd:systemd-named-credential-resolution".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
-  assert abilities.implementations."systemd:systemd-credential-delivery".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert abilities.implementations."systemd:systemd-named-credential-resolution".providerModule != null;
+  assert abilities.implementations."systemd:systemd-named-credential-resolution".handlerDescriptor == null;
+  assert abilities.implementations."systemd:systemd-credential-delivery".providerModule != null;
+  assert abilities.implementations."systemd:systemd-credential-delivery".handlerDescriptor == null;
+  assert abilities.implementations."systemd:systemd-named-credential-resolution-effects".providerModule == null;
+  assert abilities.implementations."systemd:systemd-named-credential-resolution-effects".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert abilities.implementations."systemd:systemd-credential-delivery-effects".providerModule == null;
+  assert abilities.implementations."systemd:systemd-credential-delivery-effects".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
   assert declaredHandlerEntryPoints == ["libexec/aos-systemd-provider"];
   assert builtins.length evaluation.config.systemd.providerUnitPlans == 4; true

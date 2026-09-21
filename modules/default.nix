@@ -11,7 +11,6 @@ let
     ./base
     ./security
     ./services
-    ./monitoring
     ./hardware
     ./image
     ./profiles

@@ -17,8 +17,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -303,7 +319,7 @@ in
         && ownedValues disabledAbilities.instances == {}
         && ownedValues disabledAbilities.requests == {}
         && builtins.elem "nginx:configuration-materialization" (builtins.attrNames disabledAbilities.requirementTemplates)
-        && builtins.elem "nginx:service-lifecycle" (builtins.attrNames disabledAbilities.requirementTemplates)
+        && builtins.elem "nginx:main-service-lifecycle" (builtins.attrNames disabledAbilities.requirementTemplates)
         && builtins.elem "nginx:main-lifecycle" cleartextRequests
         && !(builtins.elem "nginx:main-credentials" cleartextRequests)
         && builtins.elem "nginx:main-credentials" tlsRequests

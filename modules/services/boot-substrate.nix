@@ -172,33 +172,36 @@ in {
     '';
   };
 
-  config = {
-    aos.boot.preparationHandoff = bootPreparationHandoff;
-    system.build.checks.native-executor-path = nativeExecutorPathCheck;
-    system.build.checks.rooted-executable-path = rootedExecutablePathCheck;
-
-    environment.systemPackages = [pkgs.aos-boot-preparations];
-    aos.boot.initrd.packageRoots = [pkgs.aos-boot-preparations];
-    aos.boot.substrateServices.handoffEnabled = config.aos.boot.initrd.abilityHandoff.enable;
-    aos.abilities.stages.initrd = {
-      modules = [
-        {
-          aos.boot.substrateServices = {
-            enable = true;
-            handoffEnabled = config.aos.boot.initrd.abilityHandoff.enable;
-            verityEnabled = config.aos.security.verity.enable;
-            zfsEnabled = config.aos.boot.storage.backend == "zfs-zvol";
-            zfsPool = config.aos.boot.storage.zfs.poolName;
-            recoveryEnabled = config.aos.boot.recovery.enable;
-            recoveryAbi = config.aos.boot.recovery.abi;
-            espDevice = config.aos.filesystems.espDevice;
-            dbCertificate =
-              if config.aos.boot.recovery.enable
-              then config.aos.boot.secureBoot._effectiveDbCert
-              else "/nonexistent/aos-secure-boot-db.pem";
-          };
-        }
-      ];
-    };
-  };
+  config = lib.mkMerge [
+    {
+      aos.boot.preparationHandoff = bootPreparationHandoff;
+      system.build.checks.native-executor-path = nativeExecutorPathCheck;
+      system.build.checks.rooted-executable-path = rootedExecutablePathCheck;
+    }
+    (lib.mkIf config.aos.image.enable {
+      environment.systemPackages = [pkgs.aos-boot-preparations];
+      aos.boot.initrd.packageRoots = [pkgs.aos-boot-preparations];
+      aos.boot.substrateServices.handoffEnabled = config.aos.boot.initrd.abilityHandoff.enable;
+      aos.abilities.stages.initrd = {
+        modules = [
+          {
+            aos.boot.substrateServices = {
+              enable = true;
+              handoffEnabled = config.aos.boot.initrd.abilityHandoff.enable;
+              verityEnabled = config.aos.security.verity.enable;
+              zfsEnabled = config.aos.boot.storage.backend == "zfs-zvol";
+              zfsPool = config.aos.boot.storage.zfs.poolName;
+              recoveryEnabled = config.aos.boot.recovery.enable;
+              recoveryAbi = config.aos.boot.recovery.abi;
+              espDevice = config.aos.filesystems.espDevice;
+              dbCertificate =
+                if config.aos.boot.recovery.enable
+                then config.aos.boot.secureBoot._effectiveDbCert
+                else "/nonexistent/aos-secure-boot-db.pem";
+            };
+          }
+        ];
+      };
+    })
+  ];
 }

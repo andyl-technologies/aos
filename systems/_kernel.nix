@@ -1,6 +1,13 @@
 ##! Exact kernel selection shared by current bootable system variants.
-{pkgs, ...}: {
+{
+  config,
+  pkgs,
+  ...
+}: {
   aos.kernel.packageRoot = pkgs.linux;
+
+  environment.systemPackages = [config.aos.kernel.packageRoot];
+  aos.boot.initrd.packageRoots = [config.aos.kernel.packageRoot];
 
   aos.abilities.instances."linux:kernel-provider".implementation = "linux:kernel";
 

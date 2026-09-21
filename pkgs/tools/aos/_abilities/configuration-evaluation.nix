@@ -36,6 +36,9 @@
   multiUser = producer "multi-user" interfaces.systemMilestoneReadiness {
     milestone = milestones.multiUser;
   };
+  espReady = producer "esp-ready" interfaces.systemMilestoneReadiness {
+    milestone = milestones.espReady;
+  };
   hostStageReceived = producer "host-stage-received" interfaces.systemMilestoneReadiness {
     milestone = milestones.hostStageReceived;
   };
@@ -85,42 +88,42 @@
   registrySynchronization = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
         parameters = {
           allow_privilege_escalation = false;
-          ambient_capabilities = [];
-          capability_bounds = {
+          ambient_privileges = [];
+          privilege_bounds = {
             kind = "restricted";
-            capabilities = [];
+            privileges = [];
           };
-          control_group_delegation = false;
-          control_group_access = "read-only";
-          device_namespace = "private";
-          kernel_clock_mutation = false;
-          kernel_hostname_mutation = false;
-          kernel_log_access = false;
-          kernel_module_access = false;
-          kernel_tunable_access = false;
-          lock_personality = false;
-          memory_write_execute = false;
-          remove_ipc = false;
-          namespace_isolation = [];
-          namespace_creation = "denied";
-          network_address_families = ["ipv4" "ipv6" "unix"];
-          oom_score_adjust = 0;
+          resource_control_delegation = false;
+          resource_control_access = "read-only";
+          device_access_scope = "private";
+          host_clock_mutation = false;
+          host_name_mutation = false;
+          operating_system_log_access = false;
+          operating_system_extension_access = false;
+          operating_system_tunable_access = false;
+          lock_execution_personality = false;
+          writable_executable_memory = false;
+          remove_interprocess_communication = false;
+          isolation_domains = [];
+          isolation_domain_creation = "denied";
+          network_families = ["ipv4" "ipv6" "local"];
+          memory_pressure_adjustment = 0;
           permit_realtime = false;
-          permit_suid_sgid = false;
+          permit_elevated_file_identity = false;
           process_visibility = "all";
-          syscall_architectures = [];
-          syscall_allow = [];
-          syscall_deny = [];
-          syscall_denial_action = "return-permission-denied";
-          syscall_profile = "system-service";
-          user_namespace_ownership = "none";
+          operation_architectures = [];
+          operation_allow = [];
+          operation_deny = [];
+          denied_operation_action = "return-permission-denied";
+          operation_profile = "system-service";
+          isolated_identity_mapping = "none";
         };
       })
     ];
@@ -292,11 +295,7 @@
         // lib.optionalAttrs (conditions != null) {inherit conditions;}
         // lib.optionalAttrs (failurePolicy != null) {failure_policy = failurePolicy;};
     };
-  mountEsp = {
-    _type = "aos-request-output-reference";
-    request = "aos-boot-storage:aos-mount-esp-lifecycle";
-    output = "resource";
-  };
+  mountEsp = resultOf "esp-ready" "resource";
   activationPreflight = resultOf "aos-graph-compile-lifecycle" "resource";
   activation = resultOf "aos-activate-lifecycle" "resource";
   configurationReady = resultOf "aos-config" "resource";
@@ -334,42 +333,42 @@
   service = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
         parameters = {
           allow_privilege_escalation = false;
-          ambient_capabilities = [];
-          capability_bounds = {
+          ambient_privileges = [];
+          privilege_bounds = {
             kind = "restricted";
-            capabilities = [];
+            privileges = [];
           };
-          control_group_delegation = false;
-          control_group_access = "read-only";
-          device_namespace = "private";
-          kernel_clock_mutation = false;
-          kernel_hostname_mutation = false;
-          kernel_log_access = false;
-          kernel_module_access = false;
-          kernel_tunable_access = false;
-          lock_personality = false;
-          memory_write_execute = false;
-          remove_ipc = false;
-          namespace_isolation = [];
-          namespace_creation = "denied";
-          network_address_families = ["ipv4" "ipv6" "unix"];
-          oom_score_adjust = 0;
+          resource_control_delegation = false;
+          resource_control_access = "read-only";
+          device_access_scope = "private";
+          host_clock_mutation = false;
+          host_name_mutation = false;
+          operating_system_log_access = false;
+          operating_system_extension_access = false;
+          operating_system_tunable_access = false;
+          lock_execution_personality = false;
+          writable_executable_memory = false;
+          remove_interprocess_communication = false;
+          isolation_domains = [];
+          isolation_domain_creation = "denied";
+          network_families = ["ipv4" "ipv6" "local"];
+          memory_pressure_adjustment = 0;
           permit_realtime = false;
-          permit_suid_sgid = false;
+          permit_elevated_file_identity = false;
           process_visibility = "all";
-          syscall_architectures = [];
-          syscall_allow = [];
-          syscall_deny = ["@clock" "@cpu-emulation" "@debug" "@keyring" "@mount" "@obsolete" "@privileged" "@raw-io" "@reboot" "@resources" "@swap"];
-          syscall_denial_action = "return-permission-denied";
-          syscall_profile = "system-service";
-          user_namespace_ownership = "none";
+          operation_architectures = [];
+          operation_allow = [];
+          operation_deny = ["clock" "cpu-emulation" "debug" "keyring" "mount" "obsolete" "privileged" "raw-io" "reboot" "resource-control" "swap"];
+          denied_operation_action = "return-permission-denied";
+          operation_profile = "system-service";
+          isolated_identity_mapping = "none";
         };
       })
     ];
@@ -530,6 +529,7 @@
     networkReadiness
     userSessions
     multiUser
+    espReady
     hostStageReceived
     registrySynchronization
     service

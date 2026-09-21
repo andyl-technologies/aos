@@ -373,6 +373,23 @@
   # deployable configuration sources. Replay tests use source-backed modules.
   mkFixtureSystem = args:
     (mkSystemState {allowInlineModules = true;} args).system;
+  # Package integration checks inspect provider-neutral declarations through
+  # the current manager provider. Supply the common build's kernel package and
+  # the explicit manager selection without pulling in a complete image payload.
+  mkPackageFixtureSystem = args:
+    mkFixtureSystem (
+      args
+      // {
+        modules =
+          [
+            ./systems/_ability-providers.nix
+            ./systems/_artifact-backend.nix
+            ./systems/_kernel.nix
+            ./systems/_system-manager.nix
+          ]
+          ++ (args.modules or []);
+      }
+    );
   mkAbilityQualificationProjection = args:
     (mkSystemState {} args).qualificationProjection;
 
@@ -843,7 +860,7 @@
         // prefixAttrs name (
           pkg.checks (builtins.intersectAttrs (builtins.functionArgs pkg.checks) {
             inherit testing pkgs;
-            mkSystem = mkFixtureSystem;
+            mkSystem = mkPackageFixtureSystem;
             self = pkg;
           })
         )

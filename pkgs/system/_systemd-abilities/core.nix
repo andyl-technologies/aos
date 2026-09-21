@@ -41,8 +41,9 @@
     };
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  servicePolicy = lib.abilities.interfaces.servicePolicy;
   milestones = serviceManagement.milestones;
-  serviceInterfaces = serviceManagement.interfaces;
+  serviceInterfaces = serviceManagement.interfaces // servicePolicy.interfaces;
   serviceTypes = serviceManagement.types;
   imageRolloutPlatform = lib.abilities.interfaces.imageRolloutPlatform.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -200,10 +201,7 @@
       == dbusRegistrationInterface.name
       && declaration.abi == dbusRegistrationInterface.abi)
     (builtins.attrValues config.aos.abilities.interfaces);
-  systemManagerServiceFacets =
-    if config == null
-    then {}
-    else config.aos.systemd.serviceFacets;
+  systemManagerServiceFacets = servicePolicy.facets;
   serviceFacetPayloadSchema = schema:
     if schema.kind == "refined"
     then schema // {value = serviceFacetPayloadSchema schema.value;}
@@ -219,8 +217,10 @@
       }
     else throw "system-manager service facet request must be a record or refined record";
   systemManagerServiceFacetTypes = builtins.listToAttrs (builtins.map (feature: let
-      declaration = config.aos.abilities.interfaces."${packageName}:${feature.alias}";
-      requestSchema = declaration.requestType._abilitySchema;
+      selected = builtins.head (builtins.filter
+        (interface: interface.alias == feature.alias)
+        (builtins.attrValues servicePolicy.interfaces));
+      requestSchema = selected.requestType._abilitySchema;
     in {
       name = feature.facet;
       value = types.fromSchema (serviceFacetPayloadSchema requestSchema);
@@ -1260,38 +1260,95 @@
       requiredFeatures = [];
     };
   };
-  credentialImplementations = {
-    systemd-named-credential-resolution = {
+  credentialControllers = [
+    {
+      controllerAlias = "systemd-named-credential-resolution";
+      selected = serviceInterfaces.namedCredential;
       description = "Resolves system-scoped credentials through systemd's named credential stores.";
-      interface = serviceInterfaces.namedCredential.identity;
-      artifact = handlerArtifact;
-      inherit (serviceInterfaces.namedCredential) methods;
-      guarantees = [];
-      handlerDescriptor = {
-        artifact = handlerArtifact;
-        entryPoint = handlerEntryPoint;
-        arguments = serviceInterfaces.namedCredential.requestType;
-        result = serviceInterfaces.namedCredential.observationType;
-      };
-      desiredType = null;
-      requiredFeatures = [];
-    };
-    systemd-credential-delivery = {
+    }
+    {
+      controllerAlias = "systemd-credential-delivery";
+      selected = serviceInterfaces.credentialDelivery;
       description = "Delivers system-scoped credentials through systemd-owned credential stores and runtime views.";
-      interface = serviceInterfaces.credentialDelivery.identity;
-      artifact = handlerArtifact;
-      inherit (serviceInterfaces.credentialDelivery) methods;
+    }
+  ];
+  credentialEffectsAlias = selected: "systemd-${selected.alias}-effects";
+  credentialEffectsDeclaration = selected:
+    lib.abilities.declareInterface {
+      name = "aos.systemd.${selected.alias}-effects";
+      description = "Executes checked terminal systemd effects for ${selected.document.interface.name}.";
+      abi = 1;
+      requestType = selected.requestType;
+      outputs = {};
+      methods = builtins.mapAttrs (_: method:
+        method
+        // {
+          parameters = selected.requestType;
+          targetResource = selected.identity.name;
+        })
+      selected.declaration.methods;
+      lifecycle = selected.declaration.lifecycle;
+      aggregation =
+        selected.declaration.aggregation
+        // {
+          controllerGroup = credentialEffectsAlias selected;
+        };
+      configurationType = null;
       guarantees = [];
-      handlerDescriptor = {
-        artifact = handlerArtifact;
-        entryPoint = handlerEntryPoint;
-        arguments = serviceInterfaces.credentialDelivery.requestType;
-        result = serviceInterfaces.credentialDelivery.observationType;
-      };
-      desiredType = null;
-      requiredFeatures = [];
     };
-  };
+  credentialEffectsIdentity = selected:
+    lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration (credentialEffectsDeclaration selected)
+    );
+  credentialControllerImplementations = builtins.listToAttrs (builtins.map (controller: let
+      inherit (controller) selected;
+    in {
+      name = controller.controllerAlias;
+      value = {
+        inherit (controller) description;
+        interface = selected.identity;
+        inherit artifact;
+        inherit (selected) methods;
+        guarantees = [];
+        requirements.credential-effects = {
+          alias = "credential-effects";
+          description = "Selects the checked lower systemd credential executor for ${selected.document.interface.name}.";
+          accepted_interfaces = [(credentialEffectsIdentity selected)];
+          inherit (selected) methods;
+          guarantees = [];
+          strength = "required";
+          fallback = null;
+        };
+        providerModule = {
+          artifact = lib.abilities.packageOutput {output = "module";};
+          path = "provider/systemd.nix";
+        };
+        desiredType = null;
+        requiredFeatures = [];
+      };
+    })
+    credentialControllers);
+  credentialTerminalImplementations = builtins.listToAttrs (builtins.map (controller: let
+      inherit (controller) selected;
+    in {
+      name = credentialEffectsAlias selected;
+      value = {
+        description = "Executes checked ${selected.document.interface.name} effects through systemd.";
+        interface = credentialEffectsAlias selected;
+        artifact = handlerArtifact;
+        inherit (selected) methods;
+        guarantees = [];
+        handlerDescriptor = {
+          artifact = handlerArtifact;
+          entryPoint = handlerEntryPoint;
+          arguments = selected.requestType;
+          result = selected.observationType;
+        };
+        desiredType = null;
+        requiredFeatures = [];
+      };
+    })
+    credentialControllers);
   serviceFeatureNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
     aggregation = selected.document.interface.aggregation;
@@ -1452,6 +1509,11 @@ in {
           value = readinessEffectsDeclaration selected;
         })
         readinessControllers)
+      // builtins.listToAttrs (builtins.map (controller: {
+          name = credentialEffectsAlias controller.selected;
+          value = credentialEffectsDeclaration controller.selected;
+        })
+        credentialControllers)
       // builtins.listToAttrs (builtins.map (kind: {
         name = identityKinds.${kind}.effectsAlias;
         value = identityEffectsDeclarations.${kind};
@@ -1471,7 +1533,8 @@ in {
       // nativeTerminalImplementations
       // devicePresenceImplementation
       // imagePlatformImplementations
-      // credentialImplementations
+      // credentialControllerImplementations
+      // credentialTerminalImplementations
       // {
         systemd-manager-watchdog = {
           description = "Controls systemd manager watchdog configuration through a pure package-owned controller.";

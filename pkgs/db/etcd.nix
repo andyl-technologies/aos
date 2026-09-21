@@ -40,9 +40,36 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
     pname = "etcd";
@@ -261,7 +288,8 @@ in
         (request: request.localKey)
         (builtins.filter
           (request:
-            request.package == self.pname
+            request.package
+            == self.pname
             && lib.hasPrefix "credential-" request.localKey)
           (builtins.attrValues evaluation.config.aos.abilities.requests));
       expectedRequestOutput = localKey: output: {
@@ -312,7 +340,7 @@ in
         && ownedValues disabledAbilityConfig.instances == {}
         && ownedValues disabledAbilityConfig.requests == {}
         && builtins.elem "etcd:credential-delivery" disabledRequirements
-        && builtins.elem "etcd:service-lifecycle" disabledRequirements
+        && builtins.elem "etcd:main-service-lifecycle" disabledRequirements
         && builtins.elem "etcd:main-lifecycle" requests
         && builtins.elem "etcd:main-dependencies" requests
         && builtins.elem "etcd:main-readiness" requests

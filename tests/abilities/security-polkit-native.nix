@@ -48,7 +48,7 @@ in
   == 33554432;
   assert requests."polkit:polkit-resources".parameters.locked_memory_bytes.value == 0;
   assert requests."polkit:polkit-resources".parameters.oom_policy == "stop";
-  assert requests."polkit:polkit-linux_device_policy".parameters.rules
+  assert requests."polkit:polkit-device_policy".parameters.rules
   == [
     {
       selector = {
@@ -59,7 +59,7 @@ in
       };
       read = true;
       write = true;
-      create_node = false;
+      create = false;
     }
   ];
   assert requests."polkit:local-rules-file".parameters.destination

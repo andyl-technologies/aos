@@ -890,7 +890,7 @@
       !(builtins.elem
         {
           _type = "aos-request-output-reference";
-          request = "aos-boot-storage:aos-mount-esp-lifecycle";
+          request = "aos:esp-ready";
           output = "resource";
         }
         bareMetalStorageSystem.config.aos.abilities.requests."aos:image-boot-commit-dependencies".parameters.requires)

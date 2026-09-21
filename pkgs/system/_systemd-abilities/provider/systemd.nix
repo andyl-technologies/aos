@@ -21,31 +21,12 @@
     inherit (lib.abilities) transitionFragment;
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  servicePolicy = lib.abilities.interfaces.servicePolicy;
   milestones = serviceManagement.milestones;
   serviceInterfaces = serviceManagement.interfaces;
-  linuxServiceFacets = config.aos.systemd.serviceFacets;
-  selectedLinuxInterface = _: feature: let
-    alias = feature.alias;
-    declaration = config.aos.abilities.interfaces."${packageName}:${alias}";
-    semanticDeclaration =
-      declaration
-      // {
-        guarantees = builtins.map semanticGuarantee declaration.guarantees;
-        methods = builtins.mapAttrs (_: method:
-          method // {guarantees = builtins.map semanticGuarantee method.guarantees;})
-        declaration.methods;
-      };
-    document = lib.abilities.interfaceDocumentFromDeclaration semanticDeclaration;
-  in {
-    inherit alias declaration document;
-    identity = lib.abilities.interfaceIdentity document;
-    methods = builtins.attrNames declaration.methods;
-    guarantees = declaration.guarantees;
-    requestType = declaration.requestType;
-    observationType = declaration.methods.observe.outcome.observationEvidence;
-  };
-  linuxServiceInterfaces = builtins.mapAttrs selectedLinuxInterface linuxServiceFacets;
-  allServiceInterfaces = serviceInterfaces // linuxServiceInterfaces;
+  policyServiceFacets = servicePolicy.facets;
+  policyServiceInterfaces = servicePolicy.interfaces;
+  allServiceInterfaces = serviceInterfaces // policyServiceInterfaces;
   serviceEffectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-service-effects"
   );
@@ -105,6 +86,8 @@
   activationMilestoneAlias = serviceInterfaces.activationMilestone.alias;
   systemMilestoneReadinessAlias = serviceInterfaces.systemMilestoneReadiness.alias;
   runtimeEntryPopulationAlias = serviceInterfaces.runtimeEntryPopulation.alias;
+  namedCredentialImplementationAlias = "systemd-named-credential-resolution";
+  credentialDeliveryImplementationAlias = "systemd-credential-delivery";
   readinessControllers = [
     serviceInterfaces.networkReadiness
     serviceInterfaces.filesystemReadiness
@@ -305,10 +288,10 @@
   facetProjectionFor = selected: let
     requestFields = builtins.removeAttrs selected.requestType._abilitySchema.fields ["service" "enabled"];
     requestFieldNames = builtins.attrNames requestFields;
-    configuredPlatformFacet =
+    configuredPolicyFacet =
       builtins.filter
-      (feature: linuxServiceInterfaces.${feature}.identity == selected.identity)
-      (builtins.attrNames linuxServiceInterfaces);
+      (feature: policyServiceInterfaces.${feature}.identity == selected.identity)
+      (builtins.attrNames policyServiceInterfaces);
     candidates =
       builtins.concatMap (facet: let
         schema = serviceResourceFields.${facet};
@@ -339,9 +322,9 @@
         (fieldName: fieldName != "service" && fieldName != "enabled")
         (builtins.attrNames serviceResourceFields));
   in
-    if builtins.length configuredPlatformFacet == 1
+    if builtins.length configuredPolicyFacet == 1
     then {
-      facet = linuxServiceFacets.${builtins.head configuredPlatformFacet}.facet;
+      facet = policyServiceFacets.${builtins.head configuredPolicyFacet}.facet;
       field = null;
     }
     else if builtins.length candidates != 1
@@ -436,6 +419,43 @@
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
           value.${outputName} = entry.reference;
+        })
+        entries);
+    };
+
+  provideCredentialResource = selected: context: let
+    entries = builtins.map (requestName: let
+      binding = bindingFor context.bindings requestName;
+    in {
+      inherit requestName binding;
+      parameters = context.requests.${requestName}.parameters;
+      reference = {
+        _type = "aos-resource-reference";
+        interface = selected.identity;
+        resource = {
+          provider = context.instance.id;
+          key = binding.slot;
+        };
+        operations = ["observe"];
+        lifetime = "instance";
+      };
+    }) (builtins.attrNames context.requests);
+  in
+    emptyProvideResult
+    // {
+      requests = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.binding.slot;
+          value = {
+            requirement = "credential-effects";
+            scope = [selected.alias];
+            slot = entry.binding.slot;
+            parameters = entry.parameters;
+          };
+        })
+        entries);
+      outputs = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.requestName;
+          value.resource = entry.reference;
         })
         entries);
     };
@@ -1214,6 +1234,12 @@ in {
       };
       ${loginSessionTrackingAlias} = {
         provide = provideSelectedPolicy;
+      };
+      ${namedCredentialImplementationAlias} = {
+        provide = provideCredentialResource serviceInterfaces.namedCredential;
+      };
+      ${credentialDeliveryImplementationAlias} = {
+        provide = provideCredentialResource serviceInterfaces.credentialDelivery;
       };
       ${implementationAlias} = {
         inherit provide compose;

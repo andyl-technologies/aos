@@ -25,7 +25,7 @@
     systemdModule = lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd;
     packageModules = [
       (systemdModule
-        // {module = "${systemdModule.configRoot}/linux-service-features.nix";})
+        // {module = "${systemdModule.configRoot}/core.nix";})
       {
         name = "k3s-combined";
         version = pkgs.k3s-combined.version;
