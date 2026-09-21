@@ -156,8 +156,8 @@
         needle = "stopAt ? 4000000000";
       }
       {
-        label = "S11 numeric stop_at sustains the validated workload";
-        needle = "smp-contended --sustain";
+        label = "S11 static PID 1 passes the sustained workload selector";
+        needle = ''"--sustain",'';
       }
       {
         label = "S11 explicit null stop_at retains reboot completion";
