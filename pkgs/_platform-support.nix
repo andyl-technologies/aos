@@ -785,6 +785,8 @@ let
     "tools/miniflare/_sharp-addon.nix" = "cross-build-helper";
     "tools/workerd/_binaryen.nix" = "native-build-helper";
     "tools/workerd/_cargo-bazel.nix" = "native-build-helper";
+    "tools/workerd/_cross-clang.nix" = "cross-build-helper";
+    "tools/workerd/_cross-toolchain.nix" = "cross-build-helper";
     "tools/workerd/_emscripten-acorn.nix" = "native-build-helper";
     "tools/workerd/_emscripten-llvm.nix" = "native-build-helper";
     "tools/workerd/_emscripten.nix" = "native-build-helper";
