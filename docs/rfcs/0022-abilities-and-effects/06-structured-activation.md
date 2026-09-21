@@ -39,11 +39,14 @@ proposed difference is explicit, typed, recursively provider-authored transition
 contracts that expose authority, dependencies, and recovery. See the upstream
 [system-switch description](https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/what-happens-during-a-system-switch.chapter.md).
 
-The existing [graph compiler](../../../crates/aos-package/src/graph_compile/mod.rs)
-already uses systemd for provisioning order, parallelism, and failure isolation.
-The existing [activation implementation](../../../crates/aos-package/src/config_eval/activation.rs)
-owns configuration commit and generation publication. Extend those boundaries
-rather than introducing a competing service supervisor.
+The checked
+[ability activation path](../../../crates/aos-package/src/config_eval/ability_activation.rs)
+constructs and validates provider-authored transitions, while the
+[activation implementation](../../../crates/aos-package/src/config_eval/activation.rs)
+owns configuration commit and generation publication. The
+[ability runtime](../../../crates/aos-ability-runtime/src/lib.rs) schedules the
+validated effect graph through the selected handlers; it does not introduce a
+competing service supervisor.
 
 ## A typed execution language represented as data
 

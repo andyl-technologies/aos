@@ -15,11 +15,11 @@ profile executables on `PATH`. Root identity does not change the APM scope.
 
 The [runtime boundary](../../../crates/aos-package/src/runtime_boundary.rs)
 rejects system-scope and host activation operations. The
-[exposed-unit reconciler](../../../crates/aos-package/src/exposed_units.rs)
-does nothing for non-system profiles. User installation can retain and validate
-service artifacts without starting their services. Read-only environments
-reject package mutations. This is intentional current behavior, not evidence
-that every installed payload will execute successfully.
+[baseline exposed-unit reconciler](https://github.com/andyl-technologies/aos/blob/10432f8cca97a169754759e42c19cff08fa0a946/crates/aos-package/src/exposed_units.rs)
+did nothing for non-system profiles. User installation could retain and
+validate service artifacts without starting their services. Read-only
+environments rejected package mutations. This was intentional baseline
+behavior, not evidence that every installed payload could execute successfully.
 
 The problem extends beyond containers. Build dependencies, runtime libraries,
 configuration contributions, unit dependencies, firewall requests, boot-stage
@@ -42,11 +42,11 @@ Their relationships are often recoverable only by reading implementation code.
 | OCI builders | Explicit userland closure and filesystem/runtime metadata | Selected environment providers and runtime requirements |
 | Canonical documentation | Signed exact package documents and release-scoped indexes | Interface, consumption, plan, and outcome explanations |
 
-Code anchors include [package construction](../../../pkgs/default.nix),
-[configuration metadata](../../../pkgs/build-support/_config-module-renderer.nix),
+Baseline code anchors include [package construction](../../../pkgs/default.nix),
+[configuration metadata](https://github.com/andyl-technologies/aos/blob/10432f8cca97a169754759e42c19cff08fa0a946/pkgs/build-support/_config-module-renderer.nix),
 [ownership resolution](../../../crates/aos-package/src/config_eval/system_roots.rs),
 [module namespacing](../../../lib/namespacing.nix), and
-[configuration graph compilation](../../../crates/aos-package/src/graph_compile/mod.rs).
+[configuration graph compilation](https://github.com/andyl-technologies/aos/blob/10432f8cca97a169754759e42c19cff08fa0a946/crates/aos-package/src/graph_compile/mod.rs).
 
 The package topology is already flexible. nginx attaches its integration to
 its payload. `k3s-worker` and related role packages consume a shared k3s payload.
@@ -59,7 +59,7 @@ model does not require a separate class of service packages.
 The [nginx package](../../../pkgs/networking/nginx.nix) declares a foreground
 command, preparation and reload helpers, dynamic identity, runtime/state/log
 directories, TLS credential declarations, and network/capability permissions.
-Its [configuration module](../../../pkgs/networking/_nginx-config/module.nix)
+Its [configuration module](../../../pkgs/networking/_nginx/module.nix)
 owns `nginx.*`, validates virtual hosts, produces `nginx.conf`, and projects
 configuration and credential bindings.
 
