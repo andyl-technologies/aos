@@ -12,9 +12,9 @@
   stdenv,
   buildPackages,
 }: let
-  version = "1.10.6";
+  version = "1.10.8";
   majorMinor = "1.10";
-  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isCross = stdenv.isCross;
 in
   mkDerivation {
     pname = "json-glib";
@@ -24,11 +24,11 @@ in
       urls = [
         "https://download.gnome.org/sources/json-glib/${majorMinor}/json-glib-${version}.tar.xz"
       ];
-      hash = "sha256-d/S8v5M5Uo8Wa4BzRYaT8KILd7cFnbwtthdGoZKLApM=";
+      hash = "sha256-VcXBQaVkJFuPj752mGY8h6RaczPCosVvBvgRq3OyEt0=";
     };
 
     buildDeps =
-      if isDarwinCross
+      if isCross
       then [
         buildPackages.gnumake
         buildPackages.pkg-config
@@ -76,7 +76,7 @@ in
       {
         name = "configure";
         script =
-          if isDarwinCross
+          if isCross
           then ''
             # Keep generator programs native while exposing the target
             # GLib headers, linker names, and pkg-config metadata.

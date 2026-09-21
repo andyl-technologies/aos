@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
   gnumake,
   pkg-config,
   file,
@@ -71,6 +72,11 @@ in
         script =
           if stdenv.isCross && stdenv.hostPlatform.isDarwin
           then ''
+            # Cyrus SASL uses K&R-style prototype compatibility macros. C23
+            # changes empty parameter lists to mean no parameters, so build
+            # this release in the dialect its configure logic expects.
+            export CFLAGS="''${CFLAGS:-} -std=gnu17"
+
             # makemd5 generates a target header and executes on Linux. Isolate
             # its compiler from target SDK paths and arm64 PAC hardening.
             native_cc="$BUILD_CC"
@@ -110,17 +116,28 @@ in
               --with-openssl=${openssl} \
               --with-sqlite3=${sqlite}
           ''
-          else ''
-            ./configure \
-              $configureFlags \
-              --prefix=$out \
-              --enable-shared \
-              --enable-static \
-              --enable-gssapi \
-              --enable-scram \
-              --with-openssl=${openssl} \
-              --with-sqlite3=${sqlite}
-          '';
+          else
+            lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              # MIT Kerberos includes SPNEGO; configure otherwise tries to run
+              # its mechanism-enumeration executable while cross compiling.
+              export ac_cv_gssapi_supports_spnego=yes
+            ''
+            + ''
+              # Cyrus SASL uses K&R-style prototype compatibility macros. C23
+              # changes empty parameter lists to mean no parameters, so build
+              # this release in the dialect its configure logic expects.
+              export CFLAGS="''${CFLAGS:-} -std=gnu17"
+
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --enable-shared \
+                --enable-static \
+                --enable-gssapi \
+                --enable-scram \
+                --with-openssl=${openssl} \
+                --with-sqlite3=${sqlite}
+            '';
       }
       {
         name = "build";
@@ -151,7 +168,7 @@ in
       cli = testing.mkToolCheck {
         pname = "tool-sasl2";
         tool = self;
-        command = "sasl2pluginviewer";
+        command = "${self}/sbin/pluginviewer -s";
       };
 
       soname = testing.mkSONAMECheck {

@@ -9,6 +9,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   meson,
   ninja,
   pkg-config,
@@ -48,7 +50,12 @@ in
         script = ''
           nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
           export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
-          meson setup build \
+          ${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Meson's installed library must retain the target OpenSSL path;
+            # its temporary build-tree search paths are removed on install.
+            export PKG_CONFIG_PATH="${openssl}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,${openssl}/lib"
+          ''}meson setup build \
             $mesonFlags \
             --prefix=$out \
             -Dfuse=disabled \

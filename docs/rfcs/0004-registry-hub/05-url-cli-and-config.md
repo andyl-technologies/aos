@@ -47,8 +47,8 @@ The magic is protocol reuse, not new glue:
   --token aos_…` pipeline needs zero new flags.
 - **Publish-completion hook**: when the mutable pointers land
   (`info/refs`, `channels/**`, `nix-cache-info`), the hub indexes the
-  new state inline and triggers presence validation — no S3-event
-  plumbing in the managed path. Out-of-band uploads (direct to R2) are
+  new state inline — no S3-event plumbing in the managed path.
+  Out-of-band uploads (direct to R2) are
   picked up by the scheduled indexer re-walking the surface exactly as
   an `apm` client would.
 - **`apr login https://hub.example.com`** — device-code flow, token

@@ -3,16 +3,20 @@
   mkGoPackage,
   fetchGoModules,
   fetchurl,
+  buildPackages,
+  bash,
+  go,
+  stdenv,
 }: let
-  version = "0.22.0";
+  version = "0.23.0";
   src = fetchurl {
     urls = ["https://github.com/golang/tools/archive/refs/tags/gopls/v${version}.tar.gz"];
-    hash = "sha256-JJ3AxLnz6FP2p/tvNSjbL0h5PnxUMj87Mqo49kMvCIo=";
+    hash = "sha256-G6QYdbkY23PGpAmtj1Urhfct/upD/7VBt5gyL/a0FSs=";
   };
   goModules = fetchGoModules {
     inherit src;
     sourceRoot = "tools-gopls-v${version}/gopls";
-    hash = "sha256-XhcQW1G05gmD9UWmHEJ8bLNnsJ8cARw3Wm6F2z9H3L0=";
+    hash = "sha256-jQtTmUSar1QgMxgrnfslfTFX37ypK36p27mzJdDHWHM=";
   };
 in
   mkGoPackage {
@@ -23,6 +27,24 @@ in
     goOutput = "gopls";
     ldflags = "-s -w -X main.version=v${version}";
     doCheck = false;
+    runtimeDeps = [bash go];
+    # Retain the target Go toolchain, while cross builds still reject native Go.
+    disallowedReferences =
+      if stdenv.isCross
+      then [buildPackages.go]
+      else [];
+    postInstall = ''
+      # Workspace loading runs Go commands even when no compilation is requested.
+      mkdir -p "$out/libexec"
+      mv "$out/bin/gopls" "$out/libexec/gopls"
+      cat > "$out/bin/gopls" <<EOF
+      #!${bash}/bin/bash
+      export PATH="${go}/bin\''${PATH:+:}\$PATH"
+      exec "$out/libexec/gopls" "\$@"
+      EOF
+      chmod +x "$out/bin/gopls"
+    '';
+
     checks = {
       testing,
       self,

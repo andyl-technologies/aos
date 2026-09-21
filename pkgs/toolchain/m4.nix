@@ -5,7 +5,7 @@
   gnumake,
   stdenv,
 }: let
-  version = "1.4.20";
+  version = "1.4.21";
 in
   mkDerivation {
     pname = "m4";
@@ -15,7 +15,7 @@ in
       urls = [
         "https://mirrors.kernel.org/gnu/m4/m4-${version}.tar.xz"
       ];
-      hash = "sha256-4jbqOhzPX2wnCxxLtgcm83H6SUWajqrryQshazKNrys=";
+      hash = "sha256-8lxqtRVIpzp1VYdC+wMeBiXWSF/l+RVZSdZIaiQIq2Y=";
     };
 
     buildDeps = [gnumake];

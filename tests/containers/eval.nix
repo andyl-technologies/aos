@@ -37,7 +37,32 @@
   testing = evaluate "aos-testing-eval" [testingModule];
   aos = definitionFor {};
   testingAos = testing.config.aos.containers.definitions.aos;
+  testingChannels = builtins.map (channel: let
+    evaluated = evaluate "testing-channel-eval" [testingModule {aos.release.channel = channel;}];
+  in {
+    inherit channel;
+    profile = evaluated.config.aos.release;
+    container = evaluated.config.aos.containers.definitions.aos;
+  }) ["edge" "candidate" "stable"];
   goldenRoots = server.config.environment.systemPackages;
+
+  fixture = evaluateServer {
+    aos.image.allowTestArtifacts = true;
+    aos.image.testArtifactRoots = [pkgs.python3];
+    aos.containers.definitions.custom =
+      (import ../../containers/aos.nix {
+        inherit lib pkgs goldenRoots aosSystem;
+      })
+      .config;
+  };
+  fixturePolicy = fixture.config.aos.containers.definitions.aos.runtimePolicy;
+  customPolicy = fixture.config.aos.containers.definitions.custom.runtimePolicy;
+  fixtureAudit = fixture.config.system.build.containers.aos.checks.runtimeAudit;
+  customAudit = fixture.config.system.build.containers.custom.checks.runtimeAudit;
+  unmarkedTestRoots = tryDefinition {
+    aos.containers.definitions.aos.runtimePolicy.testArtifactRoots = [pkgs.python3];
+  };
+
   mismatchedSystem =
     if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
     then "aarch64-linux"
@@ -119,7 +144,7 @@
   ];
   invalidTestingChannel = trySystem [
     testingModule
-    {aos.release.channel = lib.mkForce "stable";}
+    {aos.release.channel = lib.mkForce "unknown";}
   ];
   invalidTestingAlias = trySystem [
     testingModule
@@ -133,6 +158,17 @@
   testingFileText = lib.concatMapStringsSep "\n" (file: file.text) testingAos.filesystem.files;
 in
   assert aos.name == "aos";
+  assert !aos.runtimePolicy.allowTestArtifacts;
+  assert aos.runtimePolicy.testArtifactRoots == [];
+  assert fixturePolicy.allowTestArtifacts;
+  assert map builtins.toString fixturePolicy.testArtifactRoots == ["${pkgs.python3}"];
+  assert !customPolicy.allowTestArtifacts;
+  assert customPolicy.testArtifactRoots == [];
+  assert fixtureAudit.ALLOW_TEST_ARTIFACTS == "1";
+  assert map builtins.toString fixtureAudit.exportReferencesGraph.testArtifacts == ["${pkgs.python3}"];
+  assert customAudit.ALLOW_TEST_ARTIFACTS == "0";
+  assert customAudit.exportReferencesGraph.testArtifacts == [];
+  assert !unmarkedTestRoots.success;
   assert builtins.attrNames server.config.system.build.containers == ["aos"];
   assert server.config.system.build.defaultContainer.coordination.definitionAttribute
   == "systems.container-eval.build.containers.aos";
@@ -162,11 +198,21 @@ in
   );
   assert aos.platform.aosSystem == aosSystem;
   assert testing.config.aos.release.registry == "andyl/testing";
-  assert testing.config.aos.system.version == "2026.9.0-dev.20260904.1";
+  assert testing.config.aos.system.version == "2026.9.0-dev.20260917.0";
   assert lib.hasInfix "\nID=aos\n" testing.config.environment.etc."os-release".text;
   assert lib.hasInfix "\nAOS_REGISTRY=andyl/testing\n" testing.config.environment.etc."os-release".text;
   assert testing.config.system.build.defaultContainer.coordination.definitionAttribute
   == "systems.aos-testing-eval.build.containers.aos";
+  assert builtins.all (entry:
+    entry.profile.registry
+    == "andyl/testing"
+    && entry.profile.channel == entry.channel
+    && entry.container.publication.referenceTag == entry.channel
+    && entry.container.runtime.environment.AOS_REGISTRY == "andyl/testing")
+  testingChannels;
+  assert testing.config.aos.release.url == "https://cdn.aos.andyl.org/andyl/testing/";
+  assert testing.config.aos.apm.registries.andyl-testing.url == "https://cdn.aos.andyl.org/andyl/testing/";
+  assert lib.hasInfix "https://cdn.aos.andyl.org/andyl/testing/" testingFileText;
   assert testing.config.aos.release.channel == "edge";
   assert builtins.attrNames testing.config.aos.apm.registries == ["andyl-testing"];
   assert testingAos.publication.repository == "aos-testing";

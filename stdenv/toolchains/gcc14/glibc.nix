@@ -9,6 +9,7 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  runtimePerl ? null,
 }: let
   # Control-flow Enforcement Technology is x86-only in glibc 2.39. Plain
   # --enable-cet (not permissive): a CET-enabled AOS process loading a
@@ -26,6 +27,7 @@ in
       linuxHeaders
       buildPlatform
       hostPlatform
+      runtimePerl
       ;
   } {
     version = "2.39";

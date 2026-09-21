@@ -1,6 +1,6 @@
 //! Closed registry identities and release-channel policy.
 //!
-//! `andyl/main` and `andyl/testing` are separate security and lifecycle
+//! `andyl/main` and `andyl/testing` are separate security and assurance
 //! domains. Mutable channels classify releases inside a registry; they do not
 //! replace that boundary. A destructive testing-root reset advances the
 //! registry identity (`andyl/testing-v2`, `andyl/testing-v3`, and so on), so an
@@ -15,12 +15,12 @@ pub const MAIN_REGISTRY: &str = "andyl/main";
 /// First-epoch experimental registry identity.
 pub const TESTING_REGISTRY: &str = "andyl/testing";
 
-/// Operational lifecycle attached to a supported registry identity.
+/// Pipeline assurance attached to a supported registry identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegistryTier {
-    /// Supported release candidates and production releases.
+    /// Strictly assured releases in every software channel.
     Production,
-    /// Disposable experimental edge releases.
+    /// Releases from the experimental build and publication pipeline.
     Testing,
 }
 
@@ -32,7 +32,7 @@ pub struct RegistryPolicy {
 }
 
 impl RegistryPolicy {
-    /// Returns the registry's support tier.
+    /// Returns the registry's pipeline assurance tier.
     #[must_use]
     pub const fn tier(self) -> RegistryTier {
         self.tier
@@ -44,32 +44,20 @@ impl RegistryPolicy {
         self.root_epoch
     }
 
-    /// Validates a release class and its intended channel against this registry.
+    /// Reports whether every release requires production pipeline assurance.
+    #[must_use]
+    pub const fn requires_production_assurance(self) -> bool {
+        matches!(self.tier, RegistryTier::Production)
+    }
+
+    /// Validates channel names independently of the registry's assurance tier.
     ///
     /// # Errors
-    ///
-    /// Returns an error when an experimental edge release targets main, a
-    /// supported release targets testing, or a channel crosses the registry's
-    /// lifecycle boundary.
-    pub fn require_release(self, class: ReleaseClass, channels: &[String]) -> Result<()> {
-        let class_allowed = match self.tier {
-            RegistryTier::Production => matches!(
-                class,
-                ReleaseClass::Candidate | ReleaseClass::Stable | ReleaseClass::Emergency
-            ),
-            RegistryTier::Testing => class == ReleaseClass::Edge,
-        };
-        if !class_allowed {
-            bail!("release class is not authorized by the selected registry tier");
-        }
-
+    /// Returns an error for a channel other than edge, candidate, or stable.
+    pub fn require_release(self, _class: ReleaseClass, channels: &[String]) -> Result<()> {
         for channel in channels {
-            let channel_allowed = match self.tier {
-                RegistryTier::Production => matches!(channel.as_str(), "candidate" | "stable"),
-                RegistryTier::Testing => channel == "edge",
-            };
-            if !channel_allowed {
-                bail!("release channel is not authorized by the selected registry tier");
+            if !matches!(channel.as_str(), "edge" | "candidate" | "stable") {
+                bail!("unsupported release channel");
             }
         }
         Ok(())
@@ -120,28 +108,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registries_are_separate_lifecycle_domains() {
-        let main = registry_policy(MAIN_REGISTRY).unwrap();
-        let testing = registry_policy(TESTING_REGISTRY).unwrap();
-
-        assert!(
-            main.require_release(ReleaseClass::Stable, &["stable".to_owned()])
-                .is_ok()
-        );
-        assert!(
-            testing
-                .require_release(ReleaseClass::Edge, &["edge".to_owned()])
-                .is_ok()
-        );
-        assert!(
-            main.require_release(ReleaseClass::Edge, &["edge".to_owned()])
-                .is_err()
-        );
-        assert!(
-            testing
-                .require_release(ReleaseClass::Stable, &["stable".to_owned()])
-                .is_err()
-        );
+    fn registry_assurance_is_independent_of_software_maturity() {
+        for registry in [MAIN_REGISTRY, TESTING_REGISTRY, "andyl/testing-v2"] {
+            let policy = registry_policy(registry).unwrap();
+            assert_eq!(
+                policy.requires_production_assurance(),
+                registry == MAIN_REGISTRY
+            );
+            for class in [
+                ReleaseClass::Edge,
+                ReleaseClass::Candidate,
+                ReleaseClass::Stable,
+                ReleaseClass::Emergency,
+            ] {
+                for channel in ["edge", "candidate", "stable"] {
+                    assert!(policy.require_release(class, &[channel.into()]).is_ok());
+                }
+                assert!(policy.require_release(class, &["unknown".into()]).is_err());
+            }
+        }
     }
 
     #[test]

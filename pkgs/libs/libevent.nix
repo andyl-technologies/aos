@@ -9,7 +9,7 @@
   python3,
   stdenv,
 }: let
-  version = "2.1.12";
+  version = "2.1.13";
 in
   mkDerivation {
     pname = "libevent";
@@ -19,7 +19,7 @@ in
       urls = [
         "https://github.com/libevent/libevent/releases/download/release-${version}-stable/libevent-${version}-stable.tar.gz"
       ];
-      hash = "sha256-kubeG+nsF2Qo/SNnZ35hzv/C7hyxGQNQN6J9NGsEA7s=";
+      hash = "sha256-9+k4O4wLqoG2h+W17swBvu+vGxm2QVHZXtYWR/56MVw=";
     };
 
     buildDeps = [

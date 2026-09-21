@@ -14,7 +14,7 @@
   attr,
   stdenv,
 }: let
-  version = "1.5.6";
+  version = "1.5.8.pl02";
 in
   mkDerivation {
     pname = "libisofs";
@@ -24,7 +24,7 @@ in
       urls = [
         "https://files.libburnia-project.org/releases/libisofs-${version}.tar.gz"
       ];
-      hash = "sha256-AVLWap00C2Wf6ciA65GQ81cPtHesB89S6LzRNKHTDXA=";
+      hash = "sha256-EL1YTY8A2AkegUkCufCj4gnxbpOPUQ/CO6BfP6Rp21o=";
     };
 
     buildDeps = [gnumake pkg-config];
@@ -44,7 +44,7 @@ in
           if stdenv.hostPlatform.isDarwin
           then ''
             tar xf $src
-            cd libisofs-${version}
+            cd libisofs-1.5.8
 
             # rockridge.h exposes ssize_t directly. Linux happens to acquire
             # it through transitive includes, while Darwin correctly requires
@@ -53,7 +53,7 @@ in
           ''
           else ''
             tar xf $src
-            cd libisofs-${version}
+            cd libisofs-1.5.8
           '';
       }
       {

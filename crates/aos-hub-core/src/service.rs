@@ -33,7 +33,10 @@ mod container_admin;
 mod delivery_workflow;
 #[cfg(test)]
 mod delivery_workflow_tests;
+mod instance_settings;
 mod publication_manifest;
+mod registry_metadata;
+mod registry_policy;
 mod release_publication;
 mod surface_topology;
 
@@ -18934,7 +18937,13 @@ impl RpcService {
             let normalized = normalize_instance_value(key, value)?;
             writes.push((key.clone(), normalized));
         }
+        let mut cleared = BTreeSet::new();
         for key in &req.clear {
+            if req.values.contains_key(key) || !cleared.insert(key) {
+                return Err(RpcError::invalid(format!(
+                    "duplicate instance setting: {key}"
+                )));
+            }
             if !is_instance_key(key) {
                 return Err(RpcError::invalid(format!(
                     "unknown instance setting: {key}"
@@ -18954,6 +18963,7 @@ impl RpcService {
                 "instance settings resource version is stale".to_string(),
             ));
         }
+        let effects = instance_settings::effects(&current, &writes)?;
         let input = InstanceSettingsPlanInput {
             writes,
             baseline_digest,
@@ -18967,7 +18977,7 @@ impl RpcService {
             "instance",
             &input,
             &req.idempotency_key,
-            vec!["replace deployment-wide instance settings".to_string()],
+            effects,
             Vec::new(),
             Some(confirmation_hash),
         )
@@ -19050,6 +19060,7 @@ impl RpcService {
             .instance_settings()
             .await
             .map_err(RpcError::internal)?;
+        crate::web::console_render::apply_instance_settings(&settings);
         let response = pb::GetInstanceSettingsResponse {
             resource_version: instance_settings_digest(&settings)?,
             settings: Some(instance_settings_to_pb(&settings)),
@@ -22413,6 +22424,7 @@ impl RpcService {
         crate::crawl::CrawlPolicy::parse(&req.crawl_policy)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         validate_registry_trust_keys(&req.trust_keys)?;
+        let effects = registry_policy::effects(&registry, &req);
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let input = RegistryUpdatePlanInput {
             request: req,
@@ -22429,7 +22441,7 @@ impl RpcService {
             &registry.scope_key,
             &input,
             &idempotency_key,
-            vec![format!("update registry '{}' configuration", registry.slug)],
+            effects,
             Vec::new(),
             Some(confirmation_hash),
         )

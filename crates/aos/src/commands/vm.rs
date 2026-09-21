@@ -2,8 +2,20 @@
 //!
 //! The runner preserves the downloaded image as an immutable input. It creates
 //! a sparse raw working disk, extends its GPT to the requested capacity, keeps
-//! one writable OVMF variable store per VM, and optionally delivers literal
+//! writable UEFI variable state per VM, and optionally delivers literal
 //! `host.nix` through QEMU's native fw_cfg metadata channel.
+//!
+//! Persistent state records bind a disk to its source image and architecture:
+//!
+//! ```json
+//! {
+//!   "schema_version": 2,
+//!   "architecture": "x86_64",
+//!   "base_image": "/var/lib/aos/images/aos.qcow2",
+//!   "base_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+//!   "disk_size_bytes": 34359738368
+//! }
+//! ```
 
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -13,7 +25,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use aos_core::output::{OutputMode, Printer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -23,9 +35,41 @@ use crate::cli::{VmAcceleration, VmCommand, VmRunArgs};
 const GIB: u64 = 1024 * 1024 * 1024;
 const COPY_BUFFER_SIZE: usize = 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VmArchitecture {
+    X86_64,
+    Aarch64,
+}
+
+impl VmArchitecture {
+    fn current() -> Result<Self> {
+        match std::env::consts::ARCH {
+            "x86_64" => Ok(Self::X86_64),
+            "aarch64" => Ok(Self::Aarch64),
+            architecture => bail!("aos vm does not support the {architecture} host architecture"),
+        }
+    }
+
+    fn qemu_executable(self) -> &'static str {
+        match self {
+            Self::X86_64 => "qemu-system-x86_64",
+            Self::Aarch64 => "qemu-system-aarch64",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct VmStateManifest {
     schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    architecture: Option<String>,
     base_image: PathBuf,
     base_sha256: String,
     disk_size_bytes: u64,
@@ -49,6 +93,7 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
     if printer.mode() == OutputMode::Json && !args.dry_run {
         bail!("--json requires --dry-run because an interactive guest console is not JSON");
     }
+    let architecture = VmArchitecture::current()?;
     let image = canonical_regular_file(&args.image, "image")?;
     let host_config = args
         .host_config
@@ -63,30 +108,17 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
     let name = resolve_name(args, &image)?;
     let state_dir = resolve_state_dir(args, &name)?;
     let acceleration = resolve_acceleration(args.accel, printer)?;
-    let qemu = resolve_executable(args.qemu.as_deref(), "qemu-system-x86_64")?;
+    let qemu = resolve_executable(args.qemu.as_deref(), architecture.qemu_executable())?;
     let qemu_img = resolve_executable(args.qemu_img.as_deref(), "qemu-img")?;
     let sgdisk = resolve_executable(args.sgdisk.as_deref(), "sgdisk")?;
-    let firmware_code = resolve_firmware(
-        args.firmware_code.as_deref(),
-        "AOS_OVMF_CODE",
-        &[
-            "/usr/share/OVMF/OVMF_CODE.fd",
-            "/usr/share/edk2/x64/OVMF_CODE.fd",
-            "/usr/share/edk2/ovmf/OVMF_CODE.fd",
-        ],
-    )?;
-    let firmware_vars_template = resolve_firmware(
-        args.firmware_vars.as_deref(),
-        "AOS_OVMF_VARS",
-        &[
-            "/usr/share/OVMF/OVMF_VARS.fd",
-            "/usr/share/edk2/x64/OVMF_VARS.fd",
-            "/usr/share/edk2/ovmf/OVMF_VARS.fd",
-        ],
-    )?;
+    let firmware_code = resolve_firmware_code(args, architecture)?;
+    let firmware_vars_template = resolve_firmware_vars_template(args, architecture)?;
     let disk = state_dir.join("disk.img");
     let partial_disk = state_dir.join(".disk.img.aos-part");
-    let firmware_vars = state_dir.join("OVMF_VARS.fd");
+    let firmware_vars = state_dir.join(match architecture {
+        VmArchitecture::X86_64 => "OVMF_VARS.fd",
+        VmArchitecture::Aarch64 => "AAVMF_VARS.json",
+    });
     let manifest_path = state_dir.join("vm-state.json");
     let disk_bytes = args
         .disk_size_gib
@@ -105,6 +137,7 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         &firmware_vars,
         host_config.as_deref(),
         host_config_signature.as_deref(),
+        architecture,
         acceleration,
         printer,
     );
@@ -154,7 +187,8 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         write_manifest(
             &manifest_path,
             &VmStateManifest {
-                schema_version: 1,
+                schema_version: 2,
+                architecture: Some(architecture.name().to_owned()),
                 base_image: image.clone(),
                 base_sha256,
                 disk_size_bytes: disk_bytes,
@@ -163,12 +197,18 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         activity.finish();
         printer.success("Prepared writable VM disk");
     } else {
-        validate_existing_state(&manifest_path, &image, &base_sha256, disk_bytes)?;
+        validate_existing_state(
+            &manifest_path,
+            &image,
+            &base_sha256,
+            disk_bytes,
+            architecture,
+        )?;
         set_private_file_permissions(&disk)?;
         set_private_file_permissions(&manifest_path)?;
         printer.info(&format!("Reusing writable disk {}", disk.display()));
     }
-    prepare_firmware_vars(&firmware_vars_template, &firmware_vars)?;
+    prepare_firmware_vars(firmware_vars_template.as_deref(), &firmware_vars)?;
 
     printer.success(&format!(
         "Starting {name}; SSH forwards from 127.0.0.1:{}",
@@ -182,6 +222,7 @@ fn run_image(args: &VmRunArgs, printer: &Printer) -> Result<()> {
         &firmware_vars,
         host_config.as_deref(),
         host_config_signature.as_deref(),
+        architecture,
         acceleration,
     );
     let status = command.status().context("starting QEMU")?;
@@ -238,6 +279,14 @@ fn resolve_state_dir(args: &VmRunArgs, name: &str) -> Result<PathBuf> {
 }
 
 fn resolve_acceleration(requested: VmAcceleration, printer: &Printer) -> Result<&'static str> {
+    if cfg!(target_os = "macos") {
+        return match requested {
+            VmAcceleration::Auto | VmAcceleration::Hvf => Ok("hvf"),
+            VmAcceleration::Tcg => Ok("tcg"),
+            VmAcceleration::Kvm => bail!("--accel kvm is available only on Linux hosts"),
+        };
+    }
+
     let kvm_available = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -253,6 +302,7 @@ fn resolve_acceleration(requested: VmAcceleration, printer: &Printer) -> Result<
             Ok("tcg")
         }
         VmAcceleration::Kvm => bail!("--accel kvm requires an accessible /dev/kvm"),
+        VmAcceleration::Hvf => bail!("--accel hvf is available only on macOS hosts"),
     }
 }
 
@@ -271,19 +321,76 @@ fn resolve_firmware(
         }
     }
     bail!(
-        "could not find OVMF firmware; set {variable} or pass the corresponding --firmware option"
+        "could not find UEFI firmware; set {variable} or pass the corresponding --firmware option"
     )
 }
 
-fn prepare_firmware_vars(template: &Path, destination: &Path) -> Result<()> {
+fn resolve_firmware_code(args: &VmRunArgs, architecture: VmArchitecture) -> Result<PathBuf> {
+    let candidates = match architecture {
+        VmArchitecture::X86_64 => &[
+            "/usr/share/OVMF/OVMF_CODE.fd",
+            "/usr/share/edk2/x64/OVMF_CODE.fd",
+            "/usr/share/edk2/ovmf/OVMF_CODE.fd",
+        ][..],
+        VmArchitecture::Aarch64 => &[
+            "/usr/share/AAVMF/AAVMF_CODE.fd",
+            "/usr/share/edk2/aarch64/AAVMF_CODE.fd",
+            "/usr/share/edk2/armvirt/AAVMF_CODE.fd",
+        ][..],
+    };
+
+    resolve_firmware(args.firmware_code.as_deref(), "AOS_OVMF_CODE", candidates)
+}
+
+fn resolve_firmware_vars_template(
+    args: &VmRunArgs,
+    architecture: VmArchitecture,
+) -> Result<Option<PathBuf>> {
+    if architecture == VmArchitecture::Aarch64 {
+        return args
+            .firmware_vars
+            .as_deref()
+            .map(|path| canonical_regular_file(path, "firmware variable template"))
+            .transpose();
+    }
+
+    resolve_firmware(
+        args.firmware_vars.as_deref(),
+        "AOS_OVMF_VARS",
+        &[
+            "/usr/share/OVMF/OVMF_VARS.fd",
+            "/usr/share/edk2/x64/OVMF_VARS.fd",
+            "/usr/share/edk2/ovmf/OVMF_VARS.fd",
+        ],
+    )
+    .map(Some)
+}
+
+fn prepare_firmware_vars(template: Option<&Path>, destination: &Path) -> Result<()> {
     if !destination.exists() {
-        fs::copy(template, destination).with_context(|| {
-            format!(
-                "copying {} to {}",
-                template.display(),
-                destination.display()
-            )
-        })?;
+        if let Some(template) = template {
+            fs::copy(template, destination).with_context(|| {
+                format!(
+                    "copying {} to {}",
+                    template.display(),
+                    destination.display()
+                )
+            })?;
+        } else {
+            // QEMU accepts an empty JSON variable store and fills it on exit.
+            // Create it ourselves so private permissions are in place before
+            // the emulator opens the persistent state.
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(destination)
+                .with_context(|| {
+                    format!(
+                        "creating empty firmware variable state {}",
+                        destination.display()
+                    )
+                })?;
+        }
     }
 
     set_private_file_permissions(destination)
@@ -333,6 +440,7 @@ fn print_plan(
     firmware_vars: &Path,
     host_config: Option<&Path>,
     host_config_signature: Option<&Path>,
+    architecture: VmArchitecture,
     acceleration: &str,
     printer: &Printer,
 ) {
@@ -344,6 +452,7 @@ fn print_plan(
             "disk_size_gib": args.disk_size_gib,
             "cpus": args.cpus,
             "memory_mib": args.memory_mib,
+            "architecture": architecture.name(),
             "acceleration": acceleration,
             "qemu": qemu,
             "qemu_img": qemu_img,
@@ -366,6 +475,7 @@ fn print_plan(
     );
     printer.kv("CPUs", &args.cpus.to_string());
     printer.kv("Memory", &format!("{} MiB", args.memory_mib));
+    printer.kv("Architecture", architecture.name());
     printer.kv("Acceleration", acceleration);
     printer.kv("QEMU", &qemu.display().to_string());
     printer.kv("Disk converter", &qemu_img.display().to_string());
@@ -390,33 +500,51 @@ fn qemu_command(
     firmware_vars: &Path,
     host_config: Option<&Path>,
     host_config_signature: Option<&Path>,
+    architecture: VmArchitecture,
     acceleration: &str,
 ) -> Command {
     let mut command = Command::new(qemu);
+    match architecture {
+        VmArchitecture::X86_64 => {
+            command
+                .arg("-machine")
+                .arg(format!("q35,smm=on,accel={acceleration}"))
+                .arg("-global")
+                .arg("driver=cfi.pflash01,property=secure,value=on")
+                .arg("-global")
+                .arg("ICH9-LPC.disable_s3=1")
+                .arg("-drive")
+                .arg(format!(
+                    "if=pflash,unit=0,format=raw,readonly=on,file={}",
+                    firmware_code.display()
+                ))
+                .arg("-drive")
+                .arg(format!(
+                    "if=pflash,unit=1,format=raw,file={}",
+                    firmware_vars.display()
+                ));
+        }
+        VmArchitecture::Aarch64 => {
+            command
+                .arg("-machine")
+                .arg(format!("virt,accel={acceleration}"))
+                .arg("-bios")
+                .arg(firmware_code)
+                .arg("-device")
+                .arg(format!(
+                    "uefi-vars-sysbus,jsonfile={}",
+                    firmware_vars.display()
+                ));
+        }
+    }
     command
-        .arg("-machine")
-        .arg(format!("q35,smm=on,accel={acceleration}"))
         .arg("-cpu")
-        .arg(if acceleration == "kvm" { "host" } else { "max" })
+        .arg(if acceleration == "tcg" { "max" } else { "host" })
         .arg("-m")
         .arg(args.memory_mib.to_string())
         .arg("-smp")
         .arg(args.cpus.to_string())
         .arg("-nographic")
-        .arg("-global")
-        .arg("driver=cfi.pflash01,property=secure,value=on")
-        .arg("-global")
-        .arg("ICH9-LPC.disable_s3=1")
-        .arg("-drive")
-        .arg(format!(
-            "if=pflash,unit=0,format=raw,readonly=on,file={}",
-            firmware_code.display()
-        ))
-        .arg("-drive")
-        .arg(format!(
-            "if=pflash,unit=1,format=raw,file={}",
-            firmware_vars.display()
-        ))
         .arg("-drive")
         .arg(format!("file={},format=raw,if=virtio", disk.display()))
         .arg("-nic")
@@ -480,6 +608,7 @@ fn validate_existing_state(
     image: &Path,
     image_sha256: &str,
     disk_size_bytes: u64,
+    architecture: VmArchitecture,
 ) -> Result<()> {
     let encoded = fs::read(manifest_path).with_context(|| {
         format!(
@@ -489,12 +618,20 @@ fn validate_existing_state(
     })?;
     let manifest: VmStateManifest = serde_json::from_slice(&encoded)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
-    if manifest.schema_version != 1 {
-        bail!(
+    match manifest.schema_version {
+        // Schema 1 predates aarch64 support, so its state is unambiguously x86_64.
+        1 if architecture == VmArchitecture::X86_64 && manifest.architecture.is_none() => {}
+        2 if manifest.architecture.as_deref() == Some(architecture.name()) => {}
+        2 => bail!(
+            "VM state architecture is {}, but this runner targets {}; choose another --name or --state-dir",
+            manifest.architecture.as_deref().unwrap_or("missing"),
+            architecture.name()
+        ),
+        schema_version => bail!(
             "VM state {} uses unsupported metadata schema {}",
             manifest_path.display(),
-            manifest.schema_version
-        );
+            schema_version
+        ),
     }
     if manifest.base_sha256 != image_sha256 {
         bail!(
@@ -591,6 +728,7 @@ mod tests {
             Path::new("OVMF_VARS.fd"),
             Some(Path::new("host.nix")),
             Some(Path::new("host.nix.sig")),
+            VmArchitecture::X86_64,
             "kvm",
         );
         let arguments = command
@@ -599,25 +737,48 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!arguments.iter().any(|argument| argument == "-kernel"));
         assert!(!arguments.iter().any(|argument| argument == "-initrd"));
-        assert!(
-            arguments
-                .iter()
-                .any(|argument| argument.contains("accel=kvm"))
-        );
-        assert!(
-            arguments
-                .iter()
-                .any(|argument| argument.contains("opt/org.andyl/host-nix"))
-        );
-        assert!(
-            arguments
-                .iter()
-                .any(|argument| argument.contains("opt/org.andyl/host-nix.sig"))
-        );
+        assert!(arguments
+            .iter()
+            .any(|argument| argument.contains("accel=kvm")));
+        assert!(arguments
+            .iter()
+            .any(|argument| argument.contains("opt/org.andyl/host-nix")));
+        assert!(arguments
+            .iter()
+            .any(|argument| argument.contains("opt/org.andyl/host-nix.sig")));
     }
 
     #[test]
-    fn existing_vm_state_is_bound_to_the_base_image_and_disk_size() {
+    fn aarch64_qemu_command_uses_virt_and_persistent_uefi_variables() {
+        let args = test_args(Path::new("base.qcow2"));
+        let command = qemu_command(
+            &args,
+            Path::new("qemu-system-aarch64"),
+            Path::new("disk.img"),
+            Path::new("AAVMF_CODE.fd"),
+            Path::new("AAVMF_VARS.json"),
+            Some(Path::new("host.nix")),
+            None,
+            VmArchitecture::Aarch64,
+            "tcg",
+        );
+        let arguments = command
+            .get_args()
+            .map(OsStr::to_string_lossy)
+            .collect::<Vec<_>>();
+
+        assert!(arguments
+            .iter()
+            .any(|argument| argument == "virt,accel=tcg"));
+        assert!(arguments.iter().any(|argument| argument == "-bios"));
+        assert!(arguments
+            .iter()
+            .any(|argument| argument == "uefi-vars-sysbus,jsonfile=AAVMF_VARS.json"));
+        assert!(!arguments.iter().any(|argument| argument.contains("pflash")));
+    }
+
+    #[test]
+    fn existing_vm_state_is_bound_to_architecture_image_and_disk_size() {
         let directory = tempfile::tempdir().unwrap();
         let image = directory.path().join("base.qcow2");
         fs::write(&image, b"base image").unwrap();
@@ -625,7 +786,8 @@ mod tests {
         write_manifest(
             &manifest_path,
             &VmStateManifest {
-                schema_version: 1,
+                schema_version: 2,
+                architecture: Some("x86_64".to_owned()),
                 base_image: image.clone(),
                 base_sha256: "abc123".to_string(),
                 disk_size_bytes: 16 * GIB,
@@ -639,9 +801,67 @@ mod tests {
             0o600
         );
 
-        assert!(validate_existing_state(&manifest_path, &image, "abc123", 16 * GIB).is_ok());
-        assert!(validate_existing_state(&manifest_path, &image, "different", 16 * GIB).is_err());
-        assert!(validate_existing_state(&manifest_path, &image, "abc123", 32 * GIB).is_err());
+        assert!(validate_existing_state(
+            &manifest_path,
+            &image,
+            "abc123",
+            16 * GIB,
+            VmArchitecture::X86_64,
+        )
+        .is_ok());
+        assert!(validate_existing_state(
+            &manifest_path,
+            &image,
+            "abc123",
+            16 * GIB,
+            VmArchitecture::Aarch64,
+        )
+        .is_err());
+        assert!(validate_existing_state(
+            &manifest_path,
+            &image,
+            "different",
+            16 * GIB,
+            VmArchitecture::X86_64,
+        )
+        .is_err());
+        assert!(validate_existing_state(
+            &manifest_path,
+            &image,
+            "abc123",
+            32 * GIB,
+            VmArchitecture::X86_64,
+        )
+        .is_err());
+
+        let legacy_manifest_path = directory.path().join("legacy-vm-state.json");
+        write_manifest(
+            &legacy_manifest_path,
+            &VmStateManifest {
+                schema_version: 1,
+                architecture: None,
+                base_image: image.clone(),
+                base_sha256: "abc123".to_owned(),
+                disk_size_bytes: 16 * GIB,
+            },
+        )
+        .unwrap();
+        assert!(validate_existing_state(
+            &legacy_manifest_path,
+            &image,
+            "abc123",
+            16 * GIB,
+            VmArchitecture::X86_64,
+        )
+        .is_ok());
+        assert!(validate_existing_state(
+            &legacy_manifest_path,
+            &image,
+            "abc123",
+            16 * GIB,
+            VmArchitecture::Aarch64,
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -653,8 +873,23 @@ mod tests {
         fs::write(&template, b"firmware state").unwrap();
         fs::set_permissions(&template, fs::Permissions::from_mode(0o444)).unwrap();
 
-        prepare_firmware_vars(&template, &destination).unwrap();
+        prepare_firmware_vars(Some(&template), &destination).unwrap();
 
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_firmware_state_is_created_private() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("AAVMF_VARS.json");
+
+        prepare_firmware_vars(None, &destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"");
         assert_eq!(
             fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
             0o600

@@ -2,12 +2,13 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
   perl,
   linux-headers,
-  binutils,
 }: let
-  version = "2.77";
+  version = "2.78";
 in
   mkDerivation {
     pname = "libcap";
@@ -18,13 +19,12 @@ in
         "https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-${version}.tar.xz"
         "https://mirrors.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-${version}.tar.xz"
       ];
-      hash = "sha256-iXvBi0Svwmxw54zq09uzHhVKzCS+4IWloJB5qI2/b1I=";
+      hash = "sha256-DWIeVi/ZMsz2e5Zg+wGORopoPXuCdUHfJ4EyKMmWuxE=";
     };
 
     buildDeps = [
       gnumake
       perl
-      binutils
       # Kernel UAPI headers are compile-time only; in runtimeDeps they would
       # ride into the closure of everything that links libcap (a dead RPATH,
       # since linux-headers ships no shared library).
@@ -42,32 +42,38 @@ in
       }
       {
         name = "build";
-        script = ''
-          # Fix shebangs: scripts reference /bin/bash which doesn't exist
-          # in the Nix sandbox. Replace with $CONFIG_SHELL (bootstrap bash).
-          for f in $(find . -name '*.sh' -o -name '*.pl'); do
-            if [ -f "$f" ]; then
-              sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
-            fi
-          done
+        script =
+          lib.optionalString stdenv.isCross ''
+            # The libpsx hooks invoke raw syscalls, so their numbers must come
+            # from target UAPI headers rather than spliced build dependencies.
+            export C_INCLUDE_PATH="${linux-headers}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+          ''
+          + ''
+            # Fix shebangs: scripts reference /bin/bash which doesn't exist
+            # in the Nix sandbox. Replace with $CONFIG_SHELL (bootstrap bash).
+            for f in $(find . -name '*.sh' -o -name '*.pl'); do
+              if [ -f "$f" ]; then
+                sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
+                sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
+                sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
+              fi
+            done
 
-          build_cc=''${BUILD_CC:-$CC}
+            build_cc=''${BUILD_CC:-$CC}
 
-          make -j$NIX_BUILD_CORES \
-            CC="$CC" \
-            AR="$AR" \
-            RANLIB="$RANLIB" \
-            OBJCOPY="${binutils}/bin/objcopy" \
-            BUILD_CC="$build_cc" \
-            prefix=$out \
-            lib=lib \
-            SHARED=yes \
-            GOLANG=no \
-            PAM_CAP=no \
-            DYNAMIC=yes
-        '';
+            make -j$NIX_BUILD_CORES \
+              CC="$CC" \
+              AR="$AR" \
+              RANLIB="$RANLIB" \
+              OBJCOPY="${stdenv.binutils}/bin/objcopy" \
+              BUILD_CC="$build_cc" \
+              prefix=$out \
+              lib=lib \
+              SHARED=yes \
+              GOLANG=no \
+              PAM_CAP=no \
+              DYNAMIC=yes
+          '';
       }
       {
         name = "install";
@@ -78,7 +84,7 @@ in
             CC="$CC" \
             AR="$AR" \
             RANLIB="$RANLIB" \
-            OBJCOPY="${binutils}/bin/objcopy" \
+            OBJCOPY="${stdenv.binutils}/bin/objcopy" \
             BUILD_CC="$build_cc" \
             prefix=$out \
             lib=lib \

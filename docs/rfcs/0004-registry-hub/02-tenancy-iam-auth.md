@@ -17,8 +17,8 @@ Organization   (tenant boundary; SSO/audit scope)
 - **Roles**, grantable at org, project, or registry scope and inherited
   downward, expanding to permission verbs (`read`, `publish`,
   `channel.advance`, `keys.manage`, `tokens.self`, `tokens.manage`,
-  `members.manage`, `registry.configure`, `storage.manage`,
-  `validation.repair`, `audit.read`, `iam.admin`):
+  `members.manage`, `registry.configure`, `storage.manage`, `audit.read`,
+  `iam.admin`):
 
   | Role | Grants |
   | --- | --- |
@@ -138,8 +138,7 @@ Always authenticated: org/project dashboards and member lists
 (viewer+), audit feed (admin+), publish console and upload-credential
 minting (maintainer+), channel advance (maintainer+ with reviewed signing-key
 custody resolution; external-custody users prepare advances for CLI signing, see
-"Configuration management"), validation repair jobs (maintainer+,
-`validation.repair`), roster mutations (maintainer+; the roster itself
+"Configuration management"), roster mutations (maintainer+; the roster itself
 is *readable* per visibility — it is public data on a public registry),
 signing-key enrollment/rotation/usage/retirement (admin+), own-token management (developer+),
 others' tokens (admin+), registry/frontend/storage/cache-store

@@ -10,7 +10,7 @@
   perl,
   openssl,
 }: let
-  version = "0.10.0";
+  version = "0.10.2";
 in
   mkDerivation {
     pname = "libtpms";
@@ -20,7 +20,7 @@ in
       urls = [
         "https://github.com/stefanberger/libtpms/archive/refs/tags/v${version}.tar.gz"
       ];
-      hash = "sha256-bamlJ7Ovp7FHCs1M0XFXuGRsMaLH/zui38UMgbpBNCY=";
+      hash = "sha256-7awDaA+KShxcHWCaEOP0HhoSnjj/UVjwyN6u3HGfsSc=";
     };
 
     # perl provides pod2man, which libtpms uses to build its man pages.

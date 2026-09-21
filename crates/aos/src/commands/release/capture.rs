@@ -160,6 +160,43 @@ pub(super) fn copy_payload_tree(source: &Path, destination: &Path) -> Result<Vec
     copy_tree(source, destination, true, true)
 }
 
+/// Copies one no-follow, single-link payload file into a new destination.
+///
+/// The source remains open while its bytes and metadata are checked. The
+/// caller supplies the final bundle-relative path so the returned identity can
+/// be inserted directly into a manifest record.
+///
+/// # Errors
+///
+/// Returns an error for a link, special or unstable source file, an existing
+/// destination, an invalid bundle path, or a copy or synchronization failure.
+pub(super) fn copy_payload_file(
+    source: &Path,
+    destination: &Path,
+    relative: &str,
+) -> Result<CapturedFile> {
+    let handle = open(
+        source,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("opening release payload file {}", source.display()))?;
+    let metadata = File::from(handle.try_clone()?).metadata()?;
+    if !metadata.is_file() {
+        bail!(
+            "release payload source is not a regular file: {}",
+            source.display()
+        );
+    }
+
+    let mut state = CaptureState::default();
+    copy_payload_regular(handle, relative, destination, &mut state, true)?;
+    state
+        .files
+        .pop()
+        .ok_or_else(|| anyhow!("release payload file capture produced no identity"))
+}
+
 /// Copies a publication surface without following links or accepting aliases.
 ///
 /// # Errors

@@ -17,6 +17,7 @@
 use console::Style;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::fmt::Display;
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -661,7 +662,7 @@ fn progress_renderer(printer: &Printer) -> ProgressRenderer {
         }
         (_, ProgressMode::Tty) => ProgressRenderer::Tty,
         (_, ProgressMode::Plain) => ProgressRenderer::Plain,
-        (_, ProgressMode::Auto) if atty::is(atty::Stream::Stderr) => ProgressRenderer::Tty,
+        (_, ProgressMode::Auto) if std::io::stderr().is_terminal() => ProgressRenderer::Tty,
         _ => ProgressRenderer::Plain,
     }
 }

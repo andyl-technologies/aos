@@ -4,13 +4,14 @@
   fetchurl,
   gnumake,
   linux-pam,
+  libxcrypt,
   openpam,
   openssl,
   zlib,
   bash,
   stdenv,
 }: let
-  version = "10.3p1";
+  version = "10.5p1";
 in
   mkDerivation {
     pname = "openssh";
@@ -20,7 +21,7 @@ in
       urls = [
         "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${version}.tar.gz"
       ];
-      hash = "sha256-VmgqNruS3PS08Bb9jsjnQFm3mo3iXBXWcNcx59GORfQ=";
+      hash = "sha256-1E0oqDnqna+WnMaRUP3lmRCys5Nh2tgaO9bL0ZIY2xE=";
     };
 
     buildDeps = [gnumake];
@@ -37,7 +38,9 @@ in
       ++ (
         if stdenv.hostPlatform.isDarwin
         then [bash]
-        else []
+        # OpenSSH links crypt directly; PAM's dependency does not preserve
+        # that library's runtime path through the reference scrub phase.
+        else [libxcrypt]
       );
     propagatedDeps = [];
 
@@ -156,7 +159,7 @@ in
 
       rpath = testing.mkRPATHCheck {
         pkg = self;
-        bins = ["ssh"];
+        bins = ["ssh" "sshd" "/libexec/sshd-auth" "/libexec/sshd-session"];
       };
 
       config-validity = testing.mkVMTest {

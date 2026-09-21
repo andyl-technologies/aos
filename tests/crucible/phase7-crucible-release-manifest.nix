@@ -74,6 +74,7 @@
       isCross = false;
       hostPlatform = {
         isDarwin = false;
+        isLinux = true;
         constraints.cpu = "x86_64";
       };
     };
@@ -91,6 +92,7 @@
     libgcrypt = null;
     gnutls = null;
     fuse3 = null;
+    gcc-libs = "/aos-gcc-libs";
     samba-smbd = {
       outPath = "/aos-samba-smbd";
       version = "4.24.7";

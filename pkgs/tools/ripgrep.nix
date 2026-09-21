@@ -6,14 +6,14 @@
   pkg-config,
   pcre2,
 }: let
-  version = "15.1.0";
+  version = "15.2.0";
   src = fetchurl {
     urls = ["https://github.com/BurntSushi/ripgrep/archive/refs/tags/${version}.tar.gz"];
-    hash = "sha256-BG+gGiFnk7i9J1D51o1K1DmG65wNYSJgD5k5BgEpcug=";
+    hash = "sha256-dgUknT6w1fFw40FEmOM0Tiax56FHrsUYtXCQuAA2pWI=";
   };
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-IS/LSRQjLWf66xqxnI71Shku9XHMXHhC9S3VfA9YSYM=";
+    hash = "sha256-Dn+cJ9eqr5HfMsMqtSyOF1PwBVabKrDqTBNu4NA6HO0=";
   };
 in
   mkCargoPackage {

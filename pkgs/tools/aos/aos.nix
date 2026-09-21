@@ -26,8 +26,10 @@
   semodule-utils,
   sbsigntools,
   systemd,
+  systemd-measure,
   mtools,
   qemu-img,
+  remove-references-to,
   sqlite,
   tpm2-tools,
   util-linux,
@@ -60,10 +62,18 @@
     if isCross
     then buildPackages.git-minimal
     else git-minimal;
+  buildNix =
+    if isCross
+    then buildPackages.nix
+    else nix;
   buildOpenSsh =
     if isCross
     then buildPackages.openssh
     else openssh;
+  buildZstd =
+    if isCross
+    then buildPackages.zstd
+    else zstd;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   # The four executables share Rust libraries and one Cargo build, but their
@@ -73,11 +83,15 @@
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
   aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
-  aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
+  aprRuntimeTools =
+    [bash nix openssl sbsigntools mtools qemu-img zstd]
+    ++ lib.optionals stdenv.hostPlatform.isLinux [systemd-measure];
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+  referenceRemovalArguments = dependencies:
+    builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
     lib.concatStringsSep ":" (
       [(lib.makeBinPath tools)]
@@ -95,6 +109,16 @@
     semodule-utils
   ];
   nonAosLinuxRuntimeDeps = builtins.filter (dependency: dependency != aos-landlock) linuxRuntimeDeps;
+  aosForbiddenRuntimeDeps =
+    [sbsigntools mtools tpm2-tools which]
+    ++ lib.optionals stdenv.hostPlatform.isLinux [systemd-measure]
+    ++ lib.optionals (!isDarwinCross) ([systemd] ++ nonAosLinuxRuntimeDeps);
+  aprForbiddenRuntimeDeps =
+    [tpm2-tools which]
+    ++ lib.optionals (!isDarwinCross) (
+      [systemd util-linux]
+      ++ lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps
+    );
   linuxToolEnvironment = ''
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
     export AOS_UNSHARE="${util-linux}/bin/unshare"
@@ -132,6 +156,7 @@
     "aos-registry-spa"
     "aos-registry-surface"
     "aos-release"
+    "aos-release-signer"
     "aos-remote"
     "aos-server"
     "aos-systemd"
@@ -143,7 +168,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-yf/Gu30exf9weCOK6RRrjusN+bXZ6rj1r+tZbEJMy4g=";
+    hash = "sha256-n9aLEnfOYHMV9ok1tKqmT/1wNgu75OJYlqmtk9OjzeM=";
   };
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
@@ -174,8 +199,8 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2];
-    runtimeDeps = [openssl sqlite zlib];
+    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
+    runtimeDeps = [openssl sqlite libssh2 zlib];
   };
 in
   mkCargoPackage {
@@ -183,6 +208,14 @@ in
     inherit version src;
 
     outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
+
+    # Enforce command-surface separation after fixup and reference scrubbing.
+    # Cross-linkers can leave build-environment paths in intermediate binaries;
+    # the scrub phase removes those paths before Nix applies these checks.
+    outputChecks = {
+      out.disallowedReferences = aosForbiddenRuntimeDeps;
+      apr.disallowedReferences = aprForbiddenRuntimeDeps;
+    };
 
     cargoFlags = "-p aos";
 
@@ -197,18 +230,22 @@ in
       inherit cargoArtifacts cargoDeps cargoEnv;
     };
 
-    # cmake + libssh2: git2's vendored libgit2 is compiled from source here
-    # (CMake build) with SSH smart-transport support against system libssh2.
+    # cmake builds git2's vendored libgit2 from source. OpenSSL, SQLite, and
+    # libssh2 are target libraries; keeping them in runtimeDeps makes cross
+    # builds expose target headers and libraries without splicing in native
+    # Linux shared objects.
     #
-    # openssh is build-only: the `doCheck` workspace tests use `ssh-keygen` to
-    # build repository fixtures. `git-minimal` is also used by those tests, but
-    # remains in the `aos` runtime closure because maintainer commands create,
-    # inspect, commit, and publish isolated Git worktrees without host tools.
+    # openssh and zstd are build-only inputs for the check phase: the workspace
+    # tests use `ssh-keygen` for repository fixtures and exercise compressed
+    # registry packs. Nix supplies the multicall commands exercised by the
+    # executable-resolution tests. `git-minimal` is also used by tests, but remains in
+    # the `aos` runtime closure because maintainer commands create, inspect,
+    # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2 buildGitMinimal buildOpenSsh]
+      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
-      [openssl sqlite zlib]
+      [openssl sqlite libssh2 zlib]
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
@@ -359,6 +396,19 @@ in
           mkdir -p "$testSupport/bin"
           mv "$out/bin/aos-release-fleet-fixture" "$testSupport/bin/"
 
+          # The common fixup phase visits only the primary output. Strip every
+          # shipped executable here so the split-output closure checks inspect
+          # the same bytes that are ultimately published. In particular,
+          # cross-link debug records can retain tools used only by sibling
+          # command surfaces.
+          for binary in \
+            "$out/bin/.aos-unwrapped" \
+            "$apm/bin/.apm-unwrapped" \
+            "$apr/bin/.apr-unwrapped" \
+            "$packageRuntime/bin/.aos-package-runtime-unwrapped"; do
+            strip -s "$binary"
+          done
+
           # Cargo links the binaries before they are distributed among the
           # named outputs, so its default install-prefix RPATH names $out/lib.
           # No output ships Rust shared libraries. Remove that nonexistent
@@ -381,28 +431,17 @@ in
             done
           fi
 
-          reject_output_reference() {
-            output=$1
-            dependency=$2
-            if grep -R -aFq "$dependency" "$output"; then
-              echo "$output unexpectedly references $dependency" >&2
-              exit 1
-            fi
-          }
-          for dependency in \
-            ${sbsigntools} ${mtools} ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${builtins.concatStringsSep " " (map toString nonAosLinuxRuntimeDeps)}"}; do
-            reject_output_reference "$out" "$dependency"
-          done
-          # APR validates package-owned SELinux modules at publication time,
-          # so its compiler and module packager are intentional APR runtime
-          # dependencies. The remaining host-enforcement helpers belong only
-          # to APM/runtime.
-          for dependency in \
-            ${tpm2-tools} ${which} \
-            ${lib.optionalString (!isDarwinCross) "${systemd} ${util-linux} ${builtins.concatStringsSep " " (map toString (lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps))}"}; do
-            reject_output_reference "$apr" "$dependency"
-          done
+          # Cargo links all four command surfaces in one build environment, so
+          # cross linkers can retain target tool paths from sibling binaries
+          # even after stripping. Remove each policy-forbidden reference before
+          # the general derivation scrub preserves the union of every output's
+          # runtime dependencies.
+          remove-references-to \
+            ${referenceRemovalArguments aosForbiddenRuntimeDeps} \
+            "$out/bin/.aos-unwrapped"
+          remove-references-to \
+            ${referenceRemovalArguments aprForbiddenRuntimeDeps} \
+            "$apr/bin/.apr-unwrapped"
 
           # Exercise the installed wrapper, not the pre-install Cargo binary.
           # The wrapper must exec .aos-unwrapped so current_exe() materializes

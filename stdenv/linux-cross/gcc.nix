@@ -1,4 +1,4 @@
-##! Native-executable GCC 14 cross compiler stages.
+##! Native-executable GCC 16 cross compiler stages.
 {
   buildStdenv,
   buildPackages,
@@ -11,7 +11,7 @@
   stage,
 }: let
   finalStage = stage == "final";
-  version = "14.3.0";
+  version = "16.2.0";
 in
   buildStdenv.mkDerivation {
     pname = "gcc";
@@ -27,6 +27,7 @@ in
       buildPackages.bison
       buildPackages.texinfo
       buildPackages.perl
+      buildPackages.python3
       binutils
     ];
     runtimeDeps = [binutils];
@@ -50,6 +51,13 @@ in
           (cd ${sources.mpc} && tar cf - .) | (cd source/mpc && tar xf -)
           (cd ${sources.isl} && tar cf - .) | (cd source/isl && tar xf -)
           chmod -R u+w source/gmp source/mpfr source/mpc source/isl
+
+          AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+            "$CONFIG_SHELL" ${../runtime-scripts.sh} source
+
+          # GCC's option generators rely on unset array elements behaving as
+          # empty strings, while gawk 5.4 can preserve a numeric zero type.
+          patch -p1 -d source < ${./gcc-16-gawk-5.4.patch}
 
           find source -type f \( -name '*.y' -o -name '*.l' -o -name 'Makefile.am' -o -name 'configure.ac' -o -name 'configure.in' \) -exec touch {} + 2>/dev/null || true
           sleep 1
@@ -95,7 +103,7 @@ in
           cd build
           CC=${buildStdenv.cc}/bin/cc \
           CXX=${buildStdenv.cc}/bin/c++ \
-          ../source/configure \
+          "$CONFIG_SHELL" ../source/configure \
             --prefix="$out" \
             --build=${buildPlatform.config} \
             --host=${buildPlatform.config} \
@@ -112,7 +120,7 @@ in
             ${
             if finalStage
             then "--enable-languages=c,c++ --enable-shared --enable-threads=posix"
-            else "--enable-languages=c --disable-shared --disable-threads --with-newlib --without-headers"
+            else "--enable-languages=c --disable-libatomic --disable-shared --disable-threads --with-newlib --without-headers"
           }
         '';
       }
@@ -120,14 +128,14 @@ in
         name = "build";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make -j"$NIX_BUILD_CORES" all-gcc
-          make -j"$NIX_BUILD_CORES" all-target-libgcc
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgcc
           ${
             if finalStage
             then ''
-              make -j"$NIX_BUILD_CORES" all-target-libstdc++-v3
-              make -j"$NIX_BUILD_CORES" all-target-libatomic
-              make -j"$NIX_BUILD_CORES" all-target-libgomp
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgomp
             ''
             else ""
           }
@@ -137,14 +145,14 @@ in
         name = "install";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make install-gcc
-          make install-target-libgcc
+          make SHELL="$CONFIG_SHELL" install-gcc
+          make SHELL="$CONFIG_SHELL" install-target-libgcc
           ${
             if finalStage
             then ''
-              make install-target-libstdc++-v3
-              make install-target-libatomic
-              make install-target-libgomp
+              make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3
+              make SHELL="$CONFIG_SHELL" install-target-libatomic
+              make SHELL="$CONFIG_SHELL" install-target-libgomp
             ''
             else ""
           }
@@ -156,10 +164,15 @@ in
             "${hostPlatform.config}-g++ c++"; do
             set -- $pair
             if test -x "$out/bin/$1"; then
-              ln -s "$1" "$out/bin/$2"
+              if test -e "$out/bin/$2"; then
+                test -x "$out/bin/$2"
+              else
+                ln -s "$1" "$out/bin/$2"
+              fi
             fi
           done
           test -x "$out/bin/gcc"
+          test -x "$out/bin/${hostPlatform.config}-gcc"
         '';
       }
     ];

@@ -20,7 +20,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "2.5.20";
+  version = "2.5.22";
 in
   mkDerivation {
     pname = "gnupg";
@@ -31,7 +31,7 @@ in
         "https://gnupg.org/ftp/gcrypt/gnupg/gnupg-${version}.tar.bz2"
         "https://mirrors.dotsrc.org/gcrypt/gnupg/gnupg-${version}.tar.bz2"
       ];
-      hash = "sha256-ZGEmbpnDCEGaN5q+bDVtVMIUE2xFib1llRCRE4mJ/8Y=";
+      hash = "sha256-luJ7AgrSZRA4jgb18H8/cKTtiRbumV8bcregJObZ2H4=";
     };
 
     buildDeps =

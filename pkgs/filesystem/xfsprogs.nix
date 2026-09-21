@@ -9,7 +9,7 @@
   liburcu,
   util-linux,
 }: let
-  version = "6.12.0";
+  version = "7.1.1";
 in
   mkDerivation {
     pname = "xfsprogs";
@@ -19,7 +19,7 @@ in
       urls = [
         "https://mirrors.edge.kernel.org/pub/linux/utils/fs/xfs/xfsprogs/xfsprogs-${version}.tar.xz"
       ];
-      hash = "sha256-CDJAckfbeRzHDe+W5+JUvW7fBD3ISoCmLzzNbj3/0yk=";
+      hash = "sha256-Bj7cMbqOhclcf6+b5GWgSJi7p8bmIv3ZsUbu1MpUFeg=";
     };
 
     buildDeps = [

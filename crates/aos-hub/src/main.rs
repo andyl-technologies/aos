@@ -4,7 +4,7 @@
 //! SQLite database, and local bindings form a complete hub. Ordinary
 //! organization, registry, cache, binding, and delivery administration uses
 //! the typed `aos hub` API; this process binary owns serving, indexing,
-//! validation, deployment, and recovery only. A one-machine serving loop is:
+//! deployment and recovery only. A one-machine serving loop is:
 //!
 //! ```text
 //! # Configure the organization, registry, bindings, and placements with `aos hub`.
@@ -24,9 +24,8 @@ use aos_hub_core::fetch::SurfaceProvider as _;
 use aos_hub_core::service::RouteReservationKeyring as _;
 use clap::{Args, Parser, Subcommand};
 
-use aos_hub::db::{Database, RegistryRecord};
+use aos_hub::db::Database;
 use aos_hub::server::{router, AppState};
-use aos_hub::validation::validate_presence;
 
 #[derive(Parser)]
 #[command(name = "aos-hub", version, about = "AOS registry hub server")]
@@ -116,23 +115,59 @@ enum Command {
         #[arg(long, env = "HUB_CLOUDFLARE_API_TOKEN")]
         cloudflare_api_token: Option<String>,
         /// Enable OCI Distribution discovery and repository pulls.
-        #[arg(long, env = "HUB_OCI_PULL_ENABLED", default_value_t = false)]
+        #[arg(
+            long,
+            env = "HUB_OCI_PULL_ENABLED",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
+        )]
         oci_pull_enabled: bool,
         /// Enable OCI Distribution discovery and repository pushes.
-        #[arg(long, env = "HUB_OCI_PUSH_ENABLED", default_value_t = false)]
+        #[arg(
+            long,
+            env = "HUB_OCI_PUSH_ENABLED",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
+        )]
         oci_push_enabled: bool,
         /// Enable verified AOS container publication transactions.
         #[arg(
             long,
             env = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED",
-            default_value_t = false
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
         )]
         oci_verified_publication_enabled: bool,
         /// Enable reviewed container repository, tag, and retention mutations.
-        #[arg(long, env = "HUB_OCI_ADMINISTRATION_ENABLED", default_value_t = false)]
+        #[arg(
+            long,
+            env = "HUB_OCI_ADMINISTRATION_ENABLED",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
+        )]
         oci_administration_enabled: bool,
         /// Enable reviewed OCI garbage collection.
-        #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
+        #[arg(
+            long,
+            env = "HUB_OCI_GC_ENABLED",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            require_equals = true
+        )]
         oci_gc_enabled: bool,
         /// File containing the scoped Cloudflare API token.
         #[arg(
@@ -146,11 +181,6 @@ enum Command {
     Index {
         /// Registry slug; omit to index everything.
         slug: Option<String>,
-    },
-    /// Run consistency validation and repairs against a registry's caches.
-    Validate {
-        #[command(subcommand)]
-        command: ValidateCommand,
     },
     /// Recover a native deployment by migrating its local database and
     /// optionally bootstrapping the root admin.
@@ -339,23 +369,59 @@ struct WorkerArgs {
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
     /// Enable OCI Distribution discovery and repository pulls.
-    #[arg(long, env = "HUB_OCI_PULL_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "HUB_OCI_PULL_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
     oci_pull_enabled: bool,
     /// Enable OCI Distribution discovery and repository pushes.
-    #[arg(long, env = "HUB_OCI_PUSH_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "HUB_OCI_PUSH_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
     oci_push_enabled: bool,
     /// Enable verified AOS container publication transactions.
     #[arg(
         long,
         env = "HUB_OCI_VERIFIED_PUBLICATION_ENABLED",
-        default_value_t = false
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
     )]
     oci_verified_publication_enabled: bool,
     /// Enable reviewed container repository, tag, and retention mutations.
-    #[arg(long, env = "HUB_OCI_ADMINISTRATION_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "HUB_OCI_ADMINISTRATION_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
     oci_administration_enabled: bool,
     /// Enable reviewed OCI garbage collection.
-    #[arg(long, env = "HUB_OCI_GC_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "HUB_OCI_GC_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
     oci_gc_enabled: bool,
     /// Stable name of the colocated SQLite Durable Object instance.
     ///
@@ -465,31 +531,6 @@ impl WorkerArgs {
             .clone()
             .unwrap_or_else(|| format!("{}-jobs", self.name))
     }
-}
-
-#[derive(Subcommand)]
-enum ValidateCommand {
-    /// Run validation at a depth: presence (default), integrity, or deep.
-    Run {
-        /// Canonical registry slug to validate.
-        canonical: String,
-        /// Validation depth: presence | integrity | deep.
-        #[arg(long, default_value = "presence")]
-        depth: String,
-    },
-    /// Plan and execute repairs for a registry's missing cache objects.
-    ///
-    /// Copies missing objects from a cache that has them into caches that are
-    /// missing them. Local placements are repaired by copy; Hub delivery
-    /// routes use typed authenticated cache uploads; other HTTP targets remain
-    /// plan-only.
-    Repair {
-        /// Canonical registry slug to repair.
-        canonical: String,
-        /// Externally reachable base URL identifying this Hub's cache routes.
-        #[arg(long)]
-        external_url: Option<String>,
-    },
 }
 
 #[tokio::main]
@@ -762,17 +803,6 @@ async fn main() -> Result<()> {
                             Err(err) => {
                                 tracing::warn!(error = %format!("{err:#}"), "org purge failed");
                             }
-                        }
-                        let cutoff = now_secs() - REPAIR_JOB_RETENTION_SECS;
-                        match db.prune_repair_jobs(cutoff).await {
-                            Ok(pruned) if pruned > 0 => {
-                                tracing::info!(pruned, "pruned old repair jobs");
-                            }
-                            Ok(_) => {}
-                            Err(err) => tracing::warn!(
-                                error = %format!("{err:#}"),
-                                "repair-job prune failed"
-                            ),
                         }
                     }
                 });
@@ -1111,60 +1141,6 @@ async fn main() -> Result<()> {
                 .await?;
             }
         }
-        Command::Validate { command } => {
-            let db = open_db(&cli.root, &cli.target).await?;
-            match command {
-                ValidateCommand::Run { canonical, depth } => {
-                    let registry = db
-                        .registry_by_slug(&canonical)
-                        .await?
-                        .with_context(|| format!("no registry '{canonical}'"))?;
-                    let depth = parse_depth(&depth)?;
-                    let summaries =
-                        aos_hub::validation::validate_registry(&db, &registry, depth).await?;
-                    for summary in &summaries {
-                        println!(
-                            "{}\tchecked={}\tmissing={}\tcorrupt={}\tcoverage={:.0}%\treachable={}",
-                            summary.cache_url,
-                            summary.checked,
-                            summary.missing,
-                            summary.corrupt,
-                            summary.coverage_percent,
-                            summary.reachable,
-                        );
-                    }
-                }
-                ValidateCommand::Repair {
-                    canonical,
-                    external_url,
-                } => {
-                    ensure_local_target(&cli.target, "validate repair")?;
-                    let registry = db
-                        .registry_by_slug(&canonical)
-                        .await?
-                        .with_context(|| format!("no registry '{canonical}'"))?;
-                    // Validate presence first so the repair plan reflects the
-                    // current cache state.
-                    aos_hub::validation::validate_presence(&db, &registry).await?;
-                    let external_url =
-                        external_url.unwrap_or_else(|| "http://127.0.0.1:8420".to_string());
-                    let db = std::sync::Arc::new(db);
-                    let authorizer = aos_hub::server::HubRepairAuthorizer::new(
-                        std::sync::Arc::clone(&db),
-                        aos_hub::auth::jwt::JwtKeys::random(),
-                        external_url,
-                    );
-                    let client = aos_hub::fetch::hardened_client().await;
-                    let summary =
-                        aos_hub::validation::run_repairs(&db, &client, &registry, &authorizer)
-                            .await?;
-                    println!(
-                        "repairs: {} done, {} plan-only, {} failed",
-                        summary.done, summary.plan_only, summary.failed,
-                    );
-                }
-            }
-        }
         Command::Index { slug } => {
             let db = Arc::new(open_db(&cli.root, &cli.target).await?);
             let root = resolve_root(cli.root.clone(), false)?;
@@ -1208,7 +1184,6 @@ async fn main() -> Result<()> {
                             outcome.channels,
                             outcome.commit,
                         );
-                        run_presence_validation(&db, &registry).await;
                     }
                     Err(err) => println!("{}: index failed: {err:#}", registry.slug),
                 }
@@ -1581,13 +1556,6 @@ async fn deploy_worker(
         .or(applied.minted_seal_key))
 }
 
-/// How long a `repair_jobs` history row is retained before the serve loop
-/// prunes it (30 days).
-///
-/// The repair-job table is an append-only audit; this retention bounds its
-/// growth while keeping recent history for the health page.
-const REPAIR_JOB_RETENTION_SECS: i64 = 30 * 86_400;
-
 /// Current Unix time in seconds.
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -1606,9 +1574,7 @@ async fn prune_expired_invitation_secrets(db: &Database) {
     }
 }
 
-/// Index every registered registry, logging failures without aborting;
-/// each successful index is followed by presence validation of the
-/// registry's committed caches.
+/// Index every registered registry, logging failures without aborting.
 async fn index_all(db: &Database, surfaces: &dyn aos_hub_core::fetch::SurfaceProvider) {
     let registries = match db.list_registries().await {
         Ok(regs) => regs,
@@ -1635,7 +1601,7 @@ async fn index_all(db: &Database, surfaces: &dyn aos_hub_core::fetch::SurfacePro
                 continue;
             }
         };
-        let indexed = match aos_hub_core::indexer::index_and_record_from_placement(
+        if let Err(err) = aos_hub_core::indexer::index_and_record_from_placement(
             db,
             fetch.as_ref(),
             &registry,
@@ -1643,15 +1609,7 @@ async fn index_all(db: &Database, surfaces: &dyn aos_hub_core::fetch::SurfacePro
         )
         .await
         {
-            Ok(_) => true,
-            Err(err) => {
-                tracing::warn!(slug = %registry.slug, placement_id = placement.id, error = %format!("{err:#}"), "index failed");
-                false
-            }
-        };
-        if indexed {
-            run_presence_validation(db, &registry).await;
-            run_cache_probes(db, &registry).await;
+            tracing::warn!(slug = %registry.slug, placement_id = placement.id, error = %format!("{err:#}"), "index failed");
         }
     }
 }
@@ -1705,49 +1663,6 @@ async fn sync_due_mirrors(db: &Database, now: i64) {
     }
 }
 
-async fn run_cache_probes(db: &Database, registry: &RegistryRecord) {
-    let http = aos_hub::fetch::hardened_client().await;
-    match aos_hub::probe::probe_caches(db, &http, registry).await {
-        Ok(probes) => {
-            for probe in &probes {
-                tracing::info!(
-                    slug = %registry.slug,
-                    cache = %probe.cache_url,
-                    status = %probe.status.as_str(),
-                    latency_ms = probe.latency_ms,
-                    "cache freshness probe"
-                );
-            }
-        }
-        Err(err) => {
-            tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "cache probe failed");
-        }
-    }
-}
-
-/// Run presence validation for one registry, logging a one-line summary
-/// per cache; validation problems are logged, never fatal.
-async fn run_presence_validation(db: &Database, registry: &RegistryRecord) {
-    match validate_presence(db, registry).await {
-        Ok(summaries) => {
-            for summary in &summaries {
-                tracing::info!(
-                    slug = %registry.slug,
-                    cache = %summary.cache_url,
-                    checked = summary.checked,
-                    missing = summary.missing,
-                    reachable = summary.reachable,
-                    coverage = %format!("{:.1}%", summary.coverage_percent),
-                    "presence validation"
-                );
-            }
-        }
-        Err(err) => {
-            tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "presence validation failed");
-        }
-    }
-}
-
 fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
     let root = match root {
         Some(root) => root,
@@ -1795,35 +1710,6 @@ async fn open_db(root: &Option<PathBuf>, target: &str) -> Result<Database> {
     )
 }
 
-/// Rejects a non-local `--target` for commands that read or write the local
-/// filesystem (surface exports, `file://` cache repairs) and so are only
-/// meaningful against a local deployment — rather than silently degrading to an
-/// empty/no-op result against a remote one.
-///
-/// # Errors
-///
-/// Returns an error when `target` is not `local`.
-fn ensure_local_target(target: &str, command: &str) -> Result<()> {
-    if target != "local" {
-        anyhow::bail!(
-            "`{command}` operates on the local filesystem and is only supported with \
-             --target local; run it on the deployment host"
-        );
-    }
-    Ok(())
-}
-
-/// Parse a validation-depth CLI argument.
-fn parse_depth(depth: &str) -> Result<aos_hub::validation::ValidationDepth> {
-    use aos_hub::validation::ValidationDepth;
-    match depth {
-        "presence" => Ok(ValidationDepth::Presence),
-        "integrity" => Ok(ValidationDepth::Integrity),
-        "deep" => Ok(ValidationDepth::Deep),
-        other => anyhow::bail!("invalid depth '{other}': presence, integrity, or deep"),
-    }
-}
-
 fn tracing_subscriber_init() {
     // tracing is a workspace-wide dependency but the subscriber is not;
     // a minimal logger keeps the binary self-contained.
@@ -1867,6 +1753,68 @@ mod production_vm_coverage {
     use clap::{Command as ClapCommand, CommandFactory as _, Parser as _};
 
     use super::{Cli, Command, WorkerCommand};
+
+    fn parsed_container_capabilities(arguments: &[&str]) -> [bool; 5] {
+        match Cli::try_parse_from(arguments).unwrap().command {
+            Command::Serve {
+                oci_pull_enabled,
+                oci_push_enabled,
+                oci_verified_publication_enabled,
+                oci_administration_enabled,
+                oci_gc_enabled,
+                ..
+            } => [
+                oci_pull_enabled,
+                oci_push_enabled,
+                oci_verified_publication_enabled,
+                oci_administration_enabled,
+                oci_gc_enabled,
+            ],
+            Command::Worker {
+                command: WorkerCommand::Install(arguments) | WorkerCommand::Deploy(arguments),
+            } => [
+                arguments.oci_pull_enabled,
+                arguments.oci_push_enabled,
+                arguments.oci_verified_publication_enabled,
+                arguments.oci_administration_enabled,
+                arguments.oci_gc_enabled,
+            ],
+            _ => panic!("expected a native or Worker deployment command"),
+        }
+    }
+
+    #[test]
+    fn native_and_worker_oci_defaults_support_independent_explicit_opt_outs() {
+        for prefix in [
+            vec!["aos-hub", "serve"],
+            vec!["aos-hub", "worker", "install"],
+            vec!["aos-hub", "worker", "deploy"],
+        ] {
+            assert_eq!(parsed_container_capabilities(&prefix), [true; 5]);
+
+            let mut explicit_enable = prefix.clone();
+            explicit_enable.push("--oci-pull-enabled");
+            assert_eq!(parsed_container_capabilities(&explicit_enable), [true; 5]);
+
+            for (index, flag) in [
+                "--oci-pull-enabled=false",
+                "--oci-push-enabled=false",
+                "--oci-verified-publication-enabled=false",
+                "--oci-administration-enabled=false",
+                "--oci-gc-enabled=false",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut arguments = prefix.clone();
+                arguments.push(flag);
+                let mut expected = [true; 5];
+                expected[index] = false;
+
+                assert_eq!(parsed_container_capabilities(&arguments), expected);
+            }
+        }
+    }
 
     #[test]
     fn parses_closed_worker_recovery_commands() {

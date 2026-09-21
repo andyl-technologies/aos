@@ -154,6 +154,20 @@ in {
     registry = {
       system = registrySystem;
       packages = ["aos-registry-server" "test-static-cache-server"];
+      metadata."host.nix" = ''
+        {
+          aos.networking.hostName = "registry";
+          aos.apm.desiredPackages = ["aos-registry-server" "test-static-cache-server"];
+          "aos-registry-server".enable = true;
+        }
+      '';
+      extraModules = [
+        {
+          environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
+            d /var/lib/sysreg-cache 0755 root root - -
+          '';
+        }
+      ];
       # The publisher needs the candidate toplevel, its complete raw OTA
       # artifact, and the tools that derive signer/SBAT/PCR facts from both
       # slot-specific UKIs.
@@ -163,6 +177,8 @@ in {
         candidateImageDisk
         candidateImageInfo
         candidateUki
+        pkgs.aos.apr
+        pkgs.gawk
         pkgs.secure-boot-test-keys
         pkgs.sbsigntools
         pkgs.binutils
@@ -230,23 +246,59 @@ in {
           ).strip()
           output = f"/var/lib/aos-test/{label}.out"
           status = f"/var/lib/aos-test/{label}.status"
+          target.succeed(f"rm -f {output} {status}")
           script = (
-              "set -o pipefail; "
+              "set -eu; rc=0; "
               f"HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-              f"{APM} {arguments} 2>&1 | ${pkgs.coreutils}/bin/tee {output}; "
-              "rc=''${PIPESTATUS[0]}; "
+              f"{APM} {arguments} > {output} 2>&1 || rc=$?; "
               f"printf '%s\\n' \"$rc\" > {status}; "
+              f"{SYNC} -f {status}; "
               "exit \"$rc\""
           )
-          command = "${pkgs.bash}/bin/bash -c " + shlex.quote(script)
+          # Reboot returns after queueing shutdown. Keep D-Bus and the wrapper
+          # alive until its actual exit status and output are durable; ExecStop
+          # runs before systemd terminates the service's remaining processes.
+          shutdown_barrier = (
+              f"until test -s {status}; do ${pkgs.coreutils}/bin/sleep 0.1; done; "
+              f"{SYNC} -f {status}"
+          )
+          properties = [
+              "Type=exec",
+              "DefaultDependencies=no",
+              "After=dbus.service",
+              "Before=shutdown.target",
+              "Conflicts=shutdown.target",
+              f"TimeoutStopSec={timeout}",
+              "ExecStop=${pkgs.bash}/bin/bash -c " + shlex.quote(shutdown_barrier),
+          ]
+          command = (
+              "${pkgs.systemd}/bin/systemd-run --no-block --collect "
+              f"--unit=aos-test-{label} "
+              + " ".join("--property=" + shlex.quote(value) for value in properties)
+              + " -- ${pkgs.bash}/bin/bash -c " + shlex.quote(script)
+          )
           try:
-              target.succeed(command, timeout=timeout)
+              exit_code, stdout, stderr = target.execute(command, timeout=30)
           except Exception as error:
-              # A queued reboot may close the guest-agent connection before
-              # the successful shell result reaches the driver.
-              print(f"{label} control connection closed: {error}")
+              # The persistent QEMU RPC channel can survive a guest reset.
+              # Only short launch/poll requests may overlap that reset.
+              print(f"{label} launch connection interrupted: {error}")
+          else:
+              assert exit_code == 0, (
+                  f"{label} launch failed (exit {exit_code}): "
+                  + (stdout + stderr).decode("utf-8", errors="replace")
+              )
 
           target.wait_until_succeeds(
+              f"test ! -e /etc/initrd-release && test -s {status}",
+              timeout=timeout,
+          )
+          result = target.succeed(f"cat {status}").strip()
+          assert result == "0", (
+              f"{label} failed (exit {result}): " + target.succeed(f"cat {output}")
+          )
+          target.wait_until_succeeds(
+              "test ! -e /etc/initrd-release && "
               "test \"$(cat /proc/sys/kernel/random/boot_id)\" != "
               + shlex.quote(old_boot_id),
               timeout=600,
@@ -529,7 +581,22 @@ in {
           ${pkgs.nix}/bin/nix-store --check-validity '${candidateTop}'
           ${pkgs.nix}/bin/nix-store --check-validity '${candidateImage}'
 
-          ${pkgs.aos.apr}/bin/apr create sysreg
+          # Privileged sysroot provenance must name a registry-roster signer.
+          ${pkgs.aos.apr}/bin/apr keys generate release --registry sysreg \\
+            > /tmp/sysreg-keygen.out 2>&1
+          PUBLIC_KEY=$(${pkgs.gawk}/bin/awk '/Public key:/ {print $NF; exit}' /tmp/sysreg-keygen.out)
+          SIGNING_KEY=$HOME/.config/apm/keys/sysreg-release.key
+          ${pkgs.aos.apr}/bin/apr create sysreg \\
+            --trust-key "$PUBLIC_KEY" --trust-key-id release --key "$SIGNING_KEY"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/sysreg.toml" <<EOF
+          [registry]
+          name = "sysreg"
+          url = "file://$HOME/.local/share/apm/registries/sysreg"
+
+          [registry.signing_keys]
+          release = "$SIGNING_KEY"
+          EOF
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
           mkdir -p "$REG_DIR/sb-certs"
           cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
@@ -555,7 +622,7 @@ in {
             --image-uki "$CANDIDATE_UKI" \\
             --no-ca \\
             --registry sysreg \\
-            --no-commit > /tmp/publish.json; then
+            --key-id release --no-commit > /tmp/publish.json; then
             cat /tmp/publish.json >&2
             exit 1
           fi
@@ -608,7 +675,13 @@ in {
           git -C "$REG_DIR" commit -m 'release: A/B lifecycle fixture'
           git -C "$REG_DIR" tag v1.0.0
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
-          chown -R aos-gitd:aos-gitd "$ORIGIN"
+          # StateDirectory may use an idmapped mount. Set ownership in the
+          # daemon's view so Git sees its own UID rather than the host mapping.
+          git_pid=$(systemctl show -p MainPID --value aos-registry-server-gitd.service)
+          test "$git_pid" -gt 0
+          git_owner=$(id -u aos-gitd):$(id -g aos-gitd)
+          ${pkgs.util-linux}/bin/nsenter --target "$git_pid" --mount --root --wd=/ \\
+            ${pkgs.coreutils}/bin/chown -R "$git_owner" "$ORIGIN"
       """), timeout=1800)
       branch = registry.succeed("cat /tmp/sysreg-branch").strip()
 
@@ -617,6 +690,14 @@ in {
           f"{APM} registry --system add --no-verify "
           f"git://registry:9418/sysreg --name sysreg --priority 500 "
           f"--branch {branch}",
+          timeout=180,
+      )
+
+      # Registration persists the endpoint; explicitly fetch the catalog into
+      # the system scope before asking the offline upgrade resolver to select it.
+      target.succeed(
+          "HOME=/tmp USER=root PATH=${pkgs.nix}/bin:$PATH "
+          f"{APM} update --system --registry sysreg 2>&1",
           timeout=180,
       )
 

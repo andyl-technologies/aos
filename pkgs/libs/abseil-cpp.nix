@@ -7,15 +7,15 @@
   stdenv,
 }: let
   upstream = mkGithubUpstream {
-    unitId = "abseil-cpp-20230802";
+    unitId = "abseil-cpp";
     family = "abseil-cpp";
-    stream = "20230802";
+    stream = "release-train";
     owner = "pkgs/libs/abseil-cpp.nix";
     classification = "assisted";
-    version = "20230802.0";
-    upstreamId = "20230802.0";
+    version = "20260817.0";
+    upstreamId = "20260817.0";
     repository = "abseil/abseil-cpp";
-    major = 20230802;
+    provider = "github-releases";
     versionScheme = "numeric";
     riskFloor = "high";
     source = {
@@ -38,7 +38,7 @@
           ];
         }
       ];
-      hash = "sha256-WdKXavnW7PABqBo1dJpuVRozW5SdNJGM+t4Hc3udk8U=";
+      hash = "sha256-9+BRed85xFQ0ytQz9Xg4QLs3iO8yKXb5E4vGtys6EH0=";
     };
   };
   inherit (upstream) version;

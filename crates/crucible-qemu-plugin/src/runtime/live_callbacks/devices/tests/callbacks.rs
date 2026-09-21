@@ -423,7 +423,6 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
     let (teardown_sender, teardown_receiver) = std::sync::mpsc::channel();
     std::mem::forget(teardown_receiver);
     let state = LiveVcpuTimeCallbackState::new(
-        61,
         test_icount_raw,
         crate::runtime::live_callbacks::test_support::test_force_vcpu_exit,
         crate::runtime::live_callbacks::test_support::test_idle_wake_wait(),

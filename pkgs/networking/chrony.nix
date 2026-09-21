@@ -8,7 +8,7 @@
   gnutls,
   stdenv,
 }: let
-  version = "4.8";
+  version = "4.9";
   isDarwin = stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
@@ -19,7 +19,7 @@ in
       urls = [
         "https://chrony-project.org/releases/chrony-${version}.tar.gz"
       ];
-      hash = "sha256-M+qOsqTa6qUG6Pyv1dbYkCftby8GCWRcbxSbVg0wFwY=";
+      hash = "sha256-SSTG9TAQW81bnp4zxIoq4b/YiSIshIC8QWAREO/IZNA=";
     };
 
     buildDeps = [

@@ -1,0 +1,24 @@
+--- a/arch/x86/tools/gen-insn-attr-x86.awk
++++ b/arch/x86/tools/gen-insn-attr-x86.awk
+@@ -258,6 +258,9 @@
+ }
+ 
+ function add_flags(old,new) {
++	# Copy the string before inspecting a newly created array element.
++	# Gawk 5.4 may otherwise retain an alias that the assignment releases.
++	old = old ""
+ 	if (old && new)
+ 		return old " | " new
+ 	else if (old)
+--- a/tools/arch/x86/tools/gen-insn-attr-x86.awk
++++ b/tools/arch/x86/tools/gen-insn-attr-x86.awk
+@@ -258,6 +258,9 @@
+ }
+ 
+ function add_flags(old,new) {
++	# Copy the string before inspecting a newly created array element.
++	# Gawk 5.4 may otherwise retain an alias that the assignment releases.
++	old = old ""
+ 	if (old && new)
+ 		return old " | " new
+ 	else if (old)

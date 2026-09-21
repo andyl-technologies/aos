@@ -320,6 +320,7 @@ pub(crate) mod tests {
 
     fn planned(ids: &[String]) -> PlannedArtifactSet {
         PlannedArtifactSet {
+            configuration: None,
             artifacts: ids
                 .iter()
                 .map(|id| PlannedArtifact {
@@ -335,6 +336,7 @@ pub(crate) mod tests {
 
     fn final_set(ids: &[String]) -> FinalArtifactSet {
         FinalArtifactSet {
+            configuration: None,
             artifact_ids: ids.to_vec(),
         }
     }
@@ -510,6 +512,10 @@ pub(crate) mod tests {
                 Some(platform),
                 None,
                 vec![
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::AuthenticatedBy,
+                        target: "cache/example.narinfo".to_owned(),
+                    },
                     ArtifactRelationship {
                         relation: ArtifactRelation::CorrespondingSource,
                         target: "source/example".to_owned(),
@@ -712,6 +718,7 @@ pub(crate) mod tests {
                 name: package.name.clone(),
                 role: crate::qualification::PackageRole::GeneralCatalog,
                 inherit_dependency_obligations: true,
+                execution: None,
             })
             .collect();
         plan.schema_version = crate::RELEASE_PLAN_V2.into();
@@ -721,7 +728,7 @@ pub(crate) mod tests {
                 release_id: "preceding-snapshot".into(),
                 manifest_digest: digest("predecessor"),
             });
-        plan.gates = policy.gates(plan.release_class)?;
+        plan.gates = policy.gates(&plan.registry, plan.release_class)?;
         plan.public_evidence_policy_digest = policy.digest()?;
         plan.qualification = Some(policy);
         for platform in Platform::LINUX {
@@ -882,6 +889,254 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn package_cases_inherit_the_strongest_runtime_consumer_role() -> anyhow::Result<()> {
+        use crate::qualification::{PackageRole, PackageRule, QualificationPhase};
+
+        let (mut plan, mut manifest) = qualification_fixture()?;
+        let dependency_name = "dependency";
+        let dependency_id = |platform| format!("package/{dependency_name}/{platform}");
+
+        let mut dependency_plan = plan.packages[0].clone();
+        dependency_plan.name = dependency_name.to_owned();
+        dependency_plan.platforms = Platform::ALL
+            .into_iter()
+            .map(|platform| PlatformCell {
+                platform,
+                decision: MatrixCell::Artifact {
+                    artifact: planned(&[dependency_id(platform)]),
+                },
+            })
+            .collect();
+        plan.packages.push(dependency_plan);
+        plan.packages
+            .sort_by(|left, right| left.name.cmp(&right.name));
+
+        let dependency_result = PackageResult {
+            name: dependency_name.to_owned(),
+            platforms: Platform::ALL
+                .into_iter()
+                .map(|platform| PlatformCell {
+                    platform,
+                    decision: MatrixCell::Artifact {
+                        artifact: final_set(&[dependency_id(platform)]),
+                    },
+                })
+                .collect(),
+        };
+        manifest.packages.push(dependency_result);
+        manifest
+            .packages
+            .sort_by(|left, right| left.name.cmp(&right.name));
+
+        for platform in Platform::ALL {
+            let id = dependency_id(platform);
+            let (artifact, _) = artifact(
+                id.clone(),
+                ArtifactKind::PackageNar,
+                Some(platform),
+                None,
+                vec![
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::AuthenticatedBy,
+                        target: "cache/example.narinfo".to_owned(),
+                    },
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::CorrespondingSource,
+                        target: "source/example".to_owned(),
+                    },
+                    ArtifactRelationship {
+                        relation: ArtifactRelation::LicensedBy,
+                        target: "license/example".to_owned(),
+                    },
+                ],
+            )?;
+            manifest.artifacts.push(artifact);
+            manifest
+                .artifacts
+                .iter_mut()
+                .find(|artifact| artifact.id == package_id(platform))
+                .unwrap()
+                .relationships
+                .push(ArtifactRelationship {
+                    relation: ArtifactRelation::Contains,
+                    target: id,
+                });
+        }
+
+        let policy = plan.qualification.as_mut().unwrap();
+        policy.package_rules = vec![
+            PackageRule {
+                name: dependency_name.to_owned(),
+                role: PackageRole::GeneralCatalog,
+                inherit_dependency_obligations: true,
+                execution: None,
+            },
+            PackageRule {
+                name: "example".to_owned(),
+                role: PackageRole::SystemIntegrity,
+                inherit_dependency_obligations: true,
+                execution: None,
+            },
+        ];
+        plan.gates = policy.gates(&plan.registry, plan.release_class)?;
+        plan.public_evidence_policy_digest = policy.digest()?;
+
+        let cases =
+            crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?;
+        let dependency_cases = cases
+            .iter()
+            .filter(|case| {
+                case.id
+                    .starts_with(&format!("package-function/{dependency_name}/"))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(dependency_cases.len(), Platform::ALL.len());
+        assert!(
+            dependency_cases
+                .iter()
+                .all(|case| case.package_role == Some(PackageRole::SystemIntegrity))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_package_case_binds_the_matching_image_and_predecessor() -> anyhow::Result<()> {
+        use crate::qualification::{PackageExecution, QualificationPhase};
+
+        let (mut plan, mut manifest) = qualification_fixture()?;
+        let platform = Platform::X86_64Linux;
+        let package = manifest
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "example")
+            .unwrap();
+        package.platforms.retain(|cell| cell.platform == platform);
+        for cell in &mut plan
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "example")
+            .unwrap()
+            .platforms
+        {
+            if cell.platform != platform {
+                cell.decision = MatrixCell::NotApplicable {
+                    rule: "recovery-execution-fixture".into(),
+                    reason: "This fixture exercises recovery on x86_64 Linux only.".into(),
+                };
+            }
+        }
+        let package_subjects = match &package.platforms[0].decision {
+            MatrixCell::Artifact { artifact } => artifact.artifact_ids.clone(),
+            MatrixCell::Blocked { .. } | MatrixCell::NotApplicable { .. } => unreachable!(),
+        };
+        let image = manifest
+            .images
+            .iter()
+            .find(|image| image.system_variant == "server")
+            .unwrap();
+        let image_subjects = match &image
+            .platforms
+            .iter()
+            .find(|cell| cell.platform == platform)
+            .unwrap()
+            .decision
+        {
+            MatrixCell::Artifact { artifact } => artifact.artifact_ids.clone(),
+            MatrixCell::Blocked { .. } | MatrixCell::NotApplicable { .. } => unreachable!(),
+        };
+        let policy = plan.qualification.as_mut().unwrap();
+        policy
+            .package_rules
+            .iter_mut()
+            .find(|rule| rule.name == "example")
+            .unwrap()
+            .execution = Some(PackageExecution::RecoveryImage {
+            system_variant: "server".into(),
+        });
+        plan.gates = policy.gates(&plan.registry, plan.release_class)?;
+        plan.public_evidence_policy_digest = policy.digest()?;
+
+        let cases =
+            crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?;
+        let case = cases
+            .iter()
+            .find(|case| case.id == "package-function/example/x86_64-linux")
+            .unwrap();
+        let mut expected = package_subjects;
+        expected.extend(image_subjects);
+        expected.sort();
+        expected.dedup();
+
+        assert_eq!(case.subjects, expected);
+        assert_eq!(case.predecessor, plan.qualification_predecessor);
+
+        let mut missing_predecessor = plan.clone();
+        missing_predecessor.qualification_predecessor = None;
+        assert!(
+            crate::qualification_evidence::cases(
+                &missing_predecessor,
+                &manifest,
+                QualificationPhase::Staging,
+            )
+            .is_err()
+        );
+        let mut missing_image = manifest.clone();
+        missing_image
+            .images
+            .retain(|image| image.system_variant != "server");
+        assert!(
+            crate::qualification_evidence::cases(
+                &plan,
+                &missing_image,
+                QualificationPhase::Staging,
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn qualification_classifies_eligible_and_blocked_packages() -> anyhow::Result<()> {
+        use crate::platform::MatrixCell;
+
+        let (mut plan, _) = qualification_fixture()?;
+        let contract = plan.qualification.clone().unwrap();
+        let mut excluded = plan.packages[0].clone();
+        excluded.name = "excluded-source-component".into();
+        for cell in &mut excluded.platforms {
+            cell.decision = MatrixCell::NotApplicable {
+                rule: "source-only".into(),
+                reason: "Retained as source, never published as a package.".into(),
+            };
+        }
+        plan.packages.push(excluded);
+
+        contract.validate_plan(&plan)?;
+
+        let added = plan.packages.last_mut().unwrap();
+        added.platforms[0].decision = MatrixCell::Blocked {
+            required_work: "Complete target support.".into(),
+            failure_evidence: crate::digest::Sha256Digest::of_bytes(b"blocked"),
+        };
+        assert!(
+            contract
+                .validate_plan(&plan)
+                .unwrap_err()
+                .to_string()
+                .contains("publication-eligible package inventory")
+        );
+
+        plan.packages.pop();
+        let mut unclassified = plan.packages[0].clone();
+        unclassified.name = "unclassified-published-package".into();
+        plan.packages.push(unclassified);
+        assert!(contract.validate_plan(&plan).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn qualification_binds_private_plan_without_requesting_it_as_a_public_object()
     -> anyhow::Result<()> {
         use crate::qualification::QualificationPhase;
@@ -1038,6 +1293,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn package_artifact_requires_its_exact_signed_narinfo() -> anyhow::Result<()> {
+        let fixture = release_fixture()?;
+        let plan: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "fixture plan")?;
+        let envelope: ManifestEnvelopeV1 =
+            canonical::from_slice(&fixture.envelope, "fixture manifest")?;
+        let mut manifest = envelope.payload;
+        for artifact in manifest
+            .artifacts
+            .iter_mut()
+            .filter(|artifact| artifact.kind == ArtifactKind::PackageNar)
+        {
+            artifact
+                .relationships
+                .retain(|relationship| relationship.relation != ArtifactRelation::AuthenticatedBy);
+        }
+
+        assert!(manifest.validate(&plan).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn journal_verifier_rejects_skipped_state() -> anyhow::Result<()> {
         let first = entry(1, None, None, ReleaseState::Planned);
         let first_digest = Sha256Digest::of_canonical("aos.release.journal-entry/v1", &first)?;
@@ -1080,6 +1356,30 @@ pub(crate) mod tests {
         assert!(admission.validate(&plan, "2026-08-31T23:59:59Z").is_err());
         admission.plan_digest = digest("another plan");
         assert!(admission.validate(&plan, "2026-09-01T00:00:00Z").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn assurance_admission_cannot_follow_a_lighter_software_channel() -> anyhow::Result<()> {
+        use crate::qualification_admission::verify_reviews;
+
+        let (mut plan, _) = qualification_fixture()?;
+        for class in [
+            ReleaseClass::Edge,
+            ReleaseClass::Candidate,
+            ReleaseClass::Stable,
+        ] {
+            plan.release_class = class;
+            plan.registry = "andyl/main".into();
+            assert!(verify_reviews(&plan, b"observations", &[], &[]).is_err());
+
+            let contract = plan.qualification.as_ref().unwrap();
+            plan.gates = contract.gates("andyl/testing", class)?;
+            assert!(contract.validate_plan(&plan).is_err());
+
+            plan.registry = "andyl/testing".into();
+            assert!(verify_reviews(&plan, b"observations", &[], &[]).is_ok());
+        }
         Ok(())
     }
 
@@ -1165,6 +1465,54 @@ pub(crate) mod tests {
         assert!(legacy.require_current_qualification().is_err());
         let (current, _) = qualification_fixture()?;
         current.require_current_qualification()?;
+        current.require_publishable_qualification()?;
+        Ok(())
+    }
+
+    #[test]
+    fn qualification_snapshot_uses_current_build_policy_but_cannot_be_published()
+    -> anyhow::Result<()> {
+        let (mut snapshot, manifest) = qualification_fixture()?;
+        snapshot.qualification_predecessor = None;
+        snapshot.release_id = format!(
+            "{}{}",
+            crate::plan::QUALIFICATION_SNAPSHOT_RELEASE_PREFIX,
+            snapshot.version
+        );
+        snapshot.source.source_tag = format!(
+            "{}{}",
+            crate::plan::QUALIFICATION_SNAPSHOT_TAG_PREFIX,
+            snapshot.version
+        );
+        snapshot.intended_channels.clear();
+
+        snapshot.validate()?;
+        snapshot.require_current_qualification()?;
+        assert!(snapshot.require_publishable_qualification().is_err());
+        let staging_cases = crate::qualification_evidence::cases(
+            &snapshot,
+            &manifest,
+            crate::qualification::QualificationPhase::Staging,
+        )?;
+        assert!(staging_cases.iter().all(|case| {
+            case.requirement_id != "image-update-recovery" && case.predecessor.is_none()
+        }));
+
+        let mut ordinary_name = snapshot.clone();
+        ordinary_name.release_id = "ordinary-release".into();
+        assert!(ordinary_name.validate().is_err());
+
+        let mut ordinary_tag = snapshot.clone();
+        ordinary_tag.source.source_tag = "release/ordinary".into();
+        assert!(ordinary_tag.validate().is_err());
+
+        let mut channel = snapshot;
+        channel.intended_channels.push(crate::plan::ChannelIntent {
+            channel: "stable".into(),
+            first_partition: 0,
+            last_partition: 255,
+        });
+        assert!(channel.validate().is_err());
         Ok(())
     }
 

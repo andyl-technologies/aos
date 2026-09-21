@@ -30,6 +30,10 @@ in
         cp -r ${src} "$TMPDIR/src"
         chmod -R u+w "$TMPDIR/src"
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/src"
+
         # Touch all files first, then touch generated .c/.h to prevent regeneration
         find "$TMPDIR/src" -type f -exec touch {} + 2>/dev/null || true
         sleep 1
@@ -39,8 +43,8 @@ in
 
         # CC wrapper: pass glibc lib path + -static
         mkdir -p "$TMPDIR/ccwrap"
-        printf '#!/bin/sh\nexec ${prev.gcc}/bin/gcc -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/gcc"
-        printf '#!/bin/sh\nexec ${prev.gcc}/bin/g++ -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/g++"
+        printf '#!${prev.bash}/bin/bash\nexec ${prev.gcc}/bin/gcc -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/gcc"
+        printf '#!${prev.bash}/bin/bash\nexec ${prev.gcc}/bin/g++ -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/g++"
         chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
         ln -sf gcc "$TMPDIR/ccwrap/cc"
         ln -sf g++ "$TMPDIR/ccwrap/c++"
@@ -52,7 +56,7 @@ in
         CXX="$TMPDIR/ccwrap/g++" \
         CFLAGS="-O2" \
         CXXFLAGS="-O2" \
-        "$TMPDIR/src/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/src/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${buildPlatform.config} \
@@ -62,8 +66,8 @@ in
           --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline --disable-sim \
           --with-sysroot=/
 
-        make -j"$NIX_BUILD_CORES" MAKEINFO="${prev.texinfo}/bin/makeinfo"
-        make install MAKEINFO="${prev.texinfo}/bin/makeinfo"
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" MAKEINFO="${prev.texinfo}/bin/makeinfo"
+        make SHELL="${prev.bash}/bin/bash" install MAKEINFO="${prev.texinfo}/bin/makeinfo"
 
         echo "Cross binutils 2.30 (${buildPlatform.config} → ${hostPlatform.config}) installed to $out"
       ''

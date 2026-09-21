@@ -12,7 +12,6 @@ use aos_hub::db::{Database, SurfaceTarget};
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::indexer::index_and_record;
 use aos_hub::server::{router, AppState};
-use aos_hub::validation::validate_presence;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
@@ -43,6 +42,80 @@ async fn get_with_accept(
         .await
         .unwrap();
     (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn disabled_container_browser_pages_render_configuration_state() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.register_registry("empty", &[], false).await.unwrap();
+    let mut state = AppState::new(db, "http://127.0.0.1:8420".into()).await;
+    state.container_rollout = aos_hub_core::container_rollout::ContainerRollout::all_disabled();
+    assert!(!state.container_rollout.pull);
+    let app = router(Arc::new(state)).await;
+
+    for page in [
+        "containers",
+        "containers/repositories",
+        "containers/repository?repository=aos",
+        "containers/tag?repository=aos&tag=edge",
+        "containers/manifest?repository=aos&digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ] {
+        let (status, headers, body) = get(&app, &format!("/empty/-/{page}")).await;
+
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        assert!(body.contains("Container browsing is not enabled for this Hub."));
+        assert!(body.contains("return to the Hub"));
+        assert!(!body.contains("No containers match"));
+    }
+
+    let (status, _, body) = get(&app, "/missing/-/containers").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!body.contains("Container browsing"));
+}
+
+#[tokio::test]
+async fn fresh_container_browser_is_enabled_and_renders_an_empty_catalog() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.register_registry("empty", &[], false).await.unwrap();
+    let state = AppState::new(db, "http://127.0.0.1:8420".into()).await;
+    assert_eq!(
+        state.container_rollout,
+        aos_hub_core::container_rollout::ContainerRollout::all_enabled()
+    );
+    let app = router(Arc::new(state)).await;
+
+    let (status, _, body) = get(&app, "/empty/-/containers").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("No containers match these filters."));
+    assert!(!body.contains("This page is unavailable"));
+}
+
+#[tokio::test]
+async fn unavailable_browser_data_is_a_page_and_not_an_empty_catalog() {
+    use aos_hub_core::backend::{Backend as _, SqlxBackend};
+
+    let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
+    let SqlxBackend::Sqlite(pool) = &backend else {
+        panic!("expected SQLite test backend");
+    };
+    let writer = SqlxBackend::Sqlite(pool.clone());
+    let db = Arc::new(Database::with_backend(Box::new(backend)).await.unwrap());
+    db.register_registry("empty", &[], false).await.unwrap();
+    let app = router(Arc::new(
+        AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
+    writer.execute("DROP TABLE releases", &[]).await.unwrap();
+
+    let (status, headers, body) = get(&app, "/empty/-/packages").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+    assert!(body.contains("We could not load the content for this page."));
+    assert!(!body.contains("No packages have been published"));
 }
 
 /// Register and index a fixture surface, returning the served app + db.
@@ -142,7 +215,10 @@ async fn static_assets_are_served_by_the_shared_router() {
     for (uri, ctype) in [
         ("/_assets/style.css", "text/css"),
         ("/_assets/app.js", "text/javascript"),
-        ("/_assets/jetbrains-mono-regular.woff2", "font/woff2"),
+        ("/_assets/theme.js", "text/javascript"),
+        ("/_assets/geist-sans-variable.woff2", "font/woff2"),
+        ("/_assets/geist-mono-variable.woff2", "font/woff2"),
+        ("/_assets/OFL.txt", "text/plain; charset=utf-8"),
     ] {
         let (status, headers, body) = get(&app, uri).await;
         assert_eq!(status, StatusCode::OK, "{uri} must be served");
@@ -154,7 +230,25 @@ async fn static_assets_are_served_by_the_shared_router() {
             "{uri} content-type"
         );
         assert!(!body.is_empty(), "{uri} non-empty");
+
+        if ctype == "font/woff2" {
+            assert!(body.starts_with("wOF2"), "{uri} must contain a WOFF2 font");
+            assert_eq!(
+                headers.get(header::CACHE_CONTROL).unwrap(),
+                "public, max-age=86400",
+                "stable font URLs must expire after an upgrade"
+            );
+        }
     }
+
+    let (_, _, page) = get(&app, "/demo/-/releases").await;
+    let theme_script = page.find("/_assets/theme.js?v=").unwrap();
+    let stylesheet = page.find("/_assets/style.css?v=").unwrap();
+    assert!(
+        theme_script < stylesheet,
+        "saved appearance applies before paint"
+    );
+    assert!(page.contains("data-theme-toggle"));
 }
 
 #[tokio::test]
@@ -171,7 +265,7 @@ async fn security_headers_on_every_route_class() {
         "/demo/-/packages",                           // /-/ page
         "/demo/HEAD",                                 // machine path
         "/_assets/style.css",                         // stylesheet
-        "/_assets/jetbrains-mono-regular.woff2",      // embedded font
+        "/_assets/geist-sans-variable.woff2",         // embedded font
         "/aos.hub.v1.RegistryService/ListRegistries", // RPC path
         "/demo/does-not-exist",                       // 404s carry the headers too
     ] {
@@ -217,35 +311,6 @@ async fn javascript_homepage_is_not_a_link() {
         "javascript: homepage must not become a link: {body}"
     );
     assert!(body.contains("javascript:alert(1)"), "shown as plain text");
-}
-
-#[tokio::test]
-async fn health_page_shows_unreachable_cache_after_validation() {
-    let dir = tempfile::tempdir().unwrap();
-    let surface = dir.path().join("surface");
-    std::fs::create_dir_all(&surface).unwrap();
-    let fixture = common::standard_registry(&surface);
-    let (app, db) = serve_fixture(&surface, &fixture).await;
-
-    // Validation state belongs on the dedicated health page.
-    let (_, _, health) = get(&app, "/demo/-/health").await;
-    assert!(health.contains("Not yet validated"));
-
-    // The fixture's committed cache (https://cache.example.com) does not
-    // resolve, so presence validation records it unreachable.
-    let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
-    validate_presence(&db, &registry).await.unwrap();
-
-    let (status, _, body) = get(&app, "/demo/-/health").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("https://cache.example.com/"), "{body}");
-    assert!(body.contains("unreachable"), "{body}");
-    assert!(body.contains("presence"), "{body}");
-
-    // Overview links to Health without duplicating its cache table.
-    let (_, _, home) = get(&app, "/demo/").await;
-    assert!(!home.contains("unreachable"), "{home}");
-    assert!(home.contains("/demo/-/health"), "{home}");
 }
 
 #[tokio::test]

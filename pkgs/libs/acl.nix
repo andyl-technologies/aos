@@ -6,24 +6,22 @@
   gettext,
   attr,
 }: let
-  version = "2.3.2";
+  version = "2.4.0";
 in
   mkDerivation {
     pname = "acl";
     inherit version;
 
     src = fetchurl {
+      name = "acl-${version}.tar.xz";
       urls = [
-        "https://download.savannah.gnu.org/releases/acl/acl-${version}.tar.gz"
-        "https://mirrors.kernel.org/gnu/acl/acl-${version}.tar.gz"
+        "https://source.ipfire.org/source-2.x/acl-${version}.tar.xz"
+        "https://download.savannah.gnu.org/releases/acl/acl-${version}.tar.xz"
       ];
-      hash = "sha256-XyvbrWKXB6p9hcYj+ZSqih0t7FWnPeUgW6wL9gWKL3w=";
+      hash = "sha256-5mETFFbScIoBxhSg9ADhHX0b+utvPnS3W7mAty8BYaM=";
     };
 
-    buildDeps = [
-      gnumake
-      gettext
-    ];
+    buildDeps = [gnumake gettext];
     runtimeDeps = [attr];
     propagatedDeps = [attr];
 

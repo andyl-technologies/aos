@@ -3,7 +3,7 @@
   mkDerivation,
   fetchurl,
 }: let
-  version = "2.4.12";
+  version = "2.4.19";
 in
   mkDerivation {
     pname = "cups";
@@ -13,7 +13,7 @@ in
       urls = [
         "https://github.com/OpenPrinting/cups/releases/download/v${version}/cups-${version}-source.tar.gz"
       ];
-      hash = "sha256-sd3hkaSuJ2DEciDILKYVWijDgnAebBoBWdEFSZAjHVk=";
+      hash = "sha256-ggmEsSpn+YcFeFquLdE0f+CsCXgoAB1Fg/9kV0rtY4k=";
     };
 
     buildDeps = [];

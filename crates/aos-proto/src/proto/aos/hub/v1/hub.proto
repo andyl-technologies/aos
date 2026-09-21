@@ -19,6 +19,10 @@ service RegistryService {
   rpc CreateRegistry(ApplyRegistryMutationRequest) returns (RegistryResponse);
   rpc PlanUpdateRegistry(PlanUpdateRegistryRequest) returns (TopologyPlanResponse);
   rpc UpdateRegistry(ApplyRegistryMutationRequest) returns (RegistryResponse);
+  // Reads and drafts committed registry metadata; promotion uses apr change merge.
+  rpc GetRegistryMetadata(GetRegistryRequest) returns (RegistryMetadataResponse);
+  rpc PlanUpdateRegistryMetadata(PlanUpdateRegistryMetadataRequest) returns (TopologyPlanResponse);
+  rpc UpdateRegistryMetadata(ApplyRegistryMutationRequest) returns (RegistryMetadataChangeResponse);
   rpc PlanDeleteRegistry(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
   rpc DeleteRegistry(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
 }
@@ -2496,6 +2500,35 @@ message PlanUpdateRegistryRequest {
   repeated string update_mask = 6;
   string expected_resource_version = 7;
   string idempotency_key = 8;
+}
+
+// Editable metadata from one verified registry.toml commit. Empty optional text
+// removes the corresponding override. Support TOML contains [default]/[trains].
+message RegistryMetadata {
+  string name = 1;
+  string description = 2;
+  string readme = 3;
+  string default_release = 4;
+  string support_toml = 5;
+}
+
+message RegistryMetadataResponse {
+  RegistryMetadata metadata = 1;
+  // Exact indexed Git commit, used as the optimistic concurrency token.
+  string resource_version = 2;
+}
+
+message PlanUpdateRegistryMetadataRequest {
+  string slug = 1;
+  RegistryMetadata desired = 2;
+  repeated string update_mask = 3;
+  string expected_resource_version = 4;
+  string idempotency_key = 5;
+}
+
+message RegistryMetadataChangeResponse {
+  string change_id = 1;
+  string merge_command = 2;
 }
 
 // The full editable instance-settings bundle. Every field carries its

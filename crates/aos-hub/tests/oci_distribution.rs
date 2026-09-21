@@ -895,7 +895,7 @@ async fn distribution_rollout_defaults_deny_discovery_and_action_tokens() {
         "public",
         false,
         "public",
-        aos_hub_core::container_rollout::ContainerRollout::default(),
+        aos_hub_core::container_rollout::ContainerRollout::all_disabled(),
     )
     .await;
     assert_eq!(
@@ -937,7 +937,7 @@ async fn distribution_rollout_defaults_deny_discovery_and_action_tokens() {
         "hub_auth",
         aos_hub_core::container_rollout::ContainerRollout {
             push: true,
-            ..aos_hub_core::container_rollout::ContainerRollout::default()
+            ..aos_hub_core::container_rollout::ContainerRollout::all_disabled()
         },
     )
     .await;
@@ -2203,10 +2203,15 @@ async fn real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_gra
         .await
         .unwrap();
     assert_eq!(cancelled, 1);
-    let cleanup = registry.db.oci_upload_cleanup_candidates(2).await.unwrap();
-    assert_eq!(cleanup.len(), 1);
-    assert_eq!(cleanup[0].upload.state, "cancelled");
-    assert!(!cleanup[0].chunks.is_empty());
+    assert!(
+        registry
+            .db
+            .oci_upload_cleanup_candidates(2)
+            .await
+            .unwrap()
+            .is_empty(),
+        "successful best-effort cancellation cleanup must leave no pending candidate"
+    );
 
     let amd64 = image_graph_for(
         "multi-amd64",

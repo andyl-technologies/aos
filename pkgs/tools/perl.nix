@@ -3,9 +3,10 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  binutils,
   # Explicit toolchain inputs needed for the postInstall Config scrub.
   # `cc` is the wrapped cc (aos-cc-wrapper); `gcc` is the wrapped
-  # gcc-14.3.0-wrapped; `gccUnwrapped` is the bare gcc-14.3.0-stage2
+  # gcc-16.2.0-wrapped; `gccUnwrapped` is the bare gcc-16.2.0-stage2
   # whose path Configure records into Config_heavy.pl via specs / PATH;
   # `glibc` is the multi-output glibc.
   cc,
@@ -15,17 +16,18 @@
   stdenv,
   buildPackages,
 }: let
-  version = "5.40.1";
+  version = "5.44.0";
   isDarwin = stdenv.hostPlatform.isDarwin;
   targetCpu = stdenv.hostPlatform.constraints.cpu;
   archDirectory =
     if isDarwin
     then "${targetCpu}-darwin"
-    else "x86_64-linux";
+    else "${targetCpu}-linux";
   longDoubleSize =
     if stdenv.hostPlatform.isAarch64
     then "8"
     else "16";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   # Native Perl records the public GCC package set, while Darwin Perl is
   # compiled by the bootstrap cross wrapper in stdenv. Referencing public
   # pkgs.gcc/cc from a cross output check would add the final Canadian-cross
@@ -43,6 +45,13 @@
     if isDarwin
     then stdenv.cc
     else gccUnwrapped;
+  # Linux cross compilation uses the construction libc. Its public utilities are
+  # completed with target Perl later, so recording that public package here
+  # would introduce an interpreter/libc dependency cycle.
+  recordedLibc =
+    if isLinuxCross
+    then stdenv.glibc
+    else glibc;
   perlCrossVersion = "1.6.4";
   perlCrossSrc = fetchurl {
     urls = [
@@ -65,7 +74,7 @@ in
       urls = [
         "https://www.cpan.org/src/5.0/perl-${version}.tar.xz"
       ];
-      hash = "sha256-36IMLu8rSvEzUlYQu7Zd0Td37PmYycWxzPDTCOcy7j8=";
+      hash = "sha256-UFz0ORLpSASVw0THAmBFLjKqKnPFRqAms/EABTsjzpE=";
     };
 
     buildDeps =
@@ -78,13 +87,12 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
-    # Per-output reference check: $out must not reference the unwrapped
-    # compiler or the cc-wrapper. If a substitution in postInstall misses
-    # a path, Nix fails the build with the offending reference. $dev is
-    # exempt — it intentionally keeps the unscrubbed Config files.
+    # Reject compiler references and make's recorded build-search paths in
+    # the runtime output. The development output intentionally preserves
+    # the original configuration for inspection.
     outputChecks = {
       out = {
-        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc];
+        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc gnumake];
       };
     };
 
@@ -130,9 +138,29 @@ in
           if isDarwin
           then ''
             # perl-cross configures a Linux build-miniperl before the Darwin
-            # target. Its probe uses the conventional GNU readelf name; AOS
-            # LLVM provides the compatible implementation as llvm-readelf.
+            # target. Isolate that native compiler from the target architecture
+            # and hardening state; otherwise an aarch64 target makes the x86_64
+            # GCC reject -mbranch-protection before every feature probe.
             mkdir -p "$TMPDIR/perl-native-tools"
+            cat > "$TMPDIR/perl-native-tools/cc-for-build" <<EOF
+            #!$CONFIG_SHELL
+            native_hardening=
+            for token in \$AOS_HARDENING_ENABLE; do
+              case "\$token" in
+                pacret) ;;
+                *) native_hardening="\$native_hardening \$token" ;;
+              esac
+            done
+            export AOS_HARDENING_ENABLE="\$native_hardening"
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+            unset MACOSX_DEPLOYMENT_TARGET NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS SDKROOT
+            exec ${buildPackages.cc}/bin/cc "\$@"
+            EOF
+            chmod +x "$TMPDIR/perl-native-tools/cc-for-build"
+
+            # The probe also uses the conventional GNU readelf name; AOS LLVM
+            # provides the compatible implementation as llvm-readelf.
             ln -s ${buildPackages.llvm}/bin/llvm-readelf \
               "$TMPDIR/perl-native-tools/readelf"
             export PATH="$TMPDIR/perl-native-tools:$PATH"
@@ -148,7 +176,7 @@ in
               --with-cc="$CC" \
               --with-ranlib="$RANLIB" \
               --with-objdump="$OBJDUMP" \
-              --host-cc="$CC_FOR_BUILD" \
+              --host-cc="$TMPDIR/perl-native-tools/cc-for-build" \
               --sysroot="$SDKROOT" \
               --prefix="$out" \
               --man1dir="$out/share/man/man1" \
@@ -202,6 +230,7 @@ in
             ./Configure \
               -des \
               -Dprefix=$out \
+              -Darchname=${archDirectory} \
               -Dvendorprefix=$out \
               -Dprivlib=$out/lib/perl5/${version} \
               -Darchlib=$out/lib/perl5/${version}/${archDirectory} \
@@ -227,9 +256,7 @@ in
               's|$(CC) $(LDDLFLAGS) -o $@ $(filter %$o,$^) $(LIBS)|$(CC) $(SHRPLDFLAGS) -o $@ $(filter %$o,$^) $(LIBS)|' \
               Makefile
 
-            # perl-cross's generated module graph races source generation
-            # against XS compilation under parallel make.
-            make -j1 \
+            make -j"$NIX_BUILD_CORES" \
               SHRPLDFLAGS='-dynamiclib -Wl,-compatibility_version,${version} -Wl,-current_version,${version} -Wl,-install_name,@rpath/libperl.dylib'
           ''
           else ''
@@ -241,7 +268,16 @@ in
         script =
           ''
             make install
-
+            ${
+              if stdenv.isCross
+              then ''
+                # Perl installs its binaries and extension modules read-only.
+                # The generic cross fixup must be able to strip them and remove
+                # build-only target-compiler directories from their RPATHs.
+                chmod -R u+w "$out"
+              ''
+              else ""
+            }
             # ── Preserve unmodified Config files in $dev before scrubbing ──
             # $dev is a forensic copy mirroring $out's layout, not a usable
             # perl interpreter. Lets future devs audit the build-time
@@ -254,34 +290,33 @@ in
               cp "$cfg" "$dev/$rel"
             done
 
-            # ── Scrub $out: rewrite build-time toolchain refs ──────────────
-            # Mirrors nixpkgs perl/interpreter.nix:312-332. After this step
-            # $Config{cc}, $Config{libpth}, etc. resolve to /no-such-path
-            # (or empty). The AOS perl-consumer audit shows no package
-            # reads $Config{cc}, so this breaks nothing — and it cuts the
-            # ~900 MB toolchain cascade that perl drags into every closure.
+            # Runtime Config retains interpreter paths and ABI information,
+            # but build-tool paths must not retain the bootstrap toolchain.
+            # The original configuration remains available in $dev.
 
             # libpth is a parsed Perl list; substituting hash digits inside
             # the string would leave a syntactically-valid but bogus path.
-            # Replace the whole line instead (mirrors interpreter.nix:317-318).
+            # Replace the whole line instead.
             sed "/ *libpth =>/c\\    libpth => ' '," \
               -i "$out"/lib/perl5/*/*/Config.pm
 
-            # Config_heavy.pl entries are inert strings — plain path
-            # substitution is safe. The pattern set covers perl's directly-
-            # recorded cc/gcc and the glibc outputs Configure picks up via
-            # CFLAGS/LIBRARY_PATH; without scrubbing glibc.dev/glibc.static
-            # the closure leak would just shift from gcc to those.
+            # Configure also records search paths for every injected build
+            # tool, including bootstrap xz and gawk. Those references can
+            # retain historical compilers even after GCC itself is scrubbed.
+            # outputChecks enables structured attrs, so nativeBuildInputs is
+            # an array containing both explicit and automatic build inputs.
             for pattern in \
+              "''${nativeBuildInputs[@]}" \
               "${recordedCc}" \
               "${recordedGcc}" \
               "${recordedGccUnwrapped}" \
-              "${glibc}" \
-              "${glibc.dev}" \
-              "${glibc.static}" \
+              "${recordedLibc}" \
+              "${recordedLibc.dev}" \
+              "${recordedLibc.static}" \
             ; do
               if [ -n "$pattern" ]; then
                 sed -i "s|$pattern|/no-such-path|g" \
+                  "$out"/lib/perl5/*/*/Config.pm \
                   "$out"/lib/perl5/*/*/Config_heavy.pl
               fi
             done
@@ -289,6 +324,26 @@ in
             # .packlist records build-time install paths — drop it.
             rm -f "$out"/lib/perl5/*/*/.packlist
           ''
+          + (
+            if isLinuxCross
+            then ''
+              # Hosted development metadata must name the exported target GCC.
+              # Retaining the scheduler-native construction compiler would
+              # cross the toolchain boundary and make the closure unusable on
+              # its target host.
+              sed -i \
+                -e "s|${stdenv.gcc}|${recordedGccUnwrapped}|g" \
+                -e "s|${stdenv.cc}|${recordedCc}|g" \
+                -e "s|${stdenv.binutils}|${binutils}|g" \
+                "$dev"/lib/perl5/*/*/Config.pm \
+                "$dev"/lib/perl5/*/*/Config_heavy.pl
+
+              sed -i "s|${stdenv.gcc}|/no-such-path|g" \
+                "$out"/lib/perl5/*/*/Config.pm \
+                "$out"/lib/perl5/*/*/Config_heavy.pl
+            ''
+            else ""
+          )
           + (
             if isDarwin
             then ''

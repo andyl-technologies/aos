@@ -43,8 +43,9 @@
   buildPackages,
   darwin-sdk,
 }: let
-  version = "18.4";
+  version = "18.6";
   isDarwin = stdenv.hostPlatform.isDarwin;
+  isCross = stdenv.isCross;
   control = writeShellScriptBin "postgresql-control" ''
     set -euo pipefail
 
@@ -170,11 +171,16 @@
         ;;
     esac
   '';
-  clangForBitcode = writeShellScriptBin "clang" ''
-    exec ${llvm}/bin/clang \
+  clangForBitcode = buildPackages.writeShellScriptBin "clang" ''
+    exec ${buildPackages.llvm}/bin/clang \
+      ${lib.optionalString isCross "--target=${stdenv.hostPlatform.config}"} \
       -isystem ${glibc.dev}/include \
       -isystem ${linux-headers}/include \
       "$@"
+  '';
+  llvmConfigForBitcode = buildPackages.writeShellScriptBin "llvm-config" ''
+    ${buildPackages.llvm}/bin/llvm-config "$@" \
+      | ${buildPackages.sed}/bin/sed 's|${buildPackages.llvm}|${llvm}|g'
   '';
 in
   mkDerivation {
@@ -185,7 +191,7 @@ in
       urls = [
         "https://ftp.postgresql.org/pub/source/v${version}/postgresql-${version}.tar.bz2"
       ];
-      hash = "sha256-gagexpX7DHkBQH3vqh0veXNhcVTPJ7p046erjmRDYJQ=";
+      hash = "sha256-VVYQwk1T5DFtpbfT/CXCedloVtXg4j7jCMMoxfqIHZ8=";
     };
 
     buildDeps =
@@ -416,45 +422,71 @@ in
             #define VAL_CC "${llvm}/bin/clang"' \
               src/common/config_info.c
           ''
-          else ''
-            export LLVM_CONFIG=${llvm}/bin/llvm-config
-            # PostgreSQL invokes Clang directly for LLVM bitcode, so retain
-            # the libc header path normally injected by the AOS GCC wrapper.
-            export CLANG="${llvm}/bin/clang -idirafter ${stdenv.cc.libc.dev}/include"
-            export TCLSH=${tcl}/bin/tclsh9.0
-            export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
-            ./configure \
-              --prefix=$out \
-              --enable-nls \
-              --with-llvm \
-              --with-icu \
-              --with-tcl \
-              --with-tclconfig=${tcl}/lib \
-              --with-gssapi \
-              --with-ldap \
-              --with-liburing \
-              --with-libnuma \
-              --with-system-tzdata=${tzdata}/share/zoneinfo \
-              --with-perl \
-              --with-python \
-              --with-pam \
-              --with-selinux \
-              --with-systemd \
-              --with-uuid=e2fs \
-              --with-libcurl \
-              --with-libxml \
-              --with-libxslt \
-              --with-lz4 \
-              --with-zstd \
-              --with-ssl=openssl
+          else
+            lib.optionalString (isCross && stdenv.hostPlatform.isLinux) ''
+              # The LLVM object shares the generated header dependency with
+              # the C object; emulated Perl exposes the upstream build race.
+              sed -i 's/^daitch_mokotoff\.o:/daitch_mokotoff.o daitch_mokotoff.bc:/' \
+                contrib/fuzzystrmatch/Makefile
 
-            for macro in \
-              ENABLE_GSS ENABLE_NLS HAVE_LIBNUMA USE_ICU USE_LDAP USE_LIBURING USE_LLVM \
-              USE_LIBCURL USE_LIBXML USE_LIBXSLT USE_LZ4 USE_OPENSSL USE_PAM \
-              USE_SYSTEMD USE_ZSTD HAVE_LIBSELINUX HAVE_UUID_E2FS; do
-              grep "^#define $macro 1$" src/include/pg_config.h
-            done
-          '';
+              # Embedded language configuration must describe the target
+              # interpreter and its headers and shared library.
+              export PERL=${perl}/bin/perl
+              export PYTHON=${python3}/bin/python3
+
+              # GCC treats an explicit -I path already in these variables as
+              # a system directory. Put target LLVM first so JIT initialization
+              # uses its architecture definitions instead of the build host's.
+              export C_INCLUDE_PATH="${llvm}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+              export CPLUS_INCLUDE_PATH="${llvm}/include''${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
+
+              # Native XML and mount utilities also carry library metadata.
+              # Installed PGXS flags must reference the target development API.
+              export PKG_CONFIG_PATH="${libxml2}/lib/pkgconfig:${libxslt}/lib/pkgconfig:${util-linux}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            ''
+            + ''
+              export LLVM_CONFIG=${
+                if isCross
+                then llvmConfigForBitcode
+                else llvm
+              }/bin/llvm-config
+              # PostgreSQL invokes Clang directly for LLVM bitcode, so retain
+              # the libc header path normally injected by the AOS GCC wrapper.
+              export CLANG=${clangForBitcode}/bin/clang
+              export TCLSH=${tcl}/bin/tclsh9.0
+              export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
+              ./configure \
+                --prefix=$out \
+                --enable-nls \
+                --with-llvm \
+                --with-icu \
+                --with-tcl \
+                --with-tclconfig=${tcl}/lib \
+                --with-gssapi \
+                --with-ldap \
+                --with-liburing \
+                --with-libnuma \
+                --with-system-tzdata=${tzdata}/share/zoneinfo \
+                --with-perl \
+                --with-python \
+                --with-pam \
+                --with-selinux \
+                --with-systemd \
+                --with-uuid=e2fs \
+                --with-libcurl \
+                --with-libxml \
+                --with-libxslt \
+                --with-lz4 \
+                --with-zstd \
+                --with-ssl=openssl
+
+              for macro in \
+                ENABLE_GSS ENABLE_NLS HAVE_LIBNUMA USE_ICU USE_LDAP USE_LIBURING USE_LLVM \
+                USE_LIBCURL USE_LIBXML USE_LIBXSLT USE_LZ4 USE_OPENSSL USE_PAM \
+                USE_SYSTEMD USE_ZSTD HAVE_LIBSELINUX HAVE_UUID_E2FS; do
+                grep "^#define $macro 1$" src/include/pg_config.h
+              done
+            '';
       }
       {
         name = "build";
@@ -534,6 +566,14 @@ in
                 -e "s|^abs_top_builddir = .*|abs_top_builddir = $out/lib/pgxs/src|" \
                 -e "s|^abs_top_srcdir = .*|abs_top_srcdir = $out/lib/pgxs/src|" \
                 "$out/lib/pgxs/src/Makefile.global"
+              ${
+                lib.optionalString isCross ''
+                  find "$out/lib/pgxs" -type f -exec sed -i \
+                    -e 's|${clangForBitcode}/bin/clang|${llvm}/bin/clang|g' \
+                    -e 's|${llvmConfigForBitcode}/bin/llvm-config|${llvm}/bin/llvm-config|g' \
+                    {} +
+                ''
+              }
             ''
           )
           + ''

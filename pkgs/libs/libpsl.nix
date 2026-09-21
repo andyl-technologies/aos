@@ -9,7 +9,7 @@
   libunistring,
   publicsuffix-list,
 }: let
-  version = "0.21.5";
+  version = "0.23.3";
 in
   mkDerivation {
     pname = "libpsl";
@@ -17,7 +17,7 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/rockdaboot/libpsl/releases/download/${version}/libpsl-${version}.tar.gz"];
-      hash = "sha256-Hcyc6uixKPPAs/ZU3s0OHoka/G/4EJjyJ+8mBEna4gg=";
+      hash = "sha256-k5QfhaHnvVk/qU8pkjPLXfyRzRRP2aeKbOt1ABxbA74=";
     };
 
     buildDeps = [gnumake pkg-config python3];

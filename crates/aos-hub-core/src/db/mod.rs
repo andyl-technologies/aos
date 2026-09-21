@@ -44,11 +44,6 @@
 //! population targets from cache-global GC policy. Logical `cache_objects`,
 //! placement-scoped presence, immutable mark/plan generations, and deletion
 //! operations preserve the evidence required for safe multi-placement GC.
-//! - **Operational history** — `validation_runs`, `validation_findings`, and
-//!   `repair_jobs` (v14): records of past consistency-validation runs (each
-//!   finding flagged `missing` or, at deep depth, `corrupt`) and the repair
-//!   attempts that copied missing objects between caches. Not derived from the
-//!   surface, but droppable without losing registration state.
 //!
 //! Registry mirroring configuration and observations are system-of-record
 //! state. Delivery identity, endpoints, gateways, and routes are modeled by
@@ -237,24 +232,6 @@
 //! `next_attempt_at` with exponential backoff up to the attempt cap. The
 //! dispatch/delivery logic lives in [`crate::webhook`]; this module only
 //! stores and lists the rows.
-//!
-//! # Cache freshness probes (v12)
-//!
-//! For each committed consumer-cache URL the
-//! hub knows, a lightweight reachability probe records whether the cache serves
-//! a `nix-cache-info`, how long the probe took, and when it ran. These rows are
-//! purely **observational** (rebuildable from the next probe), so they live in
-//! the index/derived set rather than the system of record.
-//!
-//! ```text
-//! cache_probes  registry_id 1  cache_url "https://cdn.example.com"
-//!               status "ok"  observed_nix_cache_info 1
-//!               latency_ms 42  checked_at 1730000000
-//! ```
-//!
-//! `status` is `ok` (reachable, valid `nix-cache-info`), `stale` (reachable but
-//! no/empty `nix-cache-info`), or `unreachable` (transport failure or missing
-//! file root). The probing logic lives in the hub's `probe` module.
 //!
 //! # Operations: quotas, signup policy, soft-delete (v13)
 //!
@@ -543,6 +520,7 @@ pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
+mod direct_delivery;
 pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
@@ -603,68 +581,18 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
     (incarnation.as_u128() % PORTABLE_RELATIONAL_ID_MAX as u128) as i64 + 1
 }
 
-/// Ordered schema migrations; index = version - 1.
-/// Squashed fresh-install schema for the final Hub topology.
+/// Ordered, append-only schema migrations; index = version - 1.
 ///
-/// Upgrade/cutover is deliberately an offline artifact. The first migration
-/// establishes the topology hard-cutover schema; subsequent entries are
-/// forward-only additions shared by native SQLite and Cloudflare D1.
-const EXPLICIT_TOPOLOGY_MIGRATION: &str = include_str!("explicit_topology.sql");
+/// The first entry is the immutable first stable production baseline. Databases
+/// from development histories must be reset before deploying this checkpoint;
+/// subsequent production changes require new forward migrations.
+pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
 
-pub const MIGRATIONS: &[&str] = &[
-    include_str!("schema.sql"),
-    include_str!("auth_refresh.sql"),
-    include_str!("invitation_lifecycle.sql"),
-    include_str!("identity_control.sql"),
-    include_str!("identity_incarnation.sql"),
-    include_str!("operation_scope_inventory.sql"),
-    include_str!("publication_multipart.sql"),
-    include_str!("publication_multipart_progress.sql"),
-    include_str!("placement_scan_claim.sql"),
-    include_str!("portable_recovery_cursor.sql"),
-    include_str!("org_usage_backfill.sql"),
-    include_str!("cache_multipart_creation.sql"),
-    include_str!("publication_object_evidence.sql"),
-    include_str!("worker_jobs.sql"),
-    include_str!("registry_index_build.sql"),
-    include_str!("publication_manifest_session.sql"),
-    include_str!("gateway_revision_event_history.sql"),
-    include_str!("placement_policy_build_event_history.sql"),
-    include_str!("placement_policy_publication_history.sql"),
-    EXPLICIT_TOPOLOGY_MIGRATION,
-    include_str!("package_documentation.sql"),
-    include_str!("package_documentation_system_module.sql"),
-    include_str!("release_package_documentation.sql"),
-    include_str!("release_documentation_projection_generation.sql"),
-    include_str!("release_publication.sql"),
-    include_str!("oci_catalog.sql"),
-    include_str!("oci_upload_publication.sql"),
-    include_str!("oci_admin.sql"),
-    include_str!("oci_gc.sql"),
-    include_str!("oci_gc_remediation.sql"),
-    include_str!("delivery_workflow.sql"),
-    include_str!("release_browse.sql"),
-    include_str!("registry_support_policy.sql"),
-    include_str!("release_records.sql"),
-];
-
-/// Identity stamped into databases created by the topology hard-cutover
-/// schema. Unlike the historical integer version, this value cannot collide
-/// with a pre-cutover deployment whose independent migration history happened
-/// to have the same length.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/2";
-
-/// Immediately preceding identity accepted only while applying a pending
-/// repository-owned migration to [`SCHEMA_IDENTITY`].
-pub const PREVIOUS_SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/1";
-
-/// SQLite compatibility transformer from the immediately preceding topology
-/// identity to the current relational vocabulary.
+/// Identifies the production migration lineage independently of its version.
 ///
-/// This script is intentionally outside [`MIGRATIONS`]: fresh v2 databases
-/// already use the final names, while a v1 database must run the transformer
-/// before any pending v2 migration can reference those names.
-pub const TOPOLOGY_V1_TO_V2_SQLITE: &str = include_str!("topology_v1_to_v2.sql");
+/// Historical development ledgers are incompatible even when their integer
+/// version happens to match a production migration.
+pub const SCHEMA_IDENTITY: &str = "aos-hub/production-baseline/1";
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -1921,97 +1849,6 @@ pub struct RetentionChannelPartitionRecord {
     pub snapshot_id: String,
     /// Complete snapshot artifacts.
     pub artifacts: Vec<ReleaseSnapshotArtifact>,
-}
-
-/// One recorded consistency-validation run against a cache endpoint.
-#[derive(Debug, Clone)]
-pub struct ValidationRunRow {
-    /// Run id (foreign key for [`Database::validation_missing`]).
-    pub id: i64,
-    /// The cache endpoint that was validated.
-    pub cache_url: String,
-    /// Validation depth (`presence` in phase 1).
-    pub depth: String,
-    /// Number of store hashes probed.
-    pub checked: u64,
-    /// Number of probed hashes whose narinfo was absent.
-    pub missing: u64,
-    /// Whether the cache endpoint was reachable at all.
-    pub reachable: bool,
-    /// Unix time the run finished.
-    pub finished_at: i64,
-}
-
-/// The classification of one [`validation finding`](ValidationFinding).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FindingStatus {
-    /// The narinfo (or, at integrity depth, its NAR) was absent.
-    Missing,
-    /// The NAR was present but its downloaded content did not match its
-    /// declared hash (recorded only at deep depth).
-    Corrupt,
-}
-
-impl FindingStatus {
-    /// The status label stored in `validation_findings.status`.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FindingStatus::Missing => "missing",
-            FindingStatus::Corrupt => "corrupt",
-        }
-    }
-}
-
-/// One per-hash finding of a validation run.
-#[derive(Debug, Clone)]
-pub struct ValidationFinding {
-    /// The store hash the finding concerns.
-    pub store_hash: String,
-    /// Whether the hash is missing or corrupt.
-    pub status: FindingStatus,
-}
-
-/// One recorded repair-job attempt.
-///
-/// See the [repair-jobs migration docs](self) (v14) for the `status`
-/// vocabulary (`pending | done | failed | plan_only`).
-#[derive(Debug, Clone)]
-pub struct RepairJobRow {
-    /// Repair-job id.
-    pub id: i64,
-    /// The cache the object was (to be) copied into.
-    pub cache_url: String,
-    /// The store hash repaired.
-    pub store_hash: String,
-    /// The cache the object was copied from.
-    pub source_cache_url: String,
-    /// Lifecycle status: `pending`, `done`, `failed`, or `plan_only`.
-    pub status: String,
-    /// Failure detail when `status` is `failed` (else `None`).
-    pub error: Option<String>,
-    /// Unix time the job was recorded.
-    pub created_at: i64,
-    /// Unix time the job finished (`None` while pending).
-    pub finished_at: Option<i64>,
-}
-
-/// The latest freshness probe of one committed cache endpoint.
-///
-/// See the [cache-freshness migration docs](self) for the `status` vocabulary
-/// and the probing logic in the hub's `probe` module.
-#[derive(Debug, Clone)]
-pub struct CacheProbeRow {
-    /// The committed cache endpoint that was probed.
-    pub cache_url: String,
-    /// Probe outcome: `ok`, `stale`, or `unreachable`.
-    pub status: String,
-    /// Whether a `nix-cache-info` document was served by the cache.
-    pub observed_nix_cache_info: bool,
-    /// Round-trip latency of the probe, in milliseconds.
-    pub latency_ms: i64,
-    /// Unix time the probe ran.
-    pub checked_at: i64,
 }
 
 /// A registry's upstream mirror source (system-of-record row).
@@ -3796,12 +3633,9 @@ impl Database {
             .await?;
         let mysql = self.dialect() == Dialect::Mysql;
         if mysql {
-            // MySQL needs an actual singleton key: two replicas may initialize
-            // concurrently, and the legacy one-column marker cannot prevent
-            // duplicate rows. Seed the keyed marker from an existing install's
-            // maximum legacy version; the upsert is atomic under the primary key.
-            // The sentinel is 1 because MySQL assigns a generated identity when
-            // zero is inserted into an AUTO_INCREMENT primary key.
+            // MySQL DDL can commit before the version marker. A keyed ledger
+            // coordinates replay and concurrent starters; id 1 avoids MySQL's
+            // generated-identity behavior for zero-valued primary keys.
             self.backend
                 .execute(
                     "CREATE TABLE IF NOT EXISTS hub_schema_version (
@@ -3812,65 +3646,60 @@ impl Database {
             self.backend
                 .execute(
                     "INSERT INTO hub_schema_version(id, version)
-                     SELECT 1, COALESCE(MAX(version), 0) FROM schema_version
+                     VALUES (1, 0)
                      ON CONFLICT(id) DO NOTHING",
                     &[],
                 )
                 .await?;
         }
         let marker_query = if mysql {
-            "SELECT version FROM hub_schema_version WHERE id = 1"
+            "SELECT version, id FROM hub_schema_version"
         } else {
             "SELECT version FROM schema_version"
         };
-        let current: i64 = self
-            .backend
-            .query_opt(marker_query, &[])
-            .await?
+        let rows = self.backend.query(marker_query, &[]).await?;
+        anyhow::ensure!(
+            rows.len() <= 1,
+            "Hub schema version ledger has duplicate rows"
+        );
+        let current = rows
+            .first()
             .map(|row| row.get::<i64>(0))
             .transpose()?
             .unwrap_or(0);
         let target = MIGRATIONS.len() as i64;
-        let legacy_identity = if current == 0 {
-            false
-        } else {
-            self.require_schema_identity_for_upgrade(true).await?
-        };
+        anyhow::ensure!(current >= 0, "Hub schema version cannot be negative");
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
         }
-        if legacy_identity {
+        if mysql {
             anyhow::ensure!(
-                self.backend.dialect() == Dialect::Sqlite,
-                "topology schema identity v1 requires the offline transformer on non-SQLite databases"
+                rows.len() == 1 && rows[0].get::<i64>(1)? == 1,
+                "Hub keyed schema version ledger is not a singleton"
             );
-            let statements = crate::backend::split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
-                .into_iter()
-                .map(|sql| Statement::new(sql, Vec::new()))
-                .collect::<Vec<_>>();
-            self.backend
-                .batch(&statements)
-                .await
-                .context("transforming topology schema identity v1 to v2 vocabulary")?;
-        }
-        let identity_adoption_index = MIGRATIONS
-            .iter()
-            .position(|migration| *migration == EXPLICIT_TOPOLOGY_MIGRATION)
-            .context("current schema has no identity-adoption migration")?;
-        if legacy_identity && current as usize > identity_adoption_index {
-            for sql in crate::backend::split_statements(EXPLICIT_TOPOLOGY_MIGRATION) {
-                let sql = if mysql {
-                    mysql_replay_safe_migration_sql(&sql)
-                } else {
-                    sql
-                };
-                self.backend
-                    .execute(&sql, &[])
-                    .await
-                    .context("applying schema identity-adoption migration")?;
+            let portable_rows = self
+                .backend
+                .query("SELECT version FROM schema_version", &[])
+                .await?;
+            anyhow::ensure!(
+                portable_rows.len() <= 1,
+                "Hub schema version ledger has duplicate rows"
+            );
+            anyhow::ensure!(
+                current == 0 || portable_rows.len() == 1,
+                "Hub portable schema version marker is missing"
+            );
+            if let Some(row) = portable_rows.first() {
+                anyhow::ensure!(
+                    row.get::<i64>(0)? == current,
+                    "Hub schema version ledgers disagree"
+                );
             }
+        }
+        if current > 0 {
             self.require_schema_identity().await?;
         }
+
         // Apply every pending migration *and* advance the version marker in one
         // portable transaction. Keeping the marker in the same batch matters
         // for Durable Objects: if an isolate is evicted after DDL commits but
@@ -3928,18 +3757,17 @@ impl Database {
                         }
                     }
                     self.backend
-                        .execute(
-                            "UPDATE hub_schema_version SET version = ?1 WHERE id = 1",
-                            &vals![migration_version],
-                        )
-                        .await?;
-                    // Keep the pre-hard-cutover marker monotonic for a rolling
-                    // old process, but never use its unkeyed shape for new code.
-                    self.backend
-                        .execute(
-                            "UPDATE schema_version SET version = ?1",
-                            &vals![migration_version],
-                        )
+                        .batch(&[
+                            Statement::new(
+                                "UPDATE hub_schema_version SET version = ?1 WHERE id = 1",
+                                vals![migration_version],
+                            ),
+                            Statement::new("DELETE FROM schema_version", Vec::new()),
+                            Statement::new(
+                                "INSERT INTO schema_version (version) VALUES (?1)",
+                                vals![migration_version],
+                            ),
+                        ])
                         .await?;
                 }
             } else {
@@ -3958,48 +3786,27 @@ impl Database {
                     .with_context(|| format!("applying migrations v{}..=v{target}", current + 1))?;
             }
             self.require_schema_identity().await?;
-        } else {
-            // Normalize malformed-but-compatible marker tables left by older
-            // builds to exactly one row without making every startup rewrite it.
-            let rows = self
-                .backend
-                .query("SELECT version FROM schema_version", &[])
-                .await?;
-            if !mysql && rows.len() != 1 {
-                let marker = format!(
-                    "DELETE FROM schema_version;\nINSERT INTO schema_version (version) VALUES ({target});"
-                );
-                self.backend.execute_batch(&marker).await?;
-            }
         }
         Ok(())
     }
 
-    /// Refuses a database that was not produced by the topology hard-cutover
-    /// schema or its offline transformer.
+    /// Rejects databases from a different migration lineage before changing data.
     async fn require_schema_identity(&self) -> Result<()> {
-        self.require_schema_identity_for_upgrade(false)
-            .await
-            .map(|_| ())
-    }
-
-    /// Accepts the immediately preceding schema identity only when a pending
-    /// migration will atomically replace it with the current identity.
-    async fn require_schema_identity_for_upgrade(&self, allow_legacy: bool) -> Result<bool> {
-        let row = self
+        let rows = self
             .backend
-            .query_opt("SELECT identity FROM hub_schema_identity", &[])
+            .query("SELECT identity FROM hub_schema_identity", &[])
             .await
-            .context(
-                "database predates the topology hard cutover; run the offline topology database transformer before starting this Hub",
-            )?;
-        let identity: String = row
-            .context("topology schema identity row is missing")?
-            .get(0)?;
-        if identity != SCHEMA_IDENTITY && !(allow_legacy && identity == PREVIOUS_SCHEMA_IDENTITY) {
-            bail!("unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'");
-        }
-        Ok(identity == PREVIOUS_SCHEMA_IDENTITY)
+            .context("database predates the first stable production baseline")?;
+        anyhow::ensure!(
+            rows.len() == 1,
+            "Hub schema identity ledger must contain exactly one row"
+        );
+        let identity: String = rows[0].get(0)?;
+        anyhow::ensure!(
+            identity == SCHEMA_IDENTITY,
+            "unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'"
+        );
+        Ok(())
     }
 
     // -- system of record ---------------------------------------------------
@@ -4458,6 +4265,12 @@ impl Database {
                         entry.source_drv,
                     ]);
                     let mut catalog_artifacts = vec![("output", entry.store_path.as_str())];
+                    catalog_artifacts.extend(
+                        entry
+                            .named_outputs
+                            .values()
+                            .map(|store_path| ("output", store_path.as_str())),
+                    );
                     if !entry.source_drv.is_empty() {
                         catalog_artifacts.push(("source_derivation", entry.source_drv.as_str()));
                     }
@@ -5909,351 +5722,6 @@ impl Database {
             )
             .await?;
         Ok(())
-    }
-
-    // -- consistency validation ----------------------------------------------
-
-    /// Record one validation run with its missing-hash findings; returns
-    /// the run id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure; the transaction rolls back.
-    // The argument list mirrors the validation_runs row one-to-one.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn record_validation_run(
-        &self,
-        registry_id: i64,
-        cache_url: &str,
-        depth: &str,
-        checked: u64,
-        missing_hashes: &[String],
-        reachable: bool,
-        started_at: i64,
-        finished_at: i64,
-    ) -> Result<i64> {
-        let findings: Vec<ValidationFinding> = missing_hashes
-            .iter()
-            .map(|hash| ValidationFinding {
-                store_hash: hash.clone(),
-                status: FindingStatus::Missing,
-            })
-            .collect();
-        self.record_validation_run_with_findings(
-            registry_id,
-            cache_url,
-            depth,
-            checked,
-            &findings,
-            reachable,
-            started_at,
-            finished_at,
-        )
-        .await
-    }
-
-    /// Record one validation run, classifying each finding as `missing` or
-    /// `corrupt`.
-    ///
-    /// The run's `missing` count column is the total number of findings (a
-    /// hash that is absent *or* whose downloaded content does not match its
-    /// declared hash is, either way, a hash that does not resolve correctly in
-    /// the cache). Each finding row carries its own status so the health page
-    /// can flag deep-validation corruption distinctly from plain absence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn record_validation_run_with_findings(
-        &self,
-        registry_id: i64,
-        cache_url: &str,
-        depth: &str,
-        checked: u64,
-        findings: &[ValidationFinding],
-        reachable: bool,
-        started_at: i64,
-        finished_at: i64,
-    ) -> Result<i64> {
-        // validation_runs.id feeds each finding's run_id and is read back as
-        // MAX(id) for "latest run per cache" (latest_validation_runs) and
-        // returned to the caller, so assign it client-side in monotonic order
-        // rather than via last_insert_rowid. A concurrent run would collide on
-        // the id and its batch would roll back (no corruption); validation is
-        // driven per-registry, so that path is effectively sequential.
-        let run_id = self.max_id("validation_runs").await? + 1;
-        let mut stmts: Vec<Statement> = vec![Statement::new(
-            "INSERT INTO validation_runs
-             (id, registry_id, cache_url, depth, checked, missing, reachable,
-              started_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            vals![
-                run_id,
-                registry_id,
-                cache_url,
-                depth,
-                checked,
-                findings.len() as i64,
-                reachable,
-                started_at,
-                finished_at,
-            ]
-            .to_vec(),
-        )];
-        for finding in findings {
-            stmts.push(Statement::new(
-                "INSERT INTO validation_findings (run_id, store_hash, status)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(run_id, store_hash) DO NOTHING",
-                vals![run_id, finding.store_hash, finding.status.as_str()].to_vec(),
-            ));
-        }
-        self.backend.batch(&stmts).await?;
-        Ok(run_id)
-    }
-
-    /// The latest validation run per cache URL for one registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn latest_validation_runs(&self, registry_id: i64) -> Result<Vec<ValidationRunRow>> {
-        let rows = self.backend.query(
-            "SELECT v.id, v.cache_url, v.depth, v.checked, v.missing, v.reachable, v.finished_at
-             FROM validation_runs v
-             WHERE v.registry_id = ?1
-               AND v.id = (SELECT MAX(id) FROM validation_runs
-                           WHERE registry_id = ?1 AND cache_url = v.cache_url)
-             ORDER BY v.cache_url",
-            &vals![registry_id],
-        ).await?;
-        rows.iter()
-            .map(|row| {
-                Ok(ValidationRunRow {
-                    id: row.get(0)?,
-                    cache_url: row.get(1)?,
-                    depth: row.get(2)?,
-                    checked: row.get(3)?,
-                    missing: row.get(4)?,
-                    reachable: row.get(5)?,
-                    finished_at: row.get(6)?,
-                })
-            })
-            .collect()
-    }
-
-    /// The store hashes a validation run found missing, sorted.
-    ///
-    /// Includes only `missing` findings (absent narinfo/NAR); deep-validation
-    /// `corrupt` findings are reported separately by [`Self::validation_corrupt`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn validation_missing(&self, run_id: i64) -> Result<Vec<String>> {
-        let rows = self
-            .backend
-            .query(
-                "SELECT store_hash FROM validation_findings
-             WHERE run_id = ?1 AND status = 'missing' ORDER BY store_hash",
-                &vals![run_id],
-            )
-            .await?;
-        rows.iter().map(|row| row.get(0)).collect()
-    }
-
-    /// The store hashes a validation run found corrupt, sorted.
-    ///
-    /// A `corrupt` finding is recorded only at the hub's `validation::ValidationDepth::Deep`:
-    /// a hash whose narinfo and NAR are present, but the downloaded NAR's
-    /// content hash does not match the narinfo's declared `FileHash`/`NarHash`.
-    /// This is distinct from a `missing` finding (which repair can fix by
-    /// copying); corruption flags a cache that must be re-uploaded from a good
-    /// source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn validation_corrupt(&self, run_id: i64) -> Result<Vec<String>> {
-        let rows = self
-            .backend
-            .query(
-                "SELECT store_hash FROM validation_findings
-             WHERE run_id = ?1 AND status = 'corrupt' ORDER BY store_hash",
-                &vals![run_id],
-            )
-            .await?;
-        rows.iter().map(|row| row.get(0)).collect()
-    }
-
-    /// Record a repair-job attempt and return its id.
-    ///
-    /// `status` is one of `pending`, `done`, `failed`, or `plan_only`;
-    /// `error` carries the failure detail for `failed` jobs (else `None`), and
-    /// `finished_at` is the completion time for terminal jobs (`None` while
-    /// pending).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn record_repair_job(
-        &self,
-        registry_id: i64,
-        cache_url: &str,
-        store_hash: &str,
-        source_cache_url: &str,
-        status: &str,
-        error: Option<&str>,
-        created_at: i64,
-        finished_at: Option<i64>,
-    ) -> Result<i64> {
-        self.backend
-            .execute_insert(
-                "INSERT INTO repair_jobs
-             (registry_id, cache_url, store_hash, source_cache_url, status, error,
-              created_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                &vals![
-                    registry_id,
-                    cache_url,
-                    store_hash,
-                    source_cache_url,
-                    status,
-                    error,
-                    created_at,
-                    finished_at,
-                ],
-            )
-            .await
-    }
-
-    /// The most recent repair jobs for one registry, newest first.
-    ///
-    /// Capped at `limit` rows for the health-page history.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn list_repair_jobs(
-        &self,
-        registry_id: i64,
-        limit: i64,
-    ) -> Result<Vec<RepairJobRow>> {
-        let rows = self
-            .backend
-            .query(
-                "SELECT id, cache_url, store_hash, source_cache_url, status, error,
-                    created_at, finished_at
-             FROM repair_jobs
-             WHERE registry_id = ?1
-             ORDER BY id DESC
-             LIMIT ?2",
-                &vals![registry_id, limit],
-            )
-            .await?;
-        rows.iter()
-            .map(|row| {
-                Ok(RepairJobRow {
-                    id: row.get(0)?,
-                    cache_url: row.get(1)?,
-                    store_hash: row.get(2)?,
-                    source_cache_url: row.get(3)?,
-                    status: row.get(4)?,
-                    error: row.get(5)?,
-                    created_at: row.get(6)?,
-                    finished_at: row.get(7)?,
-                })
-            })
-            .collect()
-    }
-
-    /// Prune `repair_jobs` rows older than `created_before`, returning the
-    /// number deleted.
-    ///
-    /// `repair_jobs` is an unbounded append-only audit of every repair attempt;
-    /// without retention it grows without limit on a busy hub. The serve loop
-    /// calls this periodically with `now - retention_window` so the table keeps
-    /// only recent history (the health page already pages with a `LIMIT`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn prune_repair_jobs(&self, created_before: i64) -> Result<u64> {
-        self.backend
-            .execute(
-                "DELETE FROM repair_jobs WHERE created_at < ?1",
-                &vals![created_before],
-            )
-            .await
-    }
-
-    /// Records (upserting) the latest freshness probe of one cache endpoint.
-    ///
-    /// One row is kept per `(registry_id, cache_url)`; re-probing overwrites
-    /// the prior observation. See the hub's `probe` module for the producer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn upsert_cache_probe(
-        &self,
-        registry_id: i64,
-        cache_url: &str,
-        status: &str,
-        observed_nix_cache_info: bool,
-        latency_ms: i64,
-        checked_at: i64,
-    ) -> Result<()> {
-        self.backend
-            .execute(
-                "INSERT INTO cache_probes
-             (registry_id, cache_url, status, observed_nix_cache_info, latency_ms, checked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(registry_id, cache_url) DO UPDATE SET
-               status = excluded.status,
-               observed_nix_cache_info = excluded.observed_nix_cache_info,
-               latency_ms = excluded.latency_ms,
-               checked_at = excluded.checked_at",
-                &vals![
-                    registry_id,
-                    cache_url,
-                    status,
-                    observed_nix_cache_info,
-                    latency_ms,
-                    checked_at,
-                ],
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// The latest freshness probe per committed cache, for one registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn list_cache_probes(&self, registry_id: i64) -> Result<Vec<CacheProbeRow>> {
-        let rows = self
-            .backend
-            .query(
-                "SELECT cache_url, status, observed_nix_cache_info, latency_ms, checked_at
-             FROM cache_probes WHERE registry_id = ?1 ORDER BY cache_url",
-                &vals![registry_id],
-            )
-            .await?;
-        rows.iter()
-            .map(|row| {
-                Ok(CacheProbeRow {
-                    cache_url: row.get(0)?,
-                    status: row.get(1)?,
-                    observed_nix_cache_info: row.get(2)?,
-                    latency_ms: row.get(3)?,
-                    checked_at: row.get(4)?,
-                })
-            })
-            .collect()
     }
 
     // -- mirror sources -----------------------------------------------------
@@ -19963,17 +19431,36 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn instance_settings(&self) -> Result<InstanceSettings> {
-        let get = |k: &'static str| self.instance_config_get(k);
+        // One snapshot avoids mixed settings and one remote SQL call per field.
+        let rows = self
+            .backend
+            .query(
+                "SELECT config_key, value FROM instance_config
+                 WHERE config_key IN (
+                     'site_title', 'tagline', 'announcement', 'tos_url', 'privacy_url', 'support_url',
+                     'signup_policy', 'signup_domains', 'password_login', 'caches_public',
+                     'session_lifetime_secs', 'default_crawl_policy', 'max_upload_bytes'
+                 )",
+                &[],
+            )
+            .await?;
+        let mut values = std::collections::HashMap::<String, String>::new();
+        for row in rows {
+            values.insert(row.get(0)?, row.get(1)?);
+        }
+        let get = |key: &str| values.get(key).cloned();
+
         Ok(InstanceSettings {
-            site_title: get("site_title").await?,
-            tagline: get("tagline").await?,
-            announcement: get("announcement").await?,
-            tos_url: get("tos_url").await?,
-            privacy_url: get("privacy_url").await?,
-            support_url: get("support_url").await?,
-            signup_policy: self.signup_policy().await?,
+            site_title: get("site_title"),
+            tagline: get("tagline"),
+            announcement: get("announcement"),
+            tos_url: get("tos_url"),
+            privacy_url: get("privacy_url"),
+            support_url: get("support_url"),
+            signup_policy: SignupPolicy::parse(
+                get("signup_policy").as_deref().unwrap_or("invite_only"),
+            ),
             signup_domains: get("signup_domains")
-                .await?
                 .map(|v| {
                     v.split(|c: char| c == ',' || c.is_whitespace())
                         .filter(|s| !s.is_empty())
@@ -19982,20 +19469,15 @@ impl Database {
                 })
                 .unwrap_or_default(),
             password_login: get("password_login")
-                .await?
                 .map(|v| v != "off" && v != "false" && v != "0")
                 .unwrap_or(true),
             caches_public: get("caches_public")
-                .await?
                 .map(|v| v == "on" || v == "true" || v == "1")
                 .unwrap_or(false),
-            session_lifetime_secs: get("session_lifetime_secs")
-                .await?
-                .and_then(|v| v.parse().ok()),
+            session_lifetime_secs: get("session_lifetime_secs").and_then(|v| v.parse().ok()),
             default_crawl_policy: get("default_crawl_policy")
-                .await?
                 .unwrap_or_else(|| "allow_all".to_string()),
-            max_upload_bytes: get("max_upload_bytes").await?.and_then(|v| v.parse().ok()),
+            max_upload_bytes: get("max_upload_bytes").and_then(|v| v.parse().ok()),
         })
     }
 
@@ -21634,9 +21116,13 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn validate_session(&self, secret: &str) -> Result<Option<SessionAuth>> {
+        self.validate_session_at(secret, unix_now()).await
+    }
+
+    /// Validates live session state at one clock sample, preserving second-level idle expiry.
+    async fn validate_session_at(&self, secret: &str, now: i64) -> Result<Option<SessionAuth>> {
         use crate::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
         let hash = crate::auth::token::sha256_hex(secret);
-        let now = unix_now();
         let row = self
             .backend
             .query_opt(
@@ -21675,9 +21161,13 @@ impl Database {
                 .await?;
             return Ok(None);
         }
+        // Repeated reads within one clock second must not rewrite identical
+        // bookkeeping. The SQL predicate also covers concurrent validations;
+        // liveness and expiry above remain authoritative on every request.
         self.backend
             .execute(
-                "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
+                "UPDATE sessions SET last_seen_at = ?2
+                 WHERE id_hash = ?1 AND last_seen_at != ?2",
                 &vals![hash, now],
             )
             .await?;
@@ -27056,35 +26546,6 @@ mod tests {
     use rusqlite::Connection;
     use uuid::Uuid;
 
-    /// Reverses the transformer's identifier DDL to construct a v1-shaped
-    /// database without retaining a second 160-KiB baseline fixture.
-    fn topology_v2_to_v1_identifier_sql() -> String {
-        crate::backend::split_statements(TOPOLOGY_V1_TO_V2_SQLITE)
-            .into_iter()
-            .take_while(|statement| !statement.contains("DROP INDEX"))
-            .filter_map(|statement| {
-                statement
-                    .find("ALTER TABLE ")
-                    .map(|offset| statement[offset..].to_string())
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .map(|statement| {
-                let words = statement.split_whitespace().collect::<Vec<_>>();
-                if words.get(3) == Some(&"RENAME") && words.get(4) == Some(&"COLUMN") {
-                    format!(
-                        "ALTER TABLE {} RENAME COLUMN {} TO {}",
-                        words[2], words[7], words[5]
-                    )
-                } else {
-                    format!("ALTER TABLE {} RENAME TO {}", words[5], words[2])
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(";\n")
-    }
-
     #[test]
     fn generated_relational_ids_are_positive_and_worker_exact() {
         assert_eq!(portable_relational_id(Uuid::from_u128(0)), 1);
@@ -27672,8 +27133,21 @@ source_nar_hash = ""
     }
 
     #[test]
+    fn production_baseline_is_immutable() {
+        // New schema changes append a migration; they do not replace this digest.
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(MIGRATIONS[0].as_bytes())),
+            "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061"
+        );
+    }
+
+    #[test]
     fn fresh_schema_is_final_and_foreign_key_clean() {
-        assert!(!MIGRATIONS.is_empty(), "the schema has a baseline");
+        assert_eq!(
+            MIGRATIONS.len(),
+            1,
+            "first production checkpoint has one baseline"
+        );
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
@@ -27795,803 +27269,6 @@ source_nar_hash = ""
         assert_eq!(public_boundary, (1, "active".to_string()));
     }
 
-    fn seed_oci_migration_registry(connection: &Connection) {
-        const REGISTRY_STABLE_ID: &str = "registry:0123456789abcdef0123456789abcdef";
-
-        connection
-            .execute(
-                "INSERT INTO authorization_scopes(
-                   scope_key, kind, parent_scope_key, resource_stable_id, created_at)
-                 VALUES(?1, 'registry', 'instance', ?1, 1)",
-                [REGISTRY_STABLE_ID],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO registries(
-                   id, stable_id, slug, trust_keys, require_signatures,
-                   created_at, scope_key, owner_scope_key)
-                 VALUES(1, ?1, 'oci-migration', '[]', 1, 1, ?1, 'instance')",
-                [REGISTRY_STABLE_ID],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO oci_repositories(
-                   id, registry_id, name, created_at, updated_at)
-                 VALUES(4, 1, 'aos', 1, 1)",
-                [],
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn oci_phase5_v23_migration_upgrades_v22_and_backfills_contextual_media() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 26;
-
-        assert_eq!(
-            MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX],
-            include_str!("oci_upload_publication.sql"),
-            "the fixture must stop immediately before the reviewed OCI migration"
-        );
-        let connection = Connection::open_in_memory().unwrap();
-        for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
-            connection.execute_batch(migration).unwrap();
-        }
-        seed_oci_migration_registry(&connection);
-
-        connection
-            .execute(
-                "INSERT INTO surface_objects(
-                   id, registry_id, object_key, object_kind, partition_key,
-                   content_hash, size, created_at, updated_at)
-                 VALUES(2, 1, 'oci/blobs/sha256/phase4', 'immutable',
-                        zeroblob(32), 'sha256:phase4', 11, 2, 2)",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO oci_blobs(
-                   registry_id, digest, byte_size, media_type,
-                   surface_object_id, quota_bytes, created_at, updated_at)
-                 VALUES(1, 'sha256:phase4', 11,
-                        'application/vnd.oci.image.manifest.v1+json',
-                        2, 11, 3, 3)",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO oci_repository_objects(
-                   repository_id, registry_id, digest, object_kind, linked_at)
-                 VALUES(4, 1, 'sha256:phase4', 'manifest', 5)",
-                [],
-            )
-            .unwrap();
-
-        connection
-            .execute_batch(MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX])
-            .unwrap();
-
-        let media_type: String = connection
-            .query_row(
-                "SELECT media_type FROM oci_repository_objects
-                 WHERE repository_id = 4 AND digest = 'sha256:phase4'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(media_type, "application/vnd.oci.image.manifest.v1+json");
-
-        let upload_columns: Vec<String> = connection
-            .prepare("PRAGMA table_info(oci_upload_sessions)")
-            .unwrap()
-            .query_map([], |row| row.get(1))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        for required in [
-            "quota_reservation_id",
-            "writer_id",
-            "token_id",
-            "maximum_size",
-            "sha256_h0",
-            "sha256_tail_hex",
-        ] {
-            assert!(
-                upload_columns.iter().any(|column| column == required),
-                "phase 5 upload column {required} is missing"
-            );
-        }
-
-        let publication_fence_default: String = connection
-            .query_row(
-                "SELECT dflt_value FROM pragma_table_info('oci_release_roots')
-                 WHERE name = 'publication_fence'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(publication_fence_default, "0");
-    }
-
-    #[test]
-    fn oci_phase5_v23_migration_refuses_unknown_placeholder_state() {
-        const OCI_UPLOAD_PUBLICATION_INDEX: usize = 26;
-
-        let connection = Connection::open_in_memory().unwrap();
-        for migration in &MIGRATIONS[..OCI_UPLOAD_PUBLICATION_INDEX] {
-            connection.execute_batch(migration).unwrap();
-        }
-        seed_oci_migration_registry(&connection);
-        connection
-            .execute(
-                "INSERT INTO oci_publications(
-                   id, registry_id, repository_id, root_digest, source_kind,
-                   state, idempotency_key, expires_at, created_at)
-                 VALUES('phase4-publication', 1, 4, 'sha256:unknown', 'manual',
-                        'preparing', 'phase4-idempotency', 3, 3)",
-                [],
-            )
-            .unwrap();
-
-        let error = connection
-            .execute_batch(MIGRATIONS[OCI_UPLOAD_PUBLICATION_INDEX])
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("CHECK constraint failed"),
-            "unexpected phase 5 upgrade error: {error}"
-        );
-        let publications: i64 = connection
-            .query_row("SELECT COUNT(*) FROM oci_publications", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(
-            publications, 1,
-            "failed upgrade discarded placeholder state"
-        );
-    }
-
-    fn seed_v21_oci_admin_upgrade_state(connection: &Connection, tag_history_limit: i64) {
-        seed_oci_migration_registry(connection);
-        let config = format!("sha256:{}", "c".repeat(64));
-        let layer = format!("sha256:{}", "d".repeat(64));
-        let manifest = format!("sha256:{}", "e".repeat(64));
-        for (id, digest, size, media_type) in [
-            (
-                10_i64,
-                config.as_str(),
-                64_i64,
-                "application/vnd.oci.image.config.v1+json",
-            ),
-            (
-                11,
-                layer.as_str(),
-                128,
-                "application/vnd.oci.image.layer.v1.tar",
-            ),
-            (
-                12,
-                manifest.as_str(),
-                256,
-                "application/vnd.oci.image.manifest.v1+json",
-            ),
-        ] {
-            let encoded = digest.strip_prefix("sha256:").unwrap();
-            connection
-                .execute(
-                    "INSERT INTO surface_objects(
-                       id, registry_id, object_key, object_kind, partition_key,
-                       content_hash, size, created_at, updated_at)
-                     VALUES(?1, 1, ?2, 'immutable', zeroblob(32), ?3, ?4, 2, 2)",
-                    rusqlite::params![id, format!("oci/blobs/sha256/{encoded}"), encoded, size],
-                )
-                .unwrap();
-            connection
-                .execute(
-                    "INSERT INTO oci_blobs(
-                       registry_id, digest, byte_size, media_type,
-                       surface_object_id, quota_bytes, lifecycle_state,
-                       created_at, updated_at)
-                     VALUES(1, ?1, ?2, ?3, ?4, ?2, 'active', 2, 2)",
-                    rusqlite::params![digest, size, media_type, id],
-                )
-                .unwrap();
-            connection
-                .execute(
-                    "INSERT INTO oci_repository_objects(
-                       repository_id, registry_id, digest, object_kind,
-                       media_type, linked_at)
-                     VALUES(4, 1, ?1, ?2, ?3, 2)",
-                    rusqlite::params![
-                        digest,
-                        if id == 12 { "manifest" } else { "blob" },
-                        media_type
-                    ],
-                )
-                .unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO oci_manifests(
-                   registry_id, digest, media_type, byte_size, schema_version,
-                   artifact_type, subject_digest, config_digest, platform_os,
-                   platform_architecture, platform_variant, annotations_json,
-                   descriptor_count, created_at)
-                 VALUES(1, ?1, 'application/vnd.oci.image.manifest.v1+json',
-                        256, 2, NULL, NULL, ?2, 'linux', 'amd64', NULL,
-                        '{}', 2, 2)",
-                rusqlite::params![manifest, config],
-            )
-            .unwrap();
-        for (role, digest, media_type, size) in [
-            (
-                "config",
-                config.as_str(),
-                "application/vnd.oci.image.config.v1+json",
-                64_i64,
-            ),
-            (
-                "layer",
-                layer.as_str(),
-                "application/vnd.oci.image.layer.v1.tar",
-                128_i64,
-            ),
-        ] {
-            connection
-                .execute(
-                    "INSERT INTO oci_descriptor_edges(
-                       registry_id, manifest_digest, edge_role, ordinal,
-                       target_digest, media_type, byte_size, annotations_json)
-                     VALUES(1, ?1, ?2, 0, ?3, ?4, ?5, '{}')",
-                    rusqlite::params![manifest, role, digest, media_type, size],
-                )
-                .unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO oci_retention_policies(
-                   registry_id, untagged_grace_seconds, tag_history_limit,
-                   retain_referrers, resource_version, updated_at)
-                 VALUES(1, 86400, ?1, 1, 1, 2)",
-                [tag_history_limit],
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn oci_admin_v24_upgrade_backfills_policy_and_queues_exact_byte_reconciliation() {
-        const OCI_ADMIN_INDEX: usize = 27;
-
-        let connection = Connection::open_in_memory().unwrap();
-        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
-            connection.execute_batch(migration).unwrap();
-        }
-        seed_v21_oci_admin_upgrade_state(&connection, 37);
-        connection
-            .execute_batch(MIGRATIONS[OCI_ADMIN_INDEX])
-            .unwrap();
-
-        let recent: i64 = connection
-            .query_row(
-                "SELECT recent_manual_tag_revisions FROM oci_retention_policies
-                 WHERE registry_id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(recent, 37);
-        let pending: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM oci_admin_projection_reconciliations
-                 WHERE registry_id = 1 AND repository_id = 4 AND state = 'pending'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(pending, 1, "legacy runnable manifest was not queued");
-        let projected: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM oci_image_config_projections",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(projected, 0, "upgrade fabricated an exact-byte projection");
-    }
-
-    #[test]
-    fn oci_admin_v24_upgrade_fails_closed_and_rolls_back_out_of_range_history() {
-        const OCI_ADMIN_INDEX: usize = 27;
-
-        let connection = Connection::open_in_memory().unwrap();
-        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
-            connection.execute_batch(migration).unwrap();
-        }
-        seed_v21_oci_admin_upgrade_state(&connection, 1_000_001);
-        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let error = connection
-            .execute_batch(MIGRATIONS[OCI_ADMIN_INDEX])
-            .unwrap_err();
-        connection.execute_batch("ROLLBACK").unwrap();
-        assert!(
-            error.to_string().contains("CHECK constraint failed"),
-            "{error}"
-        );
-        let v22_tables: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name = 'oci_repository_metadata'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(v22_tables, 0, "failed v22 migration committed partial DDL");
-    }
-
-    #[tokio::test]
-    async fn oci_admin_v24_concurrent_start_and_reopen_apply_once() {
-        const OCI_ADMIN_INDEX: usize = 27;
-
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("v21-concurrent.db");
-        let connection = Connection::open(&path).unwrap();
-        for migration in &MIGRATIONS[..OCI_ADMIN_INDEX] {
-            connection.execute_batch(migration).unwrap();
-        }
-        seed_v21_oci_admin_upgrade_state(&connection, 9);
-        connection
-            .execute_batch(
-                "CREATE TABLE schema_version(version INTEGER NOT NULL);
-                 INSERT INTO schema_version(version) VALUES(27);",
-            )
-            .unwrap();
-        drop(connection);
-
-        let (left, right) = tokio::join!(Database::open(&path), Database::open(&path));
-        drop(left.unwrap());
-        drop(right.unwrap());
-        let reopened = Database::open(&path).await.unwrap();
-        let version: i64 = reopened
-            .backend
-            .query_opt("SELECT version FROM schema_version", &[])
-            .await
-            .unwrap()
-            .unwrap()
-            .get(0)
-            .unwrap();
-        assert_eq!(version, MIGRATIONS.len() as i64);
-        let workflow_tables: i64 = reopened
-            .backend
-            .query_opt(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
-                   AND name IN ('delivery_workflows', 'delivery_workflow_resumptions')",
-                &[],
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .get(0)
-            .unwrap();
-        assert_eq!(
-            workflow_tables, 2,
-            "the latest migration must also be applied"
-        );
-    }
-
-    #[test]
-    fn package_documentation_system_module_identity_is_forward_migrated() {
-        let documentation_index = MIGRATIONS
-            .iter()
-            .position(|migration| migration.contains("CREATE TABLE package_documentation("))
-            .unwrap();
-        let system_module_index = MIGRATIONS
-            .iter()
-            .position(|migration| {
-                migration.contains("ADD COLUMN system_module_nar_hash KEYTEXT128")
-            })
-            .unwrap();
-        let release_documentation_index = MIGRATIONS
-            .iter()
-            .position(|migration| migration.contains("CREATE TABLE release_package_documentation("))
-            .unwrap();
-        let projection_generation_index = MIGRATIONS
-            .iter()
-            .position(|migration| {
-                migration.contains("ADD COLUMN documentation_projection_generation")
-            })
-            .unwrap();
-        assert_eq!(system_module_index, documentation_index + 1);
-        assert_eq!(release_documentation_index, system_module_index + 1);
-        assert_eq!(projection_generation_index, release_documentation_index + 1);
-
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .unwrap();
-        for migration in &MIGRATIONS[..=documentation_index] {
-            connection.execute_batch(migration).unwrap();
-        }
-        let before: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('package_documentation')
-                 WHERE name = 'system_module_nar_hash'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(before, 0);
-
-        connection
-            .execute_batch(MIGRATIONS[system_module_index])
-            .unwrap();
-        let after: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('package_documentation')
-                 WHERE name = 'system_module_nar_hash'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(after, 1);
-
-        connection
-            .execute_batch(MIGRATIONS[release_documentation_index])
-            .unwrap();
-        let release_table: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name = 'release_package_documentation'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(release_table, 1);
-
-        connection
-            .execute_batch(MIGRATIONS[projection_generation_index])
-            .unwrap();
-        connection
-            .prepare("SELECT documentation_projection_generation FROM registry_index")
-            .unwrap();
-    }
-
-    #[test]
-    fn explicit_topology_migration_adopts_the_previous_schema_identity() {
-        let connection = Connection::open_in_memory().unwrap();
-        let adoption_index = MIGRATIONS
-            .iter()
-            .position(|migration| *migration == EXPLICIT_TOPOLOGY_MIGRATION)
-            .unwrap();
-        for migration in &MIGRATIONS[..adoption_index] {
-            connection.execute_batch(migration).unwrap();
-        }
-        connection
-            .execute(
-                "UPDATE hub_schema_identity SET identity = ?1",
-                [PREVIOUS_SCHEMA_IDENTITY],
-            )
-            .unwrap();
-
-        connection
-            .execute_batch(EXPLICIT_TOPOLOGY_MIGRATION)
-            .unwrap();
-
-        let identity: String = connection
-            .query_row("SELECT identity FROM hub_schema_identity", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(identity, SCHEMA_IDENTITY);
-    }
-
-    #[tokio::test]
-    async fn migrate_repairs_the_known_schema_version_collision() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("topology-v1.db");
-        let connection = Connection::open(&path).unwrap();
-        connection
-            .execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL);")
-            .unwrap();
-        connection.execute_batch(MIGRATIONS[0]).unwrap();
-        connection
-            .execute_batch(&topology_v2_to_v1_identifier_sql())
-            .unwrap();
-        connection
-            .execute(
-                "UPDATE hub_schema_identity SET identity = ?1",
-                [PREVIOUS_SCHEMA_IDENTITY],
-            )
-            .unwrap();
-        connection
-            .execute_batch(&format!(
-                "DELETE FROM schema_version;
-                 INSERT INTO schema_version(version) VALUES ({});",
-                MIGRATIONS.len()
-            ))
-            .unwrap();
-        drop(connection);
-
-        let db = Database::open(&path).await.unwrap();
-        db.require_schema_identity().await.unwrap();
-    }
-
-    #[test]
-    fn publication_multipart_migration_upgrades_an_existing_database() {
-        let multipart_index = MIGRATIONS
-            .iter()
-            .position(|migration| migration.contains("ADD COLUMN hashed_size"))
-            .unwrap();
-        let multipart_migration = MIGRATIONS[multipart_index];
-        let connection = Connection::open_in_memory().unwrap();
-        for script in &MIGRATIONS[..multipart_index] {
-            connection.execute_batch(script).unwrap();
-        }
-        connection.execute_batch(multipart_migration).unwrap();
-        let tables: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name IN (
-                   'registry_publication_multipart_uploads',
-                   'registry_publication_multipart_parts',
-                   'registry_publication_multipart_backends')",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(tables, 3);
-        let columns: Vec<String> = connection
-            .prepare("PRAGMA table_info(registry_publication_multipart_uploads)")
-            .unwrap()
-            .query_map([], |row| row.get(1))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert!(columns.iter().any(|column| column == "hashed_size"));
-        assert!(columns.iter().any(|column| column == "sha256_state"));
-        assert!(columns.iter().any(|column| column == "pending_token"));
-        assert!(columns.iter().any(|column| column == "completion_token"));
-        let backend_columns: Vec<String> = connection
-            .prepare("PRAGMA table_info(registry_publication_multipart_backends)")
-            .unwrap()
-            .query_map([], |row| row.get(1))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert!(backend_columns
-            .iter()
-            .any(|column| column == "completion_etag"));
-    }
-
-    #[test]
-    fn placement_policy_build_event_migration_preserves_history_across_versions() {
-        let migration = MIGRATIONS
-            .iter()
-            .find(|migration| migration.contains("placement_policy_build_events_legacy"))
-            .unwrap();
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "PRAGMA foreign_keys = ON;
-                 CREATE TABLE placement_policy_revisions(
-                   id TEXT PRIMARY KEY,
-                   build_version INTEGER NOT NULL,
-                   state TEXT NOT NULL,
-                   UNIQUE(id, build_version, state)
-                 );
-                 CREATE TABLE placement_policy_build_events(
-                   event_id TEXT PRIMARY KEY,
-                   policy_revision_id TEXT NOT NULL,
-                   build_version INTEGER NOT NULL,
-                   revision_state TEXT NOT NULL,
-                   mutation_kind TEXT NOT NULL,
-                   created_at INTEGER NOT NULL,
-                   UNIQUE(policy_revision_id, build_version),
-                   FOREIGN KEY(policy_revision_id, build_version, revision_state)
-                   REFERENCES placement_policy_revisions(id, build_version, state)
-                 );
-                 INSERT INTO placement_policy_revisions
-                   (id, build_version, state) VALUES ('revision-1', 1, 'building');
-                 INSERT INTO placement_policy_build_events
-                   (event_id, policy_revision_id, build_version, revision_state,
-                    mutation_kind, created_at)
-                   VALUES ('event-1', 'revision-1', 1, 'building', 'add_group', 1);",
-            )
-            .unwrap();
-
-        connection.execute_batch(migration).unwrap();
-        connection
-            .execute(
-                "UPDATE placement_policy_revisions SET build_version = 2 WHERE id = 'revision-1'",
-                [],
-            )
-            .unwrap();
-
-        let retained: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM placement_policy_build_events
-                 WHERE event_id = 'event-1' AND build_version = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(retained, 1);
-    }
-
-    #[test]
-    fn placement_policy_publication_migration_preserves_history_across_head_versions() {
-        let migration = MIGRATIONS
-            .iter()
-            .find(|migration| migration.contains("placement_policy_publications_legacy"))
-            .unwrap();
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "PRAGMA foreign_keys = ON;
-                 CREATE TABLE placement_policy_revisions(
-                   id TEXT PRIMARY KEY,
-                   policy_id TEXT NOT NULL,
-                   state TEXT NOT NULL,
-                   UNIQUE(id, policy_id, state)
-                 );
-                 CREATE TABLE placement_policy_heads(
-                   policy_id TEXT PRIMARY KEY,
-                   resource_version INTEGER NOT NULL,
-                   UNIQUE(policy_id, resource_version)
-                 );
-                 CREATE TABLE placement_policy_publications(
-                   publication_id TEXT PRIMARY KEY,
-                   policy_revision_id TEXT NOT NULL UNIQUE,
-                   policy_id TEXT NOT NULL,
-                   revision_state TEXT NOT NULL,
-                   policy_resource_version INTEGER NOT NULL,
-                   content_digest TEXT NOT NULL,
-                   published_by TEXT NOT NULL,
-                   published_at INTEGER NOT NULL,
-                   FOREIGN KEY(policy_revision_id, policy_id, revision_state)
-                   REFERENCES placement_policy_revisions(id, policy_id, state),
-                   FOREIGN KEY(policy_id, policy_resource_version)
-                   REFERENCES placement_policy_heads(policy_id, resource_version)
-                 );
-                 INSERT INTO placement_policy_revisions
-                   (id, policy_id, state) VALUES ('revision-1', 'policy-1', 'published');
-                 INSERT INTO placement_policy_heads
-                   (policy_id, resource_version) VALUES ('policy-1', 2);
-                 INSERT INTO placement_policy_publications
-                   (publication_id, policy_revision_id, policy_id, revision_state,
-                    policy_resource_version, content_digest, published_by, published_at)
-                   VALUES ('publication-1', 'revision-1', 'policy-1', 'published',
-                           2, 'digest-1', 'operator', 1);",
-            )
-            .unwrap();
-
-        connection.execute_batch(migration).unwrap();
-        connection
-            .execute(
-                "UPDATE placement_policy_heads SET resource_version = 3
-                 WHERE policy_id = 'policy-1'",
-                [],
-            )
-            .unwrap();
-
-        let retained: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM placement_policy_publications
-                 WHERE publication_id = 'publication-1' AND policy_resource_version = 2",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(retained, 1);
-    }
-
-    #[test]
-    fn placement_scan_claim_migration_upgrades_an_existing_database() {
-        let claim_index = MIGRATIONS
-            .iter()
-            .position(|migration| migration.contains("CREATE TABLE placement_scan_claims"))
-            .unwrap();
-        let claim_migration = MIGRATIONS[claim_index];
-        let connection = Connection::open_in_memory().unwrap();
-        for script in &MIGRATIONS[..claim_index] {
-            connection.execute_batch(script).unwrap();
-        }
-        connection.execute_batch(claim_migration).unwrap();
-
-        let claim_table: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name = 'placement_scan_claims'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(claim_table, 1);
-        let columns: Vec<String> = connection
-            .prepare("PRAGMA table_info(object_placements)")
-            .unwrap()
-            .query_map([], |row| row.get(1))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert!(columns
-            .iter()
-            .any(|column| column == "catalog_object_resource_version"));
-    }
-
-    #[test]
-    fn portable_recovery_cursor_migration_repairs_existing_database() {
-        let cursor_index = MIGRATIONS
-            .iter()
-            .position(|migration| migration.contains("SET after_expires_at = -9007199254740991"))
-            .unwrap();
-        let cursor_migration = MIGRATIONS[cursor_index];
-        let earlier = &MIGRATIONS[..cursor_index];
-        let connection = Connection::open_in_memory().unwrap();
-        for script in earlier {
-            connection.execute_batch(script).unwrap();
-        }
-        connection
-            .execute(
-                "UPDATE write_recovery_cursors SET after_expires_at = ?1
-                 WHERE recovery_kind = 'cache'",
-                [i64::MIN],
-            )
-            .unwrap();
-
-        connection.execute_batch(cursor_migration).unwrap();
-
-        let after_expires_at: i64 = connection
-            .query_row(
-                "SELECT after_expires_at FROM write_recovery_cursors
-                 WHERE recovery_kind = 'cache'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            after_expires_at,
-            crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START
-        );
-    }
-
-    #[test]
-    fn org_usage_backfill_repairs_existing_organizations() {
-        let backfill_index = MIGRATIONS
-            .iter()
-            .position(|migration| migration.contains("SELECT id, 0, 0, 0"))
-            .unwrap();
-        let connection = Connection::open_in_memory().unwrap();
-        for script in &MIGRATIONS[..backfill_index] {
-            connection.execute_batch(script).unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO orgs
-                 (id, stable_id, slug, name, created_at, updated_at)
-                 VALUES (1, 'org:00000000000000000000000000000001',
-                   'existing', 'Existing', 7, 7)",
-                [],
-            )
-            .unwrap();
-
-        connection
-            .execute_batch(MIGRATIONS[backfill_index])
-            .unwrap();
-
-        let usage: (i64, i64, i64) = connection
-            .query_row(
-                "SELECT used_bytes, object_count, updated_at
-                 FROM org_usage WHERE org_id = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(usage, (0, 0, 0));
-    }
-
     #[test]
     fn mysql_migration_replay_helpers_cover_every_ddl_shape() {
         for sql in migration_statements() {
@@ -28628,34 +27305,136 @@ source_nar_hash = ""
         }
     }
 
+    #[tokio::test]
+    async fn production_baseline_rejects_incompatible_ledgers_without_changing_data() {
+        for mutation in [
+            "UPDATE schema_version SET version = -1",
+            "UPDATE schema_version SET version = 9999",
+            "INSERT INTO schema_version VALUES (1)",
+            "UPDATE hub_schema_identity SET identity = 'aos-hub/topology-hard-cutover/2'",
+            "DELETE FROM hub_schema_identity",
+            "INSERT INTO hub_schema_identity VALUES ('foreign-lineage')",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("hub.db");
+            let database = Database::open(&path).await.unwrap();
+            database
+                .register_registry("preserved", &["anchor".into()], true)
+                .await
+                .unwrap();
+            drop(database);
+
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch(mutation).unwrap();
+            drop(connection);
+            assert!(
+                Database::open(&path).await.is_err(),
+                "accepted corruption: {mutation}"
+            );
+
+            let connection = Connection::open(&path).unwrap();
+            let anchor: String = connection
+                .query_row(
+                    "SELECT trust_keys FROM registries WHERE slug = 'preserved'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(anchor, "[\"anchor\"]");
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_forward_migration_rolls_back_schema_and_marker() {
+        let db = Database::open_in_memory().await.unwrap();
+        let current = MIGRATIONS.len() as i64;
+        let statements = [
+            Statement::new(
+                "CREATE TABLE migration_probe (id INTEGER PRIMARY KEY)",
+                Vec::new(),
+            ),
+            Statement::new("UPDATE schema_version SET version = ?1", vals![current + 1]),
+            Statement::new(
+                "INSERT INTO nonexistent_migration_target VALUES (1)",
+                Vec::new(),
+            ),
+        ];
+
+        assert!(db
+            .backend
+            .migration_batch(current, current + 1, &statements)
+            .await
+            .is_err());
+
+        let version: i64 = db
+            .backend
+            .query_opt("SELECT version FROM schema_version", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(version, current);
+        let probe = db
+            .backend
+            .query_opt(
+                "SELECT name FROM sqlite_master WHERE name = 'migration_probe'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(probe.is_none(), "failed migration committed partial DDL");
+        db.migrate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn production_baseline_concurrent_installation_converges() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hub.db");
+        let (left, right) = tokio::join!(Database::open(&path), Database::open(&path));
+        drop(left.unwrap());
+        drop(right.unwrap());
+
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let identities: i64 = connection
+            .query_row("SELECT COUNT(*) FROM hub_schema_identity", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(identities, 1);
+    }
+
     #[test]
-    fn mysql_phase5_multiline_add_columns_are_replay_safe() {
-        let phase5 = include_str!("oci_upload_publication.sql");
-        let add_columns: Vec<_> = crate::backend::split_statements(phase5)
-            .into_iter()
-            .filter(|statement| statement.contains("ALTER TABLE "))
-            .collect();
+    fn production_baseline_keeps_portable_recovery_and_documentation_columns() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
 
-        assert_eq!(add_columns.len(), 2, "unexpected Phase 5 ALTER statements");
-        for statement in add_columns {
-            assert!(
-                statement.contains("\nADD COLUMN "),
-                "the regression requires the multiline migration shape: {statement}"
-            );
-            let translated = crate::dialect::Dialect::Mysql
-                .translate(&statement)
-                .expect("translating Phase 5 ALTER statement");
-            let replay_safe = mysql_replay_safe_migration_sql(&translated.sql);
-
-            assert!(
-                replay_safe.contains("\nADD COLUMN IF NOT EXISTS "),
-                "MySQL implicit-commit replay remained non-idempotent: {replay_safe}"
-            );
-            assert_eq!(
-                mysql_replay_safe_migration_sql(&replay_safe),
-                replay_safe,
-                "the replay transform itself must be idempotent"
-            );
+        let cursor: i64 = connection
+            .query_row(
+                "SELECT after_expires_at FROM write_recovery_cursors WHERE recovery_kind = 'cache'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursor, crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START);
+        for (table, column) in [
+            ("package_documentation", "system_module_nar_hash"),
+            ("release_package_documentation", "system_module_nar_hash"),
+            ("registry_index", "documentation_projection_generation"),
+            ("object_placements", "catalog_object_resource_version"),
+        ] {
+            let present: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                    [table, column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(present, 1, "missing {table}.{column}");
         }
     }
 
@@ -28729,80 +27508,9 @@ source_nar_hash = ""
         };
         let message = format!("{error:#}");
         assert!(
-            message.contains("predates the topology hard cutover"),
+            message.contains("predates the first stable production baseline"),
             "{message}"
         );
-    }
-
-    #[tokio::test]
-    async fn invitation_upgrade_reconciles_duplicate_and_expired_history() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("invitation-upgrade.db");
-        let connection = Connection::open(&path).unwrap();
-        connection.execute_batch(MIGRATIONS[0]).unwrap();
-        connection.execute_batch(MIGRATIONS[1]).unwrap();
-        let org_scope = format!("org:{}", "a".repeat(32));
-        connection
-            .execute(
-                "INSERT INTO orgs(id, stable_id, slug, name, created_at)
-                 VALUES (1, ?1, 'acme', 'Acme', 1)",
-                [&org_scope],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO authorization_scopes
-                 (scope_key, kind, org_id, parent_scope_key, resource_stable_id, created_at)
-                 VALUES (?1, 'organization', 1, 'instance', ?1, 1)",
-                [&org_scope],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO invitations
-                 (id, org_id, email, scope_key, role, token_hash, created_at, expires_at)
-                 VALUES
-                 (1, 1, 'duplicate@example.test', ?1, 'viewer', 'old', 10, 9999999999),
-                 (2, 1, 'duplicate@example.test', ?1, 'developer', 'new', 20, 9999999999),
-                 (3, 1, 'expired@example.test', ?1, 'viewer', 'expired', 30, 1)",
-                [&org_scope],
-            )
-            .unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE schema_version(version INTEGER NOT NULL);
-                 INSERT INTO schema_version(version) VALUES (2);",
-            )
-            .unwrap();
-        drop(connection);
-
-        let db = Database::open(&path).await.unwrap();
-        let invitations = db.list_invitations(1).await.unwrap();
-        assert_eq!(invitations.len(), 3);
-        assert!(invitations
-            .iter()
-            .any(|item| item.id == 1 && item.cancelled_at == Some(item.created_at)));
-        assert!(invitations
-            .iter()
-            .any(|item| item.id == 2 && item.cancelled_at.is_none()));
-        assert!(db
-            .has_pending_invitation("duplicate@example.test")
-            .await
-            .unwrap());
-        assert!(!db
-            .has_pending_invitation("expired@example.test")
-            .await
-            .unwrap());
-        db.create_invitation(
-            1,
-            "expired@example.test",
-            &org_scope,
-            "viewer",
-            "replacement",
-            unix_now() + 3600,
-        )
-        .await
-        .unwrap();
     }
 
     #[tokio::test]
@@ -28825,6 +27533,9 @@ source_nar_hash = ""
             closure_size = 20
             source_drv = "/var/lib/store/abc.drv"
             source_nar_hash = "sha256:bb"
+
+            [versions.platforms.x86_64-linux.named_outputs]
+            dev = "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
 
             [versions.platforms.x86_64-linux.documentation]
             format = "aos.package-documentation/v1+json"
@@ -29026,9 +27737,15 @@ source_nar_hash = ""
                 "expose",
                 "image",
                 "output",
+                "output",
                 "source_derivation"
             ]
         );
+        assert!(current_artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == "output"
+                && artifact.store_path
+                    == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+        }));
         assert!(current_artifacts
             .iter()
             .all(|artifact| artifact.package_name == "curl"));
@@ -31294,6 +30011,73 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
+    async fn repeated_session_validation_preserves_liveness_without_identical_writes() {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db
+            .create_user("session-reader@acme.com", None)
+            .await
+            .unwrap();
+        let secret = db.create_session(user, 3600, 0).await.unwrap();
+        let now = unix_now() + 1;
+
+        assert!(db
+            .validate_session_at(&secret, now)
+            .await
+            .unwrap()
+            .is_some());
+        let changes_before: i64 = db
+            .backend
+            .query_opt("SELECT total_changes()", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+
+        for _ in 0..100 {
+            assert!(db
+                .validate_session_at(&secret, now)
+                .await
+                .unwrap()
+                .is_some());
+        }
+        let changes_after: i64 = db
+            .backend
+            .query_opt("SELECT total_changes()", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(changes_after, changes_before);
+
+        assert!(db
+            .validate_session_at(&secret, now + 1)
+            .await
+            .unwrap()
+            .is_some());
+        let advanced: i64 = db
+            .backend
+            .query_opt(
+                "SELECT last_seen_at FROM sessions WHERE id_hash = ?1",
+                &vals![crate::auth::token::sha256_hex(&secret)],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(advanced, now + 1);
+
+        db.revoke_session(&secret).await.unwrap();
+        assert!(db
+            .validate_session_at(&secret, now + 1)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn session_idle_and_absolute_timeouts_enforced() {
         use crate::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
         let db = Database::open_in_memory().await.unwrap();
@@ -32011,52 +30795,6 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
-    async fn validation_runs_record_and_query() {
-        let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("demo", &[], false).await.unwrap();
-        let run = db
-            .record_validation_run(
-                id,
-                "https://cache.example",
-                "presence",
-                3,
-                &["aaa".into(), "bbb".into()],
-                true,
-                10,
-                11,
-            )
-            .await
-            .unwrap();
-        // A newer run for the same cache supersedes it.
-        db.record_validation_run(
-            id,
-            "https://cache.example",
-            "presence",
-            3,
-            &[],
-            true,
-            20,
-            21,
-        )
-        .await
-        .unwrap();
-        db.record_validation_run(id, "file:///srv/cache", "presence", 0, &[], false, 20, 21)
-            .await
-            .unwrap();
-
-        let latest = db.latest_validation_runs(id).await.unwrap();
-        assert_eq!(latest.len(), 2);
-        assert_eq!(latest[0].cache_url, "file:///srv/cache");
-        assert!(!latest[0].reachable);
-        assert_eq!(latest[1].cache_url, "https://cache.example");
-        assert_eq!(latest[1].missing, 0);
-        assert_eq!(
-            db.validation_missing(run).await.unwrap(),
-            vec!["aaa".to_string(), "bbb".to_string()]
-        );
-    }
-
-    #[tokio::test]
     async fn take_webauthn_challenge_is_scoped_by_kind() {
         let db = Database::open_in_memory().await.unwrap();
         // A registration challenge is in flight for a victim.
@@ -32086,45 +30824,6 @@ source_nar_hash = ""
             .await
             .unwrap()
             .is_none());
-    }
-
-    #[tokio::test]
-    async fn prune_repair_jobs_removes_old_rows() {
-        let db = Database::open_in_memory().await.unwrap();
-        let id = db.register_registry("demo", &[], false).await.unwrap();
-        // An old job (created_at = 100) and a recent one (created_at = 10_000).
-        db.record_repair_job(
-            id,
-            "file:///c",
-            "old01",
-            "file:///s",
-            "done",
-            None,
-            100,
-            Some(101),
-        )
-        .await
-        .unwrap();
-        db.record_repair_job(
-            id,
-            "file:///c",
-            "new01",
-            "file:///s",
-            "done",
-            None,
-            10_000,
-            Some(10_001),
-        )
-        .await
-        .unwrap();
-        assert_eq!(db.list_repair_jobs(id, 10).await.unwrap().len(), 2);
-
-        // Pruning everything created before 1_000 removes only the old row.
-        let pruned = db.prune_repair_jobs(1_000).await.unwrap();
-        assert_eq!(pruned, 1);
-        let remaining = db.list_repair_jobs(id, 10).await.unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].store_hash, "new01");
     }
 
     #[tokio::test]

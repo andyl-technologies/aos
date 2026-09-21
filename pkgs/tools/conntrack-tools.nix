@@ -16,7 +16,7 @@
   libtirpc,
   writeShellScriptBin,
 }: let
-  version = "1.4.8";
+  version = "1.4.9";
   control = writeShellScriptBin "conntrackd-control" ''
     set -eu
     case "''${1:-}" in
@@ -33,7 +33,7 @@ in
       urls = [
         "https://www.netfilter.org/projects/conntrack-tools/files/conntrack-tools-${version}.tar.xz"
       ];
-      hash = "sha256-BnZ39MX2VkgZ547TqdSomAk16pJz86uyKkIOowq13tY=";
+      hash = "sha256-wVr+SIqNQIydbWHpfb0Z88WRlC9iwT32RTqWHKQjHK4=";
     };
 
     buildDeps = [

@@ -10,18 +10,20 @@
   bash,
   which,
   llvm,
-  rust-1_92,
+  rust-1_97,
+  curl,
   openssl,
   zlib,
   stdenv,
   buildPackages,
 }: let
-  version = "1.93.1";
+  current = import ./_current.nix;
+  inherit (current) version changeId configFileName;
   src = fetchurl {
     urls = [
       "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
     ];
-    hash = "sha256-TCMKRLPZyfPO+VCUNxn4OABY0nyR/aXjapqUfvAT4B8=";
+    hash = current.srcHash;
   };
 in
   if stdenv.isCross
@@ -30,8 +32,7 @@ in
       inherit buildPackages src version;
       crossCc = stdenv.cc;
       hostPlatform = stdenv.hostPlatform;
-      changeId = 148795;
-      configFileName = "bootstrap.toml";
+      inherit changeId configFileName;
       nativeRust = buildPackages.rust;
       nativeLlvm = buildPackages.llvm;
     };
@@ -54,9 +55,8 @@ in
           zlib
           ;
         pname = "rust";
-        changeId = 148795;
-        configFileName = "bootstrap.toml";
-        nativeRust = buildPackages.rust-1_92;
+        inherit changeId configFileName;
+        nativeRust = buildPackages.rust-1_97;
         nativeLlvm = buildPackages.llvm;
         targetLlvm = llvm;
         additionalTargets = ["wasm32-unknown-unknown"];
@@ -65,8 +65,25 @@ in
         profiler = true;
         needsDownloadRustc = true;
         disableLld = true;
-        description = "Rust ${version} — Darwin-hosted compiler, Cargo, tools, and standard library";
+        description = "Rust programming language — compiler and cargo";
         inherit buildTool;
+      }
+    else if stdenv.hostPlatform.isLinux
+    then
+      import ./_rust-linux-hosted.nix {
+        inherit mkDerivation version src buildPackages stdenv curl openssl zlib;
+        pname = "rust";
+        inherit changeId configFileName buildTool;
+        nativeRust = buildPackages.rust-1_97;
+        nativeLlvm = buildPackages.llvm;
+        targetLlvm = llvm;
+        additionalTargets = ["wasm32-unknown-unknown"];
+        tools = ["cargo" "rustdoc" "clippy" "rustfmt" "rust-analyzer" "src"];
+        outputs = ["out" "dev"];
+        profiler = true;
+        needsDownloadRustc = true;
+        disableLld = true;
+        description = "Rust programming language — compiler and cargo";
       }
     else
       buildTool
@@ -95,7 +112,7 @@ in
         python3
         bash
         which
-        rust-1_92
+        rust-1_97
         llvm
         openssl
       ];
@@ -122,11 +139,11 @@ in
 
             # Fake git — must return exit 1 to avoid canonicalize("") panic
             mkdir -p .fake-bin
-            printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
             cat > bootstrap.toml << TOML
-            change-id = 148795
+            change-id = ${toString changeId}
 
             [llvm]
             link-shared = true
@@ -135,11 +152,14 @@ in
             [build]
             docs = false
             extended = true
+            # Rebuild the compiler, standard library, and native support
+            # artifacts at every bootstrap stage instead of uplifting them.
+            full-bootstrap = true
             tools = ["cargo", "rustdoc", "clippy", "rustfmt", "rust-analyzer", "src"]
             vendor = true
             profiler = true
-            cargo = "${rust-1_92}/bin/cargo"
-            rustc = "${rust-1_92}/bin/rustc"
+            cargo = "${rust-1_97}/bin/cargo"
+            rustc = "${rust-1_97}/bin/rustc"
             # Build std for the native host plus the bare wasm32 target. The
             # wasm32-unknown-unknown std (core + alloc, with the wasm shims; it
             # has no full libstd, which is expected) lets cargo cross-compile the
@@ -152,29 +172,34 @@ in
 
             [rust]
             channel = "stable"
-            # Later bootstrap compilers corrupt allocator state even at 32
-            # codegen units on this large host. Keep the final compiler within
-            # the same 16-way proven boundary as its immediate bootstrap tiers.
-            codegen-units = 16
+            # Zero auto-detects all physical host CPUs, bypassing x.py's job
+            # limit. Keep compiler-internal code generation within the same
+            # scheduler allocation as the surrounding bootstrap.
+            codegen-units = $NIX_BUILD_CORES
             rpath = true
+            remap-debuginfo = true
             omit-git-hash = true
             download-rustc = false
-            # `lld = false`: x.py refuses `rust.lld = true` when configured with an
-            # external `llvm-config` (it has no bundled llvm-project to build lld
-            # from). The wasm32-unknown-unknown target nonetheless needs `rust-lld`
+            # With lld disabled, x.py refuses rust.lld = true when configured with an
+            # external llvm-config (it has no bundled llvm-project to build lld
+            # from). The wasm32-unknown-unknown target nonetheless needs rust-lld
             # (wasm has no system linker), so the install phase symlinks it from
-            # the AOS LLVM's own `lld` driver instead. `use-lld = false` keeps the
-            # host (x86_64) target on GCC's `ld` — rust-lld as the default host
+            # the AOS LLVM's own lld driver instead. The bootstrap override keeps the
+            # host (x86_64) target on GCC's ld; rust-lld as the default host
             # linker chokes on the zlib-compressed debug sections in GCC 14's
             # libgcc.a.
             lld = false
-            use-lld = false
+            bootstrap-override-lld = false
 
             [target.x86_64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
+            rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
 
             [target.aarch64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
+            rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
 
             # The bare wasm32 target needs no external C toolchain or llvm-config;
             # rustc's own LLVM backend emits the wasm directly. Use the pure-Rust
@@ -187,16 +212,13 @@ in
             # virtual prefix so downstream embedded Wasm has no /build refs.
             rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
             optimized-compiler-builtins = false
+            profiler = false
             TOML
           '';
         }
         {
           name = "build";
           script = ''
-            # x.py creates nested compiler work beyond its nominal job count;
-            # cap Rust alone while other packages may consume all 128 cores.
-            rustJobs=$NIX_BUILD_CORES
-            test "$rustJobs" -le 16 || rustJobs=16
             export PATH="$PWD/.fake-bin:$PATH"
             export OPENSSL_DIR=${openssl}
             export OPENSSL_LIB_DIR=${openssl}/lib
@@ -208,7 +230,7 @@ in
             # with the corresponding target-specific compiler environment too.
             export CFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
             export CXXFLAGS_wasm32_unknown_unknown="-ffile-prefix-map=$PWD=/rustc/${version}"
-            python3 x.py build -j $rustJobs
+            python3 x.py build -j "$NIX_BUILD_CORES"
           '';
         }
         {
@@ -216,8 +238,6 @@ in
           script = ''
                     # Extended-tool installation performs real compilation;
                     # keep it under the same scheduler bound as `x.py build`.
-                    rustJobs=$NIX_BUILD_CORES
-                    test "$rustJobs" -le 16 || rustJobs=16
                     export PATH="$PWD/.fake-bin:$PATH"
                     export OPENSSL_DIR=${openssl}
                     export OPENSSL_LIB_DIR=${openssl}/lib
@@ -232,7 +252,7 @@ in
                     # `x.py install src`: that treats "src" as a path filter,
                     # matches a docs step, and panics on the absent doc dir
                     # (docs = false).
-                    python3 x.py install -j $rustJobs
+                    python3 x.py install -j "$NIX_BUILD_CORES"
 
                     # Supply `rust-lld` for wasm32-unknown-unknown. rustc links the
                     # bare wasm target with the self-contained `rust-lld` found at
@@ -255,7 +275,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!/bin/sh
+            #!${bash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
@@ -289,6 +309,88 @@ in
                     if [ -d "$out/lib/rustlib/src" ]; then
                       mkdir -p $dev/lib/rustlib
                       mv "$out/lib/rustlib/src" "$dev/lib/rustlib/src"
+                    fi
+
+                    install_log="$out/lib/rustlib/install.log"
+                    test -f "$install_log"
+                    sed -i \
+                      -e "s|/build/rustc-${version}-src/build/|/rustc/${version}/bootstrap/|g" \
+                      -e "s|/build/rustc-${version}-src|/rustc/${version}|g" \
+                      "$install_log"
+                    old_source_root="/build/rustc-${version}-src"
+                    remapped_source_root="/rustc/${version}/toolchain"
+                    test "''${#old_source_root}" -eq "''${#remapped_source_root}"
+                    find "$out" "$dev" -type f -exec sed -i \
+                      "s|$old_source_root|$remapped_source_root|g" {} +
+                    if find "$out" "$dev" -type f -exec grep -a -l -m1 -F \
+                      "$old_source_root" {} + | grep -q .; then
+                      echo "Rust output retains its bootstrap source root" >&2
+                      exit 1
+                    fi
+
+                    wasm_lib="$out/lib/rustlib/wasm32-unknown-unknown/lib"
+                    profiler_archive=$(find "$wasm_lib" -maxdepth 1 -name 'libprofiler_builtins-*.rlib' -print -quit)
+                    if [ -n "$profiler_archive" ]; then
+                      echo "wasm target unexpectedly contains a profiler runtime" >&2
+                      exit 1
+                    fi
+
+                    archive_check="$TMPDIR/rust-archive-check"
+                    mkdir -p "$archive_check"
+                    found_native_object=false
+                    native_lib="$out/lib/rustlib/x86_64-unknown-linux-gnu/lib"
+                    for archive in "$native_lib"/*.rlib; do
+                      for member in $(${stdenv.cc}/bin/ar t "$archive"); do
+                        case "$member" in
+                          *.o)
+                            ${stdenv.cc}/bin/ar p "$archive" "$member" > "$archive_check/member.o"
+                            magic=$(head -c 4 "$archive_check/member.o" | od -An -tx1 | tr -d ' \n')
+                            case "$magic" in
+                              7f454c46)
+                                machine=$(od -An -tx1 -j18 -N2 "$archive_check/member.o" | tr -d ' \n')
+                                if [ "$machine" != 3e00 ]; then
+                                  echo "$archive contains object $member for unexpected ELF machine $machine" >&2
+                                  exit 1
+                                fi
+                                ;;
+                              4243c0de|dec0170b) ;;
+                              *)
+                                echo "$archive contains invalid native object $member (magic $magic)" >&2
+                                exit 1
+                                ;;
+                            esac
+                            found_native_object=true
+                            ;;
+                        esac
+                      done
+                    done
+                    if [ "$found_native_object" != true ]; then
+                      echo "native target contains no inspectable object members" >&2
+                      exit 1
+                    fi
+
+                    found_wasm_object=false
+                    for archive in "$wasm_lib"/*.rlib; do
+                      for member in $(${stdenv.cc}/bin/ar t "$archive"); do
+                        case "$member" in
+                          *.o)
+                            ${stdenv.cc}/bin/ar p "$archive" "$member" > "$archive_check/member.o"
+                            magic=$(head -c 4 "$archive_check/member.o" | od -An -tx1 | tr -d ' \n')
+                            case "$magic" in
+                              0061736d|4243c0de|dec0170b) ;;
+                              *)
+                                echo "$archive contains non-wasm object $member (magic $magic)" >&2
+                                exit 1
+                                ;;
+                            esac
+                            found_wasm_object=true
+                            ;;
+                        esac
+                      done
+                    done
+                    if [ "$found_wasm_object" != true ]; then
+                      echo "wasm target contains no inspectable object members" >&2
+                      exit 1
                     fi
           '';
         }

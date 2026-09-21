@@ -2,9 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
-  go,
-  llvm,
   lib,
 }: let
   version = "1.17.3";
@@ -22,8 +21,8 @@ in
 
     buildDeps = [
       gnumake
-      go
-      llvm
+      buildPackages.go
+      buildPackages.llvm
     ];
     runtimeDeps = [];
 
@@ -42,19 +41,23 @@ in
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=0
           export GOPROXY=off
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           mkdir -p "$GOPATH" "$GOCACHE"
 
           # Build BPF datapath programs
-          export PATH="${llvm}/bin:$PATH"
+          export PATH="${buildPackages.llvm}/bin:$PATH"
 
           # Suppress clang 22 warning for uninitialized const pointer in SRv6 code
           # Append after -Wimplicit-fallthrough (last warning flag) so it comes after -Werror
           sed -i '/-Wimplicit-fallthrough/a CLANG_FLAGS += -Wno-uninitialized-const-pointer' bpf/Makefile.bpf
 
           make -C bpf SHELL="$CONFIG_SHELL" \
-            CLANG="${llvm}/bin/clang" \
-            LLC="${llvm}/bin/llc" \
-            STRIP="${llvm}/bin/llvm-strip"
+            CLANG="${buildPackages.llvm}/bin/clang" \
+            LLC="${buildPackages.llvm}/bin/llc" \
+            STRIP="${buildPackages.llvm}/bin/llvm-strip"
 
           mkdir -p _bin
 

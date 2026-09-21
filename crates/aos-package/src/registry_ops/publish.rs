@@ -24,7 +24,7 @@ use crate::registry_ops::images::{PublishedImage, inspect_published_image};
 use crate::registry_ops::mac::{
     infer_publish_expose_artifact, read_publish_expose_manifest, read_publish_manifest_digest,
 };
-use crate::registry_ops::metadata::build_package_toml_with_documentation;
+use crate::registry_ops::metadata::{build_package_toml_with_documentation, record_named_output};
 use crate::registry_ops::provenance::{
     append_package_provenance_transparency_log, bind_documentation_provenance,
     publish_config_provenance_artifact_with_documentation,
@@ -381,11 +381,34 @@ pub(crate) async fn publish_to_registry_directory(
             &mut local_provenance_signer
         };
 
+    let letter = first_letter(pkg_name);
+    let pkg_dir = dir.join("packages").join(&letter);
+
+    // Everything above derives and validates the entry: store-path inspection,
+    // metadata, provenance signer resolution. Stop before taking the publish
+    // lock, because a preview must not block a concurrent real publisher.
+    if crate::dry_run::active() {
+        let toml_path = pkg_dir.join(format!("{pkg_name}.toml"));
+        printer.info(&format!(
+            "Would publish {pkg_name} {pkg_version} ({platform}) to registry '{}'",
+            dir.display()
+        ));
+        printer.kv("Would write", &toml_path.display().to_string());
+        printer.kv(
+            "Entry",
+            if toml_path.exists() {
+                "added to the existing package TOML"
+            } else {
+                "a new package TOML"
+            },
+        );
+        printer.info("Dry run: nothing was written, signed, or committed.");
+        return Ok(());
+    }
+
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
     printer.step(2, 4, "Writing package TOML...");
-    let letter = first_letter(pkg_name);
-    let pkg_dir = dir.join("packages").join(&letter);
     std::fs::create_dir_all(&pkg_dir)?;
 
     let toml_path = pkg_dir.join(format!("{pkg_name}.toml"));
@@ -782,9 +805,19 @@ pub(crate) async fn publish_canonical_release_entry(
     homepage: Option<&str>,
     license: &str,
     maintainer: &str,
+    configuration: Option<&crate::registry::release::RegistryReleaseConfiguration>,
     provenance_signer: &mut dyn ProvenanceSigner,
     printer: &Printer,
 ) -> Result<()> {
+    let config_dependencies = configuration
+        .map(|configuration| {
+            configuration
+                .dependency_outputs
+                .iter()
+                .map(|(name, path)| format!("{name}={path}"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     publish_to_registry_directory(
         config,
         dir,
@@ -806,10 +839,10 @@ pub(crate) async fn publish_canonical_release_entry(
         &[],
         &[],
         None,
+        configuration.map(|configuration| configuration.module_store_path.as_str()),
+        configuration.map(|configuration| configuration.evaluation_base_store_path.as_str()),
         None,
-        None,
-        None,
-        &[],
+        &config_dependencies,
         false,
         false,
         true,
@@ -820,6 +853,66 @@ pub(crate) async fn publish_canonical_release_entry(
         printer,
     )
     .await
+}
+
+/// Retains one supplemental output for an already-authored canonical entry.
+///
+/// The primary `out` publication owns package metadata, documentation, and
+/// provenance. This operation adds only the named path binding and its complete
+/// realisation graph.
+///
+/// # Errors
+///
+/// Returns an error when the package coordinate is absent or mismatched, the
+/// output path fails publication policy, its target marker disagrees with the
+/// release platform, or catalog/store-graph authoring fails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_canonical_named_output(
+    dir: &Path,
+    registry: &str,
+    store_path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    output: &str,
+    printer: &Printer,
+) -> Result<()> {
+    validate_registry_name(registry)?;
+    validate_package_name(package)?;
+    ensure_writable_registry_clone(registry, dir)?;
+
+    let info = introspect_store_path(store_path)?;
+    validate_store_path_release_policy(&info)?;
+    resolve_publish_platform(&info.path, Some(platform))?;
+
+    let _publish_lock = RegistryPublishLock::acquire(dir)?;
+    let letter = first_letter(package);
+    let toml_path = dir
+        .join("packages")
+        .join(letter)
+        .join(format!("{package}.toml"));
+    let content = fs::read_to_string(&toml_path)
+        .with_context(|| format!("reading primary package entry {}", toml_path.display()))?;
+    let new_content =
+        record_named_output(&content, package, version, platform, output, store_path)?;
+
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would record named output '{output}' of {package} {version} ({platform})"
+        ));
+        printer.kv("Would write", &toml_path.display().to_string());
+        printer.info("Dry run: nothing was written.");
+        return Ok(());
+    }
+
+    fs::write(&toml_path, new_content)
+        .with_context(|| format!("writing supplemental output to {}", toml_path.display()))?;
+
+    let content_addressed = registry_content_addressed(dir);
+    write_store_files(dir, &info.path, content_addressed, false, printer).with_context(|| {
+        format!("writing store/ realisation graph for named output {store_path}")
+    })?;
+    Ok(())
 }
 
 /// Returns required package distribution metadata after rejecting historical

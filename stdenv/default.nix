@@ -3,7 +3,7 @@
 # Imports the full bootstrap chain and toolchain ladder internally, then
 # wraps the latest tier into a complete stdenv.
 #
-# The latest toolchain (currently GCC 14.3.0) uses GCC's stock bootstrap for
+# The latest toolchain (currently GCC 16.2.0) uses GCC's stock bootstrap for
 # the final compiler while the rest of the tier is built once.
 #
 # Usage:

@@ -9,7 +9,7 @@
   texinfo,
   gnumake,
 }: let
-  version = "2.7.6";
+  version = "2.8";
 in
   mkDerivation {
     pname = "patch";
@@ -17,7 +17,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/patch/patch-${version}.tar.xz"];
-      hash = "1zfqy4rdcy279vwn2z1kbv19dcfw25d2aqy9nzvdkq5bjzd0nqdc";
+      hash = "sha256-+Hzuae7CtPy/YKOWsDCtaqNBXxkqpffuhMrV4R9/WuM=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake];

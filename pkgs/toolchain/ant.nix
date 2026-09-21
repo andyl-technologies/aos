@@ -5,7 +5,7 @@
   buildPackages,
   openjdk-17,
 }: let
-  version = "1.10.15";
+  version = "1.10.17";
   jdk = openjdk-17;
   buildJdk = buildPackages.openjdk-17;
   buildBash = buildPackages.bash;
@@ -18,7 +18,7 @@ in
       urls = [
         "https://archive.apache.org/dist/ant/source/apache-ant-${version}-src.tar.gz"
       ];
-      hash = "sha256-oitJW5wFSChB+RnTRA0rOCE64iPgOYWbc6q83kRBmbE=";
+      hash = "sha256-8DkKXO4Qdgd/mtuP7d2ZMx/rpKmIfzN5mSuLaye+ZFw=";
     };
 
     buildDeps = [

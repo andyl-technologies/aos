@@ -27,7 +27,7 @@
     if cfg.registry == "andyl/main"
     then "andyl"
     else builtins.replaceStrings ["/"] ["-"] cfg.registry;
-  expectedUrl = "https://aos.andyl.org/${cfg.registry}/";
+  expectedUrl = "https://cdn.aos.andyl.org/${cfg.registry}/";
 in {
   options.aos.release = {
     enabled = lib.mkOption {
@@ -62,7 +62,7 @@ in {
 
     url = lib.mkOption {
       type = lib.types.str;
-      default = "https://aos.andyl.org/andyl/main/";
+      default = "https://cdn.aos.andyl.org/andyl/main/";
       description = "Canonical same-origin Hub URL baked into both artifact forms.";
     };
 
@@ -101,10 +101,6 @@ in {
           then cfg.registry == "andyl/main" && cfg.rootEpoch == 1
           else builtins.match testingRegistryPattern cfg.registry != null;
         message = "production artifacts use andyl/main; testing artifacts use an epoch-scoped andyl/testing identity";
-      }
-      {
-        assertion = cfg.tier != "testing" || cfg.channel == "edge";
-        message = "testing artifacts must follow only the edge channel";
       }
       {
         assertion = cfg.clientName == expectedClientName;

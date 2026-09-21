@@ -1,23 +1,23 @@
 ##! GCC runtime shared libraries (libstdc++.so, libgcc_s.so)
 ##!
-##! Our bootstrap GCC 14 is built with --disable-shared for hermetic static
+##! Our bootstrap GCC 16 is built with --disable-shared for hermetic static
 ##! linking. This package builds GCC from source with --enable-shared to
 ##! produce properly versioned shared libraries (with GLIBCXX_3.4.x symbol
 ##! versions), for use by pre-built binaries (e.g. bazel-bootstrap) that
 ##! need shared libstdc++.
 ##!
-##! Uses builtins.derivation (not mkDerivation) to match the gcc14 tier
+##! Uses builtins.derivation (not mkDerivation) to match the gcc16 tier
 ##! build environment — the cc-wrapper interferes with GMP's CC_FOR_BUILD.
 {
   mkDerivation,
-  lib,
   stdenv,
   bootstrapTools,
+  patchelf,
 }: let
-  # Use the same sources as the gcc14 tier (builtins.fetchTarball)
+  # Use the same sources as the gcc16 tier (builtins.fetchTarball)
   gcc-src = builtins.fetchTarball {
-    url = "https://mirrors.kernel.org/gnu/gcc/gcc-14.3.0/gcc-14.3.0.tar.xz";
-    sha256 = "18slj57b3zizzmc1bn4b6x8rygijfjjmwfzipdvyyzrbspaa5x21";
+    url = "https://mirrors.kernel.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz";
+    sha256 = "18mx8x4as86ngqxk9r91fppm8kkkdydn9jgvhih06245z7cjrplj";
   };
   gmp-src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz";
@@ -33,25 +33,24 @@
   };
 
   # Pull derivations (not just paths) from cc-wrapper's passthru so we
-  # can reach the multi-output glibc's $dev / $static. orig-libc /
-  # orig-cc in nix-support/ are string paths; reading them via readFile
-  # would lose the attribute set. The dynamic-linker file remains a
-  # readFile since it's a plain path to ld-linux.so inside glibc.$out.
+  # can reach the multi-output glibc's $dev / $static. The dynamic linker is
+  # determined by the structured target platform. Reading the same value from
+  # cc-wrapper's generated nix-support file would force that wrapper to build
+  # during cross-package evaluation.
   glibc = bootstrapTools.libc;
   gcc = bootstrapTools.cc;
-  trim = s: lib.removeSuffix "\n" s;
-  interp = trim (builtins.readFile "${bootstrapTools}/nix-support/dynamic-linker");
+  interp = "${glibc}/lib/${stdenv.hostPlatform.dynamicLinker}";
   platformConfig = stdenv.hostPlatform.config;
 in
   # Use mkDerivation but bypass the cc-wrapper by setting CC/CXX directly
   mkDerivation {
     pname = "gcc-libs";
-    version = "14.3.0";
+    version = "16.2.0";
 
     # No fetchurl source — we use builtins.fetchTarball inline
     src = null;
 
-    buildDeps = [];
+    buildDeps = [patchelf];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -72,9 +71,10 @@ in
           cd "$TMPDIR"
 
           # Copy GCC source (tar pipe to avoid cp -r fchmodat bug)
-          mkdir gcc-14.3.0 && (cd ${gcc-src} && tar cf - .) | (cd gcc-14.3.0 && tar xf -)
-          cd gcc-14.3.0
+          mkdir gcc-16.2.0 && (cd ${gcc-src} && tar cf - .) | (cd gcc-16.2.0 && tar xf -)
+          cd gcc-16.2.0
           chmod -R u+w .
+          patch -p1 < ${../../stdenv/linux-cross/gcc-16-gawk-5.4.patch}
 
           # In-tree GMP/MPFR/MPC
           mkdir gmp && (cd ${gmp-src} && tar cf - .) | (cd gmp && tar xf -)
@@ -122,7 +122,7 @@ in
           mkdir -p "$TMPDIR/build"
           cd "$TMPDIR/build"
 
-          # Use the unwrapped GCC directly (not cc-wrapper) to match gcc14 build.
+          # Use the unwrapped GCC directly (not cc-wrapper) to match the gcc16 build.
           # CC_FOR_BUILD must include -static because GMP configure runs
           # $CC_FOR_BUILD conftest.c without CFLAGS — the resulting dynamic
           # executable can't run in the sandbox (linker path not available).
@@ -141,7 +141,7 @@ in
           CFLAGS_FOR_BUILD="-O2 -static" \
           LDFLAGS_FOR_BUILD="-static" \
           AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
-          "$TMPDIR/gcc-14.3.0/configure" \
+          "$TMPDIR/gcc-16.2.0/configure" \
             --prefix="$out" \
             --build=${platformConfig} --host=${platformConfig} --target=${platformConfig} \
             --enable-languages=c,c++ \
@@ -198,6 +198,13 @@ in
           rm -rf "$out/${platformConfig}" 2>/dev/null || true
           find "$out/lib" -type d -name 'gcc' -exec rm -rf {} + 2>/dev/null || true
 
+          # A consumer's RUNPATH does not resolve transitive dependencies.
+          # Let libstdc++ find the matching libgcc_s beside itself.
+          for library in "$out"/lib/*.so.*; do
+            [ -L "$library" ] && continue
+            patchelf --add-rpath '$ORIGIN' "$library"
+          done
+
           echo "gcc-libs installed to $out"
           find "$out" -name '*.so*' -type f -o -name '*.so*' -type l | sort
         '';
@@ -209,6 +216,6 @@ in
     meta = {
       description = "GCC runtime shared libraries (libstdc++.so, libgcc_s.so)";
       homepage = "https://gcc.gnu.org/";
-      license = "GPL-3.0-or-later";
+      license = "GPL-3.0-or-later WITH GCC-exception-3.1";
     };
   }

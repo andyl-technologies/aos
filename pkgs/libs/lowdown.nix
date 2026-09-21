@@ -5,7 +5,7 @@
   gnumake,
   stdenv,
 }: let
-  version = "1.2.0";
+  version = "3.1.1";
 in
   mkDerivation {
     pname = "lowdown";
@@ -15,7 +15,7 @@ in
       urls = [
         "https://kristaps.bsd.lv/lowdown/snapshots/lowdown-${version}.tar.gz"
       ];
-      hash = "sha256-SoU+Hkm8pu9TLQdSKLhFhaKdiLv0p9JqcMXU3yYLmj8=";
+      hash = "sha256-WbLPNb8y/mAskvM66RenHgsup2pnu+SPuukBqO/G/vM=";
     };
 
     buildDeps = [gnumake];
@@ -25,20 +25,33 @@ in
     phases = [
       {
         name = "unpack";
-        script =
-          if stdenv.hostPlatform.isDarwin
-          then ''
-            tar xf $src
-            cd lowdown-${version}
+        script = ''
+          tar xf $src
+          cd lowdown-${version}
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # These headers only supplied types and declarations which the
+              # bundled base64 fallback does not use.
+              sed -i '/#include <arpa\/nameser\.h>/d; /#include <resolv\.h>/d' compats.c
+            ''
+            else ""
+          }
 
-            # These headers only supplied types and declarations which the
-            # bundled base64 fallback does not use.
-            sed -i '/#include <arpa\/nameser\.h>/d; /#include <resolv\.h>/d' compats.c
-          ''
-          else ''
-            tar xf $src
-            cd lowdown-${version}
-          '';
+          # Lowdown 3 uses bmake conditional syntax in an otherwise portable
+          # makefile. Translate its three condition groups for GNU make.
+          test "$(grep -c '^\.ifdef ' Makefile)" -eq 2
+          test "$(grep -c '^\.if ' Makefile)" -eq 3
+          sed -i \
+            -e 's/^\.ifdef /ifdef /' \
+            -e 's/^\.if $(SANDBOX_INIT_ERROR_IGNORE) == "always"$/ifeq ($(SANDBOX_INIT_ERROR_IGNORE),always)/' \
+            -e 's/^\.if $(LINK_METHOD) == "shared"$/ifeq ($(LINK_METHOD),shared)/' \
+            -e 's/^\.if $(LINKER_SOSUFFIX) == "dylib"$/ifeq ($(LINKER_SOSUFFIX),dylib)/' \
+            -e 's/^\.else$/else/' \
+            -e 's/^\.endif$/endif/' \
+            Makefile
+          test "$(grep -c '^ifeq ' Makefile)" -eq 3
+        '';
       }
       {
         name = "configure";

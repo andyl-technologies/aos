@@ -127,8 +127,15 @@
       {
         # The canonical release publisher exercises the complete AOS CLI and
         # APR surface. Keep the closure audit enforced with narrow headroom
-        # above the measured 922 MiB closure with qualification adapters.
-        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 928;
+        # above the measured 1050 MiB closure with qualification adapters and
+        # full Git's Python and Perl runtime helpers.
+        aos.image.budgets = {
+          maxRuntimeClosureMiB = lib.mkForce 1088;
+          # The same publishing tools produce a measured 782 MiB root image.
+          maxRootMiB = lib.mkForce 816;
+          # The complete compressed raw disk reaches 865 MiB.
+          maxDownloadMiB = lib.mkForce 896;
+        };
         aos.security.pki.certificates = [caCertificate];
       }
     ];
@@ -421,7 +428,7 @@ in {
       publisher.succeed(
           " ".join([
               FIXTURE, "prepare", "/var/tmp/base-surface", "/var/tmp/release-surface",
-              "/var/tmp/release-trust", base_commit,
+              "/var/tmp/release-predecessor", "/var/tmp/release-trust", base_commit,
               *map(shlex.quote, nar_paths),
           ]),
           timeout=300,
@@ -476,7 +483,13 @@ in {
                                    "first_partition": 0, "last_partition": 255}, sort_keys=True, separators=(",", ":"))
               publisher.succeed("printf %s " + shlex.quote(intent) + " > /var/tmp/qualification-rollout-intent.json")
               command += " --rollout-intent /var/tmp/qualification-rollout-intent.json"
-          publisher.succeed(command + f" --prepare-only --output {output}-prepared", timeout=600)
+          predecessor_phases = ("staging", "complete")
+          predecessor = (
+              " --predecessor-bundle /var/tmp/release-predecessor"
+              if phase in predecessor_phases else ""
+          )
+          publisher.succeed(command + predecessor +
+                            f" --prepare-only --output {output}-prepared", timeout=600)
           publisher.succeed(f"{FIXTURE} review /var/tmp/release-surface/release-plan.json "
                             f"{output}-prepared/qualification-report.json {output}-review.json")
           publisher.succeed(command + f" --report-input {output}-prepared/qualification-report.json "

@@ -1,17 +1,23 @@
 ##! D-Bus — Message bus system
-##! Note: dbus 1.14.x uses autotools, not meson (meson is 1.15.x+)
 {
   mkDerivation,
   fetchurl,
-  gnumake,
+  lib,
+  patchelf,
+  meson,
+  ninja,
   pkg-config,
+  python3,
   expat,
   libselinux,
   audit,
+  libcap-ng,
   systemd,
   stdenv,
 }: let
-  version = "1.14.10";
+  version = "1.16.2";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  linuxRuntimeLibraryPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") [expat libselinux audit libcap-ng systemd]);
 in
   mkDerivation {
     pname = "dbus";
@@ -21,13 +27,12 @@ in
       urls = [
         "https://dbus.freedesktop.org/releases/dbus/dbus-${version}.tar.xz"
       ];
-      hash = "sha256-uh8h0r2dM52i1KqHgMCd8y/qh5mLc9ok9Jq53x42pQ8=";
+      hash = "sha256-C6KhpLFq/nvOssB+nOmajCw1COXewpDbtkM4S9a+t+I=";
     };
 
-    buildDeps = [
-      gnumake
-      pkg-config
-    ];
+    buildDeps =
+      [meson ninja pkg-config python3]
+      ++ lib.optionals isLinuxCross [patchelf];
     runtimeDeps =
       [expat]
       ++ (
@@ -36,13 +41,19 @@ in
         else [
           libselinux
           audit
+          libcap-ng
           # libsystemd for sd_notify + unit file installation. Systemd
           # no longer depends on dbus at the pkg level (sd-bus replaces
           # libdbus), so this direction is cycle-free.
           systemd
         ]
       );
-    propagatedDeps = [];
+    # dbus-1.pc requires libsystemd, including when consumers only request
+    # compiler flags. Keep that metadata dependency visible downstream.
+    propagatedDeps =
+      if stdenv.hostPlatform.isDarwin
+      then []
+      else [systemd];
 
     # Pure stage-2 inventory for consumers that opt into
     # `systemd.packages = [ pkgs.dbus ]`.
@@ -70,45 +81,62 @@ in
         '';
       }
       {
+        name = "patch";
+        script = ''
+          for script in \
+            meson_post_install.py \
+            test/data/copy_data_for_tests.py \
+            tools/build-timestamp.py; do
+            sed -i "1s|^#!.*|#!${python3}/bin/python3|" "$script"
+          done
+        '';
+      }
+      {
         name = "configure";
-        # --enable-systemd so dbus installs its user service/socket units and
+        # Enable systemd so dbus installs its user service/socket units and
         # sockets.target.wants link for systemd.packages consumers.
         # --sysconfdir=/etc so
         # baked-in config lookups go to /etc/dbus-1 on the running system,
         # not a read-only store path.
         script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
+          export PYTHONPATH="${meson}/lib/python3/site-packages"
+          meson setup build \
+            --prefix="$out" \
             --sysconfdir=/etc \
             --localstatedir=/var \
-            --disable-tests \
-            --disable-doxygen-docs \
-            --disable-xml-docs \
-            --${
+            -Dintrusive_tests=false \
+            -Dmodular_tests=disabled \
+            -Dinstalled_tests=false \
+            -Ddoxygen_docs=disabled \
+            -Dducktype_docs=disabled \
+            -Dqt_help=disabled \
+            -Dxml_docs=disabled \
+            -Dsystemd_system_unitdir="$out/lib/systemd/system" \
+            -Dsystemd_user_unitdir="$out/lib/systemd/user" \
+            -Dsystemd=${
             if stdenv.hostPlatform.isDarwin
-            then "disable"
-            else "enable"
-          }-systemd \
-            --enable-user-session \
-            --disable-apparmor \
-            --${
+            then "disabled"
+            else "enabled"
+          } \
+            -Duser_session=true \
+            -Dapparmor=disabled \
+            -Dselinux=${
             if stdenv.hostPlatform.isDarwin
-            then "disable"
-            else "enable"
-          }-selinux \
-            --${
+            then "disabled"
+            else "enabled"
+          } \
+            -Dlibaudit=${
             if stdenv.hostPlatform.isDarwin
-            then "disable"
-            else "enable"
-          }-libaudit \
-            --without-x
+            then "disabled"
+            else "enabled"
+          } \
+            -Dx11_autolaunch=disabled
         '';
       }
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES
+          ninja -C build -j$NIX_BUILD_CORES
         '';
       }
       {
@@ -117,13 +145,20 @@ in
         # (writable nix build dir) so the runtime paths stay as /etc/...
         # and /var/... per the --sysconfdir/--localstatedir above.
         script = ''
-          make install DESTDIR=$out
+          DESTDIR=$out ninja -C build install
           # Flatten $out/$out/... concat from DESTDIR + --prefix.
           if [ -d "$out$out" ]; then
             cp -a $out$out/. $out/
             rm -rf $out/nix
           fi
-        '';
+          ${lib.optionalString isLinuxCross ''
+            # Meson's install step drops some cross-wrapper runtime paths.
+            # Restore declared libraries before the normal unused-path shrink.
+            find "$out" -type f | while read -r binary; do
+              patchelf --print-needed "$binary" >/dev/null 2>&1 || continue
+              patchelf --add-rpath "$out/lib:${linuxRuntimeLibraryPath}" "$binary"
+            done
+          ''}'';
       }
     ];
 

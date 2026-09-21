@@ -77,6 +77,30 @@
   },
   {
     "service": "RegistryService",
+    "method": "GetRegistryMetadata",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "RegistryService",
+    "method": "PlanUpdateRegistryMetadata",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "update_registry_metadata" },
+    "external_effects": false
+  },
+  {
+    "service": "RegistryService",
+    "method": "UpdateRegistryMetadata",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "update_registry_metadata", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "RegistryService",
     "method": "ListRegistries",
     "exposure": "public",
     "durability": "read_only",

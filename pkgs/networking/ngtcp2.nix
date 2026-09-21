@@ -8,7 +8,7 @@
   boringssl,
   nghttp3,
 }: let
-  version = "1.22.1";
+  version = "1.25.0";
 in
   mkDerivation {
     pname = "ngtcp2";
@@ -16,7 +16,7 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/ngtcp2/ngtcp2/releases/download/v${version}/ngtcp2-${version}.tar.bz2"];
-      hash = "sha256-hzVHltWssZvzEMt3vgS9IgDDImWmvnyUuGMeJsjpPKQ=";
+      hash = "sha256-jAy3gz62wLj0Eoh27ecxHuykmBLtP05xokPtiAPRttc=";
     };
 
     buildDeps = [cmake ninja pkg-config];

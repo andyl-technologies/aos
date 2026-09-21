@@ -255,6 +255,21 @@ in {
       };
     };
 
+    runtimePolicy = {
+      allowTestArtifacts = mkOption {
+        type = validatedBool;
+        default = false;
+        internal = true;
+        description = "Whether this explicitly test-only container may retain test artifacts.";
+      };
+      testArtifactRoots = mkOption {
+        type = types.listOf package;
+        default = [];
+        internal = true;
+        description = "Explicit test artifact closures exempted from runtime classification, while retaining all size budgets.";
+      };
+    };
+
     budgets = {
       maxClosureMiB = mkOption {
         type = positiveInt;
@@ -339,6 +354,10 @@ in {
         0
         (annotationKeys ++ annotationValues);
     in [
+      {
+        assertion = config.runtimePolicy.allowTestArtifacts || config.runtimePolicy.testArtifactRoots == [];
+        message = "container runtimePolicy.testArtifactRoots requires runtimePolicy.allowTestArtifacts = true";
+      }
       {
         assertion = config.packageRoots != [];
         message = "container baked package roots must not be empty";

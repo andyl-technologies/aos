@@ -164,7 +164,7 @@
       "checks": [
         "signed-index-and-platform-selection",
         "anonymous-pull",
-        "native-platform-execution",
+        "declared-platform-execution",
         "start-stop-network",
         "repeated-stop-start-and-recreate",
         "persistent-state",
@@ -351,7 +351,8 @@
       "production_only": false,
       "regressions": [
         "checks.fleet.system-image-rollback",
-        "checks.fleet.boot-identity-fail-closed"
+        "checks.fleet.boot-identity-fail-closed",
+        "checks.fleet.measured-boot"
       ],
       "scope": "images"
     },
@@ -398,7 +399,9 @@
       "phase": "staging",
       "production_only": false,
       "regressions": [
-        "checks.fleet.apm-e2e"
+        "checks.fleet.apm-e2e",
+        "checks.fleet.k3s-combined-worker",
+        "checks.fleet.k3s-control-plane-worker"
       ],
       "scope": "packages"
     },
@@ -512,6 +515,23 @@
               "board": null,
               "chipset": null,
               "kind": "physical"
+            },
+            "cpu": {
+              "features": [],
+              "models": [],
+              "skus": [],
+              "vendors": []
+            },
+            "platform": "x86_64-linux"
+          },
+          {
+            "backend": {
+              "accelerator": "tcg",
+              "cpu_model": null,
+              "kind": "qemu",
+              "machine": "virt",
+              "machine_version": null,
+              "version": null
             },
             "cpu": {
               "features": [],

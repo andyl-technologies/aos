@@ -8,6 +8,7 @@
   lib,
   goldenRoots,
 }: let
+  archive = import ../../lib/build/oci/common.nix {inherit lib;};
   expectedRootCount = builtins.length goldenRoots;
   goldenRootList = builtins.concatStringsSep "\n" (map builtins.toString goldenRoots);
   closureInfo = import ../../lib/build/closure-info.nix {inherit pkgs lib;} {
@@ -49,6 +50,9 @@ in
               echo "FAIL: $1" >&2
               exit 1
             }
+
+            ${archive.archiveScript}
+            verify_archive_tools
 
             make_layer() {
               destination="$1"
@@ -161,6 +165,7 @@ in
               '{
                 schema: $schema,
                 layerAbi: {
+                  version: "aos.container.layer/v2",
                   tarSha256: $tarSha256,
                   gzipSha256: $gzipSha256
                 },

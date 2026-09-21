@@ -50,13 +50,15 @@ in
     cargoFlags = "-p crucible-qemu-plugin";
     cargoTestFlags = "-p crucible-qemu-plugin";
     installBins = false;
-    installLibs = true;
+    installLibs = false;
     doCheck = true;
 
     buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
     runtimeDeps = [glib qemu-crucible];
 
     preBuild = ''
+      export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
       export CRUCIBLE_QEMU_BUILD_ID=${qemu-crucible.passthru.qemuBuildIdentity}
       export CRUCIBLE_QEMU_ATOMIC_PATCH_HASH=${qemu-crucible.passthru.atomicPatchHash}
       export CRUCIBLE_SHMEM_HEADER_HASH=${qemu-crucible.passthru.shmemHeaderHash}
@@ -96,7 +98,7 @@ in
       cat > "$TMPDIR/crucible-qemu-plugin-header-probe.c" <<'EOF'
       #include <stdint.h>
       #include <aos/crucible/crucible_shmem_abi.h>
-      #include <qemu/qemu-plugin.h>
+      #include <qemu-plugin.h>
 
       #ifndef QEMU_PLUGIN_VERSION
       #error "QEMU_PLUGIN_VERSION must be exposed by qemu-crucible headers"
@@ -131,6 +133,20 @@ in
     '';
 
     postInstall = ''
+      # Dependency artifacts include native procedural macros in cross builds.
+      # Install only the target plugin named by Cargo's artifact record.
+      pluginLibrary=$(jq -er '
+        select(.reason == "compiler-artifact")
+        | select(.target.name == "crucible_qemu_plugin")
+        | select(.target.crate_types | index("cdylib"))
+        | .filenames[]
+        | select(endswith("/libcrucible_qemu_plugin.so"))
+      ' "$NIX_BUILD_TOP/cargo-build-messages.jsonl" | sort -u)
+      test -n "$pluginLibrary"
+      test -f "$pluginLibrary"
+      mkdir -p "$out/lib"
+      install -m 644 "$pluginLibrary" "$out/lib/libcrucible_qemu_plugin.so"
+
       test -f "$out/lib/libcrucible_qemu_plugin.so"
       mkdir -p "$out/lib/qemu/plugins"
       ln -s ../../libcrucible_qemu_plugin.so \

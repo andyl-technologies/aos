@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::artifact::ArtifactKind;
+use crate::artifact::{ArtifactKind, ArtifactRecord, ArtifactRelation};
 use crate::digest::Sha256Digest;
 use crate::evidence::{EvidenceRecord, GateResult};
 use crate::manifest::ReleaseManifestV1;
@@ -28,9 +28,13 @@ use crate::qualification::claims::{
 use crate::qualification::claims::{ClaimDisposition, ClaimOutcome};
 use crate::qualification::environment::EnvironmentInventory;
 use crate::qualification::{
-    CONTRACT_V2, QualificationMethod, QualificationPhase, QualificationRequirement,
-    QualificationScope, QualificationTarget, TargetKind,
+    CONTRACT_V2, PackageExecution, QualificationMethod, QualificationPhase,
+    QualificationRequirement, QualificationScope, QualificationTarget, TargetKind,
 };
+
+#[cfg(test)]
+#[path = "qualification_k3s_tests.rs"]
+mod k3s_tests;
 
 /// A prior accepted snapshot selected before qualification begins.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -74,7 +78,7 @@ pub struct QualificationCase {
     pub phase: QualificationPhase,
     /// Exact target platform, or none for release-wide evidence.
     pub platform: Option<Platform>,
-    /// Direct package criticality; runtime dependencies inherit their consumers' obligations.
+    /// Effective package criticality after runtime dependency inheritance.
     pub package_role: Option<crate::qualification::PackageRole>,
     /// Public reference machine/runtime configuration, where applicable.
     pub target: Option<QualificationTarget>,
@@ -169,9 +173,12 @@ pub fn cases(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("archival plan has no shared qualification contract"))?;
     let current = contract.schema_version == CONTRACT_V2;
+    let qualification_snapshot = plan.is_qualification_snapshot();
+    let package_roles = inherited_package_roles(contract, manifest)?;
     let mut requirements: Vec<_> = contract
-        .selected(plan.release_class)
+        .selected(&plan.registry, plan.release_class)?
         .filter(|gate| gate.phase == phase)
+        .filter(|gate| !qualification_snapshot || gate.id != "image-update-recovery")
         .filter(|gate| {
             !current
                 || !matches!(
@@ -182,7 +189,18 @@ pub fn cases(
         .cloned()
         .map(|requirement| (requirement, None))
         .collect();
-    for claim in contract.claims.iter().filter(|claim| claim.phase == phase) {
+    for claim in contract
+        .claims
+        .iter()
+        .filter(|claim| claim.phase == phase)
+        .filter(|claim| {
+            !qualification_snapshot
+                || !claim
+                    .requirements
+                    .iter()
+                    .any(|requirement| requirement == "image-update-recovery")
+        })
+    {
         let target = contract
             .targets
             .iter()
@@ -245,21 +263,7 @@ pub fn cases(
                     requirement.id
                 );
             }
-            let predecessor = if requirement.id == "image-update-recovery"
-                || claim.as_ref().is_some_and(|claim| {
-                    claim.minimum_assurance >= AssuranceLevel::A2
-                        && claim
-                            .requirements
-                            .iter()
-                            .any(|id| id == "image-update-recovery")
-                }) {
-                Some(plan.qualification_predecessor.clone().ok_or_else(|| {
-                    anyhow::anyhow!("image update qualification requires a frozen predecessor")
-                })?)
-            } else {
-                None
-            };
-            let package_role = if requirement.scope == QualificationScope::Packages {
+            let package_rule = if requirement.scope == QualificationScope::Packages {
                 let (name, _) = suffix
                     .rsplit_once('/')
                     .ok_or_else(|| anyhow::anyhow!("invalid package case identity"))?;
@@ -270,9 +274,38 @@ pub fn cases(
                         .find(|rule| rule.name == name)
                         .ok_or_else(|| {
                             anyhow::anyhow!("package case lacks its criticality classification")
-                        })?
-                        .role,
+                        })?,
                 )
+            } else {
+                None
+            };
+            let predecessor = if requirement.id == "image-update-recovery"
+                || claim.as_ref().is_some_and(|claim| {
+                    claim.minimum_assurance >= AssuranceLevel::A2
+                        && claim
+                            .requirements
+                            .iter()
+                            .any(|id| id == "image-update-recovery")
+                })
+                || package_rule.is_some_and(|rule| {
+                    matches!(rule.execution, Some(PackageExecution::RecoveryImage { .. }))
+                }) {
+                Some(plan.qualification_predecessor.clone().ok_or_else(|| {
+                    anyhow::anyhow!("qualification execution requires a frozen predecessor")
+                })?)
+            } else {
+                None
+            };
+            let package_role = if let Some(rule) = package_rule {
+                let direct = rule.role;
+                let inherited = subjects
+                    .iter()
+                    .filter_map(|subject| package_roles.get(subject))
+                    .copied()
+                    .max()
+                    .unwrap_or(direct);
+
+                Some(direct.max(inherited))
             } else {
                 None
             };
@@ -300,7 +333,11 @@ pub fn cases(
                     .as_ref()
                     .is_some_and(|claim| claim.minimum_assurance == AssuranceLevel::A3)
                 {
-                    Some(contract.thresholds_for(plan.release_class)?.soak_seconds)
+                    Some(
+                        contract
+                            .thresholds_for(&plan.registry, plan.release_class)?
+                            .soak_seconds,
+                    )
                 } else {
                     None
                 },
@@ -344,11 +381,61 @@ pub fn cases(
                 for package in &manifest.packages {
                     for cell in &package.platforms {
                         if let MatrixCell::Artifact { artifact } = &cell.decision {
+                            let rule = contract
+                                .package_rules
+                                .iter()
+                                .find(|rule| rule.name == package.name)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("package lacks its criticality classification")
+                                })?;
+                            let mut subjects = artifact.artifact_ids.clone();
+                            if let Some(execution) = &rule.execution {
+                                let system_variant = execution.system_variant();
+                                let image = manifest
+                                    .images
+                                    .iter()
+                                    .find(|image| image.system_variant == system_variant)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "package {} requires absent execution image variant {}",
+                                            package.name,
+                                            system_variant
+                                        )
+                                    })?;
+                                let image_cell = image
+                                    .platforms
+                                    .iter()
+                                    .find(|image_cell| image_cell.platform == cell.platform)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "package {} execution image lacks platform {}",
+                                            package.name,
+                                            cell.platform
+                                        )
+                                    })?;
+                                let MatrixCell::Artifact {
+                                    artifact: image_artifact,
+                                } = &image_cell.decision
+                                else {
+                                    bail!(
+                                        "package {} execution image platform is not an artifact",
+                                        package.name
+                                    );
+                                };
+                                subjects.extend(image_artifact.artifact_ids.iter().cloned());
+                                if let PackageExecution::K3sFleet { topology, .. } = execution {
+                                    subjects.extend(k3s_fleet_subjects(
+                                        manifest,
+                                        cell.platform,
+                                        *topology,
+                                    )?);
+                                }
+                            }
                             add(
                                 format!("{}/{}", package.name, cell.platform),
                                 Some(cell.platform),
                                 None,
-                                artifact.artifact_ids.clone(),
+                                subjects,
                             )?;
                         }
                     }
@@ -433,6 +520,145 @@ pub fn cases(
     Ok(result)
 }
 
+/// Binds every service package and the published workload used by a K3s fleet.
+fn k3s_fleet_subjects(
+    manifest: &ReleaseManifestV1,
+    platform: Platform,
+    topology: crate::qualification::K3sTopology,
+) -> Result<Vec<String>> {
+    if !platform.supports_images() {
+        bail!("K3s fleet qualification requires a Linux platform");
+    }
+
+    let mut subjects = Vec::new();
+    for name in topology.packages() {
+        let package = manifest
+            .packages
+            .iter()
+            .find(|package| package.name == name)
+            .ok_or_else(|| anyhow::anyhow!("K3s fleet lacks package {name}"))?;
+        let cell = package
+            .platforms
+            .iter()
+            .find(|cell| cell.platform == platform)
+            .ok_or_else(|| anyhow::anyhow!("K3s fleet package {name} lacks platform {platform}"))?;
+        let MatrixCell::Artifact { artifact } = &cell.decision else {
+            bail!("K3s fleet package {name}/{platform} is not an artifact");
+        };
+        if name != "k3s" {
+            let configuration = artifact.configuration.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("K3s fleet {name} lacks its configuration binding")
+            })?;
+            for (id, output) in [
+                (&configuration.module_artifact, "config"),
+                (&configuration.evaluation_base_artifact, "out"),
+            ] {
+                if !artifact.artifact_ids.contains(id)
+                    || !manifest.artifacts.iter().any(|record| {
+                        record.id == *id
+                            && record.kind == ArtifactKind::PackageNar
+                            && record.platform == Some(platform)
+                            && record.output.as_deref() == Some(output)
+                    })
+                {
+                    bail!("K3s fleet {name} lacks its exact configuration companion {id}");
+                }
+            }
+        }
+        subjects.extend(artifact.artifact_ids.iter().cloned());
+    }
+
+    // The release manifest currently carries one published OCI index. Reject
+    // ambiguity instead of selecting a workload by ordering or a mutable tag.
+    let indexes: Vec<_> = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::OciIndex)
+        .collect();
+    let manifests: Vec<_> = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == ArtifactKind::OciManifest && artifact.platform == Some(platform)
+        })
+        .collect();
+    if indexes.len() != 1 || manifests.len() != 1 {
+        bail!("K3s fleet requires one published OCI index and platform manifest");
+    }
+    subjects.extend(indexes.into_iter().map(|artifact| artifact.id.clone()));
+    subjects.extend(manifests.into_iter().map(|artifact| artifact.id.clone()));
+    subjects.extend(
+        manifest
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.kind == ArtifactKind::OciBlob && artifact.platform == Some(platform)
+            })
+            .map(|artifact| artifact.id.clone()),
+    );
+    Ok(subjects)
+}
+
+fn inherited_package_roles(
+    contract: &crate::qualification::QualificationContract,
+    manifest: &ReleaseManifestV1,
+) -> Result<BTreeMap<String, crate::qualification::PackageRole>> {
+    let artifacts = manifest
+        .artifacts
+        .iter()
+        .map(|artifact| (artifact.id.as_str(), artifact))
+        .collect::<BTreeMap<_, _>>();
+    let rules = contract
+        .package_rules
+        .iter()
+        .map(|rule| (rule.name.as_str(), rule.role))
+        .collect::<BTreeMap<_, _>>();
+    let mut roles = BTreeMap::new();
+
+    for package in &manifest.packages {
+        let role = rules
+            .get(package.name.as_str())
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("package case lacks its criticality classification"))?;
+        for cell in &package.platforms {
+            let MatrixCell::Artifact { artifact } = &cell.decision else {
+                continue;
+            };
+            propagate_package_role(&artifacts, &artifact.artifact_ids, role, &mut roles)?;
+        }
+    }
+
+    Ok(roles)
+}
+
+fn propagate_package_role(
+    artifacts: &BTreeMap<&str, &ArtifactRecord>,
+    roots: &[String],
+    role: crate::qualification::PackageRole,
+    roles: &mut BTreeMap<String, crate::qualification::PackageRole>,
+) -> Result<()> {
+    let mut pending = roots.to_vec();
+
+    while let Some(id) = pending.pop() {
+        if roles.get(&id).is_some_and(|current| *current >= role) {
+            continue;
+        }
+        let artifact = artifacts
+            .get(id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("package closure references missing artifact {id}"))?;
+        roles.insert(id, role);
+        pending.extend(
+            artifact
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.relation == ArtifactRelation::Contains)
+                .map(|relationship| relationship.target.clone()),
+        );
+    }
+
+    Ok(())
+}
+
 /// Validates complete, fresh observations for one exact release hold point.
 ///
 /// `admitted_at` is supplied by the trusted caller, never read from a clock in
@@ -480,7 +706,7 @@ pub fn assess_observations(
         .qualification
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing qualification contract"))?;
-    let thresholds = contract.thresholds_for(plan.release_class)?;
+    let thresholds = contract.thresholds_for(&plan.registry, plan.release_class)?;
     if evidence.windows(2).any(|pair| pair[0].id >= pair[1].id) {
         bail!("qualification evidence count differs from applicable cases");
     }

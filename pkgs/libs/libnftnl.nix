@@ -6,7 +6,7 @@
   pkg-config,
   libmnl,
 }: let
-  version = "1.2.9";
+  version = "1.3.2";
 in
   mkDerivation {
     pname = "libnftnl";
@@ -16,7 +16,7 @@ in
       urls = [
         "https://www.netfilter.org/projects/libnftnl/files/libnftnl-${version}.tar.xz"
       ];
-      hash = "sha256-6MIWJV4SnyYnBjn+53dSZWZaMbEaqSAlPD5dXWLfxLg=";
+      hash = "sha256-yXq8NAn4+jlrRGKyu38UejpHpN3JfPoLLxiJDJz96LA=";
     };
 
     buildDeps = [

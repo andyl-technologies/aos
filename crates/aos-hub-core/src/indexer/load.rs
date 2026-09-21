@@ -750,14 +750,7 @@ async fn load_package_store_records(
     anyhow::ensure!(store_entry.is_tree(), "committed store entry is not a tree");
 
     let shards = object::tree_map(&reader.read_kind(store_entry.oid, ObjectKind::Tree).await?)?;
-    let mut required = BTreeSet::new();
-    for package in packages {
-        for version in &package.versions {
-            for artifact in version.platforms.values() {
-                required.insert(store_hash_component(&artifact.store_path).to_string());
-            }
-        }
-    }
+    let required = required_package_store_hashes(packages);
     anyhow::ensure!(
         required.len() <= MAX_STORE_ENTRIES,
         "registry packages reference more than the {MAX_STORE_ENTRIES}-record store graph cap"
@@ -822,6 +815,25 @@ async fn load_package_store_records(
     Ok(Some(entries))
 }
 
+/// Collects every primary and named-output store hash the signed catalog binds.
+pub(super) fn required_package_store_hashes(packages: &[PackageToml]) -> BTreeSet<String> {
+    let mut required = BTreeSet::new();
+    for package in packages {
+        for version in &package.versions {
+            for artifact in version.platforms.values() {
+                required.insert(store_hash_component(&artifact.store_path).to_string());
+                required.extend(
+                    artifact
+                        .named_outputs
+                        .values()
+                        .map(|store_path| store_hash_component(store_path).to_string()),
+                );
+            }
+        }
+    }
+    required
+}
+
 fn enrich_packages_from_store(
     packages: &mut [PackageToml],
     store: &BTreeMap<String, StoreEntry>,
@@ -852,6 +864,22 @@ fn enrich_packages_from_store(
                 }
                 artifact.nar_hash = nar.nar_hash();
                 artifact.nar_size = nar.size;
+
+                for (output, store_path) in &artifact.named_outputs {
+                    let output_hash = store_hash_component(store_path);
+                    let output_record = store.get(output_hash).with_context(|| {
+                        format!(
+                            "package {} {} {platform} named output {output} has no signed store record for {output_hash}",
+                            package.package.name, version.version
+                        )
+                    })?;
+                    anyhow::ensure!(
+                        !output_record.blessed_nars().is_empty(),
+                        "package {} {} {platform} named output {output} store record {output_hash} has no blessed NAR",
+                        package.package.name,
+                        version.version
+                    );
+                }
 
                 let dependencies = record.dep_ias();
                 match &mut artifact.references {

@@ -2,10 +2,13 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
   linux-headers,
 }: let
-  version = "6.18";
+  version = "7.2";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
 in
   mkDerivation {
     pname = "strace";
@@ -15,10 +18,10 @@ in
       urls = [
         "https://github.com/strace/strace/releases/download/v${version}/strace-${version}.tar.xz"
       ];
-      hash = "sha256-CtXcupc6aed5ZQ7xyzNbEu5gcW/HMmYJiVvTPm0qcyU=";
+      hash = "sha256-S95iRpJokNzugk9uasQqBnUvR9d+UJfYbjwNbUtwn+U=";
     };
 
-    buildDeps = [gnumake linux-headers];
+    buildDeps = [gnumake] ++ lib.optionals (!isLinuxCross) [linux-headers];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -39,12 +42,18 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --disable-mpers \
-            --enable-static=no
-        '';
+        script =
+          lib.optionalString isLinuxCross ''
+            # Kernel declarations describe the traced target, not the build
+            # machine selected by executable build-dependency splicing.
+            export C_INCLUDE_PATH="${linux-headers}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+          ''
+          + ''
+            ./configure \
+              --prefix=$out \
+              --disable-mpers \
+              --enable-static=no
+          '';
       }
       {
         name = "build";

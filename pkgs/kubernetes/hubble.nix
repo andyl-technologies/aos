@@ -4,7 +4,7 @@
   fetchurl,
   buildPackages,
 }: let
-  version = "1.17.3";
+  version = "1.19.4";
 in
   mkDerivation {
     pname = "hubble";
@@ -14,7 +14,7 @@ in
       urls = [
         "https://github.com/cilium/hubble/archive/v${version}/hubble-${version}.tar.gz"
       ];
-      hash = "sha256-ea/dd7K5QGu2zdkMClmQ/f6UV8CIN69Finu3cXtY1WA=";
+      hash = "sha256-gujQYujyz+7K7aGfMANQ1rRT1tFYTyER9qd2NyKZQ2Y=";
     };
 
     # Use the Linux-hosted compiler when producing Darwin commands.  The

@@ -20,7 +20,7 @@
   zstd,
   coreutils,
 }: let
-  version = "2.9.0";
+  version = "2.10.0";
 in
   mkDerivation {
     pname = "kbd";
@@ -28,7 +28,7 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/legionus/kbd/archive/refs/tags/v${version}.tar.gz"];
-      hash = "sha256-+kk7W2pvdJxnS85PAa6cR4l2ZU8sKCHLCmbHQ242abI=";
+      hash = "sha256-lvi2D5E26eC5JhueY7i0tFai+BeQHpA0lFM4elqh1Bw=";
     };
 
     buildDeps = [autoconf automake libtool gettext gnumake pkg-config flex bison perl check which];

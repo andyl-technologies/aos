@@ -6,7 +6,7 @@
   perl,
   stdenv,
 }: let
-  version = "7.2";
+  version = "7.3";
   darwinNativeCompilerSetup =
     if stdenv.isCross && stdenv.hostPlatform.isDarwin
     then ''
@@ -47,7 +47,7 @@ in
         "https://mirrors.kernel.org/gnu/texinfo/texinfo-${version}.tar.xz"
         "https://mirrors.kernel.org/gnu/texinfo/texinfo-${version}.tar.xz"
       ];
-      hash = "sha256-AynXeI++8RP6gsuAiJyhl6NEzg33ZG/gAJdMXXFDY6Y=";
+      hash = "sha256-UfdOsPUc+phzuFJk391dRuiVfslbiPD7di9j2eFkxy4=";
     };
 
     buildDeps = [
