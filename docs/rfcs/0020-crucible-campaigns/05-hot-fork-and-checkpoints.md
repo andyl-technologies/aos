@@ -483,9 +483,15 @@ partial destination. Cleanup attempts every
 captured node even when one delete or resume fails. Hashing, chunk persistence,
 portable closure validation, and campaign-store streaming observe attempt
 cancellation between bounded I/O chunks; cancellation cannot bypass cleanup or
-be misclassified as retryable store I/O. The remaining storage work is:
-
-- compact and tier long delta chains without changing configuration identity.
+be misclassified as retryable store I/O. Production RAM capture bounds retained
+chains at eight layers. When an eight-layer parent is committed, the next
+capture is admitted as a complete direct capture. Its published manifest has
+one direct layer, no parent-closure provenance, and the new QMP checkpoint,
+target, and frontier identity. The prior CAS lease remains rollback authority
+until durable publication and reconciliation select the replacement; successful
+reconciliation then retires the ancestor leases. This capture-time rebase bounds
+the runtime chain without changing configuration identity or requiring a
+separate offline compaction path.
 
 Only version-nine manifests are decoded and authenticated. There is no
 alternate monolithic VMState reader or restore path.
