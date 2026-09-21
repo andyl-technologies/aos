@@ -102,6 +102,13 @@ def _load_manifest(path: Path) -> dict[str, Any]:
                 raise SystemExit(
                     f"machine {name!r}: missing 'metadata' (use null to omit)"
                 )
+            kernel_params = m.get("kernel_params")
+            if not isinstance(kernel_params, list) or not all(
+                isinstance(parameter, str) and parameter for parameter in kernel_params
+            ):
+                raise SystemExit(
+                    f"machine {name!r}: kernel_params must be a list of non-empty strings"
+                )
         else:
             # Image boot requires UEFI firmware. A metadata ISO is optional
             # and, when present, drives native initrd provisioning.
@@ -160,6 +167,7 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
             host_store_mount=entry.get("host_store_mount", False),
             tpm=entry.get("tpm", False),
             swtpm_bin=entry.get("swtpm_bin"),
+            kernel_params=entry.get("kernel_params"),
             memory_mib=entry["memory_mib"],
             vcpu_count=entry["vcpu_count"],
             mac=entry["mac"],

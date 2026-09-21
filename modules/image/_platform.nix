@@ -138,6 +138,14 @@
           type = lib.types.functionTo lib.types.package;
           description = "Opaque package-owned mutable test-disk builder.";
         };
+        testMachineModule = lib.mkOption {
+          type = lib.types.functionTo (lib.types.addCheck lib.types.anything builtins.isFunction);
+          description = "Package-owned service-manager module for a fleet test machine.";
+        };
+        testKernelParams = lib.mkOption {
+          type = lib.types.listOf lib.types.nonEmptyStr;
+          description = "Direct-boot kernel parameters selected by the image platform.";
+        };
         name = lib.mkOption {
           type = lib.types.nonEmptyStr;
           description = "Human-readable selected image-builder name.";

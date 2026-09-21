@@ -81,6 +81,16 @@
       packages = testDiskPackagesFor {inherit mkDerivation sshTools testAgent;};
     }
     inputs;
+  testMachineModule = arguments:
+    import ../testing/fleet-module.nix {
+      inherit lib;
+      packages = {
+        bash = artifactFor "bash";
+        coreutils = artifactFor "coreutils";
+        systemd = systemdPackage;
+      };
+    }
+    arguments;
   builderBindings =
     if abilitySelection == null
     then []
@@ -280,7 +290,19 @@
     package = systemdPackage;
     inherit normalArtifactPath;
     build = buildImage;
-    inherit buildTestDisk;
+    inherit buildTestDisk testMachineModule;
+    testKernelParams = [
+      "console=ttyS0"
+      "reboot=k"
+      "panic=1"
+      "root=/dev/vda2"
+      "ro"
+      "systemd.unified_cgroup_hierarchy=1"
+      "systemd.gpt-auto=0"
+      "systemd.journald.forward_to_console=1"
+      "enforcing=0"
+      "net.ifnames=0"
+    ];
   };
   builderProjectionReady =
     selectedBuilderOutput

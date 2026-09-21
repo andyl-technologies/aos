@@ -106,6 +106,7 @@ class QemuMachine(Machine):
     drain_proc: subprocess.Popen[bytes] | None
     swtpm_proc: subprocess.Popen[bytes] | None
     smbios_oem_strings: list[str]
+    kernel_params: list[str]
     _smbios_tpm_snapshot: Path
 
     def __init__(
@@ -131,6 +132,7 @@ class QemuMachine(Machine):
         host_store_mount: bool = False,
         tpm: bool = False,
         swtpm_bin: str | None = None,
+        kernel_params: list[str] | None = None,
     ) -> None:
         self.boot = boot
         self.kernel_pkg = kernel
@@ -162,6 +164,7 @@ class QemuMachine(Machine):
         self.vars_copy = str(self.tmpdir / f"{name}-OVMF_VARS.fd")
         self.tpm = tpm
         self.swtpm_bin = swtpm_bin
+        self.kernel_params = kernel_params or []
         self.tpm_socket = str(self.tmpdir / f"{name}-tpm.sock") if tpm else None
         self.tpm_state_dir = str(self.tmpdir / f"{name}-tpm-state") if tpm else None
         self.swtpm_log = str(self.tmpdir / f"{name}-swtpm.log")
@@ -463,12 +466,7 @@ class QemuMachine(Machine):
                 "-kernel", vmlinuz,
                 "-initrd", initrd,
                 "-append",
-                (
-                    "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro "
-                    "systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 "
-                    "systemd.journald.forward_to_console=1 enforcing=0 "
-                    "net.ifnames=0"
-                ),
+                " ".join(self.kernel_params),
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
 
