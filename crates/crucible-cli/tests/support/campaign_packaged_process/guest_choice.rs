@@ -534,8 +534,8 @@ pub(crate) fn wait_for_choice(
         }
         cursor = Some(snapshot.clone());
 
-        let choices = run_json(
-            connected_campaign(fixture).args([
+        let choices_output = connected_campaign(fixture)
+            .args([
                 "choices",
                 CAMPAIGN,
                 "--snapshot",
@@ -544,9 +544,12 @@ pub(crate) fn wait_for_choice(
                 "8",
                 "--pages",
                 "16",
-            ]),
-            "list guest-choice opportunities",
-        )?;
+            ])
+            .output()?;
+        if is_stale_snapshot_read(&choices_output) {
+            return Ok(None);
+        }
+        let choices = parse_json_output(choices_output, "list guest-choice opportunities")?;
         assert_eq!(json_string(&choices, "snapshot")?, snapshot);
         if choices["complete"] != true {
             return Err(format!(
@@ -563,8 +566,8 @@ pub(crate) fn wait_for_choice(
         let mut matched = None;
         for entry in entries {
             let opportunity = json_string(entry, "opportunity")?;
-            let declaration = run_json(
-                connected_campaign(fixture).args([
+            let declaration_output = connected_campaign(fixture)
+                .args([
                     "choice-object",
                     CAMPAIGN,
                     "--snapshot",
@@ -573,9 +576,13 @@ pub(crate) fn wait_for_choice(
                     &opportunity,
                     "--kind",
                     "declaration",
-                ]),
-                "inspect guest-choice declaration",
-            )?;
+                ])
+                .output()?;
+            if is_stale_snapshot_read(&declaration_output) {
+                return Ok(None);
+            }
+            let declaration =
+                parse_json_output(declaration_output, "inspect guest-choice declaration")?;
             assert_eq!(json_string(&declaration, "snapshot")?, snapshot);
             let opportunity_view = &declaration["object"]["opportunity"];
             assert_eq!(json_string(opportunity_view, "opportunity")?, opportunity);
@@ -583,13 +590,17 @@ pub(crate) fn wait_for_choice(
                 let semantic_opportunity = json_string(opportunity_view, "semantic_opportunity")?;
                 let branch_point =
                     derive_branch_point(parent_configuration, &semantic_opportunity)?;
-                if !choice_is_authenticated_for_parent(
+                let Some(authenticated_for_parent) = choice_is_authenticated_for_parent(
                     fixture,
                     &snapshot,
                     &opportunity,
                     &semantic_opportunity,
                     &branch_point,
-                )? {
+                )?
+                else {
+                    return Ok(None);
+                };
+                if !authenticated_for_parent {
                     continue;
                 }
                 let choice = PublicChoice {
@@ -637,7 +648,7 @@ fn choice_is_authenticated_for_parent(
     opportunity: &str,
     semantic_opportunity: &str,
     branch_point: &str,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<Option<bool>, Box<dyn Error>> {
     let opportunity_id = ChoiceOpportunityId::parse(opportunity)?;
     let branch_point = BranchPointId::parse(branch_point)?;
     let mut canonical = Vec::new();
@@ -659,10 +670,13 @@ fn choice_is_authenticated_for_parent(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("campaign-graph-object-key-is-not-present") {
-            return Ok(false);
+            return Ok(Some(false));
+        }
+        if is_stale_snapshot_read(&output) {
+            return Ok(None);
         }
         require_success(&output, "authenticate guest-choice parent membership")?;
-        return Ok(false);
+        return Ok(Some(false));
     }
 
     let membership = parse_json_output(output, "authenticate guest-choice parent membership")?;
@@ -681,7 +695,38 @@ fn choice_is_authenticated_for_parent(
         json_string(&membership["object"], "semantic_opportunity")?,
         semantic_opportunity
     );
-    Ok(true)
+    Ok(Some(true))
+}
+
+fn is_stale_snapshot_read(output: &std::process::Output) -> bool {
+    // Live feedback may advance the head between watch and a proof-bound read.
+    // Only that exact consistency response restarts the bounded observation.
+    output.status.code() == Some(4)
+        && String::from_utf8_lossy(&output.stderr).contains("campaign request used stale snapshot")
+}
+
+#[test]
+fn guest_choice_read_refresh_classifies_only_explicit_stale_snapshot_failures() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let output = |status, stderr: &str| std::process::Output {
+        status: std::process::ExitStatus::from_raw(status << 8),
+        stdout: Vec::new(),
+        stderr: stderr.as_bytes().to_vec(),
+    };
+
+    assert!(is_stale_snapshot_read(&output(
+        4,
+        "crucible: campaign choices query failed: campaign request used stale snapshot old; current snapshot is new",
+    )));
+    assert!(!is_stale_snapshot_read(&output(
+        4,
+        "crucible: campaign choices query failed: proof validation failed",
+    )));
+    assert!(!is_stale_snapshot_read(&output(
+        0,
+        "campaign request used stale snapshot",
+    )));
 }
 
 fn derive_branch_point(
