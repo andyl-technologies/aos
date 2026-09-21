@@ -110,7 +110,8 @@ fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dy
         1
     );
 
-    std::fs::remove_file(fixture.runtime_trace_path())?;
+    let replaced_trace = fixture.runtime_trace_path().with_extension("retained");
+    std::fs::rename(fixture.runtime_trace_path(), replaced_trace)?;
     std::fs::write(fixture.runtime_trace_path(), b"replacement\n")?;
     std::fs::set_permissions(
         fixture.runtime_trace_path(),
@@ -122,6 +123,46 @@ fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dy
             .retain_runtime_determinism_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceChanged { .. })
     ));
+    Ok(())
+}
+
+#[test]
+fn retained_runtime_liveness_tail_bounds_an_oversized_authenticated_trace()
+-> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_runtime_determinism_trace()?;
+    let trace = (0..2_000)
+        .map(|index| {
+            format!("crucible_sim_main_loop_poll_ready generation={index} result=1 timeout_ns=-1\n")
+        })
+        .collect::<String>();
+    std::fs::write(fixture.runtime_trace_path(), &trace)?;
+
+    let retained = fixture
+        .prepared
+        .retain_runtime_liveness_trace_tail_after_reap()?;
+    assert!(retained.starts_with(&format!(
+        "trace_original_bytes={} trace_tail_truncated=true\n",
+        trace.len()
+    )));
+    assert_eq!(retained.lines().count(), 513);
+    assert!(!retained.contains("generation=0 result"));
+    assert!(retained.contains("generation=1999 result"));
+
+    let replaced_trace = fixture.runtime_trace_path().with_extension("tail-retained");
+    std::fs::rename(fixture.runtime_trace_path(), replaced_trace)?;
+    std::fs::write(fixture.runtime_trace_path(), b"replacement\n")?;
+    std::fs::set_permissions(
+        fixture.runtime_trace_path(),
+        std::fs::Permissions::from_mode(0o600),
+    )?;
+    assert!(matches!(
+        fixture
+            .prepared
+            .retain_runtime_liveness_trace_tail_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+
     Ok(())
 }
 

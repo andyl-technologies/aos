@@ -58,6 +58,7 @@ pub(super) fn run(
     initrd: &Path,
     firmware: &Path,
     run_root: &Path,
+    diagnostic_liveness_trace: bool,
 ) -> Result<BlockRecoveryHotForkEvidence, Box<dyn Error>> {
     recovery_timing_margin_nanos(
         GUEST_RECOVERY_WAIT_NANOS,
@@ -76,6 +77,11 @@ pub(super) fn run(
         )
         .with_console_capture()
         .with_completion_timeout(Duration::from_secs(60));
+    let config = if diagnostic_liveness_trace {
+        config.with_runtime_liveness_trace()
+    } else {
+        config
+    };
     let mut owner = factory.begin(1, MEMORY_BYTES, DISK_BYTES)?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
     directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)?;
@@ -112,10 +118,33 @@ pub(super) fn run(
     let primary = exercise_recovery_and_prepare_hot_fork(&mut node, recovery_deadline_nanos);
     let shutdown = node.shutdown_child().map_err(|error| error.to_string());
     drop(node);
+    let trace = match &shutdown {
+        Ok(report) if diagnostic_liveness_trace && report.reaped && !report.leaked => Some(
+            directory
+                .retain_runtime_liveness_trace_tail_after_reap()
+                .map_err(|error| error.to_string()),
+        ),
+        _ if diagnostic_liveness_trace => Some(Err(String::from(
+            "trace unavailable because clean QEMU reap was not proven",
+        ))),
+        _ => None,
+    };
     drop(directory);
     let finish = owner.finish().map_err(|error| error.to_string());
 
-    let primary = primary.map_err(|error| error.to_string())?;
+    let primary = primary.map_err(|error| {
+        let trace = trace.map_or_else(String::new, |trace| match trace {
+            Ok(trace) => format!(
+                "; retained_scheduler_liveness_trace_tail_begin\n{trace}\n\
+                 retained_scheduler_liveness_trace_tail_end"
+            ),
+            Err(error) => format!("; retained_scheduler_liveness_trace_tail_error={error}"),
+        });
+        format!(
+            "{error}{trace}; \
+             diagnostic_shutdown={shutdown:?}; diagnostic_finish={finish:?}"
+        )
+    })?;
     let shutdown = shutdown.map_err(|error| format!("block recovery shutdown: {error}"))?;
     if !shutdown.reaped || shutdown.leaked {
         return Err(format!("block recovery QEMU did not reap cleanly: {shutdown:?}").into());
