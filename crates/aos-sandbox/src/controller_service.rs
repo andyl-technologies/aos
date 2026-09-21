@@ -1257,7 +1257,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let registry_response = GetPublicFeatureRegistryResponse::decode(
+        let registry_response = GetPublicFeatureRegistryResponse::decode_from_slice(
             registry_response
                 .body
                 .encode(CodecFormat::Proto)
@@ -1286,7 +1286,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let capabilities_response = GetNodeCapabilitiesResponse::decode(
+        let capabilities_response = GetNodeCapabilitiesResponse::decode_from_slice(
             capabilities_response
                 .body
                 .encode(CodecFormat::Proto)
