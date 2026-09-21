@@ -1139,7 +1139,7 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 26 and
+            $report."schema-version" == 27 and
             $report.generation == 0 and
             $report.outcome == "idle" and
             $report."transaction-active" == false and
@@ -1205,7 +1205,27 @@ in
             $report."rollback-complete" == true and
             $report.ready == false)
           ' "$out/template-coordinator-query.json" >/dev/null \
-            || { cat "$out/template-coordinator-query.json" >&2; fail "QEMU template coordinator idle state was not exact and stable"; }
+            || {
+              jq -c -s '
+                [.[] | select(has("return")) | .return |
+                 select(has("transaction-active"))] as $reports |
+                {
+                  expected_schema_version: 27,
+                  report_count: ($reports | length),
+                  reports_stable: (($reports | length) == 2 and
+                                   $reports[0] == $reports[1]),
+                  schema_versions: [$reports[]."schema-version"],
+                  outcomes: [$reports[].outcome],
+                  report_keys: [$reports[] | keys | sort],
+                  reports: $reports
+                }
+              ' "$out/template-coordinator-query.json" >&2 \
+                || {
+                  echo "unable to parse template coordinator response; raw bytes follow" >&2
+                  od -An -tx1 -v "$out/template-coordinator-query.json" >&2
+                }
+              fail "QEMU template coordinator idle state was not exact and stable"
+            }
           qmp "$patched_socket" \
             '{"exec-oob":"crucible-hot-fork-template","arguments":{"action":"prepare","block-snapshot-bindings":[]}}' \
             "$out/template-coordinator-prepare.json"
@@ -1316,7 +1336,7 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=26
+          template_coordinator_schema_version=27
           plugin_child_plan_report_bound=true
           plugin_child_resource_plan_report_bound=true
           child_resource_contribution_composition=true

@@ -63,6 +63,12 @@
     "    stateSpaceSearch = greenBeforeAdvance {"
     "    gates = {";
 
+  searchFrontierChoicesBlock =
+    sliceFromUntil
+    temporalGraph
+    "impl SearchFrontierChoices {"
+    "/// One search choice and the causal decision sequence that realizes it.";
+
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -101,12 +107,16 @@
         needle = "fn is_genuine_search_frontier_decision(decision: &Decision) -> bool";
       }
       {
-        label = "delivery order excluded from search";
-        needle = "Decision::DeliveryOrder(_) => false";
+        label = "typed campaign selection frontier taxonomy";
+        needle = "matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())";
       }
       {
-        label = "non-search decisions excluded";
-        needle = "Decision::Preemption(_) | Decision::Selection(_) => false";
+        label = "typed campaign selection causal sequence";
+        needle = "[decision @ Decision::Selection(selection), causal @ ..]";
+      }
+      {
+        label = "typed campaign selection causal decision taxonomy";
+        needle = "Decision::RngDraw(_) | Decision::Override(_) | Decision::Preemption(_)";
       }
       {
         label = "search result reports realized frontier";
@@ -216,7 +226,7 @@
       }
       {
         label = "scheduler-captured choices";
-        needle = "SearchFrontierChoices::from_decisions";
+        needle = "SearchFrontierChoices::from_decision_sequences";
       }
       {
         label = "non-genuine delivery candidate";
@@ -231,8 +241,12 @@
         needle = "Decision::RngDraw";
       }
       {
-        label = "override frontier decision";
-        needle = "Decision::Override";
+        label = "typed campaign branch selection";
+        needle = "Selection::new_campaign_branch";
+      }
+      {
+        label = "typed selection frontier decision";
+        needle = "Decision::Selection(SelectionDecision::new(&selection))";
       }
       {
         label = "duplicate child input";
@@ -293,7 +307,17 @@
         needle = "fn delivery_tie_decisions_from_pending_frames";
       }
     ]
+    ++ forbiddenFailuresFor "crates/crucible/src/model.rs SearchFrontierChoices impl" searchFrontierChoicesBlock [
+      {
+        label = "removed raw-decision frontier constructor";
+        needle = "pub fn from_decisions";
+      }
+    ]
     ++ forbiddenFailuresFor "crates/crucible/tests/gate_state_space_search.rs" stateSpaceGateTest [
+      {
+        label = "removed raw-decision frontier constructor use";
+        needle = "SearchFrontierChoices::from_decisions";
+      }
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
