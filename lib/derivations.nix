@@ -1980,6 +1980,9 @@
         scrubMap
       )
     );
+    scrubMatchArgs = builtins.concatStringsSep " " (
+      map (path: "-e '${path}'") (builtins.attrNames scrubMap)
+    );
     padPlaceholder = path: placeholder: let
       padding = builtins.stringLength path - builtins.stringLength placeholder;
     in
@@ -2147,11 +2150,15 @@
               # --- Store path scrubbing ---
               # Binary substitutions must preserve offsets; text substitutions
               # stay compact. Rewrite through scratch files so read-only caches
-              # retain their original modes.
+              # retain their original modes. Only files containing a mapped
+              # path need rewriting; large source archives otherwise trigger
+              # several subprocesses for every unaffected source file.
               find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -aFlZ ${scrubMatchArgs} \
                 | xargs -0 -r grep -IlZ . \
                 | xargs -0 -r sh ${scrubTextFiles}
               find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -aFlZ ${scrubMatchArgs} \
                 | xargs -0 -r grep -ILZ . \
                 | xargs -0 -r sh ${scrubBinaryFiles}
             ''
