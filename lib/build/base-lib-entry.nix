@@ -96,6 +96,23 @@ let
       builtins.unsafeDiscardStringContext (builtins.toString ./.);
     aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
   };
+
+  # Replay the image constructor's package/stage selection pass. Stage
+  # contributions are ordinary module values and may close over current
+  # operator, runtime, fact, and package configuration. Derive them again from
+  # those authoritative inputs instead of serializing a second representation
+  # into the base library.
+  evalConfigurationSelection = {
+    operatorModules ? [],
+    runtimeModules ? [],
+    packageModules ? [],
+    factsModules ? [],
+  }:
+    lib.evalModules {
+      modules = baseModules ++ systemModules ++ factsModules ++ [baseLibraryModule];
+      pkgs = frozenPkgs;
+      inherit lib operatorModules runtimeModules packageModules;
+    };
 in rec {
   inherit lib imageManifest;
   inherit (storeViewLib) readPathFor;
@@ -117,24 +134,6 @@ in rec {
       pkgs = frozenPkgs;
       inherit lib operatorModules runtimeModules;
       enforceRuntimeDeclarations = false;
-    };
-
-  ## Replays the image constructor's package/stage selection pass.
-  ##
-  ## Stage contributions are ordinary module values and may close over current
-  ## operator, runtime, fact, and package configuration. Derive them again from
-  ## those authoritative inputs instead of serializing a second representation
-  ## into the base library.
-  evalConfigurationSelection = {
-    operatorModules ? [],
-    runtimeModules ? [],
-    packageModules ? [],
-    factsModules ? [],
-  }:
-    lib.evalModules {
-      modules = baseModules ++ systemModules ++ factsModules ++ [baseLibraryModule];
-      pkgs = frozenPkgs;
-      inherit lib operatorModules runtimeModules packageModules;
     };
 
   ## Evaluates one complete authenticated configuration fixed point.
