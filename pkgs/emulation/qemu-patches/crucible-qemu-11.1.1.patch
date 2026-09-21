@@ -1,4 +1,4 @@
-From 460d15bba8cc2c2e83f18b57abdb27af518e7709 Mon Sep 17 00:00:00 2001
+From 6b5bb45f9e7d95ab445b58faaaea7b0a7f126b16 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -92530,10 +92530,10 @@ index 0000000000000000000000000000000000000000..1e727093ffc2f3fb50186183e3ee1671
 +    main()
 diff --git a/tests/qtest/crucible-idle-wait-liveness.py b/tests/qtest/crucible-idle-wait-liveness.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad4937ccb3
+index 0000000000000000000000000000000000000000..3b2add8a7d3d89061d022a5fda07568d9f9b0fdb
 --- /dev/null
 +++ b/tests/qtest/crucible-idle-wait-liveness.py
-@@ -0,0 +1,1891 @@
+@@ -0,0 +1,1978 @@
 +# Copyright (c) Andyl, Inc.
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises Crucible's idle futex bridge through live sim-RR QMP work."""
@@ -92567,6 +92567,8 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +ALREADY_DUE_BOUNDARY_RUNS = 16
 +GUEST_AIO_NOTIFY_RUNS = 16
 +ACTIVE_HOST_READY_RUNS = 16
++ACTIVE_HOST_READY_MAX_TRANSIENT_POLLS = 8
++ACTIVE_HOST_READY_RELEASE_ALL = (1 << 32) - 1
 +IDLE_EXTERNAL_READY_RUNS = 16
 +HLT_DISPATCH_CEILING = 2
 +INITIAL_DISPATCH_CEILING = RR_SWITCH_QUANTUM * 64
@@ -93184,7 +93186,7 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +                raise self._timeout_error(False)
 +
 +    def wait_for_host_poll_state(self, deadline):
-+        """Returns the latest complete or pending infinite host poll."""
++        """Returns the latest complete or pending host poll."""
 +        stderr_fd = self.process.stderr.fileno()
 +        while True:
 +            while select.select([stderr_fd], [], [], 0)[0]:
@@ -94082,7 +94084,7 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +            qemu,
 +            plugin,
 +            bios_file.name,
-+            dispatch_ceiling=RR_SWITCH_QUANTUM * 4,
++            dispatch_ceiling=RR_SWITCH_QUANTUM,
 +            rr_switch_quantum=RR_SWITCH_QUANTUM,
 +            x86_smp="4,maxcpus=4",
 +            active_host_ready=True,
@@ -94090,7 +94092,7 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +        )
 +
 +    try:
-+        live.qmp("cont")
++        cont_id = live.qmp_send("cont")
 +
 +        initial_events = [live.marker() for _ in range(4)]
 +        expected_work = [("work", vcpu_index) for vcpu_index in range(4)]
@@ -94105,13 +94107,43 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +                f"unexpected host-ready first boundary: {first_dispatch!r}"
 +            )
 +
-+        live.control_state[16:20] = (1).to_bytes(
++        startup_deadline = time.monotonic() + TIMEOUT_SECONDS
++        live.wait_for_rr_dispatch_event(startup_deadline)
++        cont_result = live.qmp_wait(cont_id, deadline=startup_deadline)
++        if cont_result != {}:
++            raise AssertionError(
++                f"unexpected active host-ready cont result: {cont_result!r}"
++            )
++
++        blocked_dispatch_index = 1
++        blocked_icount = RR_SWITCH_QUANTUM * 2
++        startup_ceiling = (
++            RR_SWITCH_QUANTUM *
++            (ACTIVE_HOST_READY_MAX_TRANSIENT_POLLS + 4)
++        )
++        live.control_state[16:20] = blocked_dispatch_index.to_bytes(
 +            4, byteorder=sys.byteorder
 +        )
++        live.control_state[8:16] = startup_ceiling.to_bytes(
++            8, byteorder=sys.byteorder
++        )
 +        live.control_state.flush()
++        os.eventfd_write(live.wake_fd, 1)
++
++        startup_control = None
 +        while True:
 +            blocked_dispatch = live.marker()
-+            if blocked_dispatch == ("dispatch", RR_SWITCH_QUANTUM * 2):
++            if blocked_dispatch == (
++                "control", (RR_SWITCH_QUANTUM, 1)
++            ):
++                if startup_control is not None:
++                    raise AssertionError(
++                        "startup ceiling published duplicate control: "
++                        f"{blocked_dispatch!r}"
++                    )
++                startup_control = blocked_dispatch
++                continue
++            if blocked_dispatch == ("dispatch", blocked_icount):
 +                break
 +            if blocked_dispatch[0] == "park" or (
 +                blocked_dispatch[0] == "result" and
@@ -94122,24 +94154,79 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +                "unexpected host-ready blocked boundary: "
 +                f"{blocked_dispatch!r}"
 +            )
-+
-+        deadline = time.monotonic() + TIMEOUT_SECONDS
-+        (
-+            prior_generation,
-+            prior_poll_result,
-+            poll_timeout,
-+            poll_pending,
-+        ) = live.wait_for_host_poll_state(deadline)
-+        if poll_timeout != -1:
++        if startup_control is None:
 +            raise AssertionError(
-+                "main loop did not use an infinite durable host poll: "
-+                f"timeout_ns={poll_timeout}"
++                "startup ceiling did not publish its control boundary"
 +            )
 +
++        deadline = time.monotonic() + TIMEOUT_SECONDS
++        transient_polls = []
++        while True:
++            (
++                prior_generation,
++                prior_poll_result,
++                poll_timeout,
++                poll_pending,
++            ) = live.wait_for_host_poll_state(deadline)
++            if poll_timeout == -1:
++                break
++
++            transient_polls.append(
++                (
++                    prior_generation,
++                    prior_poll_result,
++                    poll_timeout,
++                    poll_pending,
++                )
++            )
++            if len(transient_polls) > ACTIVE_HOST_READY_MAX_TRANSIENT_POLLS:
++                raise AssertionError(
++                    "main loop did not reach an infinite durable host poll "
++                    "after bounded transient polls: "
++                    f"polls={transient_polls!r}"
++                )
++
++            next_dispatch_index = blocked_dispatch_index + 1
++            live.control_state[16:20] = next_dispatch_index.to_bytes(
++                4, byteorder=sys.byteorder
++            )
++            live.control_state.flush()
++            live.control_state[4:8] = blocked_dispatch_index.to_bytes(
++                4, byteorder=sys.byteorder
++            )
++            live.control_state.flush()
++
++            blocked_dispatch_index = next_dispatch_index
++            blocked_icount += RR_SWITCH_QUANTUM
++            while True:
++                blocked_dispatch = live.marker(deadline)
++                if blocked_dispatch == ("dispatch", blocked_icount):
++                    break
++                if blocked_dispatch[0] == "park" or (
++                    blocked_dispatch[0] == "result" and
++                    blocked_dispatch[1] == 9
++                ):
++                    continue
++                raise AssertionError(
++                    "unexpected host-ready retry boundary: "
++                    f"{blocked_dispatch!r}; polls={transient_polls!r}"
++                )
++
++        dispatch_ceiling = blocked_icount + RR_SWITCH_QUANTUM * 2
++        live.control_state[8:16] = dispatch_ceiling.to_bytes(
++            8, byteorder=sys.byteorder
++        )
++        # The selected callback still waits for its matching release. Later
++        # callbacks must not trap the QMP response behind a new replay hold.
++        live.control_state[20:24] = blocked_dispatch_index.to_bytes(
++            4, byteorder=sys.byteorder
++        )
++        live.control_state.flush()
++
 +        # Force the race where an unrelated ready fd returns the infinite poll
-+        # while the vCPU is still blocked in its active q2 callback.  The old
-+        # fixture waited for another pending poll here, but the main loop must
-+        # first reacquire the replay token held by this callback.
++        # while the vCPU is still blocked in the selected active callback.
++        # The main loop must first reacquire the replay token held by this
++        # callback before it can enter another poll.
 +        query_status_id = live.qmp_send("query-status")
 +        if poll_pending:
 +            prior_generation = live.wait_for_infinite_host_poll_ready(
@@ -94152,7 +94239,7 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +            )
 +
 +        os.eventfd_write(live.wake_fd, 1)
-+        live.control_state[4:8] = (1).to_bytes(
++        live.control_state[4:8] = blocked_dispatch_index.to_bytes(
 +            4, byteorder=sys.byteorder
 +        )
 +        live.control_state.flush()
@@ -94171,7 +94258,7 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +            if event[0] in ("dispatch", "control"):
 +                events.append(event)
 +                reached_ceiling |= event == (
-+                    "dispatch", RR_SWITCH_QUANTUM * 4
++                    "dispatch", dispatch_ceiling
 +                )
 +                continue
 +            if event[0] == "park" or (
@@ -94182,7 +94269,7 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +
 +        controls = [event for event in events if event[0] == "control"]
 +        expected_control = (
-+            "control", (RR_SWITCH_QUANTUM * 4, 1)
++            "control", (dispatch_ceiling, 2)
 +        )
 +        if controls != [expected_control]:
 +            raise AssertionError(
@@ -94190,8 +94277,8 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +                f"pass: {events!r}"
 +            )
 +        expected = [
-+            ("dispatch", RR_SWITCH_QUANTUM * 3),
-+            ("dispatch", RR_SWITCH_QUANTUM * 4),
++            ("dispatch", blocked_icount + RR_SWITCH_QUANTUM),
++            ("dispatch", dispatch_ceiling),
 +            expected_control,
 +        ]
 +        if events != expected:
@@ -94200,10 +94287,10 @@ index 0000000000000000000000000000000000000000..ead0dd7c1946cd84c10a2a6197b193ad
 +                f"{events!r}"
 +            )
 +    finally:
-+        live.control_state[16:20] = (1).to_bytes(
++        live.control_state[16:20] = ACTIVE_HOST_READY_RELEASE_ALL.to_bytes(
 +            4, byteorder=sys.byteorder
 +        )
-+        live.control_state[4:8] = (1).to_bytes(
++        live.control_state[4:8] = ACTIVE_HOST_READY_RELEASE_ALL.to_bytes(
 +            4, byteorder=sys.byteorder
 +        )
 +        live.control_state.flush()
@@ -95028,10 +95115,10 @@ index 0000000000000000000000000000000000000000..c1633c777c0c92a8f353bddd70b8de45
 +}
 diff --git a/tests/tcg/plugins/crucible-idle-wait-liveness.c b/tests/tcg/plugins/crucible-idle-wait-liveness.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..38e826043fb58ce05b1201e6c7e16eefa5b6b459
+index 0000000000000000000000000000000000000000..2c77d72e4c5018750216b428aa1d1ae146474977
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-idle-wait-liveness.c
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,334 @@
 +/*
 + * Crucible idle-wait liveness test plugin
 + *
@@ -95068,7 +95155,7 @@ index 0000000000000000000000000000000000000000..38e826043fb58ce05b1201e6c7e16eef
 +    _Atomic uint32_t active_host_ready_release;
 +    _Atomic uint64_t dispatch_ceiling;
 +    _Atomic uint32_t active_host_ready_arm;
-+    uint32_t reserved;
++    _Atomic uint32_t active_host_ready_disable_after;
 +};
 +
 +static struct SharedState *shared_state;
@@ -95225,22 +95312,34 @@ index 0000000000000000000000000000000000000000..38e826043fb58ce05b1201e6c7e16eef
 +static void publish_icount_callback(uint64_t icount, void *userdata)
 +{
 +    char marker[9] = {'D'};
++    uint32_t active_dispatch;
 +
 +    (void)userdata;
 +    if (dispatch_ceiling_mode) {
 +        memcpy(&marker[1], &icount, sizeof(icount));
 +        write_marker(marker, sizeof(marker));
 +    }
-+    /* The first boundary completes startup; hold the post-handoff boundary. */
-+    if (active_host_ready &&
-+        atomic_fetch_add_explicit(&active_host_ready_dispatches, 1,
-+                                  memory_order_relaxed) == 1) {
-+        while (!atomic_load_explicit(
-+            &shared_state->active_host_ready_arm, memory_order_acquire)) {
-+        }
-+        while (!atomic_load_explicit(
-+            &shared_state->active_host_ready_release,
-+            memory_order_acquire)) {
++    /* The first boundary completes startup; hold each armed later boundary. */
++    if (active_host_ready) {
++        active_dispatch = atomic_fetch_add_explicit(
++            &active_host_ready_dispatches, 1, memory_order_relaxed);
++        if (active_dispatch != 0) {
++            uint32_t armed_dispatch;
++            uint32_t disable_after = atomic_load_explicit(
++                &shared_state->active_host_ready_disable_after,
++                memory_order_acquire);
++
++            if (disable_after == 0 || active_dispatch <= disable_after) {
++                do {
++                    armed_dispatch = atomic_load_explicit(
++                        &shared_state->active_host_ready_arm,
++                        memory_order_acquire);
++                } while (armed_dispatch < active_dispatch);
++                while (atomic_load_explicit(
++                           &shared_state->active_host_ready_release,
++                           memory_order_acquire) < active_dispatch) {
++                }
++            }
 +        }
 +    }
 +    if (control_at_first_dispatch &&
