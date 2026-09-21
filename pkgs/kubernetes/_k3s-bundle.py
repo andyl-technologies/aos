@@ -110,7 +110,7 @@ def main():
     replace_exact(
         source / "manifests/traefik.yaml",
         'tag: "3.6.7"',
-        f'tag: "3.6.7@{traefik["digest"]}"',
+        f'tag: "3.7.13@{traefik["digest"]}"',
     )
 
     for name in ["helm-job", "service-lb"]:
