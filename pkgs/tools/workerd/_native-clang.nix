@@ -6,6 +6,7 @@
   sed,
   bootstrapTools,
   gcc,
+  stdenv,
 }: let
   buildLlvm = llvm;
   buildBash = bash;
@@ -17,7 +18,9 @@ in
   mkDerivation {
     pname = "workerd-native-clang";
     inherit (llvm) version;
-    runtimeDeps = [llvm bash sed bootstrapTools];
+    # Compiler wrappers need the GCC installation and libc headers whenever
+    # invoked, including after package reference scrubbing has completed.
+    runtimeDeps = [llvm bash sed bootstrapTools stdenv.gcc stdenv.glibc stdenv.glibc.dev];
     phases = [
       {
         name = "install";

@@ -622,6 +622,7 @@
     "postFetch"
     "removeRepos"
     "populateBCR"
+    "captureModuleLock"
     "installPhase"
     "preBazelBuild"
   ];
@@ -971,6 +972,7 @@
             "local_jdk"
           ];
         populateBCR = args.populateBCR or true;
+        captureModuleLock = args.captureModuleLock or false;
       });
 
     # Remove bazel-specific attrs before passing to mkDerivation

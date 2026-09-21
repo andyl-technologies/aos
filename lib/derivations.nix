@@ -1961,6 +1961,7 @@
     ],
     # Whether to populate repository_cache via empty workspace sync
     populateBCR ? true,
+    captureModuleLock ? false,
   }: let
     toolsPath = builtins.concatStringsSep ":" (
       builtins.map (d: "${builtins.toString d}/bin") tools
@@ -2113,6 +2114,18 @@
             ${fetchFlagsStr} \
             ${bazelTarget}
 
+          # Preserve registry digests resolved by Bzlmod. Offline analysis
+          # needs them to find registry files in the content-addressed cache.
+          ${
+            if captureModuleLock
+            then ''
+              if [ -f MODULE.bazel.lock ]; then
+                cp MODULE.bazel.lock "$bazelOut/external/aos-module-lock.json"
+              fi
+            ''
+            else ""
+          }
+
           # --- Standard cleanup ---
 
           # Remove built-in workspaces (Bazel recreates them)
@@ -2186,7 +2199,7 @@
       hashMode = "recursive";
       sourceInputs = [builtins.toString src];
       builderParameters = {
-        inherit bazelTarget bazelFlags bazelFetchFlags postPatch fetchPostPatch postFetch removeRepos populateBCR system;
+        inherit bazelTarget bazelFlags bazelFetchFlags postPatch fetchPostPatch postFetch removeRepos populateBCR captureModuleLock system;
         environment = builtins.mapAttrs (_: value: builtins.toString value) env;
         scrub = scrubMap;
         tools = builtins.map builtins.toString tools;
