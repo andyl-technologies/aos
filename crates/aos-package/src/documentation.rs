@@ -17,7 +17,7 @@ use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::PackageAbilityReference;
 use aos_doc_model::{
     DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument, PackageDocumentation,
-    PackageDocumentationProjection, SearchDocument, document_json_schema, tokenize,
+    PackageDocumentationProjection, SearchDocument, documentation_metadata_json_schema, tokenize,
 };
 use aos_proto_types::{
     ComparePackageDocumentationRequest, GetPackageDocumentationRequest,
@@ -156,10 +156,10 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
         DocumentationCommand::Schema { hub, token } => {
             if hub.is_some() || token.is_some() {
                 bail!(
-                    "the canonical package-reference schema is local; use `apm schema <package> --hub ... --registry ...` for an exact signed package reference"
+                    "the package metadata JSON Schema is generated locally; use `apm schema <package> --hub ... --registry ...` for an exact signed package reference"
                 );
             }
-            let bytes = document_json_schema()?;
+            let bytes = documentation_metadata_json_schema()?;
             write_bytes(&bytes, None)
         }
         DocumentationCommand::Man {
@@ -353,7 +353,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
 /// Returns an error when the local or Hub selection cannot be verified.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_schema(
-    package: Option<&str>,
+    package: &str,
     hub: Option<&str>,
     registry: Option<&str>,
     version: Option<&str>,
@@ -361,34 +361,22 @@ pub async fn run_schema(
     token: Option<&str>,
     system: bool,
 ) -> Result<()> {
-    match package {
-        Some(package) => {
-            let response = match hub {
-                Some(hub) => {
-                    remote_schema(
-                        hub,
-                        registry.context("remote schema lookup requires --registry")?,
-                        token,
-                        package,
-                        version,
-                        platform,
-                    )
-                    .await?
-                }
-                None => local_document(scope(system), package, version, platform)?.projection,
-            };
-            write_bytes(&response.canonical_json()?, None)
+    let projection = match hub {
+        Some(hub) => {
+            remote_schema(
+                hub,
+                registry.context("remote schema lookup requires --registry")?,
+                token,
+                package,
+                version,
+                platform,
+            )
+            .await?
         }
-        None => {
-            let bytes = match hub {
-                Some(_) => {
-                    bail!("remote schema lookup requires a package selection")
-                }
-                None => document_json_schema()?,
-            };
-            write_bytes(&bytes, None)
-        }
-    }
+        None => local_document(scope(system), package, version, platform)?.projection,
+    };
+
+    write_bytes(&projection.canonical_json()?, None)
 }
 
 fn scope(system: bool) -> ProfileScope {

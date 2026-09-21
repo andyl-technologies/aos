@@ -1589,7 +1589,7 @@ pub fn documentation_index_page(
     body.push_str(&navigation);
     let _ = write!(
         body,
-        "<p class=\"docs-tools\"><a href=\"/{}/-/api/docs/schema\">JSON Schema</a> · <code>apm docs search &lt;query&gt;</code> · editor completion via <code>apm docs lsp</code></p>",
+        "<p class=\"docs-tools\"><a href=\"/{}/-/api/docs/schema\">Package metadata JSON Schema</a> · <code>apm docs search &lt;query&gt;</code> · editor completion via <code>apm docs lsp</code></p>",
         escape(slug),
     );
     page_with_session(
