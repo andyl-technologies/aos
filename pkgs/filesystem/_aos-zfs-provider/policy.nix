@@ -2,6 +2,7 @@
 {
   config,
   lib,
+  packageFor,
   ...
 }: let
   cfg = config.aos.filesystems.zfs;
@@ -31,7 +32,11 @@
     // lib.optionalAttrs memory.limitAbdScatter {
       "zfs.zfs_abd_scatter_max_order" = 0;
     };
-  packagedVersion = builtins.unsafeDiscardStringContext cfg.packagedVersion;
+  packagedVersion =
+    builtins.unsafeDiscardStringContext
+    (
+      packageFor (lib.abilities.packageOutput {package = "zfs";})
+    ).version;
   knownIssueParameters =
     lib.optionalAttrs (
       cfg.knownIssueWorkarounds
@@ -253,15 +258,6 @@ in {
       type = abilityTypes.boolean;
       default = true;
       description = "Apply version-bound parameters for known defects in the packaged OpenZFS release.";
-    };
-    packagedVersion = lib.mkOption {
-      type = abilityTypes.string {
-        maxLength = 128;
-        syntax = null;
-      };
-      default = "0";
-      internal = true;
-      description = "OpenZFS release whose kernel module and userland are retained together.";
     };
   };
 

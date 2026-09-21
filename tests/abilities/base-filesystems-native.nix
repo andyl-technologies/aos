@@ -28,6 +28,41 @@
       }
     ];
   };
+  systemState = evaluate {
+    name = "base-filesystems-system-state";
+    module = ../../modules/base/filesystems.nix;
+    packages = [
+      pkgs.systemd
+      pkgs.aos-zfs-provider
+    ];
+    extraModules = [
+      {
+        aos.boot.storage.backend = "zfs-zvol";
+        aos.filesystems.zfs = {
+          enable = true;
+          systemState = true;
+          reservedSpace.enable = false;
+        };
+      }
+    ];
+  };
+  kernelIntegration = evaluate {
+    name = "base-kernel-package-contributions";
+    module = ../../modules/base/kernel.nix;
+    packages = [
+      pkgs.systemd
+      pkgs.aos-zfs-provider
+    ];
+    extraModules = [
+      {
+        aos.filesystems.zfs = {
+          enable = true;
+          systemState = false;
+          reservedSpace.enable = false;
+        };
+      }
+    ];
+  };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
   datasetRequests = builtins.listToAttrs (
@@ -82,6 +117,30 @@ in
       retention = "persistent";
     }
   ];
+  assert config.aos.storage.managedMountPoints == ["/srv/data"];
+  assert config.aos.storage.compressedSwapRecommended;
+  assert config.aos.storage.hardwareMonitoringRecommended;
+  assert config.aos.contributions.kernelPackages.aos-zfs-provider
+  == [
+    (lib.abilities.packageOutput {package = "zfs";})
+  ];
   assert lib.hasInfix "/dev/disk/by-partlabel/var  /var  ext4" config.environment.etc.fstab.text;
-  assert builtins.elem "spl.spl_kmem_cache_obj_per_slab=1" config.aos.boot.kernelParams;
+  assert systemState.config.aos.storage.managedMountPoints
+  == [
+    "/var"
+    "/var/lib"
+    "/var/log"
+  ];
+  assert !(lib.hasInfix "/dev/disk/by-partlabel/var  /var  ext4" systemState.config.environment.etc.fstab.text);
+  assert builtins.length kernelIntegration.config.aos.kernel.modulePackages == 1;
+  assert (builtins.head kernelIntegration.config.aos.kernel.modulePackages).pname == "zfs";
+  assert (builtins.head kernelIntegration.config.aos.kernel.modulePackages).kernel.version
+  == kernelIntegration.config.system.build.kernel.version;
+  assert builtins.elem
+  (builtins.head kernelIntegration.config.aos.kernel.modulePackages)
+  kernelIntegration.config.aos.boot.recovery.extraPackages;
+  assert builtins.elem
+  (builtins.head kernelIntegration.config.aos.kernel.modulePackages)
+  kernelIntegration.config.environment.systemPackages;
+  assert builtins.elem "spl.spl_kmem_cache_obj_per_slab=1" config.aos.contributions.kernelParameters.aos-zfs-provider;
   assert requests."aos-zfs-provider:zfs-kernel-tunables".parameters.values."vm.defrag_mode" == "1"; true

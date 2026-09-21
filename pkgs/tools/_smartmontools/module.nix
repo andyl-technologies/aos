@@ -211,6 +211,7 @@ in {
 
   config = lib.mkMerge [
     {
+      aos.monitoring.hardware.enable = lib.mkDefault config.aos.storage.hardwareMonitoringRecommended;
       aos.abilities = lib.mkMerge (
         [watchdogContribution.declarations]
         ++ builtins.map (contribution: contribution.declarations) serviceContributions

@@ -2,7 +2,7 @@
 {
   config,
   lib,
-  abilitySelection,
+  packageName,
   ...
 }: let
   storage = lib.abilities.interfaces.blockStorage.interfaces;
@@ -12,7 +12,9 @@
   cfg = config.aos.filesystems.zfs;
   consumerInstance = "zfs-storage";
   resultOf = lib.abilities.resultOf;
+  packageResultOf = request: resultOf "${packageName}:${request}";
   abilityTypes = lib.abilities.types;
+  zfsSelector = lib.abilities.packageOutput {package = "zfs";};
 
   size = abilityTypes.refined {
     name = "ZFS size";
@@ -186,6 +188,7 @@
   };
   controller = interface: terminalValue: providerPath: description: {
     inherit description artifact;
+    artifacts = [zfsSelector];
     interface = interface.identity;
     inherit (interface) methods;
     guarantees = [];
@@ -276,12 +279,12 @@
         properties = propertiesOf attributes;
         prerequisites = [(resultOf "pool" "resource")];
       };
-      readiness = abilitySelection.resultOfRequest key "resource";
+      readiness = packageResultOf key "resource";
     })
     configuredDatasets;
   datasets = builtins.map (entry: entry.fragment) datasetEntries;
   readinessResources =
-    [(abilitySelection.resultOfRequest "pool" "resource")]
+    [(packageResultOf "pool" "resource")]
     ++ builtins.map (entry: entry.readiness) datasetEntries;
   largeRecordDatasets = builtins.filter (
     name: !(builtins.elem cfg.datasets.${name}.recordSize safeRecordSizes)
@@ -361,6 +364,12 @@ in {
     {
       assertions = [
         {
+          assertion =
+            !(cfg.enable && cfg.systemState)
+            || config.aos.boot.storage.backend == "zfs-zvol";
+          message = "aos.filesystems.zfs.systemState requires the zfs-zvol boot backend so /var can be unlocked before switch-root; set systemState = false for a data-only pool";
+        }
+        {
           assertion = cfg.allowLargeRecords || largeRecordDatasets == [];
           message = "ZFS datasets ${lib.concatStringsSep ", " largeRecordDatasets} use records above 128 KiB without allowLargeRecords";
         }
@@ -386,7 +395,18 @@ in {
         };
         "var/lib".mountPoint = "/var/lib";
       };
-      aos.storage.readinessContributions.zfs = lib.mkIf cfg.enable readinessResources;
+      aos.storage.mountPointContributions.${packageName} = lib.mkIf cfg.enable (
+        builtins.filter (mountPoint: mountPoint != null) (
+          builtins.map (dataset: dataset.mountPoint or null) (builtins.attrValues configuredDatasets)
+        )
+      );
+      aos.storage.policyContributions.${packageName} = lib.mkIf cfg.enable {
+        compressedSwapRecommended = true;
+        hardwareMonitoringRecommended = true;
+      };
+      aos.storage.readinessContributions.${packageName} = lib.mkIf cfg.enable readinessResources;
+      aos.contributions.kernelPackages.${packageName} = lib.mkIf cfg.enable [zfsSelector];
+      aos.contributions.kernelParameters.${packageName} = lib.mkIf cfg.enable cfg.moduleParameters;
     }
     {
       aos.abilities = lib.mkMerge ([
@@ -405,5 +425,8 @@ in {
           ++ builtins.map (contribution: contribution.configured) contributions
         )));
     }
+    (lib.mkIf cfg.enable {
+      aos.services.zfsMaintenance.enable = lib.mkDefault true;
+    })
   ];
 }

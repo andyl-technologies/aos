@@ -193,7 +193,6 @@ in {
       aos.filesystems.zfs = {
         enable = true;
         poolName = cfg.zfs.poolName;
-        package = zfsPackage;
         datasets = lib.genAttrs (containerDatasets cfg.zfs.dataset) (_: {
           mountPoint = null;
           snapshot = false;
