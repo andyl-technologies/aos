@@ -516,10 +516,10 @@
       then
         acc
         // prefixAttrs name (
-          pkg.checks {
+          pkg.checks (builtins.intersectAttrs (builtins.functionArgs pkg.checks) {
             inherit testing pkgs;
             self = pkg;
-          }
+          })
         )
       else acc
   ) {} (builtins.attrNames pkgs);
