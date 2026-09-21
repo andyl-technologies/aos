@@ -118,23 +118,23 @@
   service = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_conditions";
-        requirementAlias = "linux-service-conditions";
-        description = "Requires the selected Linux platform to evaluate declared capability conditions.";
-        interface = "aos.platform.linux.service-conditions";
+        key = "runtime_conditions";
+        requirementAlias = "service-runtime-conditions";
+        description = "Requires the selected service-management provider to evaluate declared capability conditions.";
+        interface = "aos.service.runtime-conditions";
         abi = 1;
-        parameters.capabilities = [
+        parameters.privileges = [
           {
-            capability = "CAP_SYS_TIME";
+            privilege = "adjust-host-clock";
             available = true;
           }
         ];
       })
       (serviceManagement.featureContribution {
-        key = "linux_device_policy";
-        requirementAlias = "linux-service-device-policy";
-        description = "Requires the selected Linux platform to enforce the declared device access policy.";
-        interface = "aos.platform.linux.service-device-policy";
+        key = "device_policy";
+        requirementAlias = "service-device-policy";
+        description = "Requires the selected service-management provider to enforce the declared device access policy.";
+        interface = "aos.service.device-policy";
         abi = 1;
         parameters = {
           baseline_access = "standard-runtime-devices";
@@ -148,54 +148,54 @@
               };
               read = true;
               write = true;
-              create_node = false;
+              create = false;
             })
-            ["pps" "ptp" "rtc"];
+            ["precision-time" "pulse-per-second" "real-time-clock"];
         };
       })
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
         parameters = {
           allow_privilege_escalation = false;
-          ambient_capabilities = [];
-          capability_bounds = {
+          ambient_privileges = [];
+          privilege_bounds = {
             kind = "restricted";
-            capabilities = [
-              "CAP_CHOWN"
-              "CAP_DAC_OVERRIDE"
-              "CAP_NET_BIND_SERVICE"
-              "CAP_SETGID"
-              "CAP_SETUID"
-              "CAP_SYS_RESOURCE"
-              "CAP_SYS_TIME"
+            privileges = [
+              "change-file-ownership"
+              "bypass-file-access"
+              "bind-privileged-network-port"
+              "change-group-identity"
+              "change-user-identity"
+              "administer-resource-limits"
+              "adjust-host-clock"
             ];
           };
-          control_group_delegation = false;
-          control_group_access = "read-only";
-          device_namespace = "shared";
-          kernel_clock_mutation = true;
-          kernel_hostname_mutation = false;
-          kernel_log_access = false;
-          kernel_module_access = false;
-          kernel_tunable_access = false;
-          lock_personality = true;
-          memory_write_execute = false;
-          remove_ipc = true;
-          namespace_isolation = ["mount"];
-          network_address_families = ["ipv4" "ipv6" "unix"];
-          oom_score_adjust = 0;
+          resource_control_delegation = false;
+          resource_control_access = "read-only";
+          device_access_scope = "shared";
+          host_clock_mutation = true;
+          host_name_mutation = false;
+          operating_system_log_access = false;
+          operating_system_extension_access = false;
+          operating_system_tunable_access = false;
+          lock_execution_personality = true;
+          writable_executable_memory = false;
+          remove_interprocess_communication = true;
+          isolation_domains = ["filesystem"];
+          network_families = ["ipv4" "ipv6" "local"];
+          memory_pressure_adjustment = 0;
           permit_realtime = false;
-          permit_suid_sgid = false;
+          permit_elevated_file_identity = false;
           process_visibility = "self";
-          syscall_architectures = ["native"];
-          syscall_allow = ["@chown" "@clock" "@setuid" "capset"];
-          syscall_deny = ["@cpu-emulation" "@debug" "@keyring" "@mount" "@obsolete" "@privileged" "@resources"];
-          syscall_profile = "system-service";
-          user_namespace_ownership = "none";
+          operation_architectures = ["native"];
+          operation_allow = ["change-file-ownership" "clock" "change-process-identity" "set-process-privileges"];
+          operation_deny = ["cpu-emulation" "debug" "keyring" "mount" "obsolete" "privileged" "resource-control"];
+          operation_profile = "system-service";
+          isolated_identity_mapping = "none";
         };
       })
     ];

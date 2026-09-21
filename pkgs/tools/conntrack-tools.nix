@@ -19,8 +19,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -197,7 +208,7 @@ in
         && ownedValues disabledAbilities.instances == {}
         && ownedValues disabledAbilities.requests == {}
         && builtins.elem "conntrack-tools:configuration-materialization" disabledRequirements
-        && builtins.elem "conntrack-tools:service-lifecycle" disabledRequirements
+        && builtins.elem "conntrack-tools:main-service-lifecycle" disabledRequirements
         && source.kind == "interpolated-text"
         && lib.hasInfix "Mode FTFW" literalText
         && lib.hasInfix "IPv4_address 192.0.2.10" literalText

@@ -240,58 +240,58 @@
   service = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
         parameters = {
           allow_privilege_escalation = true;
-          ambient_capabilities = [
-            "CAP_CHOWN"
-            "CAP_MKNOD"
-            "CAP_NET_ADMIN"
-            "CAP_NET_RAW"
-            "CAP_SETGID"
-            "CAP_SETUID"
-            "CAP_SYS_ADMIN"
-            "CAP_SYS_CHROOT"
+          ambient_privileges = [
+            "change-file-ownership"
+            "create-device-node"
+            "administer-network"
+            "raw-network"
+            "change-group-identity"
+            "change-user-identity"
+            "administer-host"
+            "change-root-directory"
           ];
-          capability_bounds = {
+          privilege_bounds = {
             kind = "restricted";
-            capabilities = [
-              "CAP_CHOWN"
-              "CAP_MKNOD"
-              "CAP_NET_ADMIN"
-              "CAP_NET_RAW"
-              "CAP_SETGID"
-              "CAP_SETUID"
-              "CAP_SYS_ADMIN"
-              "CAP_SYS_CHROOT"
+            privileges = [
+              "change-file-ownership"
+              "create-device-node"
+              "administer-network"
+              "raw-network"
+              "change-group-identity"
+              "change-user-identity"
+              "administer-host"
+              "change-root-directory"
             ];
           };
-          control_group_delegation = true;
-          control_group_access = "host";
-          device_namespace = "shared";
-          kernel_clock_mutation = true;
-          kernel_hostname_mutation = true;
-          kernel_log_access = true;
-          kernel_module_access = true;
-          kernel_tunable_access = true;
-          lock_personality = false;
-          memory_write_execute = true;
-          namespace_isolation = [];
-          network_address_families = ["ipv4" "ipv6" "netlink" "packet" "unix"];
-          oom_score_adjust = -999;
+          resource_control_delegation = true;
+          resource_control_access = "host";
+          device_access_scope = "shared";
+          host_clock_mutation = true;
+          host_name_mutation = true;
+          operating_system_log_access = true;
+          operating_system_extension_access = true;
+          operating_system_tunable_access = true;
+          lock_execution_personality = false;
+          writable_executable_memory = true;
+          isolation_domains = [];
+          network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
+          memory_pressure_adjustment = -999;
           permit_realtime = true;
-          permit_suid_sgid = true;
+          permit_elevated_file_identity = true;
           process_visibility = "all";
           security_label = "aos-pkg-containerd";
-          syscall_architectures = [];
-          syscall_allow = [];
-          syscall_deny = [];
-          syscall_profile = "privileged";
-          user_namespace_ownership = "none";
+          operation_architectures = [];
+          operation_allow = [];
+          operation_deny = [];
+          operation_profile = "privileged";
+          isolated_identity_mapping = "none";
         };
       })
     ];

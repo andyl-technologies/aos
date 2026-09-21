@@ -1,4 +1,4 @@
-##! Checks that Linux service facets are selected with the Linux platform package.
+##! Checks that provider-neutral service policies are implemented by systemd.
 {
   lib,
   pkgs,
@@ -7,6 +7,7 @@
     ../../lib/abilities/_service-types.nix
     ../../lib/abilities/_service-interfaces.nix
     ../../lib/abilities/_service-declaration.nix
+    ../../lib/abilities/interfaces/service-policy.nix
   ];
   genericSourcesArePlatformNeutral =
     builtins.all
@@ -15,23 +16,18 @@
       && !lib.hasInfix "aos.platform.linux" source)
     genericSources;
 
-  projectedInterfaces = pkgs.systemd.abilities.interfaces;
-  projectedLinuxInterfaces =
-    builtins.intersectAttrs {
-      linux-service-conditions = null;
-      linux-service-device-policy = null;
-      linux-service-isolation = null;
-    }
-    projectedInterfaces;
-  expectedLinuxInterfaceNames = [
-    "aos.platform.linux.service-conditions"
-    "aos.platform.linux.service-device-policy"
-    "aos.platform.linux.service-isolation"
+  servicePolicy = lib.abilities.interfaces.servicePolicy;
+  policyInterfaces = servicePolicy.interfaces;
+  projectedImplementations = pkgs.systemd.abilities.implementations;
+  expectedInterfaceNames = [
+    "aos.service.device-policy"
+    "aos.service.hardening"
+    "aos.service.runtime-conditions"
   ];
 
-  systemdDevicePolicy = projectedInterfaces.linux-service-device-policy;
+  systemdDevicePolicy = policyInterfaces.devicePolicy;
   expectedDevicePolicySelector = {
-    inherit (systemdDevicePolicy) name abi;
+    inherit (systemdDevicePolicy.declaration) name abi;
   };
   polkitDevicePolicies =
     builtins.filter
@@ -40,7 +36,7 @@
   polkitDevicePolicy =
     if builtins.length polkitDevicePolicies == 1
     then builtins.head polkitDevicePolicies
-    else throw "Polkit must consume exactly one Linux service device-policy ability";
+    else throw "Polkit must consume exactly one provider-neutral service device-policy ability";
 
   selected = lib.evalModules {
     inherit lib;
@@ -49,7 +45,7 @@
       {
         config.aos.abilities.environment = {
           authority = "test";
-          key = "linux-service-features";
+          key = "service-features";
           stage = "host";
         };
       }
@@ -65,18 +61,16 @@
   selectedInterfaces = selected.config.aos.abilities.interfaces;
 in
   assert genericSourcesArePlatformNeutral;
-  assert builtins.attrNames projectedLinuxInterfaces
-  == [
-    "linux-service-conditions"
-    "linux-service-device-policy"
-    "linux-service-isolation"
-  ];
+  assert builtins.attrNames policyInterfaces == ["devicePolicy" "hardening" "runtimeConditions"];
   assert builtins.map
-  (name: projectedLinuxInterfaces.${name}.name)
-  (builtins.attrNames projectedLinuxInterfaces)
-  == expectedLinuxInterfaceNames;
+  (name: policyInterfaces.${name}.declaration.name)
+  (builtins.attrNames policyInterfaces)
+  == expectedInterfaceNames;
   assert polkitDevicePolicy.accepted_interfaces
   == [expectedDevicePolicySelector];
   assert builtins.all
-  (name: selectedInterfaces ? "systemd:${name}")
-  (builtins.attrNames projectedLinuxInterfaces); true
+  (selected: selectedInterfaces ? "${selected.alias}")
+  (builtins.attrValues policyInterfaces);
+  assert builtins.all
+  (selected: projectedImplementations ? "${selected.alias}")
+  (builtins.attrValues policyInterfaces); true

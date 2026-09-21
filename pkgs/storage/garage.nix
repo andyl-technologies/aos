@@ -22,9 +22,36 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
     pname = "garage";
@@ -220,7 +247,7 @@ in
         && ownedValues disabledAbilityConfig.instances == {}
         && ownedValues disabledAbilityConfig.requests == {}
         && builtins.elem "garage:credential-delivery" disabledRequirements
-        && builtins.elem "garage:service-lifecycle" disabledRequirements
+        && builtins.elem "garage:main-service-lifecycle" disabledRequirements
         && builtins.elem "garage:main-lifecycle" requests
         && builtins.elem "garage:main-storage" requests
         && builtins.elem "garage:service-principal" requests

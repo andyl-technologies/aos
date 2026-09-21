@@ -232,7 +232,7 @@ in
       inherit (interface) name abi descriptor;
     }
     == lib.abilities.interfaces.kernelTunables.interface.identity;
-  assert (requests edgecore)."edgecore:edgecore-linux_device_policy".parameters.baseline_access
+  assert (requests edgecore)."edgecore:edgecore-device_policy".parameters.baseline_access
   == "standard-runtime-devices";
   assert builtins.length (
     builtins.filter (fragment: fragment.kind == "execution-path")
@@ -416,7 +416,7 @@ in
       port = 10250;
     }
   ];
-  assert (requests kubelet)."kubelet:kubelet-linux_device_policy".parameters.rules
+  assert (requests kubelet)."kubelet:kubelet-device_policy".parameters.rules
   == [
     {
       selector = {
@@ -426,7 +426,7 @@ in
       };
       read = true;
       write = true;
-      create_node = false;
+      create = false;
     }
   ];
   assert (builtins.head (commandFor kubelet "kubelet:kubelet-lifecycle")).executable.artifact

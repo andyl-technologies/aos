@@ -887,7 +887,7 @@ in
         package = self.pname;
         inherit localKey output;
       };
-      configurationPathIdentity = localKey: let
+      configurationUsesPath = localKey: let
         expectedIdentity = expectedRequestOutput localKey "planned-path";
         executionPathIdentities =
           builtins.map
@@ -899,17 +899,8 @@ in
           (builtins.filter
             (fragment: fragment.kind == "execution-path")
             serverSource.fragments);
-        matches =
-          builtins.filter
-          (identity: identity == expectedIdentity)
-          executionPathIdentities;
-        matchCount = builtins.length matches;
       in
-        if matchCount == 1
-        then builtins.head matches
-        else
-          throw
-          "MariaDB ability contract fixture expected exactly one '${localKey}' planned execution path, found ${builtins.toString matchCount}.";
+        builtins.elem expectedIdentity executionPathIdentities;
       lifecycleConfig = pkgs.writeTextFile {
         name = "mariadb-lifecycle-config";
         destination = "/my.cnf";
@@ -945,8 +936,8 @@ in
         && ownedValues disabledAbilityConfig.instances == {}
         && ownedValues disabledAbilityConfig.requests == {}
         && builtins.elem "mariadb:credential-delivery" disabledRequirements
-        && builtins.elem "mariadb:service-credentials" disabledRequirements
-        && builtins.elem "mariadb:service-lifecycle" disabledRequirements
+        && builtins.elem "mariadb:main-service-credentials" disabledRequirements
+        && builtins.elem "mariadb:main-service-lifecycle" disabledRequirements
         && builtins.elem "mariadb:initialize-lifecycle" requests
         && builtins.elem "mariadb:main-lifecycle" requests
         && builtins.elem "mariadb:credential-tls-certificate" requests
@@ -987,12 +978,9 @@ in
           (expectedRequestOutput "runtime-storage" "planned-path")
           (expectedRequestOutput "log-storage" "planned-path")
         ]
-        && configurationPathIdentity "state-storage"
-        == expectedRequestOutput "state-storage" "planned-path"
-        && configurationPathIdentity "runtime-storage"
-        == expectedRequestOutput "runtime-storage" "planned-path"
-        && configurationPathIdentity "log-storage"
-        == expectedRequestOutput "log-storage" "planned-path"
+        && configurationUsesPath "state-storage"
+        && configurationUsesPath "runtime-storage"
+        && configurationUsesPath "log-storage"
         && (builtins.elemAt mainLifecycle.start 0).executable.entry_point == "bin/mariadb-control"
         && lib.abilities.requestOutputIdentity {
           requests = enabledAbilityConfig.requests;

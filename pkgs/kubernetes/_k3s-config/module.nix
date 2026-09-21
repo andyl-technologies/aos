@@ -278,10 +278,10 @@
   service = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_device_policy";
-        requirementAlias = "linux-service-device-policy";
-        description = "Requires the selected Linux platform to enforce the declared device access policy.";
-        interface = "aos.platform.linux.service-device-policy";
+        key = "device_policy";
+        requirementAlias = "service-device-policy";
+        description = "Requires the selected service-management provider to enforce the declared device access policy.";
+        interface = "aos.service.device-policy";
         abi = 1;
         parameters = {
           baseline_access = "standard-runtime-devices";
@@ -295,7 +295,7 @@
               };
               read = true;
               write = true;
-              create_node = false;
+              create = false;
             })
             [
               "fuse"
@@ -305,51 +305,51 @@
         };
       })
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
         parameters = {
           allow_privilege_escalation = true;
-          ambient_capabilities = [];
-          capability_bounds = {
+          ambient_privileges = [];
+          privilege_bounds = {
             kind = "restricted";
-            capabilities = [
-              "CAP_SYS_ADMIN"
-              "CAP_NET_ADMIN"
-              "CAP_NET_RAW"
-              "CAP_SYS_RESOURCE"
-              "CAP_SYS_PTRACE"
+            privileges = [
+              "administer-host"
+              "administer-network"
+              "raw-network"
+              "administer-resource-limits"
+              "inspect-processes"
             ];
           };
-          control_group_delegation = true;
-          control_group_access = "host";
-          device_namespace = "shared";
-          kernel_clock_mutation = true;
-          kernel_hostname_mutation = true;
-          kernel_log_access = true;
-          kernel_module_access = true;
-          kernel_tunable_access = true;
-          lock_personality = false;
-          memory_write_execute = true;
-          namespace_isolation = [];
-          network_address_families = [
+          resource_control_delegation = true;
+          resource_control_access = "host";
+          device_access_scope = "shared";
+          host_clock_mutation = true;
+          host_name_mutation = true;
+          operating_system_log_access = true;
+          operating_system_extension_access = true;
+          operating_system_tunable_access = true;
+          lock_execution_personality = false;
+          writable_executable_memory = true;
+          isolation_domains = [];
+          network_families = [
             "ipv4"
             "ipv6"
-            "netlink"
-            "packet"
-            "unix"
+            "route-control"
+            "raw-packet"
+            "local"
           ];
-          oom_score_adjust = 0;
+          memory_pressure_adjustment = 0;
           permit_realtime = true;
-          permit_suid_sgid = true;
+          permit_elevated_file_identity = true;
           process_visibility = "all";
-          syscall_architectures = [];
-          syscall_allow = [];
-          syscall_deny = [];
-          syscall_profile = "privileged";
-          user_namespace_ownership = "none";
+          operation_architectures = [];
+          operation_allow = [];
+          operation_deny = [];
+          operation_profile = "privileged";
+          isolated_identity_mapping = "none";
         };
       })
     ];

@@ -27,49 +27,49 @@
     stop_timeout_millis = 30000;
   };
 
-  linuxIsolation = {
+  hardening = {
     allow_privilege_escalation = true;
-    ambient_capabilities = [];
-    capability_bounds = {
+    ambient_privileges = [];
+    privilege_bounds = {
       kind = "unrestricted";
-      capabilities = [];
+      privileges = [];
     };
-    control_group_delegation = false;
-    control_group_access = "host";
-    device_namespace = "shared";
-    kernel_clock_mutation = true;
-    kernel_hostname_mutation = true;
-    kernel_log_access = true;
-    kernel_module_access = true;
-    kernel_tunable_access = true;
-    lock_personality = false;
-    memory_write_execute = true;
-    namespace_isolation = [];
-    network_address_families = [];
-    oom_score_adjust = 0;
+    resource_control_delegation = false;
+    resource_control_access = "host";
+    device_access_scope = "shared";
+    host_clock_mutation = true;
+    host_name_mutation = true;
+    operating_system_log_access = true;
+    operating_system_extension_access = true;
+    operating_system_tunable_access = true;
+    lock_execution_personality = false;
+    writable_executable_memory = true;
+    isolation_domains = [];
+    network_families = [];
+    memory_pressure_adjustment = 0;
     permit_realtime = true;
-    permit_suid_sgid = true;
+    permit_elevated_file_identity = true;
     process_visibility = "all";
     security_label = "system_u:system_r:aos_selinux_native_service_t";
-    syscall_architectures = [];
-    syscall_allow = [];
-    syscall_deny = [];
-    syscall_profile = "privileged";
-    user_namespace_ownership = "none";
+    operation_architectures = [];
+    operation_allow = [];
+    operation_deny = [];
+    operation_profile = "privileged";
+    isolated_identity_mapping = "none";
   };
 
   service = declaration:
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
-      declaration = builtins.removeAttrs declaration ["linux_isolation"];
+      declaration = builtins.removeAttrs declaration ["hardening"];
       featureContributions = [
         (serviceManagement.featureContribution {
-          key = "linux_isolation";
-          requirementAlias = "linux-service-isolation";
+          key = "hardening";
+          requirementAlias = "service-hardening";
           description = "Requires the selected platform to enforce the service isolation policy.";
-          interface = "aos.platform.linux.service-isolation";
+          interface = "aos.service.hardening";
           abi = 1;
-          parameters = declaration.linux_isolation;
+          parameters = declaration.hardening;
         })
       ];
     };
@@ -81,7 +81,7 @@
       lifecycle = lifecycle "Native service provider SELinux domain check" "foreground" [
         (command "bin/sleep" ["300"])
       ];
-      linux_isolation = linuxIsolation;
+      hardening = hardening;
     }
     {
       service = "selinux-native-deny";
@@ -89,7 +89,7 @@
       lifecycle = lifecycle "Native service provider SELinux denial check" "oneshot" [
         (command "bin/touch" ["/tmp/aos-selinux-denied"])
       ];
-      linux_isolation = linuxIsolation;
+      hardening = hardening;
     }
   ];
 in {

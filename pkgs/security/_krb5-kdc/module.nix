@@ -329,35 +329,35 @@
     host_paths = [];
     permit_core_dumps = false;
   };
-  linuxIsolation = capabilities: {
+  hardening = privileges: {
     allow_privilege_escalation = false;
-    ambient_capabilities = capabilities;
-    capability_bounds = {
+    ambient_privileges = privileges;
+    privilege_bounds = {
       kind = "restricted";
-      inherit capabilities;
+      inherit privileges;
     };
-    control_group_delegation = false;
-    control_group_access = "read-only";
-    device_namespace = "shared";
-    kernel_clock_mutation = false;
-    kernel_hostname_mutation = false;
-    kernel_log_access = false;
-    kernel_module_access = false;
-    kernel_tunable_access = false;
-    lock_personality = true;
-    memory_write_execute = false;
-    namespace_isolation = [];
-    network_address_families = ["ipv4" "ipv6" "unix"];
-    oom_score_adjust = 0;
+    resource_control_delegation = false;
+    resource_control_access = "read-only";
+    device_access_scope = "shared";
+    host_clock_mutation = false;
+    host_name_mutation = false;
+    operating_system_log_access = false;
+    operating_system_extension_access = false;
+    operating_system_tunable_access = false;
+    lock_execution_personality = true;
+    writable_executable_memory = false;
+    isolation_domains = [];
+    network_families = ["ipv4" "ipv6" "local"];
+    memory_pressure_adjustment = 0;
     permit_realtime = false;
-    permit_suid_sgid = false;
+    permit_elevated_file_identity = false;
     process_visibility = "all";
     security_label = "aos-pkg-krb5-kdc";
-    syscall_architectures = [];
-    syscall_allow = [];
-    syscall_deny = [];
-    syscall_profile = "system-service";
-    user_namespace_ownership = "none";
+    operation_architectures = [];
+    operation_allow = [];
+    operation_deny = [];
+    operation_profile = "system-service";
+    isolated_identity_mapping = "none";
   };
   lifecycle = description: start: {
     inherit description start;
@@ -379,12 +379,12 @@
   initializeService = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
-        parameters = (linuxIsolation []) // {network_address_families = ["unix"];};
+        parameters = (hardening []) // {network_families = ["local"];};
       })
     ];
     inherit serviceTypes;
@@ -425,12 +425,12 @@
   kdcService = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
-        parameters = linuxIsolation ["CAP_NET_BIND_SERVICE"];
+        parameters = hardening ["bind-privileged-network-port"];
       })
     ];
     inherit serviceTypes;
@@ -469,12 +469,12 @@
   administrationService = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
-        parameters = linuxIsolation [];
+        parameters = hardening [];
       })
     ];
     inherit serviceTypes;

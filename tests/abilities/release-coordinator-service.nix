@@ -160,7 +160,7 @@ in
   assert (request "timestamp-dependencies").wants
   == [(resultOf "network-readiness" "resource")];
   assert (request "restore-check-isolation").network == "none";
-  assert (request "restore-check-linux_isolation").network_address_families == ["unix"];
+  assert (request "restore-check-hardening").network_families == ["local"];
   assert (request "release-isolation").home_access == "inaccessible";
   assert builtins.all
   (name: (request "${name}-isolation").home_access == "inaccessible")

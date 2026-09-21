@@ -21,8 +21,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -276,7 +292,7 @@ in
       principal = requests."dbus:service-principal".parameters;
       contractHolds =
         self.abilities ? requirementTemplates
-        && builtins.hasAttr "service-manager-identity" self.abilities.requirementTemplates
+        && builtins.hasAttr "dbus-service-manager-identity" self.abilities.requirementTemplates
         && lifecycle.configuration_change_action == "reload"
         && managerIdentity
         == {

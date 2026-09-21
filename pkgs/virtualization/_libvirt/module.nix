@@ -190,47 +190,47 @@
     host_paths = [];
     permit_core_dumps = true;
   };
-  hostLinuxIsolation = {
+  hostHardening = {
     allow_privilege_escalation = true;
-    ambient_capabilities = [];
-    capability_bounds.kind = "unrestricted";
-    control_group_delegation = false;
-    control_group_access = "host";
-    device_namespace = "shared";
-    kernel_clock_mutation = true;
-    kernel_hostname_mutation = true;
-    kernel_log_access = true;
-    kernel_module_access = true;
-    kernel_tunable_access = true;
-    lock_personality = false;
-    memory_write_execute = true;
-    remove_ipc = false;
-    namespace_isolation = [];
-    namespace_creation = "allowed";
-    network_address_families = [];
-    oom_score_adjust = 0;
+    ambient_privileges = [];
+    privilege_bounds.kind = "unrestricted";
+    resource_control_delegation = false;
+    resource_control_access = "host";
+    device_access_scope = "shared";
+    host_clock_mutation = true;
+    host_name_mutation = true;
+    operating_system_log_access = true;
+    operating_system_extension_access = true;
+    operating_system_tunable_access = true;
+    lock_execution_personality = false;
+    writable_executable_memory = true;
+    remove_interprocess_communication = false;
+    isolation_domains = [];
+    isolation_domain_creation = "allowed";
+    network_families = [];
+    memory_pressure_adjustment = 0;
     permit_realtime = true;
-    permit_suid_sgid = true;
+    permit_elevated_file_identity = true;
     process_visibility = "all";
-    syscall_architectures = [];
-    syscall_allow = [];
-    syscall_deny = [];
-    syscall_denial_action = "kill-process";
-    syscall_profile = "privileged";
-    user_namespace_ownership = "full";
+    operation_architectures = [];
+    operation_allow = [];
+    operation_deny = [];
+    denied_operation_action = "kill-process";
+    operation_profile = "privileged";
+    isolated_identity_mapping = "full";
   };
   service = declaration:
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
-      declaration = builtins.removeAttrs declaration ["linux_isolation"];
-      featureContributions = lib.optional (declaration ? linux_isolation) (
+      declaration = builtins.removeAttrs declaration ["hardening"];
+      featureContributions = lib.optional (declaration ? hardening) (
         serviceManagement.featureContribution {
-          key = "linux_isolation";
-          requirementAlias = "linux-service-isolation";
-          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-          interface = "aos.platform.linux.service-isolation";
+          key = "hardening";
+          requirementAlias = "service-hardening";
+          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+          interface = "aos.service.hardening";
           abi = 1;
-          parameters = declaration.linux_isolation;
+          parameters = declaration.hardening;
         }
       );
     };
@@ -250,7 +250,7 @@
     reloadCompletion,
     searchPath ? [],
     isolation ? hostIsolation,
-    linuxIsolation ? hostLinuxIsolation,
+    hardening ? hostHardening,
     identity ? null,
   }:
     service {
@@ -311,7 +311,7 @@
         service_dependencies = socketDependencies;
       };
       inherit isolation identity;
-      linux_isolation = linuxIsolation;
+      hardening = hardening;
     };
   searchPath = builtins.map (package: lib.abilities.packageOutput {inherit package;}) [
     "bridge-utils"
@@ -352,26 +352,26 @@
         network = "private";
         permit_core_dumps = false;
       };
-    linuxIsolation =
-      hostLinuxIsolation
+    hardening =
+      hostHardening
       // {
-        capability_bounds = {
+        privilege_bounds = {
           kind = "restricted";
-          capabilities = ["CAP_DAC_OVERRIDE" "CAP_DAC_READ_SEARCH"];
+          privileges = ["bypass-file-access" "bypass-file-read-search"];
         };
-        control_group_access = "read-only";
-        device_namespace = "private";
-        kernel_module_access = false;
-        kernel_tunable_access = false;
-        lock_personality = true;
-        memory_write_execute = false;
-        namespace_isolation = ["mount" "network"];
-        namespace_creation = "denied";
-        network_address_families = ["unix"];
+        resource_control_access = "read-only";
+        device_access_scope = "private";
+        operating_system_extension_access = false;
+        operating_system_tunable_access = false;
+        lock_execution_personality = true;
+        writable_executable_memory = false;
+        isolation_domains = ["filesystem" "network"];
+        isolation_domain_creation = "denied";
+        network_families = ["local"];
         permit_realtime = false;
-        permit_suid_sgid = false;
-        syscall_architectures = ["native"];
-        syscall_deny = [
+        permit_elevated_file_identity = false;
+        operation_architectures = ["native"];
+        operation_deny = [
           "clock"
           "cpu-emulation"
           "debug"

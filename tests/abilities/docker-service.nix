@@ -112,9 +112,9 @@ in
   == [
     "docker-engine:docker-data-storage"
     "docker-engine:docker-dependencies"
+    "docker-engine:docker-hardening"
     "docker-engine:docker-isolation"
     "docker-engine:docker-lifecycle"
-    "docker-engine:docker-linux_isolation"
     "docker-engine:docker-logging"
     "docker-engine:docker-network-readiness"
     "docker-engine:docker-readiness"
@@ -164,5 +164,5 @@ in
   assert requests."docker-engine:docker-resources".parameters.open_files.kind == "unbounded";
   assert requests."docker-engine:docker-resources".parameters.processes.kind == "unbounded";
   assert requests."docker-engine:docker-resources".parameters.tasks.kind == "unbounded";
-  assert requests."docker-engine:docker-linux_isolation".parameters.capability_bounds.kind == "unrestricted";
+  assert requests."docker-engine:docker-hardening".parameters.privilege_bounds.kind == "unrestricted";
   assert !requests."docker-engine:docker-termination".parameters.send_to_all_processes; true

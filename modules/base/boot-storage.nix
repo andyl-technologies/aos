@@ -160,6 +160,8 @@ in {
 
       aos.boot.storage.resolvedDevices = resolvedDevices;
       aos.filesystems.espDevice = lib.mkDefault (builtins.head cfg.espDevices);
+    }
+    (lib.mkIf config.aos.image.enable {
       environment.systemPackages = [pkgs.aos-boot-storage];
       aos.boot.initrd.packageRoots = [
         pkgs.aos-boot-storage
@@ -170,8 +172,8 @@ in {
           {aos.boot.storageServices.espDevices = cfg.espDevices;}
         ];
       };
-    }
-    (lib.mkIf (cfg.backend == "zfs-zvol") {
+    })
+    (lib.mkIf (config.aos.image.enable && cfg.backend == "zfs-zvol") {
       aos.boot.initrd.modulePackages = [zfsPackage];
       aos.boot.initrd.packageRoots = [zfsPackage];
       aos.boot.initrd.loadModules = ["zfs"];

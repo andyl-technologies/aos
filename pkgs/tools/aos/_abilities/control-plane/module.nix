@@ -75,42 +75,42 @@
       readWritePaths;
     permit_core_dumps = true;
   };
-  linuxIsolation = {
+  hardening = {
     addressFamilies,
     hardenKernel,
   }: {
     allow_privilege_escalation = false;
-    ambient_capabilities = [];
-    capability_bounds = {
+    ambient_privileges = [];
+    privilege_bounds = {
       kind = "restricted";
-      capabilities = [];
+      privileges = [];
     };
-    control_group_delegation = false;
-    control_group_access =
+    resource_control_delegation = false;
+    resource_control_access =
       if hardenKernel
       then "read-only"
       else "host";
-    device_namespace = "shared";
-    kernel_clock_mutation = true;
-    kernel_hostname_mutation = true;
-    kernel_log_access = true;
-    kernel_module_access = !hardenKernel;
-    kernel_tunable_access = !hardenKernel;
-    lock_personality = false;
-    memory_write_execute = true;
-    namespace_isolation = [];
-    namespace_creation = "allowed";
-    network_address_families = addressFamilies;
-    oom_score_adjust = 0;
+    device_access_scope = "shared";
+    host_clock_mutation = true;
+    host_name_mutation = true;
+    operating_system_log_access = true;
+    operating_system_extension_access = !hardenKernel;
+    operating_system_tunable_access = !hardenKernel;
+    lock_execution_personality = false;
+    writable_executable_memory = true;
+    isolation_domains = [];
+    isolation_domain_creation = "allowed";
+    network_families = addressFamilies;
+    memory_pressure_adjustment = 0;
     permit_realtime = true;
-    permit_suid_sgid = true;
+    permit_elevated_file_identity = true;
     process_visibility = "all";
-    syscall_architectures = [];
-    syscall_allow = [];
-    syscall_deny = [];
-    syscall_denial_action = "return-permission-denied";
-    syscall_profile = "privileged";
-    user_namespace_ownership = "none";
+    operation_architectures = [];
+    operation_allow = [];
+    operation_deny = [];
+    denied_operation_action = "return-permission-denied";
+    operation_profile = "privileged";
+    isolated_identity_mapping = "none";
   };
   identity = mask: {
     supplementary_groups = [];
@@ -148,15 +148,15 @@
   service = declaration:
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
-      declaration = builtins.removeAttrs declaration ["linux_isolation"];
-      featureContributions = lib.optional (declaration ? linux_isolation) (
+      declaration = builtins.removeAttrs declaration ["hardening"];
+      featureContributions = lib.optional (declaration ? hardening) (
         serviceManagement.featureContribution {
-          key = "linux_isolation";
-          requirementAlias = "linux-service-isolation";
-          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-          interface = "aos.platform.linux.service-isolation";
+          key = "hardening";
+          requirementAlias = "service-hardening";
+          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+          interface = "aos.service.hardening";
           abi = 1;
-          parameters = declaration.linux_isolation;
+          parameters = declaration.hardening;
         }
       );
     };
@@ -200,8 +200,8 @@
     readiness = readiness 90000;
     identity = identity "0077";
     isolation = isolatedService "inaccessible" ["/run/aos"];
-    linux_isolation = linuxIsolation {
-      addressFamilies = ["unix"];
+    hardening = hardening {
+      addressFamilies = ["local"];
       hardenKernel = true;
     };
   };

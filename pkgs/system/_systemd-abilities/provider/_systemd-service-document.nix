@@ -152,10 +152,29 @@
         )
       else throw "systemd does not implement this provider-neutral service condition")
     ((value.conditions or {all = [];}).all);
-  linuxConditionDirectives = value:
+  privilegeCapability = {
+    adjust-host-clock = "CAP_SYS_TIME";
+    administer-host = "CAP_SYS_ADMIN";
+    administer-network = "CAP_NET_ADMIN";
+    administer-resource-limits = "CAP_SYS_RESOURCE";
+    bind-privileged-network-port = "CAP_NET_BIND_SERVICE";
+    bypass-file-access = "CAP_DAC_OVERRIDE";
+    bypass-file-read-search = "CAP_DAC_READ_SEARCH";
+    change-file-ownership = "CAP_CHOWN";
+    change-group-identity = "CAP_SETGID";
+    change-root-directory = "CAP_SYS_CHROOT";
+    change-user-identity = "CAP_SETUID";
+    create-device-node = "CAP_MKNOD";
+    inspect-processes = "CAP_SYS_PTRACE";
+    raw-network = "CAP_NET_RAW";
+  };
+  capabilityForPrivilege = privilege:
+    privilegeCapability.${privilege}
+    or (throw "systemd cannot lower unknown service privilege '${privilege}'");
+  runtimeConditionDirectives = value:
     literalList "ConditionCapability" (builtins.map
-      (condition: "${lib.optionalString (!condition.available) "!"}${condition.capability}")
-      ((value.linux_conditions or {capabilities = [];}).capabilities));
+      (condition: "${lib.optionalString (!condition.available) "!"}${capabilityForPrivilege condition.privilege}")
+      ((value.runtime_conditions or {privileges = [];}).privileges));
 
   failureDirectives = value: let
     policy = value.failure_policy or null;
@@ -391,7 +410,7 @@
     deviceAccess = device:
       lib.optionalString device.read "r"
       + lib.optionalString device.write "w"
-      + lib.optionalString device.create_node "m";
+      + lib.optionalString device.create "m";
   in
     if isolation == null
     then []
@@ -454,47 +473,68 @@
         builtins.filter (entry: entry.mode == "read-write") isolation.host_paths
       ));
 
-  linuxIsolationDirectives = value: let
-    isolation = value.linux_isolation or null;
-    namespace = name: isolation != null && builtins.elem name isolation.namespace_isolation;
+  hardeningDirectives = value: let
+    isolation = value.hardening or null;
+    domain = name: isolation != null && builtins.elem name isolation.isolation_domains;
+    operationToken = operation:
+      {
+        change-file-ownership = "@chown";
+        change-process-identity = "@setuid";
+        clock = "@clock";
+        cpu-emulation = "@cpu-emulation";
+        debug = "@debug";
+        keyring = "@keyring";
+        module = "@module";
+        mount = "@mount";
+        obsolete = "@obsolete";
+        privileged = "@privileged";
+        raw-io = "@raw-io";
+        reboot = "@reboot";
+        resource-control = "@resources";
+        set-process-privileges = "capset";
+        swap = "@swap";
+      }.${
+        operation
+      }
+      or (throw "systemd cannot lower unknown operating-system operation '${operation}'");
   in
     if isolation == null
     then []
     else
-      literalList "AmbientCapabilities" isolation.ambient_capabilities
+      literalList "AmbientCapabilities" (builtins.map capabilityForPrivilege isolation.ambient_privileges)
       ++ (
-        if isolation.capability_bounds.kind == "unrestricted"
+        if isolation.privilege_bounds.kind == "unrestricted"
         then []
-        else literalList "CapabilityBoundingSet" isolation.capability_bounds.capabilities
+        else literalList "CapabilityBoundingSet" (builtins.map capabilityForPrivilege isolation.privilege_bounds.privileges)
       )
-      ++ one "Delegate" (yesNo isolation.control_group_delegation)
+      ++ one "Delegate" (yesNo isolation.resource_control_delegation)
       ++ one "ProtectControlGroups"
       {
         host = "no";
         read-only = "yes";
         private = "strict";
       }.${
-        isolation.control_group_access
+        isolation.resource_control_access
       }
-      ++ one "PrivateDevices" (yesNo (isolation.device_namespace == "private"))
-      ++ one "ProtectClock" (yesNo (!isolation.kernel_clock_mutation))
-      ++ one "ProtectHostname" (yesNo (!isolation.kernel_hostname_mutation))
-      ++ one "ProtectKernelLogs" (yesNo (!isolation.kernel_log_access))
-      ++ one "ProtectKernelModules" (yesNo (!isolation.kernel_module_access))
-      ++ one "ProtectKernelTunables" (yesNo (!isolation.kernel_tunable_access))
-      ++ one "LockPersonality" (yesNo isolation.lock_personality)
-      ++ one "MemoryDenyWriteExecute" (yesNo (!isolation.memory_write_execute))
+      ++ one "PrivateDevices" (yesNo (isolation.device_access_scope == "private"))
+      ++ one "ProtectClock" (yesNo (!isolation.host_clock_mutation))
+      ++ one "ProtectHostname" (yesNo (!isolation.host_name_mutation))
+      ++ one "ProtectKernelLogs" (yesNo (!isolation.operating_system_log_access))
+      ++ one "ProtectKernelModules" (yesNo (!isolation.operating_system_extension_access))
+      ++ one "ProtectKernelTunables" (yesNo (!isolation.operating_system_tunable_access))
+      ++ one "LockPersonality" (yesNo isolation.lock_execution_personality)
+      ++ one "MemoryDenyWriteExecute" (yesNo (!isolation.writable_executable_memory))
       ++ optional "RemoveIPC" (
-        if isolation ? remove_ipc
-        then yesNo isolation.remove_ipc
+        if isolation ? remove_interprocess_communication
+        then yesNo isolation.remove_interprocess_communication
         else null
       )
-      ++ one "PrivateIPC" (yesNo (namespace "ipc"))
-      ++ one "PrivateMounts" (yesNo (namespace "mount"))
-      ++ one "PrivateNetwork" (yesNo (namespace "network"))
-      ++ one "PrivatePIDs" (yesNo (namespace "pid"))
+      ++ one "PrivateIPC" (yesNo (domain "ipc"))
+      ++ one "PrivateMounts" (yesNo (domain "filesystem"))
+      ++ one "PrivateNetwork" (yesNo (domain "network"))
+      ++ one "PrivatePIDs" (yesNo (domain "process"))
       ++ one "PrivateUsers" (
-        if !namespace "user"
+        if !domain "identity"
         then "no"
         else
           {
@@ -503,24 +543,24 @@
             none = "no";
             self = "self";
           }.${
-            isolation.user_namespace_ownership
+            isolation.isolated_identity_mapping
           }
       )
       ++ literalList "RestrictAddressFamilies" (builtins.map (family:
         {
           ipv4 = "AF_INET";
           ipv6 = "AF_INET6";
-          netlink = "AF_NETLINK";
-          packet = "AF_PACKET";
-          unix = "AF_UNIX";
+          route-control = "AF_NETLINK";
+          raw-packet = "AF_PACKET";
+          local = "AF_UNIX";
         }.${
           family
         })
-      isolation.network_address_families)
+      isolation.network_families)
       ++ one "RestrictRealtime" (yesNo (!isolation.permit_realtime))
-      ++ one "RestrictNamespaces" (yesNo (isolation.namespace_creation == "denied"))
-      ++ one "RestrictSUIDSGID" (yesNo (!isolation.permit_suid_sgid))
-      ++ one "OOMScoreAdjust" isolation.oom_score_adjust
+      ++ one "RestrictNamespaces" (yesNo (isolation.isolation_domain_creation == "denied"))
+      ++ one "RestrictSUIDSGID" (yesNo (!isolation.permit_elevated_file_identity))
+      ++ one "OOMScoreAdjust" isolation.memory_pressure_adjustment
       ++ one "ProtectProc"
       {
         all = "default";
@@ -530,27 +570,36 @@
         isolation.process_visibility
       }
       ++ optional "SELinuxContext" (isolation.security_label or null)
-      ++ literalList "SystemCallArchitectures" isolation.syscall_architectures
-      ++ literalList "SystemCallFilter" isolation.syscall_allow
-      ++ literalList "SystemCallFilter" (builtins.map (call: "~${call}") isolation.syscall_deny)
-      ++ one "SystemCallFilter" "@${isolation.syscall_profile}"
-      ++ lib.optional (isolation.syscall_denial_action == "return-permission-denied") (
+      ++ literalList "SystemCallArchitectures" isolation.operation_architectures
+      ++ literalList "SystemCallFilter" (builtins.map operationToken isolation.operation_allow)
+      ++ literalList "SystemCallFilter" (builtins.map (operation: "~${operationToken operation}") isolation.operation_deny)
+      ++ one "SystemCallFilter" "@${isolation.operation_profile}"
+      ++ lib.optional (isolation.denied_operation_action == "return-permission-denied") (
         semantic.directive "SystemCallErrorNumber" "EPERM"
       );
 
-  linuxDeviceDirectives = value: let
-    policy = value.linux_device_policy or null;
+  devicePolicyDirectives = value: let
+    policy = value.device_policy or null;
     access = rule:
       lib.optionalString rule.read "r"
       + lib.optionalString rule.write "w"
-      + lib.optionalString rule.create_node "m";
+      + lib.optionalString rule.create "m";
     deviceType = selector:
       if selector.device_type == "character"
       then "char"
       else "block";
     selected = selector:
       if selector.kind == "class"
-      then "${deviceType selector}-${selector.class}"
+      then "${deviceType selector}-${{
+          fuse = "fuse";
+          kernel-message = "kmsg";
+          network-tunnel = "tun";
+          precision-time = "ptp";
+          pulse-per-second = "pps";
+          real-time-clock = "rtc";
+        }.${
+          selector.class
+        }}"
       else "${deviceType selector}-${builtins.toString selector.major}:${
         if (selector.minor or null) == null
         then "*"
@@ -645,10 +694,10 @@
           lifecycle.execution_model
         };
     neutralIsolation = value.isolation or null;
-    linuxIsolation = value.linux_isolation or null;
+    hardening = value.hardening or null;
     noNewPrivileges =
       (neutralIsolation != null && neutralIsolation.privilege == "unprivileged")
-      || (linuxIsolation != null && !linuxIsolation.allow_privilege_escalation);
+      || (hardening != null && !hardening.allow_privilege_escalation);
     reloadDirectives =
       if reload == null || builtins.elem reload.strategy ["unsupported" "restart"]
       then []
@@ -773,8 +822,8 @@
     ++ identityDirectives value
     ++ one "NoNewPrivileges" (yesNo noNewPrivileges)
     ++ isolationDirectives value
-    ++ linuxIsolationDirectives value
-    ++ linuxDeviceDirectives value
+    ++ hardeningDirectives value
+    ++ devicePolicyDirectives value
     ++ terminalDirectives value
     ++ lib.optional (readiness != null && readiness.mechanism == "successful-exit") (
       semantic.directive "RemainAfterExit" "yes"
@@ -988,7 +1037,7 @@
           ++ socketServiceDependencyDirectives
           ++ activationDirectives value
           ++ conditionDirectives value
-          ++ linuxConditionDirectives value
+          ++ runtimeConditionDirectives value
           ++ failureDirectives value
           ++ startLimitDirectives value
         ))

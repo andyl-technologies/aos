@@ -19,7 +19,7 @@
     fields = {
       schema = types.enum ["aos.filesystem.storage-view-realization/v1"];
       source = types.resourceReference;
-      path = serviceManagement.types.storagePath;
+      path = types.deferredResult serviceManagement.types.storagePath;
       relative_path = {
         type = types.optional types.relativePath;
         optional = true;
@@ -31,7 +31,7 @@
       schema = types.enum ["aos.filesystem.entry-realization/v1"];
       path = serviceManagement.types.executionPath;
       source_path = {
-        type = types.optional serviceManagement.types.executionPath;
+        type = types.optional (types.deferredResult serviceManagement.types.executionPath);
         optional = true;
       };
     };
@@ -71,13 +71,18 @@
       abi = 1;
       requestType = selected.interface.requestType;
       outputs = {};
-      methods = builtins.mapAttrs (_: method: method // {
-        targetResource = selected.interface.identity.name;
-      }) selected.interface.declaration.methods;
+      methods = builtins.mapAttrs (_: method:
+        method
+        // {
+          targetResource = selected.interface.identity.name;
+        })
+      selected.interface.declaration.methods;
       lifecycle = selected.interface.declaration.lifecycle;
-      aggregation = selected.interface.declaration.aggregation // {
-        controllerGroup = effectsAlias alias;
-      };
+      aggregation =
+        selected.interface.declaration.aggregation
+        // {
+          controllerGroup = effectsAlias alias;
+        };
       configurationType = null;
       guarantees = [];
     };
@@ -128,9 +133,9 @@
 in {
   config.aos.abilities = {
     interfaces = builtins.listToAttrs (builtins.map (alias: {
-        name = effectsAlias alias;
-        value = effectsDeclaration alias kinds.${alias};
-      }) (builtins.attrNames kinds));
+      name = effectsAlias alias;
+      value = effectsDeclaration alias kinds.${alias};
+    }) (builtins.attrNames kinds));
     implementations = builtins.listToAttrs (
       builtins.map (alias: controllerImplementation alias kinds.${alias}) (builtins.attrNames kinds)
       ++ builtins.map (alias: terminalImplementation alias kinds.${alias}) (builtins.attrNames kinds)

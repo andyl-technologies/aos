@@ -144,14 +144,14 @@ in
   ];
   assert bootCommitDependencies.after
   == [
-    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "resource")
+    (resultOf "aos:esp-ready" "resource")
     (resultOf "aos:aos-graph-compile-lifecycle" "resource")
     (resultOf "aos:aos-activate-lifecycle" "resource")
     (resultOf "aos:aos-config" "resource")
   ];
   assert bootCommitDependencies.requires
   == [
-    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "resource")
+    (resultOf "aos:esp-ready" "resource")
     (resultOf "aos:aos-graph-compile-lifecycle" "resource")
   ];
   assert bootCommitDependencies.before

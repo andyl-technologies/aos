@@ -110,32 +110,32 @@
     host_paths = [];
     permit_core_dumps = false;
   };
-  linuxIsolation = {
+  hardening = {
     allow_privilege_escalation = false;
-    ambient_capabilities = [];
-    capability_bounds.kind = "unrestricted";
-    control_group_delegation = false;
-    control_group_access = "read-only";
-    device_namespace = "shared";
-    kernel_clock_mutation = false;
-    kernel_hostname_mutation = false;
-    kernel_log_access = false;
-    kernel_module_access = false;
-    kernel_tunable_access = false;
-    lock_personality = true;
-    memory_write_execute = false;
-    remove_ipc = false;
-    namespace_isolation = ["mount"];
-    network_address_families = ["unix"];
-    oom_score_adjust = 0;
+    ambient_privileges = [];
+    privilege_bounds.kind = "unrestricted";
+    resource_control_delegation = false;
+    resource_control_access = "read-only";
+    device_access_scope = "shared";
+    host_clock_mutation = false;
+    host_name_mutation = false;
+    operating_system_log_access = false;
+    operating_system_extension_access = false;
+    operating_system_tunable_access = false;
+    lock_execution_personality = true;
+    writable_executable_memory = false;
+    remove_interprocess_communication = false;
+    isolation_domains = ["filesystem"];
+    network_families = ["local"];
+    memory_pressure_adjustment = 0;
     permit_realtime = false;
-    permit_suid_sgid = false;
+    permit_elevated_file_identity = false;
     process_visibility = "all";
-    syscall_architectures = [];
-    syscall_allow = [];
-    syscall_deny = [];
-    syscall_profile = "privileged";
-    user_namespace_ownership = "none";
+    operation_architectures = [];
+    operation_allow = [];
+    operation_deny = [];
+    operation_profile = "privileged";
+    isolated_identity_mapping = "none";
   };
   scheduling = {
     nice = 10;
@@ -145,12 +145,12 @@
   prepareService = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
-        key = "linux_isolation";
-        requirementAlias = "linux-service-isolation";
-        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-        interface = "aos.platform.linux.service-isolation";
+        key = "hardening";
+        requirementAlias = "service-hardening";
+        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+        interface = "aos.service.hardening";
         abi = 1;
-        parameters = linuxIsolation;
+        parameters = hardening;
       })
     ];
     inherit serviceTypes consumerInstance;
@@ -195,12 +195,12 @@
     service = serviceManagement.forService {
       featureContributions = [
         (serviceManagement.featureContribution {
-          key = "linux_isolation";
-          requirementAlias = "linux-service-isolation";
-          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
-          interface = "aos.platform.linux.service-isolation";
+          key = "hardening";
+          requirementAlias = "service-hardening";
+          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
+          interface = "aos.service.hardening";
           abi = 1;
-          parameters = linuxIsolation;
+          parameters = hardening;
         })
       ];
       inherit serviceTypes consumerInstance;
