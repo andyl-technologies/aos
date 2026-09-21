@@ -11,6 +11,7 @@
   serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
   resultOf = lib.abilities.resultOf;
+  managerWatchdog = lib.abilities.interfaces.managerWatchdog.interface;
   producer = key: interface: parameters:
     serviceManagement.forProducer {
       consumerInstance = "service";
@@ -159,9 +160,43 @@
     };
   };
   abilityFragments = [filesystems configuration service];
-  contributions = builtins.map serviceManagement.splitContribution abilityFragments;
+  serviceContributions = builtins.map serviceManagement.splitContribution abilityFragments;
+  watchdog = serviceManagement.forProducer {
+    consumerInstance = "watchdog";
+    key = "manager-watchdog";
+    interface = managerWatchdog;
+    inherit (managerWatchdog) methods;
+    parameters = {
+      enabled = cfg.watchdog;
+      runtime_timeout_millis = cfg.watchdogTimeout * 1000;
+      reboot_timeout_millis = cfg.watchdogTimeout * 2000;
+      kexec_timeout_millis = cfg.watchdogTimeout * 2000;
+    };
+  };
+  watchdogContribution = serviceManagement.splitContribution watchdog;
 in {
   options.aos.monitoring.hardware = {
+    enable = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Enable hardware health monitoring.";
+    };
+
+    watchdog = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = true;
+      description = "Enable the selected service manager's hardware watchdog.";
+    };
+
+    watchdogTimeout = lib.mkOption {
+      type = abilityTypes.integer {
+        minimum = 1;
+        maximum = 86400;
+      };
+      default = 30;
+      description = "Watchdog timeout in seconds before hardware recovery.";
+    };
+
     ## Enable S.M.A.R.T. disk health monitoring via smartd.
     smartd = lib.mkOption {
       type = abilityTypes.boolean;
@@ -176,13 +211,26 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions);
+      aos.abilities = lib.mkMerge (
+        [watchdogContribution.declarations]
+        ++ builtins.map (contribution: contribution.declarations) serviceContributions
+      );
     }
-    (lib.mkIf cfg.smartd {
+    (lib.mkIf (cfg.enable && cfg.smartd) {
       aos.abilities = lib.mkMerge (
         [{instances.service = {};}]
-        ++ builtins.map (contribution: contribution.configured) contributions
+        ++ builtins.map (contribution: contribution.configured) serviceContributions
       );
     })
+    (lib.mkIf (
+        cfg.enable
+        && config.aos.abilities.environment != null
+        && config.aos.abilities.environment.stage == "host"
+      ) {
+        aos.abilities = lib.mkMerge [
+          {instances.watchdog = {};}
+          watchdogContribution.configured
+        ];
+      })
   ];
 }

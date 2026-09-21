@@ -8,7 +8,6 @@
     ./control-plane/module.nix
     ./event-log-policy.nix
     ./hardening-policy.nix
-    ./hardware-monitoring.nix
     ./image-builder.nix
     ./kernel-policy.nix
     ./nix-store-database.nix
