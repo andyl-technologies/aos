@@ -1,6 +1,6 @@
 # Traefik dashboard dependency sources
 
-`pnpm-lock.yaml` pins the dashboard dependencies for Traefik 3.6.7. It was
+`pnpm-lock.yaml` pins the dashboard dependencies for Traefik 3.7.13. It was
 imported from that release's `webui/yarn.lock` with the AOS-built pnpm 12.3.4
 using `pnpm --pm-on-fail=ignore import`. Importing also resolves pnpm's peer
 dependency graph, so this lock is a separately reviewed build input.
