@@ -6,7 +6,7 @@
   evaluate = import ./base-module-evaluation.nix {inherit lib pkgs;};
   evaluated = evaluate {
     name = "security-ssh";
-    module = ../../modules/security/ssh.nix;
+    module = {};
     packages = [pkgs.openssh];
   };
   config = evaluated.config;

@@ -9,7 +9,7 @@
       specialArgs = {inherit pkgs;};
       modules = [
         ../../modules/abilities/default.nix
-        ../../modules/security/firewall.nix
+        ../../modules/_package-contributions.nix
         ({lib, ...}: {
           options.environment.systemPackages = lib.mkOption {
             type = lib.types.listOf lib.types.package;
@@ -64,11 +64,8 @@
     packageContract.option_declarations;
   request = enabled.config.aos.abilities.requests."nftables:ruleset";
 in
-  assert enabled.config.environment.systemPackages
-  == [
-    pkgs.nftables
-    pkgs.aos-network-ruleset-provider
-  ];
+  assert enabled.config.aos.contributions.runtimeChecks.firewall.description
+  == "nftables firewall checks";
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
   assert documentedOptionPaths

@@ -307,6 +307,21 @@ in {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}] ++ builtins.map (entry: entry.configured) contributions
       );
+      aos.contributions = {
+        kernelParameters.audit = ["audit=1"];
+        runtimeChecks.audit = {
+          description = "Audit policy checks";
+          checks = [
+            {
+              name = "audit-rules";
+              description = "Audit rules file exists";
+              script = ''
+                vm.succeed("test -f /etc/audit/audit.rules")
+              '';
+            }
+          ];
+        };
+      };
     })
   ];
 }

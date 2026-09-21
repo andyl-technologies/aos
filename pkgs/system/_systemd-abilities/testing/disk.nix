@@ -260,7 +260,7 @@
 
         # SELinux off — most test rootfs images have no policy files;
         # enforcing mode would freeze systemd. The toplevel may write
-        # /etc/selinux/config from modules/security/selinux.nix; this
+        # /etc/selinux/config from refpolicy's native module; this
         # var entry shadows it via the /var/etc overlay lower.
         cat > var/etc/selinux/config << 'SELINUXCFG'
         SELINUX=disabled

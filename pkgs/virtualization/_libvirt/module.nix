@@ -544,6 +544,23 @@ in {
     (lib.mkIf cfg.enable {
       environment.etc."libvirt".source = "${packageArtifactFor (lib.abilities.packageOutput {})}/etc/libvirt";
 
+      aos.contributions.runtimeChecks.libvirt = {
+        description = "Libvirt local connection checks";
+        checks = [
+          {
+            name = "libvirt-connect";
+            description = "The client connects to the local QEMU driver";
+            script = ''
+              vm.wait_until_succeeds(
+                  "virsh --connect qemu:///system list --all", timeout=30
+              )
+              vm.succeed("test -S /run/libvirt/libvirt-sock")
+              vm.succeed("test $(stat -c %G /run/libvirt/libvirt-sock) = libvirt")
+            '';
+          }
+        ];
+      };
+
       aos.abilities = lib.mkMerge (
         [
           {

@@ -6,7 +6,7 @@
   evaluate = import ./base-module-evaluation.nix {inherit lib pkgs;};
   evaluated = evaluate {
     name = "security-audit";
-    module = ../../modules/security/audit.nix;
+    module = {};
     packages = [pkgs.audit];
   };
   config = evaluated.config;
@@ -14,6 +14,8 @@
   daemon = requests."audit:auditd-lifecycle".parameters;
   loader = requests."audit:audit-rules-lifecycle".parameters;
 in
+  assert config.aos.contributions.kernelParameters.audit == ["audit=1"];
+  assert config.aos.contributions.runtimeChecks.audit.description == "Audit policy checks";
   assert daemon.service == "auditd";
   assert daemon.execution_model == "foreground";
   assert daemon.configuration_change_action == "reload";

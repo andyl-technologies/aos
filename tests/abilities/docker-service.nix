@@ -9,7 +9,7 @@
       specialArgs = {inherit pkgs;};
       modules = [
         ../../modules/abilities/default.nix
-        ../../modules/services/docker.nix
+        ../../modules/_package-contributions.nix
         ({lib, ...}: {
           options.environment.systemPackages = lib.mkOption {
             type = lib.types.listOf lib.types.package;
@@ -75,7 +75,8 @@
   lifecycle = requests."docker-engine:docker-lifecycle".parameters;
   start = (builtins.head lifecycle.start).executable;
 in
-  assert enabled.config.environment.systemPackages == [pkgs.docker-engine pkgs.docker];
+  assert enabled.config.aos.contributions.runtimeChecks.docker.description
+  == "Docker service checks";
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
   assert builtins.attrNames packageProjection.guarantees == [];
