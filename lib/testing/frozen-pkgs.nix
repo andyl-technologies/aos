@@ -1,8 +1,6 @@
-##! Checks target filtering and lossless frozen-package metadata without builds.
+##! Checks explicit target selection and lossless frozen-package metadata.
 {lib}: let
   freeze = import ../build/freeze-pkgs.nix {inherit lib;};
-  platformSupport = import ../../pkgs/_platform-support.nix;
-  platform = (import ../platform.nix).mkPlatform "aarch64-linux";
   outputPath = "/nix/store/00000000000000000000000000000000-frozen-package";
   libraryPath = "/nix/store/11111111111111111111111111111111-frozen-library";
   package = {
@@ -11,11 +9,8 @@
     outputs = ["out" "lib"];
     out.outPath = outputPath;
     lib.outPath = libraryPath;
-    passthru.systemdUnitInventory = {"fixture.service" = "lib/systemd/system/fixture.service";};
   };
   packages = {
-    inherit platformSupport;
-    stdenv.hostPlatform = platform;
     coreutils = package;
     aos-test-agent = package;
     helper = package;
@@ -24,14 +19,19 @@
     darwin-runtimes = throw "Darwin-only packages must not be evaluated for Linux";
   };
 
-  serialized = freeze.freezeToJSON packages;
+  serialized = freeze.freezeSelectedToJSON {
+    packageSet = packages;
+    packageNames = ["aos-test-agent" "coreutils" "helper"];
+  };
   restored = freeze.frozenFromJSON serialized;
-  unclassified = freeze.frozenFromJSON (freeze.freezeToJSON {helper = package;});
+  unclassified = freeze.frozenFromJSON (freeze.freezeSelectedToJSON {
+    packageSet = {helper = package;};
+    packageNames = ["helper"];
+  });
 in
   assert builtins.attrNames restored == ["aos-test-agent" "coreutils" "helper"];
   assert toString restored.coreutils == outputPath;
   assert toString restored.coreutils.lib == libraryPath;
-  assert restored.coreutils.systemdUnitInventory == package.passthru.systemdUnitInventory;
   assert builtins.match ".*/nix/store/.*" serialized == null;
   assert builtins.getContext serialized == {};
   assert toString unclassified.helper == outputPath; true

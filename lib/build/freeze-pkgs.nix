@@ -7,7 +7,7 @@
 ##! selected by host configuration are therefore computed at image-build time
 ##! without retaining packages that the evaluated image does not select.
 ##!
-##! Freezing replaces each target-compatible derivation in a live `pkgs` set
+##! Freezing replaces each explicitly selected target-compatible derivation
 ##! with a plain attrset whose `outPath` (and per-output paths) are
 ##! reversibly encoded store-path strings, with `__toString` so `${pkgs.foo}` and
 ##! `${pkgs.foo.lib}` interpolate the path exactly as before — but with no
@@ -16,8 +16,9 @@
 ##! bytes for them and would retain every package in the image closure.
 ##!
 ##! Two halves:
-##!   - `freezeToJSON pkgs` — run at stage-1 (base-lib build): forces the
-##!     store paths once and serialises `name → { outPath; outputs; }`.
+##!   - `freezeSelectedToJSON { packageSet; packageNames; }` — run at stage-1
+##!     (base-lib build): forces the derived target package names once and
+##!     serialises `name → { outPath; outputs; }`.
 ##!   - `frozenFromJSON json` — run at stage-2: rebuilds the string-coercible
 ##!     frozen set from that JSON; touches no derivation.
 ##!
@@ -69,24 +70,32 @@
     inherit name;
   };
 in {
-  ## Stage-1: serialise the frozen form of `pkgs` (top-level derivations only).
-  ## Forces supported store paths; run inside the base-lib builder.
-  freezeToJSON = pkgs: let
-    platform = pkgs.stdenv.hostPlatform or null;
-    inventory = pkgs.platformSupport.packageInventory or {};
-
-    # Consult structural policy before forcing a derivation. Cross images must
-    # not evaluate packages for another CPU or OS merely to freeze their paths.
-    # Build-only fixtures remain available when they support the image target.
-    supportsImage = name: _:
-      platform
-      == null
-      || !(builtins.hasAttr name inventory)
-      || (
-        builtins.elem platform.constraints.cpu inventory.${name}.architectures
-        && pkgs.platformSupport.supportsTarget platform.system name
-      );
-    candidates = lib.filterAttrs supportsImage pkgs;
+  ## Stage-1: serialise the selected top-level package derivations. The caller
+  ## derives `packageNames` from package-native platform declarations before
+  ## this function touches a package value.
+  freezeSelectedToJSON = {
+    packageSet,
+    packageNames,
+  }: let
+    checkedNames =
+      if !builtins.isList packageNames || !builtins.all builtins.isString packageNames
+      then throw "freeze-pkgs: packageNames must be a list of strings"
+      else packageNames;
+    normalizedNames = builtins.sort builtins.lessThan (lib.unique checkedNames);
+    invalidNames =
+      builtins.filter (
+        name: !builtins.isString name || !(builtins.hasAttr name packageSet)
+      )
+      normalizedNames;
+    candidates =
+      if invalidNames == []
+      then
+        builtins.listToAttrs (builtins.map (name: {
+            inherit name;
+            value = packageSet.${name};
+          })
+          normalizedNames)
+      else throw "freeze-pkgs: selected package names are absent from the package set: ${builtins.toJSON invalidNames}";
   in
     builtins.toJSON (lib.filterAttrs (_: v: v != null) (
       builtins.mapAttrs (

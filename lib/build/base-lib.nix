@@ -9,9 +9,10 @@
 ##!     module engine + every module definition; `pkgs` source is needed only
 ##!     for the handful of path literals modules reference — no package is
 ##!     built on-host),
-##!   - `frozen-pkgs.json` — every package's already-built store path, captured
-##!     here at stage-1 (image build) via `freeze-pkgs.nix` in a reversible
-##!     encoding that does not retain unselected packages in the image closure,
+##!   - `frozen-pkgs.json` — every package selected for this target from its
+##!     native platform declaration, captured here at stage-1 (image build) via
+##!     `freeze-pkgs.nix` in a reversible encoding that does not retain those
+##!     packages in the image closure,
 ##!   - `frozen-artifacts.json` plus `artifact-roots/` symlinks — the stage-1
 ##!     store paths of image-fixed config artifacts, retained through ordinary
 ##!     Nix output references (`aos.config._artifactSources`),
@@ -129,9 +130,9 @@
       specialArgs =
         {
           abilityResolution = {
-        requests = abilityRequests;
-        requirements = abilityRequirements;
-      };
+            requests = abilityRequests;
+            requirements = abilityRequirements;
+          };
         }
         // evaluationSpecialArgs;
     };
@@ -139,7 +140,7 @@
   checkedInitrdStaticContract = {
     identity = "${initrdStaticAbilityContract}/contract.json";
     path = "${initrdStaticAbilityContract}/contract.json";
-    };
+  };
 
   # Evaluate the schema first so the ABI hash is available to the complete
   # image-baseline evaluation below without introducing a recursive value.
@@ -212,13 +213,13 @@
     extraModules =
       hostConfigurationModules
       ++ [
-      {
-        aos.config.evalAtBoot = {
-          baseLib = baseLibOut;
-          baseLibAbiHash = abiHash;
-        };
-      }
-    ];
+        {
+          aos.config.evalAtBoot = {
+            baseLib = baseLibOut;
+            baseLibAbiHash = abiHash;
+          };
+        }
+      ];
     evaluationSpecialArgs = {
       initrdAbilityEvaluation = initrdSchemaEval;
       initrdStaticContract = checkedInitrdStaticContract;
@@ -279,7 +280,10 @@
     builtins.mapAttrs (_: drv: builtins.unsafeDiscardStringContext "${drv}")
     frozenArtifactSources;
 
-  frozenPkgsFile = builtins.toFile "frozen-pkgs.json" (freeze.freezeToJSON pkgs);
+  frozenPkgsFile = builtins.toFile "frozen-pkgs.json" (freeze.freezeSelectedToJSON {
+    packageSet = pkgs;
+    packageNames = pkgs.packageNames;
+  });
   frozenArtifactsFile = builtins.toFile "frozen-artifacts.json" (builtins.toJSON frozenArtifacts);
   plainJson = name: value:
     builtins.toFile name (builtins.unsafeDiscardStringContext (builtins.toJSON value));
