@@ -6,15 +6,17 @@
   meson,
   ninja,
   python3,
-  glib,
+  callPackage,
   util-linux,
   zlib,
   stdenv,
   buildPackages,
+  gobject-introspection,
 }: let
   version = "1.10.8";
   majorMinor = "1.10";
   isCross = stdenv.isCross;
+  glib = callPackage ./_image-glib.nix {};
 in
   mkDerivation {
     pname = "json-glib";
@@ -27,25 +29,17 @@ in
       hash = "sha256-VcXBQaVkJFuPj752mGY8h6RaczPCosVvBvgRq3OyEt0=";
     };
 
-    buildDeps =
-      if isCross
-      then [
-        buildPackages.gnumake
-        buildPackages.pkg-config
-        buildPackages.meson
-        buildPackages.ninja
-        buildPackages.python3
-        buildPackages.glib.tools
-      ]
-      else [
-        gnumake
-        pkg-config
-        meson
-        ninja
-        python3
-        glib.dev
-        glib.tools
-      ];
+    buildDeps = [
+      buildPackages.meson
+      buildPackages.ninja
+      buildPackages.python3
+      buildPackages.pkg-config
+      buildPackages.glib.tools
+      buildPackages.gobject-introspection
+      buildPackages.gi-docgen
+      buildPackages.docutils
+      buildPackages.gettext
+    ];
     # glib's gio-2.0.pc has `Requires.private: zlib, mount` (libmount, from
     # util-linux); pkg-config 0.29 resolves private deps too, so those must
     # be reachable or `dependency('gio-2.0')` fails. glib lists util-linux
@@ -75,36 +69,39 @@ in
       }
       {
         name = "configure";
-        script =
-          if isCross
-          then ''
-            # Keep generator programs native while exposing the target
-            # GLib headers, linker names, and pkg-config metadata.
-            export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-            export CFLAGS="''${CFLAGS:-} -I${glib.dev}/include/glib-2.0 -I${glib.dev}/lib/glib-2.0/include"
-            export LDFLAGS="''${LDFLAGS:-} -L${glib.dev}/lib"
-
-            meson setup build \
-              $mesonFlags \
-              --prefix=$out \
-              --buildtype=release \
-              -Dintrospection=disabled \
-              -Dgtk_doc=disabled \
-              -Dman=false \
-              -Dtests=false \
-              -Dnls=disabled
-          ''
-          else ''
-            meson setup build \
-              $mesonFlags \
-              --prefix=$out \
-              --buildtype=release \
-              -Dintrospection=disabled \
-              -Dgtk_doc=disabled \
-              -Dman=false \
-              -Dtests=false \
-              -Dnls=disabled
-          '';
+        script = ''
+          export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export XDG_DATA_DIRS="${glib}/share:${buildPackages.gobject-introspection}/share"
+          export LDFLAGS="-L${glib.dev}/lib $NIX_LDFLAGS ''${LDFLAGS:-}"
+          export PYTHONPATH="${buildPackages.meson}/lib/python3/site-packages"
+          ${
+            if stdenv.isCross
+            then ''
+              # Use native scanner programs while describing target GI libraries.
+              mkdir -p .aos-introspection
+              cat > .aos-introspection/ldd-target <<'EOF'
+              #!${buildPackages.bash}/bin/bash
+              exec ${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} --list "$@"
+              EOF
+              cat > .aos-introspection/g-ir-scanner <<EOF
+              #!${buildPackages.bash}/bin/bash
+              exec ${buildPackages.gobject-introspection}/bin/g-ir-scanner --use-ldd-wrapper="$PWD/.aos-introspection/ldd-target" "\$@"
+              EOF
+              chmod +x .aos-introspection/ldd-target .aos-introspection/g-ir-scanner
+              cp ${gobject-introspection}/lib/pkgconfig/gobject-introspection-1.0.pc .aos-introspection/
+              sed -i \
+                -e "s|^g_ir_scanner=.*|g_ir_scanner=$PWD/.aos-introspection/g-ir-scanner|" \
+                -e 's|^g_ir_compiler=.*|g_ir_compiler=${buildPackages.gobject-introspection}/bin/g-ir-compiler|' \
+                .aos-introspection/gobject-introspection-1.0.pc
+              export PKG_CONFIG_PATH="$PWD/.aos-introspection:$PKG_CONFIG_PATH"
+            ''
+            else ""
+          }
+          meson setup build $mesonFlags --prefix="$out" --libdir=lib \
+            --buildtype=release --wrap-mode=nofallback \
+            -Dintrospection=enabled -Ddocumentation=enabled -Dman=true \
+            -Dtests=true -Dconformance=true -Dnls=enabled
+        '';
       }
       {
         name = "build";
@@ -114,6 +111,16 @@ in
           PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
             ninja -C build -j$NIX_BUILD_CORES
         '';
+      }
+      {
+        name = "check";
+        script =
+          if isCross
+          then ""
+          else ''
+            PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+              meson test -C build --print-errorlogs
+          '';
       }
       {
         name = "install";

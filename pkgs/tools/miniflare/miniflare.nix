@@ -32,7 +32,7 @@
 ##! Linux workerd, esbuild, and sharp/libvips binaries. Cross builds remove those
 ##! build-platform binaries. Their wrappers select source-built target `workerd` and
 ##! Go-built target esbuild through the tools' supported environment variables;
-##! sharp retains its target-neutral WASM implementation. node-gyp itself runs
+##! Sharp uses a source-built target addon and AOS image libraries. node-gyp itself runs
 ##! with native AOS Node/Python/make, while the ccWrapper and target Node headers
 ##! produce the target `better_sqlite3.node` addon. Darwin additionally models
 ##! the Xcode discovery queries required by gyp using the AOS SDK.
@@ -45,6 +45,7 @@
   lib,
   stdenv,
   buildPackages,
+  callPackage,
   nodejs,
   python3,
   gnumake,
@@ -72,7 +73,13 @@
     name = "miniflare-tooling-node-modules";
     src = npmSrc;
     # Iterate: fakeHash → real hash from the mismatch error.
-    hash = "sha256-RXKP78tXoES9TA9m7Y7lGic+BgicQW1mXzXck7vXy2k=";
+    hash = "sha256-AgEq4XbYNd3YVA3Zwu4byu0ywHHBrs2YtIPeJny6yVk=";
+  };
+
+  sharpVips = callPackage ../../libs/_sharp-vips.nix {};
+  sharpAddon = callPackage ./_sharp-addon.nix {
+    inherit nodeModules;
+    vips = sharpVips;
   };
 
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -127,8 +134,8 @@ in
       then [buildPackages.nodejs buildPackages.python3 buildPackages.gnumake buildPackages.file]
       else [nodejs python3 gnumake];
     runtimeDeps =
-      [nodejs]
-      ++ lib.optionals (isDarwinCross || isLinuxCross) [bash workerd targetEsbuild];
+      [nodejs sharpAddon targetEsbuild]
+      ++ lib.optionals (isDarwinCross || isLinuxCross) [bash workerd];
 
     phases = [
       {
@@ -140,7 +147,7 @@ in
 
             # The FOD is instantiated on Linux. Remove every optional ELF
             # platform package before the target closure is assembled. Sharp's
-            # loader falls back to the installed sharp-wasm32 implementation.
+            # source-built addon is installed in the final phase.
             cp -a ${nodeModules} $out/lib/node_modules
             chmod -R u+w $out/lib/node_modules
             NM=$out/lib/node_modules
@@ -232,7 +239,6 @@ in
               "$NM"/@img/sharp-linuxmusl-* \
               "$NM"/@img/sharp-libvips-linux-* \
               "$NM"/@img/sharp-libvips-linuxmusl-*
-            test -d "$NM/@img/sharp-wasm32"
 
             # Run node-gyp on Linux but select Darwin's make flavor, target
             # architecture, compiler wrapper, Node headers, and libc++ flags.
@@ -306,7 +312,7 @@ in
             NM=$out/lib/node_modules
 
             # The vendored optional binaries belong to the build platform.
-            # Select source-built target tools and Sharp's portable WASM backend.
+            # Select source-built target tools; Sharp is replaced in the final phase.
             rm -rf \
               "$NM"/@cloudflare/workerd-linux-* \
               "$NM"/wrangler/node_modules/@cloudflare/workerd-linux-* \
@@ -315,7 +321,6 @@ in
               "$NM"/@img/sharp-linuxmusl-* \
               "$NM"/@img/sharp-libvips-linux-* \
               "$NM"/@img/sharp-libvips-linuxmusl-*
-            test -d "$NM/@img/sharp-wasm32"
 
             # Wrangler imports workerd's npm resolver before consulting
             # Miniflare's override. Give that resolver a source-built binary
@@ -415,6 +420,31 @@ in
               > $out/bin/miniflare
             chmod +x $out/bin/miniflare
           '';
+      }
+      {
+        name = "install-source-esbuild";
+        script = ''
+          NM="$out/lib/node_modules"
+          rm -rf "$NM/@esbuild"
+          platform=${
+            if stdenv.hostPlatform.isDarwin
+            then "darwin"
+            else "linux"
+          }-${targetNodeArch}
+          mkdir -p "$NM/@esbuild/$platform/bin"
+          ln -s ${targetEsbuild}/bin/esbuild "$NM/@esbuild/$platform/bin/esbuild"
+        '';
+      }
+      {
+        name = "install-source-sharp";
+        script = ''
+          NM="$out/lib/node_modules"
+          rm -rf "$NM"/@img/sharp-*
+          mkdir -p "$NM/sharp/src/build/Release"
+          for addon in ${sharpAddon}/lib/sharp-*.node; do
+            ln -s "$addon" "$NM/sharp/src/build/Release/$(basename "$addon")"
+          done
+        '';
       }
     ];
 
