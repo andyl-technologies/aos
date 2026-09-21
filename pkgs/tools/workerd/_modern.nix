@@ -36,8 +36,13 @@
   esbuildRepository = callPackage ./_esbuild-repository.nix {};
   pythonRepositories = callPackage ./_python-repositories.nix {};
   pyodide = callPackage ./_pyodide.nix {};
+  utilityRepositories = callPackage ./_utility-repositories.nix {};
 
   repositories = {
+    "yq.bzl++yq+yq_linux_amd64" = "${utilityRepositories}/yq";
+    "tar.bzl++toolchains+bsd_tar_toolchains_linux_amd64" = "${utilityRepositories}/tar";
+    "bazel_lib++toolchains+coreutils_linux_amd64" = "${utilityRepositories}/coreutils";
+    "bazel_lib++toolchains+copy_directory_linux_amd64" = "${utilityRepositories}/copy_directory";
     "rules_rust++rust+rust_linux_x86_64__x86_64-unknown-linux-gnu__stable_tools" = rustRepository;
     "rules_nodejs++node+nodejs_linux_amd64" = nodeRepository;
     "aspect_rules_esbuild++esbuild+esbuild_linux-x64" = esbuildRepository;
@@ -101,6 +106,7 @@ in
           # The dependency snapshot owns repository contents. Bazel 9's shared
           # cache otherwise replaces them with temporary external symlinks.
           "--repo_contents_cache="
+          "--extra_toolchains=@protobuf//bazel/private/oss/toolchains:protoc_sources_toolchain"
           "--@rules_python//python/config_settings:python_version=3.14"
           "--repo_env=CC=${nativeClang}/bin/clang"
         ]

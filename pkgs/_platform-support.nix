@@ -20,6 +20,12 @@ let
   # Wave 1: target-independent inputs and small leaf packages.  These establish
   # the data and low-level library closure used by later Darwin packages.
   independentWave1 = [
+    "docbook-xml-4-2"
+    "docbook-xml-4-3"
+    "encodings"
+    "xcb-proto"
+    "xorgproto"
+    "xorg-sgml-doctools"
     "aos-hub-console-dist"
     "aos-hub-worker-dist"
     "ca-certificates"
@@ -147,6 +153,25 @@ let
   # build/host triples and Mach-O-aware fixup, but do not need a target runtime
   # to execute during their build.
   targetWave2 = [
+    "dav1d"
+    "gi-docgen"
+    "graphviz"
+    "help2man"
+    "latex2man"
+    "libfontenc"
+    "librsvg"
+    "libunwind"
+    "libxau"
+    "libxcb"
+    "libxdmcp"
+    "mkfontscale"
+    "perl-locale-gettext"
+    "python3-jinja2"
+    "python3-smartypants"
+    "python3-typogrify"
+    "vala"
+    "xmlto"
+    "xxhash"
     "acpica"
     "bind"
     "boringssl"
@@ -286,6 +311,8 @@ let
   # Wave 3: compilers, interpreters and build systems.  These require a native
   # Linux compiler/interpreter package set distinct from Darwin target outputs.
   targetWave3 = [
+    "cargo-c"
+    "mdbook"
     "alejandra"
     "ant"
     "ant-bootstrap"
@@ -475,6 +502,7 @@ let
   # interfaces and have no Darwin execution contract.  A portable sub-tool
   # must be split into its own package before it can leave this list.
   linuxOnly = [
+    "libglycin"
     "glycin-image-rs"
     "libevdev"
     "python3-libevdev"
@@ -737,6 +765,39 @@ let
     inventory;
 
   helperInventory = {
+    "tools/workerd/_bazel-copy-directory.nix" = "native-build-helper";
+    "tools/workerd/_yq.nix" = "native-build-helper";
+    "tools/workerd/_utility-repositories.nix" = "native-build-helper";
+    "libs/_giflib-source.nix" = "target-independent-source";
+    "libs/_glycin-loader.nix" = "linux-only-build-helper";
+    "libs/_glycin-sources.nix" = "target-independent-source";
+    "libs/_highway-assembler.nix" = "cross-build-helper";
+    "libs/_image-glib.nix" = "cross-build-helper";
+    "libs/_libfontenc.nix" = "cross-build-helper";
+    "libs/_libjxl-sources.nix" = "target-independent-source";
+    "libs/_librsvg-sources.nix" = "target-independent-source";
+    "libs/_libxcb.nix" = "cross-build-helper";
+    "libs/_sharp-libheif.nix" = "cross-build-helper";
+    "libs/_sharp-ultrahdr.nix" = "cross-build-helper";
+    "libs/_sharp-vips.nix" = "cross-build-helper";
+    "tools/_cargo-c-sources.nix" = "target-independent-source";
+    "tools/_device-test-coreutils.nix" = "linux-only-build-helper";
+    "tools/miniflare/_sharp-addon.nix" = "cross-build-helper";
+    "tools/workerd/_binaryen.nix" = "native-build-helper";
+    "tools/workerd/_cargo-bazel.nix" = "native-build-helper";
+    "tools/workerd/_emscripten-acorn.nix" = "native-build-helper";
+    "tools/workerd/_emscripten-llvm.nix" = "native-build-helper";
+    "tools/workerd/_emscripten.nix" = "native-build-helper";
+    "tools/workerd/_esbuild-repository.nix" = "native-build-helper";
+    "tools/workerd/_esbuild.nix" = "native-build-helper";
+    "tools/workerd/_modern.nix" = "linux-only-build-helper";
+    "tools/workerd/_native-clang.nix" = "linux-only-build-helper";
+    "tools/workerd/_node-repository.nix" = "native-build-helper";
+    "tools/workerd/_pyodide-esbuild.nix" = "native-build-helper";
+    "tools/workerd/_pyodide-sources.nix" = "target-independent-source";
+    "tools/workerd/_pyodide.nix" = "native-build-helper";
+    "tools/workerd/_python-repositories.nix" = "native-build-helper";
+    "tools/workerd/_rust-repository.nix" = "native-build-helper";
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
     "build-support/_config-module-renderer.nix" = "native-build-helper";
