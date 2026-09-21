@@ -102,6 +102,10 @@ in
   assert requires "bind_controller_identity" journalSource;
   assert requires "validate_current_node" journalSource;
   assert requires "production_journal_limits" runtimeSource;
+  assert requires "ControllerStorageClient" runtimeSource;
+  assert requires "begin_authenticated_storage_inventory" runtimeSource;
+  assert requires "complete_authenticated_storage_inventory" runtimeSource;
+  assert requiresAbsent "StorageResourceInventoryClient" runtimeSource;
   assert requires "broker_retryability_is_preserved_across_inventory_classification" runtimeSource;
   assert requires "host_publication_retryability_is_preserved_through_reconciliation" runtimeSource;
   assert requires "hostile_publication_and_transport_failures_are_terminal" runtimeSource;

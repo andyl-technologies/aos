@@ -356,6 +356,20 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    pub(crate) fn require_current_node(
+        &mut self,
+        expected_node: [u8; 16],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let context = self.journal.current_context(transcript)?;
+        if expected_node == [0; 16] || context.node_id() != expected_node {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.revalidate_transport(transcript, connection_peer)
+    }
+
     pub(crate) fn broker_outcome_verifier(
         &mut self,
         transcript: &VerifiedBrokerSessionTranscriptV1,

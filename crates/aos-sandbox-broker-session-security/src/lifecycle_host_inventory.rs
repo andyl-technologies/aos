@@ -695,6 +695,15 @@ pub enum DormantAtomicStorageInventoryFinishProgressV1 {
 }
 
 impl DormantStorageLifecycleInventoryOwnerV1 {
+    /// Issues a fresh query and rechecks its protected terminal currentness.
+    pub(crate) fn current_inventory_observation(
+        &mut self,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+
     /// Couples a completed fixed-custody session to Storage lifecycle queries.
     #[must_use]
     pub fn from_protected_session(session: DormantAuthenticatedBrokerSessionV1) -> Self {

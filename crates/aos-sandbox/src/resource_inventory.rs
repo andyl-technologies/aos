@@ -46,11 +46,13 @@ use sha2::{Digest as _, Sha256};
 use crate::mount_attempt::{MountAttemptError, mount_controller_state_digest};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
+pub(crate) mod authenticated;
 #[allow(
     dead_code,
     reason = "authenticated controller checkpoint wiring remains intentionally absent"
 )]
 mod checkpoint;
+pub use authenticated::StorageInventoryObservationFenceV1;
 mod format;
 
 #[doc(hidden)]

@@ -68,18 +68,24 @@ fn run() -> Result<(), StorageServiceError> {
     loop {
         let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
             .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-        let session = match activation.accept_authenticated(accept_deadline) {
+        let mut session = match activation.accept_authenticated(accept_deadline) {
             Ok(session) => session,
             Err(ProductionBrokerSessionActivationErrorV1::Deadline) => continue,
             Err(error) => return Err(production_error(error)),
         };
-        let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
-            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-        if let Err(error) = session.serve_production_storage_request(&mut storage, request_deadline)
-        {
-            // The session was consumed. The next accepted connection reopens
-            // and validates its fixed protected broker-session journal.
-            eprintln!("aos-storaged: authenticated request failed: {error}");
+        loop {
+            let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
+                .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+            match session.serve_production_storage_request(&mut storage, request_deadline) {
+                Ok(retained) => session = retained,
+                Err(error) => {
+                    // Only a failed exchange consumes the connection. Successful
+                    // requests retain the protected sequence owner for the next
+                    // inventory or effect on this authenticated session.
+                    eprintln!("aos-storaged: authenticated request failed: {error}");
+                    break;
+                }
+            }
         }
     }
 }

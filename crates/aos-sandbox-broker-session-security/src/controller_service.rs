@@ -61,21 +61,18 @@ use aos_sandbox::{
     MountAttemptError, MountInventoryClient, NetworkResourceInventoryClient, NodeController,
     NodeControllerLimits, OperationCompilationError, OperationPlan, Reconciler,
     ResourceInventoryError, ResourceInventoryServiceIdentity, SingleNodeEffectExecutor,
-    StorageResourceInventoryClient,
 };
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const JOURNAL_NAME: &str = "controller.journal";
 const DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const HOST_SOCKET: &str = "/run/aos/sandbox-host/control.sock";
-const STORAGE_SOCKET: &str = "/run/aos/sandbox-storage/control.sock";
 const MOUNT_SOCKET: &str = "/run/aos/sandbox-mount/control.sock";
 const NETWORK_SOCKET: &str = "/run/aos/sandbox-network/control.sock";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const CONTROL_SLICE: &str = "aos.slice/aos-control.slice";
 const HOST_SLICE: &str = "system.slice";
 const HOST_SERVICE: &str = "aos-sandbox-hostd.service";
-const STORAGE_CGROUP: &str = "aos-storaged.service";
 const MOUNT_CGROUP: &str = "aos-sandbox-mountd.service";
 const NETWORK_CGROUP: &str = "aos-netd.service";
 const NODE_ID_CREDENTIAL: &str = "node-id";
@@ -85,6 +82,12 @@ const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
 
 type ProductionController = NodeController<UnavailableCompiler, UnavailableExecutor>;
+
+/// Retains authenticated transports and their durable sequence owners across cycles.
+#[derive(Default)]
+struct ControllerBrokerSessions {
+    storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
+}
 
 /// Composes explicitly supplied controller and public-client dependencies without activation.
 ///
@@ -144,7 +147,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
 
     std::thread::Builder::new()
         .name("aos-sandboxd-reconciler".to_owned())
-        .spawn(move || controller_worker(controller, worker_capabilities, events_tx))
+        .spawn(move || controller_worker(controller, node_id, worker_capabilities, events_tx))
         .map_err(ControllerRuntimeError::WorkerSpawn)?;
 
     wait_for_initial_readiness(&events_rx)?;
@@ -250,12 +253,14 @@ impl axum::serve::Listener for AuthenticatedDiagnosticListener {
 
 fn controller_worker(
     mut controller: ProductionController,
+    node_id: [u8; 16],
     capabilities: Arc<Mutex<CapabilityState>>,
     events: mpsc::Sender<WorkerEvent>,
 ) {
     let mut ready = false;
+    let mut sessions = ControllerBrokerSessions::default();
     loop {
-        match run_controller_cycle(&mut controller) {
+        match run_controller_cycle(&mut controller, node_id, &mut sessions) {
             Ok(catalog) => {
                 let update = capabilities
                     .lock()
@@ -306,6 +311,8 @@ fn wait_for_initial_readiness(
 
 fn run_controller_cycle(
     controller: &mut ProductionController,
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
 ) -> Result<CatalogStatus, CycleFailure> {
     pending_first_read_only_cycle(
         controller,
@@ -316,7 +323,7 @@ fn run_controller_cycle(
         },
         |controller, pending| publish_pending(controller, pending).map(|_| ()),
         validate_read_only_ledger,
-        refresh_catalog,
+        |controller| refresh_catalog(controller, node_id, sessions),
     )
 }
 
@@ -348,7 +355,11 @@ fn validate_read_only_ledger(controller: &mut ProductionController) -> Result<()
     Ok(())
 }
 
-fn refresh_catalog(controller: &mut ProductionController) -> Result<CatalogStatus, CycleFailure> {
+fn refresh_catalog(
+    controller: &mut ProductionController,
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
+) -> Result<CatalogStatus, CycleFailure> {
     // Mount and destination state participate in the controller-state digest
     // captured by Storage and Network, so acquire them first.
     let mounts = controller
@@ -357,9 +368,7 @@ fn refresh_catalog(controller: &mut ProductionController) -> Result<CatalogStatu
     let destinations = controller
         .record_destination_slot_inventory(destination_inventory_client()?)
         .map_err(classify_mount_error)?;
-    let storage = controller
-        .record_storage_resource_inventory(storage_inventory_client()?)
-        .map_err(classify_resource_error)?;
+    let storage = authenticated_storage_inventory(controller, node_id, sessions)?;
     let network = controller
         .record_network_resource_inventory(network_inventory_client()?)
         .map_err(classify_resource_error)?;
@@ -412,13 +421,39 @@ fn destination_inventory_client() -> Result<DestinationSlotInventoryClient, Cycl
         .map_err(classify_mount_error)
 }
 
-fn storage_inventory_client() -> Result<StorageResourceInventoryClient, CycleFailure> {
-    let identity = ResourceInventoryServiceIdentity {
-        uid: 0,
-        gid: 0,
-        cgroup: service_cgroup(CONTROL_SLICE, STORAGE_CGROUP)?,
-    };
-    StorageResourceInventoryClient::connect(Path::new(STORAGE_SOCKET), identity)
+fn authenticated_storage_inventory(
+    controller: &mut ProductionController,
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
+) -> Result<aos_sandbox::DurableStorageResourceInventorySnapshotV1, CycleFailure> {
+    if sessions.storage.is_none() {
+        let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+            crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
+        )
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        let deadline = crate::production_deadline_after(Duration::from_secs(10))
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        let mut session = custody
+            .connect_production_client_session(deadline)
+            .map_err(classify_protected_handshake_error)?;
+        session
+            .require_current_node(node_id)
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        sessions.storage =
+            Some(crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(session));
+    }
+    let inventory = sessions.storage.as_mut().ok_or_else(|| {
+        CycleFailure::Fatal("protected Storage session was not retained".to_owned())
+    })?;
+    let fence = controller
+        .begin_authenticated_storage_inventory()
+        .map_err(classify_resource_error)?;
+    let outcome = inventory
+        .current_inventory_observation()
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+
+    controller
+        .complete_authenticated_storage_inventory(fence, &outcome)
         .map_err(classify_resource_error)
 }
 
@@ -479,6 +514,21 @@ fn classify_mount_error(error: MountAttemptError) -> CycleFailure {
         | MountAttemptError::Journal(_) => false,
     };
 
+    classified_failure(retryable, error)
+}
+
+fn classify_protected_handshake_error(
+    error: crate::DormantBrokerSessionHandshakeErrorV1,
+) -> CycleFailure {
+    use crate::DormantBrokerSessionHandshakeErrorV1 as HandshakeError;
+
+    let retryable = match &error {
+        HandshakeError::Transport | HandshakeError::Deadline => true,
+        HandshakeError::EndpointRole
+        | HandshakeError::Protected(_)
+        | HandshakeError::RemoteInvalid
+        | HandshakeError::KernelEvidence => false,
+    };
     classified_failure(retryable, error)
 }
 
@@ -1340,8 +1390,8 @@ mod tests {
             Path::new("system.slice/aos-sandbox-hostd.service")
         );
         assert_eq!(
-            service_cgroup_path(CONTROL_SLICE, STORAGE_CGROUP),
-            Path::new("aos.slice/aos-control.slice/aos-storaged.service")
+            service_cgroup_path(CONTROL_SLICE, NETWORK_CGROUP),
+            Path::new("aos.slice/aos-control.slice/aos-netd.service")
         );
     }
 
@@ -1420,6 +1470,28 @@ mod tests {
                     .is_err()
             );
         });
+    }
+
+    #[test]
+    fn protected_handshake_authentication_failures_are_terminal() {
+        use crate::DormantBrokerSessionHandshakeErrorV1 as HandshakeError;
+
+        for error in [
+            HandshakeError::EndpointRole,
+            HandshakeError::RemoteInvalid,
+            HandshakeError::KernelEvidence,
+        ] {
+            assert!(matches!(
+                classify_protected_handshake_error(error),
+                CycleFailure::Fatal(_)
+            ));
+        }
+        for error in [HandshakeError::Transport, HandshakeError::Deadline] {
+            assert!(matches!(
+                classify_protected_handshake_error(error),
+                CycleFailure::Retryable(_)
+            ));
+        }
     }
 
     #[test]

@@ -3788,6 +3788,46 @@ where
         crate::destination_slot_inventory::record_snapshot(self.reconciler.journal_mut(), client)
     }
 
+    /// Captures protected controller state before a fresh authenticated Storage query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or unprotected controller state and invalid prior inventory.
+    #[cfg(target_os = "linux")]
+    pub fn begin_authenticated_storage_inventory(
+        &mut self,
+    ) -> Result<
+        crate::resource_inventory::StorageInventoryObservationFenceV1,
+        crate::ResourceInventoryError,
+    > {
+        crate::resource_inventory::authenticated::begin_storage_observation(
+            self.reconciler.journal_mut(),
+        )
+    }
+
+    /// Records a fresh authenticated Storage observation against its preceding state.
+    ///
+    /// The transport owner must recheck protected terminal currentness immediately
+    /// before this call. The result is observation evidence, never effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects intervening journal changes, wrong method or direction, broker errors,
+    /// invalid or regressing inventory, and failed durable persistence.
+    #[cfg(target_os = "linux")]
+    pub fn complete_authenticated_storage_inventory(
+        &mut self,
+        fence: crate::resource_inventory::StorageInventoryObservationFenceV1,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<crate::DurableStorageResourceInventorySnapshotV1, crate::ResourceInventoryError>
+    {
+        crate::resource_inventory::authenticated::complete_storage_observation(
+            self.reconciler.journal_mut(),
+            fence,
+            outcome,
+        )
+    }
+
     /// Queries and durably records Storage's complete workspace inventory.
     ///
     /// The one-shot client validates kernel-nominated subjects, not proof of the

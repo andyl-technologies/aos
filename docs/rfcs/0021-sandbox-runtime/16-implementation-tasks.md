@@ -298,10 +298,10 @@ the outstanding work concrete:
 
 - `crates/aos-sandbox-broker-session-security/src/controller_service.rs` constructs
   `NodeController<UnavailableCompiler, UnavailableExecutor>`. Its worker
-  publishes authenticated inventory but rejects pending mutation work.
+  attempts inventory publication but rejects pending mutation work.
   Replace those unavailable dependencies with the authenticated request
   compiler and durable effect dispatcher, including restart recovery.
-- The controller's Mount, Storage, and Network inventory clients still send
+- The controller's Mount and Network inventory clients still send
   a plain `BrokerClientHello` (`mount_attempt/inventory.rs` and
   `resource_inventory.rs`). The packaged broker entry points instead accept
   sessions through `ProductionBrokerSessionActivationV1::accept_authenticated`.
@@ -309,7 +309,9 @@ the outstanding work concrete:
   session protocol before claiming the deployed controller can become ready.
   The production runtime now lives in the session-security crate, above the
   controller core, so those protected owners can be connected without a crate
-  cycle. Its legacy inventory clients still need replacement; the broker must
+  cycle. Storage now uses the fixed protected session endpoint and fences its
+  snapshot commit against intervening controller-journal changes. The remaining
+  legacy inventory clients and Host publication still need replacement; the broker must
   not accept legacy unauthenticated traffic as a compatibility shortcut.
 - That service registers `DiscoveryService` and `OperationService` only.
   Operation get, cancel, and watch return unavailable errors. Register and

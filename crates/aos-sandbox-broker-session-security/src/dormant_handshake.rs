@@ -1261,6 +1261,16 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Checks the fixed protected session against the controller's bound node.
+    ///
+    /// No identity is inferred from a socket path or an inventory response.
+    pub(crate) fn require_current_node(
+        &mut self,
+        expected_node: [u8; 16],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.require_current_node(expected_node)
+    }
+
     /// Borrows the authenticated session socket for readiness polling.
     ///
     /// The descriptor is observation-only. All traffic must continue through

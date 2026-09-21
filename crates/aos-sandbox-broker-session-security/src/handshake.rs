@@ -1203,6 +1203,14 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn require_current_node(
+        &mut self,
+        expected_node: [u8; 16],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner
+            .require_current_node(expected_node, &self.transcript, self.socket.peer())
+    }
+
     pub(super) fn as_fd(&self) -> Result<BorrowedFd<'_>, DormantBrokerSessionHandshakeErrorV1> {
         self.socket
             .as_fd()
