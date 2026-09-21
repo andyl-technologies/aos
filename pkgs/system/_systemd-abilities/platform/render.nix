@@ -672,7 +672,7 @@ in rec {
 
     jobScriptDrvs = mapAttrs (key: script:
       pkgs.writeTextFile {
-        name = "aos-job-script-${script.name}";
+        name = "aos-job-script-${builtins.unsafeDiscardStringContext script.name}";
         executable = true;
         destination = "/aos-job-scripts/${key}";
         text = script.text;
