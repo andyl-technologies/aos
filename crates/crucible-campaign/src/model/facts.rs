@@ -4,12 +4,12 @@
 //! facts use these tags within schema v14:
 //!
 //! ```text
-//! 14:u32be | 17:u8 | command | expected-snapshot |
+//! 14:u32be | 15:u8 | command | expected-snapshot |
 //!            configuration-artifact | observation-stop
-//! 14:u32be | 18:u8 | command | expected-snapshot | attempt |
+//! 14:u32be | 16:u8 | command | expected-snapshot | attempt |
 //!            configuration-artifact | semantic-configuration | stop | reason
-//! 14:u32be | 19:u8 | command | expected-snapshot | request-fact | outcome
-//! 14:u32be | 20:u8 | command | expected-snapshot | request-fact |
+//! 14:u32be | 17:u8 | command | expected-snapshot | request-fact | outcome
+//! 14:u32be | 18:u8 | command | expected-snapshot | request-fact |
 //!            ready-resolution-fact | continuation-attempt
 //! ```
 
@@ -969,7 +969,7 @@ impl Canonical for CampaignFact {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
             Self::CampaignDerived(derivation) => {
-                encoder.u8(12);
+                encoder.u8(10);
                 derivation.encode(encoder);
             }
             Self::ChoiceOpportunityDiscovered {
@@ -983,68 +983,68 @@ impl Canonical for CampaignFact {
                 opportunity.encode(encoder);
             }
             Self::BranchRequestAccepted { request, summary } => {
-                encoder.u8(16);
+                encoder.u8(14);
                 request.encode(encoder);
                 summary.encode(encoder);
             }
             Self::PlannerAdvanced(id) => {
-                encoder.u8(2);
+                encoder.u8(1);
                 id.encode(encoder);
             }
             Self::ProposalIssued(id) => {
-                encoder.u8(3);
+                encoder.u8(2);
                 id.encode(encoder);
             }
             Self::AttemptAdmitted(admission) => {
-                encoder.u8(4);
+                encoder.u8(3);
                 admission.encode(encoder);
             }
             Self::ObservationCredited(id) => {
-                encoder.u8(13);
+                encoder.u8(11);
                 id.encode(encoder);
             }
             Self::FindingPublished(id) => {
-                encoder.u8(6);
+                encoder.u8(4);
                 id.encode(encoder);
             }
             Self::ObjectiveEvaluationPublished(id) => {
-                encoder.u8(15);
+                encoder.u8(13);
                 id.encode(encoder);
             }
             Self::PolicyActivated(activation) => {
-                encoder.u8(7);
+                encoder.u8(5);
                 activation.encode(encoder);
             }
             Self::BudgetGranted(grant) => {
-                encoder.u8(8);
+                encoder.u8(6);
                 grant.encode(encoder);
             }
             Self::ControlRequested(request) => {
-                encoder.u8(9);
+                encoder.u8(7);
                 request.encode(encoder);
             }
             Self::PinChanged(change) => {
-                encoder.u8(10);
+                encoder.u8(8);
                 change.encode(encoder);
             }
             Self::PinCommandAccepted(request) => {
-                encoder.u8(14);
+                encoder.u8(12);
                 request.encode(encoder);
             }
             Self::DiscoveryRequested(request) => {
-                encoder.u8(17);
+                encoder.u8(15);
                 request.encode(encoder);
             }
             Self::SavepointCaptureRequested(request) => {
-                encoder.u8(18);
+                encoder.u8(16);
                 request.encode(encoder);
             }
             Self::SavepointCaptureResolved(resolution) => {
-                encoder.u8(19);
+                encoder.u8(17);
                 resolution.encode(encoder);
             }
             Self::SavepointContinuationSelected(selection) => {
-                encoder.u8(20);
+                encoder.u8(18);
                 selection.encode(encoder);
             }
             Self::AttemptClosed {
@@ -1052,7 +1052,7 @@ impl Canonical for CampaignFact {
                 ordinal,
                 disposition,
             } => {
-                encoder.u8(11);
+                encoder.u8(9);
                 attempt.encode(encoder);
                 ordinal.encode(encoder);
                 disposition.encode(encoder);

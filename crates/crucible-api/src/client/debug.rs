@@ -51,6 +51,15 @@ pub struct DebugControllerAccess {
     holder: uuid::Uuid,
 }
 
+/// Result of the explicit transition to a writable debug branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WritableDebugBranch {
+    /// Stable identity of the actor-recorded non-canonical branch provenance.
+    pub branch: ContentHash,
+    /// Guest-introspection features activated on the writable branch.
+    pub features: crucible_protocol::guest_introspection::GuestIntrospectionFeatures,
+}
+
 impl DebugControllerAccess {
     /// Returns the coordinator lease represented by this acquisition.
     #[must_use]
@@ -436,10 +445,7 @@ impl RpcControlClient {
         session: SessionRef,
         access: &DebugControllerAccess,
         node: &NodeId,
-    ) -> Result<
-        crucible_protocol::guest_introspection::GuestIntrospectionFeatures,
-        ControlClientError,
-    > {
+    ) -> Result<WritableDebugBranch, ControlClientError> {
         let body = self
             .post_rpc_body(
                 DEBUG_GUEST_FORK_RPC_PATH,
@@ -458,6 +464,11 @@ impl RpcControlClient {
         if branch.len() != 64 || !branch.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(rpc_decode("invalid debug guest fork branch identity"));
         }
+        let branch = ContentHash {
+            bytes: parse_hex_bytes(branch)?
+                .try_into()
+                .map_err(|_| rpc_decode("invalid debug guest fork branch identity"))?,
+        };
         let status = parse_prefixed_line(lines.next(), "status=")?;
         let failure = parse_prefixed_line(lines.next(), "failure=")?;
         let argv_exec = parse_debug_bool_line(lines.next(), "argv-exec=")?;
@@ -472,7 +483,12 @@ impl RpcControlClient {
                 .map_err(|error| rpc_decode(error.to_string()))?;
             reject_trailing(lines.next())?;
             return Err(rpc_decode(format!(
-                "non-canonical branch {branch} committed, but guest activation failed: {failure}"
+                "non-canonical branch {} committed, but guest activation failed: {failure}",
+                branch
+                    .bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
             )));
         }
         if status != "ready" {
@@ -487,15 +503,16 @@ impl RpcControlClient {
             return Err(rpc_decode("max-channels must be nonzero"));
         }
         reject_trailing(lines.next())?;
-        Ok(
-            crucible_protocol::guest_introspection::GuestIntrospectionFeatures::new(
+        Ok(WritableDebugBranch {
+            branch,
+            features: crucible_protocol::guest_introspection::GuestIntrospectionFeatures::new(
                 argv_exec,
                 pty,
                 resize,
                 ssh_bridge,
                 max_channels,
             ),
-        )
+        })
     }
 }
 

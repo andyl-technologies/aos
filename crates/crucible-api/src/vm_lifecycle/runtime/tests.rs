@@ -1036,7 +1036,6 @@ fn empty_branch_override_retains_its_scheduler_event_and_quantum() {
     lifecycle.branch = Some(ProductionVmBranchConfig {
         base: configuration.clone(),
         frontier,
-        decisions: Vec::new(),
         seed: None,
     });
     lifecycle
@@ -1070,7 +1069,6 @@ fn branch_reseed_changes_the_live_scheduler_seed_at_its_source_boundary() {
     lifecycle.branch = Some(ProductionVmBranchConfig {
         base: configuration.clone(),
         frontier,
-        decisions: Vec::new(),
         seed: Some(seed),
     });
     lifecycle
@@ -1102,7 +1100,6 @@ fn ordered_branch_reseeds_advance_without_dropping_a_generation() {
     lifecycle.branch = Some(ProductionVmBranchConfig {
         base: configuration.clone(),
         frontier,
-        decisions: Vec::new(),
         seed: Some(first_seed),
     });
     lifecycle
@@ -1110,7 +1107,6 @@ fn ordered_branch_reseeds_advance_without_dropping_a_generation() {
         .push_back(ProductionVmBranchConfig {
             base: configuration.clone(),
             frontier,
-            decisions: Vec::new(),
             seed: Some(second_seed),
         });
     lifecycle
@@ -1169,7 +1165,6 @@ fn ordered_branch_sequence_rejects_regressing_or_divergent_boundaries() {
     let branch = |base, ticks| ProductionVmBranchConfig {
         base,
         frontier: VirtualTime { ticks },
-        decisions: Vec::new(),
         seed: Some(Seed::from_u64(ticks)),
     };
 
@@ -1385,18 +1380,9 @@ fn promoted_signal_branch(
         selected_index: None,
         overridden: false,
     };
-    let runtime = crucible::SearchRuntimeFrontier {
-        configuration: parent.clone(),
-        at: frontier,
-        choices: crucible::SearchFrontierChoices::from_decisions(
-            choice
-                .override_decisions(parent.id())
-                .into_iter()
-                .map(Decision::Override),
-        ),
-    };
-    let selectable = crucible::SignalFaultSelectable::from_frontier(&runtime)
-        .unwrap_or_else(|error| panic!("promoted signal fixture should normalize: {error}"));
+    let selectable =
+        crucible::SignalFaultSelectable::from_binding_choice(parent, frontier, &choice)
+            .unwrap_or_else(|error| panic!("promoted signal fixture should normalize: {error}"));
     let selection = selectable
         .branch_selection(parent, selected_index)
         .unwrap_or_else(|error| panic!("promoted signal fixture should select: {error}"));

@@ -48,7 +48,6 @@ use explain::{
     validate_campaign_attempt_explain_command, validate_campaign_explain_command,
     validate_campaign_finding_explain_command,
 };
-use fixture::finding_triage::{generate_finding_triage_fixture, render_finding_triage_fixture};
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
 use lineage::{compile_campaign_lineage, render_campaign_lineage_compilation};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
@@ -362,10 +361,6 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
                 let report = generate_worked_network_fixture(&worked.output)?;
                 render_worked_network_fixture(&report, cli.output_format())?
             }
-            CampaignFixtureCommand::FindingTriage(finding) => {
-                let report = generate_finding_triage_fixture(&finding.output)?;
-                render_finding_triage_fixture(&report, cli.output_format())?
-            }
         };
         println!("{rendered}");
         return Ok(());
@@ -504,6 +499,12 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if let CampaignCommand::Triage(triage) = &args.command {
+        let client = CampaignClient::new(service);
+        let report = run_campaign_triage_invocation(cli, triage, &client, principal)?;
+        emit_triage_report(cli, &report);
+        return Ok(());
+    }
     if let CampaignCommand::Debug(debug) = &args.command {
         let campaign = CampaignName::new(&debug.name)
             .map_err(|error| usage_error(format!("invalid campaign name: {error}")))?;
@@ -527,9 +528,9 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             .validate_for(&request)
             .map_err(|error| backend_error(format!("campaign debug response failed: {error}")))?;
         let session = response.session();
-        if !cli.quiet {
+        if debug.writable && !cli.quiet {
             println!(
-                "campaign-debug\tcheckpoint={}\tconfiguration={}\trole={:?}\tread_only=true\tsession={}:{}:{}",
+                "campaign-debug-source\tcheckpoint={}\tconfiguration={}\trole={:?}\tread_only=true\tsession={}:{}:{}",
                 response.checkpoint().to_text(),
                 response.configuration().to_hex(),
                 response.role(),
@@ -537,6 +538,54 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
                 session.epoch,
                 session.seed.to_hex(),
             );
+        }
+        if debug.writable {
+            let fork_args = DebugArgs {
+                target: None,
+                session: Some(format!(
+                    "{}:{}:{}",
+                    session.id.value,
+                    session.epoch,
+                    session.seed.to_hex()
+                )),
+                at: None,
+                at_event: None,
+                at_failure: false,
+                at_checkpoint: None,
+                node: Some(debug.node.clone()),
+                gdb_listen: None,
+                read_only: false,
+                allow_mutate: true,
+                checkpoint_stride: None,
+                record_transcript: None,
+                guest_idle_timeout: None,
+                verb: Some(DebugVerbArgs::ForkDebug),
+            };
+            let fork_plan = plan_debug_invocation(cli, &fork_args)?;
+            run_remote_debug_relay(cli, &fork_plan)?;
+        }
+        if !cli.quiet {
+            if debug.writable {
+                println!(
+                    "campaign-debug\tcheckpoint={}\tconfiguration={}\trole={:?}\tread_only=false\tprovenance=campaign-finding\tsession={}:{}:{}",
+                    response.checkpoint().to_text(),
+                    response.configuration().to_hex(),
+                    response.role(),
+                    session.id.value,
+                    session.epoch,
+                    session.seed.to_hex(),
+                );
+            } else {
+                println!(
+                    "campaign-debug\tcheckpoint={}\tconfiguration={}\trole={:?}\tread_only=true\tsession={}:{}:{}",
+                    response.checkpoint().to_text(),
+                    response.configuration().to_hex(),
+                    response.role(),
+                    session.id.value,
+                    session.epoch,
+                    session.seed.to_hex(),
+                );
+            }
         }
         let relay_args = DebugArgs {
             target: None,
@@ -552,8 +601,8 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             at_checkpoint: None,
             node: Some(debug.node.clone()),
             gdb_listen: Some(debug.gdb_listen.clone()),
-            read_only: true,
-            allow_mutate: false,
+            read_only: !debug.writable,
+            allow_mutate: debug.writable,
             checkpoint_stride: None,
             record_transcript: None,
             guest_idle_timeout: None,
@@ -904,6 +953,13 @@ fn prepare_campaign_command(
         }
         CampaignCommand::Replay(_) => {
             validate_campaign_replay_command(command)?;
+            Ok(None)
+        }
+        CampaignCommand::Triage(triage) => {
+            campaign_name(&triage.name)?;
+            CampaignSnapshotId::parse(&triage.snapshot).map_err(|error| {
+                usage_error(format!("invalid campaign triage snapshot: {error}"))
+            })?;
             Ok(None)
         }
         CampaignCommand::Pin(_) | CampaignCommand::Unpin(_) => {
@@ -2480,6 +2536,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Findings(_)
         | CampaignCommand::FrontierObject(_)
         | CampaignCommand::Replay(_)
+        | CampaignCommand::Triage(_)
         | CampaignCommand::Debug(_)
         | CampaignCommand::Pin(_)
         | CampaignCommand::Unpin(_) => Err(backend_error(

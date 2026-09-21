@@ -1602,6 +1602,12 @@ impl CampaignServiceErrorResponse {
         self.failure
     }
 
+    /// Returns the digest of the exact canonical request that failed.
+    #[must_use]
+    pub const fn request_digest(self) -> CampaignHash {
+        self.request_digest
+    }
+
     /// Validates exact request-digest binding.
     ///
     /// # Errors

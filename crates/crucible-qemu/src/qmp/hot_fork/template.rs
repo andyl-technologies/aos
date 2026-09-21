@@ -20,7 +20,7 @@ use super::{
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 26;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 27;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -39,6 +39,8 @@ pub enum QmpHotForkTemplateOutcome {
     Blocked,
     /// Every proof is present and the retained transaction remains prepared.
     Prepared,
+    /// A reconstructed child became a fresh source with no staged descendant.
+    ChildAdopted,
     /// An active transaction was explicitly rolled back.
     Aborted,
 }

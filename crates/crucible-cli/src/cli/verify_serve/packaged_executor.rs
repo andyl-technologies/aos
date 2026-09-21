@@ -12,7 +12,7 @@ use serde::Deserialize;
 use super::*;
 
 const PACKAGED_EXECUTOR_SCHEMA: &str = "crucible.campaign-packaged-executor";
-const PACKAGED_EXECUTOR_VERSION: u32 = 1;
+const PACKAGED_EXECUTOR_VERSION: u32 = 2;
 const MAX_PACKAGED_EXECUTOR_CONFIG_BYTES: usize = 64 * 1024;
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_PACKAGED_RUN_INTERVAL_ICOUNT: u64 = 1_000_000;
@@ -56,10 +56,29 @@ struct PackagedExecutorDeployment {
     worker_count: usize,
     host_architecture: String,
     qemu_profile: String,
+    operations: PackagedExecutorOperationsDeployment,
     hot_fork: Option<PackagedHotForkDeployment>,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticsDeployment>,
     #[serde(default)]
     verify_determinism_findings: bool,
+}
+
+/// Required fixed bounds for coordinator and executor service work.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackagedExecutorOperationsDeployment {
+    listener_workers: usize,
+    pending_connections: usize,
+    requests_per_connection: usize,
+    accept_poll_interval_ms: u64,
+    exchange_read_timeout_ms: u64,
+    exchange_write_timeout_ms: u64,
+    runtime_poll_interval_ms: u64,
+    planner_scan_limit: u32,
+    planner_input_bytes: u64,
+    planner_fuel: u64,
+    executor_scan_limit: usize,
+    worker_slots_per_campaign: u32,
 }
 
 /// Optional retained-source policy; absence keeps hot-fork execution disabled.
@@ -91,6 +110,55 @@ pub(crate) struct GuardedCampaignRunDeployment {
     pub(crate) host: crucible_daemon::LinuxQemuAttemptHostConfig,
     pub(crate) resources: crucible_campaign::AttemptResourceLimits,
     pub(crate) verify_determinism_findings: bool,
+}
+
+/// Prepared packaged executor and its authenticated coordinator tuning.
+pub(super) struct PreparedCliPackagedExecutor {
+    pub(super) executor: crucible_daemon::AttachedPackagedQemuExecutor,
+    operations: PackagedExecutorOperations,
+}
+
+#[derive(Clone, Copy)]
+struct PackagedExecutorOperations {
+    server: crucible_daemon::ExecutorLoopbackServerConfig,
+    exchange_timeouts: crucible_daemon::LoopbackExecutorTimeouts,
+    runtime: crucible_daemon::CampaignRuntimeConfig,
+    planner_scan_limit: u32,
+    planner_input_bytes: u64,
+    planner_fuel: u64,
+    executor_scan_limit: usize,
+    worker_slots_per_campaign: Option<u32>,
+}
+
+impl PreparedCliPackagedExecutor {
+    pub(super) fn runtime_config(
+        &self,
+        campaign: crucible_campaign::CampaignName,
+        planner: crucible_daemon::CanonicalPlannerProcessConfig,
+    ) -> Result<crucible_daemon::CanonicalCampaignRuntimeConfig, CliError> {
+        let operations = self.operations;
+        let budget = crucible_campaign::PlanningBudget::new(
+            1,
+            1,
+            operations.planner_scan_limit,
+            operations.planner_input_bytes,
+            operations.planner_fuel,
+        )
+        .map_err(|error| serve_error(format!("campaign planner budget error: {error}")))?;
+        crucible_daemon::CanonicalCampaignRuntimeConfig::new(
+            campaign,
+            planner,
+            operations.planner_scan_limit,
+            budget,
+            None,
+            crucible_campaign::ExecutionRetentionIntent::RetainOnFailure,
+            operations.executor_scan_limit,
+            operations.worker_slots_per_campaign,
+            operations.runtime,
+        )
+        .map(|config| config.with_executor_timeouts(operations.exchange_timeouts))
+        .map_err(|error| serve_error(format!("campaign runtime configuration error: {error}")))
+    }
 }
 
 /// Resolves the operator-provisioned capability for local campaign execution.
@@ -192,8 +260,9 @@ pub(super) fn prepare_cli_packaged_executor(
     executor_socket: &Path,
     deployment_path: &Path,
     lifecycle: &crucible_api::ProductionVmLifecycleConfig,
-) -> Result<crucible_daemon::AttachedPackagedQemuExecutor, CliError> {
+) -> Result<PreparedCliPackagedExecutor, CliError> {
     let deployment = load_validated_deployment(deployment_path)?;
+    let operations = deployment_operations(&deployment)?;
     let host = deployment_host(&deployment)?;
     let capacity = deployment_capacity(&deployment)?;
     let user_id = rustix::process::geteuid().as_raw();
@@ -217,7 +286,7 @@ pub(super) fn prepare_cli_packaged_executor(
     let mut config = crucible_daemon::PackagedQemuExecutorConfig::new(
         campaigns,
         endpoint,
-        crucible_daemon::ExecutorLoopbackServerConfig::default(),
+        operations.server,
         state.join("executor-ledger"),
         deployment.maximum_checkpoint_bytes,
         daemon_epoch,
@@ -247,8 +316,75 @@ pub(super) fn prepare_cli_packaged_executor(
                 preparation_error_chain(&error)
             ))
         })?;
-    crucible_daemon::AttachedPackagedQemuExecutor::start(executor)
-        .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))
+    let executor = crucible_daemon::AttachedPackagedQemuExecutor::start(executor)
+        .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))?;
+    Ok(PreparedCliPackagedExecutor {
+        executor,
+        operations,
+    })
+}
+
+fn deployment_operations(
+    deployment: &PackagedExecutorDeployment,
+) -> Result<PackagedExecutorOperations, CliError> {
+    let operations = &deployment.operations;
+    let exchange_timeouts = crucible_daemon::LoopbackExecutorTimeouts::new(
+        deployment_timeout(
+            "executor exchange read",
+            operations.exchange_read_timeout_ms,
+        )?,
+        deployment_timeout(
+            "executor exchange write",
+            operations.exchange_write_timeout_ms,
+        )?,
+    )
+    .map_err(|error| serve_error(format!("campaign executor exchange policy error: {error}")))?;
+    let server = crucible_daemon::ExecutorLoopbackServerConfig::new(
+        operations.listener_workers,
+        operations.pending_connections,
+        operations.requests_per_connection,
+        deployment_timeout("executor accept poll", operations.accept_poll_interval_ms)?,
+        exchange_timeouts,
+    )
+    .map_err(|error| serve_error(format!("campaign executor listener policy error: {error}")))?;
+    let runtime = crucible_daemon::CampaignRuntimeConfig::new(deployment_timeout(
+        "runtime fallback poll",
+        operations.runtime_poll_interval_ms,
+    )?)
+    .map_err(|error| serve_error(format!("campaign runtime cadence error: {error}")))?;
+    crucible_campaign::PlanningBudget::new(
+        1,
+        1,
+        operations.planner_scan_limit,
+        operations.planner_input_bytes,
+        operations.planner_fuel,
+    )
+    .map_err(|error| serve_error(format!("campaign planner budget error: {error}")))?;
+    if operations.planner_scan_limit > crucible_campaign::MAX_PLANNER_SCAN_PAGE_ITEMS
+        || operations.planner_input_bytes
+            > crucible_campaign::MAX_RETAINED_PLANNER_REQUEST_BYTES as u64
+        || operations.executor_scan_limit == 0
+        || operations.executor_scan_limit > crucible_campaign::MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS
+        || operations.worker_slots_per_campaign == 0
+        || operations.worker_slots_per_campaign
+            > crucible_campaign::MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS
+        || operations.worker_slots_per_campaign > deployment.maximum_slots
+    {
+        return Err(serve_error(
+            "campaign packaged-executor coordinator policy exceeds fixed protocol bounds",
+        ));
+    }
+
+    Ok(PackagedExecutorOperations {
+        server,
+        exchange_timeouts,
+        runtime,
+        planner_scan_limit: operations.planner_scan_limit,
+        planner_input_bytes: operations.planner_input_bytes,
+        planner_fuel: operations.planner_fuel,
+        executor_scan_limit: operations.executor_scan_limit,
+        worker_slots_per_campaign: Some(operations.worker_slots_per_campaign),
+    })
 }
 
 fn deployment_guest_selectable_boundary_diagnostics(
@@ -354,6 +490,7 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
         ));
     }
     deployment_guest_selectable_boundary_diagnostics(&deployment)?;
+    deployment_operations(&deployment)?;
     let finish_timeout = Duration::from_millis(deployment.finish_timeout_ms);
     if finish_timeout.is_zero() || finish_timeout > Duration::from_secs(60 * 60) {
         return Err(serve_error(
@@ -536,10 +673,10 @@ mod tests {
         assert_eq!(preparation_error_chain(&long).len(), 1024);
     }
 
-    fn authored() -> String {
+    fn authored_without_operations() -> String {
         String::from(
             r#"schema = "crucible.campaign-packaged-executor"
-version = 1
+version = 2
 cgroup_root = "/sys/fs/cgroup/crucible"
 run_root = "/var/lib/crucible/attempts"
 attempt_namespace = "campaign-local"
@@ -555,6 +692,7 @@ maximum_vcpus = 4
 maximum_resident_bytes = 1073741824
 maximum_disk_bytes = 2147483648
 maximum_execution_quanta = 100000
+verify_determinism_findings = false
 maximum_checkpoint_bytes = 1073741824
 worker_count = 2
 host_architecture = "x86_64"
@@ -564,6 +702,25 @@ qemu_profile = "deterministic-tcg-v1"
         .replace(
             "host_architecture = \"x86_64\"",
             &format!("host_architecture = \"{}\"", std::env::consts::ARCH),
+        )
+    }
+
+    fn authored() -> String {
+        format!(
+            "{}\n[operations]\n\
+             listener_workers = 6\n\
+             pending_connections = 48\n\
+             requests_per_connection = 512\n\
+             accept_poll_interval_ms = 25\n\
+             exchange_read_timeout_ms = 45000\n\
+             exchange_write_timeout_ms = 20000\n\
+             runtime_poll_interval_ms = 250\n\
+             planner_scan_limit = 256\n\
+             planner_input_bytes = 8388608\n\
+             planner_fuel = 257\n\
+             executor_scan_limit = 384\n\
+             worker_slots_per_campaign = 2\n",
+            authored_without_operations()
         )
     }
 
@@ -651,10 +808,24 @@ qemu_profile = "deterministic-tcg-v1"
         assert_eq!(deployment.schema, PACKAGED_EXECUTOR_SCHEMA);
         assert_eq!(deployment.worker_count, 2);
         assert!(!deployment.verify_determinism_findings);
+        let operations = deployment_operations(&deployment).expect("deployment operations");
+        assert_eq!(operations.server.connection_workers(), 6);
+        assert_eq!(
+            operations.runtime.poll_interval(),
+            Duration::from_millis(250)
+        );
+        assert_eq!(operations.worker_slots_per_campaign, Some(2));
         let guarded = load_campaign_run_deployment(&path).expect("load guarded run deployment");
         assert_eq!(guarded.resources.maximum_vcpus(), 4);
         assert_eq!(guarded.resources.maximum_disk_bytes(), 2_147_483_648);
         assert!(!guarded.verify_determinism_findings);
+
+        assert!(
+            toml::from_str::<PackagedExecutorDeployment>(&authored_without_operations()).is_err()
+        );
+        fs::write(&path, authored().replace("version = 2", "version = 1"))
+            .expect("write superseded deployment");
+        assert!(load_validated_deployment(&path).is_err());
 
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .expect("weaken deployment mode");
@@ -663,9 +834,9 @@ qemu_profile = "deterministic-tcg-v1"
 
     #[test]
     fn packaged_determinism_finding_verification_is_explicit() {
-        let deployment: PackagedExecutorDeployment = toml::from_str(&format!(
-            "{}verify_determinism_findings = true\n",
-            authored()
+        let deployment: PackagedExecutorDeployment = toml::from_str(&authored().replace(
+            "verify_determinism_findings = false",
+            "verify_determinism_findings = true",
         ))
         .expect("determinism verification deployment");
 
@@ -673,10 +844,72 @@ qemu_profile = "deterministic-tcg-v1"
     }
 
     #[test]
+    fn packaged_operational_policy_configures_every_bounded_runtime_layer() {
+        let deployment: PackagedExecutorDeployment =
+            toml::from_str(&authored()).expect("operational deployment");
+        let operations = deployment_operations(&deployment).expect("valid operational policy");
+
+        assert_eq!(operations.server.connection_workers(), 6);
+        assert_eq!(operations.server.pending_connections(), 48);
+        assert_eq!(operations.server.maximum_requests_per_connection(), 512);
+        assert_eq!(
+            operations.server.accept_poll_interval(),
+            Duration::from_millis(25)
+        );
+        assert_eq!(operations.exchange_timeouts.read(), Duration::from_secs(45));
+        assert_eq!(
+            operations.exchange_timeouts.write(),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            operations.runtime.poll_interval(),
+            Duration::from_millis(250)
+        );
+        assert_eq!(operations.planner_scan_limit, 256);
+        assert_eq!(operations.planner_input_bytes, 8 * 1024 * 1024);
+        assert_eq!(operations.planner_fuel, 257);
+        assert_eq!(operations.executor_scan_limit, 384);
+        assert_eq!(operations.worker_slots_per_campaign, Some(2));
+    }
+
+    #[test]
+    fn packaged_operational_policy_rejects_unbounded_or_zero_values() {
+        for (needle, replacement) in [
+            ("listener_workers = 6", "listener_workers = 0"),
+            (
+                "runtime_poll_interval_ms = 250",
+                "runtime_poll_interval_ms = 60001",
+            ),
+            ("planner_scan_limit = 256", "planner_scan_limit = 0"),
+            (
+                "planner_input_bytes = 8388608",
+                "planner_input_bytes = 33554433",
+            ),
+            ("planner_fuel = 257", "planner_fuel = 0"),
+            ("executor_scan_limit = 384", "executor_scan_limit = 10001"),
+            (
+                "worker_slots_per_campaign = 2",
+                "worker_slots_per_campaign = 3",
+            ),
+        ] {
+            let authored = authored().replace(needle, replacement);
+            let deployment: PackagedExecutorDeployment =
+                toml::from_str(&authored).expect("syntactically valid operational deployment");
+            assert!(
+                deployment_operations(&deployment).is_err(),
+                "accepted {replacement}"
+            );
+        }
+    }
+
+    #[test]
     fn guarded_campaign_determinism_finding_verification_is_explicit() {
         let directory = tempfile::tempdir().expect("deployment directory");
         let path = directory.path().join("executor.toml");
-        let deployment = format!("{}verify_determinism_findings = true\n", authored());
+        let deployment = authored().replace(
+            "verify_determinism_findings = false",
+            "verify_determinism_findings = true",
+        );
         fs::write(&path, deployment).expect("write deployment");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
 

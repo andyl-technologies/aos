@@ -401,11 +401,16 @@ impl TemporalGraph {
         config: &PreemptionBranchConfig,
         reduction_policy: FrontierReductionPolicy,
     ) -> Result<PreemptionBranchRun, EngineError> {
-        let decisions = preemption_branch_decisions(config);
+        let (discovery, choices) = preemption_branch_choices(frontier, config)?;
+        let decisions = choices
+            .iter()
+            .map(|choice| choice.decision().clone())
+            .collect::<Vec<_>>();
         let report =
-            self.enumerate_frontier_reduced(frontier, decisions.clone(), reduction_policy)?;
+            self.enumerate_frontier_choices_reduced(frontier, choices, reduction_policy)?;
         let materialized = self.materialize_preemption_branches(&report)?;
         Ok(PreemptionBranchRun {
+            discovery,
             decisions,
             report,
             materialized,

@@ -247,17 +247,8 @@ fn signal_fault_selectable(
         selected_index: None,
         overridden: false,
     };
-    SignalFaultSelectable::from_frontier(&crucible::SearchRuntimeFrontier {
-        configuration: parent.clone(),
-        at: VirtualTime { ticks: frontier },
-        choices: crucible::SearchFrontierChoices::from_decisions(
-            choice
-                .override_decisions(parent.id())
-                .into_iter()
-                .map(Decision::Override),
-        ),
-    })
-    .expect("signal-fault selectable fixture")
+    SignalFaultSelectable::from_binding_choice(parent, VirtualTime { ticks: frontier }, &choice)
+        .expect("signal-fault selectable fixture")
 }
 
 fn publish_signal_selection(

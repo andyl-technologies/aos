@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::time::Instant;
 
 // crucible-lint: allow host-nondeterminism-state -- The factory authenticates and forwards an unchanged captured scheduler continuation; operational source availability cannot mutate it.
 use crucible::{ContentHash, ScenarioDef, SchedulerError, SchedulerOperationalFailureClass};
@@ -24,8 +26,8 @@ use crucible_campaign::{
 };
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuCrashDetector,
-    QemuHotForkChildProcessOwner, QemuHotForkLaunchError, QemuShutdownPolicy,
-    QemuVmRealizationError,
+    QemuHotForkChildProcessOwner, QemuHotForkLaunchError, QemuNodeSetPreparedHotForkSource,
+    QemuPreparedRunDirectory, QemuShutdownPolicy, QemuVmRealizationError,
 };
 
 use crate::managed_qemu_hot_fork_source_world_pool::QemuHotForkSourceWorldLease;
@@ -285,6 +287,11 @@ impl QemuSingleHotForkSourceWorldProvider {
     pub const fn available(&self) -> bool {
         self.source.is_some()
     }
+
+    /// Removes the reconciled source for explicit descendant-lineage retirement.
+    pub(crate) fn take_available(&mut self) -> Option<ProductionVmHotForkSourceWorld> {
+        self.source.take()
+    }
 }
 
 #[cfg(test)]
@@ -514,6 +521,8 @@ where
     run_state_root: PathBuf,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
+    #[cfg(test)]
+    node_launch_nanoseconds: Vec<(String, u64)>,
 }
 
 impl<S, R> QemuProductionHotForkWorldLifecycleFactory<S, R>
@@ -537,7 +546,15 @@ where
             run_state_root: run_state_root.into(),
             shutdown_policy,
             async_policy,
+            #[cfg(test)]
+            node_launch_nanoseconds: Vec::new(),
         }
+    }
+
+    /// Returns per-node production launch latency from the most recent attempt.
+    #[cfg(test)]
+    pub(crate) fn node_launch_nanoseconds(&self) -> &[(String, u64)] {
+        &self.node_launch_nanoseconds
     }
 
     /// Binds private post-shutdown lifecycles to the retained aggregate guard.
@@ -589,11 +606,62 @@ type ProductionChild<G> = QemuHotForkAttemptReconciliation<
 
 type ProductionAssembly<G> = QemuHotForkWorldAssembly<ProductionChild<G>>;
 
+type ProductionStagedChild<G> = (
+    crucible::NodeId,
+    QemuHotForkWorldNodeTarget<G>,
+    QemuPreparedRunDirectory,
+);
+
+struct ConcurrentNodeLaunch<G>
+where
+    G: QemuAttemptResourceGuard,
+{
+    source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+    node: crucible::NodeId,
+    target: QemuHotForkWorldNodeTarget<G>,
+    run_directory: QemuPreparedRunDirectory,
+    assembly: crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken,
+}
+
+// Native acceptance records this operational duration only in cfg(test); it
+// never selects or mutates modeled execution.
+// crucible-lint: allow clippy-disallowed-method -- test-only monotonic timing cannot influence modeled state.
+#[cfg_attr(test, allow(clippy::disallowed_methods))]
+fn launch_concurrent_node<G>(
+    source: QemuNodeSetPreparedHotForkSource<'_>,
+    launch: ConcurrentNodeLaunch<G>,
+) -> (
+    Result<ProductionChild<G>, LinuxQemuHotForkSourceWorldAttemptLaunchError>,
+    u64,
+)
+where
+    G: QemuAttemptProcessResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
+        + Send
+        + 'static,
+{
+    #[cfg(test)]
+    let started = Instant::now();
+    let result = QemuHotForkAttemptReconciliation::launch_from_prepared_source(
+        launch.source_world,
+        launch.node,
+        source,
+        launch.target,
+        launch.run_directory,
+        launch.assembly,
+    );
+    #[cfg(test)]
+    let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    #[cfg(not(test))]
+    let elapsed = 0;
+    (result, elapsed)
+}
+
 struct ProvenNoChildLaunchRecovery<'a> {
     checkout_identity: &'a QemuHotForkSourceWorldCheckoutIdentity,
     source_lease: QemuHotForkSourceWorldLease,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    error: LinuxQemuHotForkSourceWorldAttemptLaunchError,
+    errors: Vec<LinuxQemuHotForkSourceWorldAttemptLaunchError>,
 }
 
 type ProductionLifecycleStartResult<G, P> = Result<
@@ -657,6 +725,9 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
+        #[cfg(test)]
+        self.node_launch_nanoseconds.clear();
+
         if matches!(
             input.start(),
             crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
@@ -841,6 +912,7 @@ where
             })
             .collect::<Vec<_>>();
         let mut assembly = QemuHotForkWorldAssembly::new(continuation);
+        let mut staged: Vec<ProductionStagedChild<R::Guard>> = Vec::new();
         for (node, (service_state, generation)) in boundaries {
             match service_state {
                 ProductionVmHotForkNodeServiceState::PermanentlyFailed => continue,
@@ -883,48 +955,108 @@ where
                     );
                 }
             };
-            let child = match QemuHotForkAttemptReconciliation::launch_from_source_world(
-                Arc::clone(&source_world),
-                node.clone(),
-                &mut resources,
-                identity,
-                assembly.child_launch_token(),
-            ) {
-                Ok(child) => child,
-                Err(error) => {
-                    let mut message = error.to_string();
-                    let Some(source_lease) = source_lease.take() else {
-                        quarantine_failed_assembly(source_world, resources, assembly, None);
-                        return ProductionLifecycleStartOutcome::failed(
-                            AttemptWorkerFailure::Terminal(
-                                QemuProductionHotForkWorldLifecycleFactoryError::Assembly(
-                                    String::from("source lease disappeared before launch recovery"),
-                                ),
-                            ),
-                            CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
-                        );
-                    };
-                    let recovery = ProvenNoChildLaunchRecovery {
-                        checkout_identity: &checkout_identity,
-                        source_lease,
-                        source_world,
-                        error,
-                    };
-                    let source = self.recover_proven_no_child_launch(
-                        recovery,
-                        resources,
-                        assembly,
-                        &mut message,
-                    );
+            let launch_resources = match source_world
+                .lock()
+                .map_err(|_| String::from("source-world ownership lock is poisoned"))
+                .and_then(|world| {
+                    world
+                        .prepared_launch_resources(&node)
+                        .map_err(|error| error.to_string())
+                }) {
+                Ok(resources) => resources,
+                Err(message) => {
+                    quarantine_failed_assembly(source_world, resources, assembly, None);
                     return ProductionLifecycleStartOutcome::failed(
-                        AttemptWorkerFailure::Retryable(
+                        AttemptWorkerFailure::Terminal(
                             QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
                         ),
-                        source,
+                        CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
                     );
                 }
             };
-            let mut child = child;
+            let mut target = match resources.reserve_process_node(identity) {
+                Ok(target) => target,
+                Err(error) => {
+                    return self.recover_preflight_rejection(
+                        &checkout_identity,
+                        source_lease.take(),
+                        source_world,
+                        resources,
+                        assembly,
+                        staged,
+                        None,
+                        error.to_string(),
+                    );
+                }
+            };
+            let run_directory = match target.prepare_generation_run_directory(launch_resources) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    return self.recover_preflight_rejection(
+                        &checkout_identity,
+                        source_lease.take(),
+                        source_world,
+                        resources,
+                        assembly,
+                        staged,
+                        Some(target),
+                        error.to_string(),
+                    );
+                }
+            };
+            staged.push((node, target, run_directory));
+        }
+
+        let launch_token = assembly.child_launch_token();
+        let operations = staged
+            .into_iter()
+            .map(|(node, target, run_directory)| {
+                (
+                    node.clone(),
+                    ConcurrentNodeLaunch {
+                        source_world: Arc::clone(&source_world),
+                        node,
+                        target,
+                        run_directory,
+                        assembly: launch_token.clone(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let launched = match source_world
+            .lock()
+            .map_err(|_| String::from("source-world ownership lock is poisoned"))
+            .and_then(|mut world| {
+                world
+                    .map_prepared_sources_concurrent(operations, launch_concurrent_node::<R::Guard>)
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(launched) => launched,
+            Err(message) => {
+                quarantine_failed_assembly(source_world, resources, assembly, None);
+                return ProductionLifecycleStartOutcome::failed(
+                    AttemptWorkerFailure::Terminal(
+                        QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                    ),
+                    CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+                );
+            }
+        };
+
+        let mut launch_failures = Vec::new();
+        for (node, (child, elapsed)) in launched {
+            #[cfg(not(test))]
+            let _ = elapsed;
+            #[cfg(test)]
+            self.node_launch_nanoseconds
+                .push((node.name.clone(), elapsed));
+            let mut child = match child {
+                Ok(child) => child,
+                Err(error) => {
+                    launch_failures.push(error);
+                    continue;
+                }
+            };
             if let Err(error) = child.admit_child() {
                 let message = error.to_string();
                 quarantine_failed_assembly(source_world, resources, assembly, Some(child));
@@ -961,6 +1093,40 @@ where
                     CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
                 );
             }
+        }
+        if let Some(error) = launch_failures.first() {
+            let message = error.to_string();
+            let Some(source_lease) = source_lease.take() else {
+                drop(launch_failures);
+                quarantine_failed_assembly(source_world, resources, assembly, None);
+                return ProductionLifecycleStartOutcome::failed(
+                    AttemptWorkerFailure::Terminal(
+                        QemuProductionHotForkWorldLifecycleFactoryError::Assembly(String::from(
+                            "source lease disappeared before launch rollback",
+                        )),
+                    ),
+                    CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+                );
+            };
+            let recovery = ProvenNoChildLaunchRecovery {
+                checkout_identity: &checkout_identity,
+                source_lease,
+                source_world,
+                errors: launch_failures,
+            };
+            let mut failure_message = message;
+            let source = self.recover_proven_no_child_launch(
+                recovery,
+                resources,
+                assembly,
+                &mut failure_message,
+            );
+            return ProductionLifecycleStartOutcome::failed(
+                AttemptWorkerFailure::Retryable(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(failure_message),
+                ),
+                source,
+            );
         }
         let complete = match assembly.publish() {
             Ok(complete) => complete,
@@ -1015,6 +1181,106 @@ where
         ProductionLifecycleStartOutcome::started(lifecycle)
     }
 
+    // crucible-lint: allow rust-allow -- the transaction inputs remain explicit at the sole preflight rollback boundary.
+    #[allow(clippy::too_many_arguments)]
+    fn recover_preflight_rejection(
+        &mut self,
+        checkout_identity: &QemuHotForkSourceWorldCheckoutIdentity,
+        source_lease: Option<QemuHotForkSourceWorldLease>,
+        source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+        mut resources: QemuHotForkWorldResourceOwner<R::Guard>,
+        assembly: ProductionAssembly<R::Guard>,
+        staged: Vec<ProductionStagedChild<R::Guard>>,
+        rejected_target: Option<QemuHotForkWorldNodeTarget<R::Guard>>,
+        mut message: String,
+    ) -> ProductionLifecycleStartOutcome<R::Guard, S::Error> {
+        let mut rollback_failed = false;
+        if let Some(target) = rejected_target
+            && let Err(error) = target.abort_without_child()
+        {
+            rollback_failed = true;
+            message.push_str(&format!(
+                "; reject target reservation rollback failed: {error}"
+            ));
+        }
+        for (_node, target, run_directory) in staged {
+            drop(run_directory);
+            if let Err(error) = target.abort_without_child() {
+                rollback_failed = true;
+                message.push_str(&format!(
+                    "; staged target reservation rollback failed: {error}"
+                ));
+            }
+        }
+        if !rollback_failed && let Err(error) = resources.finish() {
+            rollback_failed = true;
+            message.push_str(&format!(
+                "; aggregate target release failed after preflight rejection: {error}"
+            ));
+        }
+        if rollback_failed {
+            let Some(source_lease) = source_lease else {
+                quarantine_failed_assembly(source_world, resources, assembly, None);
+                return ProductionLifecycleStartOutcome::failed(
+                    AttemptWorkerFailure::Retryable(
+                        QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                    ),
+                    CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+                );
+            };
+            let retained = (source_lease, source_world, resources);
+            let _retained_for_process_lifetime = Box::leak(Box::new(retained));
+            drop(assembly);
+            return ProductionLifecycleStartOutcome::failed(
+                AttemptWorkerFailure::Retryable(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                ),
+                CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+            );
+        }
+
+        drop(resources);
+        drop(source_world);
+        let Some(source_lease) = source_lease else {
+            return ProductionLifecycleStartOutcome::failed(
+                AttemptWorkerFailure::Retryable(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                ),
+                CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+            );
+        };
+        if source_lease.identity() != checkout_identity {
+            message.push_str(
+                "; exact source-world checkout identity changed during preflight rollback",
+            );
+            let _retained_for_process_lifetime = Box::leak(Box::new(source_lease));
+            return ProductionLifecycleStartOutcome::failed(
+                AttemptWorkerFailure::Retryable(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                ),
+                CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+            );
+        }
+        if !source_lease.reauthenticates_source() {
+            message
+                .push_str("; exact source-world reauthentication failed after preflight rollback");
+            let _retained_for_process_lifetime = Box::leak(Box::new(source_lease));
+            return ProductionLifecycleStartOutcome::failed(
+                AttemptWorkerFailure::Retryable(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+                ),
+                CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+            );
+        }
+        self.sources.restore(source_lease);
+        ProductionLifecycleStartOutcome::failed(
+            AttemptWorkerFailure::Retryable(
+                QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
+            ),
+            CheckedOutSourceDisposition::Restored,
+        )
+    }
+
     fn recover_proven_no_child_launch(
         &mut self,
         recovery: ProvenNoChildLaunchRecovery<'_>,
@@ -1026,38 +1292,47 @@ where
             checkout_identity,
             source_lease,
             source_world,
-            error,
+            errors,
         } = recovery;
         // Only the typed no-child outcome plus successful reservation rollback
         // permits source reuse. Every other launch state retains all authority.
-        let (failure, owner) = error.into_parts();
-        let proven_rejection = matches!(
-            failure,
-            LinuxQemuHotForkWorldAttemptLaunchFailure::Launch(
-                QemuHotForkLaunchError::Rejected { .. }
-            )
-        );
-        if !proven_rejection {
-            drop(owner);
-            quarantine_failed_assembly(source_world, resources, assembly, None);
-            return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
-        }
-
-        let (recovered_source, run_directory) = match owner.into_recoverable_parts() {
-            Ok(parts) => parts,
-            Err(owner) => {
+        let mut recovered_sources = Vec::with_capacity(errors.len());
+        for error in errors {
+            let (failure, owner) = error.into_parts();
+            let proven_rejection = matches!(
+                failure,
+                LinuxQemuHotForkWorldAttemptLaunchFailure::Launch(
+                    QemuHotForkLaunchError::Rejected { .. }
+                )
+            );
+            if !proven_rejection {
                 drop(owner);
                 quarantine_failed_assembly(source_world, resources, assembly, None);
                 return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
             }
-        };
-        drop(run_directory);
 
-        if !Arc::ptr_eq(&source_world, &recovered_source) {
-            failure_message.push_str("; clean rejection returned another source-world owner");
-            let children = assembly.into_rollback_children();
-            quarantine_failed_rollback(source_world, Some(recovered_source), resources, children);
-            return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
+            let (recovered_source, run_directory) = match owner.into_recoverable_parts() {
+                Ok(parts) => parts,
+                Err(owner) => {
+                    drop(owner);
+                    quarantine_failed_assembly(source_world, resources, assembly, None);
+                    return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
+                }
+            };
+            drop(run_directory);
+
+            if !Arc::ptr_eq(&source_world, &recovered_source) {
+                failure_message.push_str("; clean rejection returned another source-world owner");
+                let children = assembly.into_rollback_children();
+                quarantine_failed_rollback(
+                    source_world,
+                    Some(recovered_source),
+                    resources,
+                    children,
+                );
+                return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
+            }
+            recovered_sources.push(recovered_source);
         }
 
         let children = assembly.into_rollback_children();
@@ -1065,7 +1340,7 @@ where
             rollback_hot_fork_children(children, self.shutdown_policy)
         {
             failure_message.push_str(&format!("; clean-rejection rollback failed: {rollback}"));
-            drop(recovered_source);
+            drop(recovered_sources);
             quarantine_failed_rollback(source_world, None, resources, children);
             return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
         }
@@ -1074,13 +1349,13 @@ where
             failure_message.push_str(&format!(
                 "; aggregate target release failed after rollback: {error}"
             ));
-            drop(recovered_source);
+            drop(recovered_sources);
             quarantine_failed_rollback(source_world, None, resources, BTreeMap::new());
             return CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine;
         }
         drop(resources);
         drop(source_world);
-        drop(recovered_source);
+        drop(recovered_sources);
         if source_lease.identity() != checkout_identity {
             failure_message.push_str(
                 "; exact source-world checkout identity changed before rollback recovery",

@@ -658,6 +658,9 @@ where
                     | QmpHotForkTemplateOutcome::Blocked
                     | QmpHotForkTemplateOutcome::Aborted
             ),
+            HotForkTemplateAction::AdoptChild => {
+                state.outcome() == QmpHotForkTemplateOutcome::ChildAdopted
+            }
             HotForkTemplateAction::Abort => {
                 matches!(
                     state.outcome(),

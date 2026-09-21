@@ -293,11 +293,8 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                             ),
                         });
                     }
-                    let branch_decisions = branch.decisions.clone();
-                    let (configuration, append) = self
-                        .inner
-                        .loop_impl_mut()
-                        .append_branch_prefix_overrides(branch_decisions.clone())?;
+                    let configuration = self.inner.loop_impl().configuration().clone();
+                    let append = self.inner.loop_impl_mut().append_branch_boundary()?;
                     if let Some(seed) = branch.seed {
                         self.inner.loop_impl_mut().reseed_future_decisions(seed)?;
                     }
@@ -311,8 +308,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     }
                     let frontier = self.inner.loop_impl().frontier();
                     let scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
-                    let mut decisions = pre_quantum_decisions;
-                    decisions.extend(branch_decisions);
+                    let decisions = pre_quantum_decisions;
                     let mut outcome = QuantumOutcome {
                         configuration,
                         frontier,

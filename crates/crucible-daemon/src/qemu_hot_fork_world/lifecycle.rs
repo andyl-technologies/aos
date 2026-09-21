@@ -95,10 +95,105 @@ where
     source_recovery_failed: bool,
 }
 
+/// Authorities retained while one adopted child serves as a descendant template.
+///
+/// Each link owns the previous template lease, the child reconciliation set,
+/// and the aggregate resources that protect the promoted process. Links are
+/// nested so final retirement can unwind the lineage from its youngest source
+/// back to the original template without detaching any process authority.
+pub struct QemuProductionHotForkRetainedLineage<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    source_lease: QemuHotForkSourceWorldLease,
+    source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
+    reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    resources: QemuHotForkWorldResourceOwner<G>,
+    auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
+    auxiliary_binding: Option<QemuHotForkWorldAuxiliaryResourceBinding<G>>,
+    ancestor: Option<Box<Self>>,
+}
+
 impl<G> QemuProductionHotForkWorldLifecycle<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    /// Re-adopts this child and prepares it as the next descendant template.
+    ///
+    /// The returned lineage authority must remain paired with the prepared
+    /// world. A failure quarantines all authorities rather than returning a
+    /// partially promoted process.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lifecycle error when the child was already shut down, any
+    /// authority is missing, or re-adoption and template preparation fails.
+    pub fn promote_into_descendant_template(
+        self,
+        ancestor: Option<Box<QemuProductionHotForkRetainedLineage<G>>>,
+    ) -> Result<
+        (
+            ProductionVmHotForkSourceWorld,
+            QemuProductionHotForkRetainedLineage<G>,
+        ),
+        LifecycleApiError,
+    > {
+        let Self {
+            runtime_basis: _,
+            lifecycle,
+            source_lease,
+            source_world,
+            reconciliations,
+            mut resources,
+            auxiliary_resources,
+            auxiliary_binding,
+            shutdown_complete,
+            aggregate_released,
+            source_recovery_failed,
+        } = self;
+        if shutdown_complete || aggregate_released || source_recovery_failed {
+            resources.quarantine();
+            let _retained = Box::leak(Box::new((source_lease, source_world, reconciliations)));
+            return Err(lifecycle_error(
+                "hot-fork child promotion requires a live unreconciled lifecycle",
+            ));
+        }
+        let Some(source_lease) = source_lease else {
+            resources.quarantine();
+            let _retained = Box::leak(Box::new((source_world, reconciliations)));
+            return Err(lifecycle_error(
+                "hot-fork child promotion lost its parent source lease",
+            ));
+        };
+        let world = match lifecycle.promote_hot_fork_child_source_world() {
+            Ok(world) => world,
+            Err(failure) => {
+                resources.quarantine();
+                let _retained = Box::leak(Box::new((
+                    failure,
+                    source_lease,
+                    source_world,
+                    reconciliations,
+                    auxiliary_binding,
+                    ancestor,
+                )));
+                return Err(lifecycle_error(
+                    "re-adopt and prepare hot-fork child as descendant template",
+                ));
+            }
+        };
+        let lineage = QemuProductionHotForkRetainedLineage {
+            source_lease,
+            source_world,
+            reconciliations,
+            resources,
+            auxiliary_resources,
+            auxiliary_binding,
+            ancestor,
+        };
+        Ok((world, lineage))
+    }
+
     /// Returns the exact supervisor incarnation that owns this child world.
     #[must_use]
     pub const fn runtime_basis(&self) -> AttemptExecutionRuntimeBasis {
@@ -219,6 +314,77 @@ where
     #[cfg(test)]
     pub(crate) fn source_world_owner_for_test(&self) -> Arc<Mutex<ProductionVmHotForkSourceWorld>> {
         Arc::clone(&self.source_world)
+    }
+}
+
+impl<G> QemuProductionHotForkRetainedLineage<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    /// Retires one prepared descendant and then unwinds every retained parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lifecycle error when shutdown, reconciliation, resource
+    /// release, process-loan release, or parent-source recovery fails.
+    pub fn retire_source_world(
+        mut self,
+        source: ProductionVmHotForkSourceWorld,
+    ) -> Result<(), LifecycleApiError> {
+        let mut lifecycle = source
+            .recover()
+            .map_err(|failure| lifecycle_error(failure.to_string()))?;
+        QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).map_err(|error| {
+            lifecycle_error(format!("shutdown promoted hot-fork source: {error}"))
+        })?;
+        if let Some(broker) = &self.auxiliary_resources {
+            self.auxiliary_binding = Some(broker.bind(&self.resources).map_err(|error| {
+                lifecycle_error(format!(
+                    "bind promoted hot-fork auxiliary resources after shutdown: {error}"
+                ))
+            })?);
+        }
+
+        let mut reconciliation_complete = false;
+        for _ in 0..1024 {
+            if self
+                .reconciliations
+                .reconcile_execution_disposition(AttemptExecutionDisposition::Canceled)?
+                == AttemptExecutionReconciliationStep::Complete
+            {
+                reconciliation_complete = true;
+                break;
+            }
+        }
+        if !reconciliation_complete {
+            self.quarantine();
+            let _retained = Box::leak(Box::new((self, lifecycle)));
+            return Err(lifecycle_error(
+                "promoted hot-fork child did not reconcile within the bounded retirement",
+            ));
+        }
+        self.resources.finish().map_err(|error| {
+            lifecycle_error(format!("release promoted hot-fork resources: {error}"))
+        })?;
+        self.auxiliary_binding = None;
+        lifecycle.release_reaped_hot_fork_process_loans()?;
+        drop(lifecycle);
+
+        drop(self.source_world);
+        let parent = self.source_lease.into_exclusive_source().map_err(|lease| {
+            let _retained = Box::leak(lease);
+            lifecycle_error("recover exclusive parent template after descendant retirement")
+        })?;
+        match self.ancestor {
+            Some(ancestor) => ancestor.retire_source_world(parent),
+            None => parent.retire(),
+        }
+    }
+
+    fn quarantine(&mut self) {
+        self.auxiliary_binding = None;
+        self.reconciliations.quarantine();
+        self.resources.quarantine();
     }
 }
 

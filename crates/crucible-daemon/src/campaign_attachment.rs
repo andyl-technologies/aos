@@ -59,6 +59,7 @@ pub struct CanonicalCampaignRuntimeConfig {
     executor_scan_limit: usize,
     worker_slots: Option<u32>,
     runtime: CampaignRuntimeConfig,
+    executor_timeouts: crate::LoopbackExecutorTimeouts,
 }
 
 impl CanonicalCampaignRuntimeConfig {
@@ -106,7 +107,21 @@ impl CanonicalCampaignRuntimeConfig {
             executor_scan_limit,
             worker_slots,
             runtime,
+            executor_timeouts: crate::LoopbackExecutorTimeouts::default(),
         })
+    }
+
+    /// Selects the finite read and write deadlines for executor exchanges.
+    ///
+    /// The same deadlines are retained across the one bounded reconnect. The
+    /// supplied value is already validated by [`crate::LoopbackExecutorTimeouts`].
+    #[must_use]
+    pub const fn with_executor_timeouts(
+        mut self,
+        executor_timeouts: crate::LoopbackExecutorTimeouts,
+    ) -> Self {
+        self.executor_timeouts = executor_timeouts;
+        self
     }
 
     /// Builds the reviewed default attachment profile.
@@ -196,6 +211,12 @@ impl CanonicalCampaignRuntimeConfig {
     #[must_use]
     pub const fn runtime(&self) -> CampaignRuntimeConfig {
         self.runtime
+    }
+
+    /// Returns the finite read and write deadlines for executor exchanges.
+    #[must_use]
+    pub const fn executor_timeouts(&self) -> crate::LoopbackExecutorTimeouts {
+        self.executor_timeouts
     }
 }
 
@@ -369,8 +390,9 @@ pub fn prepare_canonical_campaign_runtime(
     executor_stream: UnixStream,
     config: &CanonicalCampaignRuntimeConfig,
 ) -> Result<PreparedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
-    let service = LoopbackExecutorService::new(executor_stream)
-        .map_err(CanonicalCampaignRuntimeError::ExecutorProtocol)?;
+    let service =
+        LoopbackExecutorService::with_timeouts(executor_stream, config.executor_timeouts())
+            .map_err(CanonicalCampaignRuntimeError::ExecutorProtocol)?;
     prepare_canonical_campaign_runtime_with_service(repository, planner_authority, service, config)
 }
 
@@ -390,8 +412,9 @@ pub fn prepare_canonical_campaign_runtime_endpoint(
     endpoint: ExecutorLoopbackEndpointConfig,
     config: &CanonicalCampaignRuntimeConfig,
 ) -> Result<PreparedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
-    let service = LoopbackExecutorService::connect(endpoint)
-        .map_err(CanonicalCampaignRuntimeError::ExecutorProtocol)?;
+    let service =
+        LoopbackExecutorService::connect_with_timeouts(endpoint, config.executor_timeouts())
+            .map_err(CanonicalCampaignRuntimeError::ExecutorProtocol)?;
     prepare_canonical_campaign_runtime_with_service(repository, planner_authority, service, config)
 }
 

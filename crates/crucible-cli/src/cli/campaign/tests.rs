@@ -788,9 +788,55 @@ impl CampaignService for GraphPageService {
 
     fn query_campaign_frontier(
         &self,
-        _request: &QueryCampaignFrontierRequest,
+        request: &QueryCampaignFrontierRequest,
     ) -> Result<QueryCampaignFrontierResponse, Self::Error> {
-        unreachable!("unused campaign-service operation")
+        let exploration = self.snapshot.roots().exploration;
+        let anchor = CampaignHash::derive("crucible.campaign-exploration-frontier-index.v1", b"");
+        let (_, index_proof) = self
+            .map
+            .get_with_proof(exploration, anchor)
+            .expect("frontier query index proof");
+        let frontier_index = self
+            .map
+            .get(exploration, anchor)
+            .expect("frontier query index lookup")
+            .expect("frontier query index root");
+        let (page, page_proof) = self
+            .map
+            .scan_with_proof(
+                frontier_index,
+                request
+                    .after()
+                    .map(|after| CampaignHash::from_bytes(after.content_id().digest())),
+                request.limit() as usize,
+            )
+            .expect("frontier query page proof");
+        let entries = page
+            .entries()
+            .iter()
+            .map(|(_, value)| {
+                assert_eq!(
+                    *value,
+                    self.frontier_projection
+                        .id()
+                        .expect("frontier projection ID")
+                        .content_id()
+                );
+                self.frontier_projection
+            })
+            .collect::<Vec<_>>();
+        let next_after = page
+            .next_after()
+            .and_then(|_| entries.last().map(|entry| entry.request()));
+        Ok(QueryCampaignFrontierResponse::new(
+            request,
+            self.snapshot.clone(),
+            entries,
+            next_after,
+            index_proof,
+            page_proof,
+        )
+        .expect("bound frontier query response"))
     }
 
     fn get_campaign_frontier_object(
@@ -982,6 +1028,99 @@ fn campaign_graph_aggregation_follows_checked_pages_to_authenticated_eof() {
             campaign_page_entry_row(first_entry, "\0") != campaign_page_entry_row(entry, "\0")
         })
     }));
+}
+
+#[test]
+fn campaign_choice_frontier_and_finding_pages_use_checked_query_paths() {
+    let (service, snapshot, _) = graph_page_service();
+    let expected_opportunity = service
+        .opportunity
+        .id()
+        .expect("choice opportunity identity");
+    let expected_request = service
+        .branch_request
+        .id()
+        .expect("frontier request identity");
+    let expected_branch_point = service.branch_request.branch_point();
+    let expected_finding = service.finding.id().expect("finding identity");
+    let expected_cluster = service.finding.signature().cluster_key();
+    let expected_observation = service.finding.observation();
+    let expected_reproduction = service.finding.reproduction();
+    let client = CampaignClient::new(service);
+    let principal = CampaignPrincipal::new("operator").expect("campaign principal");
+
+    let choices = query_campaign_page(
+        &client,
+        principal.clone(),
+        &CampaignCommand::Choices(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            after: None,
+            limit: 1,
+            pages: 1,
+        }),
+    )
+    .expect("checked choice page");
+    assert_eq!(choices.schema, CAMPAIGN_PAGE_REPORT_SCHEMA);
+    assert!(choices.complete);
+    assert!(matches!(
+        choices.entries.as_slice(),
+        [CampaignPageEntry::Choice { opportunity }]
+            if opportunity == &expected_opportunity.to_string()
+    ));
+
+    let frontier = query_campaign_page(
+        &client,
+        principal.clone(),
+        &CampaignCommand::Frontier(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            after: None,
+            limit: 1,
+            pages: 1,
+        }),
+    )
+    .expect("checked frontier page");
+    assert!(frontier.complete);
+    assert!(matches!(
+        frontier.entries.as_slice(),
+        [CampaignPageEntry::Frontier {
+            request,
+            branch_point,
+            state: "ready",
+            completed_visits: None,
+            required_visits: None,
+        }] if request == &expected_request.to_string()
+            && branch_point == &expected_branch_point.to_string()
+    ));
+
+    let findings = query_campaign_page(
+        &client,
+        principal,
+        &CampaignCommand::Findings(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            after: None,
+            limit: 1,
+            pages: 1,
+        }),
+    )
+    .expect("checked finding page");
+    assert!(findings.complete);
+    assert!(matches!(
+        findings.entries.as_slice(),
+        [CampaignPageEntry::Finding {
+            finding,
+            cluster,
+            observation,
+            occurrences: 3,
+            reproduction,
+            ..
+        }] if finding == &expected_finding.to_string()
+            && cluster == &expected_cluster.to_hex()
+            && observation == &expected_observation.to_string()
+            && reproduction == &expected_reproduction.to_string()
+    ));
 }
 
 #[test]
@@ -1367,6 +1506,38 @@ fn campaign_create_and_derive_records_are_prepared_before_connection() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn campaign_create_and_start_uses_the_checked_genesis_snapshot() {
+    let principal = CampaignPrincipal::new("operator").expect("campaign principal");
+    let campaign = CampaignName::new("started").expect("campaign name");
+    let (lineage, policy) = campaign_records();
+    let request = CreateCampaignRequest::new(principal, campaign, lineage, policy)
+        .expect("campaign creation request");
+    let command = CampaignCommandId::from_hash(hash("start-created"));
+    let client = CampaignClient::new(FixedHeadService);
+
+    let report = apply_campaign_create(&client, request, Some(command))
+        .expect("checked campaign creation and start");
+
+    let CampaignAcceptanceReport::Create {
+        campaign,
+        snapshot: genesis_snapshot,
+        replayed,
+        start: Some(start),
+        ..
+    } = report
+    else {
+        panic!("create-and-start must return both checked results");
+    };
+    assert_eq!(campaign, "started");
+    assert_eq!(genesis_snapshot, snapshot("created").to_string());
+    assert!(!replayed);
+    assert_eq!(start.command, command.to_string());
+    assert_eq!(start.prior_snapshot, genesis_snapshot);
+    assert_eq!(start.new_snapshot, snapshot("started").to_string());
+    assert!(!start.replayed);
 }
 
 #[test]
@@ -3321,4 +3492,60 @@ fn lineage(label: &str) -> CampaignLineageId {
 fn policy(label: &str) -> CampaignPolicyId {
     CampaignPolicyId::parse(&fixture_record_id(CampaignRecordKind::Policy, label))
         .expect("policy id")
+}
+
+#[test]
+fn campaign_triage_and_top_level_sugar_parse_the_same_request() {
+    let snapshot = snapshot("triage-parser").to_string();
+    let nested = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "--socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "operator",
+        "triage",
+        "example",
+        "--snapshot",
+        &snapshot,
+        "--policy",
+        "exact",
+        "--minimize",
+        "all",
+        "--recompute-signatures",
+    ])
+    .expect("campaign triage arguments");
+    let top_level = Cli::try_parse_from([
+        "crucible",
+        "triage",
+        "--campaign-socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "operator",
+        "example",
+        "--snapshot",
+        &snapshot,
+        "--policy",
+        "exact",
+        "--minimize",
+        "all",
+        "--recompute-signatures",
+    ])
+    .expect("top-level campaign triage arguments");
+
+    let Commands::Campaign(CampaignArgs {
+        socket: Some(nested_socket),
+        principal: Some(nested_principal),
+        command: CampaignCommand::Triage(nested_args),
+    }) = nested.command
+    else {
+        panic!("expected nested campaign triage command");
+    };
+    let Commands::Triage(top_level_args) = top_level.command else {
+        panic!("expected top-level campaign triage sugar");
+    };
+
+    assert_eq!(nested_socket, top_level_args.campaign_socket);
+    assert_eq!(nested_principal, top_level_args.principal);
+    assert_eq!(nested_args, top_level_args.campaign);
 }

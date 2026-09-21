@@ -164,8 +164,9 @@ This primitive does not compute reachability or confer deletion authority on
 root reachability, the canonical store-graph identity, ref and operational-root
 generations, and the interruption-safe external journal specified below.
 Policy-aware tier and completed write-back staging eviction now reuse this
-administrative boundary. The complete operator flight remains mandatory before
-T-CAM-8.3 is complete.
+administrative boundary. The complete operator flight remains separately
+mandatory under T-CAM-8.6; T-CAM-8.3's automated implementation boundary is
+complete.
 
 `BlobSource` is finite and reopenable: every `open` returns the same byte stream
 and exactly `logical_length` bytes. Reopenability lets mirrors, retries, and
@@ -1632,7 +1633,7 @@ Pending write-back IDs enter the same single-host GC root manifest as refs and
 assignment-ledger roots. Planning inventories them under the transfer fence;
 apply reacquires that fence, requires the exact manifest identity, and retains
 the fence through candidate deletion. No separate generation field is needed
-in the V2 GC plan header because the exact root-manifest identity binds the
+in the GC plan header because the exact root-manifest identity binds the
 complete active set and the held fence excludes changes during apply.
 Each pending ID is a direct exact-object root because the journal owns its
 transfer independently; this includes internal Merkle nodes whose root-relative
@@ -1806,8 +1807,8 @@ An error after the state advance is conservative because it only invalidates an
 older plan. The memory ledger uses a process-local hash-chain generation for its
 ephemeral backend instance.
 
-The registered `crucible.campaign.gc-root-manifest` schema v1 and
-`crucible.campaign.gc-candidate-manifest` schema v2 are streamed external
+The registered `crucible.campaign.gc-root-manifest` and
+`crucible.campaign.gc-candidate-manifest` schema v1 records are streamed external
 administrative records. Each admits at most 64,000,000 entries, matching the
 complete campaign-closure work bound. A root manifest deduplicates roots and
 orders them by `(ContentId.kind ASCII tag, schema version as an unsigned
@@ -1830,7 +1831,7 @@ logical IDs. Entries are unique and ordered first by backend ASCII bytes, then
 by the same ContentId tuple. Its canonical layout is:
 
 ```text
-"crucible.campaign.gc-candidate-manifest.v2\0"
+"crucible.campaign.gc-candidate-manifest.v1\0"
 candidate_count:u64be
 repeated candidate_count times:
     backend_length:u16be || backend_utf8
@@ -1843,21 +1844,21 @@ repeated candidate_count times:
 
 For either manifest, let `D` be respectively
 `crucible.campaign.gc-root-manifest.v1` or
-`crucible.campaign.gc-candidate-manifest.v2`, and let `M` be the complete
+`crucible.campaign.gc-candidate-manifest.v1`, and let `M` be the complete
 canonical bytes above. Its 32-byte manifest hash is
 `BLAKE3(BE64(len(D)) || D || M)`. Decoders enforce the entry limit before
 allocation proportional to a claimed count, bound every individual string,
 require strict order and exact EOF, and recompute terminal candidate count and
 logical-byte totals.
 
-The registered `crucible.campaign.gc-plan` schema v2 is the bounded immutable
+The registered `crucible.campaign.gc-plan` schema v1 is the bounded immutable
 header that composes these independently fenced inputs. It does not embed the
 potentially large root set or candidate list. Instead it binds their separately
 authenticated canonical manifest hashes and terminal counters. Its canonical
 binary layout is:
 
 ```text
-"crucible.campaign.gc-plan.v2\0"
+"crucible.campaign.gc-plan.v1\0"
 store_graph_hash[32]
 root_set_manifest_hash[32]
 ref_generation[32] || ref_count:u64be
@@ -1877,7 +1878,7 @@ digits, `.`, `_`, and `-`. The complete header is at most 64 KiB. Counts are
 checked for overflow; operational roots cannot outnumber attempt records, and
 candidate placements/bytes cannot exceed the summed physical inventory. Its
 identity is
-`CampaignHash::derive("crucible.campaign.gc-plan.v2", canonical_header)`.
+`CampaignHash::derive("crucible.campaign.gc-plan.v1", canonical_header)`.
 Changing any store-graph, root-manifest, candidate-manifest, blob, ref, or ledger
 basis therefore changes the plan identity. The daemon's non-destructive
 single-host planner now fences and inventories the complete ref namespace,
@@ -1892,9 +1893,9 @@ strictly ordered. Any incomplete visitor prefix is discarded. Because apply
 later revalidates every generation, mutations between these non-destructive
 phases only make the plan stale; they cannot authorize deletion.
 
-The candidate-manifest hash uses the v2 magic and
-`crucible.campaign.gc-candidate-manifest.v2` domain. Journal admission accepts
-only this current candidate-manifest schema and the current plan schema.
+The candidate-manifest hash uses the current magic and
+`crucible.campaign.gc-candidate-manifest.v1` domain. Journal admission accepts
+only the current candidate-manifest and plan schemas.
 
 Every physical leaf derives its storage identity from its inventory instance
 (persisted for durable leaves and process-local for memory) using

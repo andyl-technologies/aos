@@ -234,8 +234,7 @@ impl DecisionRecorder {
     ///
     /// Default preemptions are audit-only: they are deterministic from the node
     /// identity, current instruction count, fixed RR quantum, and vCPU count,
-    /// so they do not consume a schedule entry. Explorer overrides use
-    /// [`DecisionRecorder::record_preemption_override`] instead.
+    /// so they do not consume a schedule entry.
     ///
     /// # Errors
     ///
@@ -280,23 +279,6 @@ impl DecisionRecorder {
                 to_vcpu: VcpuId { index: to_vcpu },
             },
         })
-    }
-
-    /// Records an explorer-supplied preemption override in the schedule.
-    ///
-    /// Overrides are replay material: unlike default round-robin preemptions,
-    /// they are appended as [`Decision::Preemption`] so replay does not
-    /// recompute or silently repair the chosen vCPU switch or interrupt timing.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DecisionRecordError`] when the resulting schedule violates the
-    /// scenario's app-random draw limit.
-    pub fn record_preemption_override(
-        &mut self,
-        decision: PreemptionDecision,
-    ) -> Result<(), DecisionRecordError> {
-        self.append_decision(Decision::Preemption(decision))
     }
 
     fn draw_stream_value(&mut self, stream: &RngStreamId) -> (u64, u64) {
@@ -860,52 +842,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn decision_recorder_records_preemption_overrides_in_schedule() {
-        let config = Configuration::genesis(default_scenario());
-        let mut recorder = DecisionRecorder::new(config);
-        let switch = PreemptionDecision {
-            node: node("node-a"),
-            at: Icount { retired: 1024 },
-            kind: PreemptionKind::VcpuSwitch {
-                from_vcpu: VcpuId { index: 2 },
-                to_vcpu: VcpuId { index: 0 },
-            },
-        };
-        let interrupt = PreemptionDecision {
-            node: node("single-vcpu-node"),
-            at: Icount { retired: 2048 },
-            kind: PreemptionKind::InterruptAt {
-                target_vcpu: VcpuId { index: 0 },
-                irq: crate::IrqVector { vector: 32 },
-            },
-        };
-
-        recorder
-            .record_preemption_override(switch.clone())
-            .unwrap_or_else(|error| panic!("test preemption override should be accepted: {error}"));
-        recorder
-            .record_preemption_override(interrupt.clone())
-            .unwrap_or_else(|error| panic!("test preemption override should be accepted: {error}"));
-
-        assert_eq!(recorder.schedule().len(), 2);
-        assert_eq!(
-            recorder.schedule().decisions(),
-            &[
-                Decision::Preemption(switch.clone()),
-                Decision::Preemption(interrupt.clone())
-            ]
-        );
-        assert_ne!(
-            Schedule::empty()
-                .appended(Decision::Preemption(switch))
-                .content_hash(),
-            Schedule::empty()
-                .appended(Decision::Preemption(interrupt))
-                .content_hash()
-        );
     }
 
     #[test]

@@ -202,6 +202,18 @@ const HOT_FORK_SCALING_SELECTORS: &[ExactSelector] = &[
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths",
     },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_guest_memory_sizes",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_whole_world_survives_ten_thousand_lifecycles_without_leaks",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets",
+    },
 ];
 
 const WORLD_FORK_ATOMICITY_SELECTORS: &[ExactSelector] = &[
@@ -227,9 +239,25 @@ const WORLD_FORK_ATOMICITY_SELECTORS: &[ExactSelector] = &[
     },
 ];
 
+const HOT_FORK_ISOLATION_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/isolation_negative.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness",
+    },
+];
+
 const TYPED_CHOICE_PRODUCT_CHECKPOINT_SELECTORS: &[ExactSelector] = &[ExactSelector {
     source: "crates/crucible-cli/tests/support/campaign_packaged_process/guest_choice.rs",
     name: "packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart",
+}];
+
+const TYPED_CHOICE_SCHEDULE_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible/src/tests/model_core.rs",
+    name: "tests::model_core::campaign_selection_decision_is_strict_and_changes_schedule_identity",
 }];
 
 const TYPED_CHOICE_PRODUCT_CHECKPOINT_NIX_SOURCES: &[&str] = &[
@@ -498,13 +526,16 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         &[CampaignGateTarget {
             package: "crucible-daemon",
             kind: CampaignGateTargetKind::LibExactAggregate {
-                selectors: WORLD_FORK_ATOMICITY_SELECTORS,
+                selectors: HOT_FORK_ISOLATION_SELECTORS,
                 producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-atomic-world-vm.nix",
                 producer_nix_attr: "checks.crucible.phase7.gates.worldForkAtomicity",
                 producer_gate: "gate:world-fork-atomicity",
                 aggregate_nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
                 evidence: &[
                     "native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation",
+                    "native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased",
+                    "native_negative_isolation_rejected_before=child-readiness,resume,world-publication",
+                    "native_negative_isolation_source_unchanged=true",
                 ],
                 ignored: true,
             },
@@ -560,7 +591,17 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
         "gate:typed-choice",
         "crucible-campaign",
-        &[integration_target("crucible-campaign", "gate_typed_choice")],
+        &[
+            integration_target("crucible-campaign", "gate_typed_choice"),
+            CampaignGateTarget {
+                package: "crucible",
+                kind: CampaignGateTargetKind::LibExact {
+                    selectors: TYPED_CHOICE_SCHEDULE_SELECTORS,
+                    nix_source: "tests/crucible/phase2-typed-choice.nix",
+                    ignored: false,
+                },
+            },
+        ],
         "checks.crucible.phase2.gates.typedChoice",
     ),
     automated(

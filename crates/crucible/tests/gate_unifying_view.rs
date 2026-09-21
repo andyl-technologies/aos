@@ -29,8 +29,8 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
     let world = single_node_world("unifying-view")?;
     let scenario = scenario_form(&world)?;
     let root = Configuration::genesis(scenario.scenario_def());
-    let noise = override_decision("noise", "left");
-    let critical = override_decision("critical", "fail");
+    let noise = typed_override_choice("noise-left", "noise", "left")?;
+    let critical = typed_override_choice("critical-fail", "critical", "fail")?;
     let baked =
         bake_with_search_frontier_choices(&scenario, vec![noise.clone(), critical.clone()])?;
     let mut graph = TemporalGraph::new(finding_fingerprint("unifying-graph"))
@@ -52,7 +52,7 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
         &root,
     )?;
 
-    let fork = graph.fork(&root, vec![noise.clone(), critical.clone()])?;
+    let fork = graph.fork(&root, concatenate_choices([&noise, &critical]))?;
     let fork_report = graph
         .validate_unified_operation(&UnifiedGraphOperationEvidence::Fork(Box::new(fork.clone())))?;
     assert_eq!(fork.base.configuration, root.id());
@@ -95,7 +95,7 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
         &fork.branch,
     )?;
 
-    let critical_branch = try_step(&root, critical.clone())?;
+    let critical_branch = try_steps(&root, &critical)?;
     let search_fingerprint = finding_fingerprint("search-critical");
     let failure_oracle =
         SearchFailureOracle::none().with_failure(critical_branch.id(), search_fingerprint);
@@ -251,14 +251,14 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
     let world = single_node_world("mismatched-evidence")?;
     let scenario = scenario_form(&world)?;
     let root = Configuration::genesis(scenario.scenario_def());
-    let noise = override_decision("noise", "left");
-    let critical = override_decision("critical", "fail");
+    let noise = typed_override_choice("noise-left", "noise", "left")?;
+    let critical = typed_override_choice("critical-fail", "critical", "fail")?;
     let baked =
         bake_with_search_frontier_choices(&scenario, vec![noise.clone(), critical.clone()])?;
     let mut graph = TemporalGraph::new(finding_fingerprint("mismatched-graph"))
         .with_baked_genesis(&root.def, baked)?;
     let resume_runtime = graph.resume(&root)?;
-    let branch = try_step(&root, critical.clone())?;
+    let branch = try_steps(&root, &critical)?;
 
     let mismatched = UnifiedGraphOperationEvidence::Resume(Box::new(TemporalGraphResumeEvidence {
         configuration: branch,
@@ -282,8 +282,8 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
         Err(EngineError::ReplayTargetMismatch { .. })
     ));
 
-    let fork = graph.fork(&root, vec![noise.clone(), critical.clone()])?;
-    let critical_branch = try_step(&root, critical)?;
+    let fork = graph.fork(&root, concatenate_choices([&noise, &critical]))?;
+    let critical_branch = try_steps(&root, &critical)?;
     let mut forged_fork = fork.clone();
     forged_fork.base = graph.resume(&critical_branch)?;
     assert!(matches!(
@@ -605,7 +605,7 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
 
 fn bake_with_search_frontier_choices(
     scenario: &ScenarioDefForm,
-    decisions: Vec<Decision>,
+    choices: Vec<Vec<Decision>>,
 ) -> Result<GenesisCheckpoint, EngineError> {
     let mut baked = bake_for_scenario_form(scenario)?;
     let state = baked.checkpoint.state.as_ref().ok_or(
@@ -615,7 +615,7 @@ fn bake_with_search_frontier_choices(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier = SearchFrontierChoices::from_decision_sequences(choices);
     baked.checkpoint.state = Some(
         crucible::MaterializedState::from_components_with_event_log_segments(
             state.vm_snapshots.clone(),
@@ -627,6 +627,42 @@ fn bake_with_search_frontier_choices(
         ),
     );
     Ok(baked)
+}
+
+fn typed_override_choice(
+    label: &str,
+    point: &str,
+    choice: &str,
+) -> Result<Vec<Decision>, EngineError> {
+    Ok(vec![
+        crucible::test_support::typed_search_decision_for_test(label)?,
+        Decision::Override(OverrideDecision {
+            point: SchedulingPoint {
+                key: point.to_owned(),
+            },
+            choice: ChoiceTag {
+                name: choice.to_owned(),
+            },
+        }),
+    ])
+}
+
+fn concatenate_choices<const N: usize>(choices: [&Vec<Decision>; N]) -> Vec<Decision> {
+    choices
+        .into_iter()
+        .flat_map(|choice| choice.iter().cloned())
+        .collect()
+}
+
+fn try_steps(
+    configuration: &Configuration,
+    decisions: &[Decision],
+) -> Result<Configuration, EngineError> {
+    decisions
+        .iter()
+        .try_fold(configuration.clone(), |current, decision| {
+            try_step(&current, decision.clone())
+        })
 }
 
 fn bake_for_scenario_form(scenario: &ScenarioDefForm) -> Result<GenesisCheckpoint, EngineError> {
@@ -681,17 +717,6 @@ fn coverage_feedback_fingerprints(feedback: &[EventLogCoverageFeedback]) -> Vec<
         .iter()
         .map(|entry| entry.fingerprint_for(EventLogCoverageFeedbackConsumer::CoverageGuidedFuzzing))
         .collect()
-}
-
-fn override_decision(point: &str, choice: &str) -> Decision {
-    Decision::Override(OverrideDecision {
-        point: SchedulingPoint {
-            key: point.to_owned(),
-        },
-        choice: ChoiceTag {
-            name: choice.to_owned(),
-        },
-    })
 }
 
 fn finding_fingerprint(label: &str) -> ContentHash {

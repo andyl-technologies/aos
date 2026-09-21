@@ -88,7 +88,11 @@ pub(super) fn run_public_campaign_debug_flight() -> Result<(), Box<dyn Error>> {
 
     let finding_after = query_findings(&fixture, &snapshot)?;
     assert_eq!(finding_after, finding_before);
-    service.stop()?;
+    exercise_public_exact_pin_gc_flow(
+        &fixture,
+        &mut service,
+        &failure_attempt.pinnable_configuration,
+    )?;
 
     println!("public_finding_midpoint_debug=true");
     println!("authenticated_exact_checkpoint=true");
@@ -117,6 +121,7 @@ pub(super) fn run_public_campaign_debug_flight() -> Result<(), Box<dyn Error>> {
     println!("authenticated_checkpoint_candidates={}", first_selection.1);
     println!("retry_session_identity_stable=true");
     println!("campaign_finding_immutable=true");
+    println!("public_exact_pin_gc_flow=true");
     println!("production_qemu=true");
     Ok(())
 }
@@ -127,6 +132,7 @@ fn grant_midpoint_debug_operations(policy: &Path) -> Result<(), Box<dyn Error>> 
         "query-campaign-findings",
         "get-campaign-finding-object",
         "debug-campaign",
+        "pin-campaign",
     ] {
         writeln!(
             policy,
@@ -372,6 +378,7 @@ fn begin_initial_discovery(fixture: &FlightFixture, head: &Value) -> Result<(), 
 struct AuthenticatedFailureAttempt {
     attempt: String,
     observation: String,
+    pinnable_configuration: String,
 }
 
 fn drive_fast_q7_failure(
@@ -456,7 +463,136 @@ fn drive_fast_q7_failure(
     Ok(AuthenticatedFailureAttempt {
         attempt,
         observation,
+        pinnable_configuration: fast_configuration,
     })
+}
+
+fn exercise_public_exact_pin_gc_flow(
+    fixture: &FlightFixture,
+    service: &mut CampaignServiceChild,
+    configuration: &str,
+) -> Result<(), Box<dyn Error>> {
+    use crucible_campaign::{CampaignName, ConfigurationId};
+    use crucible_daemon::{
+        DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
+        ExactPinRetentionAdmin,
+    };
+
+    let head = campaign_status(fixture)?;
+    let pinned = run_json(
+        connected_campaign(fixture).args([
+            "pin",
+            CAMPAIGN,
+            configuration,
+            "--expected",
+            &json_string(&head, "snapshot")?,
+            "--command",
+            &"65".repeat(32),
+            "--tier",
+            "exact",
+            "--reason",
+            "retain public GC flight checkpoint",
+        ]),
+        "pin exact materialization through public campaign service",
+    )?;
+    assert_eq!(pinned["operation"], "pin");
+
+    // Operational status synchronously reconciles the semantic pin with the
+    // packaged materializer before the owner is stopped for offline GC.
+    let pinned_head = campaign_status(fixture)?;
+    assert_eq!(pinned_head["snapshot"], pinned["new_snapshot"]);
+    service.stop()?;
+
+    let campaign = CampaignName::new(CAMPAIGN)?;
+    let configuration = ConfigurationId::parse(configuration)?;
+    let exact_pin_root = fixture.state.join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
+    let mut selections = DirectoryExactPinMaterializationStore::open(&exact_pin_root)?;
+    let checkpoint = {
+        let mut fence = selections.acquire_exact_pin_retention_fence()?;
+        fence
+            .selection(&campaign, configuration)?
+            .ok_or("packaged materializer omitted the public exact pin")?
+            .checkpoint()
+    };
+    drop(selections);
+
+    let orphan_bytes = b"public exact-pin GC apply orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    DirectoryBlobBackend::new("public-exact-pin-gc", &fixture.objects)
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))?;
+
+    let planned = run_json(
+        &mut fixture.gc_command("plan"),
+        "plan GC with public exact pin",
+    )?;
+    assert_eq!(planned["operation"], "plan");
+    {
+        let journal = DirectoryCampaignGcJournal::open(&fixture.journal)?;
+        assert!(
+            journal
+                .roots()
+                .iter()
+                .any(|root| root == checkpoint.content_id()),
+            "public exact pin did not root its materialized checkpoint"
+        );
+        assert!(
+            !journal
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.id() == checkpoint.content_id()),
+            "public exact pin checkpoint entered the deletion manifest"
+        );
+    }
+
+    let applied = run_json(
+        &mut fixture.gc_command("apply"),
+        "apply GC with public exact pin",
+    )?;
+    assert_eq!(applied["phase"], "complete");
+    assert_eq!(applied["apply_status"], "applied");
+
+    let mut unpin_service = fixture.start_service(None)?;
+    let unpin_head = campaign_status(fixture)?;
+    let unpinned = run_json(
+        connected_campaign(fixture).args([
+            "unpin",
+            CAMPAIGN,
+            &configuration.to_string(),
+            "--expected",
+            &json_string(&unpin_head, "snapshot")?,
+            "--command",
+            &"66".repeat(32),
+            "--reason",
+            "release public GC flight checkpoint",
+        ]),
+        "unpin exact materialization through public campaign service",
+    )?;
+    assert_eq!(unpinned["operation"], "unpin");
+    unpin_service.stop()?;
+
+    let after_unpin_journal = fixture._temporary.path().join("gc-after-public-unpin");
+    let replanned = run_json(
+        &mut fixture.gc_command_at("plan", &after_unpin_journal),
+        "replan GC after public unpin",
+    )?;
+    assert_eq!(replanned["operation"], "plan");
+    let journal = DirectoryCampaignGcJournal::open(after_unpin_journal)?;
+    assert!(
+        !journal
+            .roots()
+            .iter()
+            .any(|root| root == checkpoint.content_id()),
+        "stale exact-pin selection remained a GC root after public unpin"
+    );
+    assert!(
+        journal
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == checkpoint.content_id()),
+        "unpin did not return the exact checkpoint to the deletion candidates"
+    );
+
+    Ok(())
 }
 
 fn wait_for_process_observation<T>(

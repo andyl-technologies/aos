@@ -45,7 +45,7 @@ pub use client::{
     ControlTransportKind, ControlWireModel, DebugControllerAccess, DebugControllerAcquisition,
     HelloRequest, HelloResponse, InProcessControlClient, InProcessLifecycleControlStream,
     RpcControlClient, RpcControlStream, RpcEndpoint, RpcMutualTlsConfig, RpcTransportProtocol,
-    RpcWatchStream, assert_shared_wire_model,
+    RpcWatchStream, WritableDebugBranch, assert_shared_wire_model,
 };
 pub use control_responsive::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,
@@ -81,7 +81,7 @@ pub use lifecycle::{
     ResumeObservationPreparationContext, ResumeObservationSource, ResumeReplayClosure,
     ResumeReplayClosureValidationError, ResumeReplayClosureValidator, ResumeSessionRequest,
     ResumeSessionResponse, ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId,
-    SessionLifetimeRetention, SessionRef, SessionSummary,
+    SessionLifetimeRetention, SessionRef, SessionRetentionUpdateError, SessionSummary,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,

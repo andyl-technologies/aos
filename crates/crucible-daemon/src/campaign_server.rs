@@ -21,11 +21,15 @@ use crucible_campaign::{
     CampaignOperationalStatusProvider, CampaignPrincipalAuthorizer, CampaignRepository,
 };
 
+use crate::campaign_diagnostics::route_campaign_service_diagnostic;
 use crate::campaign_endpoint::{LocalEndpointGuard, ManagedCampaignLoopbackListener};
 use crate::campaign_loopback::{
     DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION, LoopbackCampaignServerError,
     LoopbackCampaignTimeouts, MAX_CAMPAIGN_REQUESTS_PER_CONNECTION,
     UnixPeerCampaignPrincipalResolver,
+};
+use crate::{
+    CampaignConnectionDiagnostic, CampaignServiceDiagnostic, CampaignServiceDiagnosticSink,
 };
 use crate::{CampaignDebugControlService, CampaignRuntimeControlService};
 
@@ -225,6 +229,7 @@ pub struct CampaignLoopbackServer<R: ?Sized, A: ?Sized> {
     runtime_control: Option<Arc<dyn CampaignRuntimeControlService>>,
     debug_control: Option<Arc<dyn CampaignDebugControlService>>,
     operational_status: Option<Arc<dyn CampaignOperationalStatusProvider>>,
+    diagnostic_sink: Option<Arc<dyn CampaignServiceDiagnosticSink>>,
     config: CampaignLoopbackServerConfig,
     state: Arc<CampaignLoopbackServerState>,
 }
@@ -309,6 +314,7 @@ where
             runtime_control: None,
             debug_control: None,
             operational_status: None,
+            diagnostic_sink: None,
             config,
             state: Arc::new(CampaignLoopbackServerState::default()),
         })
@@ -359,6 +365,21 @@ where
         self
     }
 
+    /// Installs the deployment-owned structured operational diagnostic sink.
+    ///
+    /// Request failures are routed only after their stable response has passed
+    /// operation-specific validation. Connection diagnostics contain a closed
+    /// category and never include paths, private error text, or peer process
+    /// identifiers. A panicking sink is isolated from request serving.
+    #[must_use]
+    pub fn with_diagnostic_sink(
+        mut self,
+        diagnostic_sink: Arc<dyn CampaignServiceDiagnosticSink>,
+    ) -> Self {
+        self.diagnostic_sink = Some(diagnostic_sink);
+        self
+    }
+
     /// Serves connections until sticky shutdown or a listener/worker failure.
     ///
     /// The fixed worker pool and bounded queue are allocated before the first
@@ -386,6 +407,7 @@ where
             runtime_control: self.runtime_control.as_ref().map(Arc::clone),
             debug_control: self.debug_control.as_ref().map(Arc::clone),
             operational_status: self.operational_status.as_ref().map(Arc::clone),
+            diagnostic_sink: self.diagnostic_sink.as_ref().map(Arc::clone),
             config: self.config,
             state: Arc::clone(&self.state),
         });
@@ -421,9 +443,20 @@ where
                     increment(&self.state.accepted_connections);
                     if stream.set_nonblocking(false).is_err() {
                         increment(&self.state.protocol_failures);
+                        route_campaign_service_diagnostic(
+                            self.diagnostic_sink.as_deref(),
+                            CampaignServiceDiagnostic::ConnectionFailure(
+                                CampaignConnectionDiagnostic::StreamConfigurationFailed,
+                            ),
+                        );
                         let _ = stream.shutdown(Shutdown::Both);
                     } else {
-                        enqueue_connection(&connections, stream, &self.state);
+                        enqueue_connection(
+                            &connections,
+                            stream,
+                            &self.state,
+                            self.diagnostic_sink.as_deref(),
+                        );
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -432,6 +465,12 @@ where
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => {
                     accept_error = Some(error);
+                    route_campaign_service_diagnostic(
+                        self.diagnostic_sink.as_deref(),
+                        CampaignServiceDiagnostic::ConnectionFailure(
+                            CampaignConnectionDiagnostic::ListenerFailed,
+                        ),
+                    );
                     self.state.shutdown();
                 }
             }
@@ -450,6 +489,12 @@ where
             return Err(error.into());
         }
         if worker_panicked {
+            route_campaign_service_diagnostic(
+                self.diagnostic_sink.as_deref(),
+                CampaignServiceDiagnostic::ConnectionFailure(
+                    CampaignConnectionDiagnostic::WorkerFailed,
+                ),
+            );
             return Err(CampaignLoopbackListenerError::WorkerPanicked);
         }
         Ok(self.state.report())
@@ -555,6 +600,7 @@ struct ConnectionWorkerContext<R: ?Sized, A: ?Sized> {
     runtime_control: Option<Arc<dyn CampaignRuntimeControlService>>,
     debug_control: Option<Arc<dyn CampaignDebugControlService>>,
     operational_status: Option<Arc<dyn CampaignOperationalStatusProvider>>,
+    diagnostic_sink: Option<Arc<dyn CampaignServiceDiagnosticSink>>,
     config: CampaignLoopbackServerConfig,
     state: Arc<CampaignLoopbackServerState>,
 }
@@ -601,6 +647,12 @@ fn connection_worker_loop<R, A>(
             Ok(active) => active,
             Err(_) => {
                 increment(&state.protocol_failures);
+                route_campaign_service_diagnostic(
+                    context.diagnostic_sink.as_deref(),
+                    CampaignServiceDiagnostic::ConnectionFailure(
+                        CampaignConnectionDiagnostic::WorkerFailed,
+                    ),
+                );
                 let _ = stream.shutdown(Shutdown::Both);
                 continue;
             }
@@ -614,6 +666,7 @@ fn connection_worker_loop<R, A>(
                 runtime: context.runtime_control.as_deref(),
                 debug: context.debug_control.as_deref(),
                 status: context.operational_status.as_deref(),
+                diagnostics: context.diagnostic_sink.as_deref(),
                 timeouts: context.config.exchange_timeouts,
                 maximum_requests: context.config.maximum_requests_per_connection,
             },
@@ -621,13 +674,31 @@ fn connection_worker_loop<R, A>(
         match result {
             Ok(()) if state.stopped.load(Ordering::Acquire) => {}
             Ok(()) => increment(&state.completed_connections),
-            Err(LoopbackCampaignServerError::PeerAuthentication(_)) => {
+            Err(LoopbackCampaignServerError::PeerAuthentication(error)) => {
                 increment(&state.peer_rejections);
+                let diagnostic = match error {
+                    crucible_campaign::CampaignAuthorizationError::Unauthorized => {
+                        CampaignConnectionDiagnostic::PeerUnauthorized
+                    }
+                    crucible_campaign::CampaignAuthorizationError::Unavailable => {
+                        CampaignConnectionDiagnostic::PeerAuthenticationUnavailable
+                    }
+                };
+                route_campaign_service_diagnostic(
+                    context.diagnostic_sink.as_deref(),
+                    CampaignServiceDiagnostic::ConnectionFailure(diagnostic),
+                );
             }
             Err(LoopbackCampaignServerError::Protocol(_))
                 if !state.stopped.load(Ordering::Acquire) =>
             {
                 increment(&state.protocol_failures);
+                route_campaign_service_diagnostic(
+                    context.diagnostic_sink.as_deref(),
+                    CampaignServiceDiagnostic::ConnectionFailure(
+                        CampaignConnectionDiagnostic::ProtocolFailed,
+                    ),
+                );
             }
             Err(LoopbackCampaignServerError::Protocol(_)) => {}
         }
@@ -639,11 +710,18 @@ fn enqueue_connection(
     connections: &ConnectionQueue,
     stream: UnixStream,
     state: &CampaignLoopbackServerState,
+    diagnostic_sink: Option<&dyn CampaignServiceDiagnosticSink>,
 ) {
     match connections.try_push(stream) {
         Ok(()) => {}
         Err(ConnectionQueuePushError::Full(stream)) => {
             increment(&state.capacity_rejections);
+            route_campaign_service_diagnostic(
+                diagnostic_sink,
+                CampaignServiceDiagnostic::ConnectionFailure(
+                    CampaignConnectionDiagnostic::CapacityRejected,
+                ),
+            );
             let _ = stream.shutdown(Shutdown::Both);
         }
         Err(ConnectionQueuePushError::Closed(stream)) => {

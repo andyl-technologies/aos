@@ -6,7 +6,7 @@
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -44,6 +44,26 @@ struct RecordingResolver {
 }
 
 struct DenyResolver;
+
+#[derive(Default)]
+struct RecordingDiagnostics {
+    records: Mutex<Vec<CampaignServiceDiagnostic>>,
+}
+
+impl RecordingDiagnostics {
+    fn records(&self) -> Vec<CampaignServiceDiagnostic> {
+        self.records.lock().expect("diagnostic records").clone()
+    }
+}
+
+impl CampaignServiceDiagnosticSink for RecordingDiagnostics {
+    fn record(&self, diagnostic: CampaignServiceDiagnostic) {
+        self.records
+            .lock()
+            .expect("diagnostic records")
+            .push(diagnostic);
+    }
+}
 
 impl UnixPeerCampaignPrincipalResolver for DenyResolver {
     fn resolve_campaign_principal(
@@ -103,6 +123,7 @@ fn wait_for_no_active_connections(shutdown: &CampaignLoopbackServerShutdown) {
 fn listener_reuses_one_authenticated_principal_and_joins_on_shutdown() {
     let (_directory, listener, socket) = listener();
     let (observed_tx, observed_rx) = mpsc::channel();
+    let diagnostics = Arc::new(RecordingDiagnostics::default());
     let server = CampaignLoopbackServer::new(
         listener,
         repository("campaign-listener-reuse"),
@@ -112,7 +133,8 @@ fn listener_reuses_one_authenticated_principal_and_joins_on_shutdown() {
         Arc::new(AllowAll),
         CampaignLoopbackServerConfig::default(),
     )
-    .expect("campaign server");
+    .expect("campaign server")
+    .with_diagnostic_sink(diagnostics.clone());
     let shutdown = server.shutdown_handle();
     let server_thread = thread::spawn(move || server.serve().expect("serve campaign listener"));
 
@@ -147,6 +169,21 @@ fn listener_reuses_one_authenticated_principal_and_joins_on_shutdown() {
     assert_eq!(report.capacity_rejections(), 0);
     assert_eq!(report.peer_rejections(), 0);
     assert_eq!(report.protocol_failures(), 0);
+    assert_eq!(
+        diagnostics.records(),
+        vec![
+            CampaignServiceDiagnostic::RequestFailure {
+                operation: CampaignServiceOperation::GetCampaign,
+                request_digest: request().request_digest(),
+                failure: CampaignServiceFailure::NotFound,
+            },
+            CampaignServiceDiagnostic::RequestFailure {
+                operation: CampaignServiceOperation::GetCampaign,
+                request_digest: request().request_digest(),
+                failure: CampaignServiceFailure::NotFound,
+            },
+        ]
+    );
 }
 
 #[test]
@@ -220,6 +257,7 @@ fn listener_bounds_workers_queue_and_interrupts_active_shutdown() {
             .expect("timeouts"),
     )
     .expect("server config");
+    let diagnostics = Arc::new(RecordingDiagnostics::default());
     let server = CampaignLoopbackServer::new(
         listener,
         repository("campaign-listener-capacity"),
@@ -229,7 +267,8 @@ fn listener_bounds_workers_queue_and_interrupts_active_shutdown() {
         Arc::new(AllowAll),
         config,
     )
-    .expect("campaign server");
+    .expect("campaign server")
+    .with_diagnostic_sink(diagnostics.clone());
     let shutdown = server.shutdown_handle();
     let server_thread = thread::spawn(move || server.serve().expect("serve campaign listener"));
 
@@ -259,11 +298,18 @@ fn listener_bounds_workers_queue_and_interrupts_active_shutdown() {
     assert_eq!(report.completed_connections(), 0);
     assert_eq!(report.peer_rejections(), 0);
     assert_eq!(report.protocol_failures(), 0);
+    assert_eq!(
+        diagnostics.records(),
+        vec![CampaignServiceDiagnostic::ConnectionFailure(
+            CampaignConnectionDiagnostic::CapacityRejected,
+        )]
+    );
 }
 
 #[test]
 fn listener_rejects_denied_peers_before_reading_a_request() {
     let (_directory, listener, socket) = listener();
+    let diagnostics = Arc::new(RecordingDiagnostics::default());
     let server = CampaignLoopbackServer::new(
         listener,
         repository("campaign-listener-denied-peer"),
@@ -271,7 +317,8 @@ fn listener_rejects_denied_peers_before_reading_a_request() {
         Arc::new(AllowAll),
         CampaignLoopbackServerConfig::default(),
     )
-    .expect("campaign server");
+    .expect("campaign server")
+    .with_diagnostic_sink(diagnostics.clone());
     let shutdown = server.shutdown_handle();
     let server_thread = thread::spawn(move || server.serve().expect("serve campaign listener"));
 
@@ -290,6 +337,12 @@ fn listener_rejects_denied_peers_before_reading_a_request() {
     assert_eq!(report.completed_connections(), 0);
     assert_eq!(report.peer_rejections(), 1);
     assert_eq!(report.protocol_failures(), 0);
+    assert_eq!(
+        diagnostics.records(),
+        vec![CampaignServiceDiagnostic::ConnectionFailure(
+            CampaignConnectionDiagnostic::PeerUnauthorized,
+        )]
+    );
 }
 
 #[test]

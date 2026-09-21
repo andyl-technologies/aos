@@ -192,6 +192,52 @@ pub(super) fn build_single_node_equivalence(
     Ok((source, artifacts))
 }
 
+/// Builds the one-VM equivalence workload at an exact guest-memory size.
+pub(super) fn build_single_node_equivalence_with_memory(
+    fixture: &str,
+    artifacts: Arc<dyn DagStore>,
+    memory_mib: u32,
+) -> Result<(ScenarioDefForm, Arc<dyn DagStore>), Box<dyn Error>> {
+    let base = ScenarioDefForm::from_canonical_toml(fixture)?;
+    let mut node = base
+        .world()
+        .vm_nodes()
+        .iter()
+        .find(|node| node.id.name == "curl")
+        .cloned()
+        .ok_or("representative fixture has no curl VM")?;
+    node.cmdline = String::from("console=ttyS0 crucible.workload=hot-fork-single");
+    node.memory_mib = memory_mib;
+    let owner = node.id.clone();
+    let mut nodes = vec![WorldNodeDef::Vm(node)];
+    nodes.extend(base.world().io_nodes().cloned().map(|mut io| {
+        io.owner = owner.clone();
+        WorldNodeDef::Io(io)
+    }));
+    let world = World::from_node_defs_and_links(nodes, Vec::new())?;
+    let plan = Plan::empty();
+    let properties = Properties::from_assertions_for_world(
+        &world,
+        vec![AssertionDef::guest_sometimes(
+            AssertionId::from_name("hot-fork-continuation-complete"),
+            "The selected continuation completes",
+        )],
+    )?;
+    let measurements = equivalence_measurements(&world, &plan, &properties)?;
+    let selectables = equivalence_selectables(&world)?;
+    let source = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        &world,
+        &plan,
+        &properties,
+        &measurements,
+        Seed::from_u64(0x000a_701f + u64::from(memory_mib)),
+        0,
+    )?
+    .with_selectables(selectables)?;
+
+    Ok((source, artifacts))
+}
+
 /// Builds the one-VM workload with four ordered choices for depth scaling.
 pub(super) fn build_single_node_scaling(
     fixture: &str,

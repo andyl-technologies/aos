@@ -312,7 +312,7 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
         "plan composed-store GC",
     )?;
     assert_eq!(planned["schema"], "crucible.cli.campaign-store-gc.v2");
-    assert_eq!(planned["plan_version"], "v2");
+    assert_eq!(planned["plan_version"], "v1");
     assert!(json_u64(&planned, "reachable_cache_candidates")? >= 1);
     assert!(
         planned["cache_required_copies"]
@@ -358,7 +358,7 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
             .gc_command_at("plan", &fixture.after_maintenance_gc_journal),
         "plan GC after write-back maintenance",
     )?;
-    assert_eq!(after_maintenance["plan_version"], "v2");
+    assert_eq!(after_maintenance["plan_version"], "v1");
     {
         let journal = DirectoryCampaignGcJournal::open(&fixture.after_maintenance_gc_journal)?;
         assert!(!journal.roots().iter().any(|root| root == policy));

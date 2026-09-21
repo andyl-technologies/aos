@@ -43,6 +43,15 @@ in
           grep -Fxq \
             'native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation' \
             ${nativeIsolation}/result
+          grep -Fxq \
+            'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_negative_isolation_source_unchanged=true' \
+            ${nativeIsolation}/result
 
           mkdir -p "$out/evidence"
           cp ${nativeIsolation}/result "$out/evidence/native-atomic-world.result"
@@ -59,6 +68,9 @@ in
           ambient_outputs_rejected=pidfile,export-socket
           running_sibling_mutation_isolated=true
           native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation
+          native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased
+          native_negative_isolation_rejected_before=child-readiness,resume,world-publication
+          native_negative_isolation_source_unchanged=true
           RESULT
         '';
       }

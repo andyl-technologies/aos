@@ -1411,12 +1411,17 @@ where
     })
 }
 
-const PACKAGED_NATIVE_NAMESPACES: [&str; 5] = [
+// These are every ephemeral native lifecycle tree created by the packaged
+// composition. Durable exact/thin fallback records live under the campaign
+// service state directory and are deliberately outside this restart cleanup.
+const PACKAGED_NATIVE_NAMESPACES: [&str; 7] = [
     "campaign-workers",
     "campaign-finding-replays",
     "campaign-checkpoint-promotions",
     "campaign-baked-genesis",
     "campaign-debug",
+    "campaign-hot-fork-sources",
+    "campaign-hot-fork-demanded",
 ];
 const PACKAGED_PREPARED_RESULT_NAMESPACE: &str = "campaign-prepared-results";
 
@@ -1746,6 +1751,20 @@ pub enum PackagedQemuExecutorError {
         #[source]
         source:
             Box<ManagedQemuHotForkAuthenticatedAdmissionError<PackagedQemuHotForkDemotionError>>,
+    },
+    /// A binding-rejected source could not attest complete process/resource cleanup.
+    #[error("clean up binding-rejected packaged hot-fork source for lineage {lineage}: {binding}")]
+    HotForkSourceBindingCleanup {
+        /// Authenticated source lineage.
+        lineage: CampaignLineageId,
+        /// Original source binding rejection.
+        binding: Box<
+            crate::managed_qemu_hot_fork_source_world_pool::ManagedQemuHotForkSourceWorldBindingError,
+        >,
+        /// Complete source-world retirement failure. Its retained lifecycle has
+        /// already entered the production quarantine path.
+        #[source]
+        retirement: Box<crucible_api::LifecycleApiError>,
     },
     /// Cold-fallback retention failed while the declined source was also cleaned up.
     #[error("retain fallback and clean up policy-declined hot-fork source for lineage {lineage}")]

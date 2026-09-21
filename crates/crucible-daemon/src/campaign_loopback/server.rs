@@ -17,6 +17,7 @@ pub(crate) struct CampaignConnectionControls<'a> {
     pub(crate) runtime: Option<&'a dyn CampaignRuntimeControlService>,
     pub(crate) debug: Option<&'a dyn CampaignDebugControlService>,
     pub(crate) status: Option<&'a dyn CampaignOperationalStatusProvider>,
+    pub(crate) diagnostics: Option<&'a dyn crate::CampaignServiceDiagnosticSink>,
     pub(crate) timeouts: LoopbackCampaignTimeouts,
     pub(crate) maximum_requests: usize,
 }
@@ -73,6 +74,7 @@ where
                 &service,
                 Some(&runtime_dispatch),
                 Some(&debug_dispatch),
+                controls.diagnostics,
                 controls.timeouts,
             ) {
                 Ok(()) => {}

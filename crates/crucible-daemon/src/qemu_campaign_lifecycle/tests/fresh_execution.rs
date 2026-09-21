@@ -21,17 +21,9 @@ fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
         selected_index: None,
         overridden: false,
     };
-    let selectable = SignalFaultSelectable::from_frontier(&SearchRuntimeFrontier {
-        configuration: parent.clone(),
-        at: VirtualTime::default(),
-        choices: SearchFrontierChoices::from_decisions(
-            choice
-                .override_decisions(parent.id())
-                .into_iter()
-                .map(Decision::Override),
-        ),
-    })
-    .expect("fresh runner signal selectable");
+    let selectable =
+        SignalFaultSelectable::from_binding_choice(parent, VirtualTime::default(), &choice)
+            .expect("fresh runner signal selectable");
     let selection = selectable
         .branch_selection(parent, 1)
         .expect("fresh runner signal selection");
@@ -806,8 +798,8 @@ fn production_continuation_plan_consumes_the_authenticated_reseed() {
         source: source.clone(),
     };
 
-    let plan = production_continuation_plan(input.scenario(), Some(&continuation))
-        .expect("production continuation plan");
+    let plan =
+        production_continuation_plan(Some(&continuation)).expect("production continuation plan");
 
     assert_eq!(
         plan,

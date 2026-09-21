@@ -463,7 +463,7 @@ fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailabl
 }
 
 #[test]
-fn second_child_indeterminate_failure_quarantines_first_child_and_complete_world() {
+fn indeterminate_child_failure_rolls_back_sibling_and_quarantines_complete_world() {
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let first_source_process = first.process_id();
@@ -498,12 +498,7 @@ fn second_child_indeterminate_failure_quarantines_first_child_and_complete_world
         .retained_child_processes
         .lock()
         .expect("retained child registry");
-    assert_eq!(retained_children.len(), 1);
-    assert!(
-        PathBuf::from("/proc")
-            .join(retained_children[0].to_string())
-            .exists()
-    );
+    assert!(retained_children.is_empty());
     let guard = observations
         .guard_liveness
         .lock()
@@ -595,17 +590,17 @@ fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
 
 #[cfg(feature = "destructive-recovery-faults")]
 #[test]
-fn world_fork_one_vm_failure_quarantines_partial_world() {
-    if std::env::var_os(WORLD_FORK_ONE_VM_FAILURE_CHILD_ENVIRONMENT).is_none() {
+fn world_fork_preflight_failure_restores_source_world() {
+    if std::env::var_os(WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT).is_none() {
         let child =
             std::process::Command::new(std::env::current_exe().expect("current test binary"))
                 .arg("--exact")
-                .arg(WORLD_FORK_ONE_VM_FAILURE_TEST_NAME)
+                .arg(WORLD_FORK_PREFLIGHT_FAILURE_TEST_NAME)
                 .arg("--nocapture")
-                .env(WORLD_FORK_ONE_VM_FAILURE_CHILD_ENVIRONMENT, "1")
+                .env(WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT, "1")
                 .env(
                     DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
-                    WORLD_FORK_ONE_VM_FAILURE_TRIGGER,
+                    WORLD_FORK_PREFLIGHT_FAILURE_TRIGGER,
                 )
                 .output()
                 .expect("run world-fork one-VM failure child");
@@ -646,13 +641,15 @@ fn world_fork_one_vm_failure_quarantines_partial_world() {
         message,
     )) = failure
     else {
-        panic!("world-fork fault must be a retryable assembly failure")
+        panic!("world-fork fault must be a retryable assembly failure: {failure:?}")
     };
     assert!(message.contains("fault-injected failure while reserving the next hot-fork world VM"));
     assert_eq!(hot_fork_adoption_count_for_test(), 0);
-    assert!(!factory.sources.available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
+    // All node reservations precede every launch, so this fault is provably
+    // childless and the authenticated source remains reusable.
+    assert!(factory.sources.available());
+    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
     assert!(linux_process_identity(first_source_process).is_ok_and(|identity| identity.is_some()));
     assert!(linux_process_identity(second_source_process).is_ok_and(|identity| identity.is_some()));
     let prepared_directories = observations
@@ -665,12 +662,7 @@ fn world_fork_one_vm_failure_quarantines_partial_world() {
         .retained_child_processes
         .lock()
         .expect("retained child registry");
-    assert_eq!(retained_children.len(), 1);
-    assert!(
-        PathBuf::from("/proc")
-            .join(retained_children[0].to_string())
-            .exists()
-    );
+    assert!(retained_children.is_empty());
     drop(retained_children);
     let guard = observations
         .guard_liveness
@@ -678,5 +670,5 @@ fn world_fork_one_vm_failure_quarantines_partial_world() {
         .expect("guard liveness registry")
         .as_ref()
         .and_then(Weak::upgrade);
-    assert!(guard.is_some());
+    assert!(guard.is_none());
 }

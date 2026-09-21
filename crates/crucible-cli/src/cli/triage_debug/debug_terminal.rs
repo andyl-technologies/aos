@@ -59,15 +59,21 @@ pub(super) async fn run_remote_guest_fork(
     }
     .await;
     let release_result = client.release_debug_controller(session, &lease).await;
-    let features = fork_result?;
+    let writable_branch = fork_result?;
     release_result.map_err(control_client_error)?;
     println!(
-        "crucible: forked non-canonical guest-introspection branch argv-exec={} pty={} resize={} ssh-bridge={} max-channels={}",
-        features.argv_exec(),
-        features.pty(),
-        features.resize(),
-        features.ssh_bridge(),
-        features.max_channels(),
+        "crucible: forked writable non-canonical branch={} argv-exec={} pty={} resize={} ssh-bridge={} max-channels={}",
+        writable_branch
+            .branch
+            .bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+        writable_branch.features.argv_exec(),
+        writable_branch.features.pty(),
+        writable_branch.features.resize(),
+        writable_branch.features.ssh_bridge(),
+        writable_branch.features.max_channels(),
     );
     Ok(())
 }

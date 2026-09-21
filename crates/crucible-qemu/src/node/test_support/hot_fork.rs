@@ -84,8 +84,48 @@ pub enum QemuTestHotForkOutcome {
     /// Rejects before creating a child after terminating the scripted source.
     #[cfg(feature = "test-support")]
     RejectedAfterSourceExit,
+    /// Rejects one deliberately corrupted isolation class before child creation.
+    #[cfg(feature = "test-support")]
+    IsolationRejected(QemuTestHotForkIsolationFault),
     /// Loses the command disposition after QEMU may have forked.
     Indeterminate,
+}
+
+/// Resource-class corruption injected into the production hot-fork acceptance path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "test-support")]
+pub enum QemuTestHotForkIsolationFault {
+    /// Omits the branch-private setup ring.
+    PrivateRingOmitted,
+    /// Aliases the child QMP endpoint with inherited control authority.
+    ControlAliased,
+    /// Aliases the child console and diagnostics streams.
+    ConsoleDiagnosticsAliased,
+    /// Aliases the writable child disk with its immutable backing.
+    WritableDiskBackingAliased,
+    /// Omits the branch-private deterministic network continuation.
+    NetworkOmitted,
+    /// Aliases the child 9p continuation with its source.
+    NinepAliased,
+    /// Aliases the child to a foreign host-continuation identity.
+    HostContinuationIdentityAliased,
+}
+
+#[cfg(feature = "test-support")]
+impl QemuTestHotForkIsolationFault {
+    /// Returns the stable evidence label used by the native isolation gate.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PrivateRingOmitted => "private-ring-omitted",
+            Self::ControlAliased => "qmp-control-aliased",
+            Self::ConsoleDiagnosticsAliased => "console-diagnostics-aliased",
+            Self::WritableDiskBackingAliased => "writable-disk-backing-aliased",
+            Self::NetworkOmitted => "network-omitted",
+            Self::NinepAliased => "ninep-aliased",
+            Self::HostContinuationIdentityAliased => "host-continuation-identity-aliased",
+        }
+    }
 }
 
 /// One scripted QEMU quantum boundary for node-set tests.
@@ -1347,6 +1387,15 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                     source: QemuNodeChannelError::new(
                         "fork scripted hot-fork template",
                         "injected no-child rejection after source exit",
+                    ),
+                })
+            }
+            #[cfg(feature = "test-support")]
+            QemuTestHotForkOutcome::IsolationRejected(fault) => {
+                Err(crate::QemuHotForkCommandError::Rejected {
+                    source: QemuNodeChannelError::new(
+                        "authenticate scripted hot-fork child isolation",
+                        format!("injected isolation rejection: {}", fault.label()),
                     ),
                 })
             }

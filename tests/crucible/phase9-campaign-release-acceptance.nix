@@ -9,15 +9,14 @@
   campaignOperationalContinuity,
   campaignFindingPortability,
   hotForkScaling,
+  requiredGates,
   cruciblePackage,
   releaseManifest,
+  releaseAcceptanceContract,
   trustedAllowedSigners,
 }: let
   runner = ./_phase9-campaign-release-acceptance.sh;
   releaseAcceptanceContractPath = ./campaign-release-acceptance-contract.toml;
-  releaseAcceptanceContract = import ./phase9-campaign-release-acceptance-contract.nix {
-    inherit pkgs;
-  };
   evidenceSpec = kind: contractPath:
     import ./_campaign-manual-evidence-spec.nix {
       inherit lib kind contractPath releaseAcceptanceContractPath;
@@ -51,6 +50,7 @@ in
       campaignOperationalContinuity
       campaignFindingPortability
       hotForkScaling
+      requiredGates
       cruciblePackage
       releaseManifest
       releaseAcceptanceContract
@@ -75,6 +75,7 @@ in
             ${campaignOperationalContinuity} \
             ${campaignFindingPortability} \
             ${hotForkScaling} \
+            ${requiredGates} \
             ${cruciblePackage} \
             ${releaseManifest} \
             ${releaseAcceptanceContract} \

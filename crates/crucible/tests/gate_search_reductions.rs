@@ -19,9 +19,9 @@ use crucible::{
     EngineError, EventLogOffset, FrontierReductionPolicy, FrontierReductionReason,
     GenesisCheckpoint, Icount, IrqVector, MaterializationPolicy, MaterializationTrigger,
     MaterializedState, NodeBlobRef, NodeId, PartialOrderReductionPolicy, PreemptionDecision,
-    PreemptionKind, RngDecision, RngStreamId, Schedule, SchedulerState, SearchBudget,
-    SearchFrontierChoices, SearchStrategy, SymmetryClassId, SymmetryReductionClasses,
-    TemporalGraph, VcpuId, VirtualTime, VmSnapshotRef, World, bake,
+    PreemptionKind, Schedule, SchedulerState, SearchBudget, SearchFrontierChoices, SearchStrategy,
+    SymmetryClassId, SymmetryReductionClasses, TemporalGraph, VcpuId, VirtualTime, VmSnapshotRef,
+    World, bake,
 };
 
 #[test]
@@ -140,8 +140,10 @@ fn gate_search_reductions_symmetry_uses_graph_level_representative() -> Result<(
 #[test]
 fn gate_search_reductions_reduced_strategy_schedules_covered_representative()
 -> Result<(), Box<dyn Error>> {
-    let covered_decision = rng_decision("symmetry-covered", 1);
-    let representative_decision = rng_decision("symmetry-representative", 0);
+    let covered_decision =
+        crucible::test_support::typed_search_decision_for_test("symmetry-covered")?;
+    let representative_decision =
+        crucible::test_support::typed_search_decision_for_test("symmetry-representative")?;
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
@@ -239,13 +241,6 @@ fn preemption_decision(node: &str, retired: u64) -> Decision {
     })
 }
 
-fn rng_decision(name: &str, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(name),
-        value,
-    })
-}
-
 fn bake_with_search_frontier_decisions(
     world: &World,
     decisions: Vec<Decision>,
@@ -258,7 +253,8 @@ fn bake_with_search_frontier_decisions(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
         state.vm_snapshots.clone(),
         state.device_overlays.clone(),

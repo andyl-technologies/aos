@@ -308,8 +308,8 @@ record-body limit before acquiring QEMU host resources. Promotion routes by
 the exact World/scenario basis; attempt admission and dynamic attachment
 through that endpoint reject scenarios absent from the startup catalog.
 Attachments naming another independently authenticated executor retain that
-executor's own capability scope. Allocation across multiple incompatible-
-profile packaged pools remains open.
+executor's own capability scope. Incompatible profiles remain separate
+packaged pools and never share placement or resource authority.
 
 The real-node realization boundary now has an executor-owned exact-capture
 primitive for that checkpoint path. It seals the unified event
@@ -324,8 +324,9 @@ immutable writes; retains source and replacement roots for GC and restart; and
 releases capacity only after durable pause. The campaign supervisor drives this
 exact request/status protocol. Capture-result wiring, complete-root attempt
 resume materialization, guarded replay validation, and crash-safe promotion are
-implemented. Concrete run-directory/process-guard composition and the full
-real-node executor flight remain open.
+implemented. The packaged real-node executor composes run-directory and
+process-guard ownership and exercises the same capture and restore path in its
+production flight.
 
 - **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
   and execution handle MUST NOT enter attempt, configuration, observation, or

@@ -1016,8 +1016,8 @@ mod tests {
     use crucible::model::{BindingSearchChoice, SearchChoiceId};
     use crucible::{
         AppRandomSelectable, Configuration, ContentHash, Decision, FindingDiscoveryPath,
-        FindingReproductionArtifact, NodeId, RngStreamId, Schedule, SearchFrontierChoices,
-        SearchRuntimeFrontier, SelectionDecision, SignalFaultSelectable, VirtualTime,
+        FindingReproductionArtifact, NodeId, RngStreamId, Schedule, SelectionDecision,
+        SignalFaultSelectable, VirtualTime,
     };
     use crucible_campaign::{
         CampaignExecutorStore, CampaignRepository, ChoiceDiscovery, FindingKind,
@@ -1257,16 +1257,9 @@ mod tests {
             selected_index: None,
             overridden: false,
         };
-        let frontier = SearchRuntimeFrontier {
-            configuration: parent.clone(),
-            at: VirtualTime { ticks: 17 },
-            choices: SearchFrontierChoices::from_decisions(
-                choice
-                    .override_decisions(parent.id())
-                    .into_iter()
-                    .map(Decision::Override),
-            ),
-        };
+        let frontier =
+            SignalFaultSelectable::runtime_frontier(&parent, VirtualTime { ticks: 17 }, &choice)
+                .expect("typed signal-fault frontier");
         let selectable =
             SignalFaultSelectable::from_frontier(&frontier).expect("signal-fault selectable");
         let selection = selectable

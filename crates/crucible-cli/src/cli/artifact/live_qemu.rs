@@ -53,12 +53,6 @@ pub(crate) enum LiveQemuReplayBranch {
         frontier_ticks: u64,
         seed: u64,
     },
-    PrefixOverrides {
-        base_decisions: u64,
-        frontier_ticks: u64,
-        decision_start: u64,
-        decision_end: u64,
-    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,22 +176,6 @@ impl LiveQemuReplayContract {
                     &base_decisions.to_string(),
                     &frontier_ticks.to_string(),
                     &seed.to_string(),
-                ],
-            ),
-            LiveQemuReplayBranch::PrefixOverrides {
-                base_decisions,
-                frontier_ticks,
-                decision_start,
-                decision_end,
-            } => artifact_line(
-                &mut text,
-                &[
-                    "branch",
-                    "prefix-overrides",
-                    &base_decisions.to_string(),
-                    &frontier_ticks.to_string(),
-                    &decision_start.to_string(),
-                    &decision_end.to_string(),
                 ],
             ),
         }
@@ -585,8 +563,7 @@ impl LiveQemuReplayContract {
         let branch_start = match &self.branch {
             LiveQemuReplayBranch::None => 0,
             LiveQemuReplayBranch::Resume { base_decisions, .. }
-            | LiveQemuReplayBranch::Reseed { base_decisions, .. }
-            | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
+            | LiveQemuReplayBranch::Reseed { base_decisions, .. } => *base_decisions,
         };
         if self
             .network_choice_indices
@@ -595,18 +572,6 @@ impl LiveQemuReplayContract {
         {
             return Err(artifact_error(
                 "branch replay choices must belong to the post-branch suffix",
-            ));
-        }
-        if let LiveQemuReplayBranch::PrefixOverrides {
-            base_decisions,
-            decision_start,
-            decision_end,
-            ..
-        } = &self.branch
-            && (decision_start != base_decisions || decision_end < decision_start)
-        {
-            return Err(artifact_error(
-                "prefix-override coordinates are not a contiguous branch suffix",
             ));
         }
         let terminal_scope = self.fingerprint_scope == LiveQemuFingerprintScope::TerminalAllNodes;
@@ -798,15 +763,6 @@ fn parse_branch(
                 base_decisions: parse_u64(line_index, tag, &fields[2])?,
                 frontier_ticks: parse_u64(line_index, tag, &fields[3])?,
                 seed: parse_u64(line_index, tag, &fields[4])?,
-            })
-        }
-        Some("prefix-overrides") => {
-            require_field_count(line_index, tag, fields, 6)?;
-            Ok(LiveQemuReplayBranch::PrefixOverrides {
-                base_decisions: parse_u64(line_index, tag, &fields[2])?,
-                frontier_ticks: parse_u64(line_index, tag, &fields[3])?,
-                decision_start: parse_u64(line_index, tag, &fields[4])?,
-                decision_end: parse_u64(line_index, tag, &fields[5])?,
             })
         }
         Some(other) => Err(artifact_line_error(

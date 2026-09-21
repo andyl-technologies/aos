@@ -1748,8 +1748,14 @@ fn gate_content_address_temporal_graph_user_operations_share_single_dag() {
     let saved = accepted_step!(&genesis, generated_decision(810, 0));
     let fork_decision = generated_decision(811, 0);
     let forked = accepted_step!(&genesis, fork_decision.clone());
-    let search_extra = generated_decision(814, 0);
-    let search_only = generated_decision(812, 0);
+    let search_extra = crucible::test_support::typed_search_decision_for_test(
+        "content-address-user-operations-extra",
+    )
+    .unwrap_or_else(|error| panic!("typed search decision should build: {error}"));
+    let search_only = crucible::test_support::typed_search_decision_for_test(
+        "content-address-user-operations-only",
+    )
+    .unwrap_or_else(|error| panic!("typed search decision should build: {error}"));
     let mut baked =
         bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
     baked.checkpoint = checkpoint_with_search_frontier_choices(

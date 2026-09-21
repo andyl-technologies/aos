@@ -549,8 +549,13 @@ pub(in crate::model) fn coverage_guided_fuzz_run_from_fingerprints(
         let scenario = family.instantiate_sample(sample_index)?;
         let params = scenario.params();
         let root = scenario.genesis_configuration();
-        let mutation =
-            coverage_guided_fuzz_override_decision(config, sequence, sample_index, params);
+        let mutation = coverage_guided_fuzz_selection_decision(
+            root.configuration(),
+            config,
+            sequence,
+            sample_index,
+            params,
+        )?;
         let configuration = try_step(root.configuration(), mutation.clone())?;
         let new_coverage = coverage_fingerprint != ContentHash::default()
             && seen_coverage.insert(coverage_fingerprint);

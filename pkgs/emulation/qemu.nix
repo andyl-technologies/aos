@@ -1246,12 +1246,19 @@ in
                    r"vmstop_pending\(\)\s*&&\s*!\("
                    r"crucible_sim_shmem_dispatch_registered\(\)\s*&&\s*"
                    r"dispatch_due\)", 2),
-                  ("consumed dispatch wake returns to the RR loop", ceiling_wait,
+                  ("dispatch wake admits the main loop before consumption", ceiling_wait,
                    r"qemu_event_reset\(&rr_dispatch_ceiling_event\);\s*"
-                   r"if \(rr_crucible_sim_external_main_loop_work_pending"
-                   r"\(\)\) \{.*?continue;\s*\}\s*"
+                   r"if \(qemu_force_shutdown_requested\(\)\) \{\s*"
+                   r".*?return;\s*\}\s*"
+                   r"external_work_pending\s*=\s*"
+                   r"rr_crucible_sim_external_main_loop_work_pending\(\);\s*"
+                   r"if \(external_work_pending\s*\|\|\s*"
+                   r"rr_crucible_sim_wake_boundary_pending\(\)\) \{.*?"
+                   r"if \(!external_work_pending\) \{\s*"
+                   r"aio_notify\(qemu_get_aio_context\(\)\);\s*\}\s*"
+                   r"rr_crucible_sim_handoff_main_loop\(\);\s*"
                    r"if \(rr_crucible_sim_complete_wake_boundary\(\)\) \{\s*"
-                   r"return;\s*\}\s*"
+                   r"return;\s*\}\s*continue;\s*\}\s*"
                    r"if \(qemu_plugin_crucible_rr_control_boundary_"
                    r"pending\(\)\s*\|\|\s*qemu_force_shutdown_requested\(\)"
                    r"\s*\|\|\s*!runstate_is_running\(\)\s*\|\|\s*"
@@ -2563,9 +2570,17 @@ in
                   ("external readiness waits for an exact dispatch seam",
                    rr,
                    r"rr_crucible_sim_wait_at_dispatch_ceiling\(void\).*?"
-                   r"rr_crucible_sim_external_main_loop_work_pending\(\)"
-                   r"\) \{\s*rr_crucible_sim_handoff_main_loop\(\);\s*"
-                   r"continue;", 1),
+                   r"if \(qemu_force_shutdown_requested\(\)\) \{\s*"
+                   r".*?return;\s*\}\s*"
+                   r"external_work_pending\s*=\s*"
+                   r"rr_crucible_sim_external_main_loop_work_pending\(\);\s*"
+                   r"if \(external_work_pending\s*\|\|\s*"
+                   r"rr_crucible_sim_wake_boundary_pending\(\)\) \{.*?"
+                   r"if \(!external_work_pending\) \{\s*"
+                   r"aio_notify\(qemu_get_aio_context\(\)\);\s*\}\s*"
+                   r"rr_crucible_sim_handoff_main_loop\(\);\s*"
+                   r"if \(rr_crucible_sim_complete_wake_boundary\(\)\) \{\s*"
+                   r"return;\s*\}\s*continue;", 1),
                   ("halted device readiness uses the exact idle seam",
                    rr,
                    r"rr_crucible_sim_quantum_dispatch_fence\(\) &&\s*"

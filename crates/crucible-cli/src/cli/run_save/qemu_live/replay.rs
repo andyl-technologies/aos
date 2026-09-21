@@ -155,43 +155,6 @@ pub(crate) fn run_live_qemu_artifact_replay(
                 crucible::Seed::from_u64(*seed),
             );
         }
-        LiveQemuReplayBranch::PrefixOverrides {
-            base_decisions,
-            frontier_ticks,
-            decision_start,
-            decision_end,
-        } => {
-            let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
-            let start = usize::try_from(*decision_start).map_err(|_| {
-                artifact_error("live-QEMU replay override start cannot be represented")
-            })?;
-            let end = usize::try_from(*decision_end).map_err(|_| {
-                artifact_error("live-QEMU replay override end cannot be represented")
-            })?;
-            if start != base.schedule.len() || end < start {
-                return Err(artifact_error(
-                    "live-QEMU replay override range is not contiguous with its branch base",
-                ));
-            }
-            let overrides = schedule.decisions().get(start..end).ok_or_else(|| {
-                artifact_error("live-QEMU replay override range exceeds the model schedule")
-            })?;
-            if overrides
-                .iter()
-                .any(|decision| !matches!(decision, crucible::Decision::Override(_)))
-            {
-                return Err(artifact_error(
-                    "live-QEMU replay branch recipe contains a non-override decision",
-                ));
-            }
-            config = config.with_branch_prefix_overrides(
-                base,
-                VirtualTime {
-                    ticks: *frontier_ticks,
-                },
-                overrides.to_vec(),
-            );
-        }
     }
     let network_choices =
         replay_indexed_network_choices(schedule, &contract.network_choice_indices)?;
@@ -563,20 +526,23 @@ fn replay_branch_base(
 fn replay_indexed_network_choices(
     schedule: &crucible::Schedule,
     indices: &[u64],
-) -> Result<Vec<crucible::OverrideDecision>, CliError> {
+) -> Result<Vec<crucible::SelectionDecision>, CliError> {
     indices
         .iter()
         .map(|index| {
             let index = usize::try_from(*index)
                 .map_err(|_| artifact_error("network choice index cannot be represented"))?;
             match schedule.decisions().get(index) {
-                Some(crucible::Decision::Override(decision))
-                    if decision.point.key.starts_with("live-world-network/") =>
+                Some(crucible::Decision::Selection(decision))
+                    if decision.selection().is_ok_and(|selection| {
+                        decision.is_campaign_branch()
+                            && crucible::is_live_world_network_selection(&selection)
+                    }) =>
                 {
                     Ok(decision.clone())
                 }
                 _ => Err(artifact_error(
-                    "network choice index does not identify a live-world network override",
+                    "network choice index does not identify a typed live-world network selection",
                 )),
             }
         })

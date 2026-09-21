@@ -1108,6 +1108,14 @@ fn durable_service_bootstrap_authenticates_policy_and_restarts_cleanly() {
 #[test]
 fn repository_lock_excludes_a_second_socket_incarnation() {
     let (directory, config) = fixture();
+    let inventory_path = config.state_directory().join("debug-sessions.v1");
+    let mut empty_inventory = Vec::from(&b"CRCDSI01"[..]);
+    empty_inventory.extend_from_slice(&1_u32.to_be_bytes());
+    empty_inventory.extend_from_slice(&0_u32.to_be_bytes());
+    fs::write(&inventory_path, empty_inventory).expect("write empty debug-session inventory");
+    fs::set_permissions(&inventory_path, fs::Permissions::from_mode(0o600))
+        .expect("secure debug-session inventory");
+
     let first = config.open().expect("first local service");
     let metadata = fs::metadata(directory.path()).expect("directory metadata");
     let second_endpoint = CampaignLoopbackEndpointConfig::new(

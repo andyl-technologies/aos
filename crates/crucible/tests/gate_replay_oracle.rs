@@ -311,8 +311,12 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let baked =
-        baked_with_search_frontier_choices(&world, vec![rng_decision("operation/search", 9)])?;
+    let baked = baked_with_search_frontier_choices(
+        &world,
+        vec![crucible::test_support::typed_search_decision_for_test(
+            "operation/search",
+        )?],
+    )?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let store = MemoryDagStore::new();
     let saved = accepted_step!(&genesis, rng_decision("operation/save", 7));
@@ -511,9 +515,9 @@ fn gate_replay_oracle_samples_temporal_graph_search_fat_materializations()
     let baked = baked_with_search_frontier_choices(
         &world,
         vec![
-            rng_decision("search-oracle/a", 1),
-            rng_decision("search-oracle/b", 2),
-            rng_decision("search-oracle/c", 3),
+            crucible::test_support::typed_search_decision_for_test("search-oracle/a")?,
+            crucible::test_support::typed_search_decision_for_test("search-oracle/b")?,
+            crucible::test_support::typed_search_decision_for_test("search-oracle/c")?,
         ],
     )?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
@@ -580,9 +584,9 @@ fn gate_replay_oracle_search_sampling_rate_can_skip_materializations() -> Result
     let baked = baked_with_search_frontier_choices(
         &world,
         vec![
-            rng_decision("search-oracle/skip-a", 1),
-            rng_decision("search-oracle/skip-b", 2),
-            rng_decision("search-oracle/skip-c", 3),
+            crucible::test_support::typed_search_decision_for_test("search-oracle/skip-a")?,
+            crucible::test_support::typed_search_decision_for_test("search-oracle/skip-b")?,
+            crucible::test_support::typed_search_decision_for_test("search-oracle/skip-c")?,
         ],
     )?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
@@ -631,7 +635,7 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let decision = rng_decision("search-oracle/corrupt", 4);
+    let decision = crucible::test_support::typed_search_decision_for_test("search-oracle/corrupt")?;
     let baked = baked_with_search_frontier_choices(&world, vec![decision.clone()])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let child = accepted_step!(&genesis, decision.clone());
@@ -1489,7 +1493,8 @@ fn checkpoint_with_search_frontier_choices(
         .as_ref()
         .expect("test checkpoint must be materialized");
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
         state.vm_snapshots.clone(),
         state.device_overlays.clone(),

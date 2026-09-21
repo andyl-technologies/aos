@@ -32,6 +32,8 @@ use crate::{
 mod equivalence;
 #[path = "native_acceptance/failures.rs"]
 mod failures;
+#[path = "native_acceptance/isolation_negative.rs"]
+mod isolation_negative;
 #[path = "native_acceptance/resource_isolation.rs"]
 mod resource_isolation;
 #[path = "native_acceptance/scenario.rs"]
@@ -520,6 +522,90 @@ fn process_status_kib(process: u32, file: &str, field: &str) -> u64 {
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| panic!("process {process} {file} lacks numeric field {field}"))
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ProcessMemoryEvidence {
+    private_dirty_kib: u64,
+    private_rss_kib: u64,
+    rss_anon_kib: u64,
+    vm_pte_kib: u64,
+    vm_data_kib: u64,
+    anon_huge_pages_kib: u64,
+    numa_resident_pages: u64,
+    numa_nodes: usize,
+}
+
+fn process_memory_evidence(processes: &[u32]) -> ProcessMemoryEvidence {
+    let mut evidence = ProcessMemoryEvidence::default();
+    let mut numa_nodes = std::collections::BTreeSet::new();
+
+    for process in processes {
+        let private_dirty = process_status_kib(*process, "smaps_rollup", "Private_Dirty:");
+        let private_clean = process_status_kib(*process, "smaps_rollup", "Private_Clean:");
+        evidence.private_dirty_kib = evidence.private_dirty_kib.saturating_add(private_dirty);
+        evidence.private_rss_kib = evidence
+            .private_rss_kib
+            .saturating_add(private_dirty.saturating_add(private_clean));
+        evidence.rss_anon_kib = evidence
+            .rss_anon_kib
+            .saturating_add(process_status_kib(*process, "status", "RssAnon:"));
+        evidence.vm_pte_kib = evidence
+            .vm_pte_kib
+            .saturating_add(process_status_kib(*process, "status", "VmPTE:"));
+        evidence.vm_data_kib = evidence
+            .vm_data_kib
+            .saturating_add(process_status_kib(*process, "status", "VmData:"));
+        evidence.anon_huge_pages_kib =
+            evidence
+                .anon_huge_pages_kib
+                .saturating_add(process_status_kib(
+                    *process,
+                    "smaps_rollup",
+                    "AnonHugePages:",
+                ));
+
+        let numa_maps = fs::read_to_string(format!("/proc/{process}/numa_maps"))
+            .unwrap_or_else(|error| panic!("read process {process} numa_maps: {error}"));
+        for token in numa_maps.split_whitespace() {
+            let Some((node, pages)) = token.split_once('=') else {
+                continue;
+            };
+            let Some(node) = node.strip_prefix('N') else {
+                continue;
+            };
+            if node.chars().all(|character| character.is_ascii_digit()) {
+                numa_nodes.insert(node.to_owned());
+                evidence.numa_resident_pages = evidence
+                    .numa_resident_pages
+                    .saturating_add(pages.parse::<u64>().unwrap_or(0));
+            }
+        }
+    }
+    evidence.numa_nodes = numa_nodes.len();
+    evidence
+}
+
+fn process_thread_count(processes: &[u32]) -> usize {
+    processes
+        .iter()
+        .map(|process| {
+            fs::read_dir(format!("/proc/{process}/task"))
+                .unwrap_or_else(|error| panic!("read process {process} threads: {error}"))
+                .count()
+        })
+        .sum()
+}
+
+fn process_descriptor_count(processes: &[u32]) -> usize {
+    processes
+        .iter()
+        .map(|process| {
+            fs::read_dir(format!("/proc/{process}/fd"))
+                .unwrap_or_else(|error| panic!("read process {process} descriptors: {error}"))
+                .count()
+        })
+        .sum()
 }
 
 fn allocated_tree_bytes(root: &std::path::Path) -> u64 {

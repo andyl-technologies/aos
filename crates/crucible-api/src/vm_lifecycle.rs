@@ -168,7 +168,7 @@ pub struct ProductionVmLifecycleConfig {
     branch: Option<ProductionVmBranchConfig>,
     continuation_branches: Vec<ProductionVmBranchConfig>,
     signal_fault_replay: Option<SignalFaultCampaignReplayPlan>,
-    branch_network_choices: Vec<crucible::OverrideDecision>,
+    branch_network_choices: Vec<crucible::SelectionDecision>,
     app_random_branch_selections: BTreeMap<ContentHash, crucible::SelectionDecision>,
     app_random_branch_plans:
         BTreeMap<NodeId, crucible_protocol::app_random_branch_plan::AppRandomBranchPlan>,
@@ -280,12 +280,10 @@ struct ProductionVmDebugConfig {
 struct ProductionVmBranchConfig {
     base: Configuration,
     frontier: VirtualTime,
-    decisions: Vec<Decision>,
     seed: Option<Seed>,
 }
 
 fn production_fault_search_overrides(
-    branch: Option<&ProductionVmBranchConfig>,
     signal_fault_replay: Option<&SignalFaultCampaignReplayPlan>,
 ) -> Result<
     BTreeMap<crucible::model::SearchChoiceId, crucible::model::SearchOverride>,
@@ -318,9 +316,6 @@ fn production_fault_search_overrides(
         }
         Ok(())
     };
-    if let Some(branch) = branch {
-        insert_decisions(&branch.base, &branch.decisions)?;
-    }
     if let Some(replay) = signal_fault_replay {
         for branch in replay.branches() {
             insert_decisions(branch.parent(), branch.decisions())?;

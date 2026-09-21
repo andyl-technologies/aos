@@ -322,7 +322,7 @@ Required injections include:
 | Expire store credentials during read/write | Status distinguishes authorization from absence/corruption and preserves state |
 | Corrupt one tier copy while another remains valid | Status distinguishes corruption from a miss, refuses corrupt bytes, and follows the declared repair/fallback policy |
 | Interrupt pack/index publication or repacking | Old index generation remains readable; incomplete packs remain unreachable and reclaimable |
-| Fail one VM during atomic world fork | No partial world becomes visible; template remains usable or is invalidated explicitly |
+| Reject one VM during atomic world-fork preflight | No partial world becomes visible; template remains usable or is invalidated explicitly |
 | Alias one child ring or disk overlay in a fault build | Child readiness rejects the resource before guest execution |
 | Exceed process, memory, or descriptor budget | Backpressure/demotion is visible; strict semantic priority remains unchanged |
 | Request cancellation during child creation | Outcome and accounting are explicit; no orphan runtime remains |
@@ -371,6 +371,13 @@ storage growth, fallback churn, and any need to consult raw daemon logs.
 The end-of-flight resource audit checks processes, threads, descriptors, shared
 memory, overlay files, cgroups, staging uploads, object pins, and physical store
 growth against the campaign's canonical and operational accounting.
+
+The signed release-evidence manifest records these scale results as
+`hot_children_created_and_retired`,
+`promoted_template_generations_reached`, and
+`admitted_lightweight_attempts`. All three fields are required numeric
+measurements. A missing or below-threshold measurement blocks acceptance; a
+generic execution count does not satisfy any of them.
 
 - **[CMAN-17]** A dogfood flight MUST demonstrate sustained useful parallelism,
   bounded active resources, lazy dormant width, deep template promotion,

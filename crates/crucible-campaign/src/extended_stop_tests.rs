@@ -322,7 +322,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             "2c33f5842cc9ed13e921d287b34c5776385503e3feac253c4c4993b0cee7f36c",
             "75500f41fc4855fd239cb03132231482eb085438511ef2b57a5e39631fbd31aa",
             "8e60273d4936917295147d076e5b068fc9f12b77082fd107c1d4cb12cec092de",
-            "fdac8722ae55b2183954b36ea0908f0a73c8c6095fed2e251a5ee837e736d84f",
+            "f3b1d09d16ab6aa112e584b8eda01f7abe8414bff8a97a3a15cf29efe6ddd03e",
             "dcb5d010f97bfbda6697408bcd9c456031be8eb7316d49202cb0b11a98b2cbeb",
         ]
     );

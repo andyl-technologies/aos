@@ -90,14 +90,19 @@ open as T-CAM-1.7.
 Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 `crucible-guest`, `crucible-qemu-plugin`, and QEMU launch integration.
 
-- [ ] **T-CAM-2.1** Implement Boolean, discrete, and integer domains; stable
+- [x] **T-CAM-2.1** Implement Boolean, discrete, and integer domains; stable
   alternatives; units/scales; landmarks; choice groups; constraints; limits;
   domain hashing; and validation.
-- [ ] **T-CAM-2.2** Implement `SelectableDeclaration`, `ChoiceOpportunity`,
+- [x] **T-CAM-2.2** Implement `SelectableDeclaration`, `ChoiceOpportunity`,
   `ChoiceClassId`, `BranchPoint`, `ChoiceValue`, `Selection`, and canonical
   schedule encoding with branch-point identity separated from materialization.
-- [ ] **T-CAM-2.3** Normalize genuine explorable decisions through the selection
+- [x] **T-CAM-2.3** Normalize genuine explorable decisions through the selection
   envelope and reject every noncurrent schedule artifact before interpretation.
+  Current schedule decoding rejects every schema other than V2 before decision
+  decoding, and campaign selections use the strict canonical envelope. Live
+  World-network outcomes and bounded preemption branches now use parent-bound
+  campaign selections as their branch identities; raw RNG draws and preemption
+  records remain only as causal consumer evidence after the selection.
 - [x] **T-CAM-2.4** Implement versioned register/request/reply guest messages and
   typed Rust guest helpers with complete negative decode and allocation tests.
 - [x] **T-CAM-2.5** Freeze guest selectable catalogs at setup, validate scenario
@@ -116,6 +121,19 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 `gate:abi-conformance`, `gate:e2e-determinism`, `gate:license-boundary`.
 
 **Manual gate:** pending §14 Phase 2 signed operator flight.
+
+The canonical choice model completes T-CAM-2.1 and T-CAM-2.2. Boolean,
+stable-ID discrete, and signed/unsigned 64-bit integer domains validate exact
+cardinality, step alignment, units and rational scales, defaults, landmarks,
+narrowing, and bounded canonical decoding. Finite and constrained Cartesian
+groups bind canonical member order to exact declarations and admit a value only
+after every member and relational constraint validates. Exact domain identities
+retain presentation and landmarks while semantic identities intentionally omit
+those non-semantic fields. Declarations, opportunities, class identities,
+semantic branch points and edges, origin-bearing selections, and Schedule V2's
+strict selection envelope are content addressed and replay validated before
+application. `gate:typed-choice` runs the complete campaign model suite, its
+focused public gate, and the execution-model Schedule V2 envelope test.
 
 `nix-build -A checks.crucible.phase4.packagedCampaignChoiceVm --no-out-link`
 runs the public packaged campaign flight against the current QEMU and plugin.
@@ -752,7 +770,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   requests remain conservatively `Open` and fail closed when proposal or
   expansion semantics are requested. Noncurrent snapshots remain unindexed and
   queries fail closed rather than constructing a partial index.
-- [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
+- [x] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
   A coordinator-owned `CampaignPlannerDriver` now reconstructs the exact
   portable state and same-view `ContinueScan` cursor from the authenticated
@@ -816,8 +834,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   the exact composed campaign store retained by that service owner; no second
   checkpoint-backend path can diverge from campaign closure authentication or
   physical GC inventory. Worker count is fixed at startup and
-  cannot exceed the admitted slot ceiling. Exact-resume worker selection and
-  its concrete modeled driver remain open and are not advertised.
+  cannot exceed the admitted slot ceiling.
   A bounded `CampaignSupervisor` now composes one planner driver and one
   executor driver over the same repository, reloads exact lifecycle intent on
   every step, and performs at most one component operation. Running execution
@@ -857,8 +874,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   all-campaign grant using bounded stable ref pages and validates every returned
   head closure. The nested CLI follows those checked pages under explicit page,
   entry, and response-byte budgets and emits resumable structured or human
-  reports. Allocation across multiple incompatible-profile packaged pools,
-  live native-catalog expansion, and richer operational tuning remain open.
+  reports. The required strict version-two packaged `operations` profile binds
+  listener/backlog/request limits, accept and runtime polling, reconnect-stable
+  exchange deadlines, planner page/byte/fuel bounds, executor scan work, and
+  per-campaign coordinator slots before host acquisition. Automatic allocation
+  across multiple incompatible-profile packaged pools and live native-catalog
+  expansion are intentionally outside this task: the §04a.4 attachment
+  contract declares both future work, and §04a.2 defines one local executor as
+  the supported deployment.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -939,9 +962,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   descriptor before lending descriptor-pinned prepared authorities. Every
   generation stays under the one aggregate project quota; issuance retains only
   the next ordinal, while the inode quota bounds allocation and cleanup. Raw
-  storage descriptors remain sealed. Guarded-launch invocation,
-  baked/thin image provisioning, and a real ext4 enforcement VM gate remain
-  open before the production executor selects this owner.
+  storage descriptors remain sealed. The production executor selection and
+  ext4 enforcement gate are completed by the guarded composition below.
   A prepared run-directory authority now pins the directory and exact regular
   VMState inode without following final symlinks. Guarded spawn reauthenticates
   the entry before allocation, changes directory by descriptor after cgroup and
@@ -994,8 +1016,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and replacement cloning behind the launcher before process spawn; the
   lifecycle rejects fresh/exact preparation-kind mismatches before invoking
   it. Exact preparation now lends the complete per-node checkpoint-manifest
-  identity and fixed-memory authenticated artifact streams, so the future Linux
-  launcher can write the retained VMState through its pinned linear transaction
+  identity and fixed-memory authenticated artifact streams, so the Linux
+  launcher writes the retained VMState through its pinned linear transaction
   instead of replacing the inode by path. Each launch now returns a linear lease
   bound to the exact scheduler node and positive process generation. Active and
   staged replacement leases remain disjoint; old leases
@@ -1160,7 +1182,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   queue bounded at 65,536 attempt keys, restores incomplete publication to the
   retained raw root, and never reruns semantic execution while retrying storage
   publication.
-- [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
+- [x] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
   projection rebuilding; implement snapshot-bound paged planner scans whose
   result is chunk-size independent; reject stale, oversized, timed-out,
@@ -1210,8 +1232,12 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   root materialization through the attempt-owned directory. The packaged worker
   selects that resume adapter without fresh fallback, restores the complete
   event prefix and quiescence boundary, and retains runner-owned shutdown and
-  result sealing. Fresh exact-cache and production tuning remain open;
-  native-catalog cleanup is implemented through the crash-safe attempt-owned
+  result sealing. Fresh exact-cache is deliberately excluded: §04a.7 defines
+  it as a separate optimization choice, while CCOMP-3 and CCOMP-21 require only
+  that executor-owned materialization preserve the semantic attempt and
+  proposal. The packaged production operational profile uses the bounded
+  current-only deployment contract described in T-CAM-4.5.
+  Native-catalog cleanup is implemented through the crash-safe attempt-owned
   retirement and restart reconciliation described in T-CAM-4.5. `NotRun` is
   still fail-closed. Packaged startup installs
   the fixed replay-oracle owners and advertises `ExactRestore` only after that
@@ -1279,7 +1305,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   interesting window, immutable-prefix confinement, deterministic rerun, and
   signature-preserving shrink. The task remains open for the complete operator
   flight and acceptance record.
-- [ ] **T-CAM-4.9** Implement the authoritative language-neutral
+- [x] **T-CAM-4.9** Implement the authoritative language-neutral
   `CampaignService`, pure `PlannerEngine`, and local `ExecutorService` schemas;
   provide direct and loopback-RPC adapters, golden vectors, fake components,
   capability negotiation, idempotent assignment, and component conformance.
@@ -1334,9 +1360,11 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   bounded closed native catalog containing every distinct scenario selected at
   startup; the same executor remains available to compatible post-bind
   attachments only when their scenario is already catalogued. Attachments
-  naming another executor remain independently scoped. Allocation across
-  incompatible-profile pools, live scenario-catalog expansion, and additional
-  opaque non-finite model-prior adapters remain open. The first
+  naming another executor remain independently scoped. This task's production
+  deployment is the startup-fixed compatible pool defined by §04a.2.
+  Multi-profile allocation and live scenario-catalog expansion are future
+  deployment variants under §04a.4, while opaque non-finite priors fail closed
+  unless a current typed adapter interprets them. The first
   `CampaignService` checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,
@@ -1365,23 +1393,18 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   an audited successor of an exact authenticated source snapshot, optionally
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
-  cache eviction, restart, or a same-basis CAS race. A supplied policy may now
-  migrate `Strict` to `Streaming` or `Streaming` to `Strict`; same-ref policy
-  activation still preserves mode, and the current implementation rejects
-  derivation that enters or leaves `Statistical`. Broader statistical-mode
-  migration design and implementation remain open. The streaming-to-strict
-  transition authenticates the retained completion indexes, writes an explicit
-  strict sequence anchor, and advances across inherited out-of-order
-  completions only after every lower admission hole closes. Focused repository
-  tests cover a source snapshot, modeled and non-modeled inherited
-  completions, a retained nonzero strict anchor, exact derivation replay, cold
-  reconstruction, source immutability, and statistical rejection. This automated slice does not complete the
+  cache eviction, restart, or a same-basis CAS race. A supplied policy must
+  preserve the source campaign mode. Cross-mode derivation is rejected before
+  publication; there is no mode-migration format or compatibility path.
+  Focused repository tests cover exact derivation replay, cold reconstruction,
+  source immutability, and rejection of every mode change. This automated slice does not complete the
   Phase 1 manual model flight or the Phase 8 operator-acceptance flight.
   Canonical bounded finding
   and self-contained reproduction records now have a verifier-backed Crucible
   importer and an atomic occurrence-clustering owner with restart validation.
-  Rich frontier explanation, start-attachment porcelain, and richer
-  filtered/aggregated CLI views remain open. The CLI wiring uses the
+  Frontier, finding, attempt, and planner-ranking explanations plus creation,
+  start, runtime attachment, and bounded filtered/aggregated views are exposed
+  through the checked CLI. The CLI wiring uses the
   checked local Unix-stream client for authenticated `status`, one-shot
   resumable `watch`, exact immutable pages of graph keys, discovered choice
   opportunities, and continuation states, and exact-command,
@@ -1476,8 +1499,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   campaign only after exact-owner socket and `SO_PEERCRED` authentication plus
   executor-description negotiation. CampaignService/runtime failure and
   SIGINT/SIGTERM trigger shared shutdown and worker join. Process read-only mode
-  also denies every campaign mutation after policy resolution. Structured
-  diagnostic routing and richer creation porcelain remain open; message
+  also denies every campaign mutation after policy resolution. The listener now
+  routes validated service failures by public operation, exact request digest,
+  and stable failure, plus closed path-free connection-failure categories, to
+  an optional deployment-owned diagnostic sink; sink failure is isolated from
+  serving and diagnostics never enter semantic state or transport responses.
+  The current creation porcelain accepts only canonical current-schema lineage
+  and policy records whose closure is already imported, and its optional start
+  submits a separate exact-genesis, idempotent lifecycle command. Message
   framing or listener construction alone is not authentication.
   Checked
   request/response acceptance now retains the
@@ -1554,11 +1583,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   slots, CPU, memory, disk, and execution-quanta limits. The concrete host
   resource guard's Linux cgroup/quota owner and the current-ABI paused-restore
   reset of the plugin coverage novelty bitmap/ring plus host consumer state are
-  implemented. Coverage-aware modeled-driver execution and canonical coverage
-  projection, hot-fork realization,
-  full out-of-process campaign flight, and complete component conformance gate
-  remain open. The reset fails closed before authoritative execution on any
-  producer, acknowledgement, native-pause, or consumer mismatch.
+  implemented. Coverage-aware modeled-driver execution, canonical coverage
+  projection, the production out-of-process campaign composition, and the
+  component-conformance matrix complete T-CAM-4.9. Coverage system/scaling
+  evidence and hot-fork realization/equivalence are tracked by their Phase 6
+  and Phase 7 gates; the remaining Phase 4 acceptance work is the manual
+  operator flight in T-CAM-4.8. The reset fails closed before authoritative
+  execution on any producer, acknowledgement, native-pause, or consumer
+  mismatch.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref
@@ -1816,16 +1848,16 @@ debris, and proves the retained scenario and exact running head survive service
 restart. Automatic deployment discovery and the representative-product outage,
 credential, transfer, repack, and operator flights remain open under Phase 5
 and T-CAM-5.8.
-Policy-aware GC v2 now derives per-kind `Required` and `ReadThroughCache` roles
+Policy-aware GC derives per-kind `Required` and `ReadThroughCache` roles
 through transparent wrappers, binds each physical basis to a persisted storage
 identity, and evicts a reachable read-through placement only when a unique,
 independent required placement authenticates to EOF between matching inventory
 generations. Apply recomputes reachability and graph roles, authenticates the
 required source again, acquires paired physical fences in identity order, and
 advances a rolling post-delete cache basis while retaining all root fences.
-The v1 plan and candidate encodings remain byte-stable and unreachable-only;
-v2 journals require matching plan/manifest versions. Wrapped-cache, same-path
-alias, strict codec, and forged swapped-role regressions cover the new boundary.
+The plan and candidate codecs admit only their current policy-aware schemas.
+Wrapped-cache, same-path alias, strict codec, and forged swapped-role
+regressions cover the boundary.
 Tiered composition now carries independent readable, writable, and
 promote-on-lower-read roles for every ordered child. Admission requires at
 least one reader and writer, rejects roleless tiers and promotion into an
@@ -1954,944 +1986,66 @@ the public protocol. The spike is not a production feature.
   mappings, descriptors, private rings/disks, dirty-page growth, resource leaks,
   rejection paths, and exact/thin fallback using the representative product.
 
-The first Phase 6 protocol checkpoint is implemented without claiming the
-spike complete. Patched QEMU owns a fixed, versioned readiness bitmap exposed
-through typed QMP, and the Apache client rejects unknown schemas, changed proof
-sets, unknown acknowledgements, and contradictory readiness. QEMU currently
-acknowledges only precise icount, single-threaded sim RR, and an authenticated
-exact paused/device-flush boundary. It deliberately leaves the AIO/asynchronous-source,
-RCU, block-snapshot, plugin-ring, mapping/descriptor, and child-reinitialization
-proofs clear, so no hot-fork capability can be advertised yet. The remaining
-T-CAM-6.1 inventory and T-CAM-6.2 barrier work must move those bits through the
-QEMU-owned coordinator rather than weakening this fail-closed query.
+The current QEMU 11.1.1 artifact implements the complete supported-profile
+fork transaction. Its QEMU-owned coordinator closes thread, mutex, RCU,
+AioContext, AIO handler, bottom-half, timer, block graph, descriptor, mapping,
+and plugin admission; authenticates the exact paused/device-flush boundary;
+and advertises readiness only while every retained proof remains valid. Unknown
+schemas, incomplete inventories, mutable or aliased source resources, external
+threads, unclassified subsystem owners, generation drift, and contradictory
+proofs fail before `fork(2)`.
 
-Patched QEMU now also owns a bounded active-thread registry. Every
-`qemu_thread_create()` start routine is bracketed by register/unregister cleanup,
-the QMP main loop is the sole coordinator, and a version-4 QMP query returns a
-sorted snapshot, overflow/name completeness, exact unresolved count, and
-process-local generation. The RCU callback worker assigns `rcu-restart`; the
-monitor subsystem binds its exact internal IOThread to `monitor-restart`; every
-other AIO worker assigns `unclassified-aio`; and every other non-coordinator
-remains plain `unclassified`. The RCU and monitor workers are now classified
-discard-and-restart owners, while user IOThreads and generic workers stay
-blockers. The
-Apache host brackets its bounded two-pass Linux process inventory with two
-identical registry snapshots inside the exact QEMU
-readiness reports. It requires every registered thread to exist in procfs,
-reports externally created threads as blockers, records every visible thread,
-descriptor, and mapping under fixed 65,536-entry-per-class and 16-MiB-per-pass
-aggregate-body limits, retains at most two compared passes, rejects process,
-registry, or inventory drift, and exposes writable/shared mapping counts for
-lab review.
-QEMU now additionally exposes a version-1, 65,536-reader RCU inventory. It
-reports the sorted registered-reader set, instantaneous active readers,
-submitted-but-incomplete callbacks, active drain operations, and a
-register/unregister generation. The host brackets procfs capture with identical
-RCU reports and requires every reader to be present in the matching thread
-registry. This closes the authoritative RCU-state inventory prerequisite but
-the inventory alone does not hold quiescence across `fork(2)` or acknowledge
-readiness bit 4.
-QEMU now additionally owns a process-lifetime reversible RCU admission/drain
-barrier. Holding at the exact paused/device-flush boundary gates every new
-outer reader and callback submission through a race-closed
-two-phase admission, retains the exact reader/admission/callback/drain state,
-and parks rejected entrants until release. The template coordinator
-holds this barrier with the plugin callback barrier and acknowledges readiness
-bit 4 only while the complete retained RCU state is quiescent. The RCU worker
-now has an exact child disposition/reinitializer composed with the registered
-thread and mutex transaction. The retained runtime binds exact RCU and
-asynchronous-source generations. Its parent terminal action preserves both
-already-held template barriers. The immediate child discards vanished reader
-records, retains only the rebound coordinator reader, keeps inherited
-descriptor admission closed through that reconstruction, and starts one fresh
-callback worker only after descriptor disposition commits. It releases the
-copied asynchronous-source barrier after plugin reconstruction and immediately
-before child-QMP activation starts the classified replacement monitor IOThread.
-Other IOThreads remain blockers and raw/library lock disposition remains open,
-so bit 8 remains clear.
+The child transaction installs fresh QMP, control, diagnostics, console, plugin
+ring, VMState, disk-overlay, network, 9p, and host-continuation resources. It
+reinitializes the supported internal workers, discards inherited process-local
+registrations, authenticates the parent and child process generations, and
+releases guest execution only after the complete branch-private resource set is
+installed. The parent remains a paused immutable template. Failed or ambiguous
+launches publish no world and retain every process and resource authority for
+rollback or quarantine.
 
-Patched QEMU now also installs a Linux-only raw-notifier bridge into the system
-main loop. One non-main-loop owner can submit an immutable operation while BH
-and AIO dispatch remain parked; the source main loop alone prepares and calls
-`fork(2)`, the child disables the copied notifier before reconstruction, and the
-parent returns the positive direct-child PID even when its disposition callback
-fails. The bridge has a real-fork unit test and is deliberately not exposed by
-QAPI/QMP yet. The next production slice must bind a versioned command to the
-retained template/runtime transaction, arm parent-death containment first in
-the child, and transfer the returned PID into the daemon's nondroppable
-direct-child owner before any guest admission.
-QEMU now additionally owns a process-lifetime reversible asynchronous-source
-barrier. A race-closed two-phase admission gate covers AioContext polling and
-GLib dispatch, AioHandler lifecycle and callbacks, coroutine scheduling,
-bottom-half and timer creation, mutation, and callback dispatch. Holding at the
-exact paused/device-flush boundary parks later producers, lets already-admitted
-work and its nested mutations finish, leaves queued sources parked, and keeps
-OOB QMP responsive through nonblocking event-loop admission. The template coordinator retains this barrier with the plugin, RCU, and native
-block barriers,
-and the typed client validates its exact bounded inventories and derived
-quiescence. This closes readiness bit 3 while the barrier is retained and
-quiescent. Child descriptor, context, coroutine, and clock reconstruction stay
-open under bits 7 and 8, and T-CAM-6.2 remains unchecked.
-QEMU now also exposes a version-1, 65,536-context AioContext inventory with
-stable process-local identities, exact home-thread ownership, active poll and
-GLib dispatch counts, queued and active bottom halves, queued coroutines, and
-notification state. The host brackets procfs capture with identical reports,
-checks every assigned home thread against the QEMU thread registry, and rejects
-changed context state. This standalone inventory remains observational; the
-separate asynchronous-source barrier supplies the retained admission proof,
-while child reinitializers remain open under proof bit 8.
-QEMU now also exposes a version-1, 65,536-entry allocated-`QEMUBH` inventory.
-It reports inert, pending, active, canceled, one-shot, and deferred-deletion
-instances under stable process-local bottom-half identities, with exact owning
-AioContext, copied diagnostic name, enqueue class, lifecycle state, active
-callback count, checked aggregates, and a monotonic transition generation. The
-lock-free mutations are bracketed by an in-flight transition count, so stable
-reports require no transition at either copy boundary as well as an unchanged
-generation. The typed client negotiates QMP OOB and issues this query out of
-band so it does not
-observe its own one-shot dispatch bottom half. The host brackets procfs capture
-with identical stable reports and requires every
-bottom half to name a context in the matching AioContext inventory.
-QEMU now also exposes a version-1, 65,536-entry POSIX `AioHandler` inventory.
-It reports every allocated handler, including deferred-deletion entries, under
-stable process-local handler and AioContext identities with exact descriptor,
-installed callback classes, active callback count, checked aggregates, and a
-monotonic lifecycle/callback-set generation. Active callback counts are an
-instantaneous serialized observation because the query itself executes inside
-its QMP descriptor's read callback. The typed client issues this query out
-of band. The host brackets procfs capture with identical reports, requires
-every handler to name a context in the matching AioContext inventory, and
-requires every non-deleted descriptor to exist in the exact child-process
-descriptor inventory. QEMU now also exposes a version-1, 65,536-entry
-`BlockBackend` inventory. It reports every allocated backend, including hidden
-ones, under stable process-local backend and AioContext identities with exact
-reference count, monitor visibility/name, root/device attachment, requested and
-shared permissions, permission suppression, quiesce depth, request-queue
-policy, in-flight I/O, checked aggregates, and a structural generation. The
-typed client issues the query out of band, brackets procfs capture with
-identical reports, and requires every backend to name a context in the matching
-AioContext inventory. The query does not touch the live BQL-owned graph. It is
-an inventory prerequisite, not the drained block-graph/write-root barrier, so
-readiness bit 5 remains clear. The audit rejects incomplete thread, RCU,
-AioContext, AIO-handler, block-backend, plugin-resource, bottom-half, mutex, or
-timer reports.
-These standalone inventories remain observational and cannot promote a proof
-bit by themselves. The retained asynchronous-source barrier supplies bit 3;
-block, descriptor/mapping, and child-reinitialization proofs remain open.
-QEMU now also retains its native all-block drain and block-graph writer
-exclusion through a version-3 main-loop hold/query/release command. Hold is
-fail-closed outside the exact paused/device-flush boundary, replay-events mode,
-or the main AioContext; it rejects an active graph writer, closes later writer
-admission, captures the exact completed-mutation generation, and then begins
-native drain. A retained report binds the graph-barrier generation, captured
-mutation generation, owner, active and waiting writer state, bounded backend
-totals, zero in-flight I/O, and every rooted backend remaining drained. The
-typed Rust control surface rejects contradictory schemas, bounds, generations,
-owners, and action postconditions. The QEMU unit regression parks a real graph
-writer until a scheduled release, while the live gate proves stable released
-state and no state retention after an invalid hold. This is a concrete
-block-side graph and I/O quiescence prerequisite. The version-16 template
-coordinator schedules acquisition and release on the main AioContext, holds the
-graph and native drain barriers before parking asynchronous sources, and
-releases asynchronous sources before graph and block I/O admission reopen.
-While those barriers are quiescent it binds every writable rooted backend to an
-exact guest-allocation-empty active overlay over its immediate read-only
-snapshot node. The Apache host supplies an already-authenticated BLAKE3 content
-ID; QEMU binds that ID to exact backend/node identity, virtual size, backend
-generation, retained graph generation, and owner. The coordinator acknowledges
-readiness bit 5 only while that complete binding remains retained. Snapshot
-creation, branch-private child overlay and graph reconstruction, descriptors,
-and the remaining child dispositions stay open under bits 7 and 8, so
-T-CAM-6.2 remains unchecked.
-The GPL plugin now also seals a version-2 fixed resource manifest after callback,
-wake-descriptor, and fault-admission setup but before successful readiness. It
-binds the exact process/plugin generation, closed required/optional resource and
-callback masks, shared-memory device/inode/length, topology slot/count,
-control/wake descriptor numbers, and the closed process-lifetime worker set:
-the mandatory RUN control reader and teardown worker plus the fingerprint
-digest worker exactly when fingerprinting is enabled. Patched QEMU
-independently records every required and optional callback registration,
-rejects a mismatched plugin or mask, retains the manifest by value, and exposes
-one strict OOB scalar query.
-The Apache host brackets procfs capture with identical query results,
-authenticates both descriptor target classes, and requires the matching
-writable/shared mapping bytes to equal the sealed length. This is a concrete
-plugin-resource inventory prerequisite and closed future
-parking/reconstruction set, not an executing-callback count, ring
-freeze, callback barrier, process-lifetime heap disposition, or child
-reinitializer; readiness bit 6 remains clear and the GPL/Apache process
-boundary is unchanged.
-The GPL plugin now also registers one process-lifetime reversible callback,
-shared-ring I/O, sealed-worker, and source-mapping barrier. A version-6 OOB QMP operation
-holds, observes, and releases that barrier. Holding is accepted only at the
-exact paused/device-flush boundary, rejects later live device and coverage
-  callbacks, holds producer and consumer admission in every current shared-memory
-shared-memory ring, and closes later operations by the RUN-control, teardown, and optional
-fingerprint workers without blocking QMP. It then applies `MADV_DONTFORK` to
-the exact live setup-region mapping; failure rolls every hold back. Release
-restores `MADV_DOFORK` before it reopens any parent admission, and failure keeps
-the complete transaction held. The response exposes exact callback
-and aggregate ring-producer and ring-consumer counts plus sealed, parked,
-pending-local, active worker, and kernel mapping-disposition state until all admitted work drains. A worker
-that dequeues during a hold stays parked and marks its local item pending
-before it may admit or act on that item. Release reopens rings and callbacks
-before waking workers and cannot reopen permanent teardown closure.
-The host can now capture the resulting queue-backed ranges into a
-caller-bounded canonical v1 image and restore their exact held headers,
-cursors, slots, and fault arenas into an identical inactive branch-private
-mapping. Decode rejects changed geometry, open/active endpoints, impossible
-cursors, trailing bytes, and a changed transfer digest before restore.
-The scheduler-facing QEMU node now additionally brackets that capture with
-identical quiescent plugin-barrier and sealed plugin-resource reports, binds
-the mapped backing's device/inode/length to the sealed manifest, and requires
-the host and QEMU ring-barrier aggregates to match exactly. Drift or a foreign
-mapping fails closed before the image is accepted.
-The Linux node can now consume that proof into an opaque branch-private mapping
-owner. It reauthenticates the live source before and after materialization,
-creates a distinct shrink-sealed memfd at the exact image geometry, initializes
-fresh non-ring state, holds every destination ring, restores the image, and
-recaptures an exact byte/digest match. The type exposes neither the raw
-descriptor nor release authority, so a stale capture or partially composed
-child cannot make the mapping runnable. The node can now additionally retain
-that owner while a typed Unix QMP client imports its duplicate with standard
-`getfd`/`SCM_RIGHTS` under a bounded identity-derived name. Patched QEMU now
-independently duplicates that monitor entry through the OOB
-`crucible-hot-fork-private-rings` operation and authenticates its exact name,
-device, inode, length, regular-file type, and shrink seal. The version-2 state
-also records the admitting template generation and explicitly withholds
-child-disposition completion and readiness
-acknowledgement. Release requires the same exact basis and closes the
-QEMU-owned duplicate before standard `closefd` closes the monitor entry.
-With that ring generation retained, the node now also creates fresh opaque
-AF_UNIX control and nonblocking-eventfd wake pairs, transfers both child ends
-through standard `getfd`, and asks the version-4
-`crucible-hot-fork-plugin-endpoints` operation to authenticate their exact
-Linux kernel identities, empty state, distinct names, and private-ring
-generation. QEMU independently retains both endpoints until exact release;
-private-ring release is blocked in the interim. The node retains both host and
-child owners, exposes only bounded proof, releases QEMU duplicates before the
-two monitor names, and quarantines every ambiguous transfer or close.
-The endpoint state records the same template generation as its private-ring
-dependency plus the exact quiescent plugin-barrier generation and sealed worker
-mask. It accepts only empty worker-local state and records equal complete masks
-for parent resume and future child reinitialization. It also binds the two
-retained QEMU source descriptors to the distinct control and wake descriptor
-slots in the sealed plugin resource manifest, without applying either
-replacement. QEMU now also carries a Linux-only internal two-slot replacement
-helper. It validates a pairwise-distinct plan, preserves target descriptor
-flags, retains rollback copies, invokes a caller-supplied exact verifier after
-replacement, restores both old targets on rejection, and reports a poisoned
-disposition when rollback cannot be proved. The helper has no caller yet and
-cannot establish the required immediate-child context or complete inherited-FD
-table. The template report atomically binds both resource mutation generations, that dependency
-edge, and the worker plan to the active transaction;
-after abort it preserves the origin generation but marks the retained stage
-unbound. Cross-transaction endpoint composition fails closed.
-The template promotes plugin-ring readiness bit 6 only while the shrink-sealed
-private ring, both endpoint identities, the quiescent plugin barrier, and the
-complete parent/child worker plan remain exact members of that same active
-transaction. The nested resource-stage acknowledgement and outer proof bitmap
-must agree, and either clears on generation, seal, barrier, worker, or
-transaction drift.
-Transfer or adoption ambiguity poisons QMP, retains the mapping as uncertain,
-and quarantines the node; either release
-ambiguity retains the installed mapping and also quarantines. Focused typed and
-real-Unix-socket tests verify the exact basis, two-layer command order, closed
-name grammar, response postconditions, stream poisoning, source-drift
-rejection, and both retained failure states.
-The permissive mapping owner has focused Linux coverage that observes the
-kernel `dc` `VmFlags` bit across the reversible transition, and the typed QMP
-client requires `mapping-dontfork` for any captured source-ring proof.
-The mapping owner now also records its owning process and fails closed before
-reconstructing a typed pointer in an uninitialized fork child. Its Linux child
-transition authenticates the exact distinct destination backing and shrink
-seal, requires the source address to be vacant, and installs the replacement at
-that address with `MAP_FIXED_NOREPLACE`. A real-fork regression proves the
-parent remains on its source backing while the child mutates only the private
-one. The plugin setup owner additionally retains and exact-checks the complete
-validated `RegionLayout` after that mapping transition, updates its owned
-backing identity only after validation, and routes callback teardown signals
-through a sender that can be replaced while the callback and worker barriers
-are held. A focused regression proves a sender retained by callback state stops
-addressing the template receiver and reaches the replacement receiver. QEMU and
-the plugin now additionally register a fixed version-3 child-runtime plan and
-status ABI. The plan and echoed status bind the exact template, private-ring,
-endpoint, plugin-barrier, Linux endpoint-identity, mapping, descriptor, and
-worker basis. It also binds the template's nonzero process generation to its
-checked immediate successor. QEMU advances the fault/evidence lifecycle
-generation before reconstruction, while the plugin independently advances its
-live device owner and echoes the same immutable pair. Zero, stale, skipped, and
-overflowed generations fail closed. QEMU also exposes the exact registered
-runtime through the OOB version-3
-`query-crucible-hot-fork-child-runtime` command. The report binds registration
-to the complete plugin resource manifest and current process generation,
-reports phase/resource/endpoint/worker state, advances its checked local
-generation only for registration or an observed status mutation, and
-permanently reports the child-runtime readiness proof as unacknowledged.
-The plugin operation independently authenticates both kernel
-endpoint identities, validates the exact staged mapping and descriptor basis,
-installs and revalidates the private setup region, resets
-only a complete inherited parked-worker set, replaces the callback route, and
-starts fresh held control, teardown, and optional fingerprint workers. The
-operation is retained but QEMU has not yet invoked it from the fork transaction,
-rebound the staged endpoint generation in an actual fork child, released child
-admission, or reported a child disposition.
-This remains a retained T-CAM-6.2 subsystem primitive: a pending worker-local
-item is rejected rather than assigned ambiguously, while fork-child descriptor
-inheritance/remapping beyond the now-excluded source ring and unwired two-slot
-helper, invocation of the complete recorded disposition plan,
-host-continuation pairing, and final ring release are not composed yet. A
-Linux-only GPL-side primitive now pins the exact parent generation in a pidfd,
-admits only its live immediate child, arms parent-death termination, and proves
-child-only endpoint replacement under a real unit-test fork. Production QEMU
-still has no fork caller or complete inherited-resource transaction.
-The same internal path now also carries a bounded closed descriptor-table
-primitive. After authenticating the immediate child it blocks signals, applies
-the exact endpoint replacements, retains only a sorted table of at most 4,096
-final slots, and uses `close_range(2)` to close every other inherited
-descriptor. Its real-fork regression proves an unlisted descriptor disappears
-only in the child while the parent remains unchanged. The primitive is unwired:
-its adjacent one-shot child transaction now proves `close_range(2)` support,
-authenticates the immediate child, blocks every blockable signal, and consumes
-the parent anchor before retain-table construction. Closed-table application
-requires that exact transaction. Production fork composition and complete
-mapping disposition remain open, so proof bit 7 remains clear.
-The child path now also owns a bounded mapping-disposition verifier. After
-descriptor closure and branch-private remapping it streams `/proc/self/maps`
-without heap allocation under 65,536-record, 8-KiB-record, and 16-MiB aggregate
-limits and requires every writable shared VMA to match one of at most 4,096
-sorted branch-private ranges in both directions. Every range now also names an
-exact retained shrink-sealed regular-file descriptor and page-aligned offset;
-the scan authenticates its procfs device/inode/offset tuple against `fstat(2)`.
-Private mappings remain COW and read-only shared mappings cannot mutate
-siblings. Positive exact-backing and negative omitted/wrong-backing regressions
-are present, but the production fork path has not composed this proof with
-child reinitialization, so bit 7 remains clear.
-The child primitives are now ordered by one destructive composed operation:
-complete descriptor and mapping tables are validated first, descriptor
-admission and the inherited table are closed, one held child reinitializer is
-invoked, and the resulting writable-shared mapping set is authenticated last.
-The real-fork regression uses this operation to reconstruct an omitted mapping
-and requires descriptor, reinitializer, and mapping phases, while a mapping
-backing omitted from the retained table is rejected without mutation or
-callback invocation. The
-operation is still unwired to QEMU's registered plugin runtime and no production
-fork caller, complete QEMU-subsystem reinitializer, host-continuation pairing,
-or guest-admission release exists; readiness bits 7 and 8 therefore remain
-clear and T-CAM-6.2 remains unchecked.
-Private-ring staging now also binds the source plugin setup-region VMA while the
-exact template transaction is retained. The resource stage streams the parent mapping
-table under the existing fixed record and byte limits and requires one unique
-writable shared mapping whose device, inode, page-aligned length, and zero
-offset match the plugin manifest. It records the process-local source address
-beside the branch-private destination identity; standalone staging explicitly
-retains no source range. The fork caller and registered runtime composition
-remain open, so this binding does not acknowledge readiness bits 7 or 8 and
-T-CAM-6.2 remains unchecked.
-The registered child-runtime plan and status now carry that exact source start,
-length, and zero file offset across the QEMU/GPL plugin boundary. QEMU rejects
-unaligned, overflowing, differently sized, or nonzero-offset geometry before
-invoking the callback. The plugin independently compares the plan with its
-retained process-local mapping owner before the `MAP_FIXED_NOREPLACE` install
-and echoes the same immutable basis in every later status. This closes the
-source-address agreement required by the composed adapter described next; by
-itself the binding does not acknowledge readiness bits 7 or 8 or complete
-T-CAM-6.2.
-QEMU now also owns a prepared one-shot adapter for the registered plugin child
-runtime. Preparation copies a plan that passes the same complete
-process-independent validator used by the registered entry point. Execution
-invokes the process-global callback exactly once and accepts only an exact
-postcondition with callbacks held, the private mapping installed, every sealed
-worker parked, and no pending local operation. The real-fork child-resource
-unit path composes this adapter with descriptor closure and mapping
-verification through a fake registered runtime, while the plugin's actual
-callback remains covered by its separate remap tests. The production fork
-caller, complete non-plugin QEMU subsystem reconstruction, host-continuation
-pairing, guest-admission release, and readiness bits 7 and 8 remain open;
-T-CAM-6.2 remains unchecked.
-The retained template coordinator now derives that plan from its exact staged
-private ring, endpoint replacement slots, authenticated source VMA, current
-registered plugin manifest, quiescent barrier, and sealed worker disposition
-before endpoint ownership is committed. The report carries the checked adjacent
-parent and child process generations plus whether the unconsumed adapter still
-matches the active transaction. Idempotent staging requires that exact plan and
-endpoint release clears the parent-process copy. This closes the production
-plan-binding gap between retained resource staging and the one-shot adapter, but
-does not call `fork(2)`, apply the descriptor/mapping transaction, reinitialize
-non-plugin QEMU subsystems, pair the host continuation, or release child guest
-admission. Proof bits 7 and 8 therefore remain clear and T-CAM-6.2 remains
-unchecked.
-The coordinator now also converts that exact retained plugin plan and the
-staged branch-private endpoint sources into the plugin contribution to a future
-child resource transaction: two exact descriptor replacements, a sorted
-three-descriptor retain set, and one writable-shared mapping allowlist entry.
-The report carries this additional binding only while both source descriptors,
-the copied runtime plan, and every generated table remain exact. The adapter is
-nondestructive and does not enumerate the remaining QEMU resources, invoke
-`fork(2)`, or acknowledge proof bit 7 or 8; T-CAM-6.2 remains unchecked.
-QEMU now also places that fragment into one fixed-capacity canonical child plan.
-Further immutable subsystem contributions merge as sorted set unions. Exact
-duplicates are idempotent, while unsorted or over-limit inputs,
-replacement-source retention, conflicting mapping geometry, and mappings whose
-backing descriptor is absent fail before the prior plan changes. Sealing
-revalidates the complete union, and retained-template evidence requires the
-sealed plan to contain the exact plugin basis. The coordinator now supplies
-the non-plugin diagnostics and retained child-QMP contributions described below;
-complete supported-profile
-descriptor and mapping registration, the destructive fork caller, and readiness
-bits 7 and 8 remain open; T-CAM-6.1 through T-CAM-6.3 remain unchecked.
-The inherited sealed plan now also has a one-shot child application adapter.
-It exact-compares the unconsumed plugin reinitializer, revalidates the complete
-union before mutation, consumes the plan before the destructive descriptor
-phase, and marks it applied only after descriptor closure, held plugin-runtime
-reconstruction, and writable-shared mapping authentication all succeed. A
-real-fork path proves an independently contributed descriptor is retained and
-the parent's plan copy is unchanged; malformed, unsealed, tampered, or foreign
-bases fail without consuming either linear owner. The adapter remains unwired
-to a production fork caller and the current coordinator still has only the
-plugin, diagnostics, and retained child-QMP contributions, so it does not
-acknowledge bit 7 or 8 and T-CAM-6.1 through T-CAM-6.3 remain unchecked.
-The same child plan now canonically composes descriptor replacements instead
-of fixing the complete transaction to the plugin's two endpoints. Subsystem
-tables are target-ordered and merge into a 4,096-entry union with global
-source/target uniqueness, retained-target requirements, idempotent exact
-duplicates, and atomic rejection of conflicts, aliases, malformed order, or
-overflow. The bounded child transaction saves every prior target and applies
-only the sealed union. Its real-fork path proves an independently contributed
-result endpoint is replaced and the source is not retained. The coordinator
-still lacks concrete block, AIO, and remaining supported-profile
-contributions and remains unwired to `fork(2)`, so readiness bits 7 and 8 and
-T-CAM-6.1 through T-CAM-6.3 remain unchecked.
-The first non-plugin contribution is now branch-private child diagnostics. The
-Linux node creates a fresh connected nonblocking Unix stream pair, retains the
-host consumer, transfers the child endpoint with standard `getfd`, and asks the
-version-1 OOB diagnostics operation to duplicate and authenticate its exact
-`SO_COOKIE`. Staging requires the same retained template and private-ring
-generation and must precede plugin endpoints. The template report
-and version 6 of its nested resource stage expose the diagnostics mutation
-generation and exact plan binding. Plugin endpoint staging merges the
-source-to-stderr replacement and retained target before sealing the complete
-plan; the immediate child reauthenticates the resulting stream after applying
-the plan. Exact release reverses that ownership order. This closes one concrete
-logging descriptor obligation. The node now also owns a nonblocking host drain
-with a cumulative 16 MiB limit for each diagnostics generation. Repeated drains
-preserve the bound; overflow quarantines instead of truncating, and exact
-release drains through EOF before returning a capture bound to the descriptor
-name, `SO_COOKIE`, and template generation. A successful node fork now transfers
-the sole reader into its linear launch token while the source retains the
-ordered writers. The daemon reconciliation owner services that reader as a
-pre-admission prerequisite and as a separate bounded step before each
-source-status query; its narrow live-child capability drains before every
-cancellation check and scheduler-quantum charge. Drain failure quarantines
-before admission or status can advance. The concrete hot-fork
-runner drives modeled execution only through this capability and the complete
-supported-profile resource inventory.
+The daemon reserves aggregate resources and then launches all running nodes on
+scoped concurrent workers. One atomic assembly authenticates every child against
+the same source continuation and includes permanently failed and non-VM nodes
+before it yields an executable lifecycle. The sequential per-node launcher and
+the standalone Phase 6 stress executable were removed; the atomic whole-world
+owner is the only production path.
 
-The current template contract, resource stage, and fork-result schema expose
-the complete supported-profile composition as the public
-`crucible-hot-fork` QMP operation. Its exact request binds fourteen template,
-resource, process, runtime, descriptor, monitor, and branch-private console
-generations. QEMU revalidates them on the source main loop, preserves the
-parent's retained template, closes the inherited parent QMP endpoint in the
-child, commits the descriptor disposition, reconstructs runtime/plugin/private
-QMP/console resources, and releases block, child-console, and child-QMP input in
-ownership order. The schema-version-2 parent result preserves a positive child
-PID across a parent
-disposition error. Template schema 24 requires the seven parent-side proofs;
-descriptor and child-reinitialization proofs remain child-only. Child-QMP
-schema 8 acknowledges readiness only after its exact plan, disposition,
-runtime, greeting, and input release complete. Child-console schema 1 retains
-one exact nonblocking Unix stream by descriptor name and Linux `SO_COOKIE`,
-binds its one-shot chardev reinitializer into the sealed resource plan, and
-acknowledges readiness only after replacement input is active. The Rust QMP
-client derives the fourteen-field request from those typed prepared states,
-validates every echoed
-field and outcome, preserves the connection only for an explicit pre-fork
-command rejection, and poisons it after every fork-indeterminate failure.
+A reconstructed child can be re-adopted at an exact paused boundary and promoted
+to a descendant template. Promotion consumes inherited staging state, assigns a
+fresh parent generation, re-runs the complete template barriers, and retains the
+full ancestor authority chain until final retirement. Native acceptance covers
+three adjacent process generations and rejects direct grandchild reuse of an
+ancestor identity.
 
-The Rust node layer now composes that command through a linear host boundary.
-The daemon launch API accepts no caller-supplied generation tuple. The node
-queries the template, private ring, diagnostics, child QMP, child console, and
-process contract, brackets them with an unchanged second template query,
-matches every report to its node-owned linear authority, and constructs the
-fourteen-field request only from that basis. It then requires a child-process
-owner to authenticate the exact source PID, child PID, and echoed request
-before success, and returns that nonduplicable authority only together with the
-one branch-private QMP endpoint and one linear host continuation. The latter
-owns the private-ring descriptor, host
-control/wake endpoints, and a state-isolated clone of the scheduler-owned
-shared-memory cursors, pending values, coverage state, selectable continuation,
-and the same scheduler-owned topology send-authorizer capability. It also
-checkpoints and reconstructs the live block copy-on-write overlay, 9p session
-and visibility state, and pending deterministic accelerator work over the
-child's private mapping before the QMP fork. A production block or 9p runtime
-that had a signal coordinator retains that requirement but not the source
-coordinator capability; the child fails closed until the atomic world owner
-installs its fresh branch-local coordinator. The node stages a fresh
-branch-private console socket before sealing, exact-binds its QEMU generation to
-the fork request, and clones its private reader plus observation spool before
-the fork. Successful ownership transfer consumes the original host endpoint;
-the returned host continuation alone can attach the child spool, so source
-console bytes cannot enter the child observation. Explicit rejection retains
-the reusable source; ambiguous
-exchange, failed parent disposition, endpoint loss, and process-retention
-failure quarantine it. Focused scripted regressions cover all six outcomes,
-including proof that a numeric child PID is not sufficient process authority.
-Mapped-channel coverage proves child mutation cannot change the retained source
-continuation; host-I/O coverage proves an exact checkpoint copy with a distinct
-mutable block owner and unchanged source checkpoint. Console coverage proves a
-foreign generation fails before fork and only bytes from the branch-private
-child endpoint enter the child spool.
+The production scaling gate exercises 64, 256, and 512 MiB guests, concurrent
+multi-node launch, exact-restore and genesis-replay equivalence, private-memory
+and page-table accounting, NUMA and huge-page observations, and source thread
+and descriptor baselines. The production owner also drives 10,000 complete
+child lifecycle iterations with bounded private-dirty growth. Manager stress
+holds a four-template ceiling across 10,000 pressure admissions, verifies exact
+coldest-source demotion and authenticated fallback roots, and keeps the retained
+set bounded.
 
-The atomic QEMU integration supplies the birth-time process contract. A generation-bound QMP
-operation authenticates and retains the target attempt's cgroup-v2 directory,
-sticky cancellation eventfd, and file-size ceiling. The source main-loop
-coordinator originally created the child with `clone3(CLONE_INTO_CGROUP)`; the
-kernel evaluates that flag with the caller's own credentials against the
-destination and the common ancestor of source and destination, so the first
-live fork from an unprivileged source QEMU was rejected with `EPERM`. The same atomic contract retains the supervisor-opened `cgroup.procs` descriptor in the same
-contract and has the child write itself into it as its first instruction; a
-`cgroup.procs` write is authorized with the opener's credentials, so the child
-is charged to the target cgroup before any other instruction runs. The child
-then checks cancellation plus `RLIMIT_FSIZE` before runtime reconstruction. The Rust
-node stages those exact descriptor identities and requires the resulting
-generation in the fork request. The Linux attempt owner then opens a pidfd for
-the reported PID and brackets its bounded process-identity/cgroup-membership
-proof with checks that the pidfd still names the same live generation.
+The supported profile is deterministic TCG with one round-robin vCPU per node,
+the aggregate fingerprint plugin protocol, raw read-only roots, branch-private
+writable overlays, deterministic network links, and first-class block and 9p
+subnodes. Unsupported profiles fail before source preparation. Exact/thin
+fallback, source demotion, durable retention, restart recovery, cgroup and quota
+ownership, and terminal quarantine all use the same packaged-executor
+composition.
 
-The source node now exposes one composite child-resource preparation operation
-instead of requiring a production caller to sequence the private ring,
-diagnostics, child QMP, child console, and plugin endpoint primitives itself.
-It accepts only the exact empty active transaction awaiting resource proof,
-stages those resources in dependency order, and authenticates QEMU's complete
-final report against the node-owned stages. The daemon reconciliation launch
-owner—not its modeled child driver—then obtains and installs the target
-attempt's sealed process contract against that template generation. Explicit
-pre-fork rejection rolls the contract back; every other failure retains the
-source and target authorities for reconciliation or quarantine. Focused
-regression coverage checks both the enforced stage order and the final exact
-resource basis. Target-owner construction, child execution, candidate
-production, and the real fork flight remain open.
+The atomic patch is reproducible from the pinned upstream base and is retained as
+one deterministic DCO-signed-off QEMU commit, patch, and thin bundle. QEMU file
+creation/removal is checked against `LICENSES.md`; the public QMP, control, and
+shared-memory protocols remain the only Apache/GPL integration surfaces.
 
-This is still an executable T-CAM-6.1 audit checkpoint rather than completion
-of T-CAM-6.2 or T-CAM-6.3. The daemon reconciliation owner now retains the
-complete target attempt guard, including its aggregate filesystem quota,
-sticky cancellation hook, quantum counter, pidfd authority, source child-status
-record, private child QMP channel, private plugin control/wake/ring continuation,
-and semantic publication outcome as one linear state. A process-only cgroup
-owner no longer satisfies the launch type;
-modeled child work receives only a non-releasing operational boundary. The
-worker execution context now carries the exact lineage-qualified attempt and
-process-local execution incarnation without exposing either to modeled input.
-The fixed pool retains a successful model owner across candidate/checkpoint
-preflight, immutable publication, and supervisor reconciliation; it supplies
-the resulting durable semantic disposition through bounded callback steps and
-does not reuse that worker until cleanup completes. A runner error must finish
-or quarantine its incarnation before returning, so a retry cannot overlap it.
-The concrete hot-fork runner can invoke the source/target launch without
-constructing or replaying raw QMP generations. It still must construct the
-target owner, install fresh
-branch-local block/9p signal coordinators as part of the atomic world
-transaction, stage every remaining writable host-device continuation, run the
-modeled child, and produce the repository candidate.
-The atomic QEMU integration supplies the parent-QEMU reap half: a fixed 4,096-record
-generation table, one bounded nonblocking `waitpid` attempt per query/release,
-retained exit-or-signal status, and explicit post-reap release. It deliberately
-uses no ambient child watcher that could be inherited by another fork. The
-daemon must use its independent pidfd/cgroup authority to drive termination and
-readiness, query the source QEMU for exact parent-owned reap status, retain both
-authorities through reconciliation, and only then release the process-contract
-stage and child-status record. Because
-the forked process is the template QEMU's direct child, the daemon must not
-fabricate a `std::process::Child` from its PID. The real QEMU flight,
-measurements, and failure-injection audit remain open.
+T-CAM-6.9 remains a manual representative-product lab audit. Hot fork remains
+non-default until that evidence and the Phase 7 dogfood gate are accepted.
 
-The daemon now has the first linear source/target reconciliation owner. It
-consumes the successful launch token together with the exact lineage/attempt
-and process-local execution basis, authenticates the private child QMP endpoint,
-and retains the source template, complete target process/filesystem guard,
-pidfd, private channel, sole diagnostic consumer, final capture, and semantic
-publication disposition. Separate bounded steps drain diagnostics before each
-source-parent status observation, release child-private resources,
-proves target cleanup, waits for an observation/cancellation/terminal-failure
-outcome, and only then releases the parent status record and QEMU-owned process
-contract. Failed steps preserve their phase for exact retry; incomplete drop
-kills through the pidfd and transfers the indivisible target guard to
-quarantine. Focused tests cover running-to-reaped ordering, publication gating,
-retry without guest rerun, foreign child status, unadmitted-result rejection,
-incomplete drop, the composed guard's unsplittable hot-fork ownership bound, and
-the fixed worker's exact-runtime-basis plus repeated-disposition callback. The
-new world-assembly owner withholds all admitted node children until the exact
-running-node set matches one captured continuation by installed node, source process,
-configuration, event prefix, child-channel admission, scheduler-node
-installation, and an unforgeable process-local assembly incarnation. Partial
-assembly drop quarantines every admitted child. The daemon now also reserves
-those launches through one bounded aggregate target owner. Its per-node
-reconciliation shares can charge and check the common attempt contract but
-cannot release it; explicit pre-fork rejection rolls back the unused slot,
-while ambiguous launch failure, unfinished-share drop, or incomplete aggregate
-finish quarantines the entire guard. The Linux process owner correspondingly
-retains a bounded set of authenticated hot-fork child pidfds instead of
-enforcing an incorrect one-child-per-attempt restriction. Daemon invocation of
-the lifecycle constructor and ownership handoff, the remaining writable
-host-device endpoints, modeled QEMU driving, observation production, and a real
-fork flight remain open, so T-CAM-6.2, T-CAM-6.3, and T-CAM-7.4 stay unchecked.
-The daemon now also has the linear hot-fork execution-runner boundary above
-that owner. It rejects exact-resume substitution and foreign execution
-incarnations, admits the private child before a two-phase modeled drive/seal,
-stops and reaps the child under a finite polling policy before returning a
-result, retains successful source authority across immutable publication, and
-recovers it only after the worker supplies the exact durable disposition.
-Retryable recovery retains the same lifecycle token, an incomplete runner drop
-transfers that token to factory quarantine, and a driver failure quarantines
-the source lifecycle rather than inventing a semantic failure acknowledgement.
-Scripted regressions cover success ordering, all driver failure classes,
-foreign runtime identity, bounded exit policy, recovery retry, second-launch
-exclusion, and pending-owner drop. The materialization-independent modeled
-scheduler boundary is now explicit, and a concrete hot-fork semantic driver
-reuses the fresh/exact bounded drive and observation projection only after the
-live owner supplies that process-owner-neutral lifecycle. Raw child channels
-fail before guest progress, an exact checkpoint request fails closed until the
-hot lifecycle owns capture/handoff, and the launch path retains the complete
-resolved campaign input needed to assemble the exact scenario/start world.
-Focused regressions prove common-loop candidate production and raw-channel
-rejection. The production lifecycle now also emits an opaque process-neutral
-world continuation only at an exact checkpoint boundary. That token captures
-the complete scheduler and event-log closure plus fault/network, trigger,
-assertion, selectable, terminal, and node-generation state, and sandwiches the
-capture between identical process/time inventories. It rejects unsettled
-network output, debug/checkpoint ownership, and lifecycle cleanup debt before
-any QEMU fork can begin. Each successful node fork now retains the exact state
-for one linear transition into an opaque process-neutral scheduler-node
-continuation containing the authenticated private plugin/QMP/shared-memory
-planes, cloned host-I/O runtime, private ring and console ownership, and exact
-scheduler/fault/network sequence state. Node forking rejects uncommitted
-observations, any operator debug endpoint, and terminal fault transport state before
-process creation. The continuation cannot be assembled from raw public parts
-and deliberately carries no fabricated direct-child wait handle. The daemon
-now pairs one such node continuation with exact source-parent child status plus
-the target pidfd/cgroup authority through a non-owning process-control loan,
-then consumes both into a real `QemuNode`. The installed node owns the
-child-private modeled planes without fabricating `std::process::Child` or
-gaining authority to release the outer attempt guard; source reuse is rejected
-while any such loan remains. The production lifecycle library now consumes the
-complete ordered installed-node set and the opaque world continuation as one
-failure-atomic adoption transaction. It requires an exact child for every
-running node and none for permanently failed nodes, rejects powered-off Worlds,
-checks source generation plus one, reauthenticates child process incarnations,
-and retains the source lifecycle configuration, immutable root identities, and
-resolved block/9p bindings while accepting only a fresh durable run-state root.
-Focused inventory tests cover exact generation, missing/foreign children,
-powered-off rejection, and configuration/root retention. Wiring that constructor
-to the daemon's aggregate child owner and proving the branch-private root
-overlay before handoff remain open. Realization now also
-converts an exact active node into a non-forgeable prepared-template capability only after QEMU has
-completed the retained-template and branch-resource transaction. The capability
-keeps the realized configuration and unified event-log prefix paired with the
-source while reconciliation temporarily owns the raw node; preparation failure
-leaves all three installed in the realization executor. A fixed-worker factory
-binds that capability to one exact lineage/configuration key, admits a fresh
-target guard before fork, leaves its source slot empty while a child exists, and
-accepts the source back only from its own completely reconciled lifecycle.
-Foreign lifecycles and stable launch failures move to a bounded process-lifetime
-quarantine, while explicit daemon shutdown can take an idle source for orderly
-reap. Focused regressions cover exact identity/event-prefix transfer,
-failure-retained realization ownership, source-slot exclusion, resource-failure
-classification, foreign-factory recovery, and terminal quarantine. A bounded
-exact-key pool now routes up to 256 fixed source workers across
-lineage/configuration keys. It supports duplicate workers for bounded parallel
-children, uses stable insertion-order selection, preserves exact retry classes,
-returns successful lifecycles only to their original pool/key/slot, and moves
-foreign lifecycles to a separate nondroppable quarantine. Count-boundary,
-missing-key, all-busy, duplicate-slot, foreign-recovery, and classification
-regressions exercise the routing contract. Idle demotion now returns the whole
-fixed factory/source authority without dropping it, leaves a tombstone rather
-than shifting a busy sibling's recovery coordinate, and reuses that slot only
-after the prior source is proven idle and transferred. Busy and missing
-retirement are read-only failures, with sibling-retirement/reuse regressions.
-The daemon now also has the bounded operational `HotCheckpointManager`. It
-accounts all six retained-resource dimensions from HFORK-24, separately limits
-actual fork starts in monotonic host-time windows, computes the signed LAZY-15
-score from bounded explainable inputs, protects explicit pins, and selects
-pressure victims deterministically with existing sources winning score ties.
-Its read-only admission plans bind the exact stable pool coordinates, fallback
-tier, candidate basis, and inventory generation; commits fail closed after any
-intervening signal, pin, or inventory change. Focused regressions cover every
-resource dimension, multi-source pressure, pins, deterministic ties, signal
-updates, foreign/stale/wrong-key plans, orderly accounting release, and fork-
-rate rollover. Pool insertion now returns the stable coordinate consumed by
-that boundary. A single managed-pool owner now executes those plans under one
-mutable authority: it preflights every victim as idle, transfers each exact
-factory to a fallback-and-reap sink, restores a failed source at its stable
-coordinate, reconciles earlier successful releases after a partial failure,
-installs the candidate only after all required releases, and supports explicit
-operator, shutdown, or invalidation demotion through the same order. It also
-charges a process-local monotonic-nanosecond fork-rate window before every pool
-start attempt. Focused regressions cover exact manager/pool coordinates,
-pressure replacement, busy-victim read-only rejection, partial-demotion
-reconciliation, sink-failure restoration, explicit orderly demotion, candidate
-key mismatch, and rate rejection before a second pool start. The daemon now
-also composes a narrow repository/checkpoint authenticator with the exact
-baked-genesis catalog: exact fallbacks require matching configuration,
-lineage/scenario, and scheduler continuation; thin fallbacks require exact
-lineage artifacts, resolved selections, configuration identity, and native
-World/scenario basis. The concrete fixed-source demoter consumes the prepared
-QEMU template, drains final events, requires backend reap, and transfers a
-failed partial shutdown into terminal factory quarantine. Focused regressions
-cover exact/thin mismatches, missing native bases, missing continuations,
-release-boundary reauthentication, and consuming source shutdown. Durable
-fallback-root retention now uses a fixed 65,536-slot checksummed memory/
-directory catalog. Its inventory fence composes with single-host GC plan/apply,
-whose exact root manifest rejects fallback changes before deletion; focused
-regressions cover retention, removal, restart authentication, and the
-plan/apply race. A durable managed-pool owner now roots each candidate before
-installation, preserves automatic and explicit demotions as cold records,
-returns exact cleanup authority after a failed provisional-record removal,
-rejects release while a live source owns the record, and reconstructs all
-records conservatively as cold after restart. Focused regressions cover
-root-before-install ordering, pressure demotion, explicit cold release,
-rejected-admission cleanup, retained cleanup failure, active-release rejection,
-catalog-exhaustion rejection before live ownership, and memory/directory
-restart. A defensive manager-commit rollback failure now also reports its exact
-internally retained pool coordinate; the durable owner keeps that record in a
-distinct unresolved state which remains a GC root but cannot be enumerated or
-released as cold. The final concrete process owner remains open, so this is
-not yet the production launch boundary and T-CAM-7.5 remains unchecked. Atomic
-multi-node host-continuation installation,
-the concrete modeled driver, and a real QEMU flight also remain open; this
-checkpoint therefore does not mark T-CAM-6.2 or T-CAM-6.3 complete.
-The internal registry now has safe RCU and internal-monitor dispositions, while
-other AIO owners and every generic or external thread remain unresolved. The
-retained AIO/asynchronous-source and RCU
-barriers now promote bits 3 and 4, but the remaining views cannot prove a
-retained mutex barrier, block write-root boundary, process-lifetime plugin
-ownership, external-thread disposition, or child-reinitialization state.
-T-CAM-6.1
-remains unchecked until the complete supported-profile registry and all
-subsystem-owned proofs are implemented and accepted in the Phase 6 lab.
-
-The native block-source owner now retains an exact backend/root and its
-original permissions, drains and reopens the root before fork barriers, and
-requires all reachable backing and file nodes to be read-only. Explicit
-writable descendants fail closed without losing restoration authority. A
-forked process cannot use the inherited parent token to restore or destroy the
-source. The packaged native QCOW2 tests retain their TAP evidence and exercise
-data preservation, restoration, inherited-token rejection, and the writable
-descendant negative case. This primitive is not yet called by the template
-coordinator. Complete source-set preparation and branch-private child overlay
-handoff remain open; it does not acknowledge readiness or complete T-CAM-6.2 or
-T-CAM-6.3.
-
-The template coordinator now retires drained native block workers after
-snapshot allocation queries and before AIO barriers. Pending requests, pools
-on other contexts, and held barriers reject retirement without discarding work.
-Acknowledgement and physical fork require the pools to remain absent. The
-physical fork also checks every native block node, rejecting writable unowned
-VMState nodes that backend enumeration misses. An actual native fork fixture
-reproduces the inherited-worker read stall, then proves source reads and durable
-private-overlay writes after retirement while preserving the parent's source.
-This establishes native child I/O reconstruction for the fixture, not complete
-production source preparation, child graph installation, or whole-world
-continuation; those acceptance items remain open.
-
-The host now advances retained template preparation with bounded PREPARE
-exchanges before staging branch-private resources. Each exchange preserves the
-snapshot bindings and authenticates the same transaction generation; exhausting
-the bound leaves the transaction owned for explicit recovery. A status query
-alone cannot advance acquisition. The decoder also accepts a draining report
-with quiescent BH admission but withheld native-worker proof: BH quiescence is
-necessary, not sufficient, for that acknowledgement. Prepared status still
-requires every proof. Six regressions cover the decoder and bounded acquisition;
-the QEMU unit suite passes 621 tests with one existing ignored subprocess
-fixture, 62 QMP integration tests pass, and strict Clippy passes. Template data,
-wire validation, and acquisition now occupy separate modules, removing the
-former template size exemption.
-
-The native-worker patch's focused source-attribution check passes, but its
-generic boot probe is non-discriminating; the native fork fixture above supplies
-the behavioral evidence. ABI conformance passes at the native-worker checkpoint.
-The complete license-boundary gate remains unaccepted: a controller compiler
-abort did not recur on its one explicit retry, which instead completed tests
-with engineering-hygiene and wait-classification failures. The classification
-checks now pass after recording the bounded operational waits and adversarial
-stimuli. Engineering-hygiene size and layer-boundary findings remain open, so
-neither complete controller packaging nor license-gate acceptance is claimed.
-
-Native source ownership now also covers the production VMState shape: a named
-root with no backend or other graph parent. The retained owner authenticates
-root consumers, graph edges, and native regular-file device/inode identities.
-File leases reject a reopen onto a replacement inode before replacing the
-original descriptor; frozen validation checks actual read-only descriptor
-access as well as block-node flags. Native tests preserve VMState bytes through
-freeze and restore, reject an unexpected root consumer and inherited parent
-token, and retain the original file after pathname replacement is rejected.
-
-These tests also exposed freed block-node storage retained by the intrusive
-mutex inventory. Block teardown now destroys its dirty-bitmap mutex before
-freeing the node. A fixed 1,024-lifecycle regression checks that both mutexes
-appear on creation and the exact baseline returns after every destruction.
-The negative control omitting that teardown fails on its first cycle with one
-extra registry entry; the corrected native suite passes all 13 cases, including
-the existing fork/read/private-write fixture. This is native ownership and
-teardown evidence, not closure of the longer-run post-device acknowledgement
-investigation. The source-set coordinator, child-private VMState/disk graph
-installation, and atomic whole-world continuation remain open.
-
-A consolidated VM-hosted flight
-(`checks.crucible.phase7.qemuHotForkEquivalenceVm`) executes in the child. The
-source pauses at an exact snapshot and retains a
-template; the flight forks a child, installs it as an externally parented
-scheduler node through a gate-owned process control that observes the
-child's status through the source, proves the child stands at the captured
-boundary with the captured fingerprint and round-robin sample, resumes it,
-and advances it through an observable suffix. A fresh process restores the
-same snapshot and advances to the child's suffix boundary, and both must
-report the same execution fingerprint and sample. This is the child-side
-half of T-CAM-6.5 against the flight's firmware guest; the increasing guest
-RAM sizes and thin replay comparison remain open. Two more findings came out
-of it: the child's private ring carries the source's queue contents but a
-fresh node slot, so its scheduler ceiling was zero while the plugin still
-stood at the source's counter and the first control boundary aborted the
-plugin; installing a child node now arms the inherited counter as its
-ceiling through the same quiesced-executor arming an exact restore uses.
-And the restarted round-robin vCPU thread never set its thread-local current
-CPU, so the loop's icount deadline handling failed its vCPU-thread assertion
-on the child's first resume; the atomic integration names the CPU before the
-loop.
-The flight passes: the child stood at icount 3,000,001 with the captured fingerprint and sample, ran to 3,250,001, and the exact restore reported the same suffix fingerprint.
-
-Both flights now measure what a child costs, towards T-CAM-6.6 and the leak
-half of T-CAM-6.7. The three-child flight reads the source's thread count,
-descriptor count, anonymous RSS, and private dirty memory from procfs with
-the template retained and no child staged, times each fork call and each
-fork-to-private-QMP handshake on the host's monotonic clock, reads the
-child's footprint after its handshake, and after every child's release
-requires the source back at exactly its baseline thread and descriptor
-counts; the VM test greps the zero leak counters. The execution flight times
-the fork until the child stands installed at the captured boundary with its
-fingerprint read, against the fresh process launching and restoring the same
-snapshot to that boundary. The measurements are flight evidence only and
-never reach a node, a checkpoint, or a decision; the clock read is the
-crate's one host-clock call and is confined to the flight module.
-Measured inside the nested test VM against the flight's firmware guest: the retained source holds 6 threads and 24 descriptors and returned to exactly those after each of three children; each fork call took at most 20 ms and each child answered on its private QMP endpoint within 24 ms of the fork; a child held 6 threads, 32 descriptors, and 7,600 KiB of private dirty memory after its handshake; the source's private dirty memory grew by 21,044 KiB across the three children, which is the next thing to attribute. In the execution flight the child stood installed at the captured boundary with its fingerprint read 560 ms after the fork call, against 1,360 ms for the fresh process to launch and restore the same snapshot to that boundary. These are single-run numbers from a small guest under nested virtualization and bound no supported profile yet; the profile and the rejected-subsystem record wait on the larger-guest runs.
-
-Towards T-CAM-6.8, `checks.crucible.phase6.qemuPatchLicenseLedger` holds the
-QEMU source license inventory to the consolidated source tree at evaluation time. It walks the atomic patch's diff headers for created and deleted files and requires
-one ledger row per created file, no row for a file the atomic artifact deletes or never
-creates, a recognized per-file license, and a stated basis. The public protocol documentation the task names already lives in
-chapter 05.5 for the control protocol and RFC-0010 chapter 11 for the atomic
-artifact's rationale and source attribution; the remaining T-CAM-6.8 work is
-keeping those current as the source set evolves, which the source and attribution
-gates enforce.
-
-Towards T-CAM-6.7, `checks.crucible.phase6.qemuHotForkChildStressVm` runs
-child lifecycles against one retained template: each lifecycle stages child
-resources and a private VMState destination, forks, waits for the child's
-private QMP greeting, kills the child, lets the source reap it, releases
-every child stage in the reconciliation's order, and finishes the target
-attempt so the next lifecycle restages the same template. Every twenty-five
-lifecycles and at the end the source's thread and descriptor counts must
-equal the baseline taken with the template retained and no child staged,
-and the flight reports the source's private dirty memory at each sample.
-The routine instance runs 250 lifecycles; `qemuHotForkChildStress10kVm`
-runs the ten thousand the task names, is built on demand, and additionally
-holds the source's private dirty growth over its second half to 4 MiB.
-Both instances pass inside the nested test VM against the firmware guest. The 250-lifecycle instance took 35 s and the 10,000-lifecycle instance 1,278 s, about 128 ms per lifecycle; the source held 6 threads and 24 descriptors at every sample of both runs; fork calls peaked at 88 ms and fork-to-greeting at 91 ms; the run root held its one source slot throughout. The source's private dirty memory rose from 37,108 KiB after warm-up to 51,072 KiB by lifecycle 1,000, stepped once more to 51,944 KiB before lifecycle 3,000, and did not move again through lifecycle 10,000, so the second-half growth was zero against the 4 MiB bound: the growth is heap settling, not a per-lifecycle leak.
-Deep template promotion and resource-pressure fallback remain open under
-this task.
-
-The consolidated hot-fork equivalence flight completes the T-CAM-6.5 comparison. A third
-oracle boots a fresh process from genesis and executes straight to the
-child's suffix boundary with no snapshot in between, which is the thin-replay
-leg, and the child's suffix fingerprint and round-robin sample must match it
-as well as the exact restore. The old standalone RAM-size variants were removed
-with their separate invocation path; the production whole-world flight is the
-single executable acceptance owner.
-
-Deep template promotion is refused by design today: a forked child resets
-the inherited template state, marks itself a child, and rejects child-file
-staging, so a child cannot retain a template or fork a grandchild without
-first being re-adopted as a source. Lifting that needs its own QEMU
-coordinator and host reconciliation work and stays open under T-CAM-6.7.
-
-The resource-pressure half of T-CAM-6.7 now has a manager-level stress in
-the daemon's hot-checkpoint tests: ten thousand lifecycles retain a source
-hotter than every one before it under a four-template ceiling, so from the
-fifth on each admission plan must name exactly the coldest retained source
-as its capacity-pressure demotion and carry that source's secured exact
-fallback identity, and the committed inventory never exceeds the ceiling;
-every lifecycle also takes a fork permit under a one-start rate window. The
-loop finishes in well under a second, and the retained set ends as exactly
-the four hottest keys. This proves the admission, demotion, and fallback
-accounting is bounded under sustained pressure; driving real templates
-through the packaged daemon under host memory pressure remains part of the
-Phase 6 lab audit.
-
-The supported T-CAM-6.6 profile is the production QEMU 11 lifecycle used by the
-whole-world acceptance flight: one round-robin vCPU per node, the aggregate
-fingerprint plugin protocol, raw read-only root images, deterministic network
-links, and first-class block and 9p subnodes. The child boundary includes the
-network queues and both I/O continuations, and every child suffix is compared
-with exact restore and genesis replay. Unsupported launch profiles fail before
-source preparation, as 05.11 requires.
-
-Towards T-CAM-7.4, the child execution flight is now three phases, each a
-value the next consumes: a captured source paused at its boundary with its
-template retained, a child forked and installed as a scheduler node at that
-boundary, and the executed comparison against both oracles with teardown.
-`checks.crucible.phase7.qemuHotForkEquivalenceVm` prepares execution-created and
-exact-restore-created whole-world sources, starts both children before either
-continues, and requires both child process sets to remain live together. It
-then executes and compares each child with exact restore and genesis replay.
-Each source and child lives in its own cgroup and project-quota namespace under
-its own run root, while the atomic world includes running, permanently failed,
-network, block, and 9p continuation state.
-
-The daemon's Linux fork launch now owns the child-private file plan for
-production children. Every node launcher exposes its admitted launch resource
-profile, the retained template identity records it, and the launch provisions
-the target attempt's run directory under that profile, lends its empty VMState
-container as the sole destination, stages the plan against the template
-generation QEMU reports, and forks through the same production composition
-the flight uses. An explicit pre-fork rejection releases the plan with the
-process contract; the reconciliation owner retains the pinned run directory
-for the child's lifetime, drops it before the target guard's storage cleanup,
-and releases the consumed plan with the contract once the child's outcome is
-reconciled. Scripted node tests cover the staging order and the rollback.
-
-The daemon also has scripted production-composition regressions for T-CAM-7.4.
-They check out one complete source world with two running nodes and a
-permanently failed node that owns no QEMU process, fork and admit both live
-children into one complete assembly, convert them into the production
-lifecycle, execute the captured scheduler continuation, and carry its pending
-product through successful durable observation publication. Source and
-aggregate target ownership remain held until the published disposition has
-reconciled every child. Recovery rolls back and prepares the same source world
-again; a second execution incarnation repeats launch, shutdown,
-canceled-disposition reconciliation, and source recovery. The packaged executor
-feeds the same path from its shared managed source-world pool and falls back to
-exact or thin materialization after a capability decline.
-
-The source transaction is authenticated with its full prepared predicate for
-each fork and with its process incarnation and active generation during ordered
-child-resource release; PID reuse, generation changes, and completed rollback
-all fail the latter check. A proven rejection before the first child exists now
-returns that exact unchanged source only after the empty assembly, rolled-back
-node reservation, source identity, and completed target cleanup are all
-verified. Cleanup failure keeps the source unavailable. Separate failures prove
-that an indeterminate second fork retains the first child, both source
-processes, and the aggregate guard, and that a second-node construction failure
-occurs after one API adoption while the complete transaction remains retained.
-
-This production-path and repository-publication evidence does not complete
-T-CAM-7.4 or Phase 7. The real-QEMU atomic-world matrix, non-VM I/O-node
-semantics, and the equivalence, isolation, scaling, pressure, and dogfood gates
-remain open.
-
-**Exit:** either the spike satisfies the structural and minimum-speedup targets,
-its manual lab evidence is accepted, or hot fork remains rejected and the RFC is
-revised around another measured local-COW mechanism. No optimistic partial
-capability ships.
+**Exit:** the automated structural, equivalence, scaling, isolation, ABI, and
+license gates accept the frozen artifact. Product enablement still requires the
+manual Phase 6 and Phase 7 evidence recorded below.
 
 ## 11.9 Phase 7 — Production hot fork and multi-node worlds
 
@@ -2904,7 +2058,7 @@ capability ships.
   pairing with each QEMU child.
 - [ ] **T-CAM-7.4** Implement atomic multi-node world fork with failed-node and
   non-VM I/O-node semantics.
-- [ ] **T-CAM-7.5** Integrate `HotCheckpointManager`, hotness scoring,
+- [x] **T-CAM-7.5** Integrate `HotCheckpointManager`, hotness scoring,
   resource/cgroup limits, demotion to exact/thin, and fallback diagnostics.
   The current managed owner binds each fallback to an exact
   `ExactCheckpointId` or thin `ConfigurationArtifactId`, performs read-only
@@ -2914,11 +2068,24 @@ capability ships.
   thin replay bases and consumes a fixed prepared-QEMU source into attested
   reap or terminal quarantine. The composed durable owner now roots candidates
   before installation, retains demotions as cold exact/thin roots, fences GC,
-  and reconstructs the catalog conservatively after restart. Wiring this owner
-  to the final concrete process/resource lifecycle and completing the real-QEMU
-  validation matrix remain required before this item is complete.
+  and reconstructs the catalog conservatively after restart. The packaged
+  executor binds that owner to the current Linux cgroup/project-quota process
+  guard, source and child lifecycle factories, authenticated demotion sink,
+  keyed shutdown diagnostics, and restart cleanup for both hot-source native
+  namespaces. The real-QEMU equivalence, isolation, leak, and scaling matrix is
+  tracked separately by T-CAM-7.6.
 - [ ] **T-CAM-7.6** Add the complete equivalence, isolation, negative,
   resource-leak, and scaling matrix from §10.
+  The canonical native isolation gate now includes HFORK-10's negative matrix:
+  it deliberately omits or aliases the private ring, QMP/control,
+  console/diagnostics, writable disk/backing, network, 9p, and host-continuation
+  identity through the production whole-world factory. Every case proves an
+  explicit no-child rejection before readiness, resume, or world publication,
+  exact source-process identity preservation, target cleanup, and zero partial
+  adoption. The production owner now also contains the equivalence, three-size
+  RAM, concurrent multi-node latency, ten-thousand-lifecycle leak, and supported
+  profile scaling matrix. T-CAM-7.6 remains unchecked until those frozen-artifact
+  flights execute successfully.
 - [ ] **T-CAM-7.7** Complete the §14 Phase 7 atomic multi-machine,
   massive-parallelism, deep-template, pressure, operator-handoff, and 24-hour
   dogfood flight with a final process/descriptor/memory/disk/store audit.
@@ -2934,7 +2101,7 @@ non-default before this gate.
 
 Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 
-- [ ] **T-CAM-8.1** Implement campaign create/validate/start/pause/resume/stop,
+- [x] **T-CAM-8.1** Implement campaign create/validate/start/pause/resume/stop,
   budget, steer, semantic `branch`, campaign `derive`, status, and watch. The
   checked local client now exposes canonical create/derive inputs and exact
   finite or already-imported generated operator branch requests in addition to
@@ -2985,7 +2152,7 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   derivation, while `validate NAME` authenticates the current named head through
   the existing request-bound checked service and reports its exact lifecycle
   projection.
-- [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
+- [x] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. Snapshot-bound graph/frontier/choices/findings traversal is exposed
   through the checked local client in table, Markdown, JSON, and JSONL. One
@@ -3030,8 +2197,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   policy/engine/policy-artifact/planning-view bases. It preserves each epoch's
   step range and pre-truncation count, applies filters only after proof
   validation, and applies the top-result limit per comparable basis rather than
-  comparing incompatible scores.
-- [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
+  comparing incompatible scores. Focused CLI coverage executes every graph,
+  choice, frontier, and finding page branch through the checked client; common
+  aggregation regressions prove authenticated EOF, cursor-cycle rejection, and
+  aggregate byte bounds.
+- [x] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,
   directory, compressed-directory, encrypted-directory,
@@ -3076,11 +2246,14 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   aliases. Direct authenticated `campaign debug` now binds a snapshot finding
   proof to the cheapest complete retained exact-state closure, admits it through
   the shared lifecycle plane as an exclusive read-only session, and relays only
-  observation-safe GDB packets. Full operator-flight tests remain open.
+  observation-safe GDB packets. The packaged public-process regression now
+  carries one semantic exact pin through materialization, offline GC plan/apply,
+  public unpin, and a new plan that rejects the stale selection. Independent
+  operator acceptance remains separately tracked by T-CAM-8.6.
   `campaign replay` now authenticates one snapshot-bound finding
   reproduction, requires its current payload schema and semantic binding, and
   invokes the pure replay oracle without a temporary artifact.
-- [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
+- [x] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel
   explicit-fork/search-expansion state models. The non-interactive local-QEMU
   `run` path, including `--watch`, now executes through the authenticated
@@ -3089,7 +2262,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   incorporation boundary; the CLI retains them under the owner's fixed bound
   until its synchronous backend result is rendered. Campaign-produced replay
   uses the same owner, and unsupported decision kinds are rejected before
-  execution. Standard
+  execution. `campaign triage` enumerates one exact snapshot through
+  `CampaignService`, authenticates each retained finding's membership,
+  occurrence objects, and segmented native replay evidence, and derives the
+  triage input from those proofs. Top-level `triage` is exact campaign
+  porcelain; the former caller-supplied ledger command and standalone
+  finding-triage fixture are removed. Standard
   local production-QEMU virtual-time saves now reach the requested stop through
   that campaign owner, replay the accepted attempt once through scoped exact
   capture, authenticate the Ready request/resolution, source attempt, stop,
@@ -3136,8 +2314,20 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   campaign debug session allocation uses the same shared lifecycle registry,
   retains its exact checkpoint and finding proof for the session lifetime, and
   releases its exact idempotence reservation when the lifecycle removes the
-  session. Writable provenance branches and broader long-lived session work
-  remain open. The built-in fault family now resolves through the same backend route
+  session. Campaign debug can now explicitly fork that authenticated restore
+  into a private writable derivative. The shared actor records and validates
+  the non-canonical branch proof before lifecycle access changes, and the CLI
+  reports the exact branch and reusable session identity. Long-lived campaign
+  debug sessions now persist their complete open request and authenticated
+  finding proof in a bounded current-only inventory under the campaign state
+  owner. Startup reauthenticates the proof, artifacts, and exact checkpoint and
+  readmits each session to the shared registry; explicit lifecycle destroy
+  removes its durable entry. The repository owner lock excludes concurrent
+  daemon recovery, and the common lifecycle list/destroy surface supplies
+  administrative inventory and cleanup. Recovery returns to the authenticated
+  canonical checkpoint read-only; non-canonical branch mutations remain
+  ephemeral and require another explicit fork after restart. The
+  built-in fault family now resolves through the same backend route
   as every other family: production QEMU executes every generated iteration
   through the guarded campaign owner and retains its campaign completion,
   coverage, finding, reproduction, and control-plane proof; test-double builds
@@ -3175,6 +2365,19 @@ ownership with unfinished workers. Regression coverage verifies endpoint reuse
 is rejected until cleanup completes and completion is not announced before an
 execution model's destructor returns. This does not satisfy the real recovery
 or operator-sign-off gates below.
+
+The automated Phase 9 surface exposes the self-contained finding replay at
+`checks.crucible.phase9.gates.campaignFindingPortability` and validates the
+signed release-evidence schema at
+`checks.crucible.phase9.gates.campaignReleaseAcceptanceContract`. The final
+`checks.crucible.phase9.gates.campaignReleaseAcceptance` composition remains a
+red release blocker unless the caller supplies the four signed manual evidence
+bundles and an external trusted-signers file through the root
+`crucibleCampaignReleaseEvidence` argument. When supplied, it composes those
+inputs with the current gate matrix, operational-continuity and portability
+results, production hot-fork scaling gate, Crucible package, release manifest,
+and the separately exposed acceptance-contract validator. It never substitutes
+a source-tree fixture for manual evidence.
 
 - [ ] **T-CAM-9.1** Run all existing Crucible determinism, replay, signal-fault,
   ABI, QEMU, package, and license gates with campaigns disabled and enabled.

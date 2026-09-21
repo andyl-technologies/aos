@@ -386,13 +386,12 @@ until discard or a chosen-source continuation completes its explicit handoff.
 > capture queue, and the QEMU runner drives scoped requests to their declared
 > stop before capturing and independently replay-validating the reached
 > configuration, scheduler coordinate, and dense event prefix. Ready, canceled,
-> and failed resolutions are supported. Discard remains a stable rejected
-> transition, and a ready capture cannot yet be selected as an ordinary
-> continuation origin, so its paused ledger entry remains the physical GC root.
-> Focused tests cover scoped routing, queue fairness and head changes, quiet
-> q100/q200 boundary distinction, and the pre-write promotion decision. A
-> packaged end-to-end flight through fresh and restart promotion plus selected
-> continuation handoff remains open.
+> failed, and discarded resolutions are supported. A ready capture remains a
+> physical GC root until its selected continuation, durable debug session, or
+> noncanonical branch completes the explicit ownership handoff. Focused tests
+> cover scoped routing, queue fairness and head changes, quiet q100/q200
+> boundary distinction, pre-write promotion, restart recovery, and selected
+> continuation handoff.
 
 Facts are immutable and carry causal references. They may be represented in
 persistent Merkle maps rather than replayed from a flat log. A projection cache
@@ -730,7 +729,7 @@ pub enum AttemptContinuationInput {
         source_frontier_ticks: u64,
         seed: [u8; 32],
     },
-    SchedulerOverrides {
+    SchedulerSelections {
         source_observation: ObservationId,
         source_frontier_ticks: u64,
         decisions: Vec<Vec<u8>>,

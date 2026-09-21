@@ -178,7 +178,7 @@ impl LoopbackExecutorService {
     ///
     /// Returns an endpoint or socket-configuration error when the initial
     /// authenticated connection cannot be established.
-    fn connect_with_timeouts(
+    pub fn connect_with_timeouts(
         endpoint: ExecutorLoopbackEndpointConfig,
         timeouts: LoopbackExecutorTimeouts,
     ) -> Result<Self, LoopbackExecutorProtocolError> {
@@ -456,7 +456,8 @@ impl ExecutorResumeService for LoopbackExecutorService {
 /// malformed request, invalid service response, or bounded socket failure.
 /// Returns [`LoopbackExecutorServerError::Service`] when the executor cannot
 /// produce the selected protocol response. Every error shuts down the stream.
-pub fn serve_loopback_executor_component_once<S>(
+#[cfg(test)]
+pub(super) fn serve_loopback_executor_component_once<S>(
     stream: &mut UnixStream,
     service: &mut S,
     timeouts: LoopbackExecutorTimeouts,

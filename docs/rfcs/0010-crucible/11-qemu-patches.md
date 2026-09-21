@@ -820,10 +820,12 @@ gated capability in the atomic integration patch.
 ## 11.11 Verification and provenance
 
 The checked-in patch is generated with `git format-patch` from one DCO-signed
-commit whose parent is the pinned QEMU 11.1.1 base. the QEMU integration manifest records the
+commit whose parent is the pinned QEMU 11.1.1 base. The QEMU integration manifest records the
 base and head commits, trees, patch hash, bundle hash, author, and sign-off.
-The retained bundle contains both the prerequisite base and the named final
-head so an independent checkout can regenerate and inspect the same tree.
+The retained thin bundle names the exact prerequisite base and carries the
+named final head. The pinned upstream source deterministically reconstructs
+that base before the bundle is verified and fetched, avoiding a duplicate copy
+of the complete upstream tree in the repository.
 
 CI applies the patch with fuzz disabled, rebuilds QEMU, compares the resulting
 tree to the recorded head tree, and runs the component micro-tests. The

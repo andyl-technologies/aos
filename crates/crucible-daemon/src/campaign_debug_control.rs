@@ -8,7 +8,8 @@ use crucible::ContentHash;
 use crucible_api::{SessionId, SessionRef};
 use crucible_campaign::{
     CampaignHash, CampaignName, CampaignPrincipal, CampaignServiceFailure, CampaignSnapshotId,
-    ExactCheckpointId, FindingId, GetCampaignFindingObjectResponse,
+    ExactCheckpointId, FindingId, GetCampaignFindingObjectRequest,
+    GetCampaignFindingObjectResponse,
 };
 use thiserror::Error;
 
@@ -197,6 +198,19 @@ impl OpenCampaignDebugSessionRequest {
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
         CampaignHash::derive(REQUEST_DIGEST_DOMAIN, &self.canonical_bytes())
+    }
+
+    pub(crate) fn finding_object_request(
+        &self,
+    ) -> Result<GetCampaignFindingObjectRequest, CampaignDebugControlCodecError> {
+        GetCampaignFindingObjectRequest::new(
+            self.principal.clone(),
+            self.campaign.clone(),
+            self.snapshot,
+            self.finding,
+            crucible_campaign::CampaignFindingObjectKind::Reproduction,
+        )
+        .map_err(|_| CampaignDebugControlCodecError::InvalidIdentity)
     }
 
     /// Returns strict canonical component-message bytes.

@@ -7,11 +7,11 @@ mod ledger;
 #[path = "campaign_evidence/service.rs"]
 mod service;
 
-pub(super) use ledger::parse_campaign_findings_ledger_bytes;
-pub(crate) use ledger::write_campaign_findings_ledger;
-pub(crate) use service::capture_campaign_triage_finding;
+pub(crate) use ledger::campaign_findings_ledger_bytes;
+pub(crate) use ledger::parse_campaign_findings_ledger_bytes;
 #[cfg(test)]
-pub(crate) use service::{CampaignFindingOccurrenceScope, capture_campaign_finding_triage_replay};
+pub(crate) use service::capture_campaign_triage_finding;
+pub(crate) use service::capture_campaign_triage_finding_from_service;
 
 pub(super) fn build_campaign_triage_minimization(
     plan: &TriageInvocationPlan,

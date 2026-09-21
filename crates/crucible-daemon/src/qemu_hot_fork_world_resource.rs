@@ -39,8 +39,8 @@ pub(crate) use node_target::QemuHotForkWorldNodeTarget;
 #[cfg(feature = "destructive-recovery-faults")]
 const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
 #[cfg(feature = "destructive-recovery-faults")]
-const WORLD_FORK_ONE_VM_FAILURE_TRIGGER: &str =
-    "crucible.destructive-recovery.world-fork-one-vm-failure";
+const WORLD_FORK_PREFLIGHT_FAILURE_TRIGGER: &str =
+    "crucible.destructive-recovery.world-fork-preflight-failure";
 
 struct QemuHotForkWorldResourceState<G>
 where
@@ -175,7 +175,7 @@ where
             )));
         }
         #[cfg(feature = "destructive-recovery-faults")]
-        if !state.issued.is_empty() && world_fork_one_vm_failure_requested() {
+        if !state.issued.is_empty() && world_fork_preflight_failure_requested() {
             return Err(world_resource_error(
                 "fault-injected failure while reserving the next hot-fork world VM",
             ));
@@ -188,36 +188,35 @@ where
             resources: self.resources,
             cancellation: self.cancellation.clone(),
             released: false,
+            process_contract: None,
         })
     }
 
-    /// Runs one launch-only operation against the still-indivisible guard.
-    ///
-    /// # Errors
-    ///
-    /// Returns an executor error after terminal cleanup or registry poison.
-    pub(crate) fn with_guard_mut<T>(
+    /// Reserves one child generation with a duplicated concurrent launch contract.
+    pub(crate) fn reserve_process_node(
         &mut self,
-        operation: impl FnOnce(&mut G) -> T,
-    ) -> Result<T, QemuVmRealizationError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if state.terminal {
-            return Err(world_resource_error(
-                state
-                    .terminal_failure
-                    .as_deref()
-                    .unwrap_or("hot-fork world resource owner is terminal"),
-            ));
-        }
-        if state.auxiliary_lifecycle_active {
-            return Err(world_resource_error(
-                "hot-fork world auxiliary lifecycle is active",
-            ));
-        }
-        Ok(operation(&mut state.guard))
+        identity: ProductionVmNodeGeneration,
+    ) -> Result<QemuHotForkWorldNodeTarget<G>, QemuVmRealizationError>
+    where
+        G: QemuAttemptProcessResourceGuard,
+    {
+        let process_contract = {
+            let state = self.state.lock().map_err(|_| {
+                world_resource_error("hot-fork world resource registry is poisoned")
+            })?;
+            state
+                .guard
+                .child_process_contract()?
+                .try_clone_for_attempt_generation()
+                .map_err(|source| {
+                    world_resource_error(format!(
+                        "duplicate concurrent hot-fork node process contract: {source}"
+                    ))
+                })?
+        };
+        let mut target = self.reserve_node(identity)?;
+        target.process_contract = Some(process_contract);
+        Ok(target)
     }
 
     /// Mints the shared guard used by the adopted production lifecycle launcher.
@@ -545,9 +544,9 @@ fn world_resource_error(message: impl Into<String>) -> QemuVmRealizationError {
 }
 
 #[cfg(feature = "destructive-recovery-faults")]
-fn world_fork_one_vm_failure_requested() -> bool {
+fn world_fork_preflight_failure_requested() -> bool {
     std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT).as_deref()
-        == Some(std::ffi::OsStr::new(WORLD_FORK_ONE_VM_FAILURE_TRIGGER))
+        == Some(std::ffi::OsStr::new(WORLD_FORK_PREFLIGHT_FAILURE_TRIGGER))
 }
 
 #[cfg(test)]

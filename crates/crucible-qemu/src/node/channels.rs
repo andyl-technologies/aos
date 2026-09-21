@@ -651,6 +651,21 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         &mut self,
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError>;
 
+    /// Re-adopts an active reconstructed child as a fresh template source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when this channel cannot perform the
+    /// current child-adoption transaction.
+    fn adopt_hot_fork_child_as_template_source(
+        &mut self,
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "adopt hot-fork child as template source",
+            "machine-control channel does not implement child adoption",
+        ))
+    }
+
     /// Aborts QEMU's retained hot-fork template transaction.
     ///
     /// # Errors

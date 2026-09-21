@@ -1,88 +1,111 @@
 //! Finding triage planning, minimization, and evidence construction.
 
-use super::ledger_format::{
-    compare_triage_result, parse_triage_compare_target, parse_triage_findings_source,
-    write_triage_report,
-};
+use super::ledger_format::write_triage_report;
 use super::*;
 
-pub(crate) fn plan_triage_invocation(
+const MAX_CAMPAIGN_TRIAGE_FINDINGS: usize = 65_536;
+
+pub(crate) fn run_campaign_triage_invocation<S>(
     cli: &Cli,
-    args: &TriageArgs,
-) -> Result<TriageInvocationPlan, CliError> {
-    if cli.daemon.is_some() {
-        return Err(CliError::Backend(
-            "triage is an offline DagStore operation and must not use --daemon".to_string(),
-        ));
-    }
-    if args.findings.is_empty() {
-        return Err(usage_error("triage requires a non-empty FINDINGS argument"));
+    args: &CampaignTriageArgs,
+    client: &crucible_campaign::CampaignClient<S>,
+    principal: crucible_campaign::CampaignPrincipal,
+) -> Result<TriageRunReport, CliError>
+where
+    S: crucible_campaign::CampaignFindingOccurrenceService,
+    S::Error: crucible_campaign::CampaignServiceFailureSource,
+{
+    let campaign = crucible_campaign::CampaignName::new(&args.name)
+        .map_err(|error| usage_error(format!("invalid campaign name: {error}")))?;
+    let snapshot = crucible_campaign::CampaignSnapshotId::parse(&args.snapshot)
+        .map_err(|error| usage_error(format!("invalid campaign snapshot: {error}")))?;
+    let mut finding_ids = Vec::new();
+    let mut after = None;
+    loop {
+        let request = crucible_campaign::QueryCampaignFindingsRequest::new(
+            principal.clone(),
+            campaign.clone(),
+            snapshot,
+            after,
+            crucible_campaign::MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
+        )
+        .map_err(|error| artifact_error(format!("build campaign findings query: {error}")))?;
+        let response = client
+            .query_campaign_findings(&request)
+            .map_err(|error| artifact_error(format!("query campaign findings: {error}")))?;
+        for finding in response.entries() {
+            finding_ids.push(finding.id().map_err(|error| {
+                artifact_error(format!("campaign finding ID is invalid: {error}"))
+            })?);
+            if finding_ids.len() > MAX_CAMPAIGN_TRIAGE_FINDINGS {
+                return Err(artifact_error("campaign triage finding bound exceeded"));
+            }
+        }
+        after = response.next_after();
+        if after.is_none() {
+            break;
+        }
     }
 
-    let findings = parse_triage_findings_source(&args.findings);
-    let compare = args
-        .compare
-        .as_deref()
-        .map(parse_triage_compare_target)
-        .transpose()?;
+    let mut evidence = Vec::with_capacity(finding_ids.len());
+    for finding in finding_ids {
+        evidence.push(
+            campaign_evidence::capture_campaign_triage_finding_from_service(
+                client,
+                principal.clone(),
+                campaign.clone(),
+                snapshot,
+                finding,
+            )?,
+        );
+    }
+    let ledger_bytes = campaign_evidence::campaign_findings_ledger_bytes(&evidence)?;
+    let ledger_text = std::str::from_utf8(&ledger_bytes)
+        .map_err(|_| artifact_error("internal campaign triage evidence is not UTF-8"))?;
+    let store_root = cli.artifact_dir.join("campaign-triage-store");
+    let store = crucible::LocalDagStore::new(store_root.clone());
+    let loaded_findings = parse_campaign_findings_ledger_bytes(&store, &ledger_bytes, ledger_text)?;
     let report_dir = args
         .report
         .clone()
         .unwrap_or_else(|| cli.artifact_dir.clone());
-    let store_root = cli
-        .store
-        .clone()
-        .unwrap_or_else(|| cli.artifact_dir.join("store"));
-    let mut pipeline = vec![TriagePipelineStep::LoadFindingsLedger];
-    if args.recompute_signatures {
-        pipeline.push(TriagePipelineStep::RecomputeSignatureSelfCheck);
-    }
-    pipeline.push(TriagePipelineStep::Cluster);
-    pipeline.push(match args.minimize {
-        TriageMinimizeArg::None => TriagePipelineStep::SkipMinimization,
-        TriageMinimizeArg::Representative => TriagePipelineStep::MinimizeRepresentative,
-        TriageMinimizeArg::All => TriagePipelineStep::MinimizeAll,
-    });
-    pipeline.push(TriagePipelineStep::EmitReports);
-    pipeline.push(TriagePipelineStep::StoreTriageResult);
-    if compare.is_some() {
-        pipeline.push(TriagePipelineStep::CompareContentDiff);
-    }
-
     let plan = TriageInvocationPlan {
-        findings,
         policy: args.policy.policy(),
         minimize: args.minimize,
         report_dir,
         format: cli.output_format().triage_report_format(),
         recompute_signatures: args.recompute_signatures,
-        compare,
         store_root,
-        pipeline,
-        failure_exit_code: CliError::Triage(
-            "triage self-check or signature-preserving minimization failed".to_string(),
-        )
-        .exit_code(),
-        thin_driver: true,
-        owns_run_state: false,
-        offline: true,
-        scheduler_started: false,
     };
-    if !plan.proves_t_tri_7() {
-        return Err(CliError::Backend(
-            "triage planner does not satisfy the RFC-0010 thin-driver contract".to_string(),
-        ));
-    }
-    Ok(plan)
+
+    execute_triage_plan(plan, loaded_findings)
 }
 
-pub(crate) fn run_triage_invocation(
-    cli: &Cli,
-    args: &TriageArgs,
+pub(crate) fn emit_triage_report(cli: &Cli, report: &TriageRunReport) {
+    if cli.quiet {
+        return;
+    }
+    println!(
+        "crucible: triage findings=campaign findings_count={} ledger={} ledger_cache_hit={} policy={} minimize={} clusters={} report={} format={} store={} result={} cache_hit={} compare=none",
+        report.ledger.artifact_count(),
+        format_content_hash_ref(report.stored_ledger.key),
+        report.stored_ledger.cache_hit,
+        report.plan.policy_label(),
+        report.plan.minimize_label(),
+        report.result.clustering.cluster_count(),
+        report.report_path.display(),
+        report.plan.format_label(),
+        report.plan.store_root.display(),
+        format_content_hash_ref(report.stored_result.key),
+        report.stored_result.cache_hit,
+    );
+}
+
+fn execute_triage_plan(
+    plan: TriageInvocationPlan,
+    loaded_findings: LoadedTriageFindings,
 ) -> Result<TriageRunReport, CliError> {
-    let plan = plan_triage_invocation(cli, args)?;
     let store = crucible::LocalDagStore::new(plan.store_root.clone());
-    let loaded_findings = load_triage_findings_ledger(&store, &plan.findings)?;
     let stored_ledger = store_loaded_findings_ledger(&store, &loaded_findings)?;
     let ledger = loaded_findings.ledger.clone();
 
@@ -110,11 +133,6 @@ pub(crate) fn run_triage_invocation(
     )
     .map_err(|_| CliError::Triage("triage result validation failed".to_string()))?;
     let report_path = write_triage_report(&plan, &result.report_set)?;
-    let compare = plan
-        .compare
-        .as_ref()
-        .map(|target| compare_triage_result(&store, &result, target))
-        .transpose()?;
     let stored_result = result.store(&store).map_err(CliError::Store)?;
 
     Ok(TriageRunReport {
@@ -124,7 +142,6 @@ pub(crate) fn run_triage_invocation(
         result,
         stored_result,
         report_path,
-        compare,
     })
 }
 

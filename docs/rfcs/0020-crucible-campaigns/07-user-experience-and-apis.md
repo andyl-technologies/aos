@@ -248,7 +248,7 @@ authenticated genesis basis. With `--start-command`, the client immediately
 submits a separate `Resume` command whose precondition is the exact genesis
 snapshot returned by that checked creation response. The two mutations are not
 atomic: if creation succeeds and start fails, repeating the same command safely
-replays creation and retries the idempotent start command. Version 2 of the CLI
+replays creation and retries the idempotent start command. Version 3 of the CLI
 campaign-acceptance report retains both checked results by nesting the start
 command, prior snapshot, resulting snapshot, and replay bit under the creation
 result. `derive` similarly names one exact authenticated source snapshot and
@@ -308,8 +308,9 @@ reuse or a stale
 precondition remains visible. Every successful format includes campaign,
 operation, command ID, prior snapshot, new snapshot, and replay status. Create
 and derive report their exact lineage/policy or source basis, accepted snapshot,
-and replay status. Start's local resource attachment and richer manifest
-authoring remain open.
+and replay status. Start attaches the authenticated local runtime named by the
+created manifest; create and derive expose the complete supported manifest
+authoring surface.
 
 Semantic alternatives use a separate command:
 
@@ -551,8 +552,9 @@ finding reward, unique coverage, objective reward, producer landmarks, PUCT,
 cardinality, and lower offset.
 A mixture containing any suspended child remains conservatively `Open`. Other
 generated sources remain `Open` until their deterministic enumerator and
-feedback owner land. Rich admitted-value and interval explanation views and CLI
-rendering remain open.
+feedback owner land. Exact opportunity, declaration, domain, branch-request,
+attempt, and ranking views provide the current explanation boundary; a future
+graphical projection may compose those same proof-bearing records.
 
 The local repository API exposes the same validation boundary at object scale.
 Typed loads authenticate scenario/configuration artifacts, opportunities,
@@ -573,6 +575,7 @@ the selected model implementation's pure replay verifier before execution.
 crucible campaign pin NAME CONFIG --expected SNAPSHOT --command ID [--tier thin|exact] [--reason TEXT]
 crucible campaign unpin NAME CONFIG --expected SNAPSHOT --command ID [--reason TEXT]
 crucible campaign replay NAME --snapshot SNAPSHOT --finding FINDING [--minimized]
+crucible campaign debug NAME --snapshot SNAPSHOT --finding FINDING --node NODE [--writable]
 crucible replay ARTIFACT [--check ORIGINAL_LOG]
 crucible debug ARTIFACT|SAVEPOINT [--at-failure]
 ```
@@ -583,9 +586,23 @@ authenticates its scenario and configuration binding, and runs its pure replay
 oracle directly. The top-level `replay` command consumes an independently
 exported self-contained artifact. The current top-level `debug` command
 consumes that artifact or an exported savepoint; debugger writes create a
-non-canonical branch. Direct campaign finding-to-debug remains open because it
-must allocate an exclusive session through the authenticated exact-checkpoint
-owner rather than materializing an unchecked temporary artifact.
+non-canonical branch. `campaign debug` authenticates the snapshot-bound finding
+and retained exact checkpoint through their owners, allocates an exclusive
+read-only restore in the shared lifecycle registry, and retains those proofs
+for the session lifetime. `--writable` records and validates an explicit
+non-canonical branch before enabling mutation on that private runtime; it does
+not write the campaign object or retained checkpoint. The session identity can
+be reused after the first relay disconnects. The campaign state owner retains a
+current-only inventory containing the exact open request and authenticated
+finding proof before lifecycle admission. On restart it reauthenticates the
+artifacts and retained checkpoint and admits a replacement session into the
+shared lifecycle registry. Recovery starts from the authenticated canonical
+checkpoint in read-only mode; a previous non-canonical writable branch is not
+durable and requires a new explicit `--writable` fork. The ordinary session
+list and destroy APIs remain the administrative surface. Explicit destroy
+removes the durable record, while
+daemon shutdown preserves it. The campaign repository's exclusive state lock
+also excludes a second daemon from recovering or modifying the inventory.
 
 ## 07.6 Store, durability, and archival porcelain
 
@@ -629,15 +646,18 @@ bytes, streams every placement through the exact physical backend to
 authenticated EOF, and reports success only when a closing inventory fence
 reproduces the opening generation, count, logical-byte total, and backend
 identity. Its report discloses aggregate per-backend evidence, not object IDs
-or delete authority. Store discovery remains open rather than guessing a
-deployment registry.
+or delete authority. Store deployment selection is deliberately explicit;
+commands name the strict composed-store file instead of guessing a deployment
+registry.
 The current single-host command is an offline deployment-owner operation:
 `STORE` is the strict composed-store file, it acquires the same state lock as
 `serve`, derives the only admissible ledger as `STATE/executor-ledger`, and
 persists the complete plan/manifests/phase in `JOURNAL`. It accepts no caller-
-selected ledger or exact-pin path. Until the packaged exact-pin materialization
-owner is wired, a live exact semantic pin makes planning fail closed before
-journal creation.
+selected ledger or exact-pin path: the restart-safe exact-pin materialization
+owner is derived as `STATE/exact-pin-materializations`, reopened by both plan
+and apply, and reauthenticated against the current semantic pin inventory. A
+missing, stale, or invalid materialization for a live exact semantic pin makes
+GC fail closed.
 
 ## 07.7 Existing commands as campaign sugar
 
@@ -656,6 +676,23 @@ The existing command concepts remain useful but use one implementation:
 - **[CAPI-7]** These commands MUST call `CampaignService` and the same campaign
   primitives rather than maintain separate search, fuzz, branch, local-daemon,
   or future-endpoint state models.
+
+Campaign-owned triage is exposed directly and through the existing top-level
+spelling:
+
+```text
+crucible campaign --socket SOCKET --principal PRINCIPAL \
+  triage NAME --snapshot SNAPSHOT [--policy POLICY] [--minimize MODE]
+
+crucible triage --campaign-socket SOCKET --principal PRINCIPAL \
+  NAME --snapshot SNAPSHOT [--policy POLICY] [--minimize MODE]
+```
+
+The second form is exact porcelain for the first. Both enumerate the findings
+retained by `SNAPSHOT` and authenticate their membership, occurrence objects,
+and segmented native replay evidence through `CampaignService` before running
+the deterministic triage projection. A caller-supplied findings ledger is not
+an authority for either command.
 
 ## 07.8 Component APIs
 
@@ -740,8 +777,9 @@ authenticated current status, one-shot resumable watch, exact-precondition
 lifecycle mutation, and semantic pin/unpin mutation. The daemon now owns the
 strict 4-KiB operational request/response contract, distinct policy label,
 authenticated listener route, and CLI porcelain for dynamic runtime
-attachment. Remaining paged inspection is still required before the service is
-complete. Repeated bounded
+attachment. Snapshot-bound graph, choice, frontier, and finding pagination plus
+their separately authorized object and explanation reads complete the service's
+bounded inspection surface. Repeated bounded
 `WatchCampaign` calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now
@@ -826,8 +864,9 @@ worker; exact bounds fail before deployment-file I/O, backend failures stop the
 service visibly, and committed-object/ref deletion authority remains withheld.
 The separate `crucible store gc ... plan|apply` owner takes the same state lock,
 uses the canonical packaged-executor ledger, and reports exact durable journal
-and generation-bound apply outcomes. A hermetic live-service fixture and the
-realistic operator flight remain open.
+and generation-bound apply outcomes. Hermetic live-service coverage exercises
+GC, exact-pin retention, unpin, and restart; the independent realistic operator
+flight remains separately tracked by T-CAM-8.6.
 
 The separately hosted or daemon-packaged executor endpoint has one coupled
 lifecycle owner: a shutdown closes assignment admission, signals active
@@ -835,11 +874,12 @@ attempts, interrupts connections, and joins both connection and semantic
 workers. Terminal semantic worker failure closes the listener instead of
 leaving an apparently live but unusable socket. Dropping the unserved owner
 retains the socket namespace until the same semantic join completes. In
-daemon-packaged mode a strict version-one deployment file fixes aggregate
+daemon-packaged mode a strict version-two deployment file fixes aggregate
 capacity, worker count, cgroup/run roots, project-ID range, child credential,
-checkpoint ceiling, and exact compatibility profile before the endpoint is
-exposed. One pool may serve up to 256 explicitly selected or automatically
-discovered campaigns only when their exact compatibility profile is identical.
+checkpoint ceiling, exact compatibility profile, and the complete bounded
+listener/coordinator operational policy before the endpoint is exposed. One
+pool may serve up to 256 explicitly selected or automatically discovered
+campaigns only when their exact compatibility profile is identical.
 Its closed startup catalog contains one native baked genesis per distinct exact
 scenario; admission rechecks catalog membership for every attempt, and
 post-bind attachment through the packaged endpoint rejects an uncatalogued

@@ -26,7 +26,7 @@ use crate::cli_campaign_store::{
 };
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v2";
-const CAMPAIGN_GC_PLAN_VERSION: &str = "v2";
+const CAMPAIGN_GC_PLAN_VERSION: &str = "v1";
 const STORE_STATUS_REPORT_SCHEMA: &str = "crucible.cli.store-status.v1";
 const STORE_ENSURE_REPORT_SCHEMA: &str = "crucible.cli.store-ensure.v1";
 const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v1";

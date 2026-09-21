@@ -1079,6 +1079,13 @@ host-work pool: synchronous request pinning fixes the completion coordinate,
 while immediate and wall-delayed worker runs produce identical service results
 and exact checkpoints.
 
+T-PERF-32 is completed by keeping ahead-of-time and concurrent
+translation-block generation absent from the production launch surface. The
+canonical host-parallelism register admits only mechanisms with a recorded
+determinism class and proving gates, so translation work cannot be enabled
+without first adding the required on/off fingerprint-neutrality evidence to
+`gate:perf-bench` and `gate:single-vm-fingerprint`.
+
 T-PERF-33 is additionally completed by
 `checks.crucible.phase7.segmentParallelReplay`. The replay coordinator selects
 an ordered subset of realizable checkpoints while retaining the original
@@ -1256,6 +1263,11 @@ parallelism.
   the delivered coordinate. Assert identical completion icounts and canonical
   logs across a forced guest-wins-the-race run, a forced host-wins-the-race run,
   and a fully synchronous run. — satisfies [PERF-31]; spec §25.12.4.
+- [x] **T-PERF-32** Keep ahead-of-time and concurrent translation-block
+  generation disabled in the production launch surface. Require an explicit
+  host-parallelism admission plus bit-identical on/off on-demand fingerprints
+  across the translation-heavy, host-preempted corpus before enabling either
+  mechanism. — satisfies [PERF-32]; spec §25.12.5.
 - [x] **T-PERF-33** Implement segment-parallel replay: split a replay suffix at
   checkpoint coordinates, replay the segments concurrently, and join them.
   Assert equality with serial replay in state and canonical log, wire it into the

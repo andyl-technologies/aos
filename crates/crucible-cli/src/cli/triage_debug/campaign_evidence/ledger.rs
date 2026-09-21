@@ -653,7 +653,7 @@ fn parse_campaign_finding_occurrence_triage_proof(
     Ok(complete)
 }
 
-pub(super) fn campaign_findings_ledger_bytes(
+pub(crate) fn campaign_findings_ledger_bytes(
     evidence: &[CampaignTriageFindingEvidence],
 ) -> Result<Vec<u8>, CliError> {
     campaign_findings_ledger_bytes_with_limit(evidence, MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES)
@@ -853,28 +853,6 @@ fn campaign_findings_ledger_bytes_with_limit(
         }
     }
     lines.finish()
-}
-
-pub(crate) fn write_campaign_findings_ledger(
-    artifact_dir: &Path,
-    findings_out: Option<&Path>,
-    evidence: &[CampaignTriageFindingEvidence],
-) -> Result<(PathBuf, crucible::ContentHash, Vec<u8>), CliError> {
-    let bytes = campaign_findings_ledger_bytes(evidence)?;
-    let digest = crucible::ContentHash::from_bytes(&bytes);
-    let path = findings_out.map(Path::to_path_buf).unwrap_or_else(|| {
-        artifact_dir
-            .join("findings")
-            .join(format!("{}.crucible-findings", digest.to_hex()))
-    });
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&path, &bytes)?;
-    Ok((path, digest, bytes))
 }
 
 #[cfg(test)]

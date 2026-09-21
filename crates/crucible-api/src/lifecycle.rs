@@ -68,12 +68,36 @@ pub const RESUME_OBSERVATION_PREPARATION_TIMEOUT: Duration = Duration::from_secs
 /// Default number of expensive portable observation preparations admitted concurrently.
 pub const RESUME_OBSERVATION_PREPARATION_CAPACITY: usize = 1;
 
+/// Failure reported while removing durable session-retention state.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("{message}")]
+pub struct SessionRetentionUpdateError {
+    message: String,
+}
+
+impl SessionRetentionUpdateError {
+    /// Creates a retention update failure with stable owner-supplied detail.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Returns the stable retention update diagnostic.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// Opaque authority retained for the complete lifetime of one admitted session.
 ///
 /// Owner-side session composition uses this guard to keep immutable source and
 /// retention capabilities alive until the session is destroyed.
 pub struct SessionLifetimeRetention {
     _capability: Box<dyn Send + Sync>,
+    on_destroy: Option<Arc<dyn Fn() -> Result<(), SessionRetentionUpdateError> + Send + Sync>>,
 }
 
 impl SessionLifetimeRetention {
@@ -82,7 +106,30 @@ impl SessionLifetimeRetention {
     pub fn new(capability: impl Send + Sync + 'static) -> Self {
         Self {
             _capability: Box::new(capability),
+            on_destroy: None,
         }
+    }
+
+    /// Installs cleanup that runs only when the lifecycle registry explicitly
+    /// removes this session.
+    ///
+    /// Dropping the complete control plane does not run this callback. Durable
+    /// owners use that distinction to retain restart records across daemon
+    /// shutdown while still deleting them after an explicit session destroy.
+    #[must_use]
+    pub fn with_destroy_callback(
+        mut self,
+        callback: impl Fn() -> Result<(), SessionRetentionUpdateError> + Send + Sync + 'static,
+    ) -> Self {
+        self.on_destroy = Some(Arc::new(callback));
+        self
+    }
+
+    fn destroyed(&self) -> Result<(), LifecycleApiError> {
+        self.on_destroy
+            .as_ref()
+            .map_or(Ok(()), |callback| callback())
+            .map_err(|source| LifecycleApiError::SessionRetention { source })
     }
 }
 
@@ -356,6 +403,13 @@ pub enum LifecycleApiError {
     SessionCommandRejected {
         /// Stable actor rejection detail.
         message: String,
+    },
+    /// Durable session-retention state could not be updated.
+    #[error("session retention update failed: {source}")]
+    SessionRetention {
+        /// Owner-supplied retention update failure.
+        #[source]
+        source: SessionRetentionUpdateError,
     },
     /// A mutation was attempted against an owner-enforced read-only session.
     #[error("session {session:?} is an exclusive read-only debug session")]
@@ -999,6 +1053,9 @@ where
             });
         }
 
+        if let Some(retention) = runtime._lifetime_retention.as_ref() {
+            retention.destroyed()?;
+        }
         let runtime = self.sessions.remove(&request.session.id).ok_or(
             LifecycleApiError::CommandChannelClosed {
                 session_id: request.session.id,
@@ -1217,7 +1274,7 @@ where
         capability: DebugCapability,
     ) -> Result<(), LifecycleApiError> {
         let runtime = self.checked_runtime(session, None)?;
-        if runtime.access == SessionAccess::ReadOnlyDebug
+        if runtime.access.is_read_only()
             && matches!(
                 capability,
                 DebugCapability::Mutate | DebugCapability::Shell | DebugCapability::Admin
@@ -1228,6 +1285,36 @@ where
         runtime
             .debug_access
             .authorize_controller_operation(lease, role, capability)?;
+        Ok(())
+    }
+
+    /// Authorizes the one explicit fork that turns a retained campaign debug
+    /// restore into a writable, non-canonical branch.
+    ///
+    /// This is narrower than ordinary mutation authorization: a read-only
+    /// campaign restore remains immutable until the actor has recorded the
+    /// complete [`crucible::DebugNonCanonicalBranchReport`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session or controller lease is
+    /// stale, or when the role lacks control, mutation, or shell capability.
+    pub fn authorize_debug_branch_fork(
+        &self,
+        session: SessionRef,
+        lease: &DebugControllerLease,
+        role: &DebugRole,
+    ) -> Result<(), LifecycleApiError> {
+        let runtime = self.checked_runtime(session, None)?;
+        for capability in [
+            DebugCapability::Control,
+            DebugCapability::Mutate,
+            DebugCapability::Shell,
+        ] {
+            runtime
+                .debug_access
+                .authorize_controller_operation(lease, role, capability)?;
+        }
         Ok(())
     }
 
@@ -1321,12 +1408,109 @@ where
         session: SessionRef,
     ) -> Result<GuestIntrospectionDispatch, LifecycleApiError> {
         let runtime = self.checked_runtime(session, None)?;
-        if runtime.access == SessionAccess::ReadOnlyDebug {
+        if runtime.access.is_read_only() {
             return Err(LifecycleApiError::ReadOnlySession { session });
         }
         Ok(GuestIntrospectionDispatch {
             sender: runtime.sender.clone(),
             session_id: runtime.session.id,
+        })
+    }
+
+    /// Captures the actor dispatch used for the explicit non-canonical branch
+    /// transition of a retained campaign debug restore.
+    ///
+    /// The returned dispatch can only submit the branch-producing guest
+    /// introspection command. Ordinary writable operations remain blocked by
+    /// [`Self::guest_introspection_dispatch`] until
+    /// [`Self::commit_writable_debug_branch`] authenticates the actor report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale.
+    pub fn debug_branch_fork_dispatch(
+        &self,
+        session: SessionRef,
+    ) -> Result<GuestIntrospectionDispatch, LifecycleApiError> {
+        let runtime = self.checked_runtime(session, None)?;
+        Ok(GuestIntrospectionDispatch {
+            sender: runtime.sender.clone(),
+            session_id: runtime.session.id,
+        })
+    }
+
+    /// Commits an actor-proven writable debug branch to lifecycle access state.
+    ///
+    /// The actor report is the provenance boundary. Access changes only after
+    /// it proves that the campaign-derived canonical source stayed unchanged,
+    /// the new branch is visibly non-canonical, and the branch is excluded from
+    /// replay-oracle and reproduction-artifact use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session is stale, the actor report
+    /// does not satisfy the non-canonical provenance contract, or a different
+    /// writable branch was already committed for the session.
+    pub fn commit_writable_debug_branch(
+        &mut self,
+        session: SessionRef,
+        report: &crucible::DebugNonCanonicalBranchReport,
+    ) -> Result<(), LifecycleApiError> {
+        if !report.canonical_run_bit_identical()
+            || !report.visibly_marked_non_canonical()
+            || !report.excluded_from_oracles_and_artifacts()
+            || !report.inside_virtual_time_single_execution_path()
+        {
+            return Err(LifecycleApiError::SessionCommandRejected {
+                message: String::from(
+                    "debug branch report does not satisfy writable provenance invariants",
+                ),
+            });
+        }
+
+        let runtime = self.checked_runtime_mut(session)?;
+        let live = runtime.live.read();
+        if report.branch.fork_point != live.configuration
+            || report.canonical_footprint_before.attached_configuration != live.configuration
+            || report.canonical_footprint_after.attached_configuration != live.configuration
+        {
+            return Err(LifecycleApiError::SessionCommandRejected {
+                message: String::from(
+                    "writable debug branch provenance belongs to another session boundary",
+                ),
+            });
+        }
+        let branch = report.branch.id;
+        match runtime.access {
+            SessionAccess::ReadOnlyDebug | SessionAccess::ReadWrite => {
+                runtime.access = SessionAccess::WritableDebugBranch { branch };
+                Ok(())
+            }
+            SessionAccess::WritableDebugBranch { branch: existing } if existing == branch => Ok(()),
+            SessionAccess::WritableDebugBranch { .. } => {
+                Err(LifecycleApiError::SessionCommandRejected {
+                    message: String::from(
+                        "session already has a different writable debug branch provenance",
+                    ),
+                })
+            }
+        }
+    }
+
+    /// Returns the explicit non-canonical branch provenance for a writable
+    /// debug session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale.
+    pub fn writable_debug_branch(
+        &self,
+        session: SessionRef,
+    ) -> Result<Option<ContentHash>, LifecycleApiError> {
+        let runtime = self.checked_runtime(session, None)?;
+        Ok(match runtime.access {
+            SessionAccess::WritableDebugBranch { branch } => Some(branch),
+            SessionAccess::ReadWrite | SessionAccess::ReadOnlyDebug => None,
         })
     }
 
@@ -1344,7 +1528,7 @@ where
         session: SessionRef,
     ) -> Result<DebugRepositionDispatch, LifecycleApiError> {
         let runtime = self.checked_runtime(session, None)?;
-        if runtime.access == SessionAccess::ReadOnlyDebug {
+        if runtime.access.is_read_only() {
             return Err(LifecycleApiError::ReadOnlySession { session });
         }
         Ok(DebugRepositionDispatch {
@@ -1359,7 +1543,9 @@ where
     ) -> Result<DebugRelayAccess, LifecycleApiError> {
         let runtime = self.checked_runtime(session, None)?;
         Ok(match runtime.access {
-            SessionAccess::ReadWrite => DebugRelayAccess::ReadWrite,
+            SessionAccess::ReadWrite | SessionAccess::WritableDebugBranch { .. } => {
+                DebugRelayAccess::ReadWrite
+            }
             SessionAccess::ReadOnlyDebug => DebugRelayAccess::ReadOnly,
         })
     }
@@ -1414,7 +1600,7 @@ where
             runtime.state_transitions.clone(),
         );
         Ok(match runtime.access {
-            SessionAccess::ReadWrite => streaming,
+            SessionAccess::ReadWrite | SessionAccess::WritableDebugBranch { .. } => streaming,
             SessionAccess::ReadOnlyDebug => streaming.with_read_only_debug_policy(),
         })
     }
@@ -1432,7 +1618,7 @@ where
         let session = request.session;
         let command_id = request.command_id;
         let command_kind = SessionCommandKind::from(&request.command);
-        if self.checked_runtime(session, None)?.access == SessionAccess::ReadOnlyDebug
+        if self.checked_runtime(session, None)?.access.is_read_only()
             && !matches!(
                 command_kind,
                 SessionCommandKind::Query | SessionCommandKind::Stop
@@ -1494,6 +1680,9 @@ where
         let Some(runtime) = self.sessions.remove(&session.id) else {
             return Err(StreamingApiError::SessionNotFound { session }.into());
         };
+        if let Some(retention) = runtime._lifetime_retention.as_ref() {
+            retention.destroyed().map_err(ControlClientError::from)?;
+        }
         join_actor(runtime.actor_task).await.map_err(Into::into)
     }
 }
@@ -1892,6 +2081,13 @@ struct SessionRuntime {
 enum SessionAccess {
     ReadWrite,
     ReadOnlyDebug,
+    WritableDebugBranch { branch: ContentHash },
+}
+
+impl SessionAccess {
+    const fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnlyDebug)
+    }
 }
 
 impl SessionRuntime {

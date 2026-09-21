@@ -3,7 +3,7 @@
 //! The versioned envelope records withheld proofs explicitly:
 //!
 //! ```text
-//! { "schema-version": 26, "generation": N, "outcome": "draining",
+//! { "schema-version": 27, "generation": N, "outcome": "draining",
 //!   "acknowledged-proofs": A, "missing-proofs": M, ... }
 //! ```
 //!
@@ -70,6 +70,7 @@ pub(crate) fn parse_hot_fork_template_state(
         Some("draining") => QmpHotForkTemplateOutcome::Draining,
         Some("blocked") => QmpHotForkTemplateOutcome::Blocked,
         Some("prepared") => QmpHotForkTemplateOutcome::Prepared,
+        Some("child-adopted") => QmpHotForkTemplateOutcome::ChildAdopted,
         Some("aborted") => QmpHotForkTemplateOutcome::Aborted,
         _ => return Err(malformed()),
     };
@@ -162,7 +163,7 @@ pub(crate) fn parse_hot_fork_template_state(
         && block_barrier.held()
         && block_barrier.snapshot_complete();
     let shape_valid = match outcome {
-        QmpHotForkTemplateOutcome::Idle => {
+        QmpHotForkTemplateOutcome::Idle | QmpHotForkTemplateOutcome::ChildAdopted => {
             !transaction_active
                 && rollback_complete
                 && ordinary_barriers_unheld

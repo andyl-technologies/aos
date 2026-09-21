@@ -338,7 +338,7 @@ fn hot_fork_isolation_binds_native_aggregate_evidence() -> Result<(), Box<dyn Er
     else {
         return Err("hot-fork-isolation must authenticate an exact native producer".into());
     };
-    assert_eq!(selectors.len(), 5);
+    assert_eq!(selectors.len(), 2);
     assert_eq!(
         producer_nix_source,
         "tests/crucible/phase7-qemu-hot-fork-atomic-world-vm.nix"
@@ -353,8 +353,11 @@ fn hot_fork_isolation_binds_native_aggregate_evidence() -> Result<(), Box<dyn Er
         "tests/crucible/phase7-crucible-hot-fork-isolation.nix"
     );
     assert!(ignored);
-    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence.len(), 4);
     assert!(evidence[0].contains("native_isolation_scopes="));
+    assert!(evidence[1].contains("native_negative_isolation_matrix="));
+    assert!(evidence[2].contains("native_negative_isolation_rejected_before="));
+    assert!(evidence[3].contains("native_negative_isolation_source_unchanged="));
 
     let first_selector = targets
         .iter()

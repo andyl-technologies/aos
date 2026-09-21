@@ -2317,7 +2317,17 @@ pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
 
     for argv in [
         vec!["crucible", "selftest"],
-        vec!["crucible", "triage", "findings"],
+        vec![
+            "crucible",
+            "triage",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--principal",
+            "operator",
+            "findings",
+            "--snapshot",
+            "snapshot-id",
+        ],
         vec!["crucible", "completions", "bash"],
     ] {
         let cli = Cli::parse_from(argv);

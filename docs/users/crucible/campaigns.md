@@ -77,6 +77,36 @@ campaign-owned artifact carries its authenticated replay closure; a missing
 closure fails closed. Distinct current `verify`, `search`, and `fuzz` producers
 retain their declared execution owner.
 
+Campaign findings can also enter the shared daemon session lifecycle directly.
+The default command restores the cheapest complete retained checkpoint as an
+exclusive read-only session and opens the mediated GDB relay:
+
+```sh
+./result/bin/crucible [daemon TLS flags] \
+  campaign --socket /run/crucible/campaign.sock --principal operator \
+  debug CAMPAIGN --snapshot SNAPSHOT --finding FINDING --node NODE
+```
+
+Add `--writable` to request a private derivative. The daemon first admits the
+same authenticated restore read-only, attaches the selected node, records an
+explicit non-canonical branch through the common session primitive, verifies
+that the campaign source stayed bit-identical, and only then enables mutation
+and opens the GDB relay. Output names the retained checkpoint, configuration,
+session reference, and exact branch identity. The derivative stays in the live
+session registry after the relay disconnects, so later `debug --session
+<id:epoch:seed>` commands can address it until an explicit session destroy.
+The daemon also retains the exact campaign request and authenticated finding
+proof in its owner-only state inventory. After daemon restart it validates that
+basis and the exact checkpoint again, restores the session with a new session
+reference, and exposes it through the ordinary session list. Explicit session
+destroy removes the inventory entry. The campaign state lock prevents a second
+daemon from recovering the same session concurrently. Restart restores the
+authenticated canonical checkpoint read-only; changes made on a previous
+non-canonical branch are intentionally not durable, so request a new writable
+fork when needed. The branch remains
+excluded from campaign replay-oracle and seed/scenario/schedule reproduction
+artifacts.
+
 ## Build and validate inputs
 
 Build the complete suite first:
@@ -735,12 +765,12 @@ settings stable when replaying a campaign. A larger interval trades fewer host
 handshakes for slower boundary-level control. Existing quantum budgets still
 apply; this is an instruction bound, not a wall-clock response guarantee.
 
-The version-1 deployment file is strict TOML, must be an exact-owner regular
+The version-2 deployment file is strict TOML, must be an exact-owner regular
 file with mode `0600`, and is bounded to 64 KiB:
 
 ```toml
 schema = "crucible.campaign-packaged-executor"
-version = 1
+version = 2
 cgroup_root = "/sys/fs/cgroup/crucible"
 run_root = "/var/lib/crucible/attempts"
 attempt_namespace = "campaign-local"
@@ -761,10 +791,31 @@ maximum_checkpoint_bytes = 1073741824
 worker_count = 2
 host_architecture = "x86_64"
 qemu_profile = "deterministic-tcg-v1"
+
+[operations]
+listener_workers = 4
+pending_connections = 16
+requests_per_connection = 4096
+accept_poll_interval_ms = 10
+exchange_read_timeout_ms = 30000
+exchange_write_timeout_ms = 30000
+runtime_poll_interval_ms = 100
+planner_scan_limit = 1024
+planner_input_bytes = 16777216
+planner_fuel = 1025
+executor_scan_limit = 1024
+worker_slots_per_campaign = 2
 ```
 
 The project-ID count must cover every slot, the worker count cannot exceed the
 slot ceiling, and the checkpoint ceiling cannot exceed writable-disk capacity.
+The required `operations` table defines the complete operational profile for
+this pool. It bounds listener workers and backlog, requests per connection,
+accept polling, read/write deadlines retained across reconnect, runtime
+fallback polling, planner page/byte/fuel work, executor accounting scans, and
+each campaign coordinator's worker slots. Missing or partial tables, zero
+dimensions, and values outside the protocol ceilings fail before host-resource
+acquisition. Set `worker_slots_per_campaign` no higher than `maximum_slots`.
 `verify_determinism_findings = true` explicitly enables two private executions
 of ordinary candidates. Both executions share and consume the attempt's finite
 physical quantum budget; an incomplete pair does not create a finding.
@@ -988,6 +1039,28 @@ IDs and filter only after response authentication; `--top` truncates only after
 global ordering. JSON and JSONL use
 `crucible.cli.campaign-rankings.v2`, echo the filter basis, and report the
 number of matching candidates before truncation.
+
+Triage every finding retained by an exact snapshot through the same campaign
+owner:
+
+```sh
+crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
+  triage network-recovery --snapshot "$SNAPSHOT" \
+  --policy exact --minimize representative --report ./triage-report
+```
+
+The shorter spelling is equivalent:
+
+```sh
+crucible triage --campaign-socket "$CAMPAIGN_SOCKET" --principal operator \
+  network-recovery --snapshot "$SNAPSHOT" \
+  --policy exact --minimize representative --report ./triage-report
+```
+
+Both forms fetch and authenticate snapshot membership, every retained finding
+occurrence, its reproduction objects, and its segmented native replay proof.
+They do not accept a local findings ledger as an independent campaign
+authority.
 
 ## Inspect and collect a composed store
 

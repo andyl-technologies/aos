@@ -10,7 +10,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 mod authenticated_restore;
-mod decision_wire;
 mod decode;
 pub use authenticated_restore::{
     DecodedProductionExactCheckpoint, ProductionVmExactNodeRestoreAdmissions,
@@ -496,8 +495,6 @@ struct BranchWire {
     #[serde(deserialize_with = "decode::deserialize_vec")]
     base_schedule: Vec<u8>,
     frontier: u64,
-    #[serde(deserialize_with = "decode::deserialize_vec")]
-    decisions: Vec<decision_wire::DecisionWire>,
     seed: Option<[u8; 32]>,
 }
 
@@ -2090,11 +2087,6 @@ fn encode_lifecycle(
         branch: checkpoint.branch.as_ref().map(|branch| BranchWire {
             base_schedule: branch.base.schedule.to_compact_binary(),
             frontier: branch.frontier.ticks,
-            decisions: branch
-                .decisions
-                .iter()
-                .map(decision_wire::DecisionWire::from)
-                .collect(),
             seed: branch.seed.map(Seed::bytes),
         }),
         recorded_controls: checkpoint
@@ -2208,11 +2200,6 @@ fn decode_lifecycle(
                     frontier: VirtualTime {
                         ticks: branch.frontier,
                     },
-                    decisions: branch
-                        .decisions
-                        .into_iter()
-                        .map(decision_wire::DecisionWire::into_decision)
-                        .collect(),
                     seed: branch.seed.map(Seed::from_bytes),
                 })
             },

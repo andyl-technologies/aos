@@ -61,7 +61,7 @@ fn gate_coverage_feedback_never_affects_reduce() -> Result<(), Box<dyn Error>> {
     let world = feedback_world("read-only-reduce")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
-    let child = try_step(&root, feedback_decision(0))?;
+    let child = try_step(&root, feedback_decision(0)?)?;
     let first_log = coverage_log("guest-a", 0x7000, "first");
     let second_log = coverage_log("guest-a", 0x7100, "second");
     let first_projection = event_log_coverage_projection(&first_log);
@@ -127,11 +127,9 @@ fn coverage_feedback_fixture() -> Result<CoverageFeedbackFixture, EngineError> {
     let world = feedback_world("search-feedback")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
-    let decisions = vec![
-        feedback_decision(0),
-        feedback_decision(1),
-        feedback_decision(2),
-    ];
+    let decisions = (0..3)
+        .map(feedback_decision)
+        .collect::<Result<Vec<_>, _>>()?;
     let baked = bake_with_search_frontier_choices(&world, decisions.clone())?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let mut children = Vec::new();
@@ -171,7 +169,8 @@ fn bake_with_search_frontier_choices(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(
         crucible::MaterializedState::from_components_with_event_log_segments(
             state.vm_snapshots.clone(),
@@ -240,11 +239,8 @@ fn feedback_world(label: &str) -> Result<World, EngineError> {
     }])
 }
 
-fn feedback_decision(index: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(format!("coverage-feedback-{index}")),
-        value: index,
-    })
+fn feedback_decision(index: u64) -> Result<Decision, EngineError> {
+    crucible::test_support::typed_search_decision_for_test(&format!("coverage-feedback-{index}"))
 }
 
 fn node(name: &str) -> NodeId {

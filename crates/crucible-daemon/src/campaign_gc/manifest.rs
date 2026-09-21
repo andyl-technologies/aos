@@ -17,7 +17,7 @@
 //! The candidate format is:
 //!
 //! ```text
-//! "crucible.campaign.gc-candidate-manifest.v2\0"
+//! "crucible.campaign.gc-candidate-manifest.v1\0"
 //! candidate_count:u64be
 //! repeated candidate_count times in strict
 //! (backend, kind tag, schema version, digest) order:
@@ -44,8 +44,8 @@ use super::{
 
 const ROOT_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-root-manifest.v1\0";
 const ROOT_MANIFEST_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-root-manifest.v1";
-const CANDIDATE_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-candidate-manifest.v2\0";
-const CANDIDATE_MANIFEST_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-candidate-manifest.v2";
+const CANDIDATE_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-candidate-manifest.v1\0";
+const CANDIDATE_MANIFEST_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-candidate-manifest.v1";
 const MAX_CONTENT_ID_BYTES: usize = 128;
 
 /// Maximum number of roots or physical placements in one local manifest.

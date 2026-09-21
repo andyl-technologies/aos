@@ -627,6 +627,8 @@ fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignService
         | CampaignLocalServiceError::StoreMaintenanceUnavailable
         | CampaignLocalServiceError::HotForkRetention(_)
         | CampaignLocalServiceError::CampaignTransfer(_)
+        | CampaignLocalServiceError::DebugSessionInventory(_)
+        | CampaignLocalServiceError::DebugSessionRecovery(_)
         | CampaignLocalServiceError::StoreMaintenancePanicked
         | CampaignLocalServiceError::InvalidPolicyFile
         | CampaignLocalServiceError::InvalidComponentAuthorityFile

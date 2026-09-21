@@ -1128,13 +1128,23 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
         .unwrap_or_else(|| panic!("typed fault frontier should exist"));
     assert_eq!(frontier.configuration, parent);
     assert_eq!(frontier.at, VirtualTime { ticks: 37 });
-    assert_eq!(frontier.choices.decisions().len(), 2);
-    for (index, decision) in frontier.choices.decisions().iter().enumerate() {
-        let Decision::Override(decision) = decision else {
-            panic!("fault search candidate must remain an override decision");
+    assert_eq!(frontier.choices.choices().len(), 2);
+    for (index, branch) in frontier.choices.choices().iter().enumerate() {
+        let [Decision::Selection(selection), Decision::Override(decision)] = branch.decisions()
+        else {
+            panic!("fault search candidate must retain its typed selection and causal override");
         };
+        assert!(selection.is_campaign_branch());
+        let selection = selection
+            .selection()
+            .unwrap_or_else(|error| panic!("fault search selection should decode: {error}"));
+        assert_eq!(
+            selection.value(),
+            &crucible_campaign::ChoiceValue::Boolean(index == 1)
+        );
+
         let (id, search_override) = SearchOverride::from_override_decision(decision)
-            .unwrap_or_else(|| panic!("fault search candidate should decode"));
+            .unwrap_or_else(|| panic!("fault search candidate override should decode"));
         assert_eq!(id, choice.id);
         assert_eq!(search_override.candidate_index, index as u32);
         assert_eq!(search_override.parent_branch, Some(parent.id()));

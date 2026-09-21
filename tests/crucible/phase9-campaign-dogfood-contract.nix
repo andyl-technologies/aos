@@ -28,7 +28,7 @@
     requiredOperations;
   valid =
     contract.schema
-    == "aos.crucible.campaign-dogfood-contract.v1"
+    == "aos.crucible.campaign-dogfood-contract.v2"
     && contract.gate == "gate:campaign-dogfood"
     && contract.acceptance_state == "manual-evidence-required"
     && contract.actual_product_workload_required
@@ -42,7 +42,10 @@
     && contract.command_journal.redacts_secrets
     && missingOperations == []
     && contract.scale.required
-    && contract.scale.minimum_executions >= 10000
+    && !(contract.scale ? minimum_executions)
+    && contract.scale.minimum_hot_children >= 10000
+    && contract.scale.minimum_promoted_template_generations >= 3
+    && contract.scale.minimum_admitted_attempts >= 1000000
     && contract.scale.exercises_backpressure
     && contract.scale.exercises_resource_pressure
     && contract.resource_audit.required
@@ -76,7 +79,9 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             minimum_duration_hours=24
             release_candidate_duration_hours=72
-            minimum_executions=10000
+            minimum_hot_children=10000
+            minimum_promoted_template_generations=3
+            minimum_admitted_attempts=1000000
             manual_evidence=required
             acceptance=not-evaluated
             RESULT

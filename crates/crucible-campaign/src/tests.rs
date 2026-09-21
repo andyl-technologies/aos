@@ -631,6 +631,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     };
     let terminal_bytes = terminal.canonical_bytes();
     assert_eq!(&terminal_bytes[..4], &14_u32.to_be_bytes());
+    assert_eq!(terminal_bytes[4], 9);
     assert_eq!(
         CampaignFact::from_canonical_bytes(&terminal_bytes).expect("terminal closure fact"),
         terminal
@@ -648,6 +649,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         &credited.canonical_bytes()[..std::mem::size_of::<u32>()],
         &14_u32.to_be_bytes()
     );
+    assert_eq!(credited.canonical_bytes()[4], 11);
     let credited_envelope = ObjectEnvelope::for_fact(&credited).expect("credited fact envelope");
     assert_eq!(credited_envelope.content_id().schema_version(), 14);
     assert_eq!(
@@ -670,6 +672,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         &pin.canonical_bytes()[..std::mem::size_of::<u32>()],
         &14_u32.to_be_bytes()
     );
+    assert_eq!(pin.canonical_bytes()[4], 12);
     let pin_envelope = ObjectEnvelope::for_fact(&pin).expect("pin fact envelope");
     assert_eq!(pin_envelope.content_id().schema_version(), 14);
     assert_eq!(pin_envelope.children().len(), 1);
@@ -698,6 +701,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         &branch.canonical_bytes()[..std::mem::size_of::<u32>()],
         &14_u32.to_be_bytes()
     );
+    assert_eq!(branch.canonical_bytes()[4], 14);
     let branch_envelope = ObjectEnvelope::for_fact(&branch).expect("branch acceptance envelope");
     assert_eq!(branch_envelope.content_id().schema_version(), 14);
     assert_eq!(branch_envelope.children().len(), 1);
@@ -1566,19 +1570,19 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let first = vec![0x10, 0x20];
     let second = vec![0x30, 0x40];
     let changed = vec![0x30, 0x41];
-    let ordered = AttemptContinuationInput::scheduler_overrides(
+    let ordered = AttemptContinuationInput::scheduler_selections(
         source_observation,
         17,
         vec![first.clone(), second.clone()],
     )
     .expect("ordered override input");
-    let reordered = AttemptContinuationInput::scheduler_overrides(
+    let reordered = AttemptContinuationInput::scheduler_selections(
         source_observation,
         17,
         vec![second.clone(), first.clone()],
     )
     .expect("reordered override input");
-    let changed_value = AttemptContinuationInput::scheduler_overrides(
+    let changed_value = AttemptContinuationInput::scheduler_selections(
         source_observation,
         17,
         vec![first.clone(), changed],
@@ -1612,35 +1616,39 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     );
 
     assert!(matches!(
-        AttemptContinuationInput::scheduler_overrides(source_observation, 17, Vec::new()),
+        AttemptContinuationInput::scheduler_selections(source_observation, 17, Vec::new()),
         Err(CampaignCodecError::InvalidValue {
-            reason: "attempt continuation override set is empty"
+            reason: "attempt continuation selection set is empty"
         })
     ));
     assert!(matches!(
-        AttemptContinuationInput::scheduler_overrides(
+        AttemptContinuationInput::scheduler_selections(
             source_observation,
             17,
             vec![first.clone(), first],
         ),
         Err(CampaignCodecError::InvalidValue {
-            reason: "attempt continuation override set contains a duplicate decision"
+            reason: "attempt continuation selection set contains a duplicate selection"
         })
     ));
     assert!(matches!(
-        AttemptContinuationInput::scheduler_overrides(
+        AttemptContinuationInput::scheduler_selections(
             source_observation,
             17,
             vec![vec![0; 1024 * 1024 + 1]],
         ),
         Err(CampaignCodecError::LimitExceeded {
-            limit: "attempt-continuation-override-item-bytes"
+            limit: "attempt-continuation-selection-item-bytes"
         })
     ));
     assert!(matches!(
-        AttemptContinuationInput::scheduler_overrides(source_observation, 17, vec![vec![0]; 4_097],),
+        AttemptContinuationInput::scheduler_selections(
+            source_observation,
+            17,
+            vec![vec![0]; 4_097],
+        ),
         Err(CampaignCodecError::LimitExceeded {
-            limit: "attempt-continuation-override-count"
+            limit: "attempt-continuation-selection-count"
         })
     ));
     assert_eq!(
@@ -1673,14 +1681,14 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
             start,
             path,
             StopCondition::Terminal,
-            AttemptContinuationInput::SchedulerOverrides {
+            AttemptContinuationInput::SchedulerSelections {
                 source_observation,
                 source_frontier_ticks: 17,
-                decisions: Vec::new(),
+                selections: Vec::new(),
             },
         ),
         Err(CampaignCodecError::InvalidValue {
-            reason: "attempt continuation override set is empty"
+            reason: "attempt continuation selection set is empty"
         })
     ));
 }

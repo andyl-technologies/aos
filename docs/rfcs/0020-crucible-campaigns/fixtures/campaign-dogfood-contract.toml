@@ -1,4 +1,4 @@
-schema = "aos.crucible.campaign-dogfood-contract.v1"
+schema = "aos.crucible.campaign-dogfood-contract.v2"
 gate = "gate:campaign-dogfood"
 rfc_section = "RFC-0020 sections 14.9 and 14.11"
 acceptance_state = "manual-evidence-required"
@@ -22,7 +22,9 @@ required_operations = ["start", "status", "watch", "steer", "pause", "archive-tr
 
 [scale]
 required = true
-minimum_executions = 10000
+minimum_hot_children = 10000
+minimum_promoted_template_generations = 3
+minimum_admitted_attempts = 1000000
 exercises_backpressure = true
 exercises_resource_pressure = true
 exercises_policy_revision = true

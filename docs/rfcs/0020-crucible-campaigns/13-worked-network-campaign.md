@@ -360,8 +360,10 @@ state across them.
 The operator creates and runs the campaign:
 
 ```text
-crucible campaign create network-recovery.campaign.toml
-crucible campaign run network-recovery --daemon
+crucible campaign create network-recovery \
+  --lineage network-recovery.lineage.bin \
+  --policy network-recovery.policy.bin \
+  --start-command "$START_COMMAND"
 crucible campaign status network-recovery
 ```
 

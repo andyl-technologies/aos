@@ -3,6 +3,8 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::io::{self, Read};
+#[cfg(feature = "destructive-recovery-faults")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crucible::SchedulerOperationalFailureClass;
 use crucible_api::{
@@ -32,6 +34,12 @@ const MAX_PRODUCTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PRODUCTION_PROMOTION_EVIDENCE_BYTES: u64 = 4 * 1024 * 1024;
 const PRODUCTION_OBJECT_IDENTITY_BYTES: u64 = 32;
 const REPLAY_ORACLE_EVIDENCE_MAGIC: &[u8] = b"crucible.production-replay-oracle.v1\0";
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+#[cfg(feature = "destructive-recovery-faults")]
+const EXACT_CAPTURE_ENOSPC_TRIGGER: &str = "crucible.destructive-recovery.exact-capture-enospc";
+#[cfg(feature = "destructive-recovery-faults")]
+static EXACT_CAPTURE_ENOSPC_INJECTED: AtomicBool = AtomicBool::new(false);
 
 trait ProductionExactCheckpointPublicationSource: Send + Sync {
     fn manifest(&self) -> &[u8];
@@ -695,6 +703,8 @@ impl ExactCheckpointStore {
             prepared.manifest_id,
             prepared.manifest_source.logical_length(),
         )?;
+        #[cfg(feature = "destructive-recovery-faults")]
+        inject_exact_capture_enospc()?;
         for placement in &prepared.objects {
             check_cancellation(prepared.cancellation.as_ref())?;
             let source = portable_object_handle(
@@ -958,6 +968,21 @@ impl ExactCheckpointStore {
     }
 }
 
+#[cfg(feature = "destructive-recovery-faults")]
+fn inject_exact_capture_enospc() -> Result<(), ExactCheckpointStoreError> {
+    let requested = std::env::var_os(DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT).as_deref()
+        == Some(std::ffi::OsStr::new(EXACT_CAPTURE_ENOSPC_TRIGGER));
+    if !requested || EXACT_CAPTURE_ENOSPC_INJECTED.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    Err(ExactCheckpointStoreError::Store(StoreError::Io {
+        operation: "fault-injected production exact-capture publication",
+        path: std::path::PathBuf::from("<fault-injected-exact-capture>"),
+        source: io::Error::from_raw_os_error(rustix::io::Errno::NOSPC.raw_os_error()),
+    }))
+}
+
 mod publication_format;
 
 use publication_format::*;
@@ -971,7 +996,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::Cursor;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
     use crucible_cas::content_store::{
@@ -1009,12 +1033,6 @@ mod tests {
 
     struct DurableMemoryBackend {
         memory: MemoryBlobBackend,
-    }
-
-    struct FailOnceDurableMemoryBackend {
-        memory: MemoryBlobBackend,
-        fail_on_put: AtomicUsize,
-        put_count: AtomicUsize,
     }
 
     struct ChangingProductionSource {
@@ -1061,16 +1079,6 @@ mod tests {
         }
     }
 
-    impl FailOnceDurableMemoryBackend {
-        fn new(fail_on_put: usize) -> Self {
-            Self {
-                memory: MemoryBlobBackend::new("faulting-production-root-test", 64 * 1024 * 1024),
-                fail_on_put: AtomicUsize::new(fail_on_put),
-                put_count: AtomicUsize::new(0),
-            }
-        }
-    }
-
     impl ImmutableBlobBackend for DurableMemoryBackend {
         fn name(&self) -> &str {
             "durable-production-root-test"
@@ -1102,62 +1110,6 @@ mod tests {
             id: ContentId,
             source: &BlobHandle,
         ) -> Result<PutReceipt, StoreError> {
-            let receipt = self.memory.put_if_absent(id, source)?;
-            Ok(PutReceipt {
-                id: receipt.id,
-                placements: vec![PlacementReceipt {
-                    backend: String::from(self.name()),
-                    durable: true,
-                    logical_length: source.logical_length(),
-                }],
-            })
-        }
-    }
-
-    impl ImmutableBlobBackend for FailOnceDurableMemoryBackend {
-        fn name(&self) -> &str {
-            "faulting-durable-production-root-test"
-        }
-
-        fn capabilities(&self) -> BackendCapabilities {
-            BackendCapabilities {
-                durable: true,
-                deferred_write: false,
-                range_read: true,
-                streaming_read: true,
-                conditional_create: true,
-                streaming_put: true,
-                repair_inventory: false,
-                planned_delete: false,
-            }
-        }
-
-        fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-            self.memory.contains(id)
-        }
-
-        fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
-            self.memory.read(id, range)
-        }
-
-        fn put_if_absent(
-            &self,
-            id: ContentId,
-            source: &BlobHandle,
-        ) -> Result<PutReceipt, StoreError> {
-            let put = self.put_count.fetch_add(1, Ordering::SeqCst) + 1;
-            if self
-                .fail_on_put
-                .compare_exchange(put, 0, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                return Err(StoreError::Io {
-                    operation: "faulting-production-put",
-                    path: std::path::PathBuf::from("<faulting-production-store>"),
-                    source: io::Error::from_raw_os_error(rustix::io::Errno::NOSPC.raw_os_error()),
-                });
-            }
-
             let receipt = self.memory.put_if_absent(id, source)?;
             Ok(PutReceipt {
                 id: receipt.id,
@@ -1250,15 +1202,57 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "destructive-recovery-faults")]
     #[test]
     fn production_exact_capture_enospc_restart_retries_root_last_publication() {
+        const CHILD_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_EXACT_CAPTURE_ENOSPC_CHILD";
+        const TEST_NAME: &str = "exact_checkpoint_store::production::tests::production_exact_capture_enospc_restart_retries_root_last_publication";
+
+        if std::env::var_os(CHILD_ENVIRONMENT).is_none() {
+            let child =
+                std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                    .arg("--exact")
+                    .arg(TEST_NAME)
+                    .arg("--nocapture")
+                    .env(CHILD_ENVIRONMENT, "1")
+                    .env(
+                        DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+                        EXACT_CAPTURE_ENOSPC_TRIGGER,
+                    )
+                    .output()
+                    .expect("run exact-capture ENOSPC child");
+            assert!(
+                child.status.success(),
+                "exact-capture ENOSPC child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr),
+            );
+            return;
+        }
+
         let source = memory_source(2);
         let production_identity = ContentHash::from_bytes(b"enospc production closure");
         let scenario = ContentHash::from_bytes(b"enospc production scenario");
         let configuration = ContentHash::from_bytes(b"enospc production configuration");
-        let backend = Arc::new(FailOnceDurableMemoryBackend::new(2));
+        let backend = Arc::new(DurableMemoryBackend::new());
         let store = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
             .expect("admit faulting production store");
+
+        EXACT_CAPTURE_ENOSPC_INJECTED.store(true, Ordering::SeqCst);
+        let prior_identity = ContentHash::from_bytes(b"prior durable production closure");
+        let prior = prepare_production_source(
+            Arc::new(memory_source(1)),
+            prior_identity,
+            ContentHash::from_bytes(b"prior durable production scenario"),
+            ContentHash::from_bytes(b"prior durable production configuration"),
+            64 * 1024 * 1024,
+        )
+        .expect("prepare prior production closure");
+        let prior_publication = store
+            .publish_production_closure(&prior)
+            .expect("publish prior production closure");
+        EXACT_CAPTURE_ENOSPC_INJECTED.store(false, Ordering::SeqCst);
+
         let prepared = prepare_production_source(
             Arc::new(source),
             production_identity,
@@ -1283,6 +1277,15 @@ mod tests {
                 .contains(prepared.root().content_id())
                 .expect("inspect unpublished production root")
         );
+        assert!(
+            backend
+                .contains(prepared.manifest_id)
+                .expect("inspect staged production manifest")
+        );
+        let retained_prior = store
+            .load_production_closure(prior_publication.root())
+            .expect("authenticate prior production closure after ENOSPC");
+        assert_eq!(retained_prior.production_identity(), prior_identity);
 
         drop(store);
         let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)

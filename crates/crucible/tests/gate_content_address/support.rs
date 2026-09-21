@@ -23,7 +23,8 @@ pub(super) fn checkpoint_with_search_frontier_choices(
         .as_ref()
         .expect("test checkpoint must be materialized");
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
         state.vm_snapshots.clone(),
         state.device_overlays.clone(),

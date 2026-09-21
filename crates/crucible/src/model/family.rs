@@ -867,8 +867,7 @@ impl ScenarioFamily {
     /// Samples and mutates concrete scenarios using event-log coverage feedback.
     ///
     /// Each iteration chooses one family parameter point, pins that point to a
-    /// concrete [`ScenarioDef`], and appends a schedule mutation encoded as
-    /// [`Decision::Override`]. Coverage influences only which deterministic
+    /// concrete [`ScenarioDef`], and appends a typed campaign selection. Coverage influences only which deterministic
     /// samples are explored and how the returned candidates are ordered; it never
     /// changes the reduced execution semantics of a candidate.
     ///

@@ -99,10 +99,7 @@ fn sampled_search_offset_localizes_bisection_sequence() -> Result<(), EngineErro
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("sampled-offset/decision"),
-        value: 42,
-    });
+    let decision = crate::test_support::typed_search_decision_for_test("sampled-offset/decision")?;
     let baked = baked_genesis_with_search_frontier(&world, vec![decision.clone()])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let child = try_step(&genesis, decision)?;
@@ -188,7 +185,8 @@ fn baked_genesis_with_search_frontier(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
         state.vm_snapshots.clone(),
         state.device_overlays.clone(),

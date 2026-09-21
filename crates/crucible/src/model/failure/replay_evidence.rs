@@ -258,6 +258,59 @@ impl FailureTriageReplayEvidence {
         Ok(value)
     }
 
+    /// Decodes evidence while reconstructing its finding from an authenticated reproduction.
+    ///
+    /// The compact replay evidence carries the discovery path and exact finding
+    /// binding. This entry point is for content-addressed owners, such as a
+    /// campaign repository, that retain the reproduction and fingerprint but do
+    /// not separately retain Crucible's native finding wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the evidence is malformed, the retained
+    /// fingerprint or reproduction disagrees with its binding, or the
+    /// reproduction cannot be replayed.
+    pub fn from_compact_binary_for_reproduction(
+        finding_fingerprint: ContentHash,
+        artifact: ReproductionArtifact,
+        bytes: &[u8],
+    ) -> Result<Self, EngineError> {
+        if bytes.len() > MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES {
+            return Err(scenario_serialization_error(
+                "failure triage replay evidence exceeds canonical size limit",
+            ));
+        }
+
+        let mut reader = ScenarioBinaryReader::new(bytes, FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC)?;
+        let discovery_path = decode_discovery_path(reader.read_u8()?)?;
+        let bound_fingerprint = reader.read_hash()?;
+        let bound_configuration = reader.read_hash()?;
+        let bound_artifact = reader.read_hash()?;
+        let configuration = Configuration {
+            def: artifact.scenario_def(),
+            schedule: artifact.schedule().clone(),
+        };
+        if bound_fingerprint != finding_fingerprint
+            || bound_configuration != configuration.id()
+            || bound_artifact != artifact.id()
+        {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-triage-replay-evidence",
+                reason: "replay evidence names another finding reproduction",
+            });
+        }
+        let replay = artifact.replay()?;
+        let finding = FindingReproductionArtifact {
+            discovery_path,
+            finding_fingerprint,
+            configuration: configuration.id(),
+            artifact,
+            replay,
+        };
+
+        Self::from_compact_binary(finding, bytes)
+    }
+
     /// Returns canonical bounded bytes for campaign retention.
     ///
     /// # Errors

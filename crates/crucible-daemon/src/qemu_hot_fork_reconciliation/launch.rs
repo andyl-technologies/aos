@@ -6,8 +6,8 @@
 
 use crucible_qemu::{
     DEFAULT_VMSTATE_NODE_NAME, QemuChildProcessContract, QemuHotForkChildFileDestination,
-    QemuLaunchResourceRequirements, QemuPreparedRunDirectory, QemuSpawnError,
-    QmpHotForkChildFileRoot, ROOT_DRIVE_ID,
+    QemuLaunchResourceRequirements, QemuNodeSetPreparedHotForkSource, QemuPreparedRunDirectory,
+    QemuSpawnError, QmpHotForkChildFileRoot, ROOT_DRIVE_ID,
 };
 
 use super::linux::LinuxQemuHotForkWorldLaunchSource;
@@ -92,9 +92,6 @@ where
 /// Failure to launch one child through an aggregate World resource owner.
 #[derive(Debug, Error)]
 pub enum LinuxQemuHotForkWorldAttemptLaunchFailure {
-    /// The aggregate target owner rejected reservation or launch access.
-    #[error("aggregate hot-fork World resource admission failed: {0}")]
-    Target(#[source] QemuVmRealizationError),
     /// QEMU rejected or failed the retained-template fork transaction.
     #[error(transparent)]
     Launch(#[from] QemuHotForkLaunchError),
@@ -156,9 +153,8 @@ enum SourceWorldChildLaunchError {
     },
 }
 
-fn fork_seal_and_rearm_source_world<G>(
-    source_world: &Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    source_node: &NodeId,
+fn fork_seal_and_rearm_prepared_source<G>(
+    source: &mut QemuNodeSetPreparedHotForkSource<'_>,
     run_directory: &mut QemuPreparedRunDirectory,
     launch_resources: QemuLaunchResourceRequirements,
     target: &mut G,
@@ -173,25 +169,8 @@ where
     G: crate::QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
 {
-    let mut world = source_world.lock().map_err(|_source| {
-        SourceWorldChildLaunchError::Fork(QemuHotForkLaunchError::Rejected {
-            source: QemuNodeChannelError::new(
-                "lock production hot-fork source world",
-                "source-world ownership lock is poisoned",
-            ),
-        })
-    })?;
-    let mut source = world.prepared_source(source_node).map_err(|error| {
-        SourceWorldChildLaunchError::Fork(QemuHotForkLaunchError::Rejected {
-            source: QemuNodeChannelError::new(
-                "authenticate production hot-fork source",
-                error.to_string(),
-            ),
-        })
-    })?;
-
     let mut launch = match fork_source_world_with_private_files(
-        &mut source,
+        source,
         run_directory,
         launch_resources,
         target,
@@ -349,120 +328,40 @@ where
     G: crate::QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>,
 {
-    /// Forks one node from a complete production source world.
-    ///
-    /// The complete lifecycle, source nodes, generation leases, run
-    /// directories, and run lock remain inside `source_world`. Success moves
-    /// this shared owner into the child reconciliation; callers may retain
-    /// clones for sibling launches, but cannot recover the lifecycle while any
-    /// child owns a strong reference. The sole nested lock order is aggregate
-    /// target then source world during the fork transaction. The process-
-    /// contract callback reads only the already-borrowed target guard.
+    /// Forks one already-authenticated source loan on a concurrent world worker.
     ///
     /// # Errors
     ///
-    /// Returns [`LinuxQemuHotForkSourceWorldAttemptLaunchError`] with the
-    /// complete source-world owner after source authentication, target
-    /// reservation, fork, or rollback failure. Explicit no-child rejection
-    /// rolls back the node reservation; ambiguous and post-fork failure
-    /// quarantine the aggregate target while retaining source-side stages.
-    pub fn launch_from_source_world(
+    /// Returns [`LinuxQemuHotForkSourceWorldAttemptLaunchError`] when child
+    /// launch, source rollback, or ownership transfer cannot complete.
+    pub fn launch_from_prepared_source(
         source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
         source_node: NodeId,
-        target: &mut QemuHotForkWorldResourceOwner<G>,
-        node_generation: ProductionVmNodeGeneration,
+        mut source: QemuNodeSetPreparedHotForkSource<'_>,
+        mut target: QemuHotForkWorldNodeTarget<G>,
+        mut run_directory: QemuPreparedRunDirectory,
         world_assembly: QemuHotForkWorldAssemblyToken,
     ) -> Result<Self, LinuxQemuHotForkSourceWorldAttemptLaunchError> {
-        let source_error = |operation: &'static str, message: String| {
-            LinuxQemuHotForkSourceWorldAttemptLaunchError {
-                source: Box::new(LinuxQemuHotForkWorldAttemptLaunchFailure::Target(
-                    QemuVmRealizationError::Executor { operation, message },
-                )),
-                owner: Box::new(LinuxQemuHotForkSourceWorldFailureOwner::new(
-                    Arc::clone(&source_world),
-                    None,
-                    None,
-                    false,
-                )),
-            }
-        };
-        if node_generation.node() != &source_node {
-            return Err(source_error(
-                "bind production hot-fork source generation",
-                format!(
-                    "source node `{}` differs from target generation node `{}`",
-                    source_node.name,
-                    node_generation.node().name
-                ),
-            ));
-        }
-        let (configuration, event_log, launch_resources) = {
-            let mut world = source_world.lock().map_err(|_source| {
-                source_error(
-                    "lock production hot-fork source world",
-                    String::from("source-world ownership lock is poisoned"),
-                )
-            })?;
-            let source = world.prepared_source(&source_node).map_err(|error| {
-                source_error("authenticate production hot-fork source", error.to_string())
-            })?;
-            (
-                source.configuration(),
-                source.fork_event_log(),
-                source.launch_resources(),
-            )
-        };
-        let node_target = match target.reserve_node(node_generation) {
-            Ok(node_target) => node_target,
-            Err(source) => {
-                return Err(LinuxQemuHotForkSourceWorldAttemptLaunchError {
-                    source: Box::new(LinuxQemuHotForkWorldAttemptLaunchFailure::Target(source)),
-                    owner: Box::new(LinuxQemuHotForkSourceWorldFailureOwner::new(
-                        source_world,
-                        None,
-                        None,
-                        false,
-                    )),
-                });
-            }
-        };
-        let launched = target.with_guard_mut(|guard| {
-            let mut run_directory = guard
-                .prepare_generation_run_directory(launch_resources)
-                .map_err(|source| QemuHotForkLaunchError::Rejected {
-                    source: QemuNodeChannelError::new(
-                        "prepare aggregate target hot-fork run directory",
-                        source.to_string(),
-                    ),
-                })?;
-            let launch = fork_seal_and_rearm_source_world(
-                &source_world,
-                &source_node,
-                &mut run_directory,
-                launch_resources,
-                guard,
-            );
-            Ok((launch, run_directory))
-        });
-        let (launch, detached_resources, run_directory) = match launched {
-            Ok(Ok((Ok((launch, detached_resources)), run_directory))) => {
-                (launch, detached_resources, run_directory)
-            }
-            Ok(Ok((
-                Err(SourceWorldChildLaunchError::Fork(
-                    source @ QemuHotForkLaunchError::Rejected { .. },
-                )),
-                run_directory,
-            ))) => {
-                let failure = match node_target.abort_without_child() {
+        let configuration = source.configuration();
+        let event_log = source.fork_event_log();
+        let launch_resources = source.launch_resources();
+        let launched = fork_seal_and_rearm_prepared_source(
+            &mut source,
+            &mut run_directory,
+            launch_resources,
+            &mut target,
+        );
+        let (launch, detached_resources) = match launched {
+            Ok(launched) => launched,
+            Err(SourceWorldChildLaunchError::Fork(
+                source @ QemuHotForkLaunchError::Rejected { .. },
+            )) => {
+                let failure = match target.abort_without_child() {
                     Ok(()) => LinuxQemuHotForkWorldAttemptLaunchFailure::Launch(source),
-                    Err(rollback) => {
-                        target.quarantine();
-                        LinuxQemuHotForkWorldAttemptLaunchFailure::RejectedRollback {
-                            launch: source,
-                            rollback,
-                        }
-                    }
+                    Err(rollback) => LinuxQemuHotForkWorldAttemptLaunchFailure::RejectedRollback {
+                        launch: source,
+                        rollback,
+                    },
                 };
                 return Err(LinuxQemuHotForkSourceWorldAttemptLaunchError {
                     source: Box::new(failure),
@@ -474,9 +373,8 @@ where
                     )),
                 });
             }
-            Ok(Ok((Err(SourceWorldChildLaunchError::Fork(source)), run_directory))) => {
-                let mut node_target = node_target;
-                crate::QemuAttemptResourceGuard::quarantine(&mut node_target);
+            Err(SourceWorldChildLaunchError::Fork(source)) => {
+                crate::QemuAttemptResourceGuard::quarantine(&mut target);
                 return Err(LinuxQemuHotForkSourceWorldAttemptLaunchError {
                     source: Box::new(LinuxQemuHotForkWorldAttemptLaunchFailure::Launch(source)),
                     owner: Box::new(LinuxQemuHotForkSourceWorldFailureOwner::new(
@@ -487,12 +385,8 @@ where
                     )),
                 });
             }
-            Ok(Ok((
-                Err(SourceWorldChildLaunchError::ChildFileSeal { source, launch }),
-                run_directory,
-            ))) => {
-                let mut node_target = node_target;
-                crate::QemuAttemptResourceGuard::quarantine(&mut node_target);
+            Err(SourceWorldChildLaunchError::ChildFileSeal { source, launch }) => {
+                crate::QemuAttemptResourceGuard::quarantine(&mut target);
                 return Err(LinuxQemuHotForkSourceWorldAttemptLaunchError {
                     source: Box::new(LinuxQemuHotForkWorldAttemptLaunchFailure::ChildFileSeal(
                         source,
@@ -505,12 +399,8 @@ where
                     )),
                 });
             }
-            Ok(Ok((
-                Err(SourceWorldChildLaunchError::SourceRearm { source, launch }),
-                run_directory,
-            ))) => {
-                let mut node_target = node_target;
-                crate::QemuAttemptResourceGuard::quarantine(&mut node_target);
+            Err(SourceWorldChildLaunchError::SourceRearm { source, launch }) => {
+                crate::QemuAttemptResourceGuard::quarantine(&mut target);
                 return Err(LinuxQemuHotForkSourceWorldAttemptLaunchError {
                     source: Box::new(LinuxQemuHotForkWorldAttemptLaunchFailure::SourceRearm(
                         source,
@@ -520,66 +410,6 @@ where
                         Some(run_directory),
                         Some(*launch),
                         true,
-                    )),
-                });
-            }
-            Ok(Err(source @ QemuHotForkLaunchError::Rejected { .. })) => {
-                let failure = match node_target.abort_without_child() {
-                    Ok(()) => LinuxQemuHotForkWorldAttemptLaunchFailure::Launch(source),
-                    Err(rollback) => {
-                        target.quarantine();
-                        LinuxQemuHotForkWorldAttemptLaunchFailure::RejectedRollback {
-                            launch: source,
-                            rollback,
-                        }
-                    }
-                };
-                return Err(LinuxQemuHotForkSourceWorldAttemptLaunchError {
-                    source: Box::new(failure),
-                    owner: Box::new(LinuxQemuHotForkSourceWorldFailureOwner::new(
-                        source_world,
-                        None,
-                        None,
-                        false,
-                    )),
-                });
-            }
-            Ok(Err(source)) => {
-                let mut node_target = node_target;
-                crate::QemuAttemptResourceGuard::quarantine(&mut node_target);
-                return Err(LinuxQemuHotForkSourceWorldAttemptLaunchError {
-                    source: Box::new(LinuxQemuHotForkWorldAttemptLaunchFailure::Launch(source)),
-                    owner: Box::new(LinuxQemuHotForkSourceWorldFailureOwner::new(
-                        source_world,
-                        None,
-                        None,
-                        true,
-                    )),
-                });
-            }
-            Err(source) => {
-                let rollback = node_target.abort_without_child();
-                let failure = match rollback {
-                    Ok(()) => LinuxQemuHotForkWorldAttemptLaunchFailure::Target(source),
-                    Err(rollback) => {
-                        target.quarantine();
-                        LinuxQemuHotForkWorldAttemptLaunchFailure::Target(
-                            QemuVmRealizationError::Executor {
-                                operation: "roll back aggregate hot-fork target reservation",
-                                message: format!(
-                                    "launch access failed: {source}; rollback failed: {rollback}"
-                                ),
-                            },
-                        )
-                    }
-                };
-                return Err(LinuxQemuHotForkSourceWorldAttemptLaunchError {
-                    source: Box::new(failure),
-                    owner: Box::new(LinuxQemuHotForkSourceWorldFailureOwner::new(
-                        source_world,
-                        None,
-                        None,
-                        false,
                     )),
                 });
             }
@@ -594,7 +424,7 @@ where
                     event_log,
                 },
                 world_assembly,
-                node_target,
+                target,
                 launch,
                 detached_resources,
                 run_directory,
@@ -602,7 +432,3 @@ where
         ))
     }
 }
-
-#[cfg(test)]
-#[path = "launch/tests.rs"]
-mod tests;

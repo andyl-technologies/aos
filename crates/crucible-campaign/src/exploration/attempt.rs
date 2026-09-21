@@ -5,8 +5,8 @@ use super::*;
 /// Modeled scheduler control applied when continuing an authenticated boundary.
 ///
 /// The campaign layer owns the closed control shape and its resource bounds.
-/// An executor that recognizes the override form must additionally decode each
-/// decision with its scheduler schema and reject unsupported decision kinds.
+/// An executor must additionally decode each selection with its scheduler
+/// schema and reject unsupported choice producers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AttemptContinuationInput {
     /// Re-seeds post-boundary deterministic decision streams.
@@ -18,14 +18,14 @@ pub enum AttemptContinuationInput {
         /// Complete deterministic stream seed.
         seed: [u8; 32],
     },
-    /// Applies an ordered, finite set of recorded scheduler overrides.
-    SchedulerOverrides {
+    /// Applies an ordered, finite set of recorded scheduler selections.
+    SchedulerSelections {
         /// Canonical observation proving the selected source boundary.
         source_observation: ObservationId,
-        /// Exact scheduler frontier where override matching begins.
+        /// Exact scheduler frontier where selection matching begins.
         source_frontier_ticks: u64,
-        /// Canonical scheduler decision records in requested order.
-        decisions: Vec<Vec<u8>>,
+        /// Canonical scheduler selection records in requested order.
+        selections: Vec<Vec<u8>>,
     },
 }
 
@@ -44,22 +44,22 @@ impl AttemptContinuationInput {
         }
     }
 
-    /// Builds a bounded ordered scheduler-override input.
+    /// Builds a bounded ordered scheduler-selection input.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the set is empty, contains duplicate
     /// records, or exceeds the fixed count, item, or aggregate byte bounds.
-    pub fn scheduler_overrides(
+    pub fn scheduler_selections(
         source_observation: ObservationId,
         source_frontier_ticks: u64,
-        decisions: Vec<Vec<u8>>,
+        selections: Vec<Vec<u8>>,
     ) -> Result<Self, CampaignCodecError> {
-        validate_continuation_override_decisions(&decisions)?;
-        Ok(Self::SchedulerOverrides {
+        validate_continuation_selections(&selections)?;
+        Ok(Self::SchedulerSelections {
             source_observation,
             source_frontier_ticks,
-            decisions,
+            selections,
         })
     }
 
@@ -70,7 +70,7 @@ impl AttemptContinuationInput {
             Self::SchedulerReseed {
                 source_observation, ..
             }
-            | Self::SchedulerOverrides {
+            | Self::SchedulerSelections {
                 source_observation, ..
             } => *source_observation,
         }
@@ -84,7 +84,7 @@ impl AttemptContinuationInput {
                 source_frontier_ticks,
                 ..
             }
-            | Self::SchedulerOverrides {
+            | Self::SchedulerSelections {
                 source_frontier_ticks,
                 ..
             } => *source_frontier_ticks,
@@ -94,8 +94,8 @@ impl AttemptContinuationInput {
     fn validate(&self) -> Result<(), CampaignCodecError> {
         match self {
             Self::SchedulerReseed { .. } => Ok(()),
-            Self::SchedulerOverrides { decisions, .. } => {
-                validate_continuation_override_decisions(decisions)
+            Self::SchedulerSelections { selections, .. } => {
+                validate_continuation_selections(selections)
             }
         }
     }
@@ -114,15 +114,15 @@ impl Canonical for AttemptContinuationInput {
                 encoder.u64(*source_frontier_ticks);
                 encoder.fixed(seed);
             }
-            Self::SchedulerOverrides {
+            Self::SchedulerSelections {
                 source_observation,
                 source_frontier_ticks,
-                decisions,
+                selections,
             } => {
                 encoder.u8(1);
                 source_observation.encode(encoder);
                 encoder.u64(*source_frontier_ticks);
-                decisions.encode(encoder);
+                selections.encode(encoder);
             }
         }
     }
@@ -138,20 +138,20 @@ impl Canonical for AttemptContinuationInput {
                 let source_observation = ObservationId::decode(decoder)?;
                 let source_frontier_ticks = decoder.u64()?;
                 let mut aggregate_bytes = 0;
-                let decisions = decoder.sequence_bounded(
-                    MAX_CONTINUATION_OVERRIDE_DECISIONS,
-                    "attempt-continuation-override-count",
+                let selections = decoder.sequence_bounded(
+                    MAX_CONTINUATION_SELECTIONS,
+                    "attempt-continuation-selection-count",
                     |decoder| {
                         decoder.byte_sequence_bounded_charged(
-                            MAX_CONTINUATION_OVERRIDE_DECISION_BYTES,
-                            "attempt-continuation-override-item-bytes",
+                            MAX_CONTINUATION_SELECTION_BYTES,
+                            "attempt-continuation-selection-item-bytes",
                             &mut aggregate_bytes,
-                            MAX_CONTINUATION_OVERRIDE_BYTES,
-                            "attempt-continuation-override-aggregate-bytes",
+                            MAX_CONTINUATION_SELECTION_BYTES_TOTAL,
+                            "attempt-continuation-selection-aggregate-bytes",
                         )
                     },
                 )?;
-                Self::scheduler_overrides(source_observation, source_frontier_ticks, decisions)
+                Self::scheduler_selections(source_observation, source_frontier_ticks, selections)
             }
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "attempt-continuation-input",
@@ -161,41 +161,39 @@ impl Canonical for AttemptContinuationInput {
     }
 }
 
-fn validate_continuation_override_decisions(
-    decisions: &[Vec<u8>],
-) -> Result<(), CampaignCodecError> {
-    if decisions.is_empty() {
+fn validate_continuation_selections(selections: &[Vec<u8>]) -> Result<(), CampaignCodecError> {
+    if selections.is_empty() {
         return Err(CampaignCodecError::InvalidValue {
-            reason: "attempt continuation override set is empty",
+            reason: "attempt continuation selection set is empty",
         });
     }
-    if decisions.len() > MAX_CONTINUATION_OVERRIDE_DECISIONS {
+    if selections.len() > MAX_CONTINUATION_SELECTIONS {
         return Err(CampaignCodecError::LimitExceeded {
-            limit: "attempt-continuation-override-count",
+            limit: "attempt-continuation-selection-count",
         });
     }
 
     let mut aggregate_bytes = 0usize;
     let mut unique = BTreeSet::new();
-    for decision in decisions {
-        if decision.len() > MAX_CONTINUATION_OVERRIDE_DECISION_BYTES {
+    for selection in selections {
+        if selection.len() > MAX_CONTINUATION_SELECTION_BYTES {
             return Err(CampaignCodecError::LimitExceeded {
-                limit: "attempt-continuation-override-item-bytes",
+                limit: "attempt-continuation-selection-item-bytes",
             });
         }
-        aggregate_bytes = aggregate_bytes.checked_add(decision.len()).ok_or(
+        aggregate_bytes = aggregate_bytes.checked_add(selection.len()).ok_or(
             CampaignCodecError::LimitExceeded {
-                limit: "attempt-continuation-override-aggregate-bytes",
+                limit: "attempt-continuation-selection-aggregate-bytes",
             },
         )?;
-        if aggregate_bytes > MAX_CONTINUATION_OVERRIDE_BYTES {
+        if aggregate_bytes > MAX_CONTINUATION_SELECTION_BYTES_TOTAL {
             return Err(CampaignCodecError::LimitExceeded {
-                limit: "attempt-continuation-override-aggregate-bytes",
+                limit: "attempt-continuation-selection-aggregate-bytes",
             });
         }
-        if !unique.insert(decision) {
+        if !unique.insert(selection) {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "attempt continuation override set contains a duplicate decision",
+                reason: "attempt continuation selection set contains a duplicate selection",
             });
         }
     }
