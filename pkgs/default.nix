@@ -515,6 +515,7 @@
           stdenv.coreutils
           stdenv.tar
           stdenv.gzip
+          resolvedBuildPackages.xz
           stdenv.bash
         ];
         # Packaged fetch tools resolve their own runtime libraries. Retain an
