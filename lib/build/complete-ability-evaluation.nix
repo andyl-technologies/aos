@@ -78,8 +78,11 @@
     authenticatedPackageModules,
     authenticatedProviderModules ? [],
     configurationModules ? [],
+    enableAbilitySelection ? true,
+    selectionBindings ? selectionModule.bindings,
     selectionModule ? {
       module = {};
+      bindings = {};
       requests = {};
       requirements = {};
     },
@@ -94,11 +97,12 @@
       inherit pkgs lib operatorModules runtimeModules;
       packageModules = authenticatedPackageModules;
       selectedProviderModules = authenticatedProviderModules;
-      enableAbilitySelection = true;
+      inherit enableAbilitySelection;
       specialArgs =
         moduleSpecialArgs
         // {
           abilityResolution = {
+            bindings = selectionBindings;
             requests = selectionModule.requests;
             requirements = selectionModule.requirements;
           };
@@ -117,9 +121,11 @@
         packageModules,
         providerModules,
         selectionModule,
+        enableAbilitySelection,
+        selectionBindings,
       }:
         evaluateCompleteConfiguration {
-          inherit environment configurationModules selectionModule;
+          inherit environment configurationModules selectionModule enableAbilitySelection selectionBindings;
           authenticatedPackageModules = packageModules;
           authenticatedProviderModules = providerModules;
         };

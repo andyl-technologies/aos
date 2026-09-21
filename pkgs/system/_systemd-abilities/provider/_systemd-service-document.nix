@@ -3,6 +3,7 @@
   lib,
   serviceFacets,
   unitNameForReference,
+  resolvePlanningOutput,
 }: let
   providerLib = import ./_systemd-service-provider-lib.nix {inherit lib;};
   semantic = import ./_systemd-unit-document.nix {inherit lib;};
@@ -265,7 +266,7 @@
         builtins.filter (mount: mount.access == access) providerOwned
       );
     standardDirectory = mount: let
-      source = mount.source;
+      source = resolvePlanningOutput mount.source;
       literalSource =
         if builtins.isString source
         then source

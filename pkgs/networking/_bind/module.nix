@@ -8,6 +8,7 @@
   inherit (lib.abilities) resultOf;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceListener = lib.abilities.interfaces.serviceListener;
   serviceTypes = serviceManagement.types;
 
   port = abilityTypes.integer {
@@ -68,6 +69,32 @@
   statePath = resultOf "state-storage" "planned-path";
   runtimePath = resultOf "runtime-storage" "planned-path";
   configurationPath = resultOf "server-configuration" "planned-path";
+  listenerEndpoints = [
+    {
+      transport = "tcp";
+      inherit (cfg) port;
+    }
+    {
+      transport = "udp";
+      inherit (cfg) port;
+    }
+  ];
+  listenerRequestKey = endpoint: "listener-${serviceListener.slotFor endpoint}";
+  listenerRequests = builtins.listToAttrs (builtins.map (endpoint: {
+      name = listenerRequestKey endpoint;
+      value = {
+        requirement = "listener-claim";
+        consumer = "service";
+        scope = ["listener" (serviceListener.slotFor endpoint)];
+        parameters = endpoint;
+      };
+    })
+    listenerEndpoints);
+  listenerPrerequisites =
+    builtins.map (
+      endpoint: resultOf (listenerRequestKey endpoint) "resource"
+    )
+    listenerEndpoints;
 
   stateStorage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {
     name = "state";
@@ -125,16 +152,7 @@
     };
   };
   ingress = producer "dns-ingress" lib.abilities.interfaces.networkPolicy.interfaces.ingress {
-    endpoints = [
-      {
-        transport = "tcp";
-        inherit (cfg) port;
-      }
-      {
-        transport = "udp";
-        inherit (cfg) port;
-      }
-    ];
+    endpoints = listenerEndpoints;
     prerequisites = [(resultOf "network-readiness" "resource")];
   };
   service = serviceManagement.forService {
@@ -200,7 +218,7 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        prerequisites = [(resultOf "dns-ingress" "resource")];
+        prerequisites = [(resultOf "dns-ingress" "resource")] ++ listenerPrerequisites;
         after = [];
         before = [];
         requires = [];
@@ -218,6 +236,7 @@
       reload = {
         strategy = "command";
         commands = [(command "sbin/rndc" ["reload"])];
+        completion = "command-exit";
       };
       configuration.views = [
         {
@@ -321,11 +340,31 @@ in {
           message = "BIND must listen on at least one IPv4 or IPv6 address";
         }
       ];
-      aos.abilities = lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions);
+      aos.abilities = lib.mkMerge (
+        [
+          {
+            requirementTemplates.listener-claim = {
+              interface = serviceListener.interface.identity.name;
+              inherit (serviceListener.interface.identity) abi descriptor;
+              description = "Requires exclusive ownership of each host listener used by named.";
+              methods = ["observe"];
+              guarantees = [];
+              strength = "required";
+              fallback = null;
+            };
+          }
+        ]
+        ++ builtins.map (contribution: contribution.declarations) contributions
+      );
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
-        [{instances.service = {};}]
+        [
+          {
+            instances.service = {};
+            requests = listenerRequests;
+          }
+        ]
         ++ builtins.map (contribution: contribution.configured) contributions
       );
       aos.contributions.runtimeChecks.bind = {

@@ -658,7 +658,7 @@
       resources;
     };
 
-  resolveReference = planningOutputs: value:
+  resolvePlanningOutput = planningOutputs: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then let
       output =
@@ -666,14 +666,16 @@
         or (throw "systemd provider cannot resolve ${value.request}.${value.output}");
     in
       if output.phase != "planning"
-      then throw "systemd dependency ${value.request}.${value.output} is not a planning output"
-      else if !lib.abilities.types.resolvedResourceReference.check output.value
-      then throw "systemd dependency ${value.request}.${value.output} is not a ResourceReference"
+      then throw "systemd provider output ${value.request}.${value.output} is not available during planning"
       else output.value
-    else if
-      lib.abilities.types.resourceReference.check value
-      || lib.abilities.types.resolvedResourceReference.check value
-    then value
+    else value;
+  resolveReference = planningOutputs: value: let
+    resolved = resolvePlanningOutput planningOutputs value;
+  in
+    if
+      lib.abilities.types.resourceReference.check resolved
+      || lib.abilities.types.resolvedResourceReference.check resolved
+    then resolved
     else throw "systemd dependency is not an exact ResourceReference";
 
   resourceIdentity =
@@ -866,15 +868,16 @@
         observation_schema = observationSchemaFor selected;
       })
       serviceImplementationNames);
-  serviceRendererFor = resolver:
+  serviceRendererFor = planningOutputs: resolver:
     import ./_systemd-service-document.nix {
       inherit lib serviceFacets;
       unitNameForReference = resolver;
+      resolvePlanningOutput = resolvePlanningOutput planningOutputs;
     };
   unitIdentityForPlannedResource = planningOutputs: allResources: resource:
     if resource.kind == "aos.service.instance"
     then
-      (serviceRendererFor (optionalUnitIdentityForPlannedReference planningOutputs allResources))
+      (serviceRendererFor planningOutputs (optionalUnitIdentityForPlannedReference planningOutputs allResources))
       .serviceIdentityFor
       (builtins.removeAttrs resource ["controller"])
     else if resource.kind == "aos.systemd.packaged-unit"
@@ -943,7 +946,7 @@
       if selectedBindings == []
       then throw "systemd service controller has no selected binding"
       else (builtins.head selectedBindings).providerInstance;
-    serviceRenderer = serviceRendererFor (optionalUnitIdentityForPlannedReference planningOutputs allResources);
+    serviceRenderer = serviceRendererFor planningOutputs (optionalUnitIdentityForPlannedReference planningOutputs allResources);
   in
     if !builtins.all (binding: binding.providerInstance == providerInstance) selectedBindings
     then throw "systemd service controller received several provider instances"

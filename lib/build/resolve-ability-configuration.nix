@@ -35,7 +35,7 @@
         inherit (selection) instances bindings;
       };
     };
-    inherit (selection) requests requirements;
+    inherit (selection) bindings requests requirements;
   };
   mergeSelection = selection: additions: {
     instances = selection.instances // additions.instances;
@@ -55,9 +55,17 @@
     round ? 0,
   }: let
     selectionModule = selectionModuleFor selection;
-    packageEvaluation = evaluate {
+    bindingEvaluation = evaluate {
       inherit packageModules selectionModule;
       providerModules = [];
+      enableAbilitySelection = false;
+      selectionBindings = {};
+    };
+    selectionBindings = forceBindings bindingEvaluation.config.aos.abilities.bindings;
+    packageEvaluation = evaluate {
+      inherit packageModules selectionModule selectionBindings;
+      providerModules = [];
+      enableAbilitySelection = true;
     };
     bindings = forceBindings packageEvaluation.config.aos.abilities.bindings;
     providerModules =
@@ -66,7 +74,8 @@
       packageEvaluation.config.aos.abilities
       bindings;
     uncheckedEvaluation = evaluate {
-      inherit packageModules providerModules selectionModule;
+      inherit packageModules providerModules selectionModule selectionBindings;
+      enableAbilitySelection = true;
     };
     evaluation =
       builtins.seq

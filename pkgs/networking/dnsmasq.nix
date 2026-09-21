@@ -148,8 +148,11 @@ in
       evaluated = mkSystem {
         systemName = "dnsmasq-package-check";
         modules = [
+          ../../systems/_artifact-backend.nix
+          ../../systems/_base-packages.nix
+          ../../systems/_system-manager.nix
           {
-            environment.systemPackages = [self];
+            aos.kernel.packageRoot = pkgs.linux;
             aos.services.dnsmasq = {
               enable = true;
               port = 5353;
@@ -172,6 +175,7 @@ in
         && self.abilities ? requirementTemplates
         && self.abilities ? guarantees
         && !(self.abilities ? contract)
+        && builtins.hasAttr "listener-claim" self.abilities.requirementTemplates
         && builtins.hasAttr "network-ingress-policy" self.abilities.requirementTemplates
         && builtins.all (assertion: assertion.assertion) evaluated.config.assertions
         && configuration.kind == "interpolated-text"
@@ -194,7 +198,12 @@ in
         && builtins.map
         (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
         dependencies.prerequisites
-        == [(expectedRequestOutput "network-ingress" "resource")]
+        == [
+          (expectedRequestOutput "listener-tcp-5353" "resource")
+          (expectedRequestOutput "listener-udp-5353" "resource")
+          (expectedRequestOutput "listener-udp-67" "resource")
+          (expectedRequestOutput "network-ingress" "resource")
+        ]
         && dependencies.after == []
         && dependencies.requires == [];
     in {

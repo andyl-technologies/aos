@@ -331,6 +331,7 @@
         // {
           inherit initrdAbilityEvaluation initrdStaticContract;
           abilityResolution = {
+            bindings = hostAbilityBindings;
             requests = hostAbilityRequests;
             requirements = hostAbilityRequirements;
           };
