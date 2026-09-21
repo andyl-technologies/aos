@@ -5,7 +5,7 @@
   stdenv,
   gnumake,
 }: let
-  version = "0.18.0";
+  version = "0.19.1";
 in
   mkDerivation {
     pname = "patchelf";
@@ -15,7 +15,7 @@ in
       urls = [
         "https://github.com/NixOS/patchelf/releases/download/${version}/patchelf-${version}.tar.bz2"
       ];
-      hash = "sha256-GVKyp4K6V2J5whHulC40F0j9tEmX9wTdU970bNBVRws=";
+      hash = "sha256-LM4B3pNlOCn2q2iiDC7CdeHACpRhEHBKJ+ko0ubohxY=";
     };
 
     buildDeps = [gnumake];

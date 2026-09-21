@@ -113,7 +113,7 @@ pub(super) async fn binding(printer: &Printer, command: &HubBindingCmd) -> Resul
             include_granted,
             pagination,
         } => {
-            let client = hub_client(hub, token.as_deref())?;
+            let client = hub_client(hub, token.as_deref()).await?;
             topology_read::<_, hub_types::ListBindingsResponse>(
                 printer,
                 &client,
@@ -131,7 +131,7 @@ pub(super) async fn binding(printer: &Printer, command: &HubBindingCmd) -> Resul
             access,
             binding_ref,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GetBindingResponse>(
                 printer,
                 &client,
@@ -158,7 +158,7 @@ pub(super) async fn binding(printer: &Printer, command: &HubBindingCmd) -> Resul
             bucket_binding,
             mutation,
         } => {
-            let client = hub_client(hub, token.as_deref())?;
+            let client = hub_client(hub, token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -298,7 +298,7 @@ pub(super) async fn binding(printer: &Printer, command: &HubBindingCmd) -> Resul
             consumer_scope,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let binding_stable_id = binding_grant_stable_id(&client, binding_ref, mutation).await?;
             consumer_scope_mutation(
                 printer,
@@ -319,7 +319,7 @@ pub(super) async fn binding(printer: &Printer, command: &HubBindingCmd) -> Resul
             consumer_scope,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let binding_stable_id = binding_grant_stable_id(&client, binding_ref, mutation).await?;
             consumer_scope_mutation(
                 printer,
@@ -371,7 +371,7 @@ async fn binding_credential(printer: &Printer, command: &HubBindingCredentialCmd
             mutation,
             ..
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let expected_current_generation = match command {
                 HubBindingCredentialCmd::Rotate {
                     from_generation, ..
@@ -429,7 +429,7 @@ async fn binding_credential(printer: &Printer, command: &HubBindingCredentialCmd
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "storage credential validation")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -460,7 +460,7 @@ async fn binding_write_revision(
             binding_ref,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListBindingWriteRevisionsResponse>(
                 printer,
                 &client,
@@ -478,7 +478,7 @@ async fn binding_write_revision(
             binding_ref,
             revision,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::BindingWriteRevisionResponse>(
                 printer,
                 &client,

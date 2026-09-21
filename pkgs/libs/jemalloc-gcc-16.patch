@@ -1,0 +1,16 @@
+diff --git a/src/jemalloc_cpp.cpp b/src/jemalloc_cpp.cpp
+index 3844adf..84945b9 100644
+--- a/src/jemalloc_cpp.cpp
++++ b/src/jemalloc_cpp.cpp
+@@ -99,8 +99,9 @@ handleOOM(std::size_t size, bool nothrow) {
+ 		ptr = je_malloc(size);
+ 	}
+ 
+-	if (ptr == nullptr && !nothrow)
+-		std::__throw_bad_alloc();
++	if (ptr == nullptr && !nothrow) {
++		throw std::bad_alloc();
++	}
+ 	return ptr;
+ }
+ 

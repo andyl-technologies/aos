@@ -12,8 +12,16 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  perl ? null,
   ...
 }: let
+  # The initial sysroot precedes Perl; completed exports provide its target
+  # interpreter for generated locale data and the installed mtrace program.
+  perlCommand =
+    if perl == null
+    then "true"
+    else "${perl}/bin/perl";
+
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.3.4.tar.bz2";
     sha256 = "13cg3l7szdf0ardqi13gxgg2z9v5yvzv7xpizrg9mcrk125vjx5y";
@@ -35,12 +43,17 @@ in
         export PATH="${prev.coreutils}/bin:${crossGccStage1}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        cp -r ${src} "$TMPDIR/glibc-2.3.4"
+        cp -r --preserve=timestamps ${src} "$TMPDIR/glibc-2.3.4"
         chmod -R u+w "$TMPDIR/glibc-2.3.4"
 
         # Add linuxthreads (nptl is in-tree, linuxthreads is external add-on)
         cp -r ${linuxpthreads}/linuxthreads "$TMPDIR/glibc-2.3.4/" 2>/dev/null || true
         cp -r ${linuxpthreads}/linuxthreads_db "$TMPDIR/glibc-2.3.4/" 2>/dev/null || true
+
+        # Include linuxthreads helpers in the source interpreter pass.
+        chmod -R u+w "$TMPDIR/glibc-2.3.4"
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} "$TMPDIR/glibc-2.3.4"
 
         SRC="$TMPDIR/glibc-2.3.4"
 
@@ -94,7 +107,7 @@ in
         # fails with "no: not found".  Overriding to "true" makes those
         # rules succeed with empty output (no transliteration data, fine
         # for a bootstrap glibc).
-        make -j"$NIX_BUILD_CORES" PERL=true || true
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" PERL=${perlCommand} || true
         test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
         # -k: keep going past locale subdirectory failure (C-ctype.c fails
         # with "initializer element is not constant" under the cross GCC
@@ -103,7 +116,7 @@ in
         # -k installs headers and subdirectory artifacts but the locale
         # failure prevents the top-level libc.a/crt install and stubs
         # generation.  Install those manually from the build directory.
-        make -k install PERL=true || true
+        make SHELL="${prev.bash}/bin/bash" -k install PERL=${perlCommand} || true
         mkdir -p "$out/lib"
         cp libc.a "$out/lib/"
         cp csu/crt1.o csu/crti.o csu/crtn.o "$out/lib/"

@@ -12,10 +12,14 @@
   discard = value:
     builtins.unsafeDiscardStringContext (builtins.toString value);
 
+  eligibleNames =
+    if pkgs ? platformSupport
+    then pkgs.platformSupport.publicationEligibleNames pkgs.stdenv.hostPlatform.system pkgs.packageNames
+    else pkgs.packageNames;
   packageNames =
     builtins.filter
     (name: lib.isDerivation pkgs.${name})
-    pkgs.packageNames;
+    eligibleNames;
 
   normalizeLicense = license:
     if builtins.isList license
@@ -77,8 +81,30 @@
   in
     map normalizeSourceValue sources;
 
-  entriesForPackage = attribute: let
-    package = pkgs.${attribute};
+  entriesForPackage = attribute: package: let
+    # Bootstrap tools can retain an unversioned runtime alias for the same
+    # derivation exported by the public package set. Reuse that one canonical
+    # version so an exact output does not become falsely ambiguous.
+    canonicalVersions =
+      if package ? version
+      then []
+      else
+        lib.unique (
+          map
+          (name: pkgs.${name}.version)
+          (builtins.filter
+            (name:
+              pkgs.${name}
+              ? version
+              && discard pkgs.${name}.drvPath == discard package.drvPath)
+            packageNames)
+        );
+    version =
+      if package ? version
+      then package.version
+      else if builtins.length canonicalVersions == 1
+      then builtins.head canonicalVersions
+      else "0";
     selectedOutputName = package.outputName or "out";
     # A named split-output alias (for example `pkgs.getent`) still exposes
     # every sibling in `outputs`. Only enumerate the selected output for such
@@ -95,7 +121,7 @@
       override = false;
       derivationPath = discard package.drvPath;
       pname = package.pname or package.name;
-      version = package.version or "0";
+      inherit version;
       licenses = normalizeLicense (package.meta.license or []);
       sources = map sourceIdentity sourceValues;
     };
@@ -118,7 +144,15 @@
         }))
     outputNames;
 
-  packageEntries = builtins.concatMap entriesForPackage packageNames;
+  packageEntries = builtins.concatMap (attribute: let
+    package = pkgs.${attribute};
+    runtimePackages = package.passthru.evidenceRuntimePackages or [];
+  in
+    entriesForPackage attribute package
+    ++ builtins.concatLists (lib.imap (index: runtimePackage:
+      entriesForPackage "${attribute}-runtime-${toString index}" runtimePackage)
+    runtimePackages))
+  packageNames;
   overrideEntries =
     map (override: {
       attribute = "container-evidence-override";

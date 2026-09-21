@@ -9,6 +9,7 @@
   types = import ./_types.nix {inherit lib;};
 in {
   options.qualification = {
+    packageExecutionImageVariant = (types.text "Canonical published image used by recovery and K3s package scenarios.") // {default = "aos-testing";};
     packageRules = lib.mkOption {
       type = lib.types.attrsOf types.packageRule;
       default = {};
@@ -16,12 +17,12 @@ in {
     };
     integrityPackages = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = ["aos" "bash" "coreutils" "systemd" "linux" "nix" "openssl" "openssh" "chrony" "e2fsprogs" "cryptsetup" "tpm2-tools"];
+      default = ["aos" "aos-recovery" "bash" "coreutils" "systemd" "linux" "nix" "openssl" "openssh" "chrony" "e2fsprogs" "cryptsetup" "tpm2-tools"];
       description = "Roots whose dependencies inherit system-integrity obligations.";
     };
     workloadPackages = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = ["nginx" "containerd" "runc"];
+      default = ["nginx" "containerd" "runc" "k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"];
       description = "Roots requiring the full declared workload lifecycle.";
     };
   };
@@ -33,22 +34,58 @@ in {
         method = "automated";
         phase = "staging";
         production_only = false;
-        regressions = ["checks.fleet.apm-e2e"];
+        regressions = [
+          "checks.fleet.apm-e2e"
+          "checks.fleet.k3s-combined-worker"
+          "checks.fleet.k3s-control-plane-worker"
+        ];
         scope = "packages";
       };
     };
     packageRules = builtins.listToAttrs (map (name: {
         inherit name;
-        value.role = lib.mkDefault (
-          if builtins.elem name cfg.integrityPackages
-          then "system-integrity"
-          else if builtins.elem name cfg.workloadPackages
-          then "qualified-workload"
-          else "general-catalog"
-        );
+        value =
+          {
+            role = lib.mkDefault (
+              if builtins.elem name cfg.integrityPackages
+              then "system-integrity"
+              else if builtins.elem name cfg.workloadPackages
+              then "qualified-workload"
+              else "general-catalog"
+            );
+          }
+          // lib.optionalAttrs (name == "aos-recovery") {
+            execution = {
+              kind = "recovery-image";
+              system_variant = cfg.packageExecutionImageVariant;
+            };
+          }
+          // lib.optionalAttrs (builtins.elem name ["k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"]) {
+            execution = {
+              kind = "k3s-fleet";
+              system_variant = cfg.packageExecutionImageVariant;
+              topology =
+                if builtins.elem name ["k3s-control-plane" "k3s-worker"]
+                then "control-plane-worker"
+                else "combined-worker";
+            };
+          };
       })
       packageNames);
     assertions = [
+      {
+        assertion = builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" cfg.packageExecutionImageVariant != null;
+        message = "Package execution requires a named canonical image variant.";
+      }
+      {
+        assertion = builtins.all (
+          rule:
+            rule.execution
+            == null
+            || ((rule.execution.kind == "k3s-fleet") == (rule.execution.topology != null))
+        ) (builtins.attrValues cfg.packageRules);
+        message = "K3s package execution requires a topology; recovery execution does not accept one.";
+      }
       {
         assertion =
           builtins.attrNames cfg.packageRules

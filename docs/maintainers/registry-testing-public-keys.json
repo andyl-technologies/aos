@@ -1,0 +1,142 @@
+{
+  "schema": "aos.public-key-inventory/v1",
+  "registry": "andyl/testing",
+  "root_epoch": 1,
+  "created_at": "20260908T185334Z",
+  "custodian": "Andyl release maintainers",
+  "review_by": "2026-12-08",
+  "keys": [
+    {
+      "key_id": "testing-v1",
+      "role": "registry",
+      "trust_key": "andyl-testing:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAID1J77zx10Z/VmgFa5qab2phnJEJ2JEp8mS2HnBAnzbH",
+      "algorithm": "Ed25519",
+      "public_key_sha256": "d4a9efce8626c32b7bd28c8fc28668f3e804914f0b11be0eb6be8d074358d679",
+      "fingerprint_encoding": "OpenSSH public-key blob",
+      "status": "configured",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-tuf-root-v1",
+      "role": "tuf-root",
+      "public_key_base64": "w2dSGg0wi6oDbITzItzzr4Mn1RMHpf3n9XawO64ZpbE=",
+      "public_key_sha256": "ef6dff90fcf7980cfdd9a5a71eb3ffdd6fb17cab03f322bd5ec5e3c8c89b968b",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-tuf-targets-v1",
+      "role": "tuf-targets",
+      "public_key_base64": "mFsUNi1hgGC38u99ZQKN9QhOtD3KhUjodrre5dxZ+jQ=",
+      "public_key_sha256": "8abf3549f0e73a2fd55060bff3baf0bb371805fc7d38803b14ffaded6e85eae5",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-tuf-edge-v1",
+      "role": "tuf-edge",
+      "public_key_base64": "4ZtOjBnDSFIphSkbFfOnVXVX9N1Lrt5gLViytsdOT+Y=",
+      "public_key_sha256": "c7662831cb6eca6565ee04f65499305ad0cc3aeceb8c248e63534eea94664c47",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-tuf-snapshot-v1",
+      "role": "tuf-snapshot",
+      "public_key_base64": "5Ut04vQ2sPBM3ArpuuZ1vQEOP5iKcV3e60HiWouwnX8=",
+      "public_key_sha256": "9bf68d6af51caa968280f38306bf14c7ace46c2060c08bbfee006efc7ffb2770",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-tuf-timestamp-v1",
+      "role": "tuf-timestamp",
+      "public_key_base64": "Xh9ETZpZnMHFVT/zv5sm2/8XVASKNU7M1qTKkp98n/U=",
+      "public_key_sha256": "59246e7563cd5b1dc0faa7dca87dfd6044878eee9cd9485fb34297dfec0461a4",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-channel-edge-v1",
+      "role": "channel-edge",
+      "public_key_base64": "ld2pnEpxgW0bdUucjwI4Zc3NrcPxvPdtngNMNLWB0kc=",
+      "public_key_sha256": "2cbf178c5fedd18393b4684466642ffe1d25d15c005066232eb8d8b99e260255",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-nix-cache-v1",
+      "role": "nix-cache",
+      "public_key_base64": "BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To=",
+      "public_key_sha256": "d5ccbc45bab34b752aeb0358395e21a5df422cd5f213b4d7f539173ee55d467c",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-release-evidence-v1",
+      "role": "release-evidence",
+      "public_key_base64": "IaN+D3CdB/P4BMZwQ1CVsOiPg/Al3pk0NIWCCksZk8Y=",
+      "public_key_sha256": "f4ec5a8282bc515198f8a4159c2bb504909ab679b0ea1d2d940701c51819c89e",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-qualification-v1",
+      "role": "qualification",
+      "public_key_base64": "RIcr+9RCagMNsTJSUuvKbjE71VbxEBOoFhqF1aQ1cR0=",
+      "public_key_sha256": "769f755a480350d673fb16b07d796399cbd949214158541889216216fcc0f09a",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "aos-hub-production-publication-v1",
+      "role": "hub-publication-receipt",
+      "public_key_base64": "cN4PP/wQ6vWKikoI0EgV6iMS87fmxEcCCYvcRtSI/zI=",
+      "public_key_sha256": "436ae5b8f1166433fc8ad109db8193be5efa98a1976309262d90e253f40f37d6",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "configured",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "aos-hub-production-channel-v1",
+      "role": "hub-channel-receipt",
+      "public_key_base64": "aZ5EAS70wKLqDbi2d300v10zmpokKpXSxGQziU72WpM=",
+      "public_key_sha256": "97989ea77e4e75079f051f1ed420f452f90a6be32ec272b239ec7484802b3afc",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "configured",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "aos-hub-production-domain-probe-v1",
+      "role": "hub-domain-probe",
+      "public_key_base64": "f7O5n6hmnY3Ac38gxUKR5Tu7hH1I+AAdC3hQSVrViNo=",
+      "public_key_sha256": "d06cb9ce1aac3801552b545c69c3219676df965132a75ee14a92244853564ea8",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "configured",
+      "successor_key_id": null,
+      "endpoint_id": "endpoint:286ae94fd33d4e65abb888431fa4795b",
+      "endpoint_generation": 1
+    }
+  ]
+}

@@ -7,7 +7,7 @@
   libmnl,
   libnfnetlink,
 }: let
-  version = "1.1.0";
+  version = "1.1.1";
 in
   mkDerivation {
     pname = "libnetfilter_conntrack";
@@ -17,7 +17,7 @@ in
       urls = [
         "https://netfilter.org/projects/libnetfilter_conntrack/files/libnetfilter_conntrack-${version}.tar.xz"
       ];
-      hash = "sha256-Z+3LTrgmwvjcmK8I2r/2jzs9D+b7fZ0Kwe5+zOD+aU4=";
+      hash = "sha256-dp0+r1f6T72wXdEoc7bLmlvnhE2JN+Iitkc4HUQoSCA=";
     };
 
     buildDeps = [

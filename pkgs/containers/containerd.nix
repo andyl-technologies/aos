@@ -2,14 +2,14 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
-  go,
   runc,
   kmod,
   bash,
   lib,
 }: let
-  version = "2.2.1";
+  version = "2.3.5";
   payload = mkDerivation {
     pname = "containerd-payload";
     inherit version;
@@ -17,11 +17,11 @@
       urls = [
         "https://github.com/containerd/containerd/archive/v${version}/containerd-${version}.tar.gz"
       ];
-      hash = "sha256-r1cHomiRSGMyFCzAreTwxUP3B9OVSDj1zs7nO4M8+bQ=";
+      hash = "sha256-qZpNypgGEGT/TLNdJ9HsI0VxfpEIyCIyn87JHccr/5Y=";
     };
-    buildDeps = [gnumake go];
+    buildDeps = [gnumake buildPackages.go];
     runtimeDeps = [runc];
-    disallowedReferences = [go];
+    disallowedReferences = [buildPackages.go];
     phases = [
       {
         name = "unpack";
@@ -46,6 +46,10 @@
           export CGO_ENABLED=0
           export GOPROXY=off
           export GOFLAGS="-trimpath"
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           mkdir -p "$GOCACHE"
           make SHELL="$CONFIG_SHELL" VERSION=v${version} \
             REVISION=v${version} \
@@ -75,6 +79,11 @@ in
     src = null;
     runtimeDeps = [payload runc kmod bash];
     propagatedDeps = [];
+
+    passthru.evidenceSources = [
+      ./containerd.nix
+      payload.src
+    ];
 
     # Pure stage-2 inventory: generateUnits can reproduce the historical
     # systemd.packages symlink farm without inspecting this output at eval
@@ -225,6 +234,9 @@ in
           for program in ${payload}/bin/*; do
             ln -s "$program" "$out/bin/$(basename "$program")"
           done
+          # containerd resolves its default OCI runtime by executable name.
+          # Retain that declared runtime inside the standalone package closure.
+          ln -s ${runc}/sbin/runc $out/bin/runc
           ln -s ${payload}/lib/systemd/system/containerd.service \
             $out/lib/systemd/system/containerd.service
         '';

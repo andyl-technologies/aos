@@ -110,19 +110,16 @@ mod tests {
     use aos_hub_core::value::Value;
 
     #[test]
-    fn worker_sql_accepts_documentation_projection_generation_migration() {
-        let migration = MIGRATIONS
-            .iter()
-            .find(|migration| migration.contains("documentation_projection_generation"))
-            .expect("documentation projection migration");
-        let statements = split_statements(migration);
-        assert_eq!(statements.len(), 1);
-        assert!(statements[0].contains("documentation_projection_generation"));
-
-        let (translated, parameters) =
-            prepare(Dialect::Sqlite, &statements[0], &[]).expect("Worker SQLite translation");
-        assert_eq!(translated, statements[0]);
-        assert!(parameters.is_empty());
+    fn worker_sql_accepts_production_baseline() {
+        assert_eq!(MIGRATIONS.len(), 1);
+        for statement in split_statements(MIGRATIONS[0]) {
+            let (translated, parameters) =
+                prepare(Dialect::Sqlite, &statement, &[]).expect("Worker SQLite translation");
+            let (positional, bound) = numbered_to_positional(&translated, &parameters);
+            assert_eq!(positional, translated);
+            assert!(bound.is_empty());
+            assert!(parameters.is_empty());
+        }
     }
 
     #[test]

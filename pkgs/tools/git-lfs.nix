@@ -3,15 +3,17 @@
   mkGoPackage,
   fetchGoModules,
   fetchurl,
+  bash,
+  git,
 }: let
-  version = "3.7.1";
+  version = "3.8.0";
   src = fetchurl {
     urls = ["https://github.com/git-lfs/git-lfs/archive/refs/tags/v${version}.tar.gz"];
-    hash = "sha256-DoNWap4kd+A2J+f9a/gfAfrb+T3K9qvSaG/KkPa6x90=";
+    hash = "sha256-oS7PwX6+4ALR9qzKeUQgKdQcv15bS6ngIkntlt4gMA8=";
   };
   goModules = fetchGoModules {
     inherit src;
-    hash = "sha256-ctWlg+YBADZfhRywCyjxqoSWN559exavLS+J010R7T8=";
+    hash = "sha256-e/oSsIW+Qi67mpl6f22TjPxDpwqZ894w7hgtstarwdk=";
   };
 in
   mkGoPackage {
@@ -21,6 +23,19 @@ in
     goOutput = "git-lfs";
     ldflags = "-s -w -X github.com/git-lfs/git-lfs/v3/config.Vendor=${version}";
     doCheck = false;
+    runtimeDeps = [bash git];
+    postInstall = ''
+      # LFS invokes Git for repository configuration and filter operations.
+      mkdir -p "$out/libexec"
+      mv "$out/bin/git-lfs" "$out/libexec/git-lfs"
+      cat > "$out/bin/git-lfs" <<EOF
+      #!${bash}/bin/bash
+      export PATH="${git}/bin\''${PATH:+:}\$PATH"
+      exec "$out/libexec/git-lfs" "\$@"
+      EOF
+      chmod +x "$out/bin/git-lfs"
+    '';
+
     checks = {
       testing,
       self,

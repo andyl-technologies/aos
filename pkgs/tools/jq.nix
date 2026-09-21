@@ -14,9 +14,10 @@
     family = "jq";
     stream = "1";
     owner = "pkgs/tools/jq.nix";
-    version = "1.8.1";
-    upstreamId = "jq-1.8.1";
+    version = "1.8.2";
+    upstreamId = "jq-1.8.2";
     repository = "jqlang/jq";
+    provider = "github-releases";
     tagPrefix = "jq-";
     major = 1;
     source = {
@@ -50,7 +51,7 @@
           ];
         }
       ];
-      hash = "sha256-K+ZOcSnOyxHVkGKQ66EK9pT7nj5/n8IIoxHcM8qDfrA=";
+      hash = "sha256-cbjW6PX+gfbG0NEQ44kiUfbOdu0JWr0xXibm4Rk6868=";
     };
   };
   inherit (upstream) version;
@@ -58,6 +59,7 @@ in
   mkDerivation {
     pname = "jq";
     inherit version;
+    outputs = ["out" "dev"];
 
     src = upstream.components.main.sources.source;
     update = upstream.update;
@@ -103,6 +105,34 @@ in
         name = "install";
         script = ''
           make install
+
+          # Containers need jq and its shared library, while downstream builds
+          # retain the public headers, static archive, and linker metadata.
+          mkdir -p "$dev/lib"
+          mv "$out/include" "$dev/include"
+          mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
+          for library in "$out/lib/"*.a "$out/lib/"*.la; do
+            if [ -f "$library" ]; then
+              mv "$library" "$dev/lib/"
+            fi
+          done
+          for library in "$out/lib/libjq.so" "$out/lib/libjq.dylib"; do
+            if [ -L "$library" ]; then
+              target=$(readlink "$library")
+              name=$(basename "$library")
+              rm "$library"
+              ln -s "$out/lib/$target" "$dev/lib/$name"
+            fi
+          done
+
+          sed -i \
+            -e "s|^prefix=.*|prefix=$dev|" \
+            -e "s|^libdir=.*|libdir=$dev/lib|" \
+            -e "s|^includedir=.*|includedir=$dev/include|" \
+            "$dev/lib/pkgconfig/libjq.pc"
+          if [ -f "$dev/lib/libjq.la" ]; then
+            sed -i "s|^libdir=.*|libdir='$dev/lib'|" "$dev/lib/libjq.la"
+          fi
         '';
       }
     ];

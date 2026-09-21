@@ -4,7 +4,7 @@
   fetchurl,
   gnumake,
 }: let
-  version = "2.16.03";
+  version = "3.02";
 in
   mkDerivation {
     pname = "nasm";
@@ -14,7 +14,7 @@ in
       urls = [
         "https://www.nasm.us/pub/nasm/releasebuilds/${version}/nasm-${version}.tar.xz"
       ];
-      hash = "sha256-FBKhx2C70F2wJrbA0WV6/9ZjHNCmPN229zzG1KphYUg=";
+      hash = "sha256-hzNuulO0rP6RdCSrXVANKwBU2fUUjTXCJzzPLPtxLw0=";
     };
 
     buildDeps = [gnumake];

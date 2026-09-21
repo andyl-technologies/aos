@@ -84,7 +84,6 @@ pub fn permission_from_str(s: &str) -> Option<Permission> {
         "cache.gc.plan" => Some(Permission::CacheGcPlan),
         "cache.gc.execute" => Some(Permission::CacheGcExecute),
         "cache.lease.self" => Some(Permission::CacheLeaseSelf),
-        "validation.repair" => Some(Permission::ValidationRepair),
         "audit.read" => Some(Permission::AuditRead),
         "iam.admin" => Some(Permission::IamAdmin),
         _ => None,
@@ -133,7 +132,6 @@ mod tests {
             CacheGcPlan,
             CacheGcExecute,
             CacheLeaseSelf,
-            ValidationRepair,
             AuditRead,
             IamAdmin,
         ] {

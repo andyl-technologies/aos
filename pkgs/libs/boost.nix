@@ -11,8 +11,8 @@
   buildPackages,
   stdenv,
 }: let
-  version = "1.87.0";
-  underscoreVersion = "1_87_0";
+  version = "1.92.0";
+  underscoreVersion = "1_92_0";
   selectedLibraryFlags = "--with-system --with-filesystem --with-regex --with-container --with-context --with-coroutine --with-thread --with-chrono --with-date_time --with-program_options --with-iostreams --with-serialization --with-log --with-atomic --with-random";
   crossTargetFlags =
     if stdenv.isCross
@@ -50,7 +50,7 @@ in
       urls = [
         "https://archives.boost.io/release/${version}/source/boost_${underscoreVersion}.tar.bz2"
       ];
-      hash = "sha256-r1e+JctMT0tBPtaS/jeK/7Q1LqUPvilKEe9Uj01SfYk=";
+      hash = "sha256-XB1Ay44Zrb90Ck7C2jWz5Y8/WASx3ORN61Pfchk8vGw=";
     };
 
     buildDeps = [

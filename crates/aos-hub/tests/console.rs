@@ -279,6 +279,12 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
             assert!(body.contains(&format!("name=\"{chrome_field}\"")), "{path}");
         }
         assert!(body.contains("/_assets/style.css?v="), "{path}");
+        let theme_script = body.find("/_assets/theme.js?v=").unwrap();
+        let stylesheet = body.find("/_assets/style.css?v=").unwrap();
+        assert!(
+            theme_script < stylesheet,
+            "{path} applies appearance before paint"
+        );
         assert!(body.contains("/_assets/app.js?v="), "{path}");
         assert!(body.contains(&console_bootstrap_name()), "{path}");
         assert!(

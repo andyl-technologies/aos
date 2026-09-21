@@ -11,6 +11,7 @@
 }: let
   version = "2.0.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxAarch64 = stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
   aarch64Patch = fetchurl {
     urls = [
       "https://cgit.git.savannah.gnu.org/cgit/guix.git/plain/gnu/packages/patches/jamvm-2.0.0-aarch64-support.patch?id=f23b95a3b24003f46293d67ce2ab4c2d1785853d"
@@ -32,13 +33,18 @@ in
     buildDeps =
       [gnumake]
       ++ (
-        if isDarwinCross
+        if isDarwinCross || isLinuxAarch64
         then [
           buildPackages.autoconf
           buildPackages.automake
           buildPackages.libtool
           buildPackages.m4
         ]
+        else []
+      )
+      ++ (
+        if isLinuxAarch64
+        then [buildPackages.patch]
         else []
       );
     runtimeDeps =
@@ -95,6 +101,14 @@ in
               src/interp/engine/interp-inlining.h
             ! grep -q -e '({' -e '});' src/interp/engine/interp-inlining.h
 
+            ACLOCAL_PATH=${buildPackages.libtool}/share/aclocal autoreconf -fi
+          ''
+          else if isLinuxAarch64
+          then ''
+            # This release predates AArch64; use the existing reviewed Guix
+            # port, including its native-call assembly, for the Linux target.
+            sed -i '1i #define _GNU_SOURCE' src/os/linux/os.c
+            patch -p1 < ${aarch64Patch}
             ACLOCAL_PATH=${buildPackages.libtool}/share/aclocal autoreconf -fi
           ''
           else ''

@@ -1,5 +1,6 @@
 {
   lib,
+  pause,
   mkDerivation,
   k3s,
   containerd,
@@ -36,7 +37,7 @@
       writeShellScriptBin
       ;
   };
-  common = import ./_k3s-common.nix {inherit lib pkgs;};
+  common = import ./_k3s-common.nix {inherit lib pkgs pause;};
 in
   {
     pname,
@@ -45,6 +46,7 @@ in
     command,
     requiredEnv,
     firewall,
+    evidenceSources,
     stateDirectories ? ["rancher/k3s" "kubelet"],
     hostPaths ? [
       {
@@ -113,6 +115,15 @@ in
           '';
         }
       ];
+
+      passthru.evidenceSources =
+        evidenceSources
+        ++ [
+          ./_k3s-expose-package.nix
+          ./_k3s-common.nix
+          ./_k3s-pause-image.nix
+          ./_k3s-config
+        ];
 
       expose = {
         units = {

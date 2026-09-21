@@ -984,8 +984,8 @@ fn append_repository_delete(
                  WHERE registry_id = ?2
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = ?2)
-                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-                     WHERE purge.registry_id = ?2 AND purge.state = 'collecting')
+                   AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+                     WHERE purge_fence.registry_id = ?2 AND purge_fence.state = 'collecting')
                    AND EXISTS (SELECT 1 FROM oci_repositories repository
                    WHERE repository.id = ?1 AND repository.registry_id = ?2
                      AND repository.resource_version = ?3
@@ -1300,8 +1300,8 @@ fn mutation_epoch_statement(registry_id: i64, now: i64) -> CheckedStatement {
             updated_at = ?2 WHERE registry_id = ?1
             AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
               WHERE registry_lock.registry_id = ?1)
-            AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge
-              WHERE purge.registry_id = ?1 AND purge.state = 'collecting')",
+            AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
+              WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting')",
         vals![registry_id, now],
     )
     .expecting(1)

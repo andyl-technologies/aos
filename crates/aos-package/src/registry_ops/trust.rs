@@ -46,6 +46,24 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
         } => {
             validate_registry_name(registry)?;
             let trusted = trusted_key_from_line(registry, key)?;
+
+            if crate::dry_run::active() {
+                let verb = if *replace {
+                    "Would re-pin"
+                } else {
+                    "Would pin"
+                };
+                printer.info(&format!(
+                    "{verb} trust key for registry '{registry}' ({})",
+                    trusted.fingerprint
+                ));
+                if *replace {
+                    printer.info("  --replace: any existing pinned key would be removed first.");
+                }
+                printer.info("Dry run: the trusted-key store is unchanged.");
+                return Ok(());
+            }
+
             if *replace {
                 let _ = store.remove(registry)?;
             }
@@ -123,6 +141,22 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
         }
         TrustCommand::Remove { registry } => {
             validate_registry_name(registry)?;
+
+            if crate::dry_run::active() {
+                let pinned = !store.lookup_all(registry).is_empty();
+                if pinned {
+                    printer.info(&format!(
+                        "Would remove pinned trust keys for registry '{registry}'"
+                    ));
+                } else {
+                    printer.info(&format!(
+                        "No pinned trust keys found for registry '{registry}'; nothing would change."
+                    ));
+                }
+                printer.info("Dry run: the trusted-key store is unchanged.");
+                return Ok(());
+            }
+
             let removed = store.remove(registry)?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
@@ -297,6 +331,22 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                 )?
             };
             add_roster_key(&mut roster, &registry_name, id, key)?;
+
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would add signing key '{id}' to the roster of registry '{registry_name}'"
+                ));
+                printer.kv("Key", key);
+                printer.kv("Active keys after", &roster.active.len().to_string());
+                printer.info(if *no_commit {
+                    "  --no-commit: keys.toml would be written without committing."
+                } else {
+                    "  A signed commit would record the roster change."
+                });
+                printer.info("Dry run: the roster is unchanged.");
+                return Ok(());
+            }
+
             persist_committed_roster(
                 &dir,
                 &roster,
@@ -379,6 +429,26 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                 .map(|entry| entry.key.clone())
                 .collect();
             let plan = plan_retirement_resign(&dir, &survivors)?;
+
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would retire signing key '{id}' from registry '{registry_name}' \
+                     (vouched by '{vouching_id}')"
+                ));
+                if let Some(reason) = reason.as_deref() {
+                    printer.kv("Reason", reason);
+                }
+                // The re-sign plan is the consequential half: retiring a key
+                // invalidates every signature it still covers, so show exactly
+                // which tags and partitions a real run would rewrite.
+                print_resign_plan(&plan, printer);
+                if *no_resign {
+                    printer.info("  --no-resign: those signatures would be left stale.");
+                }
+                printer.info("Dry run: the roster and every signature are unchanged.");
+                return Ok(());
+            }
+
             persist_committed_roster(
                 &dir,
                 &roster,
@@ -648,6 +718,32 @@ fn generate_roster_key(
     let registry_name = resolve_registry_name(config, registry)?;
 
     let keys_dir = config.scope.config_dir().join("keys");
+
+    if crate::dry_run::active() {
+        let key_path = keys_dir.join(format!("{registry_name}-{id}.key"));
+        if key_path.exists() {
+            bail!(
+                "private key file {} already exists (refusing to overwrite an existing key)",
+                key_path.display()
+            );
+        }
+        printer.info(&format!(
+            "Would mint an Ed25519 keypair '{id}' for registry '{registry_name}'"
+        ));
+        printer.kv("Would write private key", &key_path.display().to_string());
+        if add {
+            printer.info(if no_commit {
+                "  --add --no-commit: the key would be appended to keys.toml, uncommitted."
+            } else {
+                "  --add: the key would be appended to keys.toml in a signed commit."
+            });
+        }
+        // The public half is not printed: it does not exist yet, and a real run
+        // mints different key material than any preview could show.
+        printer.info("Dry run: no key was generated and nothing was written.");
+        return Ok(());
+    }
+
     {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
@@ -828,6 +924,19 @@ fn register_roster_key(
     let resolved = resolve_signing_key_source(id, &source)?;
     let trust_key = derive_trust_key(&registry_name, resolved.path())?;
     let (_registry, _algorithm, public_key) = parse_signing_key(&trust_key)?;
+
+    if crate::dry_run::active() {
+        // Registration only records where an already-held key lives, so the
+        // preview can show the real derived identity a real run would record.
+        printer.info(&format!(
+            "Would register key '{id}' for registry '{registry_name}' in {}",
+            config_path.display()
+        ));
+        printer.kv("Public key", &trust_key);
+        printer.kv("Fingerprint", &key_fingerprint(&public_key));
+        printer.info("Dry run: the configuration is unchanged.");
+        return Ok(());
+    }
 
     state::upsert_signing_key(&config_path, id, &source)?;
     printer.kv("Config", &config_path.display().to_string());

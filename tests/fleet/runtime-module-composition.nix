@@ -8,6 +8,7 @@
 ##! reboot consumes the retained immutable module set rather than the dirty
 ##! authoring worktree.
 {
+  lib,
   mkSystem,
   pkgs,
   systems,
@@ -54,9 +55,13 @@ in {
       "k3s-worker"
     ];
     extraClosures = [
+      pkgs.aos.apr
+      pkgs.curl
       pkgs.diffutils
+      pkgs.gawk
       pkgs.git
       pkgs.grep
+      pkgs.jq
       pkgs.nix
     ];
     metadata."host.nix" = ''
@@ -268,7 +273,7 @@ in {
           {APR} publish '${pkgs.nginx}' \
             --name nginx \
             --version '${pkgs.nginx.version}' \
-            --description 'runtime module acceptance fixture' \
+            --description ${lib.escapeShellArg pkgs.nginx.meta.description} \
             --license BSD-2-Clause \
             --maintainer test \
             --expose-manifest '${pkgs.nginx.expose}/manifest.json' \

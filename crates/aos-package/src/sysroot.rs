@@ -1638,12 +1638,46 @@ fn stage_slot_artifacts(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StageCheckpoint {
     InactiveEntryDisarmed,
+    InactiveStorageReclaimed,
     RootWritten,
     VerityWritten,
     NormalUkiStaged,
     RecoveryUkiPublished,
     RecoveryEntryPublished,
     NormalUkiPublished,
+}
+
+// Disabled filenames are transaction markers, not rollback payloads. Keep
+// them for mixed-state replay checks, but reclaim their space only after the
+// boot-directory rename is durable. The opposite slot remains bootable.
+fn reclaim_disarmed_uki_storage(staging_dir: &Path, disabled_prefix: &str) -> Result<()> {
+    for entry in std::fs::read_dir(staging_dir)? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(disabled_prefix)
+        {
+            continue;
+        }
+
+        let file = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(entry.path())
+            .context("opening disarmed inactive UKI")?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            bail!("disarmed inactive UKI must be an unshared regular file");
+        }
+
+        file.set_len(0)
+            .context("reclaiming disarmed inactive UKI storage")?;
+        file.sync_all()
+            .context("syncing disarmed inactive UKI marker")?;
+    }
+
+    sync_directory(staging_dir)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1752,6 +1786,11 @@ where
             checkpoint(StageCheckpoint::InactiveEntryDisarmed)?;
         }
     }
+    // Replay may follow a crash between rename and directory synchronization.
+    sync_directory(parent)?;
+    sync_directory(&staging_dir)?;
+    reclaim_disarmed_uki_storage(&staging_dir, &disabled_prefix)?;
+    checkpoint(StageCheckpoint::InactiveStorageReclaimed)?;
     let temp = staging_dir.join(format!("slot-{slot_name}.efi"));
 
     // The replacement UKI is published last: at every earlier crash point
@@ -3097,7 +3136,10 @@ async fn ensure_image_imported(
         fallback_mirrors,
     };
     let engine = std::sync::Arc::new(default_engine());
-    let resolved = fetch_narinfos(
+    // The image output can retain direct references that are outside the
+    // sysroot package's runtime closure. Fetch those references first so Nix
+    // never sees an image import with dangling store paths.
+    let resolved = fetch_narinfo_closure(
         std::sync::Arc::clone(&engine),
         &[request],
         config.settings.parallel_downloads,
@@ -3111,24 +3153,40 @@ async fn ensure_image_imported(
         printer,
     )
     .await?;
-    let result = results
-        .first()
-        .context("image artifact download returned no result")?;
-    verify_download_hash(&result.local_path, &result.download_hash)?;
-    crate::verify::verify_nar_hash_with_compression(
-        &result.local_path,
-        authenticated_hash,
-        &result.compression,
-    )
-    .with_context(|| format!("verifying image update NAR for {authenticated_path}"))?;
-    crate::store::import_nar_with_compression(
-        &result.local_path,
-        &result.store_path,
-        &result.references,
-        result.deriver.as_deref(),
-        &result.compression,
-    )
-    .await?;
+    if !results
+        .iter()
+        .any(|result| result.store_path == authenticated_path)
+    {
+        bail!("image artifact download returned no authenticated root");
+    }
+
+    for result in &results {
+        verify_download_hash(&result.local_path, &result.download_hash)?;
+        let expected_nar_hash = if result.store_path == authenticated_path {
+            authenticated_hash
+        } else {
+            result.nar_hash.as_str()
+        };
+        crate::verify::verify_nar_hash_with_compression(
+            &result.local_path,
+            expected_nar_hash,
+            &result.compression,
+        )
+        .with_context(|| {
+            format!(
+                "verifying image update closure NAR for {}",
+                result.store_path
+            )
+        })?;
+        crate::store::import_nar_with_compression(
+            &result.local_path,
+            &result.store_path,
+            &result.references,
+            result.deriver.as_deref(),
+            &result.compression,
+        )
+        .await?;
+    }
     if !store_path.exists() {
         bail!(
             "imported image artifact is absent from its authenticated store path {}",
@@ -5921,9 +5979,30 @@ mod tests {
     }
 
     #[test]
+    fn disabled_uki_reclamation_rejects_links_to_active_payloads() {
+        for symlink in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let staging = tmp.path().join("staging");
+            std::fs::create_dir(&staging).unwrap();
+            let active = tmp.path().join("active.efi");
+            std::fs::write(&active, b"known-good-active").unwrap();
+            let marker = staging.join("disabled-b-0-old.efi");
+            if symlink {
+                std::os::unix::fs::symlink(&active, &marker).unwrap();
+            } else {
+                std::fs::hard_link(&active, &marker).unwrap();
+            }
+
+            assert!(reclaim_disarmed_uki_storage(&staging, "disabled-b-").is_err());
+            assert_eq!(std::fs::read(&active).unwrap(), b"known-good-active");
+        }
+    }
+
+    #[test]
     fn every_publication_cut_retains_the_opposite_recovery_copy() {
         let checkpoints = [
             StageCheckpoint::InactiveEntryDisarmed,
+            StageCheckpoint::InactiveStorageReclaimed,
             StageCheckpoint::RootWritten,
             StageCheckpoint::VerityWritten,
             StageCheckpoint::NormalUkiStaged,
@@ -5985,6 +6064,34 @@ mod tests {
                 let reusable = linux.join(format!("old-{target_name}+3.efi"));
                 std::fs::write(&reusable, format!("old-normal-{target_name}")).unwrap();
 
+                let active_uki = linux.join(format!("active-{opposite_name}.efi"));
+                let active_bytes = b"known-good-normal";
+                std::fs::write(&active_uki, active_bytes).unwrap();
+                let (opposite_root, opposite_hash) = match target_slot {
+                    ImageSlot::A => (&root_b, &hash_b),
+                    ImageSlot::B => (&root_a, &hash_a),
+                };
+                let normal_budget =
+                    active_bytes.len() as u64 + std::fs::metadata(&reusable).unwrap().len();
+                let assert_normal_budget = || {
+                    let total: u64 = [linux.clone(), boot.join("EFI/.aos-staging")]
+                        .into_iter()
+                        .flat_map(|dir| std::fs::read_dir(dir).unwrap())
+                        .map(|entry| entry.unwrap())
+                        .filter(|entry| {
+                            !entry.file_name().to_string_lossy().starts_with("recovery-")
+                        })
+                        .map(|entry| entry.metadata().unwrap().len())
+                        .sum();
+                    assert!(
+                        total <= normal_budget,
+                        "normal UKIs exceed retry storage budget: {total} > {normal_budget}"
+                    );
+                    assert_eq!(std::fs::read(&active_uki).unwrap(), active_bytes);
+                    assert_eq!(std::fs::read(opposite_root).unwrap(), vec![0_u8; 128]);
+                    assert_eq!(std::fs::read(opposite_hash).unwrap(), vec![0_u8; 128]);
+                };
+
                 let layout = ImageSlotLayout {
                     boot_root: boot.clone(),
                     esp_devices: vec![boot.clone()],
@@ -6033,6 +6140,7 @@ mod tests {
                     std::slice::from_ref(&reusable),
                     Some(&recovery),
                     |checkpoint| {
+                        assert_normal_budget();
                         if checkpoint == cut {
                             bail!("injected power cut at {checkpoint:?}");
                         }
@@ -6067,7 +6175,10 @@ mod tests {
                     &format!("EFI/Linux/aos-next-{target_name}+3.efi"),
                     &replay_visible,
                     Some(&recovery),
-                    |_| Ok(()),
+                    |_| {
+                        assert_normal_budget();
+                        Ok(())
+                    },
                 )
                 .unwrap_or_else(|error| {
                     panic!("{target_name} retry after {cut:?} failed: {error:#}")

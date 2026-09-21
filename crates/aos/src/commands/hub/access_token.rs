@@ -24,7 +24,7 @@ pub(super) async fn access_token(printer: &Printer, command: &HubAccessTokenCmd)
             scope,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListAccessTokensResponse>(
                 printer,
                 &client,
@@ -47,7 +47,8 @@ pub(super) async fn access_token(printer: &Printer, command: &HubAccessTokenCmd)
                 comment,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation =
                     retained_plan_mutation(&request.idempotency_key, if_version.as_deref());
                 topology_mutation::<
@@ -82,7 +83,8 @@ pub(super) async fn access_token(printer: &Printer, command: &HubAccessTokenCmd)
                 token_id,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation =
                     retained_plan_mutation(&request.idempotency_key, Some(if_version.as_str()));
                 topology_mutation::<
@@ -113,7 +115,7 @@ pub(super) async fn access_token(printer: &Printer, command: &HubAccessTokenCmd)
 }
 
 async fn apply_access_token_issue(printer: &Printer, apply: &HubReviewedApplyArgs) -> Result<()> {
-    let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+    let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
     let mutation = retained_apply_mutation(apply);
     topology_mutation::<_, hub_types::ApplyTopologyPlanRequest, hub_types::AccessTokenResponse, _>(
         printer,
@@ -131,7 +133,7 @@ async fn apply_access_token_retirement(
     printer: &Printer,
     apply: &HubReviewedApplyArgs,
 ) -> Result<()> {
-    let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+    let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
     let mutation = retained_apply_mutation(apply);
     topology_mutation::<
         _,

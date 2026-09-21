@@ -17,12 +17,18 @@ use serde::{Deserialize, Serialize};
 use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
 use crate::evidence::GateRequirement;
-use crate::plan::{ReleaseClass, ReleasePlanV1};
+use crate::plan::{
+    QUALIFICATION_SNAPSHOT_RELEASE_PREFIX, QUALIFICATION_SNAPSHOT_TAG_PREFIX, ReleaseClass,
+    ReleasePlanV1,
+};
 use crate::platform::Platform;
 
 pub mod capabilities;
 pub mod claims;
 pub mod environment;
+
+#[cfg(test)]
+mod plan_tests;
 
 /// Schema of archived qualification contracts with untyped environments.
 pub const CONTRACT_V1: &str = "aos.release.qualification-contract/v1";
@@ -110,6 +116,55 @@ pub enum PackageRole {
     SystemIntegrity,
 }
 
+/// Booted execution required to prove a package's functional behavior.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PackageExecution {
+    /// Exercises the package from recovery UKIs in one system image variant.
+    RecoveryImage {
+        /// Exact system image variant carrying the package.
+        system_variant: String,
+    },
+    /// Exercises authenticated K3s packages and the published OCI workload in a fleet.
+    K3sFleet {
+        /// Exact system image variant booted by both fleet members.
+        system_variant: String,
+        /// Server and worker roles whose package artifacts enter the case subjects.
+        topology: K3sTopology,
+    },
+}
+
+/// Supported K3s service arrangements for staged package qualification.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum K3sTopology {
+    /// Schedules workloads on a combined server and its separate worker.
+    CombinedWorker,
+    /// Runs an agentless control plane and schedules workloads on its worker.
+    ControlPlaneWorker,
+}
+
+impl K3sTopology {
+    /// Returns the complete package population exercised by this topology.
+    pub fn packages(self) -> [&'static str; 3] {
+        match self {
+            Self::CombinedWorker => ["k3s", "k3s-combined", "k3s-worker"],
+            Self::ControlPlaneWorker => ["k3s", "k3s-control-plane", "k3s-worker"],
+        }
+    }
+}
+
+impl PackageExecution {
+    /// Returns the system image variant required by this execution environment.
+    pub fn system_variant(&self) -> &str {
+        match self {
+            Self::RecoveryImage { system_variant } | Self::K3sFleet { system_variant, .. } => {
+                system_variant
+            }
+        }
+    }
+}
+
 /// Classification for one package in the complete discovered inventory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +175,9 @@ pub struct PackageRule {
     pub role: PackageRole,
     /// Requires dependencies to inherit the consuming root's obligations.
     pub inherit_dependency_obligations: bool,
+    /// Special execution environment required by this package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<PackageExecution>,
 }
 
 /// Shared requirement with applicability at one hold point.
@@ -134,7 +192,7 @@ pub struct QualificationRequirement {
     pub scope: QualificationScope,
     /// Required observation method.
     pub method: QualificationMethod,
-    /// Includes the requirement only for main-registry release classes.
+    /// Includes the requirement only for the main registry, including edge releases.
     pub production_only: bool,
     /// Named acceptance conditions; each requires an affirmative observation.
     pub checks: Vec<String>,
@@ -177,7 +235,7 @@ pub struct QualificationContract {
     pub thresholds: BTreeMap<String, QualificationThresholds>,
     /// Required reference environments.
     pub targets: Vec<QualificationTarget>,
-    /// Complete package classification, independent of platform eligibility.
+    /// Classification of every package eligible on at least one platform.
     pub package_rules: Vec<PackageRule>,
     /// Shared gate catalog.
     pub requirements: Vec<QualificationRequirement>,
@@ -248,6 +306,27 @@ impl QualificationContract {
                 .any(|rule| !rule.inherit_dependency_obligations)
         {
             bail!("qualification must classify packages and inherit dependency obligations");
+        }
+        for rule in &self.package_rules {
+            if let Some(execution) = &rule.execution {
+                if !current {
+                    bail!("archival contracts cannot select package execution environments");
+                }
+                require_identifier(
+                    execution.system_variant(),
+                    "package execution image variant",
+                )?;
+                if let PackageExecution::K3sFleet { topology, .. } = execution {
+                    if !topology.packages().contains(&rule.name.as_str()) {
+                        bail!("K3s fleet topology does not exercise package {}", rule.name);
+                    }
+                    for package in topology.packages() {
+                        if !self.package_rules.iter().any(|rule| rule.name == package) {
+                            bail!("K3s fleet lacks its companion package rule {package}");
+                        }
+                    }
+                }
+            }
         }
         for target in &self.targets {
             if !target.platform.supports_images() {
@@ -409,36 +488,63 @@ impl QualificationContract {
         Sha256Digest::of_canonical(&self.schema_version, self)
     }
 
-    /// Returns the obligations selected by the release class.
+    /// Returns maturity obligations with registry-specific pipeline assurance.
     ///
     /// # Errors
-    /// Returns an error if that class has no threshold record.
-    pub fn thresholds_for(&self, class: ReleaseClass) -> Result<&QualificationThresholds> {
+    /// Returns an error for an unknown registry or missing class thresholds.
+    pub fn thresholds_for(
+        &self,
+        registry: &str,
+        class: ReleaseClass,
+    ) -> Result<QualificationThresholds> {
         let name = match class {
             ReleaseClass::Edge => "edge",
             ReleaseClass::Candidate => "candidate",
             ReleaseClass::Stable => "stable",
             ReleaseClass::Emergency => "emergency",
         };
-        self.thresholds
+        let policy = crate::registry::registry_policy(registry)?;
+        let mut thresholds = self
+            .thresholds
             .get(name)
-            .ok_or_else(|| anyhow::anyhow!("missing {name} qualification thresholds"))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing {name} qualification thresholds"))?;
+        // Software soak and matrix obligations still follow maturity. Review
+        // authority follows the registry even when its software channel is edge.
+        if self.schema_version == CONTRACT_V2 {
+            thresholds.require_independent_review = policy.requires_production_assurance();
+        }
+        Ok(thresholds)
     }
 
     /// Selects requirements without allowing per-release manual deselection.
-    pub fn selected(&self, class: ReleaseClass) -> impl Iterator<Item = &QualificationRequirement> {
-        self.requirements
+    ///
+    /// # Errors
+    /// Returns an error for an unknown registry identity.
+    pub fn selected(
+        &self,
+        registry: &str,
+        class: ReleaseClass,
+    ) -> Result<impl Iterator<Item = &QualificationRequirement>> {
+        let policy = crate::registry::registry_policy(registry)?;
+        let production = if self.schema_version == CONTRACT_V2 {
+            policy.requires_production_assurance()
+        } else {
+            class != ReleaseClass::Edge
+        };
+        Ok(self
+            .requirements
             .iter()
-            .filter(move |gate| !gate.production_only || class != ReleaseClass::Edge)
+            .filter(move |gate| !gate.production_only || production))
     }
 
     /// Derives the exact gate identities bound into a release plan.
     ///
     /// # Errors
     /// Returns an error if a requirement cannot be canonically encoded.
-    pub fn gates(&self, class: ReleaseClass) -> Result<Vec<GateRequirement>> {
+    pub fn gates(&self, registry: &str, class: ReleaseClass) -> Result<Vec<GateRequirement>> {
         let mut gates = self
-            .selected(class)
+            .selected(registry, class)?
             .filter(|requirement| {
                 self.schema_version != CONTRACT_V2
                     || !matches!(
@@ -451,7 +557,7 @@ impl QualificationContract {
                     policy_id: requirement.id.clone(),
                     policy_digest: Sha256Digest::of_canonical(
                         &self.schema_version,
-                        &(requirement, self.thresholds_for(class)?),
+                        &(requirement, self.thresholds_for(registry, class)?),
                     )?,
                     required_for_stable: true,
                 })
@@ -462,7 +568,7 @@ impl QualificationContract {
                 policy_id: format!("claim-{}", claim.id),
                 policy_digest: Sha256Digest::of_canonical(
                     CONTRACT_V2,
-                    &(self, claim, self.thresholds_for(class)?),
+                    &(self, claim, self.thresholds_for(registry, class)?),
                 )?,
                 required_for_stable: claim.blocks_release,
             });
@@ -477,22 +583,50 @@ impl QualificationContract {
     /// blocked cells where the selected thresholds require completeness.
     pub fn validate_plan(&self, plan: &ReleasePlanV1) -> Result<()> {
         self.validate()?;
+        let snapshot_release_id =
+            format!("{QUALIFICATION_SNAPSHOT_RELEASE_PREFIX}{}", plan.version);
+        let snapshot_source_tag = format!("{QUALIFICATION_SNAPSHOT_TAG_PREFIX}{}", plan.version);
         match &plan.qualification_predecessor {
             Some(prior)
-                if prior.registry == plan.registry && prior.release_id != plan.release_id =>
+                if prior.registry == plan.registry
+                    && prior.release_id != plan.release_id
+                    && !plan
+                        .release_id
+                        .starts_with(QUALIFICATION_SNAPSHOT_RELEASE_PREFIX)
+                    && !plan
+                        .source
+                        .source_tag
+                        .starts_with(QUALIFICATION_SNAPSHOT_TAG_PREFIX) =>
             {
                 require_identifier(&prior.release_id, "qualification predecessor release")?;
             }
-            _ => bail!("server contract requires a distinct same-registry predecessor"),
+            None if plan.release_id == snapshot_release_id
+                && plan.source.source_tag == snapshot_source_tag
+                && plan.intended_channels.is_empty() => {}
+            _ => {
+                bail!(
+                    "server contract requires a distinct same-registry predecessor or an explicitly reserved non-public qualification snapshot"
+                )
+            }
         }
-        if plan.gates != self.gates(plan.release_class)?
+        if plan.gates != self.gates(&plan.registry, plan.release_class)?
             || plan.public_evidence_policy_digest != self.digest()?
         {
             bail!("release gates or evidence policy differ from the frozen qualification contract");
         }
+        // The complete inventory also retains packages excluded from every
+        // publication target. Blocked eligible targets still require rules.
         let packages: BTreeSet<_> = plan
             .packages
             .iter()
+            .filter(|package| {
+                package.platforms.iter().any(|cell| {
+                    !matches!(
+                        cell.decision,
+                        crate::platform::MatrixCell::NotApplicable { .. }
+                    )
+                })
+            })
             .map(|package| package.name.as_str())
             .collect();
         let rules: BTreeSet<_> = self
@@ -501,7 +635,9 @@ impl QualificationContract {
             .map(|rule| rule.name.as_str())
             .collect();
         if packages != rules {
-            bail!("qualification classification differs from the complete package inventory");
+            bail!(
+                "qualification classification differs from the publication-eligible package inventory"
+            );
         }
         if plan.images.is_empty() {
             bail!("server qualification requires the Linux image matrix");
@@ -515,8 +651,9 @@ impl QualificationContract {
                 bail!("required server image target is blocked or inapplicable");
             }
         }
+        self.validate_package_execution_images(plan)?;
         if self
-            .thresholds_for(plan.release_class)?
+            .thresholds_for(&plan.registry, plan.release_class)?
             .require_complete_matrix
             && plan.packages.iter().any(|package| {
                 package
@@ -526,6 +663,50 @@ impl QualificationContract {
             })
         {
             bail!("qualification profile requires a complete package matrix");
+        }
+        Ok(())
+    }
+
+    /// Rejects missing package execution images before builds or signatures.
+    fn validate_package_execution_images(&self, plan: &ReleasePlanV1) -> Result<()> {
+        use crate::platform::MatrixCell;
+
+        for package in &plan.packages {
+            let Some(execution) = self
+                .package_rules
+                .iter()
+                .find(|rule| rule.name == package.name)
+                .and_then(|rule| rule.execution.as_ref())
+            else {
+                continue;
+            };
+
+            for cell in package
+                .platforms
+                .iter()
+                .filter(|cell| matches!(cell.decision, MatrixCell::Artifact { .. }))
+            {
+                let variant = execution.system_variant();
+                let bound_image = plan
+                    .images
+                    .iter()
+                    .find(|image| image.system_variant == variant);
+                let image_cell = bound_image.and_then(|image| {
+                    image
+                        .platforms
+                        .iter()
+                        .find(|image_cell| image_cell.platform == cell.platform)
+                });
+                if !image_cell.is_some_and(|image_cell| {
+                    matches!(image_cell.decision, MatrixCell::Artifact { .. })
+                }) {
+                    bail!(
+                        "package {} requires execution image {variant} for {} in the release plan",
+                        package.name,
+                        cell.platform,
+                    );
+                }
+            }
         }
         Ok(())
     }

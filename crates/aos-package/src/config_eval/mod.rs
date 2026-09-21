@@ -2841,7 +2841,7 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     );
     std::fs::write(&staged_entry, &expression)
         .with_context(|| format!("writing {}", staged_entry.display()))?;
-    let mut evaluator = stock::pure_eval_command()
+    let mut evaluator = stock::pure_eval_command(&cmd.eval_root)
         .context("resolving the AOS stock evaluator for host package selection")?;
     evaluator.arg("-");
     let output = stock::output_with_expression(&mut evaluator, &expression)

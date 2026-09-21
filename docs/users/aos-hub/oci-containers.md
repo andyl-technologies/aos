@@ -17,20 +17,26 @@ reported. An explicit `--token` is used directly.
 
 ## Rollout gates
 
-OCI capabilities are disabled by default and enabled independently. Native and
-Worker deployments use the same variables:
+OCI capabilities are enabled by default, alongside image browsing. Each can be
+disabled independently. Native and Worker deployments use the same variables:
 
-| Capability | Native `serve` flag | Environment / Worker variable |
+| Capability | Native `serve` opt-out | Environment / Worker opt-out |
 | --- | --- | --- |
-| Pull and discovery | `--oci-pull-enabled` | `HUB_OCI_PULL_ENABLED=true` |
-| Push and discovery | `--oci-push-enabled` | `HUB_OCI_PUSH_ENABLED=true` |
-| Verified AOS publication | `--oci-verified-publication-enabled` | `HUB_OCI_VERIFIED_PUBLICATION_ENABLED=true` |
-| Repository, tag, and retention mutations | `--oci-administration-enabled` | `HUB_OCI_ADMINISTRATION_ENABLED=true` |
-| Garbage collection | `--oci-gc-enabled` | `HUB_OCI_GC_ENABLED=true` |
+| Pull and discovery | `--oci-pull-enabled=false` | `HUB_OCI_PULL_ENABLED=false` |
+| Push and discovery | `--oci-push-enabled=false` | `HUB_OCI_PUSH_ENABLED=false` |
+| Verified AOS publication | `--oci-verified-publication-enabled=false` | `HUB_OCI_VERIFIED_PUBLICATION_ENABLED=false` |
+| Repository, tag, and retention mutations | `--oci-administration-enabled=false` | `HUB_OCI_ADMINISTRATION_ENABLED=false` |
+| Garbage collection | `--oci-gc-enabled=false` | `HUB_OCI_GC_ENABLED=false` |
 
-For Worker installs, pass the corresponding flags to `aos-hub worker deploy`
-or `install`; the generated Wrangler configuration records every value
-explicitly. The checked-in development `wrangler.toml` keeps all five false.
+For Worker installs, pass any opt-outs to `aos-hub worker deploy` or `install`;
+the generated Wrangler configuration records every value explicitly. Bare
+flags and `=true` remain supported for explicitly enabling a capability. The
+checked-in development `wrangler.toml` enables all five capabilities.
+
+An empty registry renders an empty Containers catalog. Disabling container
+browsing renders an explanatory page with Hub navigation. Configuration and
+page-data failures do not produce a blank HTTP 503 in the browser; machine
+Distribution and Connect endpoints retain their error responses.
 
 These are server-side gates, not presentation hints. Pull and push are enforced
 again at Distribution discovery, token exchange, and the exact manifest, blob,

@@ -16,6 +16,7 @@
 //! - [`object_bundle`] — bounded OID-sharded loose-object transport bundles.
 //! - [`pack_index`] — bounded SHA-256 pack-index structural and checksum
 //!   validation.
+//! - [`package_version`] — exact upstream package-version validation.
 //! - [`keymap`] — machine paths, mutability, and HTTP response metadata shared
 //!   by producers and serving runtimes.
 //! - [`sshsig`] — OpenSSH SSHSIG signature parsing and Ed25519
@@ -43,6 +44,7 @@ pub mod manifest;
 pub mod object;
 pub mod object_bundle;
 pub mod pack_index;
+pub mod package_version;
 pub mod refs;
 pub mod sshsig;
 pub mod stack;

@@ -239,7 +239,7 @@ fn test_live_state_with_teardown(
 // crucible-lint: allow rust-allow -- test factory carries the complete live callback state boundary.
 #[allow(clippy::too_many_arguments)]
 fn test_live_state_with_teardown_and_fault_commands(
-    plugin_id: QemuPluginId,
+    _plugin_id: QemuPluginId,
     vcpu_count: u32,
     icount_shift: u8,
     initial_raw_icount: u64,
@@ -253,7 +253,6 @@ fn test_live_state_with_teardown_and_fault_commands(
     let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("test queued advance should validate: {error}"));
     LiveVcpuTimeCallbackState::new(
-        plugin_id,
         test_icount_raw,
         test_force_vcpu_exit,
         QemuIdleWakeWait::test_stub(test_wait_idle_wake),

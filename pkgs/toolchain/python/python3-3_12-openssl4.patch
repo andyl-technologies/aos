@@ -1,0 +1,108 @@
+--- a/Modules/_ssl.c
++++ b/Modules/_ssl.c
+@@ -1339,14 +1339,14 @@
+                 }
+                 PyTuple_SET_ITEM(t, 0, v);
+ 
+-                if (name->d.ip->length == 4) {
+-                    unsigned char *p = name->d.ip->data;
++                if (ASN1_STRING_length(name->d.ip) == 4) {
++                    const unsigned char *p = ASN1_STRING_get0_data(name->d.ip);
+                     v = PyUnicode_FromFormat(
+                         "%d.%d.%d.%d",
+                         p[0], p[1], p[2], p[3]
+                     );
+-                } else if (name->d.ip->length == 16) {
+-                    unsigned char *p = name->d.ip->data;
++                } else if (ASN1_STRING_length(name->d.ip) == 16) {
++                    const unsigned char *p = ASN1_STRING_get0_data(name->d.ip);
+                     v = PyUnicode_FromFormat(
+                         "%X:%X:%X:%X:%X:%X:%X:%X",
+                         p[0] << 8 | p[1],
+@@ -1477,8 +1477,8 @@
+             continue;
+         }
+         uri = ad->location->d.uniformResourceIdentifier;
+-        ostr = PyUnicode_FromStringAndSize((char *)uri->data,
+-                                           uri->length);
++        ostr = PyUnicode_FromStringAndSize((const char *)ASN1_STRING_get0_data(uri),
++                                           ASN1_STRING_length(uri));
+         if (ostr == NULL) {
+             goto fail;
+         }
+@@ -1544,8 +1544,8 @@
+                 continue;
+             }
+             uri = gn->d.uniformResourceIdentifier;
+-            ouri = PyUnicode_FromStringAndSize((char *)uri->data,
+-                                               uri->length);
++            ouri = PyUnicode_FromStringAndSize((const char *)ASN1_STRING_get0_data(uri),
++                                               ASN1_STRING_length(uri));
+             if (ouri == NULL)
+                 goto done;
+ 
+@@ -2966,6 +2966,7 @@
+     SSL_CTX *ctx = NULL;
+     X509_VERIFY_PARAM *params;
+     int result;
++    int fixed_protocol = 0;
+ 
+    /* slower approach, walk MRO and get borrowed reference to module.
+     * PyType_GetModuleByDef is required for SSLContext subclasses */
+@@ -2980,7 +2981,8 @@
+ #if defined(SSL3_VERSION) && !defined(OPENSSL_NO_SSL3)
+     case PY_SSL_VERSION_SSL3:
+         PY_SSL_DEPRECATED("ssl.PROTOCOL_SSLv3 is deprecated", 2, NULL);
+-        method = SSLv3_method();
++        method = TLS_method();
++        fixed_protocol = SSL3_VERSION;
+         break;
+ #endif
+ #if (defined(TLS1_VERSION) && \
+@@ -2988,7 +2990,8 @@
+         !defined(OPENSSL_NO_TLS1_METHOD))
+     case PY_SSL_VERSION_TLS1:
+         PY_SSL_DEPRECATED("ssl.PROTOCOL_TLSv1 is deprecated", 2, NULL);
+-        method = TLSv1_method();
++        method = TLS_method();
++        fixed_protocol = TLS1_VERSION;
+         break;
+ #endif
+ #if (defined(TLS1_1_VERSION) && \
+@@ -2996,7 +2999,8 @@
+         !defined(OPENSSL_NO_TLS1_1_METHOD))
+     case PY_SSL_VERSION_TLS1_1:
+         PY_SSL_DEPRECATED("ssl.PROTOCOL_TLSv1_1 is deprecated", 2, NULL);
+-        method = TLSv1_1_method();
++        method = TLS_method();
++        fixed_protocol = TLS1_1_VERSION;
+         break;
+ #endif
+ #if (defined(TLS1_2_VERSION) && \
+@@ -3004,7 +3008,8 @@
+         !defined(OPENSSL_NO_TLS1_2_METHOD))
+     case PY_SSL_VERSION_TLS1_2:
+         PY_SSL_DEPRECATED("ssl.PROTOCOL_TLSv1_2 is deprecated", 2, NULL);
+-        method = TLSv1_2_method();
++        method = TLS_method();
++        fixed_protocol = TLS1_2_VERSION;
+         break;
+ #endif
+     case PY_SSL_VERSION_TLS:
+@@ -3033,6 +3038,16 @@
+     PySSL_END_ALLOW_THREADS
+ 
+     if (ctx == NULL) {
++        _setSSLError(get_ssl_state(module), NULL, 0, __FILE__, __LINE__);
++        return NULL;
++    }
++
++    /* OpenSSL 4 removes the version-specific methods. Preserve their protocol
++       bounds using the supported generic method and version controls. */
++    if (fixed_protocol != 0 &&
++        (!SSL_CTX_set_min_proto_version(ctx, fixed_protocol) ||
++         !SSL_CTX_set_max_proto_version(ctx, fixed_protocol))) {
++        SSL_CTX_free(ctx);
+         _setSSLError(get_ssl_state(module), NULL, 0, __FILE__, __LINE__);
+         return NULL;
+     }

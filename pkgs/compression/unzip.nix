@@ -51,11 +51,12 @@ in
           sed -i '1i #include <dirent.h>' unix/unix.c 2>/dev/null || true
           sed -i '1i #include <sys/types.h>' unix/unix.c 2>/dev/null || true
 
-          # Remove conflicting localtime() declaration from unxcfg.h (C23 fix)
-          sed -i '/^struct tm \*localtime/d' unix/unxcfg.h 2>/dev/null || true
+          # Remove obsolete no-argument declarations rejected by C23 compilers.
+          sed -i '/struct tm \*gmtime(), \*localtime();/d' unix/unxcfg.h
 
           # Large file support + no lchmod
           sed -i 's/^CF = /CF = -DLARGE_FILE_SUPPORT -D_FILE_OFFSET_BITS=64 -DNO_LCHMOD /' unix/Makefile 2>/dev/null || true
+          sed -i 's/CFLAGS="-O -Wall"/CFLAGS="-O -Wall -std=gnu17"/' unix/Makefile
 
           ${
             if stdenv.hostPlatform.isDarwin

@@ -22,12 +22,15 @@
   pcre2,
   gettext,
   bash,
+  rust,
   stdenv,
   buildPackages,
   minimal ? false,
 }: let
-  version = "2.48.1";
+  version = "2.55.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
   buildBash =
     if isDarwinCross
     then buildPackages.bash
@@ -40,6 +43,27 @@
     if isDarwinCross
     then buildPackages.python3
     else python3;
+  cargoBuildTool =
+    if isDarwinCross
+    then let
+      currentRust = import ../toolchain/rust/_current.nix;
+      rustSource = fetchurl {
+        urls = [
+          "https://static.rust-lang.org/dist/rustc-${currentRust.version}-src.tar.gz"
+        ];
+        hash = currentRust.srcHash;
+      };
+    in
+      import ../toolchain/rust/_rust-darwin-build-tool.nix {
+        inherit buildPackages;
+        crossCc = stdenv.cc;
+        hostPlatform = stdenv.hostPlatform;
+        src = rustSource;
+        inherit (currentRust) version changeId configFileName;
+      }
+    else if isLinuxCross
+    then rust.passthru.buildTool
+    else rust;
   gettextRuntime =
     if isDarwinCross
     then gettext.lib
@@ -58,12 +82,19 @@
     then featureFlags
     else "PERL_PATH=${buildPerl}/bin/perl PYTHON_PATH=${buildPython3}/bin/python3";
   buildShellFlag = "SHELL_PATH=${buildBash}/bin/bash";
+  # Link the declared target library without executing curl-config, whose
+  # interpreter may be unavailable in the sandbox or on a cross builder.
+  curlLinkFlag = ''CURL_LDFLAGS="-L${curl}/lib -lcurl"'';
+
   # Git's Makefile runs uname independently of configure. Override the Linux
   # builder result so config.mak.uname selects the target Darwin capabilities.
   targetPlatformFlags = lib.optionalString isDarwinCross " uname_S=Darwin uname_M=${stdenv.hostPlatform.darwinArch} uname_R=22.1.0";
   # Darwin's precompose support calls iconv directly; its SDK provides the
   # canonical header and system-library stub.
   iconvConfigureFlag = lib.optionalString (!isDarwinCross) "--without-iconv";
+  cargoTargetFlags = lib.optionalString stdenv.isCross ''
+    CARGO_ARGS="--release --target ${stdenv.hostPlatform.config}" \
+    RUST_TARGET_DIR=target/${stdenv.hostPlatform.config}/release'';
 in
   mkDerivation {
     pname = "git" + lib.optionalString minimal "-minimal";
@@ -74,7 +105,7 @@ in
         "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${version}.tar.xz"
         "https://www.kernel.org/pub/software/scm/git/git-${version}.tar.xz"
       ];
-      hash = "sha256-HF1UX13B61HpXSxQ2Y/fiLGja6H6MOmuXVOFxgJPgq0=";
+      hash = "sha256-RX/bBNyHKOAH1GiGleaRLm9oByeSDypAvxHqzBdQU1c=";
     };
 
     buildDeps =
@@ -82,13 +113,13 @@ in
         gnumake
         pkg-config
         autoconf
+        cargoBuildTool
+        # Translation catalogs need a compiler that runs on the builder.
+        buildPackages.gettext
       ]
       ++ lib.optionals (!minimal) [
         perl
         python3
-      ]
-      ++ lib.optionals isDarwinCross [
-        buildPackages.gettext
       ];
     runtimeDeps =
       [
@@ -122,12 +153,13 @@ in
       {
         name = "configure";
         script = ''
-          make configure${lib.optionalString isDarwinCross ''
+          make configure${lib.optionalString stdenv.isCross ''
 
-            # These runtime probes describe fixed Darwin libc behavior. Seed
+            # These runtime probes describe fixed target-libc behavior. Seed
             # them when the target binaries cannot run on the Linux builder.
             export ac_cv_fread_reads_directories=yes
             export ac_cv_snprintf_returns_bogus=no
+          ''}${lib.optionalString isDarwinCross ''
             export ac_cv_iconv_omits_bom=no
           ''}
           ./configure \
@@ -137,7 +169,6 @@ in
             --with-openssl=${openssl} \
             --with-expat=${expat} \
             --with-zlib=${zlib} \
-            --with-pcre2=${pcre2} \
             --with-libpcre2 \
             --without-tcltk \
             ${iconvConfigureFlag}
@@ -146,9 +177,27 @@ in
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES \
+          ${lib.optionalString isLinuxCross ''
+            # Cargo's build script runs on the builder, while libgitcore is
+            # linked into target Git. Keep target headers and linker flags
+            # out of the build script's native compiler invocation.
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset AOS_OBJECT_FORMAT AOS_RUST_TARGET AOS_GOARCH AOS_GOOS
+            unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+            unset LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+            exec ${buildPackages.cc}/bin/cc "$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export CARGO_TARGET_${nativeCargoTarget}_LINKER="$PWD/.aos-build-tools/cc-for-build"
+          ''}make -j$NIX_BUILD_CORES \
             NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
+            ${curlLinkFlag} \
+            ${cargoTargetFlags} \
             ${buildFeatureFlags}
         '';
       }
@@ -158,6 +207,8 @@ in
           make install \
             NO_INSTALL_HARDLINKS=1${targetPlatformFlags} \
             ${buildShellFlag} \
+            ${curlLinkFlag} \
+            ${cargoTargetFlags} \
             ${buildFeatureFlags}
           ${lib.optionalString isDarwinCross ''
             retarget_tool_root() {

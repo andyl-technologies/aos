@@ -205,7 +205,7 @@ diff -purN -x .git -x fubar -x fubar.c -x Makefile -x config.status -x config.h 
 
    # And finally, pipe this all into the compiler.
 -  echo '	) | $(COMPILE.S) -x assembler-with-cpp -o $@ -'
-+  echo '	) > stdin.c; $(COMPILE.S) -x assembler-with-cpp -o $@ stdin.c'
++  echo '	) > "$@.stdin.c"; $(COMPILE.S) -x assembler-with-cpp -o $@ "$@.stdin.c"'
 
    case $weak in
    *@*)
@@ -214,7 +214,7 @@ diff -purN -x .git -x fubar -x fubar.c -x Makefile -x config.status -x config.h 
  	 echo ''; \\
  	 echo '#include <bp-thunks.h>'; \\
 -	) | \$(COMPILE.c) -x c -o \$@ -"
-+	) > stdin.c; \$(COMPILE.c) -x c -o \$@ stdin.c"
++	) > '\$@.stdin.c'; \$(COMPILE.c) -x c -o \$@ '\$@.stdin.c'"
  ### Use this for debugging intermediate output:
  ### 	) >\$(@:.ob=.c)
  ### 	\$(subst -c,-E,\$(COMPILE.c)) -o \$(@:.ob=.ib) \$(@:.ob=.c)

@@ -1,0 +1,13 @@
+{
+  "schema_version": "aos.release.contributor-authorization-summary/v1",
+  "registry": "andyl/testing",
+  "source_repository": "https://github.com/andyl-technologies/aos",
+  "policy": "docs/maintainers/contributor-licensing.md",
+  "external_contributors": 0,
+  "external_agreement_acceptances_required": 0,
+  "employee_authorization_path": "Andyl, Inc. standard CIAA and internal authorization record",
+  "determination": "authorized",
+  "statement": "Every contributor to the source revision named by this release plan contributed within the scope of their Andyl, Inc. employment and is covered by the standard CIAA and a verified internal authorization record. No external contributor participated, so no External Contributor License Agreement acceptance is required for this revision.",
+  "records_location": "Private employee and acceptance records are held outside this repository and outside the release bundle, as required by the contributor-licensing policy.",
+  "attested_by": "dylan@andyl.com"
+}

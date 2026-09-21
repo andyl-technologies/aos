@@ -1,4 +1,4 @@
-##! qemu — Minimal QEMU for KVM-accelerated virtual machines (headless)
+##! qemu — Headless virtual machines and Linux process emulation
 {
   lib,
   mkDerivation,
@@ -24,11 +24,13 @@
   libgcrypt,
   gnutls,
   fuse3,
+  gcc-libs,
   stdenv,
   buildPackages,
   pname ? "qemu",
   enablePlugins ? false,
   applyCruciblePatch ? false,
+  enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
   testOnlyNonDistributable ? false,
   fullUpstreamTestSuiteOnly ? false,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
@@ -142,6 +144,13 @@
     if enablePlugins
     then "--enable-plugins"
     else "--disable-plugins";
+  # The stock Linux package also executes foreign build tools. Keep Crucible's
+  # system-emulator target set and its inertness reference unchanged.
+  qemuTargetFlag =
+    if enableLinuxUser
+    then "--target-list=x86_64-softmmu,aarch64-softmmu,i386-linux-user,x86_64-linux-user,aarch64-linux-user,riscv64-linux-user"
+    else "--target-list=x86_64-softmmu,aarch64-softmmu";
+  qemuTargetList = lib.removePrefix "--target-list=" qemuTargetFlag;
   sambaSmbdExecutable = "sbin/smbd";
   sambaSmbdConfigureFlag = "--smbd=${samba-smbd}/${sambaSmbdExecutable}";
   normalizeSambaSmbdConfigureFlag = executable: flag: let
@@ -154,7 +163,7 @@
     else flag;
   qemuConfigureFlags =
     [
-      "--target-list=x86_64-softmmu,aarch64-softmmu"
+      qemuTargetFlag
     ]
     ++ (
       if isDarwinCross
@@ -179,7 +188,11 @@
       "--enable-slirp"
       "--enable-virtfs"
       "--disable-bsd-user"
-      "--disable-linux-user"
+      (
+        if enableLinuxUser
+        then "--enable-linux-user"
+        else "--disable-linux-user"
+      )
       "--disable-download"
       "--disable-docs"
       "--disable-guest-agent"
@@ -211,6 +224,10 @@
       "--enable-slirp-smbd"
       sambaSmbdConfigureFlag
     ]
+    # Thread exit unwinds through glibc's dlopen of libgcc_s. Retain it even
+    # when QEMU itself has no direct references to its exported symbols. Keep
+    # the scoped linker state in one argument so Meson cannot reorder it.
+    ++ lib.optional stdenv.hostPlatform.isLinux "--extra-ldflags=-Wl,--push-state,--no-as-needed,-l:libgcc_s.so.1,--pop-state"
     ++ lib.optionals isDarwinCross [
       "--disable-cap-ng"
       "--disable-libusb"
@@ -247,6 +264,24 @@
   '';
   qemuConfigureFlagsHash = builtins.hashString "sha256" qemuConfigureIdentityMaterial;
   qemuConfigureFlagsScript = builtins.concatStringsSep " \\\n            " qemuConfigureFlags;
+  qemuRuntimeDeps =
+    [
+      glib
+      pixman
+      zlib
+      libslirp
+      dtc
+    ]
+    ++ lib.optionals (!isDarwinCross) [
+      libcap-ng
+      libusb1
+      libgcrypt
+      gnutls
+      fuse3
+      samba-smbd
+    ]
+    ++ lib.optional stdenv.hostPlatform.isLinux gcc-libs;
+  qemuRuntimeRpath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") qemuRuntimeDeps);
   fullUpstreamTestHarnessMutationMaterial = ''
     mutation_version=1
     mutation_scope=post-build-test-harness-only
@@ -269,7 +304,7 @@
     qemu_source_hash=${atomicPatch.qemuSourceHash}
     qemu_nix_hash=${qemuNixHash}
     qemu_configure_flags_hash=${qemuConfigureFlagsHash}
-    qemu_configure_target_list=x86_64-softmmu,aarch64-softmmu
+    qemu_configure_target_list=${qemuTargetList}
     qemu_atomic_patch_hash=${atomicPatchHash}
     qemu_patch_branch_ref=${atomicPatch.branchRef}
     qemu_patch_branch_model=${atomicPatch.branchModel}
@@ -350,22 +385,7 @@ in
             buildBash
             buildPerl
           ];
-      runtimeDeps =
-        [
-          glib
-          pixman
-          zlib
-          libslirp
-          dtc
-        ]
-        ++ lib.optionals (!isDarwinCross) [
-          libcap-ng
-          libusb1
-          libgcrypt
-          gnutls
-          fuse3
-          samba-smbd
-        ];
+      runtimeDeps = qemuRuntimeDeps ++ lib.optional enableLinuxUser bash;
       propagatedDeps = [];
       # The Darwin install is finalized and signed below. Either generic
       # mutating pass would invalidate the resulting Mach-O code signatures.
@@ -2895,6 +2915,18 @@ in
               done
             ''}
 
+            ${lib.optionalString (stdenv.isCross && !isDarwinCross) ''
+              # QEMU's generated Meson cross file preserves explicitly found
+              # GLib paths but drops the wrapper's remaining install RPATH.
+              # Restore the declared target runtime closure before the common
+              # fixup phase shrinks each executable to the libraries it uses.
+              for executable in "$out"/bin/*; do
+                [ -f "$executable" ] || continue
+                patchelf --print-rpath "$executable" >/dev/null 2>&1 || continue
+                patchelf --add-rpath "${qemuRuntimeRpath}" "$executable"
+              done
+            ''}
+
             plugin_header=include/plugins/qemu-plugin.h
             test -f "$plugin_header"
             mkdir -p "$out/include/qemu"
@@ -2902,6 +2934,27 @@ in
             mkdir -p "$out/include/aos/crucible"
             install -m 644 include/aos/crucible/crucible_shmem_abi.h \
               "$out/${shmemHeaderInstallPath}"
+
+            ${lib.optionalString enableLinuxUser ''
+              # binfmt_misc's P flag inserts the original argv[0] after the
+              # executable path. Translate that contract to QEMU's -0 option.
+              for architecture in i386 x86_64 aarch64 riscv64; do
+                test -x "$out/bin/qemu-$architecture"
+                cat > "$out/bin/qemu-$architecture-binfmt-P" <<EOF
+              #!${bash}/bin/bash
+              set -eu
+              if [ "\$#" -lt 2 ]; then
+                echo "binfmt interpreter requires executable path and original argv[0]" >&2
+                exit 64
+              fi
+              program=\$1
+              original_argv0=\$2
+              shift 2
+              exec "$out/bin/qemu-$architecture" -0 "\$original_argv0" "\$program" "\$@"
+              EOF
+                chmod 755 "$out/bin/qemu-$architecture-binfmt-P"
+              done
+            ''}
 
             mkdir -p "$out/share/aos/crucible"
             ${lib.optionalString applyCruciblePatch ''
@@ -2940,7 +2993,7 @@ in
             qemu_source_hash=${atomicPatch.qemuSourceHash}
             qemu_nix_hash=${qemuNixHash}
             qemu_configure_flags_hash=${qemuConfigureFlagsHash}
-            qemu_configure_target_list=x86_64-softmmu,aarch64-softmmu
+            qemu_configure_target_list=${qemuTargetList}
             qemu_atomic_patch_hash=${atomicPatchHash}
             qemu_patch_branch_ref=${atomicPatch.branchRef}
             qemu_patch_branch_model=${atomicPatch.branchModel}
@@ -3139,10 +3192,19 @@ in
             dependencies = [patchMicrotests];
           };
         }
-        else {};
+        else
+          lib.optionalAttrs enableLinuxUser {
+            linux-user = import ../../tests/build/qemu-linux-user.nix {
+              inherit pkgs;
+              qemu = self;
+            };
+          };
 
       meta = {
-        description = "qemu — machine emulator and virtualizer (minimal KVM build)";
+        description =
+          if enableLinuxUser
+          then "QEMU headless system emulators and Linux process emulation"
+          else "QEMU headless system emulators";
         homepage = "https://www.qemu.org";
         license = ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"];
       };

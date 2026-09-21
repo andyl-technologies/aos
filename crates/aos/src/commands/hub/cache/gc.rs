@@ -19,7 +19,7 @@ use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
 async fn cache_gc_policy(printer: &Printer, command: &HubCacheGcPolicyCmd) -> Result<()> {
     match command {
         HubCacheGcPolicyCmd::Show { access, cache } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::GetCacheGcPolicyResponse>(
                 printer,
                 &client,
@@ -111,7 +111,7 @@ async fn cache_gc_policy(printer: &Printer, command: &HubCacheGcPolicyCmd) -> Re
 async fn cache_gc_plan(printer: &Printer, command: &HubCacheGcPlanCmd) -> Result<()> {
     match command {
         HubCacheGcPlanCmd::Create { access, cache } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let current: hub_types::GetCacheGcPolicyResponse = client
                 .call_topology(
                     HubTopologyMethod::GetCacheGcPolicy,
@@ -141,7 +141,7 @@ async fn cache_gc_plan(printer: &Printer, command: &HubCacheGcPlanCmd) -> Result
             cache,
             plan_id,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::CacheGcPlanResponse>(
                 printer,
                 &client,
@@ -164,7 +164,7 @@ async fn cache_gc_first_sweep(printer: &Printer, command: &HubCacheGcFirstSweepC
             gc_plan_id,
             idempotency_key,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let current: hub_types::GetCacheGcPolicyResponse = client
                 .call_topology(
                     HubTopologyMethod::GetCacheGcPolicy,
@@ -221,7 +221,7 @@ async fn cache_gc_runs(printer: &Printer, command: &HubCacheGcRunsCmd) -> Result
             cache,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListCacheGcRunsResponse>(
                 printer,
                 &client,
@@ -239,7 +239,7 @@ async fn cache_gc_runs(printer: &Printer, command: &HubCacheGcRunsCmd) -> Result
             cache,
             operation_id,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::CacheGcRunResponse>(
                 printer,
                 &client,
@@ -257,7 +257,7 @@ async fn cache_gc_runs(printer: &Printer, command: &HubCacheGcRunsCmd) -> Result
             operation_id,
             timeout,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             watch_hub_operation(printer, &client, operation_id, timeout.as_deref()).await
         }
     }
@@ -271,7 +271,7 @@ async fn cache_gc_jobs(printer: &Printer, command: &HubCacheGcJobsCmd) -> Result
             operation_id,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListCacheGcDeletionJobsResponse>(
                 printer,
                 &client,
@@ -290,7 +290,7 @@ async fn cache_gc_jobs(printer: &Printer, command: &HubCacheGcJobsCmd) -> Result
             cache,
             job_id,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::CacheGcDeletionJobResponse>(
                 printer,
                 &client,
@@ -312,7 +312,7 @@ async fn cache_gc_jobs(printer: &Printer, command: &HubCacheGcJobsCmd) -> Result
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "cache GC deletion retry")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -377,7 +377,7 @@ pub(super) async fn cache_gc(printer: &Printer, command: &HubCacheGcCmd) -> Resu
                 printer.info("logical cache GC cancelled");
                 return Ok(());
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let response: hub_types::OperationResponse = client
                 .call_topology(
                     HubTopologyMethod::RunCacheGc,

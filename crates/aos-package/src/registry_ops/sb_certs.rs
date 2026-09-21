@@ -113,13 +113,16 @@ pub fn run_sb_certs(config: &ApmConfig, command: &SbCertsCommand, printer: &Prin
                 signing_key_id.as_deref(),
             )?;
             add_sb_cert(&mut catalog, id, cert_sha256)?;
-            persist_committed_sb_certs(
+            if !persist_committed_sb_certs(
                 &dir,
                 &catalog,
                 *no_commit,
                 &format!("registry: add Secure Boot db cert {id}"),
                 commit_key.as_ref().map(|k| k.path()),
-            )?;
+                printer,
+            )? {
+                return Ok(());
+            }
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "sb_certs_add",
@@ -155,13 +158,16 @@ pub fn run_sb_certs(config: &ApmConfig, command: &SbCertsCommand, printer: &Prin
                 signing_key_id.as_deref(),
             )?;
             retire_sb_cert(&mut catalog, id, reason.as_deref())?;
-            persist_committed_sb_certs(
+            if !persist_committed_sb_certs(
                 &dir,
                 &catalog,
                 *no_commit,
                 &format!("registry: retire Secure Boot db cert {id}"),
                 commit_key.as_ref().map(|k| k.path()),
-            )?;
+                printer,
+            )? {
+                return Ok(());
+            }
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "sb_certs_retire",
@@ -197,13 +203,16 @@ pub fn run_sb_certs(config: &ApmConfig, command: &SbCertsCommand, printer: &Prin
                 signing_key_id.as_deref(),
             )?;
             set_sbat_floor(&mut catalog, component, *generation)?;
-            persist_committed_sb_certs(
+            if !persist_committed_sb_certs(
                 &dir,
                 &catalog,
                 *no_commit,
                 &format!("registry: set SBAT floor {component}={generation}"),
                 commit_key.as_ref().map(|k| k.path()),
-            )?;
+                printer,
+            )? {
+                return Ok(());
+            }
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "sb_certs_set_floor",
@@ -256,20 +265,37 @@ fn load_committed_sb_certs(dir: &Path) -> Result<SbCertsToml> {
 ///
 /// Returns an error when the catalog fails validation, the write fails, or
 /// the commit/object-store refresh fails.
+/// Writes and commits the Secure Boot certificate catalog.
+///
+/// Returns `false` when dry-run mode previewed the change instead of applying
+/// it, which callers use to return before announcing anything as done.
 fn persist_committed_sb_certs(
     dir: &Path,
     catalog: &SbCertsToml,
     no_commit: bool,
     message: &str,
     signing_key: Option<&str>,
-) -> Result<()> {
+    printer: &Printer,
+) -> Result<bool> {
+    if crate::dry_run::active() {
+        printer.info(&format!("Would update sb-certs.toml in {}", dir.display()));
+        printer.kv("Commit message", message);
+        printer.info(if no_commit {
+            "  --no-commit: the catalog would be written without committing."
+        } else {
+            "  A signed commit would record the catalog change."
+        });
+        printer.info("Dry run: the certificate catalog is unchanged.");
+        return Ok(false);
+    }
+
     sb_certs::write_sb_certs_toml(dir, catalog)?;
     if !no_commit {
         commit_registry(dir, message, signing_key)?;
         refresh_registry_object_store(dir)
             .context("refreshing dumb-HTTP object store after sb-certs.toml update")?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Resolve the maintainer key that signs an `sb-certs.toml` commit.

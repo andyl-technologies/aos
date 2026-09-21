@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
   perl,
   pkg-config,
@@ -23,8 +25,10 @@
   json-c,
   zlib,
   readline,
+  tzdata,
+  buildPackages,
 }: let
-  version = "9.20.26";
+  version = "9.20.27";
 in
   mkDerivation {
     pname = "bind";
@@ -35,10 +39,11 @@ in
       urls = [
         "https://downloads.isc.org/isc/bind9/${version}/bind-${version}.tar.xz"
       ];
-      hash = "sha256-VSSN7w+HDExGs95yl46pcmFRMVFmYxiKRWTcodIL81A=";
+      hash = "sha256-FFq3pQszoG2dSIteZoyIfnVPQqz4lU4rXcfiOLCA5KA=";
     };
 
-    buildDeps = [gnumake perl pkg-config cmocka];
+    # dnstap generates C sources with protoc-c on the build machine.
+    buildDeps = [gnumake perl pkg-config cmocka tzdata buildPackages.protobuf-c];
     runtimeDeps = [
       libcap
       libidn2
@@ -67,10 +72,6 @@ in
           tar xf "$src"
           cd bind-${version}
 
-          # This timezone-formatting case relies on host timezone data and is
-          # not deterministic in a hermetic build sandbox.
-          sed -i '/^ISC_TEST_ENTRY(isc_time_formatISO8601L/d' tests/isc/time_test.c
-
           # These are scheduler-sensitive performance benchmarks with a fixed
           # watchdog, rather than rwlock/mutex correctness tests. Concurrent
           # hermetic builds can exhaust the watchdog on otherwise healthy hosts.
@@ -81,31 +82,45 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix="$out" \
-            --sysconfdir="$out/etc" \
-            --localstatedir=/var \
-            --enable-dnstap \
-            --enable-doh \
-            --enable-geoip \
-            --enable-year2038 \
-            --enable-full-report \
-            --with-liburcu=membarrier \
-            --with-maxminddb=${libmaxminddb} \
-            --with-libnghttp2=yes \
-            --with-openssl=${openssl} \
-            --with-gssapi=${krb5}/bin/krb5-config \
-            --with-lmdb=${lmdb} \
-            --with-libxml2=yes \
-            --with-json-c=yes \
-            --with-zlib=yes \
-            --with-readline=readline \
-            --with-libidn2=${libidn2} \
-            --with-cmocka=detect \
-            --with-jemalloc=detect
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # protoc-c runs on the builder, but dnstap and unit tests link
+            # target libraries. Prefer their metadata over native build tools.
+            export PKG_CONFIG_PATH="${protobuf-c}/lib/pkgconfig:${cmocka}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+            # The cross linker cannot use the final installation paths to
+            # resolve indirect dependencies among BIND's in-tree libraries.
+            for library in lib/*; do
+              [ -d "$library" ] || continue
+              LDFLAGS="$LDFLAGS -Wl,-rpath-link,$PWD/$library/.libs"
+            done
+            export LDFLAGS
+          ''
+          + ''
+            ./configure \
+              $configureFlags \
+              --prefix="$out" \
+              --sysconfdir="$out/etc" \
+              --localstatedir=/var \
+              --enable-dnstap \
+              --enable-doh \
+              --enable-geoip \
+              --enable-year2038 \
+              --enable-full-report \
+              --with-liburcu=membarrier \
+              --with-maxminddb=${libmaxminddb} \
+              --with-libnghttp2=yes \
+              --with-openssl=${openssl} \
+              --with-gssapi=${krb5}/bin/krb5-config \
+              --with-lmdb=${lmdb} \
+              --with-libxml2=yes \
+              --with-json-c=yes \
+              --with-zlib=yes \
+              --with-readline=readline \
+              --with-libidn2=${libidn2} \
+              --with-cmocka=detect \
+              --with-jemalloc=detect
+          '';
       }
       {
         name = "build";
@@ -117,7 +132,13 @@ in
           # BIND defaults each test binary to one loop worker per detected CPU.
           # Large builders can then expose an upstream netmgr teardown race in
           # qpdb_test, while two workers still exercise its concurrent paths.
-          ISC_TASK_WORKERS=2 make -j"$NIX_BUILD_CORES" unit
+          # Exercise named-zone formatting against the AOS timezone database;
+          # the sandbox deliberately has no host /usr/share/zoneinfo.
+          # CMocka is needed only by the test executables, not installed tools.
+          LD_LIBRARY_PATH=${cmocka}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
+          TZDIR=${tzdata}/share/zoneinfo \
+            ISC_TASK_WORKERS=2 \
+            make -j"$NIX_BUILD_CORES" unit
         '';
       }
       {

@@ -66,6 +66,50 @@
         type = lib.types.listOf checkType;
         description = "Flat list of checks run inside one VM.";
       };
+      extraDisks = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule {
+          options.sizeMiB = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            description = "Size of the blank device presented to the guest.";
+          };
+        });
+        default = [];
+        description = ''
+          Additional blank block devices attached to the VM, appearing as
+          /dev/vdb onward in declaration order. Storage checks need real
+          devices to build a pool or array on, which the root disk cannot
+          provide.
+        '';
+      };
+      kernelParams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          Extra kernel command-line arguments for the check VM. The harness
+          owns the boot arguments that select a root and console, so a check
+          that depends on kernel or module parameters names them here rather
+          than relying on the image's own command line.
+        '';
+      };
+      timeoutSeconds = lib.mkOption {
+        type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
+        default = null;
+        description = ''
+          Wall-clock budget for the whole check group, covering guest boot as
+          well as the checks themselves. Null takes the harness default. Raise
+          it for a subject that adds boot-time work, such as storage that has
+          to be imported and mounted before the system is usable.
+        '';
+      };
+      memoryMiB = lib.mkOption {
+        type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
+        default = null;
+        description = ''
+          Guest memory for this check group. Null takes the harness default.
+          Checks that exercise memory policy need enough RAM for the
+          proportional caps to leave a usable budget.
+        '';
+      };
     };
   });
 in {

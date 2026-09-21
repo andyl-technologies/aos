@@ -7,14 +7,22 @@
   secretSystem = systems.server-test.extendModules {
     modules = [
       {
+        # APR and its publication tools are test-only image contents. Keep
+        # their explicit fixture envelope separate from production defaults.
+        aos.image.budgets = {
+          maxRuntimeClosureMiB = 832;
+          maxDownloadMiB = 800;
+        };
         aos.packages.aos-secret-reference-test = {
           package = pkgs.aos-secret-reference-test;
           bundle = true;
           preset = false;
         };
         # The in-guest publisher needs both registry-only artifacts. The
-        # runtime package is bundled separately above.
+        # runtime package is bundled separately above. APR is a distinct AOS
+        # output, so include it explicitly for the in-guest publication step.
         environment.systemPackages = [
+          pkgs.aos.apr
           pkgs.aos-secret-reference-test.expose
           pkgs.aos-secret-reference-test.config
         ];
@@ -147,8 +155,13 @@ in {
           printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
             > "$NIX_CONF_DIR/nix.conf"
 
-          KEYGEN=$(${pkgs.aos.apr}/bin/apr keys generate release \
-            --registry secret-reference-test-reg 2>&1)
+          if ! ${pkgs.aos.apr}/bin/apr keys generate release \
+              --registry secret-reference-test-reg \
+              > /tmp/secret-reference-test-keygen.out 2>&1; then
+            cat /tmp/secret-reference-test-keygen.out >&2
+            exit 1
+          fi
+          KEYGEN=$(cat /tmp/secret-reference-test-keygen.out)
           printf '%s\n' "$KEYGEN"
           PUBKEY=
           while IFS= read -r line; do

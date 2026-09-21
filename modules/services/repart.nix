@@ -17,7 +17,8 @@
 in {
   config = lib.mkMerge [
     {
-      boot.initrd.systemd.services."aos-repart".enable = !config.aos.filesystems.zfs.enable;
+      boot.initrd.systemd.services."aos-repart".enable =
+        !(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState);
       boot.initrd.systemd.services."aos-repart" = {
         description = "Commit one-time host storage provisioning";
         requiredBy = ["initrd-root-fs.target"];
@@ -254,7 +255,7 @@ in {
       boot.initrd.systemd.services."mount-var".after = ["aos-repart.service"];
     }
 
-    (lib.mkIf (measured && !config.aos.filesystems.zfs.enable) {
+    (lib.mkIf (measured && !(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState)) {
       boot.initrd.systemd.services."aos-var-crypt".after = ["aos-repart.service"];
     })
   ];

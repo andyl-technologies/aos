@@ -32,8 +32,13 @@
   lib,
   system,
   name,
+  systemVariant ? name,
   runtimeClosureAudit,
 }: let
+  # Assembly and validation execute on the build machine; payloads stay target-specific.
+  buildPackages = pkgs.buildPackages or pkgs;
+  targetPlatform = pkgs.stdenv.hostPlatform;
+
   # Kernel command line parameters from the evaluated config.
   kernelParams = lib.concatStringsSep " " system.config.aos.boot.kernelParams;
   # Each UKI names its own immutable root slot. The root hash bytes are shared
@@ -61,7 +66,7 @@
   guidFrom = seed: let
     digest = builtins.hashString "sha256" seed;
   in "${builtins.substring 0 8 digest}-${builtins.substring 8 4 digest}-${builtins.substring 12 4 digest}-${builtins.substring 16 4 digest}-${builtins.substring 20 12 digest}";
-  identitySeed = "aos-image:${version}:${lib.system}:${name}";
+  identitySeed = "aos-image:${version}:${targetPlatform.system}:${name}";
   rootfsPname = "aos-image-${name}-rootfs";
   verityDigest = builtins.hashString "sha256" "aos-rootfs:verity:${rootfsPname}:aos-root";
   verityUuid = "${builtins.substring 0 8 verityDigest}-${builtins.substring 8 4 verityDigest}-4${builtins.substring 13 3 verityDigest}-8${builtins.substring 17 3 verityDigest}-${builtins.substring 20 12 verityDigest}";
@@ -96,8 +101,8 @@
     };
   };
   dpsType =
-    dpsTypes.${lib.platform.constraints.cpu}
-    or (throw "no DPS root partition types for ${lib.system}");
+    dpsTypes.${targetPlatform.constraints.cpu}
+    or (throw "no DPS root partition types for ${targetPlatform.system}");
   rootGuid = dpsType.root;
   verityGuid = dpsType.verity;
   efiNames = {
@@ -119,8 +124,8 @@
     };
   };
   efiName =
-    efiNames.${lib.platform.constraints.cpu}
-    or (throw "no UEFI executable names for ${lib.system}");
+    efiNames.${targetPlatform.constraints.cpu}
+    or (throw "no UEFI executable names for ${targetPlatform.system}");
 
   mkRootfs = import ../../lib/build/rootfs.nix;
   # The image's root filesystem matches the system's declared root fstype, so
@@ -163,11 +168,11 @@
   activeImageDbCerts =
     if sb.enable
     then
-      pkgs.mkDerivation {
+      buildPackages.mkDerivation {
         pname = "aos-recovery-active-db-certs";
         version = "1";
         src = null;
-        buildDeps = [pkgs.coreutils];
+        buildDeps = [buildPackages.coreutils];
         runtimeDeps = [];
         propagatedDeps = [];
         phases = [
@@ -206,6 +211,20 @@
           cp ${activeImageDbCerts}/active-db-certs.pem \
             rootfs/usr/lib/aos/image-trust/active-db-certs.pem
         ''}
+        # Mount points for declared ZFS datasets. systemd creates a missing
+        # Where= directory itself, but it cannot do so on the read-only root,
+        # so any dataset whose mount point sits directly on the image needs
+        # that directory to exist in the image. Points nested inside another
+        # dataset are shadowed once their parent mounts and are created there
+        # at runtime; making them here too is harmless and keeps the rule
+        # simple.
+        ${lib.concatMapStringsSep "\n" (mountPoint: ''
+            mkdir -p ${lib.escapeShellArg "rootfs${mountPoint}"}
+          '') (
+            builtins.filter (point: point != null && point != "/")
+            (map (dataset: dataset.mountPoint)
+              (builtins.attrValues system.config.aos.filesystems.zfs.datasets))
+          )}
         ${lib.optionalString (system.config.aos.apm.drainScript != null) ''
           # Draining belongs to the system that is currently serving
           # workloads, not the image selected as the next boot. Keep the hook
@@ -276,11 +295,11 @@
   recoverySlotManifest =
     if recoveryEnabled && localSecureBootSigning
     then
-      pkgs.mkDerivation {
+      buildPackages.mkDerivation {
         pname = "aos-recovery-slot-manifest";
         inherit version;
         src = null;
-        buildDeps = [pkgs.coreutils pkgs.jq pkgs.openssl];
+        buildDeps = [buildPackages.coreutils buildPackages.jq buildPackages.openssl];
         runtimeDeps = [];
         propagatedDeps = [];
         phases = [
@@ -291,7 +310,7 @@
               root_hash=$(cat ${rootfs}/root.roothash)
               uki_a_sha256=$(sha256sum ${ukiA}/${ukiAStoreFilename} | cut -d ' ' -f1)
               uki_b_sha256=$(sha256sum ${ukiB}/${ukiBStoreFilename} | cut -d ' ' -f1)
-              ${pkgs.jq}/bin/jq -S -n \
+              ${buildPackages.jq}/bin/jq -S -n \
                 --arg schema "aos.recovery-slot-manifest/v1" \
                 --arg release "${version}" \
                 --argjson recoveryAbi ${toString recovery.abi} \
@@ -317,13 +336,13 @@
                     }
                   }
                 }' > $out/slot-manifest.json
-              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+              ${buildPackages.openssl}/bin/openssl dgst -sha256 \
                 -sign ${sb.dbKey} \
                 -out $out/slot-manifest.json.sig \
                 $out/slot-manifest.json
-              ${pkgs.openssl}/bin/openssl x509 -pubkey -noout \
+              ${buildPackages.openssl}/bin/openssl x509 -pubkey -noout \
                 -in ${dbCertificate} > db-public.pem
-              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+              ${buildPackages.openssl}/bin/openssl dgst -sha256 \
                 -verify db-public.pem \
                 -signature $out/slot-manifest.json.sig \
                 $out/slot-manifest.json
@@ -336,13 +355,19 @@
     import ../base/_recovery-initrd-builder.nix {
       inherit pkgs lib;
       kernel = system.config.system.build.kernel;
+      # Recovery loads the same early-boot modules as the normal initrd, so it
+      # needs the same external module packages behind them. Without the ZFS
+      # module and userland, a recovery environment cannot import the pool that
+      # holds the host's state, which is exactly when it is needed.
+      kernelModulePackages = system.config.aos.boot.initrd.modulePackages;
+      recoveryExtraPackages = system.config.aos.boot.recovery.extraPackages;
       loadModules = system.config.aos.boot.initrd.loadModules;
       dbCert = dbCertificate;
       authorizedDbCerts = "${activeImageDbCerts}/active-db-certs.pem";
       slotManifest = recoverySlotManifest;
       recoveryCopy = lib.toUpper copy;
       recoveryAbi = recovery.abi;
-      platform = lib.system;
+      platform = targetPlatform.system;
       moduleAbi = system.config.aos.system.moduleAbi;
     };
   recoveryInitrdA =
@@ -452,11 +477,11 @@
   # role-bound external providers, and constructs the final disk bytes there.
   # Private material is intentionally neither an argument nor an environment
   # value of this derivation.
-  unsignedAssembly = pkgs.mkDerivation {
+  unsignedAssembly = buildPackages.mkDerivation {
     pname = "aos-image-${name}-unsigned-assembly";
     inherit version;
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.findutils pkgs.jq pkgs.tar];
+    buildDeps = [buildPackages.coreutils buildPackages.findutils buildPackages.jq buildPackages.tar];
     runtimeDeps = [];
     propagatedDeps = [];
     phases = [
@@ -483,7 +508,7 @@
           cp ${system.config.system.build.kernel}/boot/config-${system.config.system.build.kernel.version} "$out/inputs/kernel.config"
           cp ${pkgs.systemd}/lib/systemd/boot/efi/${efiName.systemd} "$out/inputs/systemd-boot.efi"
           cp ${pkgs.systemd}/lib/systemd/boot/efi/linux${
-            if lib.platform.constraints.cpu == "x86_64"
+            if targetPlatform.constraints.cpu == "x86_64"
             then "x64"
             else "aa64"
           }.efi.stub "$out/inputs/uki-stub.efi"
@@ -518,11 +543,11 @@
             exit 1
           }
 
-          ${pkgs.jq}/bin/jq -cS -n \
+          ${buildPackages.jq}/bin/jq -cS -n \
             --arg schema aos.image.assembly-recipe/v2 \
             --arg release ${lib.escapeShellArg version} \
-            --arg platform ${lib.escapeShellArg lib.system} \
-            --arg variant ${lib.escapeShellArg name} \
+            --arg platform ${lib.escapeShellArg targetPlatform.system} \
+            --arg variant ${lib.escapeShellArg systemVariant} \
             --arg kernelRelease ${lib.escapeShellArg system.config.system.build.kernel.version} \
             --arg kernelParams ${lib.escapeShellArg kernelParams} \
             --arg kernelParamsB ${lib.escapeShellArg kernelParamsB} \
@@ -629,10 +654,11 @@
         '';
       }
     ];
-    meta.description = "Public-only unsigned AOS image assembly for ${lib.system}";
+    meta.description = "Public-only unsigned AOS image assembly for ${targetPlatform.system}";
   };
 
-  imageDrv = pkgs.mkDerivation ({
+  imageDrv = buildPackages.mkDerivation ({
+      inherit targetPlatform;
       name = "aos-image-${name}";
       src = null;
 
@@ -641,17 +667,20 @@
       # release budget even when callers do not build the focused check.
       buildDeps =
         [
-          pkgs.util-linux # sfdisk
-          pkgs.e2fsprogs
-          pkgs.dosfstools # mkfs.vfat
-          pkgs.mtools # mcopy
-          pkgs.coreutils
-          pkgs.jq
-          pkgs.zstd
+          buildPackages.util-linux # sfdisk
+          buildPackages.e2fsprogs
+          buildPackages.dosfstools # mkfs.vfat
+          buildPackages.mtools # mcopy
+          buildPackages.coreutils
+          buildPackages.jq
+          buildPackages.zstd
           runtimeClosureAudit
         ]
-        ++ lib.optional localSecureBootSigning pkgs.sbsigntools
-        ++ lib.optionals recoveryEnabled [pkgs.binutils pkgs.openssl]; # recovery audit + bundle signature
+        ++ lib.optional localSecureBootSigning buildPackages.sbsigntools
+        ++ lib.optionals recoveryEnabled [
+          pkgs.stdenv.binutils # Native executable with target PE support.
+          buildPackages.openssl
+        ];
 
       ROOT_IMG = "${rootfs}/root.img";
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
@@ -672,8 +701,8 @@
       IMAGE_NAME = name;
       IMAGE_FILENAME = "aos-${name}.img.zst";
       IMAGE_VERSION = version;
-      IMAGE_ARCHITECTURE = lib.platform.constraints.cpu;
-      IMAGE_PLATFORM = lib.system;
+      IMAGE_ARCHITECTURE = targetPlatform.constraints.cpu;
+      IMAGE_PLATFORM = targetPlatform.system;
       IMAGE_KERNEL_PARAMS = kernelParams;
       IMAGE_ROOT_FS_TYPE = rootFsType;
       MAX_ROOT_MIB = toString budgets.maxRootMiB;
@@ -783,14 +812,14 @@
               cp "$RECOVERY_A_PATH" esp/EFI/AOS/recovery-a.efi
               cp "$RECOVERY_B_PATH" esp/EFI/AOS/recovery-b.efi
               for recovery_uki in "$RECOVERY_A_PATH" "$RECOVERY_B_PATH"; do
-                objcopy -O binary --only-section=.cmdline "$recovery_uki" recovery.cmdline
+                ${pkgs.stdenv.binutils}/bin/objcopy -O binary --only-section=.cmdline "$recovery_uki" recovery.cmdline
                 recovery_cmdline=$(tr -d '\000' < recovery.cmdline)
                 if [ "$recovery_cmdline" != "$RECOVERY_CMDLINE" ]; then
                   echo "recovery UKI carries a noncanonical command line" >&2
                   exit 1
                 fi
                 rm -f recovery.pcrsig
-                objcopy -O binary --only-section=.pcrsig "$recovery_uki" recovery.pcrsig 2>/dev/null || true
+                ${pkgs.stdenv.binutils}/bin/objcopy -O binary --only-section=.pcrsig "$recovery_uki" recovery.pcrsig 2>/dev/null || true
                 if [ -s recovery.pcrsig ]; then
                   echo "recovery UKI must not carry normal PCR authorization" >&2
                   exit 1
@@ -1017,7 +1046,7 @@
               exit 1
             fi
             disk_sha256=$(sha256sum "$out/$IMAGE_FILENAME" | cut -d ' ' -f1)
-            ${pkgs.jq}/bin/jq -S -n \
+            ${buildPackages.jq}/bin/jq -S -n \
               --arg name "$IMAGE_NAME" \
               --arg version "$IMAGE_VERSION" \
               --arg architecture "$IMAGE_ARCHITECTURE" \
@@ -1153,7 +1182,7 @@
                 path=$2
                 size=$(stat -c %s "$out/$path")
                 digest=$(sha256sum "$out/$path" | cut -d ' ' -f1)
-                ${pkgs.jq}/bin/jq -n \
+                ${buildPackages.jq}/bin/jq -n \
                   --arg id "$id" --arg path "$path" \
                   --argjson byteSize "$size" --arg sha256 "$digest" \
                   '{id: $id, path: $path, byte_size: $byteSize, sha256: $sha256}'
@@ -1170,9 +1199,9 @@
                   component recovery-entry-a recovery-a.conf
                   component recovery-entry-b recovery-b.conf
                   component image-metadata image-info.json
-                } | ${pkgs.jq}/bin/jq -s .
+                } | ${buildPackages.jq}/bin/jq -s .
               )
-              ${pkgs.jq}/bin/jq -S -n \
+              ${buildPackages.jq}/bin/jq -S -n \
                 --arg schema aos.recovery-bundle/v1 \
                 --arg release "$IMAGE_VERSION" \
                 --arg architecture "$IMAGE_ARCHITECTURE" \
@@ -1184,13 +1213,13 @@
                   platform: $platform, module_abi: $module_abi,
                   recovery_abi: $recovery_abi, components: $components}' \
                 > $out/recovery-bundle.json
-              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+              ${buildPackages.openssl}/bin/openssl dgst -sha256 \
                 -sign ${sb.dbKey} \
                 -out $out/recovery-bundle.json.sig \
                 $out/recovery-bundle.json
-              ${pkgs.openssl}/bin/openssl x509 -pubkey -noout \
+              ${buildPackages.openssl}/bin/openssl x509 -pubkey -noout \
                 -in ${dbCertificate} > recovery-bundle-public.pem
-              ${pkgs.openssl}/bin/openssl dgst -sha256 \
+              ${buildPackages.openssl}/bin/openssl dgst -sha256 \
                 -verify recovery-bundle-public.pem \
                 -signature $out/recovery-bundle.json.sig \
                 $out/recovery-bundle.json
@@ -1210,11 +1239,11 @@
   recoveryBundle =
     if recoveryEnabled
     then
-      pkgs.mkDerivation {
+      buildPackages.mkDerivation {
         pname = "aos-recovery-bundle";
         inherit version;
         src = null;
-        buildDeps = [pkgs.coreutils];
+        buildDeps = [buildPackages.coreutils];
         runtimeDeps = [];
         propagatedDeps = [];
         phases = [

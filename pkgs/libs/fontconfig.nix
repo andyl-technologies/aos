@@ -2,7 +2,13 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
+  autoconf,
+  automake,
+  libtool,
+  gettext,
   gperf,
   pkg-config,
   python3,
@@ -10,7 +16,7 @@
   expat,
   zlib,
 }: let
-  version = "2.15.0";
+  version = "2.18.3";
 in
   mkDerivation {
     pname = "fontconfig";
@@ -18,13 +24,17 @@ in
 
     src = fetchurl {
       urls = [
-        "https://www.freedesktop.org/software/fontconfig/release/fontconfig-${version}.tar.xz"
+        "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/${version}/fontconfig-${version}.tar.gz"
       ];
-      hash = "sha256-Y6BljQ4G4PqIYQZFK1jvBPIfWCAuoCqUw53g0zNdfA4=";
+      hash = "sha256-muAeHVOs3vVgEMVFHNNKpB0yWy+szYYGRI2PoBsklrM=";
     };
 
     buildDeps = [
       gnumake
+      autoconf
+      automake
+      libtool
+      gettext
       gperf
       pkg-config
       python3
@@ -46,18 +56,31 @@ in
         '';
       }
       {
-        name = "build";
+        name = "patch";
         script = ''
-          FREETYPE_CFLAGS="-I${freetype}/include/freetype2" \
-          FREETYPE_LIBS="-L${freetype}/lib -lfreetype" \
-          $CONFIG_SHELL ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --sysconfdir=$out/etc \
-            --localstatedir=$out/var \
-            --disable-docs
-          make -j$NIX_BUILD_CORES
+          export ACLOCAL_PATH="${libtool}/share/aclocal"
+          NOCONFIGURE=1 $CONFIG_SHELL ./autogen.sh
         '';
+      }
+      {
+        name = "build";
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # The runtime-only configure probe has no cross fallback. AOS
+            # GCC/glibc provides C99 va_copy, including AArch64's va_list layout.
+            export ac_cv_va_copy=C99
+          ''
+          + ''
+            FREETYPE_CFLAGS="-I${freetype}/include/freetype2" \
+            FREETYPE_LIBS="-L${freetype}/lib -lfreetype" \
+            $CONFIG_SHELL ./configure \
+              $configureFlags \
+              --prefix=$out \
+              --sysconfdir=$out/etc \
+              --localstatedir=$out/var \
+              --disable-docs
+            make -j$NIX_BUILD_CORES
+          '';
       }
       {
         name = "install";

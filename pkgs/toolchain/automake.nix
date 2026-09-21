@@ -22,7 +22,7 @@ in
     };
 
     # Automake invokes both Autoconf and Perl during its build.  Build-dep
-    # splicing selects their native outputs while the installed Darwin scripts
+    # splicing selects their native outputs while the installed cross scripts
     # retain the corresponding target runtimes below.
     buildDeps = [
       gnumake
@@ -62,7 +62,7 @@ in
       {
         name = "install";
         script =
-          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          if stdenv.isCross && (stdenv.hostPlatform.isDarwin || stdenv.hostPlatform.isLinux)
           then ''
             make install
 
@@ -77,6 +77,12 @@ in
               (grep -IrlZ -F "$nativeRoot" "$out" 2>/dev/null || true) \
                 | xargs -0 -r sed -i "s|$nativeRoot|$targetRoot|g"
             }
+
+            # Upstream defaults are bare command names. Resolve the matching
+            # Autoconf tools while keeping the documented environment overrides.
+            sed -i "s|'autom4te'|'${autoconf}/bin/autom4te'|g" "$out/bin/aclocal-1.18"
+            sed -i "s|'autoconf'|'${autoconf}/bin/autoconf'|g" "$out/bin/automake-1.18"
+
             retarget_tool_root autoconf ${autoconf}
             retarget_tool_root perl ${perl}
 
@@ -95,6 +101,12 @@ in
               grep -IrlZ -F "$nativeRoot" "$out" 2>/dev/null \
                 | xargs -0 -r sed -i "s|$nativeRoot|$targetRoot|g"
             }
+
+            # Upstream defaults are bare command names. Resolve the matching
+            # Autoconf tools while keeping the documented environment overrides.
+            sed -i "s|'autom4te'|'${autoconf}/bin/autom4te'|g" "$out/bin/aclocal-1.18"
+            sed -i "s|'autoconf'|'${autoconf}/bin/autoconf'|g" "$out/bin/automake-1.18"
+
             retarget_tool_root autoconf ${autoconf}
             retarget_tool_root perl ${perl}
 

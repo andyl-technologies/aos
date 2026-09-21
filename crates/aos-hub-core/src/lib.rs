@@ -71,6 +71,7 @@ pub mod clock;
 pub mod conditional_delete_probe;
 pub mod config;
 pub mod connect;
+mod container_catalog;
 pub mod container_rollout;
 pub mod coordinator;
 pub mod crawl;

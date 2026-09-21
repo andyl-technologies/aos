@@ -18,7 +18,7 @@ pub(super) async fn audit(printer: &Printer, command: &HubAuditCmd) -> Result<()
         scope,
         pagination,
     } = command;
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_read::<_, hub_types::ListAuditResponse>(
         printer,
         &client,

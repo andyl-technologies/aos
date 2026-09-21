@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   autoconf,
   automake,
   libtool,
@@ -15,7 +16,7 @@
   systemd,
   glibc-locales,
 }: let
-  version = "3.6a";
+  version = "3.7c";
 in
   mkDerivation {
     pname = "tmux";
@@ -23,11 +24,11 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/tmux/tmux/archive/refs/tags/${version}.tar.gz"];
-      hash = "sha256-zY2X80TNL6qJ5BNYQos62og+THL9fU9DzKyT2uwUQus=";
+      hash = "sha256-XnsPUztm5WM+K3Kp1IP5U0o0OrcBHrJiG2MJ37pVPao=";
     };
 
     buildDeps = [autoconf automake libtool gnumake bison pkg-config];
-    runtimeDeps = [libevent ncurses utf8proc libutempter systemd glibc-locales];
+    runtimeDeps = [bash libevent ncurses utf8proc libutempter systemd glibc-locales];
     propagatedDeps = [];
 
     phases = [
@@ -64,7 +65,20 @@ in
       }
       {
         name = "install";
-        script = ''make install'';
+        script = ''
+          make install
+
+          # Retain UTF-8 locale data in the executable's runtime closure. An
+          # explicitly supplied LOCPATH, including an empty one, remains valid.
+          mkdir -p "$out/libexec"
+          mv "$out/bin/tmux" "$out/libexec/tmux"
+          cat > "$out/bin/tmux" <<EOF
+          #!${bash}/bin/bash
+          export LOCPATH="\''${LOCPATH-${glibc-locales}/lib/locale}"
+          exec "$out/libexec/tmux" "\$@"
+          EOF
+          chmod +x "$out/bin/tmux"
+        '';
       }
     ];
 

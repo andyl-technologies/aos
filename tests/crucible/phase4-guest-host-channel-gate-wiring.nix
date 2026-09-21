@@ -227,7 +227,7 @@
         needle = "dependencies = [patchMicrotests.rawGate];";
       }
       {
-        label = "phase2 single-VM fingerprint depends on qemu-inert";
+        label = "phase2 raw single-VM fingerprint follows qemu-inert";
         needle = "dependencies = [qemuInert.rawGate];";
       }
       {

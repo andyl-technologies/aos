@@ -199,6 +199,9 @@ store_path    = "/nix/store/<hash>-curl-8.5.0"
 closure_size  = 5242880
 source_drv    = "/nix/store/<hash>-curl-8.5.0.drv"
 source_nar_hash = "sha256:<hex>"
+
+[versions.platforms.x86_64-linux.named_outputs]
+dev = "/nix/store/<hash>-curl-8.5.0-dev"
 # [[versions.platforms.x86_64-linux.images]]  ← pre-built images (sysroot packages
 #                                               only; image entries keep nar_hash/nar_size)
 ```
@@ -208,8 +211,10 @@ The output's **content binding (`nar_hash`/`nar_size`) and dependency edges
 (§5), the single authority for blessed bytes and dependency shape (RFC-0005).
 Pre-RFC-0005 registries still carry these fields per platform entry; the
 parser treats them as optional legacy fields and consumers backfill the
-in-memory metadata from `store/` when absent. `store_path` still anchors the
-package to its IA hash (and thus its `store/` record); sources
+in-memory metadata from `store/` when absent. `store_path` anchors the
+installable `out` output to its IA hash. `named_outputs` retains every other
+release output as an authenticated static-cache root without changing the
+package selected by APM. Sources
 (`source_nar_hash`) and sysroot images keep their hashes in the TOML - they
 sit outside the runtime closure the graph covers.
 

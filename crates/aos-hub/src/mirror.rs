@@ -544,7 +544,7 @@ async fn collect_release_packs(
 ///
 /// 1. The narinfo's `Sig:` is checked against `trusted` (the registry's trust
 ///    roster, extended by the verified in-band roster) with
-///    [`crate::validation::verify_narinfo_signature`]. A narinfo with no valid
+///    [`crate::nar_verification::verify_narinfo_signature`]. A narinfo with no valid
 ///    trusted signature **fails the whole sync** — a mirror is a byte courier,
 ///    not a trust party, so it must not launder an unsigned/forged narinfo. The
 ///    narinfo's signed `StorePath` hash is then bound to the `<hash>` it was
@@ -553,7 +553,7 @@ async fn collect_release_packs(
 ///    because the path a narinfo is served at is not covered by its signature.
 /// 2. The NAR the (now-trusted) narinfo names is fetched and its bytes verified
 ///    against the narinfo's `FileHash`/`NarHash`
-///    ([`crate::validation::verify_nar_against_narinfo`]). A mismatch **fails
+///    ([`crate::nar_verification::verify_nar_against_narinfo`]). A mismatch **fails
 ///    the whole sync**.
 ///
 /// Only narinfos and NARs that pass both checks are pushed to `out` (the
@@ -604,7 +604,7 @@ async fn collect_nix_cache(
                     .with_context(|| format!("{narinfo_path} is not UTF-8"))?;
 
                 if verify {
-                    crate::validation::verify_narinfo_signature(narinfo, trusted)
+                    crate::nar_verification::verify_narinfo_signature(narinfo, trusted)
                         .with_context(|| format!("verifying narinfo {narinfo_path}"))?;
                     // Bind the signed narinfo's `StorePath` hash to the `<hash>`
                     // we fetched it under (sec M-5). `verify_narinfo_signature`
@@ -639,7 +639,7 @@ async fn collect_nix_cache(
                         let nar_bytes = fetch.fetch(&url).await?.with_context(|| {
                             format!("NAR {url} named by {narinfo_path} is missing upstream")
                         })?;
-                        crate::validation::verify_nar_against_narinfo(narinfo, &nar_bytes)
+                        crate::nar_verification::verify_nar_against_narinfo(narinfo, &nar_bytes)
                             .with_context(|| {
                                 format!("verifying NAR {url} for narinfo {narinfo_path}")
                             })?;
@@ -887,7 +887,7 @@ pub async fn fetch_through(
             if verify {
                 let text = std::str::from_utf8(&bytes)
                     .with_context(|| format!("pulled narinfo {path} is not UTF-8"))?;
-                crate::validation::verify_narinfo_signature(text, trusted_keys)
+                crate::nar_verification::verify_narinfo_signature(text, trusted_keys)
                     .with_context(|| format!("verifying pulled narinfo {path}"))?;
                 // Bind the served narinfo to the REQUESTED `<hash>.narinfo` path
                 // (sec M-5): a valid-but-foreign signed narinfo (packageA's)
@@ -917,7 +917,7 @@ pub async fn fetch_through(
                 })?;
                 let narinfo = std::str::from_utf8(&narinfo_bytes)
                     .with_context(|| format!("narinfo {narinfo_path} is not UTF-8"))?;
-                crate::validation::verify_narinfo_signature(narinfo, trusted_keys)
+                crate::nar_verification::verify_narinfo_signature(narinfo, trusted_keys)
                     .with_context(|| format!("verifying narinfo {narinfo_path} for NAR {path}"))?;
                 // Bind the governing narinfo to the requested store hash AND the
                 // requested NAR path (sec M-5). Two independent bindings, because
@@ -941,7 +941,7 @@ pub async fn fetch_through(
                 //    but different NAR (`nar/Y`) cannot be served under `nar/X`.
                 assert_nar_store_hash_matches_requested(path, narinfo, requested_store_hash)?;
                 assert_nar_matches_requested(path, narinfo)?;
-                crate::validation::verify_nar_against_narinfo(narinfo, &bytes)
+                crate::nar_verification::verify_nar_against_narinfo(narinfo, &bytes)
                     .with_context(|| format!("verifying pulled NAR {path}"))?;
             }
             Ok(Some(PullResult {

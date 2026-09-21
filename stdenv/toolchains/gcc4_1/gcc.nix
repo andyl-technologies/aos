@@ -78,7 +78,7 @@ in
       "--program-transform-name="
     ];
     postConfigure = ''
-      make configure-gcc
+      make SHELL="$CONFIG_SHELL" configure-gcc
       rewriteWithPrevSed gcc/Makefile \
         "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${prev.glibc}/include|"
 

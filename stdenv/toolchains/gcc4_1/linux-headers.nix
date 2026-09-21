@@ -47,6 +47,10 @@ in
         cd linux-2.6.18
         chmod -R u+w .
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
         # Linux 2.6.18 headers_install requires unifdef which isn't available.
         # Manually install headers (same approach as gcc3_4 tier).
         mkdir -p "$out/include"
@@ -55,7 +59,7 @@ in
         cp -r include/asm-generic "$out/include/"
 
         # Create version.h
-        make ARCH=${linuxArch} include/linux/version.h 2>/dev/null || true
+        make SHELL="${prev.bash}/bin/bash" ARCH=${linuxArch} include/linux/version.h 2>/dev/null || true
         if ! test -f include/linux/version.h; then
           printf '#define UTS_RELEASE "2.6.18"\n#define LINUX_VERSION_CODE 132626\n#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))\n' > include/linux/version.h
         fi

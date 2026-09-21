@@ -50,7 +50,11 @@
   # /etc lower; subsequent generations are rendered by the stage-2 config-eval
   # fixpoint and switched in by `activate`.
   filesUnit = "aos-config-seed.service";
-  zfsState = config.aos.filesystems.zfs.enable;
+  # Whether the pool is what carries /var, rather than merely existing. A host
+  # can run a pool for data while leaving system state on the partition the
+  # image provisions, and then /var is mounted and provisioned exactly as it is
+  # without ZFS.
+  zfsState = config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState;
   zfsPackage = config.aos.filesystems.zfs.package;
   recoveryEnabledJson =
     if config.aos.boot.recovery.enable
@@ -519,13 +523,13 @@
           recovery_audit=/run/aos-seed-recovery-audit
           rm -rf "$recovery_audit"
           mkdir -p "$recovery_audit"
-          ${pkgs.binutils}/bin/objcopy -O binary --only-section=.cmdline \
+          ${pkgs.pe-tools}/bin/objcopy -O binary --only-section=.cmdline \
             "$recovery_mount/$recovery_uki" "$recovery_audit/cmdline" \
             || fail_image_identity "cannot inspect paired recovery command line"
           recovery_cmdline=$(tr -d '\000' < "$recovery_audit/cmdline")
           [ "$recovery_cmdline" = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0" ] \
             || fail_image_identity "paired recovery UKI has a noncanonical signed command line"
-          ${pkgs.binutils}/bin/objcopy -O binary --only-section=.osrel \
+          ${pkgs.pe-tools}/bin/objcopy -O binary --only-section=.osrel \
             "$recovery_mount/$recovery_uki" "$recovery_audit/os-release" \
             || fail_image_identity "cannot inspect paired recovery identity"
           tr -d '\000' < "$recovery_audit/os-release" > "$recovery_audit/os-release.clean"

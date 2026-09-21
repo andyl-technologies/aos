@@ -63,6 +63,9 @@ consumption, and on-host activation as distinct installed capabilities.
   boundary for exposed services and how to inspect its effective policy.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
+- [Run ZFS storage](storage-zfs.md) covers the memory budget, dataset
+  declarations, pool lifecycle, and the metrics that move before a host runs
+  into trouble.
 - [Upgrade and roll back a host](upgrades.md) covers the independent image and
   configuration generation axes, A/B boot counting, and failure semantics.
 - [Use Secure Boot and verify package trust](secure-boot.md) follows the chain

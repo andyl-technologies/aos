@@ -13,7 +13,9 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{require_identifier, require_store_path};
-use crate::plan::{PackagePlan, PlannedArtifact, PlannedArtifactSet, PlatformCell};
+use crate::plan::{
+    PackageConfigurationBinding, PackagePlan, PlannedArtifact, PlannedArtifactSet, PlatformCell,
+};
 use crate::platform::{MatrixCell, Platform, require_complete_package_platforms};
 
 /// Exact schema emitted by the Nix package inventory.
@@ -76,6 +78,13 @@ pub enum InventoryDecision {
     },
 }
 
+impl InventoryDecision {
+    /// Requires evaluation only when the policy permits an artifact.
+    fn requires_derivation(&self) -> bool {
+        matches!(self, Self::Eligible { blockers, .. } if blockers.is_empty())
+    }
+}
+
 /// Exact derivations and outputs evaluated for one target package set.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -96,12 +105,40 @@ pub struct DerivationPackage {
     pub name: String,
     /// Nix-derived public distribution metadata, absent when incomplete.
     pub publication: Option<PackagePublicationMetadata>,
-    /// Exact upstream source store paths; empty means repository source.
+    /// Exact source and dependency-source store roots needed to rebuild it.
     pub source_store_paths: Vec<String>,
     /// Exact `.drv` path.
     pub derivation: String,
-    /// Every named output produced by the derivation.
+    /// Every logical runtime output and independently built companion root.
     pub outputs: Vec<DerivationOutput>,
+    /// Independently built configuration companions used by registry authoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<PackageConfigurationBinding>,
+}
+
+impl DerivationPackage {
+    fn planned_artifacts(&self, platform: Platform) -> PlannedArtifactSet {
+        PlannedArtifactSet {
+            configuration: self.configuration.clone(),
+            artifacts: self
+                .outputs
+                .iter()
+                .map(|output| PlannedArtifact {
+                    id: format!("package/{}/{}/{}", self.name, platform, output.name),
+                    derivation: Some(
+                        output
+                            .derivation
+                            .as_ref()
+                            .unwrap_or(&self.derivation)
+                            .clone(),
+                    ),
+                    output: Some(output.output.as_ref().unwrap_or(&output.name).clone()),
+                    store_path: Some(output.store_path.clone()),
+                    source_store_paths: self.source_store_paths.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Public distribution metadata required by atomic registry authoring.
@@ -122,7 +159,8 @@ pub struct PackagePublicationMetadata {
 
 impl PackagePublicationMetadata {
     pub(crate) fn validate(&self) -> Result<()> {
-        semver::Version::parse(&self.version).context("parsing package publication version")?;
+        aos_registry_surface::package_version::validate_package_version(&self.version)
+            .context("validating package publication version")?;
         for (value, label) in [
             (&self.description, "package description"),
             (&self.license_expression, "package license expression"),
@@ -152,10 +190,16 @@ impl PackagePublicationMetadata {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DerivationOutput {
-    /// Nix output name.
+    /// Logical output name used in the package artifact id.
     pub name: String,
     /// Evaluated output store path.
     pub store_path: String,
+    /// Owning derivation for an independently built companion output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<String>,
+    /// Actual Nix output name when the logical name identifies a companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 impl DerivationInventoryV1 {
@@ -200,10 +244,28 @@ impl DerivationInventoryV1 {
             for output in &package.outputs {
                 require_identifier(&output.name, "derivation output name")?;
                 require_store_path(&output.store_path, false)?;
+                match (&output.derivation, &output.output) {
+                    (Some(derivation), Some(name)) => {
+                        require_store_path(derivation, true)?;
+                        require_identifier(name, "companion Nix output name")?;
+                        let id =
+                            format!("package/{}/{}/{}", package.name, self.platform, output.name);
+                        if !package
+                            .configuration
+                            .as_ref()
+                            .is_some_and(|binding| binding.is_companion(&id))
+                        {
+                            bail!("independent output is not bound as a configuration companion");
+                        }
+                    }
+                    (None, None) => {}
+                    _ => bail!("companion derivation and output name must be specified together"),
+                }
                 if !output_names.insert(&output.name) || !output_paths.insert(&output.store_path) {
                     bail!("derivation package repeats an output name or store path");
                 }
             }
+            package.planned_artifacts(self.platform).validate()?;
         }
         Ok(())
     }
@@ -280,23 +342,15 @@ impl PackageInventoryV1 {
                             .ok_or_else(|| {
                                 anyhow::anyhow!("eligible package lacks an evaluated derivation")
                             })?;
+                        if evaluated.source_store_paths.is_empty() {
+                            bail!(
+                                "publishable package '{}' for {} lacks retained source evidence",
+                                package.name,
+                                cell.platform
+                            );
+                        }
                         MatrixCell::Artifact {
-                            artifact: PlannedArtifactSet {
-                                artifacts: evaluated
-                                    .outputs
-                                    .iter()
-                                    .map(|output| PlannedArtifact {
-                                        id: format!(
-                                            "package/{}/{}/{}",
-                                            package.name, cell.platform, output.name
-                                        ),
-                                        derivation: Some(evaluated.derivation.clone()),
-                                        output: Some(output.name.clone()),
-                                        store_path: Some(output.store_path.clone()),
-                                        source_store_paths: evaluated.source_store_paths.clone(),
-                                    })
-                                    .collect(),
-                            },
+                            artifact: evaluated.planned_artifacts(cell.platform),
                         }
                     }
                     InventoryDecision::Eligible { blockers, .. } => {
@@ -342,7 +396,7 @@ fn package_publication_metadata<'a>(
     let mut selected = None;
     let mut incomplete = false;
     for cell in &package.platforms {
-        if !matches!(&cell.decision, InventoryDecision::Eligible { .. }) {
+        if !cell.decision.requires_derivation() {
             continue;
         }
         let metadata = derivations
@@ -389,7 +443,7 @@ fn index_derivations<'a>(
     for package in &package_inventory.packages {
         for cell in &package.platforms {
             let present = indexed.contains_key(&(cell.platform, package.name.as_str()));
-            if present != matches!(&cell.decision, InventoryDecision::Eligible { .. }) {
+            if present != cell.decision.requires_derivation() {
                 bail!("derivation inventory does not match package eligibility");
             }
         }
@@ -399,7 +453,7 @@ fn index_derivations<'a>(
             .packages
             .iter()
             .flat_map(|package| &package.platforms)
-            .filter(|cell| matches!(&cell.decision, InventoryDecision::Eligible { .. }))
+            .filter(|cell| cell.decision.requires_derivation())
             .count()
     {
         bail!("derivation inventory contains an unknown package");
@@ -425,7 +479,13 @@ fn validate_decision(platform: Platform, decision: &InventoryDecision) -> Result
             {
                 bail!("eligible package disposition conflicts with its platform");
             }
-            if wave.is_none_or(|wave| !(1..=5).contains(&wave)) {
+            // Waves describe Darwin implementation order. Linux-only entries
+            // deliberately have no wave in the shared Nix inventory.
+            if disposition == "linux-only" {
+                if wave.is_some() {
+                    bail!("Linux-only package cannot have a publication wave");
+                }
+            } else if wave.is_none_or(|wave| !(1..=5).contains(&wave)) {
                 bail!("eligible package requires a valid publication wave");
             }
             for blocker in blockers {
@@ -447,6 +507,90 @@ fn validate_decision(platform: Platform, decision: &InventoryDecision) -> Result
 mod tests {
     use super::*;
 
+    const SOURCE_PATH: &str = "/nix/store/cccccccccccccccccccccccccccccccc-example-source";
+
+    fn configured_inventory() -> DerivationInventoryV1 {
+        let prefix = "package/example/x86_64-linux";
+        DerivationInventoryV1 {
+            schema_version: DERIVATION_INVENTORY_V1.into(),
+            platform: Platform::X86_64Linux,
+            packages: vec![DerivationPackage {
+                name: "example".into(),
+                publication: None,
+                source_store_paths: vec![SOURCE_PATH.into()],
+                derivation: "/nix/store/00000000000000000000000000000000-runtime.drv".into(),
+                outputs: [
+                    ("out", "out"),
+                    ("config", "config"),
+                    ("configuration-base", "out"),
+                ]
+                .into_iter()
+                .map(|(name, output)| DerivationOutput {
+                    name: name.into(),
+                    store_path: format!("/nix/store/11111111111111111111111111111111-{name}"),
+                    derivation: (name != "out")
+                        .then(|| format!("/nix/store/22222222222222222222222222222222-{name}.drv")),
+                    output: (name != "out").then(|| output.into()),
+                })
+                .collect(),
+                configuration: Some(PackageConfigurationBinding {
+                    module_artifact: format!("{prefix}/config"),
+                    evaluation_base_artifact: format!("{prefix}/configuration-base"),
+                    dependency_outputs: BTreeMap::new(),
+                }),
+            }],
+        }
+    }
+
+    #[test]
+    fn configuration_companions_retain_their_own_derivers_and_output_names() -> Result<()> {
+        let inventory = configured_inventory();
+        inventory.validate()?;
+        let planned = inventory.packages[0].planned_artifacts(inventory.platform);
+
+        assert_eq!(
+            planned.artifacts[0].derivation.as_deref(),
+            Some(inventory.packages[0].derivation.as_str())
+        );
+        assert_eq!(planned.artifacts[1].output.as_deref(), Some("config"));
+        assert_eq!(planned.artifacts[2].output.as_deref(), Some("out"));
+        assert_ne!(
+            planned.artifacts[0].derivation,
+            planned.artifacts[1].derivation
+        );
+        assert_ne!(
+            planned.artifacts[0].derivation,
+            planned.artifacts[2].derivation
+        );
+        assert_eq!(planned.configuration, inventory.packages[0].configuration);
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_or_substituted_configuration_bindings_are_rejected() {
+        let inventory = configured_inventory();
+        for missing in [1, 2] {
+            let mut changed = inventory.clone();
+            changed.packages[0].outputs.remove(missing);
+            assert!(changed.validate().is_err());
+        }
+        let mut unbound = inventory.clone();
+        unbound.packages[0].configuration = None;
+        assert!(unbound.validate().is_err());
+
+        let mut substituted = inventory.clone();
+        substituted.packages[0]
+            .configuration
+            .as_mut()
+            .unwrap()
+            .evaluation_base_artifact = "package/example/x86_64-linux/out".into();
+        assert!(substituted.validate().is_err());
+
+        let mut incomplete = inventory;
+        incomplete.packages[0].outputs[1].derivation = None;
+        assert!(incomplete.validate().is_err());
+    }
+
     fn decision(platform: Platform) -> InventoryPlatformCell {
         InventoryPlatformCell {
             platform,
@@ -457,9 +601,40 @@ mod tests {
                     "target"
                 }
                 .to_owned(),
-                wave: Some(1),
+                wave: (!platform.supports_images()).then_some(1),
                 blockers: Vec::new(),
             },
+        }
+    }
+
+    #[test]
+    fn publication_waves_follow_the_nix_disposition_policy() {
+        for platform in Platform::ALL {
+            for disposition in ["target", "independent", "linux-only", "darwin-only"] {
+                for wave in [None, Some(0), Some(1), Some(5), Some(6)] {
+                    let decision = InventoryDecision::Eligible {
+                        disposition: disposition.to_owned(),
+                        wave,
+                        blockers: Vec::new(),
+                    };
+                    let compatible_platform = match disposition {
+                        "linux-only" => platform.supports_images(),
+                        "darwin-only" => !platform.supports_images(),
+                        _ => true,
+                    };
+                    let valid_wave = if disposition == "linux-only" {
+                        wave.is_none()
+                    } else {
+                        matches!(wave, Some(1..=5))
+                    };
+
+                    assert_eq!(
+                        validate_decision(platform, &decision).is_ok(),
+                        compatible_platform && valid_wave,
+                        "{platform} {disposition} {wave:?}",
+                    );
+                }
+            }
         }
     }
 
@@ -479,8 +654,9 @@ mod tests {
                 schema_version: DERIVATION_INVENTORY_V1.to_owned(),
                 platform,
                 packages: vec![DerivationPackage {
+                    configuration: None,
                     name: "example".to_owned(),
-                    source_store_paths: vec![],
+                    source_store_paths: vec![SOURCE_PATH.to_owned()],
                     publication: Some(PackagePublicationMetadata {
                         version: "1.0.0".to_owned(),
                         description: "Example package".to_owned(),
@@ -491,6 +667,8 @@ mod tests {
                     derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
                         .to_owned(),
                     outputs: vec![DerivationOutput {
+                        derivation: None,
+                        output: None,
                         name: "out".to_owned(),
                         store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
                             .to_owned(),
@@ -539,8 +717,9 @@ mod tests {
                 schema_version: DERIVATION_INVENTORY_V1.to_owned(),
                 platform,
                 packages: vec![DerivationPackage {
+                    configuration: None,
                     name: "example".to_owned(),
-                    source_store_paths: vec![],
+                    source_store_paths: vec![SOURCE_PATH.to_owned()],
                     publication: Some(PackagePublicationMetadata {
                         version: "1.0.0".to_owned(),
                         description: "Example package".to_owned(),
@@ -551,6 +730,8 @@ mod tests {
                     derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
                         .to_owned(),
                     outputs: vec![DerivationOutput {
+                        derivation: None,
+                        output: None,
                         name: "out".to_owned(),
                         store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
                             .to_owned(),
@@ -558,11 +739,24 @@ mod tests {
                 }],
             })
             .collect::<Vec<_>>();
+        // A blocked cell has no realizable derivation. It must not suppress
+        // the independently publishable cells of the same package.
+        let mut derivations = derivations;
+        let blocked_package = derivations[0].packages.pop().unwrap();
         let plan = inventory.package_plan(&derivations)?;
+
         assert!(matches!(
             plan[0].platforms[0].decision,
             MatrixCell::Blocked { .. }
         ));
+        assert!(
+            plan[0].platforms[1..]
+                .iter()
+                .all(|cell| matches!(cell.decision, MatrixCell::Artifact { .. }))
+        );
+
+        derivations[0].packages.push(blocked_package);
+        assert!(inventory.package_plan(&derivations).is_err());
         Ok(())
     }
 
@@ -574,5 +768,47 @@ mod tests {
             packages: Vec::new(),
         };
         assert!(inventory.validate().is_err());
+    }
+
+    #[test]
+    fn inventory_rejects_publishable_package_without_source_evidence() {
+        let inventory = PackageInventoryV1 {
+            schema_version: PACKAGE_INVENTORY_V1.to_owned(),
+            platforms: Platform::ALL.to_vec(),
+            packages: vec![InventoryPackage {
+                name: "example".to_owned(),
+                platforms: Platform::ALL.into_iter().map(decision).collect(),
+            }],
+        };
+        let derivations = Platform::ALL
+            .into_iter()
+            .map(|platform| DerivationInventoryV1 {
+                schema_version: DERIVATION_INVENTORY_V1.to_owned(),
+                platform,
+                packages: vec![DerivationPackage {
+                    configuration: None,
+                    name: "example".to_owned(),
+                    publication: Some(PackagePublicationMetadata {
+                        version: "1.0.0".to_owned(),
+                        description: "Example package".to_owned(),
+                        homepage: None,
+                        license_expression: "Apache-2.0".to_owned(),
+                        maintainers: vec!["Example Maintainer".to_owned()],
+                    }),
+                    source_store_paths: Vec::new(),
+                    derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
+                        .to_owned(),
+                    outputs: vec![DerivationOutput {
+                        derivation: None,
+                        output: None,
+                        name: "out".to_owned(),
+                        store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
+                            .to_owned(),
+                    }],
+                }],
+            })
+            .collect::<Vec<_>>();
+
+        assert!(inventory.package_plan(&derivations).is_err());
     }
 }

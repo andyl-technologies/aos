@@ -32,6 +32,11 @@
       }
     ''
     else "";
+  bundledGlibCflags = ''
+    # Bundled GLib 2.38 uses `bool` as a field name. Keep this historical
+    # source on the last language edition before C23 made `bool` a keyword.
+    export CFLAGS="''${CFLAGS:-} -std=gnu17"
+  '';
 in
   mkDerivation {
     pname = "pkg-config";
@@ -62,6 +67,7 @@ in
           if isDarwinCross
           then ''
             ${crossConfigureCache}
+            ${bundledGlibCflags}
 
             # Bundled GLib 2.38 detects Carbon by preprocessing its umbrella
             # header. The AOS compiler SDK deliberately exposes the surviving
@@ -92,6 +98,7 @@ in
           ''
           else ''
             ${crossConfigureCache}
+            ${bundledGlibCflags}
 
             ./configure \
               $configureFlags \

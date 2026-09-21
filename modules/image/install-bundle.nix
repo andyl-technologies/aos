@@ -12,6 +12,9 @@
   pkgs,
   ...
 }: let
+  # Image identity follows the payload platform when tools run on another host.
+  targetPlatform = pkgs.stdenv.hostPlatform;
+
   cfg = config.aos.boot.storage;
   image = config.system.build.image.raw;
   zfs = config.aos.filesystems.zfs.package;
@@ -27,7 +30,7 @@
       systemd = "systemd-bootaa64.efi";
     };
   };
-  efiName = efiNames.${lib.platform.constraints.cpu} or (throw "no installer EFI names for ${lib.system}");
+  efiName = efiNames.${targetPlatform.constraints.cpu} or (throw "no installer EFI names for ${targetPlatform.system}");
   pcrPublicKey = config.aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey;
 in {
   options.system.build.installBundle = lib.mkOption {
@@ -111,6 +114,7 @@ in {
               --replace-fail '@zfs@' '${zfs}' \
               --replace-fail '@pool@' '${cfg.zfs.poolName}' \
               --replace-fail '@dataset@' '${cfg.zfs.dataset}' \
+              --replace-fail '@compatibility@' '${cfg.zfs.compatibility}' \
               --replace-fail '@sealed_key_path@' '${cfg.zfs.sealedKeyPath}' \
               --replace-fail '@signed_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.signedPcrs}' \
               --replace-fail '@pinned_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.pinnedPcrs}' \

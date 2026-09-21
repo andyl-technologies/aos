@@ -83,6 +83,11 @@ in {
       # state before switch-root. These explicit opt-in gettys replace the
       # base initrd's masked sulogin services. One runs on the serial console
       # (ttyS0) and one on the VGA console (tty0 / GTK window).
+      # An interactive bash ignores SIGTERM, so stopping these shells falls
+      # through to the kill timeout. At the default 90 seconds that delay is
+      # charged to every initrd-to-rootfs transition on a debug image, which
+      # is most of a VM check's wall clock before its first assertion runs.
+      # Five seconds is ample for a shell that has nothing to flush.
       boot.initrd.systemd.services."debug-shell-serial" = {
         description = "Initrd Debug Shell on ttyS0";
         wantedBy = ["sysinit.target"];
@@ -94,6 +99,7 @@ in {
           TTYPath = "/dev/ttyS0";
           TTYReset = "yes";
           TTYVHangup = "yes";
+          TimeoutStopSec = "5s";
         };
       };
       boot.initrd.systemd.services."debug-shell-console" = {
@@ -107,6 +113,7 @@ in {
           TTYPath = "/dev/tty0";
           TTYReset = "yes";
           TTYVHangup = "yes";
+          TimeoutStopSec = "5s";
         };
       };
       # Unlock root. The empty second field in shadow(5) means "no

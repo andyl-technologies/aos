@@ -69,7 +69,15 @@
       ;
 
     # Phase 1: GCC 8.5.0 built with prev.gcc (4.8.5, provides C++11)
-    gcc = callPackage ./gcc.nix {};
+    gcc = callPackage ./gcc.nix {
+      # GCC 4.8's AArch64 scheduler moves a live condition across cmeq's
+      # late scalar expansion, which clobbers the flags without declaring it.
+      # Disable only that construction pass; the exported GCC keeps -O2.
+      bootstrapCompilerFlags =
+        if hostPlatform.constraints.cpu == "aarch64"
+        then " -fno-schedule-insns"
+        else "";
+    };
 
     # Phase 2: binutils 2.30 built with THIS.gcc
     binutils = callPackage ./binutils.nix {};
@@ -136,33 +144,25 @@
   };
 
   scope = baseScope // manifestTools;
-in {
-  inherit
-    (scope)
-    gcc
-    binutils
-    glibc
-    linuxHeaders
-    m4
-    flex
-    bison
-    perl
-    autoconf
-    automake
-    texinfo
-    help2man
-    gperf
-    python3
-    bash
-    coreutils
-    gnumake
-    sed
-    grep
-    gawk
-    findutils
-    diffutils
-    tar
-    gzip
-    patch
-    ;
-}
+in
+  import ../lib/finalize-native.nix {
+    privateTools = scope;
+    directory = ./.;
+    gccVersion = "8.5.0";
+    manifestNames = manifestToolNames;
+    extraToolNames = [];
+    # The private binutils is already complete; filter only its public rebuild.
+    binutilsBuildOverrides =
+      if hostPlatform.constraints.cpu == "aarch64"
+      then {sourceScriptFilter = scope.perl;}
+      else {};
+    libcBuildOverrides =
+      if hostPlatform.constraints.cpu == "aarch64"
+      then {sourceScriptFilter = scope.perl;}
+      else {};
+    publicScriptFilter =
+      if hostPlatform.constraints.cpu == "aarch64"
+      then scope.perl
+      else null;
+    inherit buildPlatform hostPlatform targetPlatform;
+  }

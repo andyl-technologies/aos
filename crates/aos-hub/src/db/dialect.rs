@@ -156,16 +156,12 @@ mod tests {
     fn phase5_guard_and_quota_identities_translate_portably() {
         let migration = crate::db::MIGRATIONS
             .iter()
-            .find(|migration| {
-                migration.contains("CREATE TABLE IF NOT EXISTS oci_phase5_upgrade_guard")
-            })
+            .find(|migration| migration.contains("CREATE TABLE oci_phase5_upgrade_guard"))
             .expect("Phase 5 OCI migration");
         let statements = crate::db::backend::split_statements(migration);
         let guard = statements
             .iter()
-            .find(|statement| {
-                statement.contains("CREATE TABLE IF NOT EXISTS oci_phase5_upgrade_guard")
-            })
+            .find(|statement| statement.contains("CREATE TABLE oci_phase5_upgrade_guard"))
             .expect("Phase 5 upgrade guard");
         let quota = statements
             .iter()

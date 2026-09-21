@@ -446,7 +446,7 @@ in {
       # records any retention evidence. The initrd copies an explicit package
       # closure, so both PE verification tools must be named here.
       aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.recovery.enable [
-        pkgs.binutils
+        pkgs.pe-tools
         pkgs.sbsigntools
       ];
     })
@@ -539,7 +539,7 @@ in {
       # Later boots: unlock via the TPM2 token, no passphrase. Ordered
       # after aos-repart (which creates the partition) and before
       # mount-var (which mounts /dev/mapper/var).
-      boot.initrd.systemd.services."aos-var-crypt" = lib.mkIf (!config.aos.filesystems.zfs.enable) {
+      boot.initrd.systemd.services."aos-var-crypt" = lib.mkIf (!(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState)) {
         description = "Encrypt and TPM2-seal /var (measured boot)";
         requiredBy = ["initrd-fs.target"];
         requires =

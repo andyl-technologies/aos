@@ -83,7 +83,7 @@ pub(super) async fn cache_retention(
             cache,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListRetentionSubscriptionsResponse>(
                 printer,
                 &client,
@@ -188,7 +188,7 @@ pub(super) async fn cache_retention(
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "retention refresh")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             match registry {
                 Some(registry) => {
                     topology_operation_mutation(
@@ -236,7 +236,7 @@ pub(super) async fn cache_retention(
             cache,
             store_hash,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ExplainRetentionResponse>(
                 printer,
                 &client,
@@ -254,7 +254,7 @@ pub(super) async fn cache_retention(
             registry,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListRootReasonsResponse>(
                 printer,
                 &client,

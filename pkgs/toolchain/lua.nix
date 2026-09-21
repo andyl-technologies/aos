@@ -6,7 +6,7 @@
   readline,
   ncurses,
 }: let
-  version = "5.4.7";
+  version = "5.5.1";
 in
   mkDerivation {
     pname = "lua";
@@ -14,7 +14,7 @@ in
 
     src = fetchurl {
       urls = ["https://www.lua.org/ftp/lua-${version}.tar.gz"];
-      hash = "sha256-n79eKO+GxphY9tPTTszDLpEcGii0Eg/z6EqqcM+/HjA=";
+      hash = "sha256-HEtAaNZwYfKiIxrStUIud6zqFIfqmJD2Mgr2FPQ3Pc4=";
     };
 
     buildDeps = [gnumake];

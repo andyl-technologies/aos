@@ -29,4 +29,6 @@ in
   mkLLVM {
     version = "18.1.8";
     srcHash = "sha256-C1hVem0yzu6XyNUzpZuSEth+D8TSgzkk62xhEkfbLyo=";
+    needsCstdintFixes = true;
+    needsGccIteratorCompat = true;
   }
