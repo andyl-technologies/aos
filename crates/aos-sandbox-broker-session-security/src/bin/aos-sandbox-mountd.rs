@@ -125,20 +125,27 @@ fn run() -> Result<(), MountDaemonErrorV1> {
 
     loop {
         let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
-        let session = match activation.accept_authenticated(accept_deadline) {
+        let mut session = match activation.accept_authenticated(accept_deadline) {
             Ok(session) => session,
             Err(ProductionBrokerSessionActivationErrorV1::Deadline) => continue,
             Err(error) => return Err(error.into()),
         };
-        let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
-        let owners = ProductionMountBrokerOwnersV1 {
-            mount: &mut mount,
-            catalog_scope: None,
-            source: None,
-        };
-        if let Err(error) = session.serve_production_mount_request(owners, request_deadline) {
-            // Request completion consumes all authenticated session custody.
-            eprintln!("aos-sandbox-mountd: authenticated request failed: {error}");
+        loop {
+            let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
+            let owners = ProductionMountBrokerOwnersV1 {
+                mount: &mut mount,
+                catalog_scope: None,
+                source: None,
+            };
+            match session.serve_production_mount_request(owners, request_deadline) {
+                Ok(retained) => session = retained,
+                Err(error) => {
+                    // Preserve the protected sequence owner between successful
+                    // resource and destination-slot queries on one session.
+                    eprintln!("aos-sandbox-mountd: authenticated request failed: {error}");
+                    break;
+                }
+            }
         }
     }
 }

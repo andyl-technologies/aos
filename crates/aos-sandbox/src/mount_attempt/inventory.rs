@@ -45,6 +45,8 @@ pub use reconciliation::{
 };
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountInventory;
+pub(crate) mod authenticated;
+
 const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES;
 const RESPONSE_BYTES: u32 = 15 * 1024 * 1024;

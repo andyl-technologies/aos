@@ -301,18 +301,18 @@ the outstanding work concrete:
   attempts inventory publication but rejects pending mutation work.
   Replace those unavailable dependencies with the authenticated request
   compiler and durable effect dispatcher, including restart recovery.
-- The controller's Mount inventory clients still send
-  a plain `BrokerClientHello` (`mount_attempt/inventory.rs` and
-  `resource_inventory.rs`). The packaged broker entry points instead accept
-  sessions through `ProductionBrokerSessionActivationV1::accept_authenticated`.
-  Connect readiness inventory and catalog publication through the protected
-  session protocol before claiming the deployed controller can become ready.
+- The controller's Host catalog publication still uses its legacy transport.
+  The packaged broker entry points accept sessions through
+  `ProductionBrokerSessionActivationV1::accept_authenticated`. Connect catalog
+  publication through that protected session protocol before claiming the
+  deployed controller can become ready.
   The production runtime now lives in the session-security crate, above the
   controller core, so those protected owners can be connected without a crate
-  cycle. Storage and Network now use retained fixed protected sessions, check
+  cycle. Mount, destination-slot, Storage, and Network inventory now use retained
+  fixed protected sessions, check
   the controller's node identity, and fence snapshot commits against intervening
-  controller-journal changes. Network also rejects unresolved checkpoint history. The remaining
-  legacy inventory clients and Host publication still need replacement; the broker must
+  controller-journal changes. Network also rejects existing checkpoint history.
+  Host publication still needs replacement; the broker must
   not accept legacy unauthenticated traffic as a compatibility shortcut.
 - That service registers `DiscoveryService` and `OperationService` only.
   Operation get, cancel, and watch return unavailable errors. Register and

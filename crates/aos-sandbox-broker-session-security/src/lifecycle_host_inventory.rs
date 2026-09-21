@@ -6,8 +6,9 @@
 //! by the caller.
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerMethod, BrokerRequestEnvelope, InventoryMountsRequest,
-    InventoryNetworksRequest, InventoryRuntimeRequest, InventoryStorageRequest, RequestHeader,
+    Audience, BrokerMethod, BrokerRequestEnvelope, InventoryDestinationSlotsRequest,
+    InventoryMountsRequest, InventoryNetworksRequest, InventoryRuntimeRequest,
+    InventoryStorageRequest, RequestHeader,
 };
 use aos_sandbox::lifecycle::{
     CurrentLifecycleBootInventoryV1, LifecycleAtomicDatasetSnapshotPlanV1,
@@ -39,6 +40,7 @@ use crate::{
 enum LifecycleInventoryMethodV1 {
     Host,
     Mount,
+    DestinationSlots,
     Network,
     Storage,
 }
@@ -48,6 +50,7 @@ impl LifecycleInventoryMethodV1 {
         match self {
             Self::Host => BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
             Self::Mount => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+            Self::DestinationSlots => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
             Self::Network => BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
             Self::Storage => BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
         }
@@ -72,6 +75,11 @@ impl LifecycleInventoryMethodV1 {
             }
             .encode_to_vec(),
             Self::Mount => InventoryMountsRequest {
+                header,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            Self::DestinationSlots => InventoryDestinationSlotsRequest {
                 header,
                 ..Default::default()
             }
@@ -101,9 +109,9 @@ fn endpoint_for_inventory_method(
     match method {
         LifecycleInventoryMethodV1::Mount => Ok(LifecycleBootBootstrapEndpointV1::Mount),
         LifecycleInventoryMethodV1::Network => Ok(LifecycleBootBootstrapEndpointV1::Network),
-        LifecycleInventoryMethodV1::Host | LifecycleInventoryMethodV1::Storage => {
-            Err(LifecyclePhase6ErrorV1::InvalidInput)
-        }
+        LifecycleInventoryMethodV1::Host
+        | LifecycleInventoryMethodV1::Storage
+        | LifecycleInventoryMethodV1::DestinationSlots => Err(LifecyclePhase6ErrorV1::InvalidInput),
     }
 }
 
@@ -239,6 +247,28 @@ domain_inventory_owner!(
     LifecycleInventoryMethodV1::Network,
     "Network"
 );
+
+impl DormantMountLifecycleInventoryOwnerV1 {
+    /// Issues a fresh Mount query under protected terminal currentness.
+    pub(crate) fn current_inventory_observation(
+        &mut self,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Mount)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+
+    /// Queries destination slots on the same retained Mount session.
+    pub(crate) fn current_destination_slot_observation(
+        &mut self,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self
+            .0
+            .query_complete(LifecycleInventoryMethodV1::DestinationSlots)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+}
 
 impl DormantNetworkLifecycleInventoryOwnerV1 {
     /// Issues a fresh query and rechecks its protected terminal currentness.

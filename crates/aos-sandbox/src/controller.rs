@@ -3685,6 +3685,82 @@ where
         )
     }
 
+    /// Captures protected controller state before a fresh authenticated Mount query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or unprotected controller state and invalid prior inventory.
+    #[cfg(target_os = "linux")]
+    pub fn begin_authenticated_mount_inventory(
+        &mut self,
+    ) -> Result<crate::mount_attempt::MountInventoryObservationFenceV1, crate::MountAttemptError>
+    {
+        crate::mount_attempt::authenticated_inventory::begin_observation(
+            self.reconciler.journal_mut(),
+        )
+    }
+
+    /// Records a fresh authenticated Mount observation against its preceding state.
+    ///
+    /// The transport owner must recheck protected terminal currentness immediately
+    /// before this call. The result is observation evidence, never effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects intervening journal changes, wrong method or direction, broker errors,
+    /// invalid or regressing inventory, and failed durable persistence.
+    #[cfg(target_os = "linux")]
+    pub fn complete_authenticated_mount_inventory(
+        &mut self,
+        fence: crate::mount_attempt::MountInventoryObservationFenceV1,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<crate::DurableMountInventorySnapshotV1, crate::MountAttemptError> {
+        crate::mount_attempt::authenticated_inventory::complete_observation(
+            self.reconciler.journal_mut(),
+            fence,
+            outcome,
+        )
+    }
+
+    /// Captures protected controller state before an authenticated destination-slot query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or unprotected controller state and invalid prior inventory.
+    #[cfg(target_os = "linux")]
+    pub fn begin_authenticated_destination_slot_inventory(
+        &mut self,
+    ) -> Result<
+        crate::destination_slot_inventory::DestinationSlotInventoryObservationFenceV1,
+        crate::MountAttemptError,
+    > {
+        crate::destination_slot_inventory::authenticated::begin_observation(
+            self.reconciler.journal_mut(),
+        )
+    }
+
+    /// Records a fresh authenticated destination-slot observation against its preceding state.
+    ///
+    /// The transport owner must recheck protected terminal currentness immediately
+    /// before this call. The result is observation evidence, never effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects intervening journal changes, wrong method or direction, broker errors,
+    /// invalid or regressing inventory, and failed durable persistence.
+    #[cfg(target_os = "linux")]
+    pub fn complete_authenticated_destination_slot_inventory(
+        &mut self,
+        fence: crate::destination_slot_inventory::DestinationSlotInventoryObservationFenceV1,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<crate::DurableDestinationSlotInventorySnapshotV1, crate::MountAttemptError> {
+        crate::destination_slot_inventory::authenticated::complete_observation(
+            self.reconciler.journal_mut(),
+            fence,
+            outcome,
+        )
+    }
+
     /// Queries and durably records one validated complete Mount inventory.
     ///
     /// The one-shot client validates kernel-nominated subjects, not proof of the

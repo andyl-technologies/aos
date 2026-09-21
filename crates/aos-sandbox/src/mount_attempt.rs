@@ -72,6 +72,8 @@ pub use completion::{
 pub(crate) use completion::{
     contains_completions, dispatch_current, validate_namespace as validate_completion_namespace,
 };
+pub(crate) use inventory::authenticated as authenticated_inventory;
+pub use inventory::authenticated::MountInventoryObservationFenceV1;
 pub(crate) use inventory::controller_state_digest as mount_controller_state_digest;
 #[cfg(test)]
 pub(crate) use inventory::record_snapshot_bytes_for_test;

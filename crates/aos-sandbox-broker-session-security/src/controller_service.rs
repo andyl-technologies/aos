@@ -53,26 +53,22 @@ use aos_sandbox::controller_service::journal::{
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationClient, HostCatalogPublicationError, HostCatalogServiceIdentity,
 };
-use aos_sandbox::mount_preparation::{MountCatalogPreparationError, MountServiceIdentity};
+use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::{
-    ActivatedOperationCompiler, ControllerRequestScopeV1, ControllerServiceError,
-    DestinationSlotInventoryClient, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
-    HostCatalogReconciliationError, HostCatalogReconciliationV1, Journal, JournalError,
-    MountAttemptError, MountInventoryClient, NodeController, NodeControllerLimits,
-    OperationCompilationError, OperationPlan, Reconciler, ResourceInventoryError,
-    SingleNodeEffectExecutor,
+    ActivatedOperationCompiler, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
+    EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
+    HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
+    NodeControllerLimits, OperationCompilationError, OperationPlan, Reconciler,
+    ResourceInventoryError, SingleNodeEffectExecutor,
 };
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const JOURNAL_NAME: &str = "controller.journal";
 const DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const HOST_SOCKET: &str = "/run/aos/sandbox-host/control.sock";
-const MOUNT_SOCKET: &str = "/run/aos/sandbox-mount/control.sock";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
-const CONTROL_SLICE: &str = "aos.slice/aos-control.slice";
 const HOST_SLICE: &str = "system.slice";
 const HOST_SERVICE: &str = "aos-sandbox-hostd.service";
-const MOUNT_CGROUP: &str = "aos-sandbox-mountd.service";
 const NODE_ID_CREDENTIAL: &str = "node-id";
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
 const HOST_PUBLICATION_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
@@ -84,6 +80,7 @@ type ProductionController = NodeController<UnavailableCompiler, UnavailableExecu
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
 struct ControllerBrokerSessions {
+    mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
     network: Option<crate::DormantNetworkLifecycleInventoryOwnerV1>,
 }
@@ -361,12 +358,7 @@ fn refresh_catalog(
 ) -> Result<CatalogStatus, CycleFailure> {
     // Mount and destination state participate in the controller-state digest
     // captured by Storage and Network, so acquire them first.
-    let mounts = controller
-        .record_mount_inventory(mount_inventory_client()?)
-        .map_err(classify_mount_error)?;
-    let destinations = controller
-        .record_destination_slot_inventory(destination_inventory_client()?)
-        .map_err(classify_mount_error)?;
+    let (mounts, destinations) = authenticated_mount_inventories(controller, node_id, sessions)?;
     let storage = authenticated_storage_inventory(controller, node_id, sessions)?;
     let network = authenticated_network_inventory(controller, node_id, sessions)?;
 
@@ -399,23 +391,57 @@ fn publish_pending(
     })
 }
 
-fn mount_inventory_client() -> Result<MountInventoryClient, CycleFailure> {
-    let identity = MountServiceIdentity {
-        uid: 0,
-        gid: 0,
-        cgroup: service_cgroup(CONTROL_SLICE, MOUNT_CGROUP)?,
-    };
-    MountInventoryClient::connect(Path::new(MOUNT_SOCKET), identity).map_err(classify_mount_error)
-}
+fn authenticated_mount_inventories(
+    controller: &mut ProductionController,
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
+) -> Result<
+    (
+        aos_sandbox::DurableMountInventorySnapshotV1,
+        aos_sandbox::DurableDestinationSlotInventorySnapshotV1,
+    ),
+    CycleFailure,
+> {
+    if sessions.mount.is_none() {
+        let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+            crate::ProtectedBrokerSessionFixedEndpointV1::ControllerMountClient,
+        )
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        let deadline = crate::production_deadline_after(Duration::from_secs(10))
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        let mut session = custody
+            .connect_production_client_session(deadline)
+            .map_err(classify_protected_handshake_error)?;
+        session
+            .require_current_node(node_id)
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        sessions.mount =
+            Some(crate::DormantMountLifecycleInventoryOwnerV1::from_protected_session(session));
+    }
+    let inventory = sessions.mount.as_mut().ok_or_else(|| {
+        CycleFailure::Fatal("protected Mount session was not retained".to_owned())
+    })?;
+    let mount_fence = controller
+        .begin_authenticated_mount_inventory()
+        .map_err(classify_mount_error)?;
+    let mounts = inventory
+        .current_inventory_observation()
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    let mounts = controller
+        .complete_authenticated_mount_inventory(mount_fence, &mounts)
+        .map_err(classify_mount_error)?;
 
-fn destination_inventory_client() -> Result<DestinationSlotInventoryClient, CycleFailure> {
-    let identity = MountServiceIdentity {
-        uid: 0,
-        gid: 0,
-        cgroup: service_cgroup(CONTROL_SLICE, MOUNT_CGROUP)?,
-    };
-    DestinationSlotInventoryClient::connect(Path::new(MOUNT_SOCKET), identity)
-        .map_err(classify_mount_error)
+    // The Mount snapshot commit precedes the destination observation's fence.
+    let destination_fence = controller
+        .begin_authenticated_destination_slot_inventory()
+        .map_err(classify_mount_error)?;
+    let destinations = inventory
+        .current_destination_slot_observation()
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    let destinations = controller
+        .complete_authenticated_destination_slot_inventory(destination_fence, &destinations)
+        .map_err(classify_mount_error)?;
+    Ok((mounts, destinations))
 }
 
 fn authenticated_storage_inventory(
@@ -1413,7 +1439,7 @@ mod tests {
             Path::new("system.slice/aos-sandbox-hostd.service")
         );
         assert_eq!(
-            service_cgroup_path(CONTROL_SLICE, MOUNT_CGROUP),
+            service_cgroup_path("aos.slice/aos-control.slice", "aos-sandbox-mountd.service"),
             Path::new("aos.slice/aos-control.slice/aos-sandbox-mountd.service")
         );
     }

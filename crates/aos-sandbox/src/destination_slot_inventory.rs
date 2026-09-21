@@ -35,6 +35,8 @@ use crate::mount_preparation::{
 };
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
+pub(crate) mod authenticated;
+pub use authenticated::DestinationSlotInventoryObservationFenceV1;
 mod format;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotInventory;

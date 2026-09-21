@@ -110,6 +110,11 @@ in
   assert requires "begin_authenticated_network_inventory" runtimeSource;
   assert requires "complete_authenticated_network_inventory" runtimeSource;
   assert requiresAbsent "NetworkResourceInventoryClient" runtimeSource;
+  assert requires "ControllerMountClient" runtimeSource;
+  assert requires "begin_authenticated_mount_inventory" runtimeSource;
+  assert requires "complete_authenticated_destination_slot_inventory" runtimeSource;
+  assert requiresAbsent "MountInventoryClient" runtimeSource;
+  assert requiresAbsent "DestinationSlotInventoryClient" runtimeSource;
   assert requires "broker_retryability_is_preserved_across_inventory_classification" runtimeSource;
   assert requires "host_publication_retryability_is_preserved_through_reconciliation" runtimeSource;
   assert requires "hostile_publication_and_transport_failures_are_terminal" runtimeSource;
