@@ -145,7 +145,6 @@
           else if builtins.length ownerEntries != 1
           then fail "child request '${localRequestKey}' delegates ownership to an absent or ambiguous parent request '${toString ownerRequest}'"
           else (builtins.head ownerEntries).request.authority;
-        ownerPackage = ownerAuthority.package or null;
         requirementKey = lib.abilities.compositionRequirementKey {
           implementation = group.implementationKey;
           alias = authored.requirement;
@@ -156,7 +155,7 @@
           key = localRequestKey;
         };
       in {
-        inherit authored localRequestKey ownerPackage ownerRequest requirementKey;
+        inherit authored localRequestKey ownerAuthority ownerRequest requirementKey;
         originGroup = group.groupKey;
         implementation = group.implementationKey;
         inherit (group) providerInstance;
@@ -165,7 +164,6 @@
         request = requestKey;
         declaration = {
           authority = ownerAuthority;
-          package = ownerPackage;
           localKey = localRequestKey;
           requirement = requirementKey;
           consumer = group.providerInstance;
@@ -271,8 +269,12 @@
       request =
         requests.${requestName}
         or (throw "ability composition: provider requested an artifact for an absent request");
+    in let
+      owner = lib.abilities.packageForDeclarationAuthority request.authority;
     in
-      packageArtifactForOwner request.package selector;
+      if owner == null
+      then fail "request '${requestName}' has no package authority for an artifact selection"
+      else packageArtifactForOwner owner selector;
     bindings = builtins.listToAttrs (builtins.map (entry: {
         name = entry.bindingName;
         value = entry.binding;

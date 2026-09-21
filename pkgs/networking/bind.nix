@@ -290,7 +290,10 @@ in
       dependencies = requests."bind:named-dependencies".parameters;
       ingress = requests."bind:dns-ingress".parameters;
       expectedRequestOutput = localKey: output: {
-        package = self.pname;
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
         inherit localKey output;
       };
       contractHolds =

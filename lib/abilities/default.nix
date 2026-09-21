@@ -765,6 +765,11 @@
     if configurationSchemaIsLiteral schema
     then schema
     else fail "export configurationSchema must contain evaluation literals only";
+
+  packageForDeclarationAuthority = authority:
+    if authority.kind == "package"
+    then authority.package
+    else null;
 in rec {
   inherit
     schemas
@@ -783,6 +788,7 @@ in rec {
     packageProjectionFor
     sourceStageFixedPoint
     packageAbilitiesFromProjection
+    packageForDeclarationAuthority
     checkedProviderModuleEvaluation
     identityKeyFor
     singletonSchemaDiscriminator
@@ -874,10 +880,10 @@ in rec {
         checked.requests.${reference.request}
         or (throw "Request output reference '${reference.request}' has no exact evaluated request declaration.");
     in
-      if (request.package or null) == null || (request.localKey or null) == null
-      then throw "Request output reference '${reference.request}' has no retained package provenance."
+      if (request.authority or null) == null || (request.localKey or null) == null
+      then throw "Request output reference '${reference.request}' has no retained declaration provenance."
       else {
-        inherit (request) package localKey;
+        inherit (request) authority localKey;
         output = reference.output;
       };
 

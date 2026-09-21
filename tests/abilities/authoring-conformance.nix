@@ -1766,7 +1766,10 @@ in
   };
   assert alphaResultProvenance
   == {
-    package = "alpha";
+    authority = {
+      kind = "package";
+      package = "alpha";
+    };
     localKey = "shared";
     output = "result";
   };

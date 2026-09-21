@@ -288,12 +288,15 @@ in
         (request: request.localKey)
         (builtins.filter
           (request:
-            request.package
+            lib.abilities.packageForDeclarationAuthority request.authority
             == self.pname
             && lib.hasPrefix "credential-" request.localKey)
           (builtins.attrValues evaluation.config.aos.abilities.requests));
       expectedRequestOutput = localKey: output: {
-        package = self.pname;
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
         inherit localKey output;
       };
       disabled = evalConfig {};

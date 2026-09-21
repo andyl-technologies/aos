@@ -1762,7 +1762,10 @@ in
       mainStorage = (credentialTlsAbilityConfig.requests."envoy:main-storage" or {parameters = {};}).parameters;
       mainResources = (credentialTlsAbilityConfig.requests."envoy:main-resources" or {parameters = {};}).parameters;
       expectedRequestOutput = localKey: output: {
-        package = self.pname;
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
         inherit localKey output;
       };
       contractChecks = [

@@ -158,7 +158,10 @@ in
       mkSystem,
     }: let
       expectedRequestOutput = localKey: output: {
-        package = self.pname;
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
         inherit localKey output;
       };
       evaluate = conntrackdConfig:

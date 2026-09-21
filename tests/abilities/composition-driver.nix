@@ -760,7 +760,11 @@ in
     assert pendingRequest.implementation == "provider:service-lifecycle";
     assert pendingRequest.providerInstance == "provider:manager";
     assert pendingRequest.requirement == "network";
-    assert pendingRequest.declaration.package == "consumer";
+    assert pendingRequest.declaration.authority
+    == {
+      kind = "package";
+      package = "consumer";
+    };
     assert pendingRequest.declaration.requirement == childRequirementKey;
     assert lib.abilities.types.declarationKey.check childRequirementKey;
     assert lib.abilities.types.declarationKey.check childRequestKey;

@@ -309,7 +309,10 @@ in
           cleartext.options.nginx.tlsCredentials.privateKey
         ];
       expectedRequestOutput = localKey: output: {
-        package = self.pname;
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
         inherit localKey output;
       };
       contractHolds =

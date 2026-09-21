@@ -822,8 +822,17 @@
             }
             or (throw
               "evalModules: package '${package}' local ${kind} '${localKey}' has no authenticated declaration '${declaration}'");
+          packageProvenanceMatches =
+            if collection == "requests"
+            then
+              value.authority
+              == {
+                kind = "package";
+                inherit package;
+              }
+            else value.package == package;
         in
-          if value.package != package || value.localKey != localKey
+          if !packageProvenanceMatches || value.localKey != localKey
           then
             throw
             "evalModules: package '${package}' local ${kind} '${localKey}' has mismatched declaration provenance"
