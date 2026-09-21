@@ -27,6 +27,9 @@
     # Normal tests run in the build sandbox without the feature. The explicitly
     # enabled kernel fixtures run only in the guest, never against host cgroups.
     doCheck = true;
+    # Isolate subprocess fixtures from other tests' live journal descriptors.
+    # Forked children can otherwise briefly retain another test's flock owner.
+    cargoNextest = true;
     cargoTestFlags = "${packageFlags} --lib";
     installBins = false;
     buildDeps = [pkgs.protobuf];
@@ -70,6 +73,7 @@ in
       mkdir /sys/fs/cgroup/aos-local-identity-tests
       echo $$ > /sys/fs/cgroup/aos-local-identity-tests/cgroup.procs
       export AOS_CGROUP_TEST_SLEEP=${pkgs.coreutils}/bin/sleep
+      export AOS_TEST_UNSHARE=${pkgs.util-linux}/bin/unshare
 
       run_tests() {
         executable=$1
@@ -79,7 +83,13 @@ in
           echo "kernel qualification selected no tests: $executable $filter" >&2
           exit 1
         fi
-        "$executable" "$filter" --test-threads=1 --nocapture
+        case "$filter" in
+          broker::tests::host_scope_exchange::*)
+            ${pkgs.util-linux}/bin/unshare --mount --propagation private \
+              "$executable" "$filter" --test-threads=1 --nocapture
+            ;;
+          *) "$executable" "$filter" --test-threads=1 --nocapture ;;
+        esac
       }
 
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::real_readonly_hierarchy_resolves_exact_current_membership

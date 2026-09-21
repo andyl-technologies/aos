@@ -71,6 +71,8 @@ fn root_mount_client_accepts_exact_kernel_scope_and_rejects_response_substitutio
             ..Default::default()
         };
         let header = query.header.get_or_insert_default();
+        // The query targets Host, not Mount's independently versioned protocol.
+        header.protocol_major = 1;
         header.protocol_minor = 0;
         header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
         header.deadline_boottime_nanoseconds = boottime() + 10_000_000_000;
@@ -132,6 +134,7 @@ fn assert_prepared_catalog(
     let slot_path = directory.path().join(&slot_relative_path);
     std::fs::create_dir(&source_directory).unwrap();
     std::fs::create_dir_all(&slot_path).unwrap();
+    install_payload_anchor(slot_path.parent().unwrap());
     let slot = std::fs::metadata(&slot_path).unwrap();
     let root = observed.root().identity();
     let mount_namespace = observed.mount_namespace().identity();
@@ -194,7 +197,8 @@ fn assert_prepared_catalog(
     teardown_header.request_id = vec![92; 16];
     let teardown_fence = teardown_wire.fence.get_or_insert_default();
     teardown_fence.desired_generation += 1;
-    teardown_fence.assignment_digest = vec![7; 32];
+    // Cleanup retains the runtime assignment that owns the catalogued scope.
+    // Changing its digest would identify a different runtime, not a new operation.
     teardown_wire.action = MountAction::MOUNT_ACTION_DETACH.into();
     teardown_wire.detached_mount_handle = vec![93; 32];
     teardown_wire.view_revision = None.into();
@@ -224,6 +228,12 @@ fn assert_prepared_catalog(
     teardown_host_header.protocol_major = 1;
     teardown_host_header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
     teardown_host_request.fence = teardown_wire.fence.clone();
+    teardown_host_request.runtime_handle = runtime_handle_v1(
+        teardown.fence().incarnation_id(),
+        teardown.fence().assignment_epoch(),
+        teardown.fence().assignment_digest(),
+    )
+    .to_vec();
     let teardown_scope =
         observe_scope(&teardown_host_request, artifacts, ResponseCase::Valid).unwrap();
     let mut outage_catalog =
@@ -240,6 +250,79 @@ fn assert_prepared_catalog(
         teardown_resources.authorization_commitment.digest(),
         teardown_commitment
     );
+}
+
+fn install_payload_anchor(protected_anchor: &Path) {
+    use aos_sandbox_linux::mount::{DetachedMount, MountAttributes};
+
+    // The VM runner must isolate this process before publishing its fixture mount.
+    let current_namespace = std::fs::metadata("/proc/self/ns/mnt").unwrap();
+    let init_namespace = std::fs::metadata("/proc/1/ns/mnt").unwrap();
+    assert_ne!(current_namespace.ino(), init_namespace.ino());
+
+    let destination = Path::new("/run/aos/attachments");
+    std::fs::create_dir_all(destination).unwrap();
+    let source =
+        ResolvedPath::from_inherited(open_path(protected_anchor.to_str().unwrap())).unwrap();
+    let target = ResolvedPath::from_inherited(open_path(destination.to_str().unwrap())).unwrap();
+    let (_owner, idmap) = anchor_idmap();
+    let detached = DetachedMount::clone_from(&source, false).unwrap();
+    detached
+        .set_attributes(
+            false,
+            MountAttributes::secure_read_only().with_no_exec(true),
+            Some(&idmap),
+        )
+        .unwrap();
+    detached.attach(&target).unwrap();
+}
+
+struct NamespaceFixtureChild(std::process::Child);
+
+impl Drop for NamespaceFixtureChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn anchor_idmap() -> (NamespaceFixtureChild, aos_sandbox_linux::pidfd::NamespaceFd) {
+    use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
+
+    let unshare = std::env::var_os("AOS_TEST_UNSHARE").expect("VM supplies AOS unshare");
+    let sleep = std::env::var_os("AOS_CGROUP_TEST_SLEEP").expect("VM supplies AOS sleep");
+    let mut child = NamespaceFixtureChild(
+        std::process::Command::new(unshare)
+            .args(["--user", "--map-root-user", "--"])
+            .arg(sleep)
+            .arg("60")
+            .spawn()
+            .unwrap(),
+    );
+    let process = format!("/proc/{}", child.0.id());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+
+    // Namespace creation precedes map installation; wait for both complete maps.
+    loop {
+        assert!(child.0.try_wait().unwrap().is_none(), "idmap helper exited");
+        let mapped = ["uid_map", "gid_map"].into_iter().all(|name| {
+            std::fs::read_to_string(format!("{process}/{name}"))
+                .is_ok_and(|map| map.split_whitespace().collect::<Vec<_>>() == ["0", "0", "1"])
+        });
+        if mapped {
+            let namespace = NamespaceFd::from_owned(
+                open_namespace(&format!("{process}/ns/user")),
+                NamespaceKind::User,
+            )
+            .unwrap();
+            return (child, namespace);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "idmap installation deadline"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 fn observe_scope(
@@ -266,7 +349,11 @@ fn observe_scope(
             ownership_lease_signature: artifacts.ownership_lease_signature(),
         },
     );
-    server.join().unwrap();
+    assert!(
+        server.join().is_ok(),
+        "synthetic responder failed for {case:?}; client error: {:?}",
+        observed.as_ref().err(),
+    );
     observed
 }
 
