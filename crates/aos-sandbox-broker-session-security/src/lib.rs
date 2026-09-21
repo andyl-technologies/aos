@@ -14,6 +14,11 @@
 //! no detached signer, caller-built authenticated request, or raw channel
 //! authority is exposed.
 //!
+//! [`controller_service`] owns the unprivileged node-controller process above
+//! the controller core and this crate's protected transports. Sharing a crate
+//! does not combine processes: each broker and controller retains its separate
+//! executable, service identity, protected state, and systemd confinement.
+//!
 //! Broker-side execution reserves the authenticated request durably before
 //! issuing a move-only domain handoff. Concrete Host, Storage, Mount, and
 //! Network adapters cover the closed method profile, including observation and
@@ -37,6 +42,7 @@
 
 #![cfg(target_os = "linux")]
 
+pub mod controller_service;
 mod dormant_handshake;
 mod endpoint;
 mod entropy;

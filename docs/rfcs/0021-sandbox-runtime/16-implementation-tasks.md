@@ -296,7 +296,7 @@ they gate any affected runtime backend.
 The production composition is not complete. The following entry points make
 the outstanding work concrete:
 
-- `crates/aos-sandbox/src/controller_service.rs` constructs
+- `crates/aos-sandbox-broker-session-security/src/controller_service.rs` constructs
   `NodeController<UnavailableCompiler, UnavailableExecutor>`. Its worker
   publishes authenticated inventory but rejects pending mutation work.
   Replace those unavailable dependencies with the authenticated request
@@ -307,9 +307,10 @@ the outstanding work concrete:
   sessions through `ProductionBrokerSessionActivationV1::accept_authenticated`.
   Connect readiness inventory and catalog publication through the protected
   session protocol before claiming the deployed controller can become ready.
-  The session-security crate already depends on `aos-sandbox`; compose these
-  owners above that dependency boundary rather than introducing a crate cycle
-  or accepting legacy unauthenticated traffic in the brokers.
+  The production runtime now lives in the session-security crate, above the
+  controller core, so those protected owners can be connected without a crate
+  cycle. Its legacy inventory clients still need replacement; the broker must
+  not accept legacy unauthenticated traffic as a compatibility shortcut.
 - That service registers `DiscoveryService` and `OperationService` only.
   Operation get, cancel, and watch return unavailable errors. Register and
   connect the remaining public services to their authorized controller

@@ -5,7 +5,7 @@
 }: let
   moduleSource = builtins.readFile ../../modules/sandbox/controller-service.nix;
   hostModuleSource = builtins.readFile ../../modules/sandbox/host-broker.nix;
-  runtimeSource = builtins.readFile ../../crates/aos-sandbox/src/controller_service.rs;
+  runtimeSource = builtins.readFile ../../crates/aos-sandbox-broker-session-security/src/controller_service.rs;
   catalogReconciliationSource =
     builtins.readFile ../../crates/aos-sandbox/src/host_catalog_reconciliation.rs;
   resourceInventorySource =
@@ -118,6 +118,8 @@ in
   assert requiresAbsent "SemanticCapability" runtimeSource;
   assert requiresAbsent "aos.sandbox.controller.observation" runtimeSource;
   assert requires ''--frozen --offline'' packageSource;
+  assert requires ''-p aos-sandbox-broker-session-security --bin aos-sandboxd'' packageSource;
+  assert requires ''cargoTestFlags = "-p aos-sandbox -p aos-sandbox-broker-session-security"'' packageSource;
     pkgs.mkDerivation {
       pname = "sandbox-controller-service-source-contract";
       version = "0";

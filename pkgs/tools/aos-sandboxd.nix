@@ -20,7 +20,7 @@
     inherit src;
     name = "aos-sandboxd-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-1RgRja5AK1CyIq0j1cIRtDcDqtcHro7V5rzNalpWxjQ=";
+    hash = "sha256-9WcNC5RWMw3rqMFTdHEF73ai4Edf6lxxkOGviTNxfw0=";
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
@@ -41,8 +41,8 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox --bin aos-sandboxd"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandboxd"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox -p aos-sandbox-broker-session-security"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
@@ -52,8 +52,9 @@ in
     pname = "aos-sandboxd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox --bin aos-sandboxd";
-    cargoTestFlags = "-p aos-sandbox";
+    cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandboxd";
+    # Keep the core suite when moving process ownership into the transport crate.
+    cargoTestFlags = "-p aos-sandbox -p aos-sandbox-broker-session-security";
     cargoNextest = true;
     doCheck = true;
     buildDeps = [buildProtobuf];

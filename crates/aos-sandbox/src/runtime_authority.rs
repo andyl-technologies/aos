@@ -171,7 +171,14 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
     }
 
     /// Validates that every current assignment belongs to the configured node.
-    pub(crate) fn validate_current_node(
+    ///
+    /// This startup audit grants no execution or mutation authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unhealthy protected state, corrupt current bindings,
+    /// or an assignment belonging to a different node.
+    pub fn validate_current_node(
         &self,
         expected_node: NodeId,
     ) -> Result<(), RuntimeAuthorityError> {
