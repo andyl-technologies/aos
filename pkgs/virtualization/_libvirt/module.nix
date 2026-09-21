@@ -13,6 +13,7 @@
   consumerInstance = "libvirt";
   resultOf = lib.abilities.resultOf;
   availabilityRequirement = "dbus-system-bus-availability";
+  authorizationRequirement = "authorization-service-availability";
 
   producer = key: interface: parameters:
     serviceManagement.forProducer {
@@ -445,11 +446,13 @@
     inherit searchPath;
     dependencies = {
       after = [
+        (resultOf authorizationRequirement "resource")
         (resultOf "system-bus-availability" "resource")
         (resultOf "virtlogd-lifecycle" "resource")
         (resultOf "virtlockd-lifecycle" "resource")
       ];
       requires = [
+        (resultOf authorizationRequirement "resource")
         (resultOf "system-bus-availability" "resource")
         (resultOf "virtlogd-lifecycle" "resource")
       ];
@@ -536,6 +539,18 @@ in {
                 strength = "required";
                 fallback = null;
               };
+            requirementTemplates.${authorizationRequirement} =
+              lib.abilities.interfaceSelector {
+                name = "aos.authorization.service-availability";
+                abi = 1;
+              }
+              // {
+                description = "Requires the selected system authorization service.";
+                methods = ["observe"];
+                guarantees = [];
+                strength = "required";
+                fallback = null;
+              };
           }
         ]
         ++ builtins.map (value: value.declarations) contributions
@@ -570,6 +585,12 @@ in {
               consumer = consumerInstance;
               scope = ["system-bus"];
               parameters.scope = "system-bus";
+            };
+            requests.${authorizationRequirement} = {
+              requirement = authorizationRequirement;
+              consumer = consumerInstance;
+              scope = ["authorization"];
+              parameters.scope = "system";
             };
           }
         ]
