@@ -830,12 +830,16 @@ dependencies = [
  "futures",
  "rand 0.9.4",
  "rustix 1.1.4",
+ "rustls",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls",
+ "zeroize",
 ]
 
 [[package]]

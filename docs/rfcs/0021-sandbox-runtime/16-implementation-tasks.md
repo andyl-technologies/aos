@@ -338,6 +338,12 @@ the outstanding work concrete:
   public API, including operation waits, structured output, watch, and the
   separately authorized execution data plane.
 - The root-only diagnostic socket is not a project authentication mechanism.
+  `aos-sandbox::public_api_session` supplies a TLS 1.3/HTTP/2 transport
+  foundation with mandatory client certificates, protected explicit
+  certificate-to-principal/project registration, and connection-bound peer
+  evidence. It grants no capability and is not yet connected to a production
+  listener, RPC authorization, or CLI transport. Real handshake and deployed
+  credential-lifecycle qualification remain required.
   Production activation must preserve holder-bound sessions, current protected
   authorization, broker audience binding, ownership fencing, and independent
   Guardian enforcement. An opaque client authorization context or local UID

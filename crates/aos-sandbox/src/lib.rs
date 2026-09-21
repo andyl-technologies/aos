@@ -38,6 +38,8 @@ pub mod controller_query;
 #[cfg(target_os = "linux")]
 pub mod controller_service;
 #[cfg(target_os = "linux")]
+pub mod public_api_session;
+#[cfg(target_os = "linux")]
 pub mod destination_slot_effect;
 #[cfg(target_os = "linux")]
 pub mod destination_slot_inventory;
