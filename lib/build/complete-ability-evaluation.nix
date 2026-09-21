@@ -31,7 +31,20 @@
   in
     lib.abilities.canonicalizeAuthenticatedPackages candidates;
 
-  hostSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.environment.systemPackages;
+  declaredHostPackagesFrom = evaluation:
+    builtins.map
+    (selection: selection.package)
+    (builtins.attrValues (
+      lib.filterAttrs
+      (_: selection: selection.enable || selection.bundle)
+      evaluation.config.aos.packages
+    ));
+
+  hostPackagesFrom = evaluation:
+    evaluation.config.environment.systemPackages
+    ++ declaredHostPackagesFrom evaluation;
+
+  hostSelectedAbilityPackages = selectedAbilityPackagesFrom (hostPackagesFrom selectionEvaluation);
   initrdSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.aos.boot.initrd.packageRoots;
   callerPackageModules = lib.abilities.canonicalizeAuthenticatedModuleRecords packageModules;
   authenticatedModuleRecordFor = package: let
@@ -113,14 +126,14 @@
       discoverPackageModules = {evaluation, ...}: let
         stagePackages =
           if environment.stage == "host"
-          then evaluation.config.environment.systemPackages
+          then hostPackagesFrom evaluation
           else evaluation.config.aos.boot.initrd.packageRoots;
       in
         authenticatedModuleRecordsFor (selectedAbilityPackagesFrom stagePackages);
     };
     evaluatedStagePackages =
       if environment.stage == "host"
-      then resolution.evaluation.config.environment.systemPackages
+      then hostPackagesFrom resolution.evaluation
       else resolution.evaluation.config.aos.boot.initrd.packageRoots;
   in
     resolution // {packages = selectedAbilityPackagesFrom evaluatedStagePackages;};
