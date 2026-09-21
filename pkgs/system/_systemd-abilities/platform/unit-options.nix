@@ -201,14 +201,12 @@ in rec {
       };
     };
 
-  # Reconstruct the legacy `sharedOptions` shape from the layered
-  # halves. Stage-2 callers still see a byte-identical option surface:
-  # identity + `[Install]` directives + the stage-2-only mask /
-  # override-strategy fields.
-  sharedOptions = identityOption // stage2InstallOptions;
+  # Concrete and common units share identity and `[Install]` directives plus
+  # the stage-2 mask and override-strategy fields.
+  stage2CommonOptions = identityOption // stage2InstallOptions;
 
   concreteUnitOptions =
-    sharedOptions
+    stage2CommonOptions
     // {
       text = mkOption {
         type = types.nullOr types.str;
@@ -238,7 +236,7 @@ in rec {
 
   commonUnitOptions = {
     options =
-      sharedOptions
+      stage2CommonOptions
       // {
         description = mkOption {
           default = "";

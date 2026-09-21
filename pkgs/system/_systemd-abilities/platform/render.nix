@@ -411,54 +411,6 @@ in rec {
     then true
     else trace (concatStringsSep "\n" errors) false;
 
-  # Minimal pretty-printer used only by `checkUnitConfigWithLegacyKey`'s
-  # error message. Nixpkgs uses `lib.generators.toPretty` for a fuller
-  # rendering; AOS doesn't have that helper, so we fall back to printing
-  # the keys and string values at one level of depth. Enough to debug a
-  # misplaced `networkConfig`-style legacy key collision without porting
-  # the full pretty-printer.
-  _shallowDump = attrs:
-    if builtins.isAttrs attrs
-    then
-      "{ "
-      + concatStringsSep "; " (
-        mapAttrsToList (
-          n: v: "${n} = ${
-            if builtins.isString v
-            then "\"${v}\""
-            else if builtins.isAttrs v
-            then "{ ... }"
-            else builtins.toString v
-          }"
-        )
-        attrs
-      )
-      + "; }"
-    else builtins.toString attrs;
-
-  checkUnitConfigWithLegacyKey = legacyKey: group: checks: attrs: let
-    dump = _shallowDump attrs;
-    attrs' =
-      if legacyKey == null
-      then attrs
-      else if !(attrs ? ${legacyKey})
-      then attrs
-      else if builtins.removeAttrs attrs [legacyKey] == {}
-      then attrs.${legacyKey}
-      else
-        throw ''
-          The declaration
-
-          ${dump}
-
-          must not mix unit options with the legacy key '${legacyKey}'.
-
-          This can be fixed by moving all settings from within ${legacyKey}
-          one level up.
-        '';
-  in
-    checkUnitConfig group checks attrs';
-
   toOption = x:
     if x == true
     then "true"
@@ -494,7 +446,7 @@ in rec {
 
   # generateUnits — render authored systemd units as pure data.
   #
-  # Every value is JSON-safe pure data and deliberately omits the legacy
+  # Every value is JSON-safe pure data and deliberately omits the build-only
   # `unit` derivation and derivation-bearing job-script fields. Package-owned
   # unit trees enter through authenticated provider artifacts and are assembled
   # outside this renderer.
