@@ -247,13 +247,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),

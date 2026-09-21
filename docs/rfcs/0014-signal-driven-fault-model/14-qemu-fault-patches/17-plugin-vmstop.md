@@ -1,14 +1,14 @@
-# 0063 - Exact plugin-boundary VM stop
+# Capability task 0063 — Exact plugin-boundary VM stop
 
-Patch `0063-crucible-plugin-vmstop.patch` adds the one in-process operation
-needed to hand a boundary published by the GPL-side Crucible plugin to QEMU's
-native machine-control state. It exports `qemu_plugin_request_vmstop()`;
-follow-up patch `0073-crucible-device-wait-vmstop.patch` distinguishes the
-drained main-loop control boundary from device-completion contexts. The patch
-stack does not add a second snapshot mechanism, a host-side QEMU callback, or
-a shared-memory representation of QEMU state.
+The atomic patch `crucible-qemu-11.1.1.patch` adds the
+one in-process operation needed to hand a boundary published by the GPL-side
+Crucible plugin to QEMU's native machine-control state. It exports
+`qemu_plugin_request_vmstop()` and
+distinguishes the drained main-loop control boundary from device-completion
+contexts. The integration adds no second snapshot mechanism, host-side QEMU
+callback, or shared-memory representation of QEMU state.
 
-## Why the patch is required
+## Why the capability is required
 
 The shared-memory pause request can make the plugin publish an exact node
 instruction count, an exact idle wake coordinate, and an inactive-device
@@ -70,10 +70,7 @@ the main loop consumes the first request. The plugin treats `-EALREADY` as an
 idempotent successful handoff: QEMU has already fenced and queued the one stop
 needed for that pause generation. Every other nonzero result remains fatal.
 
-The patch series does not expose the earlier void
-`qemu_plugin_crucible_pause_vm()` helper. That unvalidated operation discarded
-the native stop result and could report no distinction between an accepted
-boundary and a rejected transition. All GPL-side callers use the typed export;
+The public API exposes only the typed export. All GPL-side callers use it;
 a nonzero result is either returned as a typed callback error or requests a
 fail-loud QEMU shutdown.
 
@@ -150,17 +147,17 @@ is rejected outright. The Apache host never links QEMU,
 includes a QEMU header, or calls the export. Only the GPL-2.0-only plugin
 resolves and invokes it inside the QEMU process.
 
-The patch stack modifies `include/qemu/qemu-plugin.h`, `include/qemu/plugin.h`,
+The atomic patch modifies `include/plugins/qemu-plugin.h`, `include/qemu/plugin.h`,
 `plugins/api-system.c`, `block/crucible-shmem.c`,
 `accel/tcg/tcg-accel-ops-sim-shmem.c`,
 `accel/tcg/tcg-accel-ops-rr.c`, `system/cpus.c`, and `monitor/qmp-cmds.c`. It
 creates no QEMU file, so the created-file license inventory does not gain a row.
-Every file retains its existing license scope. The deterministic patch commit
+Every file retains its existing license scope. The atomic patch commit
 carries the required DCO sign-off and is included in the matching corresponding-source
 bundle.
 
-Patch `0073` gives every scheduler-owned or device-completion exact callback a
-safe native-stop path. It adds a required
+The capability specified by capability task `0073` gives every scheduler-owned
+or device-completion exact callback a safe native-stop path. It adds a required
 `qemu_plugin_register_control_boundary_cb()` surface distinct from vCPU resume:
 waking QEMU's main loop does not mean a halted vCPU became runnable, so the
 control callback may acknowledge pause or shutdown but must not mutate halt
@@ -215,13 +212,13 @@ remains the authoritative completion channel for both paths.
   scheduler-owned exact callback, proves admission from an exact callback with
   no current vCPU, and verifies rejection under disabled/non-precise icount,
   under MTTCG, and outside `sim`.
-- The stock negative control proves the symbol is absent before the patch; the
-  drop-one and patch-prefix gates attribute the symbol only to patch `0063`.
+- The pristine-QEMU negative proves the symbol is absent without the atomic
+  integration patch, while source evidence binds it to this capability.
 - Plugin unit tests prove a pause publication precedes the stop request and a
   nonzero status becomes a typed fail-loud callback error.
-- The patch microtest proves synchronous stop at a drained control boundary,
-  nonblocking main-loop admission from other exact scopes without requiring
-  `current_cpu`, retention of the admission fence, rejection outside an exact
+- The atomic-patch microtest proves synchronous stop at a drained control
+  boundary, nonblocking main-loop admission from other exact scopes without
+  requiring `current_cpu`, retention of the admission fence, rejection outside an exact
   scope, coalescing of duplicate control requests, the two-pass device-BH
   barrier, and deferral behind an overlapping idle-time advance.
 - The live diskless checkpoint gate uses at least two vCPUs and proves capture,
@@ -232,9 +229,10 @@ remains the authoritative completion channel for both paths.
   a real virtio block mutation has acknowledged but non-durable continuation
   state.
 - `gate:patch-microtests`, `gate:abi-conformance`,
-  `gate:license-boundary`, patch regeneration, patched-QEMU build, exact
+  `gate:license-boundary`, atomic-patch regeneration, patched-QEMU build, exact
   snapshot/restore, and complete corresponding-source checks all consume the
-  new patch identity.
+  atomic-patch identity.
 
-Removing patch `0063` must make plugin capability admission, the focused
-microtest, the drop-one gate, and both live exact-checkpoint gates fail closed.
+The pristine-QEMU negative must make plugin capability admission and the
+focused microtest fail closed; both live exact-checkpoint gates require the
+atomic capability.

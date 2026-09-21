@@ -54,18 +54,6 @@ pub(super) fn assert_timeout_budget(timeouts: &[Duration], budget: Duration) {
     );
 }
 
-pub(super) fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {
-    Checkpoint::new(
-        content_hash_with_byte(byte),
-        content_hash_with_byte(byte.wrapping_add(1)),
-        CheckpointKind::Fat,
-    )
-}
-
-pub(super) fn content_hash_with_byte(byte: u8) -> ContentHash {
-    ContentHash { bytes: [byte; 32] }
-}
-
 #[derive(Debug)]
 pub(super) struct ScriptedQmpStream {
     pub(super) read: Cursor<Vec<u8>>,

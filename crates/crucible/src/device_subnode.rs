@@ -755,19 +755,6 @@ impl DeviceSchedulingSubNode {
         }
     }
 
-    /// Returns a shared view of the held block device, when this is a disk sub-node.
-    ///
-    /// This migration accessor is equivalent to
-    /// [`DeviceSchedulingSubNode::block_device`]. It returns `None` for a 9p
-    /// sub-node because [`DeviceSchedulingSubNode`] now owns either concrete
-    /// device kind. New code should use [`DeviceSchedulingSubNode::block_device`]
-    /// or [`DeviceSchedulingSubNode::ninep_device`] so the expected concrete
-    /// device kind is visible at the call site.
-    #[must_use]
-    pub fn device(&self) -> Option<&BlockDevice> {
-        self.block_device()
-    }
-
     /// Returns a shared view of the held 9p device, when this is a filesystem sub-node.
     #[must_use]
     pub fn ninep_device(&self) -> Option<&NinepDevice> {

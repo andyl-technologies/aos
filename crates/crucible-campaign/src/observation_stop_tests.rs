@@ -106,14 +106,14 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
 
     let attempt = Attempt::new(AttemptStart::Discover { configuration }, path, stop.clone())
         .expect("observation-stop attempt");
-    assert_eq!(attempt.schema_version(), 4);
+    assert_eq!(attempt.schema_version(), 8);
     assert_eq!(
         Attempt::from_canonical_bytes(&attempt.canonical_bytes()).expect("attempt round trip"),
         attempt
     );
-    let mut downgraded_attempt = attempt.canonical_bytes();
-    downgraded_attempt[..4].copy_from_slice(&3_u32.to_be_bytes());
-    assert!(Attempt::from_canonical_bytes(&downgraded_attempt).is_err());
+    let mut noncurrent_attempt = attempt.canonical_bytes();
+    noncurrent_attempt[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(Attempt::from_canonical_bytes(&noncurrent_attempt).is_err());
 
     let opportunity = stored_id!(
         ChoiceOpportunityId,
@@ -128,13 +128,15 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         "observation-stop-domain"
     );
     let branch = BranchRequest::new(
-        BranchPointId::from_hash(CampaignHash::derive(
-            "observation-stop-test",
-            b"branch point",
-        )),
-        configuration,
-        opportunity,
-        domain,
+        BranchRequest::identity(
+            BranchPointId::from_hash(CampaignHash::derive(
+                "observation-stop-test",
+                b"branch point",
+            )),
+            configuration,
+            opportunity,
+            domain,
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
             .expect("finite source"),
         BranchRequestCause::Operator(CampaignCommandId::from_hash(CampaignHash::derive(
@@ -150,9 +152,9 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         BranchRequest::from_canonical_bytes(&branch.canonical_bytes()).expect("branch round trip"),
         branch
     );
-    let mut downgraded_branch = branch.canonical_bytes();
-    downgraded_branch[..4].copy_from_slice(&8_u32.to_be_bytes());
-    assert!(BranchRequest::from_canonical_bytes(&downgraded_branch).is_err());
+    let mut unsupported_branch_version = branch.canonical_bytes();
+    unsupported_branch_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(BranchRequest::from_canonical_bytes(&unsupported_branch_version).is_err());
 
     let proof = assertion_proof(child);
     assert_eq!(
@@ -165,35 +167,39 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     assert!(!StopOutcome::Reached(stop.clone()).reaches(&stop));
     let observation = Observation::new(
         attempt.id().expect("attempt ID"),
-        child,
-        configuration,
-        path,
-        outcome,
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            configuration,
+            path,
+            outcome,
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::new(),
     )
     .expect("observation-stop observation");
-    assert_eq!(observation.schema_version(), 9);
+    assert_eq!(observation.schema_version(), 12);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
         observation
     );
-    let mut downgraded_observation = observation.canonical_bytes();
-    downgraded_observation[..4].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(Observation::from_canonical_bytes(&downgraded_observation).is_err());
+    let mut noncurrent_observation = observation.canonical_bytes();
+    noncurrent_observation[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(Observation::from_canonical_bytes(&noncurrent_observation).is_err());
     assert!(
         Observation::new(
             attempt.id().expect("attempt ID"),
-            child,
-            configuration,
-            path,
-            StopOutcome::Reached(stop.clone()),
-            measurements,
-            properties,
-            coverage,
+            Observation::outcome(
+                child,
+                configuration,
+                path,
+                StopOutcome::Reached(stop.clone()),
+                measurements,
+                properties,
+                coverage,
+            ),
             BTreeSet::new(),
         )
         .is_err()
@@ -208,7 +214,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     let selection_observation = observation
         .with_produced_selections(BTreeSet::from([selection]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 11);
+    assert_eq!(selection_observation.schema_version(), 12);
 
     let discovery = DiscoveryRequest::new(
         CampaignCommandId::from_hash(CampaignHash::derive(
@@ -235,11 +241,9 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         CampaignFact::from_canonical_bytes(&fact.canonical_bytes()).expect("fact round trip"),
         fact
     );
-    for wrong_version in [8_u32, 9] {
-        let mut mismatched = fact.canonical_bytes();
-        mismatched[..4].copy_from_slice(&wrong_version.to_be_bytes());
-        assert!(CampaignFact::from_canonical_bytes(&mismatched).is_err());
-    }
+    let mut noncurrent_fact = fact.canonical_bytes();
+    noncurrent_fact[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(CampaignFact::from_canonical_bytes(&noncurrent_fact).is_err());
 
     let service = SubmitCampaignDiscoveryRequest::new(
         CampaignPrincipal::new("operator:observation-stop").expect("principal"),
@@ -253,11 +257,9 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
             .expect("service round trip"),
         service
     );
-    for wrong_version in [1_u32, 2] {
-        let mut mismatched = service.canonical_bytes();
-        mismatched[..4].copy_from_slice(&wrong_version.to_be_bytes());
-        assert!(SubmitCampaignDiscoveryRequest::from_canonical_bytes(&mismatched).is_err());
-    }
+    let mut mismatched = service.canonical_bytes();
+    mismatched[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(SubmitCampaignDiscoveryRequest::from_canonical_bytes(&mismatched).is_err());
 }
 
 #[test]
@@ -303,13 +305,15 @@ fn observation_stop_proofs_reject_wrong_witness_shapes_and_child_bindings() {
     assert!(
         Observation::new(
             attempt.id().expect("attempt ID"),
-            wrong_child,
-            configuration,
-            path,
-            StopOutcome::ObservationReached(Box::new(assertion_proof(child))),
-            measurements,
-            properties,
-            coverage,
+            Observation::outcome(
+                wrong_child,
+                configuration,
+                path,
+                StopOutcome::ObservationReached(Box::new(assertion_proof(child))),
+                measurements,
+                properties,
+                coverage,
+            ),
             BTreeSet::new(),
         )
         .is_err()

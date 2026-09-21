@@ -24,7 +24,7 @@ pub(super) enum HotForkRcuBarrierAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum HotForkBhTimerBarrierAction {
+pub(super) enum HotForkAsyncWorkerBarrierAction {
     Hold,
     Query,
     Release,
@@ -159,7 +159,7 @@ impl HotForkRcuBarrierAction {
     }
 }
 
-impl HotForkBhTimerBarrierAction {
+impl HotForkAsyncWorkerBarrierAction {
     const fn wire_name(self) -> &'static str {
         match self {
             Self::Hold => "hold",
@@ -185,14 +185,24 @@ pub(super) enum QmpCommand<'a> {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
     },
-    LoadVm {
-        tag: &'a QmpSnapshotTag,
-        job_id: &'a str,
-    },
     DeleteSnapshot {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
     },
+    CheckpointCapture {
+        request: &'a QmpCheckpointCaptureRequest,
+    },
+    CheckpointRestore {
+        request: &'a QmpCheckpointRestoreRequest,
+    },
+    CheckpointCommit {
+        identity: QmpCheckpointIdentity,
+    },
+    CheckpointAbort {
+        identity: QmpCheckpointIdentity,
+    },
+    QueryCheckpointEpoch,
+    QueryFingerprintProjectionManifest,
     QueryJobs,
     JobDismiss {
         job_id: &'a str,
@@ -205,13 +215,6 @@ pub(super) enum QmpCommand<'a> {
         evidence: crucible::ContentHash,
         process_generation: u64,
     },
-    QueryCpusFast,
-    QueryHotForkReadiness,
-    QueryHotForkThreadInventory,
-    QueryHotForkRcuInventory,
-    QueryHotForkAioInventory,
-    QueryHotForkAioHandlerInventory,
-    QueryHotForkBlockBackendInventory,
     QueryHotForkPluginResourceInventory,
     QueryHotForkChildRuntime,
     HotForkPluginBarrier {
@@ -220,8 +223,8 @@ pub(super) enum QmpCommand<'a> {
     HotForkRcuBarrier {
         action: HotForkRcuBarrierAction,
     },
-    HotForkBhTimerBarrier {
-        action: HotForkBhTimerBarrierAction,
+    HotForkAsyncWorkerBarrier {
+        action: HotForkAsyncWorkerBarrierAction,
     },
     HotForkBlockBarrier {
         action: HotForkBlockBarrierAction,
@@ -276,10 +279,6 @@ pub(super) enum QmpCommand<'a> {
         name: Option<&'a QmpDescriptorName>,
         socket_cookie: Option<u64>,
     },
-    QueryHotForkBottomHalfInventory,
-    QueryHotForkMutexInventory,
-    QueryHotForkTimerInventory,
-    QueryHotForkMonitorInventory,
     Quit,
     GetFd {
         name: &'a QmpDescriptorName,
@@ -294,32 +293,28 @@ impl QmpCommand<'_> {
         match self {
             Self::Capabilities => QmpCommandKind::Capabilities,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
-            Self::LoadVm { .. } => QmpCommandKind::LoadVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
+            Self::CheckpointCapture { .. } => QmpCommandKind::CheckpointCapture,
+            Self::CheckpointRestore { .. } => QmpCommandKind::CheckpointRestore,
+            Self::CheckpointCommit { .. } => QmpCommandKind::CheckpointCommit,
+            Self::CheckpointAbort { .. } => QmpCommandKind::CheckpointAbort,
+            Self::QueryCheckpointEpoch => QmpCommandKind::QueryCheckpointEpoch,
+            Self::QueryFingerprintProjectionManifest => {
+                QmpCommandKind::QueryFingerprintProjectionManifest
+            }
             Self::QueryJobs => QmpCommandKind::QueryJobs,
             Self::JobDismiss { .. } => QmpCommandKind::JobDismiss,
             Self::QueryStatus => QmpCommandKind::QueryStatus,
             Self::Stop => QmpCommandKind::Stop,
             Self::Cont => QmpCommandKind::Cont,
             Self::CompleteTerminalLifecycle { .. } => QmpCommandKind::CompleteTerminalLifecycle,
-            Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
-            Self::QueryHotForkReadiness => QmpCommandKind::QueryHotForkReadiness,
-            Self::QueryHotForkThreadInventory => QmpCommandKind::QueryHotForkThreadInventory,
-            Self::QueryHotForkRcuInventory => QmpCommandKind::QueryHotForkRcuInventory,
-            Self::QueryHotForkAioInventory => QmpCommandKind::QueryHotForkAioInventory,
-            Self::QueryHotForkAioHandlerInventory => {
-                QmpCommandKind::QueryHotForkAioHandlerInventory
-            }
-            Self::QueryHotForkBlockBackendInventory => {
-                QmpCommandKind::QueryHotForkBlockBackendInventory
-            }
             Self::QueryHotForkPluginResourceInventory => {
                 QmpCommandKind::QueryHotForkPluginResourceInventory
             }
             Self::QueryHotForkChildRuntime => QmpCommandKind::QueryHotForkChildRuntime,
             Self::HotForkPluginBarrier { .. } => QmpCommandKind::HotForkPluginBarrier,
             Self::HotForkRcuBarrier { .. } => QmpCommandKind::HotForkRcuBarrier,
-            Self::HotForkBhTimerBarrier { .. } => QmpCommandKind::HotForkBhTimerBarrier,
+            Self::HotForkAsyncWorkerBarrier { .. } => QmpCommandKind::HotForkAsyncWorkerBarrier,
             Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
             Self::HotFork { .. } => QmpCommandKind::HotFork,
@@ -331,12 +326,6 @@ impl QmpCommand<'_> {
             Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
             Self::HotForkChildQmp { .. } => QmpCommandKind::HotForkChildQmp,
             Self::HotForkChildConsole { .. } => QmpCommandKind::HotForkChildConsole,
-            Self::QueryHotForkBottomHalfInventory => {
-                QmpCommandKind::QueryHotForkBottomHalfInventory
-            }
-            Self::QueryHotForkMutexInventory => QmpCommandKind::QueryHotForkMutexInventory,
-            Self::QueryHotForkTimerInventory => QmpCommandKind::QueryHotForkTimerInventory,
-            Self::QueryHotForkMonitorInventory => QmpCommandKind::QueryHotForkMonitorInventory,
             Self::Quit => QmpCommandKind::Quit,
             Self::GetFd { .. } => QmpCommandKind::GetFd,
             Self::CloseFd { .. } => QmpCommandKind::CloseFd,
@@ -354,9 +343,6 @@ impl QmpCommand<'_> {
             Self::SaveVm { tag, job_id } => {
                 snapshot_request(QMP_SNAPSHOT_SAVE_COMMAND, job_id, tag)
             }
-            Self::LoadVm { tag, job_id } => {
-                snapshot_request(QMP_SNAPSHOT_LOAD_COMMAND, job_id, tag)
-            }
             Self::DeleteSnapshot { tag, job_id } => json!({
                 "execute": QMP_SNAPSHOT_DELETE_COMMAND,
                 "arguments": {
@@ -364,6 +350,28 @@ impl QmpCommand<'_> {
                     "tag": tag.as_str(),
                     "devices": [QMP_SNAPSHOT_VMSTATE_DEVICE],
                 },
+            }),
+            Self::CheckpointCapture { request } => json!({
+                "execute": QMP_CHECKPOINT_CAPTURE_COMMAND,
+                "arguments": request.wire_value(),
+            }),
+            Self::CheckpointRestore { request } => json!({
+                "execute": QMP_CHECKPOINT_RESTORE_COMMAND,
+                "arguments": request.wire_value(),
+            }),
+            Self::CheckpointCommit { identity } => json!({
+                "execute": QMP_CHECKPOINT_COMMIT_COMMAND,
+                "arguments": identity.wire_value(),
+            }),
+            Self::CheckpointAbort { identity } => json!({
+                "execute": QMP_CHECKPOINT_ABORT_COMMAND,
+                "arguments": identity.wire_value(),
+            }),
+            Self::QueryCheckpointEpoch => json!({
+                "execute": QMP_QUERY_CHECKPOINT_EPOCH_COMMAND,
+            }),
+            Self::QueryFingerprintProjectionManifest => json!({
+                "execute": QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND,
             }),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
@@ -393,27 +401,6 @@ impl QmpCommand<'_> {
                     "process-generation": process_generation,
                 },
             }),
-            Self::QueryCpusFast => json!({
-                "execute": QMP_QUERY_CPUS_FAST_COMMAND,
-            }),
-            Self::QueryHotForkReadiness => json!({
-                "execute": QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-            }),
-            Self::QueryHotForkThreadInventory => json!({
-                "execute": QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-            }),
-            Self::QueryHotForkRcuInventory => json!({
-                "execute": QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
-            }),
-            Self::QueryHotForkAioInventory => json!({
-                "execute": QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
-            }),
-            Self::QueryHotForkAioHandlerInventory => json!({
-                "exec-oob": QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
-            }),
-            Self::QueryHotForkBlockBackendInventory => json!({
-                "exec-oob": QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
-            }),
             Self::QueryHotForkPluginResourceInventory => json!({
                 "exec-oob": QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND,
             }),
@@ -432,8 +419,8 @@ impl QmpCommand<'_> {
                     "action": action.wire_name(),
                 },
             }),
-            Self::HotForkBhTimerBarrier { action } => json!({
-                "exec-oob": QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
+            Self::HotForkAsyncWorkerBarrier { action } => json!({
+                "exec-oob": QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND,
                 "arguments": {
                     "action": action.wire_name(),
                 },
@@ -476,6 +463,7 @@ impl QmpCommand<'_> {
             Self::HotForkChildProcess { action, generation } => json!({
                 "exec-oob": QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
                 "arguments": {
+                    "schema-version": QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
                     "action": action.wire_name(),
                     "generation": generation,
                 },
@@ -722,18 +710,6 @@ impl QmpCommand<'_> {
                     "arguments": Value::Object(arguments),
                 })
             }
-            Self::QueryHotForkBottomHalfInventory => json!({
-                "exec-oob": QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND,
-            }),
-            Self::QueryHotForkMutexInventory => json!({
-                "execute": QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
-            }),
-            Self::QueryHotForkTimerInventory => json!({
-                "execute": QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
-            }),
-            Self::QueryHotForkMonitorInventory => json!({
-                "exec-oob": QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND,
-            }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,
             }),

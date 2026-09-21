@@ -58,12 +58,12 @@
         needle = "guest_backing_state: GuestBackingStateMode::ByteIdenticalGenesis,";
       }
       {
-        label = "disk image policy setter";
-        needle = "pub fn with_disk_image_mode(mut self, disk_image_mode: DiskImageMode) -> Self";
+        label = "disk image policy input";
+        needle = "pub disk_image_mode: DiskImageMode,";
       }
       {
-        label = "genesis backing-state policy setter";
-        needle = "pub fn with_guest_backing_state(";
+        label = "genesis backing-state policy input";
+        needle = "pub guest_backing_state: GuestBackingStateMode,";
       }
       # The storage-mode validation refactored from two independent `if !=`
       # guards into one exhaustive match over the (disk_image_mode,
@@ -107,8 +107,8 @@
         needle = "guest_core_content: GuestCoreContentMode::HostSideOnly,";
       }
       {
-        label = "guest core content setter";
-        needle = "pub fn with_guest_core_content(mut self, guest_core_content: GuestCoreContentMode) -> Self";
+        label = "guest core content policy input";
+        needle = "pub guest_core_content: GuestCoreContentMode,";
       }
       {
         label = "host-side-only validation";
@@ -166,7 +166,7 @@
       }
       {
         label = "writable backing negative assertion";
-        needle = "with_disk_image_mode(DiskImageMode::WritableBacking)";
+        needle = "disk_image_mode: DiskImageMode::WritableBacking,";
       }
       {
         label = "disk mutation error assertion";
@@ -174,7 +174,7 @@
       }
       {
         label = "host-mutable genesis negative assertion";
-        needle = "with_guest_backing_state(GuestBackingStateMode::HostMutableGenesis)";
+        needle = "guest_backing_state: GuestBackingStateMode::HostMutableGenesis,";
       }
       {
         label = "host-mutable genesis error assertion";
@@ -182,7 +182,7 @@
       }
       {
         label = "guest-injected content negative assertion";
-        needle = "with_guest_core_content(GuestCoreContentMode::GuestInjectedContent)";
+        needle = "guest_core_content: GuestCoreContentMode::GuestInjectedContent,";
       }
       {
         label = "guest core content error assertion";

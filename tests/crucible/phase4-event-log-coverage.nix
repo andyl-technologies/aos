@@ -108,16 +108,16 @@
         needle = "crate::scheduler::coverage_fingerprint_from_event_log(entries)";
       }
       {
-        label = "graph cache coverage entry point";
-        needle = "pub fn cache_snapshot_with_event_log_coverage";
+        label = "graph cache accepts typed checkpoint feedback";
+        needle = "pub fn cache_snapshot(";
       }
       {
-        label = "graph cache stamps coverage before insert";
-        needle = "checkpoint.with_coverage_fingerprint(fingerprint)";
+        label = "checkpoint derives coverage before cache insertion";
+        needle = "pub fn with_coverage_from_event_log";
       }
       {
         label = "graph cache stamps checkpoint node";
-        needle = "checkpoint.coverage_fingerprint = fingerprint";
+        needle = "checkpoint.coverage_fingerprint = coverage_fingerprint";
       }
       {
         label = "recorded thin node inherits cached coverage";
@@ -188,8 +188,8 @@
         needle = "ObservableEvent::coverage_marker";
       }
       {
-        label = "graph cache uses coverage projection";
-        needle = "cache_snapshot_with_event_log_coverage";
+        label = "graph cache receives typed coverage checkpoint";
+        needle = "checkpoint.with_coverage_from_event_log(&coverage_log)";
       }
       {
         label = "search materialization returns stamped checkpoint";

@@ -62,13 +62,13 @@ fn host_refuses_nonzero_setup_ack_before_scheduling() {
 fn host_rejects_unexpected_or_malformed_setup_ack() {
     assert_eq!(
         host_validate_setup_ack(PluginMsg::Hello {
-            proto_version: 1,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
         }),
         Err(SetupCompletionError::UnexpectedPluginMessage {
             message: PluginMsg::Hello {
-                proto_version: 1,
-                abi_version: 1,
+                proto_version: 3,
+                abi_version: 25,
             },
         })
     );

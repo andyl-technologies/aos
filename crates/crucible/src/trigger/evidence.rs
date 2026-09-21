@@ -1102,17 +1102,6 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
                 &preemption.kind,
             ));
         }
-        D::AppRandom(random) => {
-            lines.push(String::from("decision=app-random"));
-            lines.push(external_node_id_material("decision.node", &random.node));
-            lines.push(external_rng_stream_material(
-                "decision.stream",
-                &random.stream,
-            ));
-            lines.push(format!("decision.request_id={}", random.request_id));
-            lines.push(format!("decision.width={}", random.width));
-            lines.push(format!("decision.value={}", random.value));
-        }
         D::Selection(selection) => {
             lines.push(String::from("decision=campaign-selection"));
             lines.push(format!(

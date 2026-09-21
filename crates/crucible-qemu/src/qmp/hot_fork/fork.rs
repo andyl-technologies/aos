@@ -46,7 +46,7 @@ pub struct QmpHotForkRequest {
     plugin_endpoint_generation: u64,
     plugin_barrier_generation: u64,
     rcu_barrier_generation: u64,
-    bh_timer_barrier_generation: u64,
+    async_worker_barrier_generation: u64,
     block_barrier_generation: u64,
     parent_process_generation: u64,
     child_process_generation: u64,
@@ -136,7 +136,7 @@ impl QmpHotForkRequest {
             plugin_endpoint_generation: stage.plugin_endpoint_generation(),
             plugin_barrier_generation: template.plugin_barrier().generation(),
             rcu_barrier_generation: template.rcu_barrier().generation(),
-            bh_timer_barrier_generation: template.bh_timer_barrier().generation(),
+            async_worker_barrier_generation: template.async_worker_barrier().generation(),
             block_barrier_generation: template.block_barrier().generation(),
             parent_process_generation: stage.parent_process_generation(),
             child_process_generation: stage.child_process_generation(),
@@ -158,7 +158,7 @@ impl QmpHotForkRequest {
         plugin_endpoint_generation: u64,
         plugin_barrier_generation: u64,
         rcu_barrier_generation: u64,
-        bh_timer_barrier_generation: u64,
+        async_worker_barrier_generation: u64,
         block_barrier_generation: u64,
         parent_process_generation: u64,
         child_process_generation: u64,
@@ -175,7 +175,7 @@ impl QmpHotForkRequest {
             plugin_endpoint_generation,
             plugin_barrier_generation,
             rcu_barrier_generation,
-            bh_timer_barrier_generation,
+            async_worker_barrier_generation,
             block_barrier_generation,
             parent_process_generation,
             child_process_generation,
@@ -238,10 +238,10 @@ impl QmpHotForkRequest {
         self.rcu_barrier_generation
     }
 
-    /// Returns the exact retained bottom-half/timer-barrier generation.
+    /// Returns the exact retained asynchronous-worker-barrier generation.
     #[must_use]
-    pub const fn bh_timer_barrier_generation(self) -> u64 {
-        self.bh_timer_barrier_generation
+    pub const fn async_worker_barrier_generation(self) -> u64 {
+        self.async_worker_barrier_generation
     }
 
     /// Returns the exact retained block-barrier generation.
@@ -285,7 +285,7 @@ impl QmpHotForkRequest {
             "plugin-endpoint-generation": self.plugin_endpoint_generation,
             "plugin-barrier-generation": self.plugin_barrier_generation,
             "rcu-barrier-generation": self.rcu_barrier_generation,
-            "bh-timer-barrier-generation": self.bh_timer_barrier_generation,
+            "async-worker-barrier-generation": self.async_worker_barrier_generation,
             "block-barrier-generation": self.block_barrier_generation,
             "parent-process-generation": self.parent_process_generation,
             "child-process-generation": self.child_process_generation,
@@ -380,7 +380,7 @@ pub(crate) fn parse_hot_fork_state(
         "plugin-endpoint-generation",
         "plugin-barrier-generation",
         "rcu-barrier-generation",
-        "bh-timer-barrier-generation",
+        "async-worker-barrier-generation",
         "block-barrier-generation",
         "parent-process-generation",
         "child-process-generation",
@@ -420,7 +420,7 @@ pub(crate) fn parse_hot_fork_state(
         plugin_endpoint_generation: unsigned("plugin-endpoint-generation")?,
         plugin_barrier_generation: unsigned("plugin-barrier-generation")?,
         rcu_barrier_generation: unsigned("rcu-barrier-generation")?,
-        bh_timer_barrier_generation: unsigned("bh-timer-barrier-generation")?,
+        async_worker_barrier_generation: unsigned("async-worker-barrier-generation")?,
         block_barrier_generation: unsigned("block-barrier-generation")?,
         parent_process_generation: unsigned("parent-process-generation")?,
         child_process_generation: unsigned("child-process-generation")?,
@@ -474,7 +474,7 @@ mod tests {
             "plugin-endpoint-generation": 7,
             "plugin-barrier-generation": 8,
             "rcu-barrier-generation": 9,
-            "bh-timer-barrier-generation": 10,
+            "async-worker-barrier-generation": 10,
             "block-barrier-generation": 11,
             "parent-process-generation": 12,
             "child-process-generation": 13,

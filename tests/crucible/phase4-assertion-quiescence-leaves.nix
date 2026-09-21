@@ -62,7 +62,7 @@
       }
       {
         label = "quiescent property predicate";
-        needle = "Predicate::At { .. }\n        | Predicate::NetworkMatch { .. }\n        | Predicate::Quiescent\n        | Predicate::FaultActive { .. } => Ok(())";
+        needle = "Predicate::At { .. } | Predicate::NetworkMatch { .. } | Predicate::Quiescent => Ok(())";
       }
       {
         label = "assertion-state TOML";

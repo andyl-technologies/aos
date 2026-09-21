@@ -2,28 +2,16 @@
 
 use super::*;
 
-#[path = "campaign_evidence/guarded_export.rs"]
-mod guarded_export;
 #[path = "campaign_evidence/ledger.rs"]
 mod ledger;
 #[path = "campaign_evidence/service.rs"]
 mod service;
 
+pub(super) use ledger::parse_campaign_findings_ledger_bytes;
+pub(crate) use ledger::write_campaign_findings_ledger;
+pub(crate) use service::capture_campaign_triage_finding;
 #[cfg(test)]
-pub(crate) use guarded_export::{
-    guarded_finding_report, validate_guarded_finding_query_chain_parts,
-};
-#[cfg(test)]
-pub(crate) use ledger::failure_findings_ledger_v4_bytes_with_test_limit;
-pub(super) use ledger::parse_failure_findings_ledger_v4_bytes;
-// crucible-lint: allow rust-allow -- the producer consumes these staged boundaries in the composed integration stack.
-#[allow(unused_imports)]
-pub(crate) use ledger::{
-    write_failure_findings_ledger_v4, write_guarded_campaign_finding_exports_v4,
-};
-// crucible-lint: allow rust-allow -- the producer consumes these staged boundaries in the composed integration stack.
-#[allow(unused_imports)]
-pub(crate) use service::{capture_campaign_finding_triage_replay, capture_campaign_triage_finding};
+pub(crate) use service::{CampaignFindingOccurrenceScope, capture_campaign_finding_triage_replay};
 
 pub(super) fn build_campaign_triage_minimization(
     plan: &TriageInvocationPlan,
@@ -47,14 +35,7 @@ pub(super) fn build_campaign_triage_minimization(
     }
     let mut runs = Vec::new();
     for cluster in &clustering.clusters {
-        let _representative = cluster
-            .representative_member()
-            .ok_or_else(|| CliError::Triage("triage cluster has no representative".to_string()))?;
-        let selected_members = match plan.minimize {
-            TriageMinimizeArg::Representative => &cluster.members[..1],
-            TriageMinimizeArg::All => cluster.members.as_slice(),
-            TriageMinimizeArg::None => unreachable!("campaign minimization mode is selected"),
-        };
+        let selected_members = selected_triage_members(plan.minimize, cluster.members.as_slice())?;
         for member in selected_members {
             let item = campaign_by_artifact
                 .get(&member.reproduction_artifact)
@@ -68,7 +49,12 @@ pub(super) fn build_campaign_triage_minimization(
                         "campaign finding has no retained candidate occurrence for a selected triage member",
                     )
                 })?;
-            let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?;
+            let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?
+                .ok_or_else(|| {
+                    artifact_error(
+                        "campaign finding candidate predates native triage replay evidence",
+                    )
+                })?;
             let target_signature_key = member
                 .signature
                 .signature_key(plan.policy)
@@ -128,6 +114,7 @@ pub(super) fn build_campaign_triage_minimization(
                 },
                 minimization: crucible_model::MinimizationRun {
                     seed: minimized.artifact.seed(),
+                    interesting_window: None,
                     target_fingerprint: item.report.finding.finding_fingerprint,
                     original,
                     minimized,
@@ -171,12 +158,9 @@ fn campaign_occurrence_for_artifact(
 ) -> Result<Option<&CampaignFindingOccurrenceProof>, CliError> {
     for occurrence in campaign_occurrences(item) {
         let reproduction = campaign_occurrence_reproduction(occurrence)?;
-        if crucible::ContentHash::from_bytes(reproduction.payload()) == artifact {
-            if occurrence.triage_evidence.is_none() {
-                return Err(artifact_error(
-                    "campaign occurrence has no native triage replay evidence",
-                ));
-            }
+        if crucible::ContentHash::from_bytes(reproduction.payload()) == artifact
+            && occurrence.triage_evidence.is_some()
+        {
             return Ok(Some(occurrence));
         }
     }
@@ -266,10 +250,10 @@ fn campaign_model_finding_reproduction(
 fn campaign_occurrence_native_triage_replays(
     occurrence: &CampaignFindingOccurrenceProof,
     template: &TriageFindingEvidence,
-) -> Result<CampaignOccurrenceNativeTriageReplays, CliError> {
-    let triage = occurrence.triage_evidence.as_ref().ok_or_else(|| {
-        artifact_error("campaign occurrence has no native triage replay evidence")
-    })?;
+) -> Result<Option<CampaignOccurrenceNativeTriageReplays>, CliError> {
+    let Some(triage) = &occurrence.triage_evidence else {
+        return Ok(None);
+    };
     let bundle_triage = campaign_occurrence_bundle(occurrence)?
         .triage_evidence()
         .ok_or_else(|| artifact_error("campaign occurrence bundle has no triage evidence set"))?;
@@ -280,7 +264,7 @@ fn campaign_occurrence_native_triage_replays(
     let selected_finding =
         campaign_model_finding_reproduction(&template.finding, selected_reproduction)?;
 
-    Ok(CampaignOccurrenceNativeTriageReplays {
+    Ok(Some(CampaignOccurrenceNativeTriageReplays {
         minimization_original: decode_campaign_occurrence_triage_replay(
             &triage.minimization_original,
             crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal,
@@ -309,7 +293,7 @@ fn campaign_occurrence_native_triage_replays(
             selected_reproduction,
             selected_finding,
         )?,
-    })
+    }))
 }
 
 fn decode_campaign_occurrence_triage_replay(
@@ -489,7 +473,10 @@ pub(super) fn campaign_triage_report_evidence_for_run(
         else {
             continue;
         };
-        let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?;
+        let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?
+            .ok_or_else(|| {
+                artifact_error("campaign candidate predates native triage report evidence")
+            })?;
         let selected = triage_finding_evidence_from_replay(&replays.minimization_selected);
         if selected.finding.artifact.id() != run.minimized_artifact() {
             return Err(artifact_error(

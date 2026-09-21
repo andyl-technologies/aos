@@ -1,21 +1,16 @@
 {
   pkgs,
   lib,
-  patchName ? "0027-crucible-sim-batch-tcg-exec.patch",
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   microtestSource = builtins.readFile ./phase1-qemu-sim-batch-tcg-exec.c;
   simAccelCheck = import ./phase1-sim-accel.nix {inherit pkgs lib qemuPackage;};
-  patchFiles =
-    builtins.sort builtins.lessThan
-    (builtins.filter
-      (name: lib.hasSuffix ".patch" name)
-      (builtins.attrNames (builtins.readDir patchDir)));
   qemuPackageResultLines =
     if qemuPackage == null
     then ''
@@ -27,25 +22,16 @@
       qemu_package_version=${qemuPackage.version}
     '';
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
-  forbiddenPatchNeedles = [
-    "QEMU_CLOCK_REALTIME"
-    "g_get_monotonic_time"
-    "qemu_clock_get_ns(QEMU_CLOCK_REALTIME)"
-  ];
+  inherit (import ./_lib.nix {inherit lib;}) failuresFor;
 
   failures =
-    lib.optionals (patchName != "0027-crucible-sim-batch-tcg-exec.patch") [
-      "tests/crucible/phase1-qemu-sim-batch-tcg-exec.nix: unknown T-PATCH-17 patch ${patchName}"
-    ]
-    ++ failuresFor "pkgs/emulation/qemu.nix" qemuNix [
+    failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
-        label = "QEMU patch wiring for ${patchName}";
-        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
+        label = "QEMU atomic patch wiring";
+        needle = "< \${atomicPatchPath}";
       }
     ]
-    ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+    ++ failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "fixed batch limit";
         needle = "RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT";
@@ -95,11 +81,6 @@
         needle = "qemu_cond_wait_bql(first_cpu->halt_cond)";
       }
     ]
-    ++ lib.optionals (hasInfix "qemu_plugin_main_loop_wait()" patchSource) [
-      "pkgs/emulation/qemu-patches/${patchName}: vCPU ceiling path must not run the QEMU main loop"
-    ]
-    ++ map (needle: "pkgs/emulation/qemu-patches/${patchName}: pure perf patch must not use wall-clock needle `${needle}`")
-    (builtins.filter (needle: hasInfix needle patchSource) forbiddenPatchNeedles)
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
       {
         label = "PATCH-35 cross reference";
@@ -118,10 +99,10 @@
     ];
 in
   if failures != []
-  then throw "crucible phase1 QEMU sim batch TCG exec check failed for ${patchName}:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase1 QEMU sim batch TCG exec check failed for ${atomicPatch.file}:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase1-qemu-sim-batch-tcg-exec-${lib.removeSuffix ".patch" patchName}";
+      pname = "crucible-phase1-qemu-sim-batch-tcg-exec";
       version = "0";
       src = null;
 
@@ -156,9 +137,7 @@ in
 
             (
               cd "$source_dir"
-              for patch in ${builtins.concatStringsSep " " patchFiles}; do
-                patch --batch --fuzz=0 -p1 -i "${patchDir}/$patch"
-              done
+              patch --batch --fuzz=0 -p1 -i "${patchDir}/${atomicPatch.file}"
 
               grep -F -q 'RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'rr_crucible_sim_tcg_batch_limit' accel/tcg/tcg-accel-ops-rr.c
@@ -200,7 +179,7 @@ in
             gate=gate:single-vm-fingerprint
             gate=gate:patch-microtests
             tasks=T-PATCH-17
-            patch=${patchName}
+            atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}

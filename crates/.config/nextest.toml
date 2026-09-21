@@ -23,6 +23,16 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = "package(crucible-campaign) & test(/ten_thousand_/)"
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# This distinct-request scale test executes ten thousand real repository
+# transitions across 2,500 independently capped requests and then validates the
+# complete indexed frontier. Isolate it from the workspace batch and retain the
+# measured scale-test allowance rather than weakening its workload. Its full
+# indexed-frontier validation exceeds ten minutes on the hermetic controller.
+[[profile.default.overrides]]
+filter = "package(crucible-campaign) & test(distinct_request_transitions_keep_indexed_cap_queries_bounded)"
+slow-timeout = { period = "60s", terminate-after = 15 }
+threads-required = "num-test-threads"
+
 # This end-to-end registry test deliberately cancels an in-flight upload and
 # waits for the server-side transaction to release before issuing DELETE. Keep
 # it isolated so unrelated I/O-heavy tests cannot consume its bounded retry

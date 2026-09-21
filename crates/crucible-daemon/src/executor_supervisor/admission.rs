@@ -236,9 +236,6 @@ where
                         AttemptRuntimeState::Publishing {
                             observation,
                             finding_candidate,
-                            finding_replay_captures,
-                            finding_exact_retention_roots,
-                            prepared_result_digest,
                             ..
                         } => AttemptRuntimeState::Publishing {
                             execution_basis,
@@ -247,9 +244,6 @@ where
                             execution,
                             observation,
                             finding_candidate,
-                            finding_replay_captures,
-                            finding_exact_retention_roots,
-                            prepared_result_digest,
                         },
                         AttemptRuntimeState::Paused { .. }
                         | AttemptRuntimeState::CheckpointPromoting { .. }
@@ -269,7 +263,9 @@ where
                         }
                         AttemptRuntimeState::Running { .. }
                         | AttemptRuntimeState::Publishing { .. } => {
-                            self.reserve(&assignment, execution, origin)?;
+                            let selected_checkpoint =
+                                SelectedExactCheckpointRoot::after_durable_admission(origin);
+                            self.reserve(&assignment, execution, origin, selected_checkpoint)?;
                         }
                         AttemptRuntimeState::Paused { .. }
                         | AttemptRuntimeState::CheckpointPromoting { .. }
@@ -341,7 +337,8 @@ where
             execution,
         };
         let advance = self.advance_attempt(key, current, Some(running))?;
-        self.reserve(&assignment, execution, origin)?;
+        let selected_checkpoint = SelectedExactCheckpointRoot::after_durable_admission(origin);
+        self.reserve(&assignment, execution, origin, selected_checkpoint)?;
         if let AttemptAdvance::CommittedAfterError(error) = advance {
             return Err(LocalExecutorError::Ledger(error));
         }
@@ -562,9 +559,6 @@ where
                     execution,
                     observation,
                     finding_candidate,
-                    finding_replay_captures,
-                    finding_exact_retention_roots,
-                    prepared_result_digest,
                 },
             ) if current_basis == execution_basis => {
                 match self.validator.validate_completion_artifacts(
@@ -582,7 +576,6 @@ where
                             finding_candidate: CompletedFindingCandidate::pending(
                                 finding_candidate,
                             ),
-                            prepared_result_digest,
                         };
                         let advance = self.advance_attempt(key, publishing, Some(completed))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -612,13 +605,12 @@ where
                             execution: recovery_execution,
                             observation,
                             finding_candidate,
-                            finding_replay_captures,
-                            finding_exact_retention_roots,
-                            prepared_result_digest,
                         };
                         let advance = self.advance_attempt(key, publishing, Some(recovery))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {
-                            self.reserve(request, recovery_execution, origin)?;
+                            let selected_checkpoint =
+                                SelectedExactCheckpointRoot::after_durable_admission(origin);
+                            self.reserve(request, recovery_execution, origin, selected_checkpoint)?;
                             return Err(LocalExecutorError::Ledger(error));
                         }
                         let response = self.persist_response(
@@ -627,7 +619,9 @@ where
                                 execution: recovery_execution,
                             },
                         );
-                        self.reserve(request, recovery_execution, origin)?;
+                        let selected_checkpoint =
+                            SelectedExactCheckpointRoot::after_durable_admission(origin);
+                        self.reserve(request, recovery_execution, origin, selected_checkpoint)?;
                         return response;
                     }
                     Err(CompletionValidationFailure::Unauthorized) => {
@@ -861,7 +855,9 @@ where
             if capture_materialized_start {
                 self.reserve_checkpoint_recovery(request, execution, origin)?;
             } else {
-                self.reserve(request, execution, origin)?;
+                let selected_checkpoint =
+                    SelectedExactCheckpointRoot::after_durable_admission(origin);
+                self.reserve(request, execution, origin, selected_checkpoint)?;
             }
             return Err(LocalExecutorError::Ledger(error));
         }
@@ -873,7 +869,8 @@ where
         if capture_materialized_start {
             self.reserve_checkpoint_recovery(request, execution, origin)?;
         } else {
-            self.reserve(request, execution, origin)?;
+            let selected_checkpoint = SelectedExactCheckpointRoot::after_durable_admission(origin);
+            self.reserve(request, execution, origin, selected_checkpoint)?;
         }
         response
     }

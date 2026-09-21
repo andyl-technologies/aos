@@ -20,8 +20,9 @@ subset of a vast choice space, feed descendant observations back into the
 exploration policy, and revisit an earlier checkpoint to admit additional
 branches. It unifies systematic search, probabilistic sampling,
 coverage-guided fuzzing, performance optimization, manual branching,
-hibernation, and failure retention over the same content-addressed temporal
-graph. The supported deployment is one coordinator and one local executor;
+exact pause, archive transfer, and failure retention over the same
+content-addressed temporal graph. The supported deployment is one coordinator
+and one local executor;
 their language-neutral contract is implemented now without implementing
 multi-host scheduling.
 
@@ -191,7 +192,7 @@ effects into arbitrary callbacks.
   snapshot.
 - **[CAM-7]** Make the common on-host branch path share paused QEMU memory pages,
   immutable disk state, log prefixes, and host continuation state copy-on-write.
-- **[CAM-8]** Preserve a portable durable exact closure for hibernation,
+- **[CAM-8]** Preserve a portable durable exact closure for exact pause,
   midpoint debugging, failure retention, and offline maintenance transfer.
 - **[CAM-9]** Bound runnable branches by host resources while allowing millions
   of dormant logical continuations and pending possibilities.
@@ -294,7 +295,7 @@ effects into arbitrary callbacks.
    contracts shared by direct and RPC clients.
 7. [`05-hot-fork-and-checkpoints.md`](05-hot-fork-and-checkpoints.md) defines
    single- and multi-node QEMU hot forks, host continuation cloning, durable
-   checkpoints, hibernation, and migration.
+   checkpoints, exact pause, archive transfer, and migration.
 8. [`06-storage-replication-and-gc.md`](06-storage-replication-and-gc.md) defines
    content-store traits, pluggable leaf backends, tiering, routing, packing,
    pinning, archival transfer, and garbage collection.
@@ -317,7 +318,7 @@ effects into arbitrary callbacks.
     measured implementation spikes.
 15. [`13-worked-network-campaign.md`](13-worked-network-campaign.md) walks one
     network-disruption campaign from scenario authoring through adaptive
-    branching, selection, hibernation, and reproduction.
+    branching, selection, exact pause, archive transfer, and reproduction.
 16. [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
     defines independent operator acceptance, realistic dogfood, destructive
     recovery, evidence bundles, and release-blocking manual gates.

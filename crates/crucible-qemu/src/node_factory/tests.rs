@@ -1,6 +1,5 @@
 //! Tests for Linux QEMU node factory composition.
 
-use std::collections::BTreeMap;
 use std::error::Error;
 use std::io::{self, Cursor, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
@@ -11,9 +10,8 @@ use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    Backend, Checkpoint, CheckpointKind, ContentHash, Icount, NodeBlobRef, NodeId, ReadyPoint,
-    SchedulerError, SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
-    SimulationBackend, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Backend, Checkpoint, CheckpointKind, ContentHash, NodeId, SchedulerError, SchedulerNodeId,
+    SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, PluginHandshakeConfig};
 use crucible_shmem::{ABI_VERSION, RegionConfig, RegionLayout, SLOT_NET_ROUTER};
@@ -21,21 +19,13 @@ use serde_json::Value;
 
 use crate::spawn::create_test_spawn_resource_pair;
 use crate::{
-    LaunchProfileCandidate, QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_JOB_DISMISS_COMMAND,
-    QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
-    QMP_STOP_COMMAND, QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome,
-    QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot, QemuExactSnapshotPolicy,
-    QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
-    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
-    QemuNodeChannelPlane, QemuNodeChild, QemuNodeLifecycleState, QemuQmpVmStateControlChannel,
-    QemuVmLaunchConfig,
+    QMP_CAPABILITIES_COMMAND, QMP_JOB_DISMISS_COMMAND, QMP_QUERY_JOBS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
+    QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuNodeChannelPlane,
+    QemuNodeChild, QemuNodeLifecycleState, QemuQmpVmStateControlChannel,
 };
 
 use super::*;
-
-mod probe_restore;
-mod restore_continuation;
 
 #[test]
 fn qmp_node_control_saves_deletes_and_quits() -> Result<(), Box<dyn Error>> {
@@ -158,8 +148,8 @@ fn factory_assembles_node_with_exact_snapshot_qmp_control() -> Result<(), Box<dy
 }
 
 #[test]
-fn post_load_host_restore_failure_kills_child_without_resuming_qemu() -> Result<(), Box<dyn Error>>
-{
+fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
+-> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(1, 4, 0);
     let layout = RegionLayout::for_config(config)?;
     let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
@@ -177,446 +167,88 @@ fn post_load_host_restore_failure_kills_child_without_resuming_qemu() -> Result<
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":false,"status":"paused"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-delete-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
     ]);
     let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
     let checkpoint = checkpoint_with_hash_byte(0xab);
-    let runtime = QemuNodeFactoryRuntime::new(
-        qemu_config_for_slot(0),
-        AllowAllSends,
-        node_shutdown_policy(),
-        QemuAsyncDriverPolicy::fast_test(),
-        QemuCrashDetector::new("vm-a"),
-        FailRestoreRuntime,
-    );
-
-    let result = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        QemuNodeRestorePlan::new(
-            &checkpoint,
-            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-            test_admission(),
-        ),
-        runtime,
-    );
-    assert!(matches!(
-        result,
-        Err(QemuNodeFactoryError::HostIoCheckpointRestore { .. })
-    ));
-    assert_process_is_gone(child_pid)?;
-    match plugin_peer.join() {
-        Ok(Ok(_region)) => {}
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_panic) => return Err("plugin setup peer panicked".into()),
-    }
-
-    let lines = written_json_lines_from_shared(&qmp_written)?;
-    assert_eq!(lines.len(), 10);
-    assert!(
-        lines
-            .iter()
-            .all(|line| execute_name(line) != Some(QMP_CONT_COMMAND))
-    );
-    Ok(())
-}
-
-#[test]
-fn post_load_anchor_release_failure_kills_child_without_resuming_qemu() -> Result<(), Box<dyn Error>>
-{
-    let config = RegionConfig::new(1, 4, 0);
-    let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
-    let plugin_peer = thread::spawn(move || {
-        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
-    });
-    let setup = crate::complete_qemu_host_plugin_setup(
-        resources.into_setup_resources(),
-        config,
-        0,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
-    )?;
-    let child = Command::new("sleep").arg("60").spawn()?;
-    let child_pid = child.id();
-    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
-        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":false,"status":"paused"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
-        r#"{"error":{"class":"GenericError","desc":"delete failed"}}"#,
-    ]);
-    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
-    let checkpoint = checkpoint_with_hash_byte(0xab);
-
-    let result = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        QemuNodeRestorePlan::new(
-            &checkpoint,
-            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-            test_admission(),
-        ),
-        node_factory_runtime(),
-    );
-    assert!(matches!(
-        result,
-        Err(QemuNodeFactoryError::VmStateRestoreAnchorRelease { .. })
-    ));
-    assert_process_is_gone(child_pid)?;
-    match plugin_peer.join() {
-        Ok(Ok(_region)) => {}
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_panic) => return Err("plugin setup peer panicked".into()),
-    }
-
-    let lines = written_json_lines_from_shared(&qmp_written)?;
-    assert_eq!(lines.len(), 8);
-    assert_eq!(
-        execute_name(json_line(&lines, 7)),
-        Some(QMP_SNAPSHOT_DELETE_COMMAND)
-    );
-    assert!(
-        lines
-            .iter()
-            .all(|line| execute_name(line) != Some(QMP_CONT_COMMAND))
-    );
-    Ok(())
-}
-
-#[test]
-fn missing_post_load_calibration_ack_kills_child_before_exposure() -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(1, 4, 0);
-    let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
-    let plugin_peer = thread::spawn(move || {
-        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::HoldRestoreUnacked)
-    });
-    let setup = crate::complete_qemu_host_plugin_setup(
-        resources.into_setup_resources(),
-        config,
-        0,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
-    )?;
-    let child = Command::new("sleep").arg("60").spawn()?;
-    let child_pid = child.id();
-    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
-        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":false,"status":"paused"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-delete-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
-    ]);
-    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
-    let checkpoint = checkpoint_with_hash_byte(0xab);
-
-    let result = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        QemuNodeRestorePlan::new(
-            &checkpoint,
-            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-            test_admission(),
-        ),
-        node_factory_runtime(),
-    );
-    assert!(matches!(
-        result,
-        Err(QemuNodeFactoryError::LogicalTimeRestoreBoundary {
-            stage: "await acknowledgement",
-            ..
-        })
-    ));
-    assert_process_is_gone(child_pid)?;
-    match plugin_peer.join() {
-        Ok(Ok(_region)) => {}
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_panic) => return Err("plugin setup peer panicked".into()),
-    }
-
-    let lines = written_json_lines_from_shared(&qmp_written)?;
-    assert_eq!(lines.len(), 10);
-    assert!(
-        lines
-            .iter()
-            .all(|line| execute_name(line) != Some(QMP_CONT_COMMAND))
-    );
-    assert!(
-        lines
-            .iter()
-            .all(|line| execute_name(line) != Some(QMP_QUIT_COMMAND_NAME))
-    );
-    Ok(())
-}
-
-#[test]
-fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(1, 4, 0);
-    let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
-    let plugin_peer = thread::spawn(move || {
-        plugin_peer_complete_setup(
-            plugin_socket,
-            PluginPeerAfterRun::AcknowledgeRestoreThenWaitForQuit,
-        )
-    });
-    let setup = crate::complete_qemu_host_plugin_setup(
-        resources.into_setup_resources(),
-        config,
-        0,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
-    )?;
-    let child = Command::new("sleep").arg("60").spawn()?;
-    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
-        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":true,"status":"running"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":false,"status":"paused"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-delete-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{"running":false,"status":"paused"}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-    ]);
-    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
-    let world = baked_world()?;
-    let snapshot = baked_genesis_snapshot(&world);
-    let admission = QemuBakedGenesisRestoreAdmission::new(
-        &snapshot,
-        &world,
-        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
-    )?;
-
-    let mut node = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        QemuNodeRestorePlan::baked_genesis(admission),
-        node_factory_runtime(),
-    )?;
-
-    assert!(node.shutdown_child()?.reaped);
-
-    let plugin_region = match plugin_peer.join() {
-        Ok(Ok(region)) => region,
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_panic) => return Err("plugin setup peer panicked".into()),
+    let host_io = crate::QemuHostIoCheckpoint::without_devices(checkpoint.id);
+    let mut network_transport = crate::QemuNetworkTransportCheckpoint::empty();
+    network_transport.queue_capacity = config.queue_capacity;
+    let continuation = crate::QemuNodeContinuationCheckpoint {
+        execution_binding: checkpoint.id,
+        last_observed_time: checkpoint.virtual_time,
+        logical_time_calibration: crate::QemuLogicalTimeCalibration {
+            logical_icount: checkpoint.virtual_time.ticks,
+            raw_icount: checkpoint.virtual_time.ticks,
+        },
+        console_observation_boundary: checkpoint.virtual_time,
+        pending_preemption: None,
+        pending_network_outputs: Vec::new(),
+        network_transport,
+        next_fault_command_sequence: 2,
+        next_fault_event_sequence: 1,
     };
-    assert_eq!(plugin_region.region_len, layout.region_size);
+    let snapshot = crate::QemuVmSnapshot::from_live_capture(
+        Arc::new(checkpoint.clone()),
+        host_io,
+        continuation,
+    )?;
+    let ram_layer = crate::QmpCheckpointRestoreLayer::new(
+        crate::QmpDescriptorName::new("restore-ram")?,
+        ContentHash::from_bytes(b"RAM content"),
+        4096,
+    )?;
+    let restore_request = crate::QmpCheckpointRestoreRequest::new(
+        vec![ram_layer],
+        crate::QmpDescriptorName::new("restore-device")?,
+        ContentHash::from_bytes(b"device content"),
+        crate::QmpDescriptorName::new("restore-cancel")?,
+        crate::QmpCheckpointIdentity::new(
+            ContentHash::from_bytes(b"foreign checkpoint"),
+            ContentHash::from_bytes(b"target"),
+            ContentHash::from_bytes(b"frontier"),
+        ),
+        4096,
+    )?;
+    let mut descriptor_input = crate::QemuExactCheckpointInputMaterialization::new(1)?;
+    descriptor_input.write_all(b"x")?;
+    let descriptor = descriptor_input.finish()?;
+    let ram_descriptors = [descriptor.as_fd()];
+    let descriptors = QemuExactCheckpointRestoreDescriptors::new(
+        &ram_descriptors,
+        descriptor.as_fd(),
+        descriptor.as_fd(),
+    );
+    let restore = QemuNodeRestorePlan::exact_checkpoint(
+        &snapshot,
+        &restore_request,
+        descriptors,
+        ContentHash::from_bytes(b"RAM topology"),
+    );
 
+    let result = build_qemu_node_from_restored_checkpoint(
+        QemuNodeChild::new(child),
+        setup,
+        qmp,
+        restore,
+        node_factory_runtime(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(QemuNodeFactoryError::VmStateRestore { .. })
+    ));
+    assert_process_is_gone(child_pid)?;
+    match plugin_peer.join() {
+        Ok(Ok(_region)) => {}
+        Ok(Err(error)) => return Err(error.into()),
+        Err(_panic) => return Err("plugin setup peer panicked".into()),
+    }
     let lines = written_json_lines_from_shared(&qmp_written)?;
+    assert_eq!(lines.len(), 1);
     assert_eq!(
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)
     );
-    assert_eq!(
-        execute_name(json_line(&lines, 1)),
-        Some(QMP_QUERY_STATUS_COMMAND)
-    );
-    assert_eq!(execute_name(json_line(&lines, 2)), Some(QMP_STOP_COMMAND));
-    assert_eq!(
-        execute_name(json_line(&lines, 3)),
-        Some(QMP_QUERY_STATUS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 4)),
-        Some(QMP_SNAPSHOT_LOAD_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 5)),
-        Some(QMP_QUERY_JOBS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 6)),
-        Some(QMP_JOB_DISMISS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 7)),
-        Some(QMP_SNAPSHOT_DELETE_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 8)),
-        Some(QMP_QUERY_JOBS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 9)),
-        Some(QMP_JOB_DISMISS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 10)),
-        Some(QMP_QUERY_STATUS_COMMAND)
-    );
-    assert_eq!(execute_name(json_line(&lines, 11)), Some(QMP_CONT_COMMAND));
-    assert_eq!(
-        execute_name(json_line(&lines, 12)),
-        Some(QMP_QUIT_COMMAND_NAME)
-    );
-
-    Ok(())
-}
-
-#[test]
-fn warm_restore_launch_requires_qmp_channel_before_spawn() -> Result<(), Box<dyn Error>> {
-    let command = launch_command_without_qmp()?;
-    let world = baked_world()?;
-    let snapshot = baked_genesis_snapshot(&world);
-    let admission = QemuBakedGenesisRestoreAdmission::new(
-        &snapshot,
-        &world,
-        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
-    )?;
-
-    let error = spawn_setup_and_restore_qemu_node(
-        &command,
-        "/tmp/crucible-node-factory-test",
-        RegionConfig::new(1, 4, 0),
-        0,
-        QemuNodeRestorePlan::baked_genesis(admission),
-        node_factory_runtime(),
-        |_current_icount| {},
-    )
-    .err()
-    .ok_or("warm restore launch should reject commands without QMP before spawn")?;
-
-    assert!(matches!(
-        error,
-        QemuWarmRestoreLaunchError::MissingQmpChannel
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn factory_rejects_baked_authorization_for_replay_oracle_restore() -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(1, 4, 0);
-    let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
-    let plugin_peer = thread::spawn(move || {
-        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
-    });
-    let setup = crate::complete_qemu_host_plugin_setup(
-        resources.into_setup_resources(),
-        config,
-        0,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
-    )?;
-    let child = Command::new("sleep").arg("60").spawn()?;
-    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
-        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
-        r#"{"return":{}}"#,
-    ]);
-    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
-    let checkpoint = checkpoint_with_hash_byte(0xab);
-
-    let error = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        QemuNodeRestorePlan::new(
-            &checkpoint,
-            QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
-            test_admission(),
-        ),
-        node_factory_runtime(),
-    )
-    .err()
-    .ok_or("factory should reject baked authorization for replay-oracle restore")?;
-
-    assert!(matches!(
-        error,
-        QemuNodeFactoryError::VmStateRestoreAuthorization {
-            purpose: QemuLoadvmCommandPurpose::BakedGenesisRealization
-        }
-    ));
-    assert_qmp_wrote_only_capabilities(&qmp_written)?;
-
-    let plugin_region = match plugin_peer.join() {
-        Ok(Ok(region)) => region,
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_panic) => return Err("plugin setup peer panicked".into()),
-    };
-    assert_eq!(plugin_region.region_len, layout.region_size);
-
-    Ok(())
-}
-
-#[test]
-fn factory_rejects_restore_slot_mismatch_before_vmstate_restore() -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(2, 4, 0);
-    let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
-    let plugin_peer = thread::spawn(move || {
-        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
-    });
-    let setup = crate::complete_qemu_host_plugin_setup(
-        resources.into_setup_resources(),
-        config,
-        0,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
-    )?;
-    let child = Command::new("sleep").arg("60").spawn()?;
-    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
-        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
-        r#"{"return":{}}"#,
-    ]);
-    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
-    let checkpoint = checkpoint_with_hash_byte(0xab);
-
-    let error = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        QemuNodeRestorePlan::new(
-            &checkpoint,
-            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-            test_admission(),
-        ),
-        node_factory_runtime_for_slot(1),
-    )
-    .err()
-    .ok_or("factory should reject mismatched setup and shmem slots before VMState restore")?;
-
-    assert!(matches!(
-        error,
-        QemuNodeFactoryError::SetupSlotMismatch {
-            setup_slot: 0,
-            shmem_slot: 1
-        }
-    ));
-    assert_qmp_wrote_only_capabilities(&qmp_written)?;
-
-    let plugin_region = match plugin_peer.join() {
-        Ok(Ok(region)) => region,
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_panic) => return Err("plugin setup peer panicked".into()),
-    };
-    assert_eq!(plugin_region.region_len, layout.region_size);
-
     Ok(())
 }
 
@@ -714,54 +346,10 @@ impl QemuHostIoRuntime for ImmediateRuntime {
     }
 }
 
-struct FailRestoreRuntime;
-
-impl QemuHostIoRuntime for FailRestoreRuntime {
-    fn publish_current_execution_fingerprint(
-        &mut self,
-        _timeout: Duration,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        Ok(())
-    }
-
-    fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        Ok(())
-    }
-
-    fn await_child(
-        &mut self,
-        _wait: QemuAsyncWait,
-        _timeout: Duration,
-    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
-        Ok(QemuAsyncWaitOutcome::Completed)
-    }
-
-    fn repoll_child(
-        &mut self,
-        _wait: QemuAsyncWait,
-        _timeout: Duration,
-    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
-        Ok(QemuAsyncWaitOutcome::Completed)
-    }
-
-    fn restore_host_io_checkpoint(
-        &mut self,
-        _execution_binding: ContentHash,
-        _checkpoint: &crate::QemuHostIoCheckpoint,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        Err(QemuAsyncDriverRuntimeError::new(
-            "restore host-I/O checkpoint",
-            "injected post-load restore failure",
-        ))
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 enum PluginPeerAfterRun {
     Return,
     WaitForQuit,
-    AcknowledgeRestoreThenWaitForQuit,
-    HoldRestoreUnacked,
 }
 
 fn plugin_peer_complete_setup(
@@ -802,38 +390,7 @@ fn plugin_peer_complete_setup(
     plugin
         .enter_run_via_shared_memory()
         .map_err(|error| error.to_string())?;
-    if matches!(
-        after_run,
-        PluginPeerAfterRun::AcknowledgeRestoreThenWaitForQuit
-    ) {
-        let node_slot = mapped.node_slot(0).map_err(|error| error.to_string())?;
-        let mut acknowledged = false;
-        for _attempt in 0..1_000 {
-            if let Some(request) = node_slot.pending_logical_time_restore() {
-                node_slot
-                    .acknowledge_logical_time_restore(
-                        request,
-                        request.target_icount,
-                        request.target_icount,
-                        0,
-                    )
-                    .map_err(|error| error.to_string())?;
-                acknowledged = true;
-                break;
-            }
-            thread::sleep(Duration::from_millis(1));
-        }
-        if !acknowledged {
-            return Err("timed out waiting for the logical-time restore request".to_owned());
-        }
-    }
-    if matches!(after_run, PluginPeerAfterRun::HoldRestoreUnacked) {
-        thread::sleep(Duration::from_millis(20));
-    }
-    if matches!(
-        after_run,
-        PluginPeerAfterRun::WaitForQuit | PluginPeerAfterRun::AcknowledgeRestoreThenWaitForQuit
-    ) {
+    if matches!(after_run, PluginPeerAfterRun::WaitForQuit) {
         plugin
             .plugin_read_run_control_frame()
             .map_err(|error| error.to_string())?;
@@ -921,83 +478,8 @@ fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {
     )
 }
 
-fn baked_world() -> Result<World, Box<dyn Error>> {
-    Ok(World::from_nodes(vec![WorldNode {
-        id: node_id("vm-a"),
-        arch: VmArchitecture::X86_64,
-        memory_mib: 512,
-        cmdline: String::new(),
-        ready_point: ReadyPoint::FixedIcount {
-            icount: Icount::default(),
-        },
-        white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: 1,
-        icount_shift: 0,
-        kernel: None,
-        root_image: None,
-        initrd: None,
-    }])?)
-}
-
-fn baked_genesis_snapshot(world: &World) -> QemuBakedGenesisSnapshot {
-    let node = world
-        .vm_nodes()
-        .first()
-        .map(|node| node.id.clone())
-        .unwrap_or_else(|| node_id("vm-a"));
-    let node_blobs = BTreeMap::from([(
-        node,
-        NodeBlobRef::baked(ContentHash::from_canonical_material(
-            "crucible.qemu.node-factory.test.baked-blob.v1",
-            "vm-a",
-        )),
-    )]);
-    QemuBakedGenesisSnapshot {
-        world_id: world.id(),
-        checkpoint: Checkpoint::with_node_blobs(
-            content_hash_with_byte(0xab),
-            content_hash_with_byte(0xac),
-            CheckpointKind::Fat,
-            node_blobs,
-        ),
-    }
-}
-
-fn launch_command_without_qmp() -> Result<QemuLaunchCommand, Box<dyn Error>> {
-    Ok(QemuLaunchCommandBuilder::new_for_live_gate(
-        LaunchProfileCandidate::default().try_into_deterministic()?,
-        QemuVmLaunchConfig::new(
-            "vm-a",
-            launch_artifact("kernel"),
-            launch_artifact("root-image"),
-        ),
-        "/nix/store/00000000000000000000000000000000-qemu/bin/qemu-system-x86_64",
-        QemuLaunchPluginConfig::new(
-            "/nix/store/00000000000000000000000000000000-crucible-qemu-plugin/lib/crucible.so",
-            0,
-        )
-        .with_fault_target_node("vm-a"),
-        crate::LivePluginGuestArchitecture::X86_64,
-    )
-    .build()?)
-}
-
-fn launch_artifact(name: &str) -> QemuLaunchArtifact {
-    QemuLaunchArtifact::new(
-        ContentHash::from_canonical_material(
-            "crucible.qemu.node-factory.test.launch-artifact.v1",
-            name,
-        ),
-        format!("/nix/store/00000000000000000000000000000000-crucible-{name}"),
-    )
-}
-
 fn content_hash_with_byte(byte: u8) -> ContentHash {
     ContentHash { bytes: [byte; 32] }
-}
-
-fn test_admission() -> QemuLoadvmRealizationAdmission {
-    QemuLoadvmRealizationAdmission::for_test(content_hash_with_byte(0xcd))
 }
 
 type SharedQmpWritten = Arc<Mutex<Vec<u8>>>;
@@ -1029,7 +511,9 @@ fn scripted_qmp_with_written<const N: usize>(
 fn written_json_lines_from_shared(
     written: &SharedQmpWritten,
 ) -> Result<Vec<Value>, serde_json::Error> {
-    let bytes = written.lock().unwrap();
+    let bytes = written
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     String::from_utf8_lossy(bytes.as_slice())
         .lines()
         .map(serde_json::from_str)
@@ -1045,16 +529,6 @@ fn json_line(lines: &[Value], index: usize) -> &Value {
 
 fn execute_name(value: &Value) -> Option<&str> {
     value.get("execute").and_then(Value::as_str)
-}
-
-fn assert_qmp_wrote_only_capabilities(written: &SharedQmpWritten) -> Result<(), Box<dyn Error>> {
-    let lines = written_json_lines_from_shared(written)?;
-    assert_eq!(
-        execute_name(json_line(&lines, 0)),
-        Some(QMP_CAPABILITIES_COMMAND)
-    );
-    assert_eq!(lines.len(), 1);
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -1073,7 +547,10 @@ impl Read for ScriptedQmpStream {
 
 impl Write for ScriptedQmpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.written.lock().unwrap().extend_from_slice(buf);
+        self.written
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
 

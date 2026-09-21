@@ -199,7 +199,7 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
     let decision =
         choice.override_decisions(ContentHash::from_bytes(b"campaign-parent"))[1].clone();
     let (_, expected) = SearchOverride::from_override_decision(&decision)
-        .expect("canonical fixture decision should decode");
+        .unwrap_or_else(|| panic!("canonical fixture decision should decode"));
     let mut replay = ProductionFaultRuntime::new_with_search_overrides(
         replay_plan,
         Some(Arc::new(NoArtifacts)),

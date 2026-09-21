@@ -60,8 +60,8 @@ cross-record constraints. Non-campaign structured kinds such as exact
 manifests, observations, findings, and projections are still parsed as generic
 envelopes so their children remain walkable; their owning crate performs the
 stronger body validation. Scenario and configuration artifacts are owned
-campaign envelopes with exact semantic cross-links; legacy raw forms must be
-migrated explicitly before import. Deliberately opaque leaves such as RAM/disk
+campaign envelopes with exact semantic cross-links; noncurrent raw forms are
+rejected before import. Deliberately opaque leaves such as RAM/disk
 extents, VMState, and trace segments are drained through their authenticated
 stream to EOF but are not parsed as envelopes. A missing child, wrong record
 subtype, malformed ancestry transition, cycle, or traversal-limit breach
@@ -580,9 +580,8 @@ only with a durable transfer journal whose protected roots participate in GC.
 `crucible serve --campaign-store PATH` loads the registered
 `crucible.campaign-repository-store` TOML deployment. The file is
 an absolute, lexically normalized, exact-owner mode-`0600` regular file of at
-most 256 KiB; unknown fields and schema versions other than 2 fail closed.
-Version two supports either a local ref directory or one authenticated S3 ref
-backend. Its closed top-level fields for a local deployment are:
+most 256 KiB; unknown fields and schema versions other than 2 fail closed. The
+current and only accepted schema's closed top-level fields are:
 
 ```toml
 schema = "crucible.campaign-repository-store"
@@ -629,8 +628,8 @@ policy = "crucible.campaign.object-profile.v1"
 
 `admitted_kinds` MUST contain every listed campaign kind exactly once so a
 successful startup cannot defer an unsupported repository operation until
-later. `nodes` uses a unique `id` plus one closed `[nodes.spec]` variant. Version
-two admits `directory`, `compressed-directory`, `encrypted-directory`,
+later. `nodes` uses a unique `id` plus one closed `[nodes.spec]` variant. The
+current schema admits `directory`, `compressed-directory`, `encrypted-directory`,
 `compressed-encrypted-directory`, `packed`, `verified`, `routed`, `tiered`,
 `read-through`, `write-through`, `write-back`, `durability-policy`, `metrics`,
 `logical-quota`, `physical-quota`, `namespaced`, and `profile-validated` with
@@ -660,10 +659,10 @@ or executor capabilities. A maintenance operation must receive an explicit
 bounded owner-side loan rather than reconstruct or promote authority from the
 ordinary graph.
 
-Memory nodes are absent because they cannot satisfy durable daemon admission.
-Version two also supports the `s3` node and one remote `[s3_ref]` instead of a
-local `ref_directory`, without embedding credentials in canonical graph
-identity. For example:
+Memory nodes are deliberately absent because they cannot satisfy durable daemon
+admission. The current schema admits the `s3` node and requires either a local
+`ref_directory` or one remote `[s3_ref]`, exactly one, without embedding
+credentials in canonical graph identity. For example:
 
 ```toml
 schema = "crucible.campaign-repository-store"
@@ -723,7 +722,7 @@ bucket, every graph-leaf and ref base prefix MUST be segment-disjoint: equality,
 an empty prefix, or an ancestor/descendant prefix is rejected so an inventory
 or cleanup capability cannot encounter another logical namespace.
 
-Every admitted version-two endpoint supplies both the ordinary SDK capability
+Every admitted endpoint supplies both the ordinary SDK capability
 and the separately typed strong object/ref administration capability. Setting
 `strong_cas_conformance = true` is an exact-owner deployment attestation that
 the configured service satisfies the strong-CAS, listing, lifecycle, and
@@ -753,7 +752,7 @@ key 1 through 4,096, and an optional session token 1 through 8,192. The optional
 expiry is an unsigned Unix timestamp strictly after the load time. The AWS SDK
 provider rereads and reauthenticates this exact file when credentials refresh;
 secret buffers are cleared on drop and neither secrets nor their paths enter
-graph identity. Memory remains absent from both durable deployment versions.
+graph identity. Memory remains absent from the durable deployment schema.
 
 An operator may add
 `--campaign-maintenance-interval-ms MILLISECONDS` to a writable
@@ -1148,8 +1147,10 @@ demand propagation before constructing the root:
   reachable;
 - a router covers exactly the kinds that can reach it, including the union of
   demands when the router is shared;
-- tiers and mirrors are nonempty, the write-tier index is valid, and promotion
-  or mirroring children support conditional immutable creation;
+- tiers and mirrors are nonempty; every tier has an explicit readable or
+  writable role; at least one tier is readable and one is writable; promotion
+  is enabled only for readable tiers; and every promotion or mirrored-write
+  child supports conditional immutable creation;
 - write-back staging and destination children are durable, conditional,
   streaming stores that do not themselves defer transfer, pending count/byte
   bounds are nonzero and bounded, and journal directories do not lexically
@@ -1233,30 +1234,9 @@ bound fails without reporting verification success. The result may disclose
 the graph configuration and aggregate per-leaf summaries but does not disclose
 the placement IDs or confer publication, ref, or deletion authority.
 
-The registered `crucible.content-store.graph-configuration` schemas v1 through
-v10 freeze that identity basis. New writers retain the byte-for-byte v1 body
-when the graph has no compressed-directory, logical-quota, encrypted,
-compressed-encrypted, durability-policy, or namespaced nodes,
-emit v2 when it has a compressed-directory node but no logical quota or
-encryption, emit v3 when it has a logical-quota node but no encryption, and
-emit v4 when it has any encrypted-directory node but no compressed-encrypted
-node. A graph with any compressed-encrypted-directory node but no durability
-policy emits v5. A graph with any durability-policy node but no namespaced node
-emits v6. A graph with any namespaced node but no profile-validation node emits
-v7. A graph with any profile-validation node but no physical-quota node emits
-v8. A graph with any physical-quota node but no S3 node emits v9. A graph with
-any S3 node emits v10. V2 uses
-the same grammar and existing tags as v1, changes the magic suffix from `v1`
-to `v2`, and adds tag 11. V3 changes the suffix to `v3`, retains tags 1 through
-11, and adds tag 12. V4 changes the suffix to `v4`, retains tags 1 through 12,
-and adds tag 13. V5 changes the suffix to `v5`, retains tags 1 through 13, and
-adds tag 14.
-V6 changes the suffix to `v6`, retains tags 1 through 14, and adds tag 15.
-V7 changes the suffix to `v7`, retains tags 1 through 15, and adds tag 16.
-V8 changes the suffix to `v8`, retains tags 1 through 16, and adds tag 17.
-V9 changes the suffix to `v9`, retains tags 1 through 17, and adds tag 18.
-V10 changes the suffix to `v10`, retains tags 1 through 18, and adds tag 19.
-Every persistent
+The registered `crucible.content-store.graph-configuration` schema v11 freezes
+that identity basis. Every admitted graph emits the same current v11 domain;
+node membership does not select a historical identity schema. Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
 Node IDs and counts use their bounds above, object-kind tags and routed entries
@@ -1264,7 +1244,7 @@ are ordered by ascending ASCII tag, nodes by ascending node ID, and ordered
 child lists retain their configured order. The canonical body is:
 
 ```text
-"crucible.content-store.graph-configuration.v1\0"
+"crucible.content-store.graph-configuration.v11\0"
 root_node_id:string_u16
 admitted_kind_count:u16be
 repeated admitted_kind_count times: object_kind_tag:string_u16
@@ -1281,8 +1261,11 @@ node tag 3  Packed:      root:path_u32 || target_pack_bytes:u64be
 node tag 4  Verified:    child:string_u16
 node tag 5  Routed:      route_count:u16be
                          || repeated (kind:string_u16 || child:string_u16)
-node tag 6  Tiered:      child_count:u16be || repeated child:string_u16
-                         || write_tier:u16be || promote_reads:u8
+node tag 6  Tiered:      tier_count:u16be
+                         || repeated (child:string_u16
+                                      || readable:u8
+                                      || writable:u8
+                                      || promote_reads:u8)
 node tag 7  ReadThrough: cache:string_u16 || source:string_u16
 node tag 8  WriteThrough:child_count:u16be || repeated child:string_u16
 node tag 9  WriteBack:   staging:string_u16 || destination:string_u16
@@ -1459,7 +1442,7 @@ cached projections.
 
 Hot QEMU forks use kernel copy-on-write directly. They do not hash or publish
 RAM pages merely to create a child. Pages or extents enter the content store
-only when an exact closure, retained finding, hibernation image, or explicit
+only when an exact closure, retained finding, exact-pause image, or explicit
 archive operation requires durable state.
 
 An exact RAM manifest maps stable `(RAMBlockId, page-or-extent-index)` keys to
@@ -1587,8 +1570,8 @@ pack is deleted. Repack is the operation that reclaims sparse physical bytes.
 The public repack owner preserves this exact backend plan format:
 
 ```text
-crucible store repack --store STORE --node PACKED_NODE --plan PLAN_FILE plan
-crucible store repack --store STORE --node PACKED_NODE --plan PLAN_FILE apply
+crucible store transform packed --store STORE --node PACKED_NODE --journal JOURNAL plan
+crucible store transform packed --store STORE --node PACKED_NODE --journal JOURNAL apply
 ```
 
 Every path is absolute, normalized, and bounded. Planning authenticates the
@@ -1622,7 +1605,7 @@ stores, verifies every object, then creates or advances the destination ref.
 Supported closure policies are `metadata`, `findings`, `debug`, `executable`,
 and `mirror`. A metadata archive can be inspected without downloading RAM.
 
-Offline maintenance transfer first hibernates and pins the exact closure,
+Offline maintenance transfer first exactly pauses the campaign and pins its closure,
 ensures its complete executable closure in the destination store, verifies
 compatibility, restores on the destination during a separate operator action,
 and only then permits source eviction. No two-host scheduler or live post-copy
@@ -1649,7 +1632,7 @@ Pending write-back IDs enter the same single-host GC root manifest as refs and
 assignment-ledger roots. Planning inventories them under the transfer fence;
 apply reacquires that fence, requires the exact manifest identity, and retains
 the fence through candidate deletion. No separate generation field is needed
-in the v2 GC plan header because the exact root-manifest identity binds the
+in the V2 GC plan header because the exact root-manifest identity binds the
 complete active set and the held fence excludes changes during apply.
 Each pending ID is a direct exact-object root because the journal owns its
 transfer independently; this includes internal Merkle nodes whose root-relative
@@ -1658,7 +1641,7 @@ transitive roots and retain their complete authenticated closures.
 
 Hot exact/thin correctness fallbacks use a separate fixed 65,536-slot
 single-writer operational catalog. Each occupied slot stores one exact
-`QemuHotForkTemplateKey` and either an `ExactCheckpointId` or
+`HotCheckpointPoolKey` and either an `ExactCheckpointId` or
 `ConfigurationArtifactId`; the latter roots the complete authenticated thin
 configuration/scenario closure. The registered checksummed v1 record is:
 
@@ -1686,7 +1669,7 @@ does not grant campaign-ref mutation and its summary is operational evidence,
 not modeled campaign identity.
 
 Within a campaign snapshot, the semantic pin projection is keyed by the exact
-`ConfigurationId`. Its value is the latest authenticated schema-v5
+`ConfigurationId`. Its value is the latest authenticated schema-v14
 `PinCommandAccepted` fact. `Thin` and `Exact` select the required logical
 closure profile; `None` is a retained tombstone that removes the configuration
 from the current GC pin set without erasing command replay or campaign history.
@@ -1711,10 +1694,9 @@ authenticates the complete current semantic pin projection, requires the target
 configuration to be `Exact`, loads the complete `ExactCheckpointId` root and
 metadata through the exact-checkpoint store, and requires the checkpoint's
 modeled configuration identity to equal the pin target before the first journal
-write. Authentication is representation-independent: compatibility schema-v2/
-v3 single-node roots and schema-v4 production root-manifest/index closures are
-both admitted, while operations that require the compatibility-only node model
-fail closed for a production root. The selected value binds the campaign name,
+write. Authentication requires the sole current production exact-closure schema
+v9 and its current checkpoint contract. Any other closure or checkpoint schema
+fails closed. The selected value binds the campaign name,
 configuration, latest accepted pin fact, and exact-checkpoint root. It is
 operational owner state and does not advance the campaign ref or alter modeled
 campaign identity.
@@ -1824,8 +1806,8 @@ An error after the state advance is conservative because it only invalidates an
 older plan. The memory ledger uses a process-local hash-chain generation for its
 ephemeral backend instance.
 
-The registered `crucible.campaign.gc-root-manifest` v1 and
-`crucible.campaign.gc-candidate-manifest` v2 schemas are streamed external
+The registered `crucible.campaign.gc-root-manifest` schema v1 and
+`crucible.campaign.gc-candidate-manifest` schema v2 are streamed external
 administrative records. Each admits at most 64,000,000 entries, matching the
 complete campaign-closure work bound. A root manifest deduplicates roots and
 orders them by `(ContentId.kind ASCII tag, schema version as an unsigned
@@ -1859,15 +1841,20 @@ repeated candidate_count times:
         required_backend_length:u16be || required_backend_utf8
 ```
 
-Its hash uses the same construction with the complete candidate-manifest bytes
-and `crucible.campaign.gc-candidate-manifest.v2` as `D`. Decoders for both
-manifests enforce the entry limit before allocation proportional to a claimed
-count, bound every individual string, require strict order and exact EOF, and
-recompute terminal candidate count and logical-byte totals.
+For either manifest, let `D` be respectively
+`crucible.campaign.gc-root-manifest.v1` or
+`crucible.campaign.gc-candidate-manifest.v2`, and let `M` be the complete
+canonical bytes above. Its 32-byte manifest hash is
+`BLAKE3(BE64(len(D)) || D || M)`. Decoders enforce the entry limit before
+allocation proportional to a claimed count, bound every individual string,
+require strict order and exact EOF, and recompute terminal candidate count and
+logical-byte totals.
 
-The bounded immutable plan header composes the independently fenced inputs
-without embedding the potentially large root set or candidate list. It binds
-their authenticated canonical manifest hashes and terminal counters:
+The registered `crucible.campaign.gc-plan` schema v2 is the bounded immutable
+header that composes these independently fenced inputs. It does not embed the
+potentially large root set or candidate list. Instead it binds their separately
+authenticated canonical manifest hashes and terminal counters. Its canonical
+binary layout is:
 
 ```text
 "crucible.campaign.gc-plan.v2\0"
@@ -1892,22 +1879,22 @@ candidate placements/bytes cannot exceed the summed physical inventory. Its
 identity is
 `CampaignHash::derive("crucible.campaign.gc-plan.v2", canonical_header)`.
 Changing any store-graph, root-manifest, candidate-manifest, blob, ref, or ledger
-basis therefore changes the plan identity. Normal journal admission accepts
-only the v2 plan and candidate formats; earlier bytes fail closed as unsupported
-schemas.
+basis therefore changes the plan identity. The daemon's non-destructive
+single-host planner now fences and inventories the complete ref namespace,
+assignment ledger, hot-checkpoint fallback catalog, and pending write-back
+transfers, deduplicates their logical roots, authenticates their union
+through the campaign repository's semantic, generic-envelope, Merkle, and
+opaque-leaf closure verifier, then inventories each named physical leaf. Every
+placement whose logical ID is absent from that authenticated reachable set is
+written into the candidate manifest. A physical capability must report the same
+backend identifier configured by the maintenance owner, and physical inputs are
+strictly ordered. Any incomplete visitor prefix is discarded. Because apply
+later revalidates every generation, mutations between these non-destructive
+phases only make the plan stale; they cannot authorize deletion.
 
-The daemon's non-destructive single-host planner fences and inventories the
-complete ref namespace, assignment ledger, hot-checkpoint fallback catalog,
-and pending write-back transfers, deduplicates their logical roots,
-authenticates their union through the campaign repository's semantic,
-generic-envelope, Merkle, and opaque-leaf closure verifier, then inventories
-each named physical leaf. Every placement whose logical ID is absent from that
-authenticated reachable set is written into the candidate manifest. A
-physical capability must report the same backend identifier configured by the
-maintenance owner, and physical inputs are strictly ordered. Any incomplete
-visitor prefix is discarded. Because apply later revalidates every generation,
-mutations between these non-destructive phases only make the plan stale; they
-cannot authorize deletion.
+The candidate-manifest hash uses the v2 magic and
+`crucible.campaign.gc-candidate-manifest.v2` domain. Journal admission accepts
+only this current candidate-manifest schema and the current plan schema.
 
 Every physical leaf derives its storage identity from its inventory instance
 (persisted for durable leaves and process-local for memory) using
@@ -2007,12 +1994,12 @@ deletion. A public-process flight composes profile validation, verification,
 kind routing, compressed-directory read-through caching, and durable compressed
 write-back staging; it proves cache eviction against the required directory
 copy, bounded maintenance transfer of a known object, exact pending-root
-removal, and restart at the unchanged campaign head. Graph-derived policy also
-marks each tier's write child and each write-back destination as required while
-treating non-write tiers and write-back staging as reconstructible caches. A
-pending journal root or missing destination retains staging; after transfer,
-the existing policy-aware apply requires an independent EOF-authenticated
-destination copy under matching generation fences before eviction.
+removal, and restart at the unchanged campaign head. Tier policy assigns read,
+write, and promotion roles independently to every ordered child. Reads skip
+non-readable archive tiers, writes authenticate every writable-tier receipt,
+and lower-tier reads populate only preceding tiers that explicitly request
+promotion. Admission rejects roleless tiers, promotion into a non-readable
+tier, and graphs without both a reader and writer.
 
 The single-host daemon composes these sources into one logical root inventory:
 authoritative refs, current exact-pin selections, durable observation and
@@ -2116,6 +2103,35 @@ Store administration is separate from campaign operation. Export and archive
 commands report sensitive closure classes and required bytes before transfer.
 Credentials never enter campaign objects, planner input, executor attempts,
 logs, or placement receipts returned to ordinary operators.
+
+`crucible store credentials refresh STORE` reconstructs the exact deployment
+graph from its current credential and key capability files, rejects expired,
+mismatched, malformed, or inaccessible authority, authenticates every bounded
+physical placement and the complete ref inventory, and resolves every ref to
+an authenticated logical object. It reports the unchanged graph configuration,
+exact non-secret capability set, physical placement count, ref generation, and
+ref count. It does not persist secret material or mutate campaign state.
+
+Physical repair and incomplete-pack cleanup require the campaign owner to be
+stopped. The command acquires the state and policy owner together with the
+exact composed store before it can borrow maintenance authority. `store repair`
+names one immutable content ID and distinct source and target physical nodes;
+it authenticates the source and both inventory generations, removes only an
+absent-or-corrupt target placement, conditionally republishes the same logical
+bytes, and authenticates the result. Retrying after interruption either finishes
+the repair or reports `already-valid`. `store cleanup incomplete-packs`
+authenticates the retained pack index and every referenced pack under the
+exclusive lifecycle lock before removing unindexed complete packs or abandoned
+staging packs; repeating a completed cleanup removes nothing.
+
+Archive completion returns a terminal durability receipt that binds the exact
+transfer operation, authenticated manifest, destination durability policy, and
+the lowest durable-placement count observed across the copied or pre-existing
+closure. After every selected object satisfies that policy, publication makes
+the destination refs authoritative while both GC-protected transfer journals
+still retain the closure. Only then are both journals retired and the receipt
+returned. Repeating the same interrupted operation preserves its operation
+identity and copies only objects still missing at the destination.
 
 - **[CSTORE-21]** Every physical decoding path MUST authenticate encryption,
   compression, pack range, logical length, kind, and final logical digest before

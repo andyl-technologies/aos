@@ -65,7 +65,20 @@ struct DebugRelay {
     lease: DebugControllerLease,
     holder: DebugControllerHolderId,
     stream: Arc<Mutex<TcpStream>>,
+    access: DebugRelayAccess,
+    read_only_filter: ReadOnlyGdbFilter,
     last_activity: RelayInstant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DebugRelayAccess {
+    ReadWrite,
+    ReadOnly,
+}
+
+#[derive(Default)]
+struct ReadOnlyGdbFilter {
+    pending: Vec<u8>,
 }
 
 struct DebugRelayTombstone {
@@ -135,6 +148,7 @@ impl DebugRelayRegistry {
         session: SessionRef,
         lease: DebugControllerLease,
         holder: DebugControllerHolderId,
+        access: DebugRelayAccess,
     ) -> Result<DebugRelayId, DebugRelayError> {
         if let Some(id) = self.existing(session, &lease, holder) {
             return Ok(id);
@@ -154,6 +168,8 @@ impl DebugRelayRegistry {
                 lease,
                 holder,
                 stream: Arc::new(Mutex::new(stream)),
+                access,
+                read_only_filter: ReadOnlyGdbFilter::default(),
                 last_activity: relay_clock_now(),
             },
         );
@@ -179,17 +195,27 @@ impl DebugRelayRegistry {
         Ok(bytes.len())
     }
 
-    pub(crate) fn stream(
+    pub(crate) fn prepare_write(
         &mut self,
         id: DebugRelayId,
         session: SessionRef,
         client: &DebugClientId,
         generation: u64,
         holder: DebugControllerHolderId,
-    ) -> Result<Arc<Mutex<TcpStream>>, DebugRelayError> {
+        bytes: &[u8],
+    ) -> Result<(Arc<Mutex<TcpStream>>, Vec<u8>), DebugRelayError> {
+        if bytes.len() > DEBUG_RELAY_CHUNK_MAX_BYTES {
+            return Err(DebugRelayError::ChunkTooLarge {
+                length: bytes.len(),
+            });
+        }
         let relay = self.checked_relay_mut(id, session, client, generation, holder)?;
         relay.last_activity = relay_clock_now();
-        Ok(relay.stream.clone())
+        let forwarded = match relay.access {
+            DebugRelayAccess::ReadWrite => bytes.to_vec(),
+            DebugRelayAccess::ReadOnly => relay.read_only_filter.accept(bytes)?,
+        };
+        Ok((Arc::clone(&relay.stream), forwarded))
     }
 
     pub(crate) fn touch(
@@ -401,6 +427,136 @@ pub enum DebugRelayError {
     /// Another operation currently owns the relay stream.
     #[error("debug relay is busy")]
     Busy,
+    /// A read-only relay received malformed GDB remote-protocol bytes.
+    #[error("read-only debug relay received an invalid GDB packet")]
+    InvalidReadOnlyPacket,
+    /// A read-only relay received a command that can change target state.
+    #[error("read-only debug relay rejected a state-changing GDB command")]
+    ReadOnlyCommand,
+}
+
+impl ReadOnlyGdbFilter {
+    fn accept(&mut self, bytes: &[u8]) -> Result<Vec<u8>, DebugRelayError> {
+        let pending_length = self
+            .pending
+            .len()
+            .checked_add(bytes.len())
+            .ok_or(DebugRelayError::InvalidReadOnlyPacket)?;
+        if pending_length > DEBUG_RELAY_CHUNK_MAX_BYTES {
+            return Err(DebugRelayError::InvalidReadOnlyPacket);
+        }
+        self.pending.extend_from_slice(bytes);
+
+        let mut forwarded = Vec::with_capacity(self.pending.len());
+        let mut cursor = 0;
+        while cursor < self.pending.len() {
+            match self.pending[cursor] {
+                b'+' | b'-' => {
+                    forwarded.push(self.pending[cursor]);
+                    cursor += 1;
+                }
+                b'$' => {
+                    let Some(hash) = packet_checksum_offset(&self.pending, cursor + 1) else {
+                        break;
+                    };
+                    let packet_end = hash
+                        .checked_add(3)
+                        .ok_or(DebugRelayError::InvalidReadOnlyPacket)?;
+                    if packet_end > self.pending.len() {
+                        break;
+                    }
+                    let encoded_payload = &self.pending[cursor + 1..hash];
+                    authenticate_packet_checksum(
+                        encoded_payload,
+                        &self.pending[hash + 1..packet_end],
+                    )?;
+                    let payload = decode_packet_payload(encoded_payload)?;
+                    if !read_only_gdb_command(&payload) {
+                        return Err(DebugRelayError::ReadOnlyCommand);
+                    }
+                    forwarded.extend_from_slice(&self.pending[cursor..packet_end]);
+                    cursor = packet_end;
+                }
+                _ => return Err(DebugRelayError::InvalidReadOnlyPacket),
+            }
+        }
+        self.pending.drain(..cursor);
+        Ok(forwarded)
+    }
+}
+
+fn packet_checksum_offset(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut escaped = false;
+    for (offset, byte) in bytes.get(start..)?.iter().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if *byte == b'}' {
+            escaped = true;
+        } else if *byte == b'#' {
+            return Some(start + offset);
+        }
+    }
+    None
+}
+
+fn authenticate_packet_checksum(payload: &[u8], checksum: &[u8]) -> Result<(), DebugRelayError> {
+    let [high, low] = checksum else {
+        return Err(DebugRelayError::InvalidReadOnlyPacket);
+    };
+    let declared = hex_nibble(*high)
+        .and_then(|high| hex_nibble(*low).map(|low| (high << 4) | low))
+        .ok_or(DebugRelayError::InvalidReadOnlyPacket)?;
+    let observed = payload
+        .iter()
+        .fold(0_u8, |sum, byte| sum.wrapping_add(*byte));
+    if observed != declared {
+        return Err(DebugRelayError::InvalidReadOnlyPacket);
+    }
+    Ok(())
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_packet_payload(encoded: &[u8]) -> Result<Vec<u8>, DebugRelayError> {
+    let mut decoded = Vec::with_capacity(encoded.len());
+    let mut cursor = 0;
+    while cursor < encoded.len() {
+        if encoded[cursor] == b'}' {
+            let escaped = *encoded
+                .get(cursor + 1)
+                .ok_or(DebugRelayError::InvalidReadOnlyPacket)?;
+            decoded.push(escaped ^ 0x20);
+            cursor += 2;
+        } else {
+            decoded.push(encoded[cursor]);
+            cursor += 1;
+        }
+    }
+    Ok(decoded)
+}
+
+fn read_only_gdb_command(payload: &[u8]) -> bool {
+    match payload.first().copied() {
+        None | Some(b'?') | Some(b'g') | Some(b'p') | Some(b'm') | Some(b'x') | Some(b'H')
+        | Some(b'T') => true,
+        Some(b'q') => !payload.starts_with(b"qRcmd,") && !contains_bytes(payload, b":write:"),
+        Some(b'Q') => payload == b"QStartNoAckMode",
+        Some(b'v') => matches!(payload, b"vCont?" | b"vMustReplyEmpty" | b"vStopped"),
+        _ => false,
+    }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 #[cfg(test)]

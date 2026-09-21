@@ -71,20 +71,24 @@ fn authenticated_lineage_fixture() -> (CampaignExecutorStore, CampaignLineage) {
     )
     .expect("widening policy");
     let policy = CampaignPolicy::new(
-        scenario_artifact.scenario(),
-        CampaignSeed::from_bytes([0x51; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness policy"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario_artifact.scenario(),
+            CampaignSeed::from_bytes([0x51; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness policy"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("source basis policy");
     repository

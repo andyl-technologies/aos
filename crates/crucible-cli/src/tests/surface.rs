@@ -2,6 +2,38 @@
 
 use super::*;
 
+#[test]
+fn campaign_debug_route_is_public_and_forced_read_only() {
+    let cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "https://127.0.0.1:9443",
+        "campaign",
+        "--socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "debugger",
+        "debug",
+        "midpoint",
+        "--snapshot",
+        "snapshot-id",
+        "--finding",
+        "finding-id",
+        "--node",
+        "vm-a",
+    ]);
+    let Commands::Campaign(campaign) = cli.command else {
+        panic!("campaign debug must remain a public campaign command");
+    };
+    let CampaignCommand::Debug(debug) = campaign.command else {
+        panic!("campaign debug must parse to its owner-backed route");
+    };
+
+    assert_eq!(debug.name, "midpoint");
+    assert_eq!(debug.node, "vm-a");
+    assert_eq!(debug.gdb_listen, "127.0.0.1:0");
+}
+
 use clap::CommandFactory;
 
 pub(super) const TEST_SCENARIO: &str = "builtin:happy-path.scn";
@@ -404,61 +436,6 @@ pub(super) fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn
     Ok(path)
 }
 
-pub(super) fn write_signed_triage_findings_ledger(
-    dir: &Path,
-    store_root: &Path,
-    file_name: &str,
-    discovery_signature_assertion: Option<&str>,
-) -> Result<(PathBuf, crucible::FindingReproductionArtifact), Box<dyn Error>> {
-    fs::create_dir_all(dir)?;
-    let form = search_frontier_scenario_form()?;
-    let configuration = crucible::try_step(
-        &crucible::Configuration::genesis(form.scenario_def()),
-        search_frontier_decisions()
-            .into_iter()
-            .nth(1)
-            .ok_or_else(|| std::io::Error::other("missing triage fixture decision"))?,
-    )?;
-    let finding_fingerprint = crucible::ContentHash::from_bytes(b"cli triage signed finding");
-    let finding = crucible::FindingReproductionArtifact::capture(
-        crucible::FindingDiscoveryPath::StateSpaceSearch,
-        finding_fingerprint,
-        &form,
-        &configuration,
-    )?;
-    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    let artifact = finding.store_artifact(&store)?;
-    assert_eq!(artifact, finding.artifact.id());
-
-    let assertion = "cli-triage-signed-finding";
-    let mut ledger = format!(
-        "\
-{FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2}
-finding.0.artifact={artifact}
-finding.0.discovery_path=state-space-search
-finding.0.finding_fingerprint={finding_fingerprint}
-finding.0.assertion={assertion}
-finding.0.message=CLI triage signed finding violated
-finding.0.quantifier=always
-finding.0.event_kind=assertion_state_changed
-finding.0.at_icount=8
-finding.0.at_virtual_time=8
-finding.0.node=triage-node
-finding.0.detail=synthetic signed finding evidence
-",
-        artifact = artifact.to_hex(),
-        finding_fingerprint = finding_fingerprint.to_hex()
-    );
-    if let Some(discovery_signature_assertion) = discovery_signature_assertion {
-        ledger.push_str(&format!(
-            "finding.0.discovery_signature.assertion={discovery_signature_assertion}\n"
-        ));
-    }
-    let path = dir.join(file_name);
-    fs::write(&path, ledger)?;
-    Ok((path, finding))
-}
-
 pub(super) fn search_frontier_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_frontier_world()?;
     Ok(crucible::ScenarioDefForm::from_components(
@@ -530,13 +507,6 @@ pub(super) fn search_frontier_decisions() -> Vec<crucible::Decision> {
     ]
 }
 
-pub(super) fn write_property_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
-    let form = property_selector_scenario_form()?;
-    let path = temp.path().join("property-selector-scenario.toml");
-    fs::write(&path, form.to_canonical_toml()?)?;
-    Ok(path)
-}
-
 pub(super) fn property_selector_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>>
 {
     let fixture = crucible::happy_path_scenario()?;
@@ -552,63 +522,6 @@ pub(super) fn property_selector_scenario_form() -> Result<crucible::ScenarioDefF
         &crucible::Plan::empty(),
         &properties,
         fixture.scenario.seed(),
-    )?)
-}
-
-pub(super) fn write_marker_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
-    write_marker_selector_scenario_with_policy(
-        temp,
-        "marker-selector-scenario.toml",
-        crucible::WhiteBoxPolicy::Enabled,
-    )
-}
-
-pub(super) fn write_marker_selector_without_source_scenario(
-    temp: &TempDir,
-) -> Result<PathBuf, Box<dyn Error>> {
-    write_marker_selector_scenario_with_policy(
-        temp,
-        "marker-selector-no-source-scenario.toml",
-        crucible::WhiteBoxPolicy::Disabled,
-    )
-}
-
-pub(super) fn write_marker_selector_scenario_with_policy(
-    temp: &TempDir,
-    file_name: &str,
-    white_box: crucible::WhiteBoxPolicy,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let form = marker_selector_scenario_form(white_box)?;
-    let path = temp.path().join(file_name);
-    fs::write(&path, form.to_canonical_toml()?)?;
-    Ok(path)
-}
-
-pub(super) fn marker_selector_scenario_form(
-    white_box: crucible::WhiteBoxPolicy,
-) -> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
-    let world = crucible::World::from_nodes(vec![crucible::WorldNode {
-        id: crucible::NodeId {
-            name: String::from("marker-node"),
-        },
-        arch: crucible::NodeTemplate::DEFAULT_ARCH,
-        memory_mib: crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
-        cmdline: String::from("crucible-marker-selector=1 crucible-guest-marker=phase-two-marker"),
-        ready_point: crucible::ReadyPoint::FixedIcount {
-            icount: crucible::Icount { retired: 1 },
-        },
-        white_box,
-        smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
-        kernel: None,
-        root_image: None,
-        initrd: None,
-    }])?;
-    Ok(crucible::ScenarioDefForm::from_components(
-        &world,
-        &crucible::Plan::empty(),
-        &crucible::Properties::empty(),
-        crucible::Seed::from_u64(14),
     )?)
 }
 
@@ -643,78 +556,8 @@ pub(super) fn spawn_production_lifecycle_server() -> Result<String, Box<dyn Erro
                 "crucible-cli-test-daemon",
                 Vec::new(),
                 |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-            );
-            let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
-        });
-    });
-    Ok(address.to_string())
-}
-
-pub(super) fn spawn_save_recording_lifecycle_server() -> Result<String, Box<dyn Error>> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-    listener.set_nonblocking(true)?;
-    let address = listener.local_addr()?;
-    std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(_) => return,
-        };
-        runtime.block_on(async move {
-            let listener = match tokio::net::TcpListener::from_std(listener) {
-                Ok(listener) => listener,
-                Err(_) => return,
-            };
-            let control_plane = LifecycleControlPlane::new_with_source_factory(
-                "crucible-cli-save-selector-test-daemon",
-                Vec::new(),
-                move |_scenario: &crucible::ScenarioDef, scenario_form, _seed| {
-                    let scenario_form = scenario_form
-                        .expect("save selector daemon requires inline scenario source");
-                    SaveRecordingLifecycleLoop::new(SaveRecordingSources::from_scenario_form(
-                        scenario_form,
-                    ))
-                    .with_selector_delay_quanta(2)
-                },
-            );
-            let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
-        });
-    });
-    Ok(address.to_string())
-}
-
-pub(super) fn spawn_resume_recording_lifecycle_server(
-    fixture: ResumeRecordingFixture,
-    frontier: VirtualTime,
-) -> Result<String, Box<dyn Error>> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-    listener.set_nonblocking(true)?;
-    let address = listener.local_addr()?;
-    std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(_) => return,
-        };
-        runtime.block_on(async move {
-            let listener = match tokio::net::TcpListener::from_std(listener) {
-                Ok(listener) => listener,
-                Err(_) => return,
-            };
-            let control_plane = LifecycleControlPlane::new(
-                "crucible-cli-resume-test-daemon",
-                Vec::new(),
-                move |_scenario: &crucible::ScenarioDef, _seed| match fixture.clone() {
-                    ResumeRecordingFixture::None => ResumeRecordingLifecycleLoop::new(frontier),
-                    ResumeRecordingFixture::PropertyViolation { assertion } => {
-                        ResumeRecordingLifecycleLoop::with_property_violation(frontier, assertion)
-                    }
-                },
-            );
+            )
+            .with_terminal_session_retention(true);
             let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
         });
     });
@@ -948,7 +791,7 @@ pub(super) fn write_qemu_artifact_markers(
     fs::write(
         dir.join("qemu-build-identity.env"),
         format!(
-            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id={qemu_build_id}\n"
+            "qemu_plugins_enabled=true\nqemu_crucible_atomic_patch_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_atomic_patch_hash=sha256-test-qemu-atomic-patch\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id={qemu_build_id}\n"
         ),
     )?;
     fs::write(
@@ -974,7 +817,10 @@ pub(super) fn write_savepoint_handle_fixture(
     let scenario_payload = form.to_compact_binary();
     let schedule_payload = schedule.to_compact_binary();
     let mut text = String::new();
-    artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
+    artifact_line(
+        &mut text,
+        &["schema", REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA],
+    );
     artifact_line(&mut text, &["label", label]);
     artifact_line(
         &mut text,
@@ -998,6 +844,15 @@ pub(super) fn write_savepoint_handle_fixture(
             "schedule-payload",
             &content_address_bytes(&schedule_payload),
             &hex_bytes(&schedule_payload),
+        ],
+    );
+    let replay_closure = b"CCRC\0\0\0\x01\0\0\0\0";
+    artifact_line(
+        &mut text,
+        &[
+            "campaign-replay-closure",
+            &content_address_bytes(replay_closure),
+            &hex_bytes(replay_closure),
         ],
     );
     artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
@@ -1069,44 +924,6 @@ pub(super) fn externalized_replay_artifact_text(
     Ok(canonical_artifact_text(&decoded))
 }
 
-pub(super) fn fork_artifact_path(
-    outcome: &BackendCommandOutcome,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let line = outcome
-        .stdout
-        .iter()
-        .find(|line| line.starts_with("fork-artifact\t"))
-        .ok_or("fork workflow did not emit fork-artifact line")?;
-    let path = line
-        .split('\t')
-        .find_map(|field| field.strip_prefix("path="))
-        .ok_or("fork-artifact line did not include path")?;
-    Ok(PathBuf::from(path))
-}
-
-pub(super) fn assert_fork_artifact_replays(
-    cli: &Cli,
-    outcome: &BackendCommandOutcome,
-    expected_seed: u64,
-) -> Result<(), Box<dyn Error>> {
-    let path = fork_artifact_path(outcome)?;
-    let report = replay_reproduction_artifact(
-        cli,
-        &ReplayArgs {
-            artifact: path.clone(),
-            to: None,
-            check: None,
-            bisect: None,
-        },
-    )?;
-    assert_eq!(report.path, path);
-    assert!(report.digest.starts_with(CONTENT_ADDRESS_PREFIX));
-    assert_eq!(report.seed, expected_seed);
-    assert!(report.check.is_none());
-    assert!(report.bisect.is_none());
-    Ok(())
-}
-
 pub(super) fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'static str>)> {
     vec![
         (CliSubcommand::Run, vec!["run", TEST_SCENARIO]),
@@ -1119,10 +936,12 @@ pub(super) fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'sta
             CliSubcommand::Resume,
             vec!["resume", "blake3:test-savepoint"],
         ),
-        (CliSubcommand::Fork, vec!["fork", "blake3:test-savepoint"]),
         (CliSubcommand::Replay, vec!["replay", "case.crucible"]),
         (CliSubcommand::Search, vec!["search", TEST_SCENARIO]),
-        (CliSubcommand::Fuzz, vec!["fuzz", "builtin:fault-campaign"]),
+        (
+            CliSubcommand::Fuzz,
+            vec!["fuzz", crucible::FAULT_CAMPAIGN_FAMILY_NAME],
+        ),
         (CliSubcommand::Debug, vec!["debug", "case.crucible"]),
         (
             CliSubcommand::Serve,
@@ -1166,7 +985,6 @@ pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
             "campaign",
             "completions",
             "debug",
-            "fork",
             "fuzz",
             "replay",
             "resume",
@@ -1341,7 +1159,6 @@ pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
         "selftest",
         "save",
         "resume",
-        "fork",
         "replay",
         "search",
         "fuzz",
@@ -1424,19 +1241,6 @@ pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
             ],
         ),
         (
-            "fork",
-            &[
-                "SAVEPOINT",
-                "--seed <u64|hex>",
-                "--override <decision=value>",
-                "--until <quiescence|virtual-time|property|stopped>",
-                "--max-virtual-time <dur>",
-                "--label <name>",
-                "--interactive",
-                "--watch",
-            ],
-        ),
-        (
             "replay",
             &[
                 "ARTIFACT",
@@ -1455,6 +1259,7 @@ pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
                 "--on-violation <stop|collect>",
                 "--findings-out <path>",
                 "--schedule-named-truths <path>",
+                "--retained-evidence <path>",
             ],
         ),
         (
@@ -1512,7 +1317,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         (
             "verify",
             &["scenario", "runs", "adversarial", "bisect", "compare"][..],
-            "about=Prove determinism: run N times, diff fingerprints + causal logs\nusage=Usage: crucible verify [OPTIONS] <SCENARIO|--compare <a> <b>>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nruns=Number of runs to compare. Default: 2\nadversarial=Perturb observer polling order, yields, and timeouts\nbisect=On divergence, run divergence-bisection (24 §5) and print the report\ncompare=Diff two existing reproduction artifacts instead of running\n",
+            "about=Prove determinism: run N times, diff fingerprints + causal logs\nusage=Usage: crucible verify [OPTIONS] <SCENARIO|--compare <a> <b>>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nruns=Number of runs to compare. Default: 2\nadversarial=Run the full hostile host scheduling, clock, core, and I/O matrix\nbisect=On divergence, run divergence-bisection (24 §5) and print the report\ncompare=Diff two existing reproduction artifacts instead of running\n",
         ),
         (
             "selftest",
@@ -1544,22 +1349,15 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
             "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A current portable savepoint handle (07)\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line (20 §9)\n",
         ),
         (
-            "fork",
-            &[
-                "savepoint",
-                "overrides",
-                "until",
-                "max_virtual_time",
-                "label",
-                "interactive",
-                "watch",
-            ][..],
-            "about=Fork a run from a savepoint with a new seed or decision override\nusage=Usage: crucible fork [OPTIONS] <SAVEPOINT>\nsavepoint=The fork point: a current portable savepoint handle (07)\noverrides=Override a decision at/after the fork point (05 §3). Repeatable\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nlabel=Label the forked branch\ninteractive=Drive the forked session interactively\nwatch=Stream the live status line (20 §9)\n",
-        ),
-        (
             "replay",
-            &["artifact", "check", "to", "bisect"][..],
-            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle\nbisect=Bisect this artifact against another (24 §5)\n",
+            &[
+                "artifact",
+                "check",
+                "to",
+                "bisect",
+                "bounded_scheduler_preemption",
+            ][..],
+            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle\nbisect=Bisect this artifact against another (24 §5)\nbounded_scheduler_preemption=Inject and require authenticated bounded host scheduler preemption during live QEMU replay\n",
         ),
         (
             "search",
@@ -1571,8 +1369,9 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "on_violation",
                 "findings_out",
                 "schedule_named_truths",
+                "retained_evidence",
             ][..],
-            "about=Drive state-space search over the schedule space (22)\nusage=Usage: crucible search [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nstrategy=Frontier expansion strategy (22)\nmax_depth=Decision-depth bound\nmax_states=Budget on materialized states\non_violation=Stop at the first finding, or collect findings within the search bound\nfindings_out=Write the signed findings ledger to this path\nschedule_named_truths=Load schedule-named assertion truth data\n",
+            "about=Drive state-space search over the schedule space (22)\nusage=Usage: crucible search [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nstrategy=Frontier expansion strategy (22)\nmax_depth=Decision-depth bound\nmax_states=Budget on materialized states\non_violation=Stop at the first finding, or collect findings within the search bound\nfindings_out=Write the signed findings ledger to this path\nschedule_named_truths=Load schedule-named assertion truth data\nretained_evidence=Load backend-retained assertion evidence\n",
         ),
         (
             "fuzz",
@@ -1621,7 +1420,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         (
             "store",
             &[][..],
-            "about=Inspect or maintain a configured content store\nusage=Usage: crucible store [OPTIONS] <COMMAND>\ncommand.status=Describe one exact admitted store graph without accessing object bytes\ncommand.ensure=Read and authenticate one complete object without repair or promotion\ncommand.verify=Authenticate every bounded physical placement in one stable generation\ncommand.repair=Repair one placement or migrate stopped-daemon operational state\ncommand.gc=Plan, cancel, or apply stopped-owner campaign-store garbage collection\ncommand.repack=Plan or apply deterministic repacking for one configured packed leaf\n",
+            "about=Inspect or maintain a configured content store\nusage=Usage: crucible store [OPTIONS] <COMMAND>\ncommand.status=Describe one exact admitted store graph without accessing object bytes\ncommand.ensure=Read and authenticate one complete object without repair or promotion\ncommand.verify=Authenticate every bounded physical placement in one stable generation\ncommand.gc=Plan, cancel, or apply stopped-owner campaign-store garbage collection\ncommand.transform=Plan or apply one exact physical storage transformation\ncommand.credentials=Reload and validate deployment credential capabilities\ncommand.cleanup=Reclaim unreachable incomplete physical material under a stopped owner\ncommand.repair=Repair one physical copy from an independently authenticated peer\n",
         ),
         (
             "debug",
@@ -1751,14 +1550,6 @@ pub(super) fn cli_parser_enforces_every_normatively_required_input() {
             "--until",
             "virtual-time",
         ],
-        vec!["crucible", "fork"],
-        vec![
-            "crucible",
-            "fork",
-            "blake3:missing",
-            "--until",
-            "virtual-time",
-        ],
         vec!["crucible", "search"],
         vec!["crucible", "fuzz"],
         vec!["crucible", "serve"],
@@ -1860,15 +1651,6 @@ pub(super) fn cli_parser_enforces_normative_alternative_and_conflicting_inputs()
             "family.toml",
             "--family",
             "blake3:family",
-        ],
-        vec![
-            "crucible",
-            "fork",
-            "blake3:savepoint",
-            "--seed",
-            "1",
-            "--override",
-            "decision=value",
         ],
     ] {
         let error = match Cli::try_parse_from(argv.clone()) {
@@ -2239,7 +2021,7 @@ schedule = {:?}
     invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
     invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
     fs::write(&component_authority, invalid_authority_bytes).expect("replace component authority");
-    let error = match open_local_campaign_service(args, None) {
+    let error = match open_local_campaign_service(args, None, None) {
         Ok(_) => panic!("equal component authorities must fail before bind"),
         Err(error) => error,
     };
@@ -2307,7 +2089,7 @@ principal = "operator"
     let Commands::Serve(args) = &cli.command else {
         panic!("expected serve command");
     };
-    let error = match open_local_campaign_service(args, None) {
+    let error = match open_local_campaign_service(args, None, None) {
         Ok(_) => panic!("malformed campaign import must fail"),
         Err(error) => error,
     };
@@ -2813,10 +2595,6 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
             vec!["crucible", "resume", "blake3:test-savepoint"],
         ),
         (
-            CliSubcommand::Fork,
-            vec!["crucible", "fork", "blake3:test-savepoint"],
-        ),
-        (
             CliSubcommand::Replay,
             vec!["crucible", "replay", "case.crucible"],
         ),
@@ -2826,7 +2604,7 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         ),
         (
             CliSubcommand::Fuzz,
-            vec!["crucible", "fuzz", "builtin:fault-campaign"],
+            vec!["crucible", "fuzz", crucible::FAULT_CAMPAIGN_FAMILY_NAME],
         ),
         (
             CliSubcommand::Triage,
@@ -2877,7 +2655,6 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         assert!(!plan.owns_canonical_run_state);
         assert!(!plan.implements_scheduler);
         assert!(!plan.implements_checkpoint_materialization);
-        assert!(!plan.implements_fork_logic);
         assert!(plan.extra_control_capabilities.is_empty());
         assert!(
             plan.session_commands
@@ -2900,7 +2677,7 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         assert_eq!(recorder.state_references, plan.state_references);
     }
 
-    assert_eq!(observed.len(), 14);
+    assert_eq!(observed.len(), 13);
     assert!(observed.contains(&CliSubcommand::Run));
     assert!(observed.contains(&CliSubcommand::Store));
     assert!(observed.contains(&CliSubcommand::Completions));
@@ -2966,10 +2743,6 @@ pub(super) fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabili
     let mut materializes = base.clone();
     materializes.implements_checkpoint_materialization = true;
     assert!(!materializes.proves_t_cli_2());
-
-    let mut forks = base.clone();
-    forks.implements_fork_logic = true;
-    assert!(!forks.proves_t_cli_2());
 
     let mut extra_control = base;
     extra_control
@@ -3181,7 +2954,7 @@ pub(super) fn cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_w
         temp.path()
             .join("shmem-mismatch")
             .join("qemu-build-identity.env"),
-        "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v999\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-c\n",
+        "qemu_plugins_enabled=true\nqemu_crucible_atomic_patch_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_atomic_patch_hash=sha256-test-qemu-atomic-patch\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v999\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-c\n",
     )?;
     let mismatch_cli = Cli::parse_from([
         "crucible",
@@ -3215,7 +2988,7 @@ pub(super) fn cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_w
         temp.path()
             .join("shmem-version-mismatch")
             .join("qemu-build-identity.env"),
-        "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v1\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-d\n",
+        "qemu_plugins_enabled=true\nqemu_crucible_atomic_patch_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_atomic_patch_hash=sha256-test-qemu-atomic-patch\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v998\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-d\n",
     )?;
     let mismatch_cli = Cli::parse_from([
         "crucible",
@@ -3313,8 +3086,8 @@ pub(super) fn cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts()
         content_address_bytes(b"artifact-qemu-build")
     );
     assert_eq!(
-        artifact.identity.qemu_patch_series_hash,
-        "sha256-test-qemu-patch-series"
+        artifact.identity.qemu_atomic_patch_hash,
+        "sha256-test-qemu-atomic-patch"
     );
     assert_eq!(
         artifact.identity.shmem_abi_version,
@@ -3411,7 +3184,7 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
     let property = Cli::parse_from([
         String::from("crucible"),
         String::from("save"),
-        String::from("builtin:fault-campaign"),
+        format!("builtin:{}", crucible::PARTITION_RECOVERY_SCENARIO_NAME),
         String::from("--at"),
         String::from("property"),
         String::from("--property"),
@@ -3436,7 +3209,7 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
     let marker = Cli::parse_from([
         String::from("crucible"),
         String::from("save"),
-        String::from("builtin:fault-campaign"),
+        format!("builtin:{}", crucible::PARTITION_RECOVERY_SCENARIO_NAME),
         String::from("--at"),
         String::from("marker"),
         String::from("--marker"),

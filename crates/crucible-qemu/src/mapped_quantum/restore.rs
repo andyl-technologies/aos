@@ -4,21 +4,6 @@ use super::QemuMappedQuantumShmemHotPath;
 use crate::QemuNodeChannelError;
 
 impl QemuMappedQuantumShmemHotPath {
-    #[cfg(all(target_os = "linux", feature = "test-support"))]
-    /// Returns a coherent snapshot of the mapped VM node slot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the configured slot is absent.
-    pub(crate) fn node_snapshot(
-        &self,
-    ) -> Result<crucible_shmem::NodeSlotSnapshot, QemuNodeChannelError> {
-        self.region
-            .node_slot(self.config.vm_slot)
-            .map(|slot| slot.snapshot())
-            .map_err(|source| QemuNodeChannelError::new("snapshot node slot", source.to_string()))
-    }
-
     /// Arms the mapped slot for a quiesced VMState restore without waking QEMU.
     ///
     /// # Errors

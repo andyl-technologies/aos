@@ -14,11 +14,9 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 
 use crucible_campaign::*;
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, ObjectKind};
-use crucible_daemon::serve_loopback_campaign_once;
 
 #[derive(Clone, Copy)]
 struct FixedHeadService;
@@ -70,11 +68,8 @@ struct GraphPageService {
 }
 
 fn budget_ledger(label: &str) -> CampaignBudgetLedgerId {
-    CampaignBudgetLedgerId::parse(&format!(
-        "crucible.campaign.budget-ledger@{}",
-        ContentId::for_bytes(ObjectKind::CampaignFact, 2, label.as_bytes()).encode()
-    ))
-    .expect("current budget-ledger ID")
+    CampaignBudgetLedgerId::parse(&fixture_record_id(CampaignRecordKind::BudgetLedger, label))
+        .expect("current budget-ledger ID")
 }
 
 macro_rules! impl_unused_finding_occurrence_service {
@@ -941,74 +936,6 @@ fn campaign_runtime_attachment_validates_before_connect_and_renders_status() {
 }
 
 #[test]
-fn campaign_list_uses_the_checked_loopback_transport_across_pages() {
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        for _page in 0..2 {
-            serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
-                .expect("serve one campaign list page");
-        }
-    });
-    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
-    let client = CampaignClient::new(service);
-    let report = query_campaign_list(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        &CampaignListArgs {
-            after: None,
-            limit: 1,
-            pages: 2,
-        },
-    )
-    .expect("checked campaign list");
-    server.join().expect("campaign server thread");
-
-    assert!(report.complete);
-    assert_eq!(report.pages_scanned, 2);
-    assert_eq!(report.next_after, None);
-    assert_eq!(
-        report
-            .entries
-            .iter()
-            .map(|entry| entry.campaign.as_str())
-            .collect::<Vec<_>>(),
-        ["alpha", "middle"]
-    );
-}
-
-#[test]
-fn campaign_graph_page_uses_the_checked_proof_bearing_transport() {
-    let (service, snapshot, _) = graph_page_service();
-    let command = CampaignCommand::Graph(CampaignPageArgs {
-        name: "example".to_owned(),
-        snapshot: snapshot.to_string(),
-        after: None,
-        limit: 1,
-        pages: 1,
-    });
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &service)
-            .expect("serve graph page request");
-    });
-    let client =
-        CampaignClient::new(LoopbackCampaignService::new(client_stream).expect("loopback client"));
-
-    let report = query_campaign_page(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        &command,
-    )
-    .expect("checked graph query");
-    server.join().expect("campaign server thread");
-
-    assert_eq!(report.operation, "graph");
-    assert_eq!(report.snapshot, snapshot.to_string());
-    assert_eq!(report.entries.len(), 1);
-    assert!(report.next_after.is_some());
-}
-
-#[test]
 fn campaign_graph_aggregation_follows_checked_pages_to_authenticated_eof() {
     let (service, snapshot, _) = graph_page_service();
     let client = CampaignClient::new(service);
@@ -1189,190 +1116,6 @@ fn campaign_page_aggregation_rejects_a_repeated_cursor() {
 }
 
 #[test]
-fn campaign_findings_page_uses_the_checked_proof_bearing_transport() {
-    let (service, snapshot, _) = graph_page_service();
-    let command = CampaignCommand::Findings(CampaignPageArgs {
-        name: "example".to_owned(),
-        snapshot: snapshot.to_string(),
-        after: None,
-        limit: 1,
-        pages: 1,
-    });
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &service)
-            .expect("serve finding page request");
-    });
-    let client =
-        CampaignClient::new(LoopbackCampaignService::new(client_stream).expect("loopback client"));
-
-    let report = query_campaign_page(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        &command,
-    )
-    .expect("checked findings query");
-    server.join().expect("campaign server thread");
-
-    assert_eq!(report.operation, "findings");
-    assert_eq!(report.snapshot, snapshot.to_string());
-    assert_eq!(report.entries.len(), 1);
-    assert!(report.next_after.is_none());
-    assert!(matches!(
-        &report.entries[0],
-        CampaignPageEntry::Finding {
-            finding_kind: "timeout",
-            occurrences: 3,
-            ..
-        }
-    ));
-}
-
-#[test]
-fn campaign_graph_object_uses_the_checked_proof_bearing_transport() {
-    let (service, snapshot, _) = graph_page_service();
-    let key = service.object_key;
-    let command = CampaignCommand::GraphObject(CampaignGraphObjectArgs {
-        name: "example".to_owned(),
-        snapshot: snapshot.to_string(),
-        key: key.to_hex(),
-    });
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &service)
-            .expect("serve graph object request");
-    });
-    let client =
-        CampaignClient::new(LoopbackCampaignService::new(client_stream).expect("loopback client"));
-
-    let report = query_campaign_object(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        &command,
-    )
-    .expect("checked graph object query");
-    server.join().expect("campaign server thread");
-
-    let rendered = render_campaign_object(&report, OutputFormat::Json).expect("object JSON");
-    let decoded: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
-    assert_eq!(decoded["schema"], "crucible.cli.campaign-object.v1");
-    assert_eq!(decoded["operation"], "graph-object");
-    assert_eq!(decoded["snapshot"], snapshot.to_string());
-    assert_eq!(decoded["object"]["kind"], "configuration");
-    assert_eq!(decoded["object"]["key"], key.to_hex());
-}
-
-#[test]
-fn campaign_compare_uses_two_checked_historical_snapshot_reads() {
-    let (service, right, left) = graph_page_service();
-    let command = CampaignCommand::Compare(CampaignCompareArgs {
-        name: "example".to_owned(),
-        left: left.to_string(),
-        right: right.to_string(),
-    });
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &service)
-            .expect("serve left snapshot request");
-        serve_loopback_campaign_once(&mut server_stream, &service)
-            .expect("serve right snapshot request");
-    });
-    let client =
-        CampaignClient::new(LoopbackCampaignService::new(client_stream).expect("loopback client"));
-
-    let report = query_campaign_snapshot(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        &command,
-    )
-    .expect("checked campaign comparison");
-    server.join().expect("campaign server thread");
-
-    let rendered = render_campaign_snapshot(&report, OutputFormat::Json).expect("compare JSON");
-    let decoded: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
-    assert_eq!(decoded["schema"], "crucible.cli.campaign-compare.v1");
-    assert_eq!(decoded["direct_relationship"], "left-parent-of-right");
-    assert_eq!(decoded["left"]["id"], left.to_string());
-    assert_eq!(decoded["right"]["id"], right.to_string());
-    assert_eq!(decoded["changed"]["active_policy"], true);
-}
-
-#[test]
-fn campaign_create_derive_and_branch_use_checked_loopback_transport() {
-    let (lineage_record, policy_record) = campaign_records();
-    let principal = CampaignPrincipal::new("operator").expect("campaign principal");
-    let create = accept_over_loopback(PreparedCampaignCommand::Create(
-        CreateCampaignRequest::new(
-            principal.clone(),
-            CampaignName::new("created").expect("campaign name"),
-            lineage_record,
-            policy_record.clone(),
-        )
-        .expect("create request"),
-    ));
-    assert!(matches!(
-        create,
-        CampaignAcceptanceReport::Create { snapshot: value, replayed: false, .. }
-            if value == snapshot("created").to_string()
-    ));
-
-    let started = accept_start_over_loopback(
-        CreateCampaignRequest::new(
-            principal.clone(),
-            CampaignName::new("started").expect("started campaign name"),
-            campaign_records().0,
-            policy_record.clone(),
-        )
-        .expect("create-and-start request"),
-        CampaignCommandId::from_hash(hash("start-command")),
-    );
-    assert!(matches!(
-        started,
-        CampaignAcceptanceReport::Create {
-            snapshot: value,
-            replayed: false,
-            start: Some(CampaignCreateStartReport {
-                prior_snapshot,
-                new_snapshot,
-                replayed: false,
-                ..
-            }),
-            ..
-        } if value == snapshot("created").to_string()
-            && prior_snapshot == snapshot("created").to_string()
-            && new_snapshot == snapshot("started").to_string()
-    ));
-
-    let derive = accept_over_loopback(PreparedCampaignCommand::Derive(
-        DeriveCampaignRequest::new(
-            principal.clone(),
-            CampaignName::new("created").expect("source name"),
-            snapshot("created"),
-            CampaignName::new("derived").expect("target name"),
-            Some(policy_record),
-        )
-        .expect("derive request"),
-    ));
-    assert!(matches!(
-        derive,
-        CampaignAcceptanceReport::Derive { new_snapshot, replayed: false, .. }
-            if new_snapshot == snapshot("derived").to_string()
-    ));
-
-    let branch = accept_over_loopback(
-        prepare_campaign_branch(&branch_args("branch"), &principal)
-            .expect("prepared finite branch request"),
-    );
-    assert!(matches!(
-        branch,
-        CampaignAcceptanceReport::Branch {
-            replayed: false,
-            ..
-        }
-    ));
-}
-
-#[test]
 fn campaign_all_branch_derives_authenticated_generator_policy_and_budget() {
     let (service, source_snapshot, _) = graph_page_service();
     let template = service.branch_request.clone();
@@ -1403,10 +1146,12 @@ fn campaign_all_branch_derives_authenticated_generator_policy_and_budget() {
         stop: "next-choice".to_owned(),
     };
     let expected = BranchRequest::new(
-        template.branch_point(),
-        template.parent(),
-        template.opportunity(),
-        template.domain(),
+        BranchRequest::identity(
+            template.branch_point(),
+            template.parent(),
+            template.opportunity(),
+            template.domain(),
+        ),
         CandidateSource::generated(all_generator),
         BranchRequestCause::ExhaustivePolicy(active_policy),
         BranchBudget::new(2, 2).expect("all budget"),
@@ -1460,10 +1205,12 @@ fn campaign_branch_selector_resolves_authenticated_name_and_domain() {
         stop: "next-choice".to_owned(),
     };
     let expected = BranchRequest::new(
-        template.branch_point(),
-        template.parent(),
-        template.opportunity(),
-        template.domain(),
+        BranchRequest::identity(
+            template.branch_point(),
+            template.parent(),
+            template.opportunity(),
+            template.domain(),
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
             .expect("selector finite source"),
         BranchRequestCause::Operator(
@@ -1620,51 +1367,6 @@ fn campaign_create_and_derive_records_are_prepared_before_connection() {
         )
         .is_err()
     );
-}
-
-#[test]
-fn campaign_mutation_uses_the_checked_loopback_transport() {
-    let command = CampaignCommand::Pause(CampaignPauseArgs {
-        basis: mutation_basis("pause"),
-        active: CampaignPausePolicyArg::Checkpoint,
-    });
-    let report = mutate_over_loopback(&command);
-
-    assert_eq!(report.operation, "pause");
-    assert_eq!(report.command, hash("pause").to_hex());
-    assert_eq!(report.prior_snapshot, snapshot("current").to_string());
-    assert_eq!(report.new_snapshot, snapshot("mutated").to_string());
-    assert!(!report.replayed);
-}
-
-#[test]
-fn campaign_start_uses_the_checked_resume_transition() {
-    let command = CampaignCommand::Start(mutation_basis("start"));
-    let report = mutate_over_loopback(&command);
-
-    assert_eq!(report.operation, "start");
-    assert_eq!(report.command, hash("start").to_hex());
-    assert_eq!(report.prior_snapshot, snapshot("current").to_string());
-    assert_eq!(report.new_snapshot, snapshot("started").to_string());
-    assert!(!report.replayed);
-}
-
-#[test]
-fn campaign_pin_uses_the_checked_loopback_transport() {
-    let configuration = ConfigurationId::from_hash(hash("pin-configuration"));
-    let command = CampaignCommand::Pin(CampaignPinArgs {
-        basis: mutation_basis("pin"),
-        configuration: configuration.to_string(),
-        tier: CampaignPinRetentionArg::Exact,
-        reason: "retain reproducer".to_owned(),
-    });
-    let report = pin_over_loopback(&command);
-
-    assert_eq!(report.operation, "pin");
-    assert_eq!(report.command, hash("pin").to_hex());
-    assert_eq!(report.prior_snapshot, snapshot("current").to_string());
-    assert_eq!(report.new_snapshot, snapshot("pinned").to_string());
-    assert!(!report.replayed);
 }
 
 #[test]
@@ -1910,9 +1612,9 @@ fn campaign_inputs_fail_before_transport_setup() {
     invalid_budget.proposals = Some(1);
     invalid_budget.attempts = 2;
     assert!(validate_campaign_command(&CampaignCommand::Branch(invalid_budget)).is_err());
-    let generator = CandidateGeneratorSpecId::parse(&format!(
-        "crucible.campaign.candidate-generator-spec@{}",
-        ContentId::for_bytes(ObjectKind::Policy, 1, b"branch-generator").encode()
+    let generator = CandidateGeneratorSpecId::parse(&fixture_record_id(
+        CampaignRecordKind::CandidateGeneratorSpec,
+        "branch-generator",
     ))
     .expect("candidate generator ID");
     let mut generated_branch = branch_args("generated");
@@ -2360,9 +2062,9 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             ..
         })
     ));
-    let finding = FindingId::parse(&format!(
-        "crucible.campaign.finding@{}",
-        ContentId::for_bytes(ObjectKind::Finding, 2, b"finding-explanation-parser").encode()
+    let finding = FindingId::parse(&fixture_record_id(
+        CampaignRecordKind::Finding,
+        "finding-explanation-parser",
     ))
     .expect("finding explanation ID")
     .to_string();
@@ -2388,9 +2090,9 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             ..
         })
     ));
-    let attempt = AttemptId::parse(&format!(
-        "crucible.campaign.attempt@{}",
-        ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"attempt-explanation-parser").encode()
+    let attempt = AttemptId::parse(&fixture_record_id(
+        CampaignRecordKind::Attempt,
+        "attempt-explanation-parser",
     ))
     .expect("attempt explanation ID")
     .to_string();
@@ -2595,23 +2297,15 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
         })
     ));
 
-    let planner_step = PlannerStepId::parse(&format!(
-        "crucible.campaign.planner-step@{}",
-        ContentId::for_bytes(
-            CampaignRecordKind::PlannerStep.object_kind(),
-            CampaignRecordKind::PlannerStep.schema_version(),
-            b"planner ranking step",
-        )
+    let planner_step = PlannerStepId::parse(&fixture_record_id(
+        CampaignRecordKind::PlannerStep,
+        "planner ranking step",
     ))
     .expect("planner step ID");
     let branch_point = BranchPointId::from_hash(hash("planner-ranking-branch-point"));
-    let source = BranchRequestId::parse(&format!(
-        "crucible.campaign.branch-request@{}",
-        ContentId::for_bytes(
-            CampaignRecordKind::BranchRequest.object_kind(),
-            CampaignRecordKind::BranchRequest.schema_version(),
-            b"planner ranking source",
-        )
+    let source = BranchRequestId::parse(&fixture_record_id(
+        CampaignRecordKind::BranchRequest,
+        "planner ranking source",
     ))
     .expect("branch request ID");
     let rankings = Cli::try_parse_from([
@@ -2742,9 +2436,9 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
         "--domain",
         branch.domain.as_deref().expect("branch domain"),
         "--generator",
-        &format!(
-            "crucible.campaign.candidate-generator-spec@{}",
-            ContentId::for_bytes(ObjectKind::Policy, 1, b"parser-generator").encode()
+        &fixture_record_id(
+            CampaignRecordKind::CandidateGeneratorSpec,
+            "parser-generator",
         ),
         "--proposals",
         "8",
@@ -3026,100 +2720,6 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
     ));
 }
 
-fn query_over_loopback(command: &CampaignCommand) -> CampaignHeadReport {
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let serves_status = matches!(command, CampaignCommand::Status(_));
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
-            .expect("serve one campaign request");
-        if serves_status {
-            serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
-                .expect("serve campaign status request");
-        }
-    });
-    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
-    let client = CampaignClient::new(service);
-    let report = query_campaign_head(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        command,
-    )
-    .expect("checked campaign query");
-    server.join().expect("campaign server thread");
-    report
-}
-
-fn mutate_over_loopback(command: &CampaignCommand) -> CampaignMutationReport {
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
-            .expect("serve one campaign mutation");
-    });
-    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
-    let client = CampaignClient::new(service);
-    let report = apply_campaign_mutation(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        command,
-    )
-    .expect("checked campaign mutation");
-    server.join().expect("campaign server thread");
-    report
-}
-
-fn pin_over_loopback(command: &CampaignCommand) -> CampaignMutationReport {
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
-            .expect("serve one campaign pin mutation");
-    });
-    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
-    let client = CampaignClient::new(service);
-    let report = apply_campaign_pin(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        command,
-    )
-    .expect("checked campaign pin mutation");
-    server.join().expect("campaign server thread");
-    report
-}
-
-fn accept_over_loopback(prepared: PreparedCampaignCommand) -> CampaignAcceptanceReport {
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
-            .expect("serve one campaign acceptance");
-    });
-    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
-    let client = CampaignClient::new(service);
-    let report = apply_campaign_acceptance(&client, prepared).expect("checked campaign acceptance");
-    server.join().expect("campaign server thread");
-    report
-}
-
-fn accept_start_over_loopback(
-    request: CreateCampaignRequest,
-    command: CampaignCommandId,
-) -> CampaignAcceptanceReport {
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        for _operation in 0..2 {
-            serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
-                .expect("serve create-and-start operation");
-        }
-    });
-    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
-    let client = CampaignClient::new(service);
-    let report = apply_campaign_acceptance(
-        &client,
-        PreparedCampaignCommand::CreateAndStart(request, command),
-    )
-    .expect("checked create-and-start acceptance");
-    server.join().expect("campaign server thread");
-    report
-}
-
 fn campaign_records() -> (CampaignLineage, CampaignPolicy) {
     let scenario = ScenarioDefId::from_hash(hash("scenario"));
     let scenario_artifact = ScenarioArtifact::new(scenario, 1, b"scenario-artifact".to_vec())
@@ -3147,19 +2747,23 @@ fn campaign_records() -> (CampaignLineage, CampaignPolicy) {
     )
     .expect("campaign lineage");
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 64,
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 64,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("campaign policy");
     (lineage, policy)
@@ -3171,39 +2775,24 @@ fn branch_args(label: &str) -> CampaignBranchArgs {
         expected: snapshot("created").to_string(),
         command: Some(CampaignCommandId::from_hash(hash(&format!("{label}-command"))).to_string()),
         branch_point: BranchPointId::from_hash(hash(&format!("{label}-point"))).to_string(),
-        parent: ConfigurationArtifactId::parse(&format!(
-            "crucible.campaign.configuration-artifact@{}",
-            ContentId::for_bytes(
-                ObjectKind::Configuration,
-                1,
-                format!("{label}-parent").as_bytes(),
-            )
-            .encode()
+        parent: ConfigurationArtifactId::parse(&fixture_record_id(
+            CampaignRecordKind::ConfigurationArtifact,
+            &format!("{label}-parent"),
         ))
         .expect("parent ID")
         .to_string(),
         opportunity: Some(
-            ChoiceOpportunityId::parse(&format!(
-                "crucible.campaign.choice-opportunity@{}",
-                ContentId::for_bytes(
-                    ObjectKind::CampaignFact,
-                    1,
-                    format!("{label}-opportunity").as_bytes(),
-                )
-                .encode()
+            ChoiceOpportunityId::parse(&fixture_record_id(
+                CampaignRecordKind::ChoiceOpportunity,
+                &format!("{label}-opportunity"),
             ))
             .expect("opportunity ID")
             .to_string(),
         ),
         domain: Some(
-            ChoiceDomainId::parse(&format!(
-                "crucible.campaign.choice-domain@{}",
-                ContentId::for_bytes(
-                    ObjectKind::CampaignFact,
-                    1,
-                    format!("{label}-domain").as_bytes(),
-                )
-                .encode()
+            ChoiceDomainId::parse(&fixture_record_id(
+                CampaignRecordKind::ChoiceDomain,
+                &format!("{label}-domain"),
             ))
             .expect("domain ID")
             .to_string(),
@@ -3235,9 +2824,9 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
     let map = MerkleMap::new(backend);
     let mut root = map.empty().expect("empty graph root");
     let empty = root.content_id();
-    let scenario_artifact = ScenarioArtifactId::parse(&format!(
-        "crucible.campaign.scenario-artifact@{}",
-        ContentId::for_bytes(ObjectKind::Scenario, 1, b"cli-graph-scenario").encode()
+    let scenario_artifact = ScenarioArtifactId::parse(&fixture_record_id(
+        CampaignRecordKind::ScenarioArtifact,
+        "cli-graph-scenario",
     ))
     .expect("scenario artifact ID");
     let configuration = ConfigurationArtifact::new(
@@ -3258,7 +2847,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         .insert(
             root.content_id(),
             hash("second"),
-            ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"second"),
+            fixture_record_content_id(CampaignRecordKind::Fact, "second"),
         )
         .expect("second graph insertion");
     let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
@@ -3311,10 +2900,12 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         )
         .expect("choice opportunity index anchor");
     let branch_request = BranchRequest::new(
-        opportunity.branch_point_id(configuration.configuration()),
-        configuration.id().expect("configuration artifact ID"),
-        opportunity_id,
-        domain_id,
+        BranchRequest::identity(
+            opportunity.branch_point_id(configuration.configuration()),
+            configuration.id().expect("configuration artifact ID"),
+            opportunity_id,
+            domain_id,
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
             .expect("finite explanation source"),
         BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("explanation-command"))),
@@ -3368,9 +2959,9 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         policy("next-policy"),
         None,
         1,
-        CampaignViewId::parse(&format!(
-            "crucible.campaign.planning-view@{}",
-            ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"attempt-guidance-view",).encode()
+        CampaignViewId::parse(&fixture_record_id(
+            CampaignRecordKind::PlanningView,
+            "attempt-guidance-view",
         ))
         .expect("attempt guidance view ID"),
     )
@@ -3425,25 +3016,27 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         .expect("attempt explanation admission insertion");
     let finding_observation = Observation::new(
         attempt_id,
-        configuration.configuration(),
-        configuration.id().expect("finding child artifact ID"),
-        path.id().expect("finding path ID"),
-        StopOutcome::ModeledTimeout("execution".to_owned()),
-        MeasurementSetId::parse(&format!(
-            "crucible.campaign.measurement-set@{}",
-            ContentId::for_bytes(ObjectKind::Observation, 2, b"cli-finding-measurements").encode()
-        ))
-        .expect("finding measurement ID"),
-        PropertyVerdictSetId::parse(&format!(
-            "crucible.campaign.property-verdict-set@{}",
-            ContentId::for_bytes(ObjectKind::Observation, 1, b"cli-finding-properties").encode()
-        ))
-        .expect("finding property ID"),
-        CoverageProjectionId::parse(&format!(
-            "crucible.campaign.coverage-projection@{}",
-            ContentId::for_bytes(ObjectKind::Projection, 1, b"cli-finding-coverage").encode()
-        ))
-        .expect("finding coverage ID"),
+        Observation::outcome(
+            configuration.configuration(),
+            configuration.id().expect("finding child artifact ID"),
+            path.id().expect("finding path ID"),
+            StopOutcome::ModeledTimeout("execution".to_owned()),
+            MeasurementSetId::parse(&fixture_record_id(
+                CampaignRecordKind::MeasurementSet,
+                "cli-finding-measurements",
+            ))
+            .expect("finding measurement ID"),
+            PropertyVerdictSetId::parse(&fixture_record_id(
+                CampaignRecordKind::PropertyVerdictSet,
+                "cli-finding-properties",
+            ))
+            .expect("finding property ID"),
+            CoverageProjectionId::parse(&fixture_record_id(
+                CampaignRecordKind::CoverageProjection,
+                "cli-finding-coverage",
+            ))
+            .expect("finding coverage ID"),
+        ),
         BTreeSet::new(),
     )
     .expect("finding observation");
@@ -3456,33 +3049,46 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         )
         .expect("attempt explanation observation insertion");
     let finding_reproduction = ReproductionArtifact::new(
-        configuration.scenario(),
-        configuration.scenario_artifact(),
-        configuration.configuration(),
-        configuration
-            .id()
-            .expect("finding configuration artifact ID"),
-        hash("finding-fingerprint"),
+        crucible_campaign::ReproductionArtifactBasis::new(
+            configuration.scenario(),
+            configuration.scenario_artifact(),
+            configuration.configuration(),
+            configuration
+                .id()
+                .expect("finding configuration artifact ID"),
+            hash("finding-fingerprint"),
+        ),
         1,
         b"reproduce-timeout".to_vec(),
     )
     .expect("finding reproduction");
-    let finding = Finding::new_with_retention(
-        FindingSignature::new(
-            FindingKind::Timeout,
-            hash("finding-fingerprint"),
-            None,
-            "timeout.execution".to_owned(),
-            None,
-            BTreeSet::new(),
-        )
-        .expect("finding signature"),
-        finding_observation_id,
-        finding_reproduction.id().expect("finding reproduction ID"),
-        snapshot("finding-first-seen"),
-        FindingOccurrenceSet::new(empty, 3, finding_observation_id).expect("finding occurrences"),
+    let finding_candidate = FindingCandidateBundleId::parse(&fixture_record_id(
+        CampaignRecordKind::FindingCandidateBundle,
+        "cli-finding-candidate",
+    ))
+    .expect("finding candidate bundle ID");
+    let finding = Finding::new_with_candidate_occurrences(
+        Finding::basis(
+            FindingSignature::new(
+                FindingKind::Timeout,
+                hash("finding-fingerprint"),
+                None,
+                "timeout.execution".to_owned(),
+                None,
+                BTreeSet::new(),
+            )
+            .expect("finding signature"),
+            finding_observation_id,
+            finding_reproduction.id().expect("finding reproduction ID"),
+            snapshot("finding-first-seen"),
+            FindingOccurrenceSet::new(empty, 3, finding_observation_id)
+                .expect("finding occurrences"),
+        ),
         None,
         FindingExactPins::default(),
+        finding_candidate,
+        FindingCandidateOccurrenceSet::new(empty, 1, finding_candidate)
+            .expect("finding candidate occurrences"),
     )
     .expect("finding");
     let finding_root = map
@@ -3511,9 +3117,9 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
     )
     .expect("historical graph snapshot");
     let historical_id = historical.id().expect("historical graph snapshot ID");
-    let transition = CampaignFactId::parse(&format!(
-        "crucible.campaign.fact@{}",
-        ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"cli-graph-transition").encode()
+    let transition = CampaignFactId::parse(&fixture_record_id(
+        CampaignRecordKind::Fact,
+        "cli-graph-transition",
     ))
     .expect("transition fact ID");
     let snapshot = CampaignSnapshot::successor(
@@ -3605,14 +3211,9 @@ fn add_ambiguous_selector_choice(
     let mut roots = service.snapshot.roots();
     roots.graph = graph.content_id();
     let parent = service.snapshot.id().expect("selector parent snapshot ID");
-    let transition = CampaignFactId::parse(&format!(
-        "crucible.campaign.fact@{}",
-        ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            2,
-            b"cli-selector-ambiguity-transition",
-        )
-        .encode()
+    let transition = CampaignFactId::parse(&fixture_record_id(
+        CampaignRecordKind::Fact,
+        "cli-selector-ambiguity-transition",
     ))
     .expect("selector transition fact ID");
     let snapshot = CampaignSnapshot::successor(
@@ -3695,26 +3296,29 @@ fn hash(label: &str) -> CampaignHash {
     CampaignHash::derive("crucible-cli-campaign-test", label.as_bytes())
 }
 
+fn fixture_record_content_id(kind: CampaignRecordKind, label: &str) -> ContentId {
+    ContentId::for_bytes(kind.object_kind(), kind.schema_version(), label.as_bytes())
+}
+
+fn fixture_record_id(kind: CampaignRecordKind, label: &str) -> String {
+    format!(
+        "{}@{}",
+        kind.schema_name(),
+        fixture_record_content_id(kind, label).encode()
+    )
+}
+
 fn snapshot(label: &str) -> CampaignSnapshotId {
-    CampaignSnapshotId::parse(&format!(
-        "crucible.campaign.snapshot@{}",
-        ContentId::for_bytes(ObjectKind::CampaignSnapshot, 3, label.as_bytes()).encode()
-    ))
-    .expect("snapshot id")
+    CampaignSnapshotId::parse(&fixture_record_id(CampaignRecordKind::Snapshot, label))
+        .expect("snapshot id")
 }
 
 fn lineage(label: &str) -> CampaignLineageId {
-    CampaignLineageId::parse(&format!(
-        "crucible.campaign.lineage@{}",
-        ContentId::for_bytes(ObjectKind::CampaignFact, 1, label.as_bytes()).encode()
-    ))
-    .expect("lineage id")
+    CampaignLineageId::parse(&fixture_record_id(CampaignRecordKind::Lineage, label))
+        .expect("lineage id")
 }
 
 fn policy(label: &str) -> CampaignPolicyId {
-    CampaignPolicyId::parse(&format!(
-        "crucible.campaign.policy@{}",
-        ContentId::for_bytes(ObjectKind::Policy, 1, label.as_bytes()).encode()
-    ))
-    .expect("policy id")
+    CampaignPolicyId::parse(&fixture_record_id(CampaignRecordKind::Policy, label))
+        .expect("policy id")
 }

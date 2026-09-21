@@ -9,33 +9,30 @@
 //! scheduler ceiling, a single exact-icount quantum, run-control silence, control
 //! `Quit` teardown, and natural child exit with no leaked process.
 //!
-//! Unlike [`crate::run_loaded_qemu_coverage_gate`], this gate loads **only** the
-//! Rust control plugin: no independent observation plugin sets a horizon, so the
-//! Rust plugin is the sole `sim_shmem` dispatch authority that owns virtual-time
-//! advancement. The guest stops at exactly the host-published ceiling only
-//! because the plugin blocked on the boot barrier and then honored that ceiling,
-//! which supplies the live proof the earlier scaffolded lifecycle was missing.
+//! The Rust plugin is the sole `sim_shmem` dispatch authority that owns
+//! virtual-time advancement. The guest stops at exactly the host-published
+//! ceiling because the plugin blocks on the boot barrier and then honors that
+//! ceiling.
 //!
 //! The emitted [`LivePluginInstallReport`] records each lifecycle milestone plus
 //! `time_authority=rust-plugin` so the gate cannot silently regress to a mode in
 //! which some other plugin owns time control.
 
-use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crucible::{
-    DecisionRecorder, DecisionRngState, EventLog, EventLogCoverageObservation,
+    BackendRngEvidence, DecisionRecorder, DecisionRngState, EventLog, EventLogCoverageObservation,
     ExecutionFingerprint, ExecutionHorizon, Icount, RngStreamId, RngStreamPosition,
     event_log_coverage_projection,
 };
 // crucible-lint: allow host-nondeterminism-state -- this seeded value is reconstructed before admission.
 use crucible::Configuration;
-// crucible-lint: allow host-nondeterminism-state -- live causal values remain untrusted until recorder validation.
-use crucible::Decision;
 // crucible-lint: allow host-nondeterminism-state -- the gate reconstructs fixed scenario material rather than host timing.
 use crucible::ScenarioDef;
-use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
+use crucible_shmem::{
+    FingerprintSample, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
+};
 mod error;
 mod support;
 // crucible-lint: allow host-nondeterminism-state -- this typed error exports failures, not host-derived state.
@@ -43,11 +40,12 @@ pub use error::LivePluginInstallGateError;
 use support::*;
 
 use crate::{
-    LaunchProfileCandidate, QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchPluginConfig,
+    LaunchProfileCandidate, QemuChildProcessContract, QemuHostIoRuntime, QemuLaunchAppRandomConfig,
+    QemuLaunchArtifact, QemuLaunchPluginConfig, QemuLiveHostIoRuntime,
     QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuPluginIpcControlChannel,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
-    complete_qemu_host_plugin_setup, probe_x86_whitebox_setup,
-    spawn_qemu_child_with_fds_in_directory, validate_aarch64_whitebox_setup,
+    QemuPreparedRunDirectory, QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
+    complete_qemu_host_plugin_setup, spawn_prepared_qemu_child_with_fds_in_directory_guarded,
+    validate_aarch64_whitebox_setup,
 };
 
 /// Content-addressing domain for install-gate launch artifacts.
@@ -155,13 +153,6 @@ impl LivePluginInstallGateConfig {
         self
     }
 
-    /// Returns this configuration with the retained guest's doorbell instruction ABI.
-    #[must_use]
-    pub const fn with_doorbell_instruction_abi_version(mut self, version: u16) -> Self {
-        self.doorbell_instruction_abi_version = version;
-        self
-    }
-
     /// Returns this configuration with the seeded app-random path enabled.
     #[must_use]
     pub fn with_app_random(mut self, app_random: QemuLaunchAppRandomConfig) -> Self {
@@ -173,13 +164,6 @@ impl LivePluginInstallGateConfig {
     #[must_use]
     pub const fn with_fingerprint(mut self, fingerprint: crate::QemuLaunchPluginSwitch) -> Self {
         self.fingerprint = fingerprint;
-        self
-    }
-
-    /// Returns this configuration with a different exact icount boundary.
-    #[must_use]
-    pub const fn with_horizon_icount(mut self, horizon_icount: u64) -> Self {
-        self.horizon_icount = horizon_icount;
         self
     }
 
@@ -216,6 +200,12 @@ pub struct LivePluginInstallReport {
     pub boot_barrier_ceiling_enforced: bool,
     /// Execution fingerprint the Rust plugin published when sampling was enabled.
     pub execution_fingerprint: Option<ExecutionFingerprint>,
+    /// Exact component sample used to derive [`Self::execution_fingerprint`].
+    ///
+    /// Retaining the source sample lets install gates localize any aggregate
+    /// difference without issuing another capture request or rereading a newer
+    /// publication generation.
+    pub fingerprint_sample: Option<FingerprintSample>,
     /// The plugin sent no unsolicited run-phase control frame before `Quit`.
     pub run_control_silent: bool,
     /// The plugin published `Done` after consuming the control `Quit`.
@@ -238,10 +228,49 @@ pub struct LivePluginInstallReport {
     pub app_random_decision_count: usize,
     /// First guest request id served by the live path.
     pub app_random_request_id: Option<u64>,
-    /// First live value validated against the scenario-seeded host recorder.
-    pub app_random_value: Option<u64>,
+    /// Ordered live values validated against the scenario-seeded host recorder.
+    pub app_random_values: Vec<u64>,
     /// First live app-random width in bits.
     pub app_random_width_bits: Option<u8>,
+}
+
+/// Prepared host authority for one plugin-install validation run.
+#[derive(Debug)]
+pub struct LivePluginInstallAdmission<'a> {
+    run_directory: &'a QemuPreparedRunDirectory,
+    process_contract: &'a QemuChildProcessContract,
+}
+
+impl<'a> LivePluginInstallAdmission<'a> {
+    /// Binds a prepared fresh run directory to its attempt process contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LivePluginInstallGateError`] when the configured path differs
+    /// from the prepared directory or its fresh launch artifacts are incomplete.
+    pub fn admit(
+        config: &LivePluginInstallGateConfig,
+        run_directory: &'a QemuPreparedRunDirectory,
+        process_contract: &'a QemuChildProcessContract,
+    ) -> Result<Self, LivePluginInstallGateError> {
+        if config.run_directory != run_directory.path() {
+            return Err(LivePluginInstallGateError::PrepareRunDirectory {
+                path: config.run_directory.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "plugin-install configuration and prepared directory differ",
+                ),
+            });
+        }
+        run_directory
+            .require_fresh_artifacts()
+            .map_err(|source| LivePluginInstallGateError::Spawn { source })?;
+
+        Ok(Self {
+            run_directory,
+            process_contract,
+        })
+    }
 }
 
 /// Runs the Rust control plugin through its full install lifecycle in real QEMU.
@@ -258,17 +287,12 @@ pub struct LivePluginInstallReport {
 // crucible-lint: allow host-nondeterminism-state -- this public gate validates live observations before returning its report.
 pub fn run_live_plugin_install_gate(
     config: &LivePluginInstallGateConfig,
+    admission: LivePluginInstallAdmission<'_>,
 ) -> Result<LivePluginInstallReport, LivePluginInstallGateError> {
     if config.horizon_icount == 0 {
         return Err(LivePluginInstallGateError::ZeroHorizon);
     }
     let run_directory = config.run_directory.as_path();
-    fs::create_dir_all(run_directory).map_err(|source| {
-        LivePluginInstallGateError::PrepareRunDirectory {
-            path: run_directory.to_owned(),
-            source,
-        }
-    })?;
 
     let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
     if config.architecture == crate::LivePluginGuestArchitecture::Aarch64 {
@@ -307,7 +331,11 @@ pub fn run_live_plugin_install_gate(
             .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
         let validation = match config.architecture {
             crate::LivePluginGuestArchitecture::X86_64 => {
-                probe_x86_whitebox_setup(&probe_command, run_directory)
+                crate::launch::probe_x86_whitebox_setup_guarded(
+                    &probe_command,
+                    admission.run_directory,
+                    admission.process_contract,
+                )
             }
             crate::LivePluginGuestArchitecture::Aarch64 => {
                 validate_aarch64_whitebox_setup(config.doorbell_instruction_abi_version)
@@ -341,10 +369,11 @@ pub fn run_live_plugin_install_gate(
     let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
     let allocation = RegionAllocation::new(region_config)
         .map_err(|source| LivePluginInstallGateError::RegionLayout { source })?;
-    let spawned = spawn_qemu_child_with_fds_in_directory(
+    let spawned = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         &command,
-        run_directory,
+        admission.run_directory,
         allocation.layout().region_size,
+        admission.process_contract,
     )
     .map_err(|source| LivePluginInstallGateError::Spawn { source })?;
     let (mut child, resources) = spawned.into_parts();
@@ -367,6 +396,19 @@ pub fn run_live_plugin_install_gate(
     }
     let shmem_region_len = setup.region().region_len;
 
+    let mut fingerprint_runtime = match config.fingerprint {
+        crate::QemuLaunchPluginSwitch::On => Some(
+            QemuLiveHostIoRuntime::from_shmem_fd(
+                setup.shmem_as_fd(),
+                setup.wake_as_fd(),
+                shmem_region_len,
+                GATE_SLOT,
+            )
+            .map_err(|source| LivePluginInstallGateError::FingerprintRuntime { source })?,
+        ),
+        crate::QemuLaunchPluginSwitch::Off => None,
+    };
+
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| LivePluginInstallGateError::RegionMap { source })?;
     let hot_path_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
@@ -384,6 +426,7 @@ pub fn run_live_plugin_install_gate(
                 retired: config.horizon_icount,
             },
         },
+        crate::QemuQuantumStopCondition::Ceiling,
     )
     .map_err(|source| channel_error("start boot-barrier quantum", source))?;
     wait_for_exact_boundary(&mut hot_path, &mut child, config)?;
@@ -399,17 +442,32 @@ pub fn run_live_plugin_install_gate(
             actual: completed_icount,
         });
     }
-    let execution_fingerprint = match config.fingerprint {
-        crate::QemuLaunchPluginSwitch::On => Some(wait_for_execution_fingerprint(
-            &mut hot_path,
-            &mut child,
-            config,
-        )?),
-        crate::QemuLaunchPluginSwitch::Off => None,
+    let (execution_fingerprint, fingerprint_sample) = match fingerprint_runtime.as_mut() {
+        Some(runtime) => {
+            runtime
+                .publish_current_execution_fingerprint(config.completion_timeout)
+                .map_err(|source| LivePluginInstallGateError::FingerprintCapture { source })?;
+            let sample = QemuShmemHotPathChannel::fingerprint_sample(&mut hot_path)
+                .map_err(|source| channel_error("read exact fingerprint capture", source))?;
+            if sample.sample_icount != completed_icount {
+                return Err(LivePluginInstallGateError::InexactFingerprintBoundary {
+                    expected: completed_icount,
+                    actual: sample.sample_icount,
+                });
+            }
+            let fingerprint = crate::mapped_quantum::black_box_execution_fingerprint(
+                &node_id(GATE_NODE),
+                &sample,
+            )
+            .map_err(|source| channel_error("derive exact fingerprint capture", source))?;
+
+            (Some(fingerprint), Some(sample))
+        }
+        None => (None, None),
     };
-    let causal_decisions = QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
+    let rng_evidence = QemuShmemHotPathChannel::drain_rng_evidence(&mut hot_path)
         .map_err(|source| channel_error("drain boundary causal decisions", source))?;
-    let app_random_evidence = validate_app_random_decisions(config, causal_decisions)?;
+    let app_random_evidence = validate_app_random_decisions(config, rng_evidence)?;
     let observations = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
         .map_err(|source| channel_error("drain boundary observations", source))?;
     let mut event_log = EventLog::new();
@@ -457,6 +515,7 @@ pub fn run_live_plugin_install_gate(
         completed_icount,
         boot_barrier_ceiling_enforced: true,
         execution_fingerprint,
+        fingerprint_sample,
         run_control_silent: true,
         plugin_quit_consumed: true,
         orderly_child_exit: true,
@@ -468,23 +527,23 @@ pub fn run_live_plugin_install_gate(
         whitebox_marker_point,
         app_random_decision_count: app_random_evidence.count,
         app_random_request_id: app_random_evidence.request_id,
-        app_random_value: app_random_evidence.value,
+        app_random_values: app_random_evidence.values,
         app_random_width_bits: app_random_evidence.width_bits,
     })
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct LiveAppRandomEvidence {
     count: usize,
     request_id: Option<u64>,
-    value: Option<u64>,
+    values: Vec<u64>,
     width_bits: Option<u8>,
 }
 
 fn validate_app_random_decisions(
     config: &LivePluginInstallGateConfig,
     // crucible-lint: allow host-nondeterminism-state -- this batch is verified against the authoritative seeded recorder.
-    decisions: Vec<Decision>,
+    decisions: Vec<BackendRngEvidence>,
 ) -> Result<LiveAppRandomEvidence, LivePluginInstallGateError> {
     if decisions.is_empty() {
         return Ok(LiveAppRandomEvidence::default());
@@ -523,7 +582,7 @@ fn validate_app_random_decisions(
     for decision in decisions {
         let current_draw = app_random.draw_offset.saturating_add(evidence.count as u64);
         while let Some((branch_seed, _)) = app_random
-            .branch_reseeds()
+            .branch_seed_sequence()
             .get(next_branch)
             .filter(|(_, after)| *after == current_draw)
             .copied()
@@ -535,33 +594,16 @@ fn validate_app_random_decisions(
             );
             next_branch += 1;
         }
-        // crucible-lint: allow host-nondeterminism-state -- the plugin conjecture is compared and rejected on any mismatch.
-        let Decision::AppRandom(expected) = decision else {
-            return Err(LivePluginInstallGateError::UnsupportedCausalDecision {
-                decision: format!("{decision:?}"),
-            });
-        };
-        let host_value = recorder
-            .serve_app_random_request(
-                expected.node.clone(),
-                expected.stream.clone(),
-                expected.request_id,
-                expected.width,
-            )
+        recorder
+            .admit_backend_rng_evidence(decision.clone())
             .map_err(|error| LivePluginInstallGateError::AppRandomRecorder {
                 message: error.to_string(),
             })?;
-        if host_value != expected.value {
-            return Err(LivePluginInstallGateError::AppRandomValueMismatch {
-                actual: expected.value,
-                expected: host_value,
-            });
-        }
         if evidence.count == 0 {
-            evidence.request_id = Some(expected.request_id);
-            evidence.value = Some(expected.value);
-            evidence.width_bits = Some(expected.width);
+            evidence.request_id = Some(decision.request_id);
+            evidence.width_bits = Some(decision.width);
         }
+        evidence.values.push(decision.value);
         evidence.count = evidence.count.saturating_add(1);
     }
     Ok(evidence)

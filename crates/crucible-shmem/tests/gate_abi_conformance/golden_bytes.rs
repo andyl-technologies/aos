@@ -170,6 +170,56 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
         13,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+        9,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+        3,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+        17,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
+        989,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
+        62,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+        60,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
+        989,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
+        992,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+        60,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+        1,
+    );
 
     write_u64(
         &mut bytes,

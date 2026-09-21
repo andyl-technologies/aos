@@ -13,7 +13,7 @@ in
       base
       != ".git"
       && base != "target"
-      && base != "result"
+      && pathString != "${repoRootString}/result"
       && (
         pathString
         == repoRootString

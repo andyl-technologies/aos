@@ -72,20 +72,24 @@ fn campaign_model_public_repository_flight_is_exact() -> Result<(), Box<dyn Erro
         1,
     )?;
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0)?,
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0)?,
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )?;
 
     let created = repository.create("source", &lineage, &policy, &BTreeMap::new())?;

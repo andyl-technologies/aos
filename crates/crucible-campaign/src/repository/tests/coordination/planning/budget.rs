@@ -30,10 +30,12 @@ fn mixed_budget_fixture(puct: bool) -> MixedBudgetFixture {
             name,
         );
         BranchRequest::new(
-            request.branch_point(),
-            request.parent(),
-            request.opportunity(),
-            request.domain(),
+            BranchRequest::identity(
+                request.branch_point(),
+                request.parent(),
+                request.opportunity(),
+                request.domain(),
+            ),
             CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
                 .expect("single candidate"),
             request.cause(),
@@ -86,10 +88,12 @@ fn mixed_budget_fixture(puct: bool) -> MixedBudgetFixture {
         )
         .expect("seed attempt");
     let convergent = BranchRequest::new(
-        seeded.branch_point(),
-        seeded.parent(),
-        seeded.opportunity(),
-        seeded.domain(),
+        BranchRequest::identity(
+            seeded.branch_point(),
+            seeded.parent(),
+            seeded.opportunity(),
+            seeded.domain(),
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
             .expect("single convergent cause"),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
@@ -423,7 +427,7 @@ fn candidate_budget_forgery_is_rejected_before_publication() {
             original.remaining_proposals() + 1,
             0,
             true,
-            original.remaining_request_attempts(),
+            encoded_remaining_request_attempts(original),
         )
         .expect("inflated proposals"),
         crate::PlannerCandidateBudget::new(
@@ -431,7 +435,7 @@ fn candidate_budget_forgery_is_rejected_before_publication() {
             original.remaining_proposals(),
             1,
             true,
-            original.remaining_request_attempts(),
+            encoded_remaining_request_attempts(original),
         )
         .expect("inflated attempts"),
         crate::PlannerCandidateBudget::new(
@@ -439,7 +443,7 @@ fn candidate_budget_forgery_is_rejected_before_publication() {
             original.remaining_proposals(),
             0,
             false,
-            original.remaining_request_attempts(),
+            encoded_remaining_request_attempts(original),
         )
         .expect("forged dedup"),
     ] {

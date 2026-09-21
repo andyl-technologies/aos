@@ -58,6 +58,11 @@ in
             > $SITE/setuptools-${version}.dist-info/METADATA
           printf 'setuptools\npkg_resources\n_distutils_hack\n' \
             > $SITE/setuptools-${version}.dist-info/top_level.txt
+          # Setuptools discovers its distutils commands and setup keywords
+          # through this distribution metadata. Without it, PEP 517 builds
+          # cannot parse fields such as entry_points from setup.cfg.
+          cp setuptools.egg-info/entry_points.txt \
+            $SITE/setuptools-${version}.dist-info/entry_points.txt
           touch $SITE/setuptools-${version}.dist-info/INSTALLER
         '';
       }

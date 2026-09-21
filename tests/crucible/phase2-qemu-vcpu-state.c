@@ -240,9 +240,8 @@ static void completion(void *opaque)
     submit_prepare(result.observed_icount);
 }
 
-static void at_exit(qemu_plugin_id_t id, void *opaque)
+static void at_exit(void *opaque)
 {
-    (void)id;
     (void)opaque;
     if (!finished) {
         fail("QEMU exited before the state trajectory completed");

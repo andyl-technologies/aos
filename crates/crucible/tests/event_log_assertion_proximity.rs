@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, Checkpoint, CheckpointKind, Configuration,
     ContentHash, Decision, EventLog, Icount, MaterializationPolicy, MaterializationTrigger,
@@ -229,7 +236,15 @@ fn scheduler_appends_report_proximities_to_unified_event_log() {
     .expect("append-only scheduler should build");
 
     let append = scheduler
-        .append_assertion_proximity_events(&report)
+        .append_observable_events(report.proximities().iter().map(|proximity| {
+            ObservableEvent::assertion_proximity(
+                proximity.at,
+                proximity.assertion.clone(),
+                proximity.quantifier,
+                proximity.distance,
+                None,
+            )
+        }))
         .expect("scheduler should append assertion proximity events");
     let entries = append.entries;
 
@@ -266,7 +281,7 @@ fn graph_cache_snapshot_stamps_checkpoint_assertion_proximity_from_event_log_pro
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
-    let child = valid_step(
+    let child = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("proximity-graph-cache-stamping"),
@@ -293,7 +308,10 @@ fn graph_cache_snapshot_stamps_checkpoint_assertion_proximity_from_event_log_pro
         .expect("baked genesis should seed graph");
 
     graph
-        .cache_snapshot_with_event_log_assertion_proximity(&child, checkpoint, &proximity_log)
+        .cache_snapshot(
+            &child,
+            checkpoint.with_assertion_proximity_from_event_log(&proximity_log),
+        )
         .expect("assertion-proximity-stamped snapshot should cache");
     assert_eq!(
         graph
@@ -438,11 +456,4 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
 
 fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
-}
-
-fn valid_step(
-    configuration: &crucible::Configuration,
-    decision: crucible::Decision,
-) -> crucible::Configuration {
-    crucible::try_step(configuration, decision).expect("test configuration step")
 }

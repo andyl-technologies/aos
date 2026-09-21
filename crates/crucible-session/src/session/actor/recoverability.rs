@@ -50,6 +50,8 @@ pub(in super::super) fn is_recoverable_command_rejection(
         | SessionError::ControlReplayFrontierMismatch { .. }
         | SessionError::ControlReplayBatchMismatch { .. }
         | SessionError::ControlReplayFinalSnapshotMismatch { .. }
+        | SessionError::ControlReplayInitialConfigurationMismatch { .. }
+        | SessionError::ControlReplayRecordInvalid { .. }
         | SessionError::DebugRuntimeRepositionMismatch(_) => false,
     }
 }
@@ -84,7 +86,6 @@ pub(in super::super) fn is_recoverable_engine_rejection(error: &EngineError) -> 
             | EngineError::DebugTimeTravelCoordinateNotFound { .. }
             | EngineError::DebugTimeTravelUnknownNode { .. }
             | EngineError::DebugReverseContinueInvalidPrefix { .. }
-            | EngineError::NotImplemented { .. }
             | EngineError::WorldNodeUnsupportedWorkload { .. }
             | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
             | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
@@ -98,8 +99,7 @@ pub(in super::super) fn is_recoverable_engine_rejection(error: &EngineError) -> 
 
 pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &SchedulerError) -> bool {
     match error {
-        SchedulerError::NotImplemented { .. }
-        | SchedulerError::BoundaryViolation { .. }
+        SchedulerError::BoundaryViolation { .. }
         | SchedulerError::TimeConversion(_)
         | SchedulerError::TopologyActivationInPast { .. } => true,
         SchedulerError::ResourceLimit { .. } => false,
@@ -110,9 +110,7 @@ pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &Schedul
 
 pub(in super::super) const fn is_recoverable_backend_rejection(error: &BackendError) -> bool {
     match error {
-        BackendError::NotImplemented { .. }
-        | BackendError::Unsupported { .. }
-        | BackendError::Rejected { .. } => true,
+        BackendError::Unsupported { .. } | BackendError::Rejected { .. } => true,
         BackendError::ResourceLimit { .. } => false,
     }
 }

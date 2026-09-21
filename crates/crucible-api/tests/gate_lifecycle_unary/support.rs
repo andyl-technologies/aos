@@ -55,6 +55,36 @@ impl QuantumLoop for NoopLoop {
     }
 }
 
+pub(super) struct RunningLoop {
+    quanta: u64,
+}
+
+impl RunningLoop {
+    pub(super) const fn new() -> Self {
+        Self { quanta: 0 }
+    }
+}
+
+impl QuantumLoop for RunningLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.quanta = self.quanta.saturating_add(1);
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime { ticks: self.quanta },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            discovered_choices: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
+}
+
 pub(super) struct FailingLoop;
 
 impl QuantumLoop for FailingLoop {
@@ -85,84 +115,6 @@ impl QuantumLoop for RejectShutdownLoop {
     }
 }
 
-pub(super) struct RuntimeOnlyReplayLoop {
-    frontier: u64,
-    step: u64,
-}
-
-impl RuntimeOnlyReplayLoop {
-    pub(super) const fn new() -> Self {
-        Self {
-            frontier: 0,
-            step: 1,
-        }
-    }
-
-    pub(super) const fn with_step(step: u64) -> Self {
-        Self { frontier: 0, step }
-    }
-}
-
-impl QuantumLoop for RuntimeOnlyReplayLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        self.frontier = self.frontier.saturating_add(self.step);
-        Ok(QuantumOutcome {
-            configuration: request.configuration,
-            frontier: VirtualTime {
-                ticks: self.frontier,
-            },
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: Vec::new(),
-            discovered_choices: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: Default::default(),
-            scheduler_quiescence: None,
-        })
-    }
-}
-
-pub(super) struct DivergentReplayLoop;
-
-impl QuantumLoop for DivergentReplayLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        let frontier = VirtualTime { ticks: 1 };
-        let node = crucible::SchedulerNodeId {
-            node: crucible::NodeId {
-                name: String::from("unexpected"),
-            },
-            kind: crucible::SchedulingNodeKind::ControlPlane,
-        };
-        let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
-            at: frontier,
-            order: vec![crucible::EventKey::new(frontier, node.clone(), node, 0)],
-        });
-        let configuration =
-            crucible::try_step(&request.configuration, decision.clone()).map_err(|error| {
-                SchedulerError::BoundaryViolation {
-                    message: format!("divergent replay loop could not record decision: {error}"),
-                }
-            })?;
-        Ok(QuantumOutcome {
-            configuration,
-            frontier,
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: vec![decision],
-            discovered_choices: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: Default::default(),
-            scheduler_quiescence: None,
-        })
-    }
-}
-
 pub(super) fn generated_scenario(seed: u64) -> ScenarioDefForm {
     let scenario = crucible::happy_path_scenario()
         .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
@@ -187,69 +139,31 @@ pub(super) fn resume_request(seed: u64) -> ResumeSessionRequest {
         schedule: schedule.clone(),
     };
     let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
-    ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
-}
-
-pub(super) fn selected_resume_request(seed: u64) -> ResumeSessionRequest {
-    use crucible::SelectionDecision;
-    use crucible::campaign::{
-        BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-        ChoiceOpportunity, ChoiceSource, ChoiceValue, ScenarioDefId, SelectableDeclaration,
-        Selection, SelectionOrigin,
-    };
-    use std::collections::BTreeSet;
-
-    let mut scenario = crucible::happy_path_scenario()
-        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
-        .scenario;
-    if scenario.seed() != Seed::from_u64(seed) {
-        scenario = scenario_with_seed(&scenario, Seed::from_u64(seed));
-    }
-    let scenario_def = scenario.scenario_def();
-    let domain = ChoiceDomain::Boolean(
-        BooleanDomain::new(1)
-            .unwrap_or_else(|error| panic!("boolean test domain should build: {error}")),
-    );
-    let declaration = SelectableDeclaration::new(
-        "product.test.resume-selection",
-        ChoiceSource::Scheduler {
-            producer: String::from("lifecycle-test"),
-        },
-        domain.clone(),
-        ChoiceValue::Boolean(false),
-        ChoiceClassContext::new(BTreeSet::new())
-            .unwrap_or_else(|error| panic!("empty class context should build: {error}")),
-        BTreeSet::new(),
-        true,
+    let observation_source = ResumeObservationSource::new(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        1,
+        b"proof".to_vec(),
+        b"evidence".to_vec(),
     )
-    .unwrap_or_else(|error| panic!("test selectable should build: {error}"));
-    let opportunity = ChoiceOpportunity::new(
-        ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario_def.id().bytes)),
-        &declaration,
-        &domain,
-        ChoiceCoordinate {
-            scheduler: CampaignHash::derive("lifecycle-test", b"scheduler"),
-            producer: CampaignHash::derive("lifecycle-test", b"producer"),
-        },
-        "resume-selection",
-        None,
+    .unwrap_or_else(|error| panic!("observation source should build: {error}"));
+    let replay_closure = ResumeReplayClosure::new(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        1,
+        b"replay-closure".to_vec(),
     )
-    .unwrap_or_else(|error| panic!("test opportunity should build: {error}"));
-    let selection = Selection::new(
-        &opportunity,
-        &domain,
-        ChoiceValue::Boolean(false),
-        SelectionOrigin::Default,
+    .unwrap_or_else(|error| panic!("replay closure should build: {error}"));
+    ResumeSessionRequest::new(
+        scenario,
+        schedule,
+        checkpoint,
+        Seed::from_u64(seed),
+        observation_source,
     )
-    .unwrap_or_else(|error| panic!("test selection should build: {error}"));
-    let schedule =
-        Schedule::empty().appended(Decision::Selection(SelectionDecision::new(&selection)));
-    let configuration = Configuration {
-        def: scenario_def,
-        schedule: schedule.clone(),
-    };
-    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
-    ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
+    .with_replay_closure(replay_closure)
 }
 
 pub(super) fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {

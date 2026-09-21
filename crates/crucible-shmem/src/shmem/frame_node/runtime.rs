@@ -19,7 +19,7 @@ impl NodeSlot {
             status: AtomicU8::new(status),
             kind: AtomicU8::new(kind),
             device_io_active: AtomicU8::new(0),
-            _pad0: 0,
+            advance_stop_condition: AtomicU8::new(ADVANCE_STOP_CONDITION_CEILING),
             publish_gen: AtomicU32::new(0),
             // Odd values are acknowledged; the host publishes the even
             // successor while one main-loop control boundary is requested.
@@ -38,27 +38,62 @@ impl NodeSlot {
             logical_time_restore_target: AtomicU64::new(0),
             logical_time_restore_request: AtomicU32::new(0),
             logical_time_restore_ack: AtomicU32::new(0),
+            control_boundary_fault_command_frontier: AtomicU64::new(0),
+            control_boundary_capture_request: AtomicU32::new(0),
+            _pad3: [0; 4],
+            timer_witness_generation: AtomicU64::new(0),
+            timer_witness_deadline_ns: AtomicU64::new(0),
+            timer_witness_deadline_icount: AtomicU64::new(0),
+            timer_witness_armed_raw_icount: AtomicU64::new(0),
+            timer_witness_fired_expire_ns: AtomicU64::new(0),
+            timer_witness_fired_virtual_ns: AtomicU64::new(0),
+            timer_witness_fired_raw_icount: AtomicU64::new(0),
+            timer_witness_completed: AtomicU32::new(0),
+            timer_witness_reserved: AtomicU32::new(0),
+            advance_publication_sequence: AtomicU64::new(0),
+            _pad4: [0; 40],
         }
     }
 
-    /// Publishes a scheduler-computed advance ceiling and returns the wake action.
-    ///
-    /// The ceiling is release-stored so the governed node can acquire-load it
-    /// before deciding whether more advancement is authorized.
+    /// Publishes one plugin-validated actual virtual-timer callback witness.
+    pub fn publish_virtual_timer_witness(&self, witness: VirtualTimerFireWitness) {
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.timer_witness_deadline_ns
+            .store(witness.deadline_ns, Ordering::Release);
+        self.timer_witness_deadline_icount
+            .store(witness.deadline_icount, Ordering::Release);
+        self.timer_witness_armed_raw_icount
+            .store(witness.armed_raw_icount, Ordering::Release);
+        self.timer_witness_fired_expire_ns
+            .store(witness.fired_expire_ns, Ordering::Release);
+        self.timer_witness_fired_virtual_ns
+            .store(witness.fired_virtual_ns, Ordering::Release);
+        self.timer_witness_fired_raw_icount
+            .store(witness.fired_raw_icount, Ordering::Release);
+        self.timer_witness_completed
+            .store(witness.completed, Ordering::Release);
+        self.timer_witness_reserved
+            .store(witness.reserved, Ordering::Release);
+        self.timer_witness_generation
+            .store(witness.generation, Ordering::Release);
+        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Publishes one scheduler advance with explicit completion semantics.
     ///
     /// # Errors
     ///
     /// Returns [`NodeSlotError::CeilingBeforePublishedCurrent`] when the ceiling
-    /// is already behind the slot's published current icount, or
-    /// [`NodeSlotError::FutexWake`] when the non-private futex wake syscall
-    /// fails.
-    pub fn publish_scheduler_ceiling(
+    /// is behind the slot's published current icount, or
+    /// [`NodeSlotError::FutexWake`] when the non-private futex wake fails.
+    pub fn publish_scheduler_advance(
         &self,
         ceiling: AdvanceCeiling,
+        stop_condition: AdvanceStopCondition,
     ) -> Result<WakeAction, NodeSlotError> {
         self.validate_scheduler_ceiling(ceiling)?;
 
-        self.publish_prevalidated_scheduler_ceiling(ceiling)
+        self.publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)
     }
 
     /// Arms a ceiling for an externally restored execution state without waking it.
@@ -84,8 +119,7 @@ impl NodeSlot {
             max_advance_icount: restored_icount,
         };
         self.validate_scheduler_ceiling(ceiling)?;
-        self.max_advance_icount
-            .store(restored_icount, Ordering::Release);
+        self.publish_scheduler_advance_fields(restored_icount, AdvanceStopCondition::Ceiling);
         Ok(())
     }
 
@@ -102,7 +136,12 @@ impl NodeSlot {
     /// Returns [`SchedulerWakePublicationError`] when the node slot rejects the
     /// ceiling, an input frame is stamped with a different source than
     /// `src_slot`, the inbox rejects the batch, or the futex wake fails.
-    pub fn publish_scheduler_inbox_and_ceiling(
+    // crucible-lint: allow rust-allow -- the borrowed adapter binds every independent ring and scheduler-advance input explicitly.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the borrowed adapter binds one directed ring and one typed scheduler advance"
+    )]
+    pub fn publish_scheduler_inbox_and_advance(
         &self,
         dst_slot: u32,
         src_slot: u32,
@@ -110,6 +149,7 @@ impl NodeSlot {
         inbox_entries: &mut [FrameEntry],
         pending_inputs: &[FrameEntry],
         ceiling: AdvanceCeiling,
+        stop_condition: AdvanceStopCondition,
     ) -> Result<SchedulerWakePublication, SchedulerWakePublicationError> {
         self.validate_scheduler_ceiling(ceiling)?;
         for (input_index, frame) in pending_inputs.iter().enumerate() {
@@ -128,7 +168,7 @@ impl NodeSlot {
                 .map_err(RegionAllocationAccessError::from)?;
         }
 
-        let wake = self.publish_prevalidated_scheduler_ceiling(ceiling)?;
+        let wake = self.publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;
         Ok(SchedulerWakePublication {
             dst_slot,
             pending_input_count: pending_inputs.len(),
@@ -137,10 +177,18 @@ impl NodeSlot {
         })
     }
 
-    /// Loads the scheduler-published ceiling with acquire ordering.
-    #[must_use]
-    pub fn load_node_ceiling(&self) -> u64 {
-        self.max_advance_icount.load(Ordering::Acquire)
+    /// Loads a scheduler ceiling paired with a stable advance-stop condition.
+    ///
+    /// The publication sequence excludes both partial transitions and a full
+    /// ceiling-to-next-idle-to-ceiling ABA while the tuple is being read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError::InvalidAdvanceStopCondition`] when the stable
+    /// tuple contains an unknown current-ABI encoding.
+    pub fn load_scheduler_advance(&self) -> Result<(u64, AdvanceStopCondition), NodeSlotError> {
+        let (ceiling, encoded, _) = self.load_scheduler_advance_raw();
+        Ok((ceiling, AdvanceStopCondition::decode(encoded)?))
     }
 
     /// Publishes that this node has plugin-submitted device I/O in flight.
@@ -166,7 +214,7 @@ impl NodeSlot {
     /// Returns [`NodeSlotError::NodeAdvancePastCeiling`] when `next_icount`
     /// exceeds the acquire-loaded scheduler ceiling.
     pub fn check_node_may_advance_to(&self, next_icount: u64) -> Result<(), NodeSlotError> {
-        let max_advance_icount = self.load_node_ceiling();
+        let (max_advance_icount, _) = self.load_scheduler_advance()?;
         if next_icount > max_advance_icount {
             Err(NodeSlotError::NodeAdvancePastCeiling {
                 next_icount,
@@ -273,7 +321,13 @@ impl NodeSlot {
         raw_icount: u64,
         shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
-        self.check_node_may_advance_to(reached_icount)?;
+        let (max_advance_icount, stop_condition) = self.load_scheduler_advance()?;
+        if reached_icount > max_advance_icount {
+            return Err(NodeSlotError::NodeAdvancePastCeiling {
+                next_icount: reached_icount,
+                max_advance_icount,
+            });
+        }
         let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
         let was_idle = self.status.load(Ordering::Acquire) == STATUS_IDLE;
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
@@ -281,7 +335,7 @@ impl NodeSlot {
         self.current_ns.store(current_ns, Ordering::Release);
         self.logical_time_raw_icount
             .store(raw_icount, Ordering::Release);
-        if reached_icount == self.max_advance_icount.load(Ordering::Acquire) {
+        if reached_icount == max_advance_icount && stop_condition == AdvanceStopCondition::Ceiling {
             if !was_idle {
                 self.idle_wake_icount
                     .store(reached_icount, Ordering::Release);
@@ -405,17 +459,27 @@ impl NodeSlot {
             // return a new acknowledgement beside slot fields fetched before
             // the corresponding control callback published them.
             let control_boundary_ack = self.control_boundary_ack.load(Ordering::Acquire);
+            let (max_advance_icount, advance_stop_condition, advance_publication_sequence) =
+                self.load_scheduler_advance_raw();
             let snapshot = NodeSlotSnapshot {
                 current_icount: self.current_icount.load(Ordering::Acquire),
                 current_ns: self.current_ns.load(Ordering::Acquire),
-                max_advance_icount: self.max_advance_icount.load(Ordering::Acquire),
+                max_advance_icount,
                 idle_wake_icount: self.idle_wake_icount.load(Ordering::Acquire),
                 wake_signal: self.wake_signal.load(Ordering::Acquire),
                 status: self.status.load(Ordering::Acquire),
                 kind: self.kind.load(Ordering::Acquire),
                 device_io_active: self.device_io_active.load(Ordering::Acquire),
+                advance_stop_condition,
+                advance_publication_sequence,
                 publish_gen: before,
                 control_boundary_ack,
+                control_boundary_fault_command_frontier: self
+                    .control_boundary_fault_command_frontier
+                    .load(Ordering::Acquire),
+                control_boundary_capture_request: self
+                    .control_boundary_capture_request
+                    .load(Ordering::Acquire),
                 logical_time_raw_icount: self.logical_time_raw_icount.load(Ordering::Acquire),
                 logical_time_restore_target: self
                     .logical_time_restore_target
@@ -424,6 +488,26 @@ impl NodeSlot {
                     .logical_time_restore_request
                     .load(Ordering::Acquire),
                 logical_time_restore_ack: self.logical_time_restore_ack.load(Ordering::Acquire),
+                virtual_timer_witness: match self.timer_witness_generation.load(Ordering::Acquire) {
+                    0 => None,
+                    generation => Some(VirtualTimerFireWitness {
+                        generation,
+                        deadline_ns: self.timer_witness_deadline_ns.load(Ordering::Acquire),
+                        deadline_icount: self.timer_witness_deadline_icount.load(Ordering::Acquire),
+                        armed_raw_icount: self
+                            .timer_witness_armed_raw_icount
+                            .load(Ordering::Acquire),
+                        fired_expire_ns: self.timer_witness_fired_expire_ns.load(Ordering::Acquire),
+                        fired_virtual_ns: self
+                            .timer_witness_fired_virtual_ns
+                            .load(Ordering::Acquire),
+                        fired_raw_icount: self
+                            .timer_witness_fired_raw_icount
+                            .load(Ordering::Acquire),
+                        completed: self.timer_witness_completed.load(Ordering::Acquire),
+                        reserved: self.timer_witness_reserved.load(Ordering::Acquire),
+                    }),
+                },
             };
             let after = self.publish_gen.load(Ordering::Acquire);
             if before == after && after.is_multiple_of(2) {
@@ -435,7 +519,9 @@ impl NodeSlot {
     /// Returns `true` when all forward-compatible reserved slot bytes are zero.
     #[must_use]
     pub fn reserved_bytes_are_zero(&self) -> bool {
-        self._pad0 == 0 && self._pad2.iter().all(|byte| *byte == 0)
+        self._pad2.iter().all(|byte| *byte == 0)
+            && self._pad3.iter().all(|byte| *byte == 0)
+            && self._pad4.iter().all(|byte| *byte == 0)
     }
 
     /// Requests one QEMU main-loop control boundary and wakes an idle plugin.
@@ -453,17 +539,47 @@ impl NodeSlot {
     ///
     /// Returns [`NodeSlotError::FutexWake`] when the non-private futex wake
     /// syscall fails.
-    pub fn request_control_boundary(&self) -> Result<u32, NodeSlotError> {
+    pub fn request_control_boundary(
+        &self,
+        fault_command_frontier: u64,
+        capture_request: Option<u32>,
+    ) -> Result<u32, NodeSlotError> {
+        let capture_request = capture_request.unwrap_or(0);
+        if capture_request != 0 && capture_request & 1 == 0 {
+            return Err(NodeSlotError::InvalidControlBoundaryCaptureRequest {
+                request: capture_request,
+            });
+        }
         let request = loop {
             let observed = self.control_boundary_ack.load(Ordering::Acquire);
             if observed & 1 == 0 {
+                let observed_frontier = self
+                    .control_boundary_fault_command_frontier
+                    .load(Ordering::Acquire);
+                let observed_capture = self
+                    .control_boundary_capture_request
+                    .load(Ordering::Acquire);
+                if observed_frontier != fault_command_frontier
+                    || observed_capture != capture_request
+                {
+                    return Err(NodeSlotError::ControlBoundaryRequestChanged {
+                        expected_frontier: observed_frontier,
+                        observed_frontier: fault_command_frontier,
+                        expected_capture_request: observed_capture,
+                        observed_capture_request: capture_request,
+                    });
+                }
                 break observed;
             }
             let request = observed.wrapping_add(1);
+            self.control_boundary_fault_command_frontier
+                .store(fault_command_frontier, Ordering::Relaxed);
+            self.control_boundary_capture_request
+                .store(capture_request, Ordering::Relaxed);
             match self.control_boundary_ack.compare_exchange(
                 observed,
                 request,
-                Ordering::AcqRel,
+                Ordering::Release,
                 Ordering::Acquire,
             ) {
                 Ok(_) => break request,
@@ -473,6 +589,22 @@ impl NodeSlot {
         self.wake_after_signal_increment()
             .map_err(|source| NodeSlotError::FutexWake { source })?;
         Ok(request)
+    }
+
+    /// Returns the fault-command frontier bound to the pending control request.
+    #[must_use]
+    pub fn control_boundary_fault_command_frontier(&self) -> u64 {
+        self.control_boundary_fault_command_frontier
+            .load(Ordering::Acquire)
+    }
+
+    /// Returns the fingerprint request generation bound to the control request.
+    #[must_use]
+    pub fn control_boundary_capture_request(&self) -> Option<u32> {
+        let request = self
+            .control_boundary_capture_request
+            .load(Ordering::Acquire);
+        (request != 0).then_some(request)
     }
 
     /// Returns whether the host has published an unacknowledged even request.
@@ -562,17 +694,82 @@ impl NodeSlot {
     pub(crate) fn publish_prevalidated_scheduler_ceiling(
         &self,
         ceiling: AdvanceCeiling,
+        stop_condition: AdvanceStopCondition,
     ) -> Result<WakeAction, NodeSlotError> {
-        self.max_advance_icount
-            .store(ceiling.max_advance_icount, Ordering::Release);
+        self.publish_scheduler_advance_fields(ceiling.max_advance_icount, stop_condition);
 
         self.wake_after_signal_increment()
             .map_err(|source| NodeSlotError::FutexWake { source })
     }
 
+    fn publish_scheduler_advance_fields(
+        &self,
+        max_advance_icount: u64,
+        stop_condition: AdvanceStopCondition,
+    ) {
+        let published_sequence = loop {
+            let observed = self.advance_publication_sequence.load(Ordering::Acquire);
+            if !observed.is_multiple_of(2) {
+                core::hint::spin_loop();
+                continue;
+            }
+            match self.advance_publication_sequence.compare_exchange(
+                observed,
+                observed.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break observed.wrapping_add(2),
+                Err(_) => core::hint::spin_loop(),
+            }
+        };
+
+        match stop_condition {
+            AdvanceStopCondition::NextAuthenticatedIdle => {
+                // A peer that observes the raised ceiling must also observe the
+                // stop mode that prevents that ceiling from authorizing an idle
+                // deadline.
+                self.advance_stop_condition
+                    .store(stop_condition.encode(), Ordering::Release);
+                self.max_advance_icount
+                    .store(max_advance_icount, Ordering::Release);
+            }
+            AdvanceStopCondition::Ceiling => {
+                // A peer that observes the cleared mode must first observe the
+                // clamp or replacement ceiling that bounds renewed execution.
+                self.max_advance_icount
+                    .store(max_advance_icount, Ordering::Release);
+                self.advance_stop_condition
+                    .store(stop_condition.encode(), Ordering::Release);
+            }
+        }
+
+        self.advance_publication_sequence
+            .store(published_sequence, Ordering::Release);
+    }
+
+    pub(crate) fn load_scheduler_advance_raw(&self) -> (u64, u8, u64) {
+        loop {
+            let before = self.advance_publication_sequence.load(Ordering::Acquire);
+            if !before.is_multiple_of(2) {
+                core::hint::spin_loop();
+                continue;
+            }
+            let stop_condition = self.advance_stop_condition.load(Ordering::Acquire);
+            let max_advance_icount = self.max_advance_icount.load(Ordering::Acquire);
+            let after = self.advance_publication_sequence.load(Ordering::Acquire);
+            if before == after && after.is_multiple_of(2) {
+                return (max_advance_icount, stop_condition, after);
+            }
+        }
+    }
+
     pub(super) fn is_runnable_after_idle_publish(&self) -> bool {
+        let Ok((max_advance_icount, AdvanceStopCondition::Ceiling)) = self.load_scheduler_advance()
+        else {
+            return false;
+        };
         let status = self.status.load(Ordering::Acquire);
-        let max_advance_icount = self.max_advance_icount.load(Ordering::Acquire);
         let idle_wake_icount = self.idle_wake_icount.load(Ordering::Acquire);
         status != STATUS_IDLE || max_advance_icount >= idle_wake_icount
     }

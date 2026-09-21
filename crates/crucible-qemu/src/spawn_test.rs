@@ -2,11 +2,10 @@
 
 use std::env;
 use std::error::Error;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -17,7 +16,6 @@ use super::*;
 
 const PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CHILD_PROBE";
 const SOURCE_FDS_ENV: &str = "CRUCIBLE_QEMU_SPAWN_SOURCE_FDS";
-const CWD_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CWD_PROBE";
 const PINNED_CWD_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PINNED_CWD_PROBE";
 const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
 const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
@@ -30,6 +28,350 @@ const DESCENDANT_SUPERVISOR_ENV: &str = "CRUCIBLE_QEMU_DESCENDANT_SUPERVISOR";
 const GUARDED_PROBE_CHILD_MARKER: &str = "guarded-probe-child";
 const GUARDED_PROBE_DESCENDANT_PID: &str = "guarded-probe-descendant.pid";
 static TEMP_DIR_SUFFIX: AtomicU64 = AtomicU64::new(0);
+
+struct TraceRetentionFixture {
+    directory: tempfile::TempDir,
+    prepared: QemuPreparedRunDirectory,
+}
+
+impl TraceRetentionFixture {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+        let mut prepared = open_prepared_run_directory_for_test(directory.path())?;
+        prepared.child_credentials = Some(QemuChildCredentials {
+            user_id: rustix::process::geteuid().as_raw(),
+            group_id: rustix::process::getegid().as_raw(),
+        });
+
+        Ok(Self {
+            directory,
+            prepared,
+        })
+    }
+
+    fn trace_path(&self) -> std::path::PathBuf {
+        self.directory
+            .path()
+            .join(crate::QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME)
+    }
+
+    fn runtime_trace_path(&self) -> std::path::PathBuf {
+        self.directory
+            .path()
+            .join(crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME)
+    }
+}
+
+fn write_sparse_trace(path: &std::path::Path, bytes: u64) -> Result<(), Box<dyn Error>> {
+    let mut trace = std::fs::OpenOptions::new().write(true).open(path)?;
+    trace.set_len(bytes)?;
+    trace.seek(SeekFrom::Start(bytes - 1))?;
+    trace.write_all(b"\n")?;
+    Ok(())
+}
+
+#[test]
+fn retained_control_boundary_trace_accepts_only_the_prepared_inode() -> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::write(fixture.trace_path(), b"phase=request request=1\n")?;
+    assert_eq!(
+        fixture
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap()?,
+        "phase=request request=1\n"
+    );
+
+    std::fs::remove_file(fixture.trace_path())?;
+    std::fs::write(fixture.trace_path(), b"phase=request request=2\n")?;
+    std::fs::set_permissions(fixture.trace_path(), std::fs::Permissions::from_mode(0o600))?;
+    assert!(matches!(
+        fixture
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dyn Error>> {
+    let trace = "crucible_sim_determinism_timer seq=1 timer=3 list=1 scope=global owner=rr expire_ns=10 current_ns=10 raw=80\n";
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_runtime_determinism_trace()?;
+    std::fs::write(fixture.runtime_trace_path(), trace)?;
+    let retained = fixture
+        .prepared
+        .retain_runtime_determinism_trace_after_reap()?;
+    assert_eq!(retained, trace);
+    assert_eq!(
+        crate::parse_qemu_runtime_determinism_trace(&retained)?.len(),
+        1
+    );
+
+    std::fs::remove_file(fixture.runtime_trace_path())?;
+    std::fs::write(fixture.runtime_trace_path(), b"replacement\n")?;
+    std::fs::set_permissions(
+        fixture.runtime_trace_path(),
+        std::fs::Permissions::from_mode(0o600),
+    )?;
+    assert!(matches!(
+        fixture
+            .prepared
+            .retain_runtime_determinism_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_state()
+-> Result<(), Box<dyn Error>> {
+    let unprepared = TraceRetentionFixture::new()?;
+    assert!(
+        unprepared
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap()
+            .is_err()
+    );
+
+    let empty = TraceRetentionFixture::new()?;
+    empty.prepared.prepare_rr_control_boundary_trace()?;
+    assert!(matches!(
+        empty.prepared.retain_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceLength { actual: 0, .. })
+    ));
+
+    let linked = TraceRetentionFixture::new()?;
+    linked.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::write(linked.trace_path(), b"line\n")?;
+    std::fs::hard_link(
+        linked.trace_path(),
+        linked.directory.path().join("second-link"),
+    )?;
+    assert!(matches!(
+        linked
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceMetadata { links: 2, .. })
+    ));
+
+    let wrong_mode = TraceRetentionFixture::new()?;
+    wrong_mode.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::write(wrong_mode.trace_path(), b"line\n")?;
+    std::fs::set_permissions(
+        wrong_mode.trace_path(),
+        std::fs::Permissions::from_mode(0o644),
+    )?;
+    assert!(matches!(
+        wrong_mode
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceMetadata { mode: 0o644, .. })
+    ));
+
+    let symlinked = TraceRetentionFixture::new()?;
+    symlinked.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::remove_file(symlinked.trace_path())?;
+    let target = symlinked.directory.path().join("trace-target");
+    std::fs::write(&target, b"line\n")?;
+    symlink(&target, symlinked.trace_path())?;
+    assert!(
+        symlinked
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap()
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn retained_control_boundary_trace_enforces_content_and_aggregate_bounds()
+-> Result<(), Box<dyn Error>> {
+    let oversized = TraceRetentionFixture::new()?;
+    oversized.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::write(
+        oversized.trace_path(),
+        vec![b'x'; usize::try_from(MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES)? + 1],
+    )?;
+    assert!(matches!(
+        oversized
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceLength { .. })
+    ));
+
+    let runtime_above_prior_limit = TraceRetentionFixture::new()?;
+    runtime_above_prior_limit
+        .prepared
+        .prepare_runtime_determinism_trace()?;
+    let runtime_bytes = MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES / 2 + 1;
+    write_sparse_trace(
+        &runtime_above_prior_limit.runtime_trace_path(),
+        runtime_bytes,
+    )?;
+    assert_eq!(
+        runtime_above_prior_limit
+            .prepared
+            .retain_runtime_determinism_trace_after_reap()?
+            .len(),
+        usize::try_from(runtime_bytes)?
+    );
+
+    let runtime_oversized = TraceRetentionFixture::new()?;
+    runtime_oversized
+        .prepared
+        .prepare_runtime_determinism_trace()?;
+    write_sparse_trace(
+        &runtime_oversized.runtime_trace_path(),
+        MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES + 1,
+    )?;
+    assert!(matches!(
+        runtime_oversized
+            .prepared
+            .retain_runtime_determinism_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceLength { .. })
+    ));
+
+    let too_many_lines = TraceRetentionFixture::new()?;
+    too_many_lines
+        .prepared
+        .prepare_rr_control_boundary_trace()?;
+    std::fs::write(
+        too_many_lines.trace_path(),
+        vec![b'\n'; MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1],
+    )?;
+    assert!(matches!(
+        too_many_lines
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceLines {
+            actual,
+            maximum: MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
+            ..
+        }) if actual == MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1
+    ));
+
+    let runtime_above_rr_line_limit = TraceRetentionFixture::new()?;
+    runtime_above_rr_line_limit
+        .prepared
+        .prepare_runtime_determinism_trace()?;
+    let runtime_lines = vec![b'\n'; MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1];
+    std::fs::write(
+        runtime_above_rr_line_limit.runtime_trace_path(),
+        &runtime_lines,
+    )?;
+    assert_eq!(
+        runtime_above_rr_line_limit
+            .prepared
+            .retain_runtime_determinism_trace_after_reap()?
+            .len(),
+        runtime_lines.len()
+    );
+
+    let runtime_too_many_lines = TraceRetentionFixture::new()?;
+    runtime_too_many_lines
+        .prepared
+        .prepare_runtime_determinism_trace()?;
+    std::fs::write(
+        runtime_too_many_lines.runtime_trace_path(),
+        vec![b'\n'; MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES + 1],
+    )?;
+    assert!(matches!(
+        runtime_too_many_lines
+            .prepared
+            .retain_runtime_determinism_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceLines {
+            actual,
+            maximum: MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
+            ..
+        }) if actual == MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES + 1
+    ));
+
+    let mut outside_admission = TraceRetentionFixture::new()?;
+    outside_admission
+        .prepared
+        .prepare_rr_control_boundary_trace()?;
+    std::fs::write(outside_admission.trace_path(), b"line\n")?;
+    outside_admission.prepared.admitted_ceiling.2 = 1;
+    assert!(matches!(
+        outside_admission
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceExceedsAdmission { .. })
+    ));
+
+    let mut runtime_outside_admission = TraceRetentionFixture::new()?;
+    runtime_outside_admission
+        .prepared
+        .prepare_runtime_determinism_trace()?;
+    std::fs::write(
+        runtime_outside_admission.runtime_trace_path(),
+        b"runtime-row\n",
+    )?;
+    runtime_outside_admission.prepared.admitted_ceiling.2 = 1;
+    assert!(matches!(
+        runtime_outside_admission
+            .prepared
+            .retain_runtime_determinism_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceExceedsAdmission { .. })
+    ));
+    Ok(())
+}
+
+fn spawn_unpinned_test_process_with_resources(
+    executable: &str,
+    args: &[String],
+    child_resources: QemuSpawnChildResources,
+    envs: &[(&str, &str)],
+    operation: &'static str,
+    process_contract: Option<&QemuChildProcessContract>,
+) -> Result<std::process::Child, QemuSpawnError> {
+    let control_fd = child_resources.control_socket.as_raw_fd();
+    let shmem_fd = child_resources.shmem_fd.as_raw_fd();
+    let wake_fd = child_resources.wake_fd.as_raw_fd();
+    let expected_parent_pid = unsafe {
+        // SAFETY: `getpid` has no preconditions.
+        libc::getpid()
+    };
+    let process_contract = process_contract.map(|contract| ChildProcessContractRaw {
+        cgroup_procs: contract.cgroup_procs.as_raw_fd(),
+        cancellation_event: contract.cancellation_event.as_raw_fd(),
+        maximum_file_bytes: contract.maximum_writable_bytes,
+        credentials: contract.credentials,
+    });
+
+    let mut command = Command::new(executable);
+    command
+        .env_clear()
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+
+    // SAFETY: this test-only unpinned launcher exercises the descriptor and
+    // containment setup without a run-directory fixture. Its closure has the
+    // same async-signal-safe syscall boundary as the pinned production path.
+    unsafe {
+        command.pre_exec(move || {
+            if let Some(contract) = process_contract {
+                install_attempt_process_contract(contract)?;
+            }
+            if let Some(credentials) = process_contract.and_then(|contract| contract.credentials) {
+                install_child_credentials(credentials)?;
+            }
+            install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)
+        });
+    }
+
+    command
+        .spawn()
+        .map_err(|source| QemuSpawnError::Io { operation, source })
+}
 
 fn pipe_pair() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut descriptors = [-1; 2];
@@ -152,10 +494,9 @@ fn guarded_pre_exec_places_child_before_exec() -> Result<(), Box<dyn Error>> {
         String::from("spawn::tests::guarded_pre_exec_places_child_before_exec"),
     ];
 
-    let mut child = spawn_process_with_resources(
+    let mut child = spawn_unpinned_test_process_with_resources(
         &current_exe,
         &args,
-        QemuSpawnWorkingDirectory::Inherit,
         child_resources,
         &[(PROBE_ENV, "1")],
         "spawn guarded pre-exec probe",
@@ -179,8 +520,11 @@ fn guarded_image_helper_uses_the_attempt_contract_and_pinned_directory()
         QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
     let directory = tempfile::tempdir()?;
     std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
-    let prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        directory.path(),
+        &contract,
+    )?;
     let executable = env::current_exe()?;
     let args = [
         std::ffi::OsString::from("--exact"),
@@ -211,8 +555,11 @@ fn guarded_image_helper_observes_sticky_cancellation_before_exec() -> Result<(),
         QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
     let directory = tempfile::tempdir()?;
     std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
-    let prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        directory.path(),
+        &contract,
+    )?;
     let executable = env::current_exe()?;
 
     for _ in 0..2 {
@@ -368,10 +715,9 @@ fn canceled_pre_exec_contract_stays_canceled_across_spawns() -> Result<(), Box<d
 
     for _ in 0..2 {
         let (_host, child_resources) = create_spawn_resources(4096)?;
-        let error = match spawn_process_with_resources(
+        let error = match spawn_unpinned_test_process_with_resources(
             &current_exe,
             &[],
-            QemuSpawnWorkingDirectory::Inherit,
             child_resources,
             &[],
             "spawn canceled pre-exec probe",
@@ -404,15 +750,44 @@ fn process_contract_rejects_forged_regular_descriptors() -> Result<(), Box<dyn E
         second_duplicate,
         temporary.into(),
         duplicate,
-        1,
-        4096,
+        crate::linux_cgroup::LinuxQemuCgroupLimits::new(1, 4096, 1)?,
         4096,
         credentials,
+        None,
     ) {
         Err(error) => error,
         Ok(_) => panic!("regular files must not construct a containment contract"),
     };
     assert!(matches!(error, QemuSpawnError::Io { .. }));
+    Ok(())
+}
+
+#[test]
+fn exact_checkpoint_root_is_immutable_across_contract_generations() -> Result<(), Box<dyn Error>> {
+    let root_a = ContentHash { bytes: [0x11; 32] };
+    let root_b = ContentHash { bytes: [0x22; 32] };
+
+    let (_, fresh_cgroup) = pipe_pair()?;
+    let fresh = QemuChildProcessContract::for_test(
+        fresh_cgroup,
+        event_fd_for_test()?,
+        current_file_size_limit()?,
+    );
+    assert!(fresh.require_exact_checkpoint_root(root_a).is_err());
+
+    let (_, exact_cgroup) = pipe_pair()?;
+    let exact = QemuChildProcessContract::for_exact_checkpoint_test(
+        exact_cgroup,
+        event_fd_for_test()?,
+        current_file_size_limit()?,
+        root_a,
+    );
+    assert!(exact.require_exact_checkpoint_root(root_a).is_ok());
+    assert!(exact.require_exact_checkpoint_root(root_b).is_err());
+
+    let cloned = exact.try_clone_for_attempt_generation()?;
+    assert!(cloned.require_exact_checkpoint_root(root_a).is_ok());
+    assert!(cloned.require_exact_checkpoint_root(root_b).is_err());
     Ok(())
 }
 
@@ -516,7 +891,7 @@ fn prepared_run_directory_rejects_vmstate_replacement() -> Result<(), Box<dyn Er
 
     assert!(matches!(
         prepared.revalidate(),
-        Err(QemuSpawnError::PreparedVmStateChanged { .. })
+        Err(QemuSpawnError::PreparedDeviceStateChanged { .. })
     ));
     Ok(())
 }
@@ -536,7 +911,7 @@ fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
     let error = match spawn_process_with_resources(
         &current_exe,
         &[],
-        QemuSpawnWorkingDirectory::Pinned(&prepared),
+        &prepared,
         child_resources,
         &[],
         "spawn replaced pinned VMState probe",
@@ -590,7 +965,7 @@ fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box
     let mut child = spawn_process_with_resources(
         &current_exe,
         &args,
-        QemuSpawnWorkingDirectory::Pinned(&prepared),
+        &prepared,
         child_resources,
         &[
             (
@@ -626,8 +1001,8 @@ fn guarded_preparation_rejects_underprovisioned_launch_before_run_directory_acce
         unique_temp_suffix()
     ));
 
-    let error = match QemuPreparedRunDirectory::open_for_launch(
-        &command,
+    let error = match QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
         &missing_run_directory,
         &contract,
     ) {
@@ -664,8 +1039,8 @@ fn materialization_preparation_rejects_before_run_directory_access() -> Result<(
     ));
 
     assert!(matches!(
-        QemuPreparedRunDirectory::open_for_materialization(
-            &command,
+        QemuPreparedRunDirectory::open_for_test_requirements(
+            command.resource_requirements(),
             &missing_run_directory,
             &contract,
         ),
@@ -684,8 +1059,11 @@ fn guarded_spawn_rejects_another_attempt_with_identical_limits() -> Result<(), B
     let second_contract = wide_test_process_contract()?;
     let directory = tempfile::tempdir()?;
     std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
-    let prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &first_contract)?;
+    let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        directory.path(),
+        &first_contract,
+    )?;
 
     assert!(matches!(
         spawn_prepared_qemu_child_with_fds_in_directory_guarded(
@@ -700,14 +1078,40 @@ fn guarded_spawn_rejects_another_attempt_with_identical_limits() -> Result<(), B
 }
 
 #[test]
+fn prepared_trace_admission_rejects_an_unreserved_command() -> Result<(), Box<dyn Error>> {
+    let traced = guarded_resource_test_command_builder()?
+        .with_runtime_determinism_trace()
+        .build()?;
+    let ordinary = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        traced.resource_requirements(),
+        directory.path(),
+        &contract,
+    )?;
+
+    assert!(prepared.validate_launch_basis(&traced, &contract).is_ok());
+    assert!(matches!(
+        prepared.validate_launch_basis(&ordinary, &contract),
+        Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
+    ));
+    Ok(())
+}
+
+#[test]
 fn guarded_spawn_rejects_changed_admission_before_revalidation() -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
     let wide_contract = wide_test_process_contract()?;
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
     std::fs::File::create(&vmstate_path)?;
-    let prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &wide_contract)?;
+    let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        directory.path(),
+        &wide_contract,
+    )?;
     std::fs::remove_file(&vmstate_path)?;
     std::fs::File::create(&vmstate_path)?;
 
@@ -729,349 +1133,6 @@ fn guarded_spawn_rejects_changed_admission_before_revalidation() -> Result<(), B
         ),
         Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
     ));
-    Ok(())
-}
-
-#[test]
-fn exact_vmstate_materialization_commits_one_checkpoint_root_basis() -> Result<(), Box<dyn Error>> {
-    let command = guarded_resource_test_command()?;
-    let contract = wide_test_process_contract()?;
-    let directory = tempfile::tempdir()?;
-    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
-    std::fs::write(&vmstate_path, b"provisioned")?;
-    let mut prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
-    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
-        ContentHash::from_canonical_material("checkpoint-root", "exact-a").bytes,
-    );
-    let payload = b"authenticated exact VMState";
-
-    let mut materialization =
-        prepared.begin_exact_vmstate_materialization(binding, u64::try_from(payload.len())?)?;
-    materialization.write_all(payload)?;
-    materialization.finish()?;
-
-    prepared.require_exact_vmstate(binding)?;
-    assert!(matches!(
-        prepared.require_exact_launch_artifacts(&command, binding),
-        Err(QemuSpawnError::PreparedRootOverlayNotReady { .. })
-    ));
-
-    let overlay = b"authenticated exact root overlay";
-    let mut materialization = prepared
-        .begin_exact_root_overlay_materialization(binding, u64::try_from(overlay.len())?)?;
-    materialization.write_all(overlay)?;
-    materialization.finish()?;
-    prepared.require_exact_launch_artifacts(&command, binding)?;
-
-    prepared.revalidate()?;
-    assert_eq!(std::fs::read(vmstate_path)?, payload);
-    let other = QemuVmStateBinding::from_exact_checkpoint_root_digest(
-        ContentHash::from_canonical_material("checkpoint-root", "exact-b").bytes,
-    );
-    let thin = QemuVmStateBinding::from_thin_checkpoint_artifact_digest(
-        ContentHash::from_canonical_material("thin-checkpoint-artifact", "exact-a").bytes,
-    );
-    assert_ne!(binding, thin);
-    assert!(matches!(
-        prepared.require_exact_vmstate(other),
-        Err(QemuSpawnError::PreparedVmStateBindingMismatch {
-            expected,
-            actual,
-        }) if expected == other && actual == binding
-    ));
-    Ok(())
-}
-
-#[test]
-fn exact_root_overlay_materialization_commits_the_checkpoint_root_basis()
--> Result<(), Box<dyn Error>> {
-    let command = guarded_resource_test_command()?;
-    let contract = wide_test_process_contract()?;
-    let directory = tempfile::tempdir()?;
-    std::fs::write(
-        directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME),
-        b"provisioned",
-    )?;
-    let mut prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
-    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
-        ContentHash::from_canonical_material("checkpoint-root", "overlay-a").bytes,
-    );
-    let payload = b"authenticated exact root overlay";
-
-    let mut materialization = prepared
-        .begin_exact_root_overlay_materialization(binding, u64::try_from(payload.len())?)?;
-    materialization.write_all(payload)?;
-    materialization.finish()?;
-
-    prepared.require_exact_root_overlay(binding)?;
-    prepared.revalidate()?;
-    assert_eq!(
-        std::fs::read(directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME))?,
-        payload
-    );
-    let other = QemuVmStateBinding::from_exact_checkpoint_root_digest(
-        ContentHash::from_canonical_material("checkpoint-root", "overlay-b").bytes,
-    );
-    assert!(matches!(
-        prepared.require_exact_root_overlay(other),
-        Err(QemuSpawnError::PreparedRootOverlayBindingMismatch {
-            expected,
-            actual,
-        }) if expected == other && actual == binding
-    ));
-    Ok(())
-}
-
-#[test]
-fn replacement_artifacts_are_reflinked_with_one_local_snapshot_binding()
--> Result<(), Box<dyn Error>> {
-    let command = guarded_resource_test_command()?;
-    let contract = wide_test_process_contract()?;
-    let source_directory = tempfile::tempdir()?;
-    let destination_directory = tempfile::tempdir()?;
-    let source_vmstate = b"paused source VMState";
-    let source_overlay = b"paused source root overlay";
-    std::fs::write(
-        source_directory
-            .path()
-            .join(crate::DEFAULT_VMSTATE_FILE_NAME),
-        source_vmstate,
-    )?;
-    std::fs::write(
-        source_directory
-            .path()
-            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
-        source_overlay,
-    )?;
-    std::fs::File::create(
-        destination_directory
-            .path()
-            .join(crate::DEFAULT_VMSTATE_FILE_NAME),
-    )?;
-    let source =
-        QemuPreparedRunDirectory::open_for_launch(&command, source_directory.path(), &contract)?;
-    let mut destination = QemuPreparedRunDirectory::open_for_launch(
-        &command,
-        destination_directory.path(),
-        &contract,
-    )?;
-    let binding = QemuVmStateBinding::from_replacement_snapshot_digest(
-        ContentHash::from_canonical_material("replacement-snapshot", "generation-two").bytes,
-    );
-
-    destination.clone_replacement_artifacts_from(&source, binding)?;
-
-    destination.require_exact_vmstate(binding)?;
-    destination.require_exact_root_overlay(binding)?;
-    destination.revalidate()?;
-    assert_eq!(
-        std::fs::read(
-            destination_directory
-                .path()
-                .join(crate::DEFAULT_VMSTATE_FILE_NAME)
-        )?,
-        source_vmstate
-    );
-    assert_eq!(
-        std::fs::read(
-            destination_directory
-                .path()
-                .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME)
-        )?,
-        source_overlay
-    );
-    Ok(())
-}
-
-#[test]
-fn replacement_clone_rejects_a_different_attempt_before_destination_writes()
--> Result<(), Box<dyn Error>> {
-    let command = guarded_resource_test_command()?;
-    let source_contract = wide_test_process_contract()?;
-    let destination_contract = wide_test_process_contract()?;
-    let source_directory = tempfile::tempdir()?;
-    let destination_directory = tempfile::tempdir()?;
-    std::fs::write(
-        source_directory
-            .path()
-            .join(crate::DEFAULT_VMSTATE_FILE_NAME),
-        b"source VMState",
-    )?;
-    std::fs::write(
-        source_directory
-            .path()
-            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
-        b"source overlay",
-    )?;
-    let destination_vmstate = destination_directory
-        .path()
-        .join(crate::DEFAULT_VMSTATE_FILE_NAME);
-    std::fs::File::create(&destination_vmstate)?;
-    let source = QemuPreparedRunDirectory::open_for_launch(
-        &command,
-        source_directory.path(),
-        &source_contract,
-    )?;
-    let mut destination = QemuPreparedRunDirectory::open_for_launch(
-        &command,
-        destination_directory.path(),
-        &destination_contract,
-    )?;
-    let binding = QemuVmStateBinding::from_replacement_snapshot_digest([7; 32]);
-
-    assert!(matches!(
-        destination.clone_replacement_artifacts_from(&source, binding),
-        Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
-    ));
-    assert_eq!(std::fs::metadata(destination_vmstate)?.len(), 0);
-    assert!(
-        !destination_directory
-            .path()
-            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME)
-            .exists()
-    );
-    Ok(())
-}
-
-#[test]
-fn interrupted_root_overlay_materialization_blocks_guarded_spawn() -> Result<(), Box<dyn Error>> {
-    let command = guarded_resource_test_command()?;
-    let contract = wide_test_process_contract()?;
-    let directory = tempfile::tempdir()?;
-    std::fs::write(
-        directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME),
-        b"provisioned",
-    )?;
-    let mut prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
-    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
-        ContentHash::from_canonical_material("checkpoint-root", "overlay-interrupted").bytes,
-    );
-
-    {
-        let mut materialization = prepared.begin_exact_root_overlay_materialization(binding, 4)?;
-        materialization.write_all(b"ab")?;
-    }
-
-    assert!(matches!(
-        spawn_prepared_qemu_child_with_fds_in_directory_guarded(
-            &command, &prepared, 4096, &contract,
-        ),
-        Err(QemuSpawnError::PreparedRootOverlayNotReady { .. })
-    ));
-    Ok(())
-}
-
-#[test]
-fn reaped_vmstate_reader_survives_artifact_unlink_without_shared_cursor()
--> Result<(), Box<dyn Error>> {
-    let command = guarded_resource_test_command()?;
-    let contract = wide_test_process_contract()?;
-    let directory = tempfile::tempdir()?;
-    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
-    std::fs::write(&vmstate_path, b"provisioned")?;
-    std::fs::write(
-        directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
-        b"provisioned",
-    )?;
-    let mut prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
-    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
-        ContentHash::from_canonical_material("checkpoint-root", "captured").bytes,
-    );
-    let payload = b"stable captured VMState";
-    let mut materialization =
-        prepared.begin_exact_vmstate_materialization(binding, u64::try_from(payload.len())?)?;
-    materialization.write_all(payload)?;
-    materialization.finish()?;
-
-    let captured = prepared.capture_vmstate_after_reap()?;
-    std::fs::remove_file(&vmstate_path)?;
-    let mut beginning = [0_u8; 6];
-    let mut ending = [0_u8; 7];
-    assert_eq!(captured.read_at(&mut ending, 16)?, ending.len());
-    assert_eq!(captured.read_at(&mut beginning, 0)?, beginning.len());
-
-    assert_eq!(captured.logical_length(), u64::try_from(payload.len())?);
-    assert_eq!(&beginning, b"stable");
-    assert_eq!(&ending, b"VMState");
-    Ok(())
-}
-
-#[test]
-fn interrupted_exact_vmstate_materialization_blocks_guarded_launch_until_replaced()
--> Result<(), Box<dyn Error>> {
-    let command = guarded_resource_test_command()?;
-    let contract = wide_test_process_contract()?;
-    let directory = tempfile::tempdir()?;
-    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
-    std::fs::write(&vmstate_path, b"provisioned")?;
-    std::fs::write(
-        directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
-        b"provisioned",
-    )?;
-    let mut prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
-    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
-        ContentHash::from_canonical_material("checkpoint-root", "interrupted").bytes,
-    );
-
-    {
-        let mut materialization = prepared.begin_exact_vmstate_materialization(binding, 4)?;
-        materialization.write_all(b"ab")?;
-    }
-    assert!(matches!(
-        spawn_prepared_qemu_child_with_fds_in_directory_guarded(
-            &command, &prepared, 4096, &contract,
-        ),
-        Err(QemuSpawnError::PreparedVmStateNotReady { .. })
-    ));
-
-    let mut replacement = prepared.begin_exact_vmstate_materialization(binding, 4)?;
-    replacement.write_all(b"abcd")?;
-    replacement.finish()?;
-    prepared.require_exact_vmstate(binding)?;
-    prepared.revalidate()?;
-    Ok(())
-}
-
-#[test]
-fn exact_vmstate_length_rejection_precedes_destination_mutation() -> Result<(), Box<dyn Error>> {
-    let command = guarded_resource_test_command()?;
-    let maximum = command.resource_requirements().minimum_writable_bytes();
-    let (_cgroup_read, cgroup_write) = pipe_pair()?;
-    let cancellation = event_fd_for_test()?;
-    let contract = QemuChildProcessContract::from_unvalidated_test_descriptors(
-        cgroup_write,
-        cancellation,
-        u32::MAX,
-        u64::MAX,
-        maximum,
-    );
-    let directory = tempfile::tempdir()?;
-    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
-    std::fs::write(&vmstate_path, b"unchanged")?;
-    std::fs::write(
-        directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
-        b"provisioned",
-    )?;
-    let mut prepared =
-        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
-    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
-        ContentHash::from_canonical_material("checkpoint-root", "oversized").bytes,
-    );
-
-    assert!(matches!(
-        prepared.begin_exact_vmstate_materialization(binding, maximum.saturating_add(1)),
-        Err(QemuSpawnError::PreparedVmStateLength {
-            length,
-            maximum: admitted,
-        }) if length == maximum.saturating_add(1) && admitted == maximum
-    ));
-    prepared.revalidate()?;
-    assert_eq!(std::fs::read(vmstate_path)?, b"unchanged");
     Ok(())
 }
 
@@ -1103,10 +1164,9 @@ fn qemu_spawn_maps_fixed_child_fds_after_pre_exec() -> Result<(), Box<dyn Error>
         String::from("--exact"),
         String::from("spawn::tests::qemu_spawn_maps_fixed_child_fds_after_pre_exec"),
     ];
-    let mut child = spawn_process_with_resources(
+    let mut child = spawn_unpinned_test_process_with_resources(
         &current_exe,
         &args,
-        QemuSpawnWorkingDirectory::Inherit,
         child_resources,
         &[(PROBE_ENV, "1"), (SOURCE_FDS_ENV, &source_fds)],
         "spawn child fd probe",
@@ -1118,52 +1178,6 @@ fn qemu_spawn_maps_fixed_child_fds_after_pre_exec() -> Result<(), Box<dyn Error>
     assert!(status.success());
     Ok(())
 }
-
-#[test]
-fn qemu_spawn_run_directory_sets_child_cwd() -> Result<(), Box<dyn Error>> {
-    if let Some(expected) = env::var_os(CWD_PROBE_ENV) {
-        child_probe_cwd(Path::new(&expected))?;
-        return Ok(());
-    }
-
-    let (_host, child_resources) = create_spawn_resources(4096)?;
-    let source_fds = format!(
-        "{},{},{}",
-        child_resources.control_socket.as_raw_fd(),
-        child_resources.shmem_fd.as_raw_fd(),
-        child_resources.wake_fd.as_raw_fd()
-    );
-    let run_directory = unique_temp_run_directory("qemu-spawn-cwd")?;
-    let expected_directory = run_directory.canonicalize()?;
-    let current_exe = env::current_exe()?;
-    let current_exe = current_exe.to_string_lossy().into_owned();
-    let args = vec![
-        String::from("--exact"),
-        String::from("spawn::tests::qemu_spawn_run_directory_sets_child_cwd"),
-    ];
-    let mut child = spawn_process_with_resources(
-        &current_exe,
-        &args,
-        QemuSpawnWorkingDirectory::Path(&run_directory),
-        child_resources,
-        &[
-            (
-                CWD_PROBE_ENV,
-                expected_directory.as_os_str().to_string_lossy().as_ref(),
-            ),
-            (SOURCE_FDS_ENV, &source_fds),
-        ],
-        "spawn child cwd probe",
-        None,
-    )?;
-
-    let status = child.wait()?;
-
-    assert!(status.success());
-    std::fs::remove_dir_all(run_directory)?;
-    Ok(())
-}
-
 #[test]
 fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
 -> Result<(), Box<dyn Error>> {
@@ -1191,10 +1205,9 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
                 "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
             ),
         ];
-        let mut child = spawn_process_with_resources(
+        let mut child = spawn_unpinned_test_process_with_resources(
             &current_exe,
             &args,
-            QemuSpawnWorkingDirectory::Inherit,
             child_resources,
             &[
                 (ENV_CLEAR_CHILD_PROBE, "1"),
@@ -1282,10 +1295,9 @@ fn parent_probe_spawn_pdeath_child() -> Result<(), Box<dyn Error>> {
         String::from("--exact"),
         String::from("spawn::tests::qemu_spawn_kills_child_when_parent_exits"),
     ];
-    let child = spawn_process_with_resources(
+    let child = spawn_unpinned_test_process_with_resources(
         &current_exe,
         &args,
-        QemuSpawnWorkingDirectory::Inherit,
         child_resources,
         &[(PDEATH_CHILD_ENV, "1")],
         "spawn parent-death probe child",
@@ -1313,16 +1325,6 @@ fn child_probe_cwd(expected: &Path) -> Result<(), Box<dyn Error>> {
     let actual = std::env::current_dir()?.canonicalize()?;
     assert_eq!(actual, expected);
     child_probe_fixed_fds()
-}
-
-fn unique_temp_run_directory(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let path = std::env::temp_dir().join(format!(
-        "{prefix}-{}-{}",
-        std::process::id(),
-        unique_temp_suffix()
-    ));
-    std::fs::create_dir(&path)?;
-    Ok(path)
 }
 
 struct GuardedProbeFixture {
@@ -1359,8 +1361,11 @@ impl GuardedProbeFixture {
             std::fs::set_permissions(pid_file, std::fs::Permissions::from_mode(0o666))?;
         }
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o711))?;
-        let prepared =
-            QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+        let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+            command.resource_requirements(),
+            directory.path(),
+            &contract,
+        )?;
         let args = vec![String::from("--exact"), child_test.to_owned()];
         Ok(Self {
             directory,
@@ -1468,12 +1473,19 @@ fn open_prepared_run_directory_for_test(
         path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
         b"provisioned",
     )?;
-    Ok(QemuPreparedRunDirectory::open_for_launch(
-        &command, path, &contract,
+    Ok(QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        path,
+        &contract,
     )?)
 }
 
 fn guarded_resource_test_command() -> Result<QemuLaunchCommand, Box<dyn Error>> {
+    Ok(guarded_resource_test_command_builder()?.build()?)
+}
+
+fn guarded_resource_test_command_builder() -> Result<crate::QemuLaunchCommandBuilder, Box<dyn Error>>
+{
     let profile = crate::DeterministicLaunchProfile::conservative_default()?;
     let vm = crate::QemuVmLaunchConfig::new(
         "vm-a",
@@ -1497,8 +1509,7 @@ fn guarded_resource_test_command() -> Result<QemuLaunchCommand, Box<dyn Error>> 
         "/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64",
         plugin,
         crate::LivePluginGuestArchitecture::X86_64,
-    )
-    .build()?)
+    ))
 }
 
 fn unique_temp_suffix() -> u64 {

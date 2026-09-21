@@ -22,7 +22,7 @@ Forward references: the determinism contract is [`04-determinism-contract.md`](0
 the execution model and replay oracle are [`05-execution-model.md`](05-execution-model.md)
 and [`07-temporal-graph.md`](07-temporal-graph.md); the reproduction artifact is
 [`06-spatial-graph.md`](06-spatial-graph.md) and [`23-cli.md`](23-cli.md); the
-QEMU patch series is [`11-qemu-patches.md`](11-qemu-patches.md); the plugin,
+atomic QEMU patch is [`11-qemu-patches.md`](11-qemu-patches.md); the plugin,
 shmem ABI, and protocol are [`12-qemu-plugin.md`](12-qemu-plugin.md),
 [`13-shmem-abi.md`](13-shmem-abi.md), and [`14-protocol.md`](14-protocol.md); the
 I/O sub-nodes and guest↔host channel are [`15-io-subnodes.md`](15-io-subnodes.md)
@@ -54,7 +54,7 @@ invariants/requirements it enforces.
 | Gate | Layer/phase guarded | Primary invariants/requirements | One-line criterion |
 | --- | --- | --- | --- |
 | `gate:harness-lint` | All crucible crates (Phase 0, runs on every PR) | INV-9; HARN-24..26 | No banned nondeterminism source compiles in the engine. |
-| `gate:layer0-determinism` | L0 deterministic core | INV-4, INV-8; HARN-3 | The sim runtime/scheduler primitives reduce identically twice. |
+| `gate:layer0-determinism` | L2 production QEMU determinism | INV-4, INV-8; HARN-3 | A guarded production QEMU run reproduces the same authenticated fingerprint stream at exact icount coordinates. |
 | `gate:single-vm-fingerprint` | L2 single VM (Contract A) | DET (Contract A), INV-4; HARN-4, HARN-7 | One VM's execution fingerprint is bit-identical across runs. |
 | `gate:layer1-injection` | L1 co-sim transport (Contract B) | INV-3; HARN-5, HARN-8 | Cross-node injection icount is a pure function of virtual time. |
 | `gate:content-address` | L1/L3 content-addressed store | INV-6; HARN-11 | Equal content hashes equal; unequal content does not collide. |
@@ -62,14 +62,14 @@ invariants/requirements it enforces.
 | `gate:campaign-statistics` | L3 statistical campaign owner | RFC-0020 GUIDE-15, GUIDE-23 | Finite static and bounded version-four SMC designs preserve exact `P`/`Q` support, path weights, resampling normalization, genealogy, and multiplicity; reports require complete declared populations, label finite-sample bias, and exclude intervention execution bases. |
 | `gate:replay-oracle` | L3 temporal graph | INV-1, INV-2; HARN-12, HARN-13 | Fat-checkpoint hash == thin (replay-from-ancestor) hash. |
 | `gate:divergence-bisect` | Cross-layer diagnostic | INV-10; HARN-9, HARN-10 | A seeded divergence is localized to its first differing step. |
-| `gate:scheduler-liveness` | L3 scheduler actor | INV-8; HARN-18 | The scheduler always reaches quiescence or its time limit; no deadlock/livelock. |
+| `gate:scheduler-liveness` | L2/L3 production scheduler boundary | INV-8; HARN-18 | Packaged QEMU reaches exact bounded targets through preemption, vCPU switching, interrupts, all-vCPU idle, and queued idle wake. |
 | `gate:control-responsive` | L4 control plane | INV-8; HARN-19 | A control op is acknowledged within a bounded number of quanta. |
 | `gate:any-guest` | L2 guest boot | INV-5, G-2; HARN-6 | An unmodified guest boots deterministically with no image mutation. |
-| `gate:qemu-inert` | AOS QEMU package + patch series | INV-7, G-7; HARN-20, HARN-21 | Sim-off guest and upstream management behavior are identical; the exact Crucible host-control extension is rejected without changing stopped run state; each patch has a passing micro-test. |
+| `gate:qemu-inert` | AOS QEMU package + atomic patch | INV-7, G-7; HARN-20, HARN-21 | Sim-off guest and upstream management behavior are identical; the exact Crucible host-control extension is rejected without changing stopped run state; each capability has a passing microtest. |
 | `gate:abi-conformance` | L1 boundary ABIs | G-8; HARN-32, HARN-33, HARN-34 | Shmem layout, protocol, and RPC match frozen golden vectors. |
 | `gate:typed-choice` | L1/L2 guest choice boundary | INV-3, INV-4, G-8; SHM-53, SHM-54 | Typed guest registrations, exact pending tokens, host-authorized replies, and fresh-process continuation match the frozen shared-memory and canonical choice contracts. |
 | `gate:license-boundary` | Repository and Crucible/QEMU boundary (Always) | BOUND-1..BOUND-12 | `crucible-harness` rejects dependency, license-scope, protocol-shape, package-source, or corresponding-source violations. |
-| `gate:patch-microtests` | QEMU patch series (per-patch) | INV-7; HARN-20 | Every patch in the series has a focused, passing behavioral test. |
+| `gate:patch-microtests` | Atomic QEMU integration patch | INV-7; HARN-20 | Every capability task has a focused, passing behavioral test and the atomic patch has one pristine-QEMU attribution negative. |
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
 | `gate:e2e-determinism` | Final acceptance (all layers) | All headline invariants; HARN-22, HARN-23 | A representative multi-VM, fault-injected scenario runs bit-identically across adversarial conditions and reproduces from its artifact. |
 | `gate:basic-block-coverage` | L2/L3 coverage observation | INV-4, INV-7; ADV-21, PLUG-35..PLUG-37 | An opt-in loaded-QEMU run emits the expected guest-PC/block-length coverage stream with no fingerprint effect; off mode installs no callback. |
@@ -78,6 +78,7 @@ invariants/requirements it enforces.
 | `gate:perf-bench` | Cross-layer (Phase ≥ L2), regression | G-9; PERF-1..PERF-34 | Cost-model metrics meet their baselines and no metric regresses beyond threshold. Unlike every other gate this is a *regression* gate (per-metric baselines), not a byte-identity check; it MUST never trade determinism for speed (defined in [`25-performance-targets.md`](25-performance-targets.md) §25.11). |
 | `gate:fleet-equivalence` | Cross-layer (Phase ≥ L3) | DCE-16, DCE-17, DCE-20; G-6 | Single-host and fleet search over the same `(family, seed, budget)` discover the same content-addressed finding-set with byte-identical artifacts; discovery order may differ. |
 | `gate:campaign-continuity` | Cross-layer (Phase ≥ L3) | DCE-11, DCE-12, DCE-26; PERF-28 | Seeding run N+1 from run N's campaign reproduces each corpus entry bit-identically, accumulated coverage is monotone non-decreasing across runs, and cross-provenance reuse is refused. |
+| `gate:production-rust-plugin-flight` | L2/L4 production QEMU boundary (Phase 7) | INV-4, INV-7, INV-8; RISK-14 | The current Rust host and plugin drive the packaged QEMU through exact boundaries, fingerprints, idle wake, and timer expiry twice with identical authenticated evidence. |
 | `gate:signal-fault-system` | Cross-layer (Phase 7) | RFC-0014 executable contract | The closed signal-driven network, storage/9p, and node fault system has exhaustive per-kind evidence, live-boundary coverage, replay identity, documentation, and no retired or specification-only executable path. |
 
 The first twelve names — `gate:layer0-determinism`, `gate:single-vm-fingerprint`,
@@ -93,6 +94,10 @@ it remains red until its loaded-QEMU proof is green. `gate:fleet-equivalence`
 and `gate:campaign-continuity` (owned
 by [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md))
 are likewise canonical.
+
+`gate:production-rust-plugin-flight` is the identity-bound live acceptance gate
+for the current Rust host, plugin, and packaged QEMU. It closes the native
+timer and boundary evidence required by RISK-14.
 
 `gate:signal-fault-system` is the terminal fault-system acceptance gate. It
 aggregates the closed effect registry, production adapter capability manifests,
@@ -123,20 +128,23 @@ runs on every boundary-affecting change and at release construction.
 
 #### `gate:layer0-determinism`
 
-- **Runs:** the L0 (`crucible-sim`, `crucible-assert`) determinism suite — the
-  runtime/scheduler primitives are driven through a fixed decision sequence twice
-  and the resulting canonical state digests compared, plus property tests on the
-  scheduler's ordering and the decision RNG's stability under entity addition.
-- **Pass/fail:** the two digests are byte-identical and all properties hold.
-- **Guards:** L0; must be green before L1 is built on it. **Enforces:** INV-4,
-  INV-8 (the scheduling primitive level).
+- **Runs:** the guarded production QEMU fingerprint authority at four exact
+  aggregate-icount coordinates, including adjacent-instruction localization and
+  a restarted run under bounded host-scheduler preemption.
+- **Pass/fail:** the authenticated fingerprint stream is byte-identical after
+  restart, and a one-instruction coordinate change is localized exactly.
+- **Guards:** the production execution foundation used by later phase gates.
+  **Enforces:** INV-4 and INV-8 on the shipped QEMU/plugin path. In-process
+  reducer and RNG tests remain supplemental unit coverage and do not authorize
+  this canonical gate.
 
 #### `gate:single-vm-fingerprint`
 
 - **Runs:** the single-VM execution-fingerprint comparison (§4) — boot one
   unmodified guest under sim mode twice with a fixed `(image, kernel cmdline,
-  seed, injected-input sequence)` and compare the periodic icount + register +
-  memory-region fingerprints.
+  seed, injected-input sequence)` and compare the authenticated on-demand
+  icount + register + memory-region fingerprints at the same requested
+  coordinates.
 - **Pass/fail:** every fingerprint sample matches between the two runs; the final
   fingerprint matches; icount totals match. Any mismatch fails and triggers
   bisection (§5) to localize.
@@ -189,13 +197,14 @@ runs on every boundary-affecting change and at release construction.
 
 #### `gate:scheduler-liveness`
 
-- **[HARN-18]** `gate:scheduler-liveness` MUST drive the single authoritative
-  scheduler (INV-8) over generated scenarios and assert it always terminates in
-  `Quiescent` or `TimeLimitReached`, never deadlocks (all nodes blocked with a
-  due event) or livelocks (advancing without progress), and that it yields between
-  quanta (no held lock spans a node advance). Pass/fail: every generated scenario
-  reaches a terminal result within a deterministic quantum budget. **Guards:** L3
-  scheduler. **Enforces:** INV-8 (liveness half).
+- **[HARN-18]** `gate:scheduler-liveness` MUST drive the shipped QEMU/plugin
+  scheduler through exact bounded icount targets. It must exercise pending-
+  quantum preemption, vCPU switching, interrupt delivery, the all-vCPU-halted
+  state, and an exact queued idle wake, then reproduce the idle-wake stream after
+  restart. Pass/fail: every requested boundary is acknowledged at its exact
+  coordinate and the bounded progress evidence is complete. **Guards:** the
+  L2/L3 production scheduler boundary. **Enforces:** INV-8 (liveness half).
+  Generated in-process scenarios remain supplemental scheduler unit tests.
 
 #### `gate:control-responsive`
 
@@ -246,7 +255,7 @@ runs on every boundary-affecting change and at release construction.
   flag is set. The only permitted QMP command-set delta is the enumerated
   terminal-lifecycle host-control command, which MUST fail closed and leave the
   stopped VM in its original run state without sim mode.
-- **Guards:** the AOS QEMU package + patch series. **Enforces:** INV-7, G-7.
+- **Guards:** the AOS QEMU package + atomic patch. **Enforces:** INV-7, G-7.
 
 #### `gate:abi-conformance`
 
@@ -261,12 +270,10 @@ runs on every boundary-affecting change and at release construction.
 
 #### `gate:patch-microtests`
 
-- **Runs:** each QEMU patch's focused micro-test (§10), aggregated.
-- **Pass/fail:** every patch in the series has at least one passing micro-test
-  that exercises exactly the behavior the patch adds and fails on stock QEMU.
-- **Guards:** the patch series, per-patch. **Enforces:** INV-7 (each patch is
-  individually justified and tested; see also the per-patch gates in
-  [`11-qemu-patches.md`](11-qemu-patches.md)).
+- **Runs:** the atomic QEMU patch's focused component microtests (§10).
+- **Pass/fail:** every capability task has a passing microtest that exercises
+  its behavior, and the pristine-QEMU negative lacks the capability.
+- **Guards:** the atomic patch and its capability inventory. **Enforces:** INV-7.
 
 #### `gate:adversarial-determinism`
 
@@ -300,37 +307,37 @@ Each layer has its **own** determinism gate that must be green before anything i
 built on top of it ([G-5]). This section spells out *what is tested at each layer
 and how*; the gate names above bind to it.
 
-- **[HARN-3]** Each layer L0–L4 MUST have a determinism gate that is green before
-  any higher layer's tests are allowed to run in the phase plan. A higher-layer
-  test MUST NOT be used to "cover" a lower-layer determinism property; the lower
-  layer's gate owns it. (This is the testing-side expression of [PLAN-4].)
+- **[HARN-3]** Each layer L0–L4 MUST have explicit determinism coverage before
+  dependent tests run in the phase plan. The canonical execution gate MUST use
+  the shipped QEMU/plugin path; lower-layer unit suites remain supplemental and
+  cannot substitute their modeled results for production evidence. (This is the
+  testing-side expression of [PLAN-4].)
 
 ```text
   L4  control plane     gate:control-responsive   — ops acked within a quantum bound
-                        gate:scheduler-liveness*   — (*scheduler is L3 but the actor
-                                                     boundary is exercised from L4)
   L3  engine            gate:replay-oracle         — fat == thin by hash
-                        gate:scheduler-liveness    — always terminates, yields
                         gate:content-address       — equal content, equal id
   L2  QEMU integration  gate:single-vm-fingerprint — one VM bit-identical (Contract A)
+                        gate:layer0-determinism    — exact production fingerprint stream
+                        gate:scheduler-liveness    — bounded production scheduler progress
                         gate:any-guest             — unmodified guest, no mutation
                         gate:qemu-inert            — sim-off == upstream
   L1  co-sim transport  gate:layer1-injection      — injection icount is pure (Contract B)
                         gate:abi-conformance       — shmem/protocol/RPC golden vectors
-  L0  deterministic core gate:layer0-determinism   — primitives reduce identically
+  L0  deterministic core supplemental unit suites — reducer/RNG/assertion properties
   ──  cross-cutting     gate:harness-lint, gate:divergence-bisect,
                         gate:adversarial-determinism, gate:e2e-determinism
 ```
 
-**L0 — deterministic core (`crucible-sim`, `crucible-assert`).** Tested entirely
-in-process, no QEMU. The scheduler primitives, the decision RNG, the
-content-addressed digest helpers, and the assertion evaluator are driven through
-fixed decision sequences and compared by canonical digest. Property tests cover:
+**L0 — deterministic core (`crucible-sim`, `crucible-assert`).** Supplemental
+in-process unit tests cover the scheduler primitives, decision RNG,
+content-addressed digest helpers, and assertion evaluator. Property tests cover:
 decision-RNG stability under entity insertion (the per-entity stream is forked by
 name-hash so adding a node does not perturb others — §4.5), total-order stability
 of the cross-node event keying `(virtual_time, consumer node_id, producer node_id, sequence)`, and ordered
-iteration on every ordering-significant collection. **Gate:**
-`gate:layer0-determinism`. Runs in milliseconds.
+iteration on every ordering-significant collection. These tests run in
+milliseconds but do not stand in for the canonical production-QEMU
+`gate:layer0-determinism` authority.
 
 **L1 — co-sim transport (`crucible-shmem`, `crucible-protocol`,
 `crucible-device`).** Tested against the in-process QEMU double (§3): the shmem
@@ -343,6 +350,8 @@ and codec/wire fuzzing (§8). **Gate:** `gate:layer1-injection`,
 **L2 — QEMU integration (`crucible-qemu`, `crucible-qemu-plugin`,
 `crucible-guest`).** The first layer that requires real QEMU. Single-VM
 fingerprint determinism (`gate:single-vm-fingerprint`, Contract A),
+production execution determinism (`gate:layer0-determinism`), production
+scheduler progress (`gate:scheduler-liveness`, INV-8),
 unmodified-guest boot and non-mutation (`gate:any-guest`), and patch inertness
 (`gate:qemu-inert`, `gate:patch-microtests`). Slower (boots a guest), so the
 suite uses small boot-to-ready images and is structured so the cheap in-process
@@ -350,10 +359,9 @@ layers catch most regressions first.
 
 **L3 — engine (`crucible`).** The temporal graph, scheduler, faults, assertions.
 The replay oracle (`gate:replay-oracle`, INV-1/INV-2) is the headline structural
-test; scheduler liveness (`gate:scheduler-liveness`, INV-8) and content
-addressing (`gate:content-address`, INV-6) round it out. Most of L3 runs against
-the in-process double so the oracle and scheduler are exercised in milliseconds;
-a smaller slice runs against real QEMU for fidelity.
+test; content addressing (`gate:content-address`, INV-6) rounds it out. L3 keeps
+fast in-process scheduler unit coverage, while the canonical scheduler-liveness
+authority is the packaged-QEMU flight described above.
 
 **L4 — control plane (`crucible-session`, `crucible-api`, `crucible-daemon`,
 `crucible`).** The session actor, API, daemon, and CLI.
@@ -536,8 +544,9 @@ half of `gate:adversarial-determinism`. Forward ref:
 - **[HARN-31]** Fingerprint and injection determinism both rest on the decision
   RNG being **order-independent**: per-entity RNG streams MUST be derived by
   forking from the seed by entity name-hash (so adding or renaming a node does not
-  perturb other nodes' streams), and this property MUST be a property test in the
-  L0 suite (`gate:layer0-determinism`). See
+  perturb other nodes' streams), and this property MUST remain in the
+  supplemental L0 unit suite. The canonical `gate:layer0-determinism` result
+  comes from the production fingerprint stream. See
   [`04-determinism-contract.md`](04-determinism-contract.md) and
   [`08-scheduling.md`](08-scheduling.md) for the decision model.
 
@@ -747,17 +756,15 @@ Forward ref: [`28-engineering-standards.md`](28-engineering-standards.md).
 
 ## 10. QEMU patch micro-tests + inertness gate
 
-The AOS QEMU package is patched to support sim mode, but those patches MUST be
-**inert** unless sim mode is active (INV-7), and each patch MUST be individually
+The AOS QEMU package carries one atomic patch for sim mode. The patch MUST be
+**inert** unless sim mode is active (INV-7), and each capability task MUST be
 justified by a focused test. Gates: `gate:qemu-inert`, `gate:patch-microtests`.
 Forward ref: [`11-qemu-patches.md`](11-qemu-patches.md).
 
-- **[HARN-20]** Every patch in the QEMU patch series MUST have a focused
-  micro-test that (a) exercises exactly the behavior the patch adds (with sim mode
-  on) and (b) demonstrates that the behavior is absent on stock/unpatched QEMU.
-  `gate:patch-microtests` aggregates these; the patch series is not allowed to
-  grow a patch without a corresponding micro-test (per-patch gates are also
-  enumerated in [`11-qemu-patches.md`](11-qemu-patches.md)).
+- **[HARN-20]** Every capability task in the atomic QEMU patch MUST have a
+  focused microtest that exercises its sim-mode behavior. The aggregate MUST
+  also prove that the capability set is absent from pristine QEMU.
+  `gate:patch-microtests` owns both forms of evidence.
 
 - **[HARN-21]** `gate:qemu-inert` MUST demonstrate that the AOS QEMU built from
   the patched source, run with **sim mode off** (plugin not loaded, no sim
@@ -857,7 +864,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase0  gate:harness-lint                  (every PR, always on)
   phase1  gate:harness-lint                  (first phase exit gate)
   phase1  gate:license-boundary               (component and process boundary)
-  phase1  gate:layer0-determinism            (L0 core)
+  phase1  gate:layer0-determinism            (production QEMU fingerprint determinism)
   phase1  gate:content-address               (store)
   phase1  gate:campaign-model                (canonical campaign owner)
   phase1  gate:replay-oracle                 (double-backed replay)
@@ -866,16 +873,16 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase2  gate:abi-conformance               (L1 ABIs)
   phase2  gate:typed-choice                  (typed guest choice boundary)
   phase2  gate:layer1-injection              (L1 injection preflight)
-  phase2  gate:patch-microtests              (patch series)
+  phase2  gate:patch-microtests              (atomic QEMU patch)
   phase2  gate:qemu-inert                    (sim-off QEMU behavior)
   phase2  gate:single-vm-fingerprint         (Contract A, real QEMU)
   phase2  gate:any-guest                     (unmodified guest)
   phase3  gate:layer1-injection              (Contract B)
-  phase3  gate:scheduler-liveness            (scheduler actor)
+  phase3  gate:scheduler-liveness            (production QEMU bounded progress)
   phase3  gate:adversarial-determinism       (modeled hostile-condition matrix)
   phase4  gate:replay-oracle                 (full temporal graph)
   phase4  gate:campaign-statistics           (finite static P/Q estimation)
-  phase4  gate:e2e-determinism               (mock backend)
+  phase4  gate:e2e-determinism               (native QEMU acceptance)
   phase5  gate:control-responsive            (control plane)
   phase6  gate:replay-oracle                 (active search)
   phase6  gate:basic-block-coverage           (loaded-QEMU coverage boundary)
@@ -885,6 +892,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase7  gate:e2e-determinism               (final acceptance)
   phase7  gate:fleet-equivalence             (distributed equivalence)
   phase7  gate:campaign-continuity           (coverage ratchet)
+  phase7  gate:production-rust-plugin-flight (identity-bound live boundary proof)
   phase7  gate:signal-fault-system           (complete signal fault system)
 ```
 
@@ -932,7 +940,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
   cross-check suite. — satisfies [HARN-16]; spec §3.2.
   - Completed by `checks.crucible.phase1.hostObservableSchedule` and
-    `checks.crucible.phase2.qemuLivePluginQuantum`. The
+    `checks.crucible.phase2.qemuQuantumShmem`. The
     `host_observable_schedule_cross_checks_sim_double_against_plugin_projection`
     unit test proves the callback-model half: `crucible::SimDouble` records a
     typed host-observable schedule vocabulary for horizon advances, inbound
@@ -949,28 +957,25 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     through `SimDouble`, and compares the versioned, length-prefixed canonical
     schedule bytes. The live gate fails on a backward step, unsupported event,
     outcome mismatch, setup failure, or first byte-level schedule difference.
-- [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
-  (twice-reduce digest compare + scheduler-ordering and decision-RNG-stability
-  property tests). — satisfies [HARN-3], [HARN-31]; spec §2, §4.5.
+- [x] **T-HARN-5** Implement `gate:layer0-determinism` as the guarded production
+  QEMU fingerprint flight at exact icount coordinates with restart identity and
+  one-instruction mismatch localization. Reducer, scheduler-ordering, and
+  decision-RNG property tests remain supplemental. — satisfies [HARN-3],
+  [HARN-31]; spec §2, §4.5.
 - [x] **T-HARN-6** Implement the execution fingerprint (icount + register +
   memory-region rolling hash) with icount-driven, observation-only sampling via
   plugin/QMP. — satisfies [HARN-4], [HARN-7]; spec §4.
-  - Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`: the live
-    Rust plugin samples all-vCPU registers, the RR cursor, writable RAM, and
-    non-RAM VMState at fixed cadence boundaries plus a frame delivered through
-    the production inbound ring and a fault applied through the production
-    preemption mailbox. Every event is acknowledged before its sample is
-    accepted.
+  - Completed by `checks.crucible.phase2.qemuFingerprintStateDomains` and
+    `checks.crucible.phase2.qemuRrQuantumIcount`: the current path validates
+    the exact `VOLATILE | DEVICE | CONTROL` projection, native checkpoint
+    state, and the authoritative multi-vCPU RR coordinate.
 - [x] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
-  unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
-  bisection result). — satisfies [HARN-5]; spec §4.3.
+  unmodified guest twice and compare fingerprint streams). — satisfies [HARN-5];
+  spec §4.3.
   - Completed by the same live gate. The ordinary pass boots one unmodified
     fixed guest twice and proves identical streams under bounded scheduler preemption.
-    The negative-control pass forces a real QEMU divergence, performs
-    ordinal-aware RESTART refinement to the exact first differing instruction,
-    and emits both sides' complete architectural register bytes, paired
-    differing RAM ranges, complete non-RAM VMState, and a stable dump content
-    address. Snapshot restore remains policy-disabled.
+    The negative-control pass forces a real QEMU divergence and identifies the
+    first differing canonical sample and component from the two retained streams.
 - [x] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical
   observed-injection-icount vectors across host interleavings, against the
   double). — satisfies [HARN-8]; spec §4.4.
@@ -1003,9 +1008,10 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   mismatches as hard failures with bisection requests; the divergence gate
   localizes the sampled fat/thin mismatch to an exact icount/decision when
   diagnostic streams are available.
-- [x] **T-HARN-14** Implement `gate:scheduler-liveness` (every generated scenario
-  reaches Quiescent/TimeLimitReached within a quantum budget; no held lock spans a
-  node advance). — satisfies [HARN-18]; spec §1.2.
+- [x] **T-HARN-14** Implement `gate:scheduler-liveness` with packaged QEMU exact
+  target progress, pending-quantum preemption, vCPU switch and interrupt
+  delivery, all-vCPU idle, and restart-identical queued idle wake. — satisfies
+  [HARN-18]; spec §1.2.
 - [x] **T-HARN-15** Implement `gate:control-responsive` (control ops acked within
   a bounded number of quanta against a running session, measured in quanta not
   wall-clock). — satisfies [HARN-19]; spec §1.2.
@@ -1041,8 +1047,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   Completed by `checks.crucible.phase2.gates.abiConformance`: the gate aggregates
   the shmem generated-header/layout fixture, protocol frame golden vectors, and
   the RPC golden-vector corpus, with explicit version constants, byte-for-byte
-  live encoder comparisons, and typed RPC major-mismatch rejection. The full API
-  reference-client lifecycle conformance suite remains T-API-13.
+  live encoder comparisons, and typed RPC exact-version mismatch rejection. The
+  full API reference-client lifecycle conformance suite remains T-API-13.
 - [x] **T-HARN-18** Implement the SPSC queue concurrency model-checker + property
   tests (no loss/dup, FIFO, full/empty, wraparound). — satisfies [HARN-33];
   spec §8.2.
@@ -1060,12 +1066,13 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   well-formed block requests, block responses, and 9p envelopes. Full 9p
   filesystem semantics and block sub-node execution remain owned by the
   `15-io-subnodes.md` implementation tasks.
-- [x] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
-  `gate:patch-microtests` (each patch has a focused test absent on stock QEMU). —
+- [x] **T-HARN-20** Implement the QEMU component-microtest framework and
+  `gate:patch-microtests` (each capability has focused evidence and the atomic
+  patch has one pristine-QEMU attribution negative). —
   satisfies [HARN-20]; spec §10.
-  Completed by `checks.crucible.phase2.gates.patchMicrotests`: every carried
-  patch has prefix provenance plus exactly one live drop-one attribution method,
-  and the aggregate rejects composition and structural fallback classifications.
+  Completed by `checks.crucible.phase2.gates.patchMicrotests`: component tests
+  cover the capability inventory and the atomic patch has one live
+  pristine-QEMU attribution negative.
 - [x] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally
   identical to an unpatched reference over the behavioral corpus, all from-source).
   — satisfies [HARN-21]; spec §10.
@@ -1079,7 +1086,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     negative control proves raw serial comparison remains authoritative.
 - [x] **T-HARN-22** Implement the modeled adversarial host-condition harness
   component and `gate:adversarial-determinism` (byte-identical canonical
-  logs/fingerprints). — provides model-level evidence toward [HARN-11]; spec §7.
+  logs/fingerprints). — satisfies the modeled scope of [HARN-11]; spec §7.
   Completed at modeled scope by
   `checks.crucible.phase3.gates.adversarialDeterminism`: the gate runs a fixed
   adversarial scenario corpus through the shared
@@ -1088,35 +1095,28 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   modeled host I/O stalls while asserting byte-identical canonical logs and final
   fingerprints. It also carries negative controls for profile-dependent logs,
   fingerprints, observer output, and empty evidence; shared artifact
-  machine-profile reproduction is completed by T-HARN-25. This modeled proof
-  does not claim that the native executor satisfies [HARN-11]. It is
-  complemented by the live-QEMU production fleet run in
-  `checks.fleet.crucible-e2e-determinism`, which executes each independent
-  reduction through the packaged QEMU/plugin lifecycle before comparing live
-  event and execution-fingerprint streams. Its adversarial profiles perturb
-  observer polling; they do not provide physical host variation.
-- [ ] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
+  machine-profile reproduction is completed by T-HARN-25. The same profile
+  dimensions execute against the native QEMU backend in T-HARN-23; the modeled
+  gate remains the fast diagnostic layer for isolating scheduler drift.
+- [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
-  T-HARN-23 remains open. The phase-4 and phase-7 `.rawGate` checks are
-  component checks over the scheduler and shared mock artifact. The fleet slice
-  runs every reduction with `--backend qemu`, launches the closure-owned patched
-  QEMU and plugin under TCG against the AOS-built kernel/root fixture, requires
-  non-empty live fingerprints, and compares live event and fingerprint streams
-  across observer scheduling perturbations. Its representative three-VM flight
-  is configured to replay an emitted artifact from a one-CPU producer profile
-  under a two-CPU profile with bounded scheduler preemption. The result records
-  [HARN-23] only after that live replay passes. T-HARN-23 remains open because
-  the native run does not yet apply the full randomized worker, wall-clock,
-  varied-core, and host-I/O-stall matrix required by [HARN-22].
-- [ ] **T-HARN-24** Implement the reproduction-artifact format `(seed,
+  Completed by `checks.crucible.phase4.gates.e2eDeterminism.rawGate`. The gate
+  runs the representative three-VM block/9p workload with partition, loss,
+  latency, and crash faults through the closure-owned patched QEMU and plugin.
+  Its one-, two-, and four-core profiles add seeded worker pressure, launch
+  jitter, bounded scheduler preemption, and host I/O stalls. All profiles must
+  produce identical canonical logs, non-empty final fingerprints, and identical
+  reproduction artifacts. The one-core artifact is then replayed from an empty
+  content store under the preempted four-core profile. Raw profile/replay JSONL,
+  canonical identities, artifact digests, and the exact closure identity are
+  retained in the gate output for divergence diagnosis.
+- [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into
   failures and the CLI. — satisfies [HARN-27], [HARN-29]; spec §12.
-  The prior independent harness codec and its gate were removed because they
-  did not prove ownership of the current Campaign repository closure. Completion
-  requires the sole current CLI artifact to carry and authenticate that bounded
-  closure before replay.
+  The sole current CLI artifact carries and authenticates the bounded Campaign
+  repository closure before replay.
 - [ ] **T-HARN-25** Implement machine-independent reproduction verification
   (re-run from artifact on a different host profile ⇒ byte-identical) and fail
   loudly on engine/ABI/QEMU identity mismatch. — satisfies [HARN-28]; spec §12.
@@ -1182,46 +1182,43 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     `phase4-guest-host-channel-determinism.nix` and
     `phase4-guest-host-app-random-doorbell.nix` kept naming the parent file;
     both checks now throw at evaluation for that reason alone, while their own
-    shell scripts already address the tests at the new path. Separately,
-    [`11-qemu-patches.md`](11-qemu-patches.md) cites
-    `checks.crucible.phase2.qemuAarch64DetIpiAdapter`, which does not exist (the
-    check is an anonymous inline import), and describes "the 40-patch series"
-    while `pkgs/emulation/qemu-patches/_series.nix` carries 42.
+    shell scripts already address the tests at the new path.
   - Plan: (1) a lint that, for every `failuresFor "<path>"` block, asserts
     `<path>` exists and that each needle occurs in it — turning a silent
     false-negative into a build failure; (2) a lint resolving every
     `checks.crucible.*` / `checks.fleet.*` attribute path named in the RFC against
-    the evaluated check set; (3) a lint comparing patch-series counts in prose
-    against `_series.nix`. Fix the eighteen needles and the two prose defects as
-    part of landing it.
+    the evaluated check set; (3) a lint comparing atomic-patch identity claims in prose
+    against the QEMU integration manifest.
   - Gate: `gate:harness-lint` fails on an unresolvable needle, attribute path, or
     count.
   - Completed by `checks.crucible.referenceIntegrity` and
     `checks.crucible.phase1.gates.harnessLint`: the Nix check walks the complete
     Crucible and fleet check trees under `tryEval`, resolves every check
-    attribute named by the RFC, and derives the documented patch count from the
-    series manifest. The Rust lint rejects missing `failuresFor` source paths,
+    attribute named by the RFC, and validates atomic-patch identity claims
+    against the patch manifest. The Rust lint rejects missing `failuresFor` source paths,
     checklist-state evidence, and completed/open task metadata inversions; its
     synthetic negative controls prove both task-state inversions fail. The
-    repaired source needles, named check reference, and patch-count prose all
+    repaired source needles, named check reference, and atomic-patch prose all
     pass the full-tree evaluation.
 
 - [x] **T-HARN-29** Certify that CLI reproduction artifacts replay through
   independent packaged-QEMU processes rather than only through the model
   reducer. — satisfies [HARN-12], [HARN-24], [HARN-28]; spec §6, §7.
-  - The gate creates a v3 artifact from a real two-VM QEMU timeout, retains its
+  - The gate creates a v4 artifact from a real two-VM QEMU timeout, retains its
     canonical trace and terminal savepoint, and requires fresh-QEMU ordinary,
     `--check`, `--to`, and identical-artifact `--bisect` invocations to pass.
-  - The artifact identity pins QEMU, patch-series, plugin, shmem, guest-host,
+  - The artifact identity pins QEMU, the atomic patch, plugin, shmem, guest-host,
     RPC, engine, and artifact ABIs. Its live evidence comparison covers the
     exact terminal tuple, canonical QEMU event bytes, and the declared full or
-    terminal-all-node fingerprint scope after the pure model preflight. Generic
-    run/verify/fuzz/fork recipes also replay separate closed, ordered startup and
-    initial controls and compare all acknowledgements produced by the fresh
+    terminal-all-node fingerprint scope after the pure model preflight.
+    Campaign-run, verify, search, and fuzz artifacts replay their direct closed,
+    ordered startup and controls; Interactive artifacts apply every control at
+    its recorded event, scheduler-batch, virtual-time, quanta, and command
+    boundary. Each route compares all acknowledgements produced by the fresh
     session.
   - Completed by `checks.crucible.phase5.cliReplayCheck`; the check depends on
     the existing replay-oracle and end-to-end determinism gates and runs the
     packaged production CLI, QEMU, plugin, kernel, root image, and initramfs.
-    A closed-producer contract matrix separately covers run/verify/search/fuzz/
-    fork recipe admission and the fail-closed branch, lifecycle, fingerprint,
-    choice-order, and unsupported-control rules.
+    A closed-producer contract matrix separately covers campaign-run, verify,
+    search, and fuzz recipe admission and the fail-closed branch, lifecycle,
+    fingerprint, choice-order, and unsupported-control rules.

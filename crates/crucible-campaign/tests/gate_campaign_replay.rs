@@ -82,26 +82,30 @@ impl ReplayFixture {
             1,
         )?;
         let policy = CampaignPolicy::new(
-            scenario,
-            CampaignSeed::from_bytes([0x93; 32]),
-            CampaignMode::Strict,
-            ExplorerPolicy::TreeSearch {
-                widening: Some(ProgressiveWideningPolicy::new(
-                    ExactRational::new(1, 1)?,
-                    ExactRational::new(1, 2)?,
-                    1,
-                    16,
-                    1,
-                )?),
-                puct: PuctPolicy::new(1_000_000, 1, 0),
-            },
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeSet::new(),
-            FairnessPolicy::new(0, 0)?,
-            RetentionPolicy::new(true, 1, true, true),
-            true,
+            CampaignPolicy::identity(
+                scenario,
+                CampaignSeed::from_bytes([0x93; 32]),
+                CampaignMode::Strict,
+                ExplorerPolicy::TreeSearch {
+                    widening: Some(ProgressiveWideningPolicy::new(
+                        ExactRational::new(1, 1)?,
+                        ExactRational::new(1, 2)?,
+                        1,
+                        16,
+                        1,
+                    )?),
+                    puct: PuctPolicy::new(1_000_000, 1, 0),
+                },
+            ),
+            CampaignPolicy::rules(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                FairnessPolicy::new(0, 0)?,
+                RetentionPolicy::new(true, 1, true, true),
+                true,
+            ),
         )?;
 
         Ok(Self {
@@ -299,10 +303,12 @@ fn publish_branch_request(
         .repository
         .publish_choice_opportunity(&opportunity)?;
     let request = BranchRequest::new(
-        opportunity.branch_point_id(fixture.lineage.genesis()),
-        fixture.lineage.genesis_content(),
-        opportunity.id()?,
-        domain.id()?,
+        BranchRequest::identity(
+            opportunity.branch_point_id(fixture.lineage.genesis()),
+            fixture.lineage.genesis_content(),
+            opportunity.id()?,
+            domain.id()?,
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),
@@ -450,13 +456,15 @@ fn observation(
         .publish_coverage_projection(&CoverageProjection::new(BTreeSet::new(), BTreeSet::new())?)?;
     Ok(Observation::new(
         attempt,
-        child,
-        child_content,
-        path.id()?,
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id()?,
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([opportunity]),
     )?)
 }

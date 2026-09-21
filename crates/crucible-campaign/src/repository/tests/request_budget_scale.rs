@@ -64,10 +64,12 @@ fn distinct_request_transitions_keep_indexed_cap_queries_bounded() {
             &format!("request-index-{ordinal}"),
         );
         let request = BranchRequest::new(
-            template.branch_point(),
-            template.parent(),
-            template.opportunity(),
-            template.domain(),
+            BranchRequest::identity(
+                template.branch_point(),
+                template.parent(),
+                template.opportunity(),
+                template.domain(),
+            ),
             template.source().clone(),
             template.cause(),
             BranchBudget::new(2, 1).expect("request cap"),

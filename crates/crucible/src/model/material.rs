@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineError> {
     let value = toml::from_str::<toml::Value>(input).map_err(|source| {
         scenario_serialization_error(format!(
-            "parse TOML before fault-schema migration check: {source}"
+            "parse TOML before current fault-schema validation: {source}"
         ))
     })?;
     let root = value.as_table().ok_or_else(|| {
@@ -17,7 +17,7 @@ pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineErro
         .unwrap_or(root);
     if plan.get("fault_model").and_then(toml::Value::as_str) != Some("signal_bindings_v2") {
         return Err(scenario_serialization_error(
-            "unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)",
+            "unsupported fault schema; use `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)",
         ));
     }
     Ok(())
@@ -480,12 +480,6 @@ pub(super) fn scenario_serialization_error(reason: impl Into<String>) -> EngineE
     }
 }
 
-pub(super) fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
-    let mut nodes = nodes.to_vec();
-    nodes.sort_by(|left, right| left.id.cmp(&right.id));
-    nodes
-}
-
 pub(super) fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNodeDef> {
     let mut nodes = nodes.to_vec();
     nodes.sort_by(|left, right| left.id().cmp(right.id()));
@@ -519,9 +513,10 @@ pub(super) fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
 }
 
 pub(super) fn world_participants(world: &World) -> Vec<NodeId> {
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
-        .map(|node| node.id)
+    world
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
         .collect()
 }
 
@@ -548,13 +543,13 @@ pub(super) fn world_scheduling_nodes(world: &World) -> Vec<SchedulerNodeId> {
 pub(super) fn world_rng_streams(world: &World) -> Vec<RngStreamId> {
     let mut streams = Vec::with_capacity(
         world
-            .nodes
+            .vm_nodes()
             .len()
             .saturating_add(world.links.len())
             .saturating_add(world.io_nodes().count()),
     );
-    for node in canonical_world_nodes(&world.nodes) {
-        streams.push(RngStreamId::for_node(node.id.name));
+    for node in world.vm_nodes() {
+        streams.push(RngStreamId::for_node(node.id.name.clone()));
     }
     for link in canonical_world_links(&world.links) {
         streams.push(RngStreamId::for_link(world_link_stream_name(&link)));
@@ -690,25 +685,27 @@ pub(super) fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, 
 
 pub(super) fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
     let world_identity = canonical_world_identity(world);
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
+    world
+        .vm_nodes()
+        .iter()
         .map(|node| {
             let blob = ContentHash::from_canonical_material(
                 "crucible.model.node-baked-blob.v1",
                 &format!(
                     "world_id={}\n{}",
                     content_hash_hex(world_identity),
-                    world_node_material(&node)
+                    world_node_material(node)
                 ),
             );
-            (node.id, NodeBlobRef::baked(blob))
+            (node.id.clone(), NodeBlobRef::baked(blob))
         })
         .collect()
 }
 
 pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
+    world
+        .vm_nodes()
+        .iter()
         .map(|node| {
             let icount = match node.ready_point {
                 ReadyPoint::FixedIcount { icount } => icount,
@@ -716,7 +713,7 @@ pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
                 | ReadyPoint::ConsoleMarker { .. }
                 | ReadyPoint::AgentSignal => Icount::default(),
             };
-            (node.id, icount)
+            (node.id.clone(), icount)
         })
         .collect()
 }
@@ -1415,30 +1412,23 @@ mod policy_labels;
 pub(super) use policy_labels::*;
 
 #[cfg(test)]
-mod migration_tests {
+mod current_schema_tests {
     use super::*;
 
     #[test]
-    fn pre_signal_forms_return_one_actionable_migration_error() {
-        for input in [
-            "id = 'x'",
-            "id = 'x'\nfault_model = 'signal_bindings_v1'",
-            "id = 'x'\n[plan]\nid = 'p'",
-        ] {
-            let error = match require_current_fault_schema(input) {
-                Ok(()) => panic!("a pre-signal form must be rejected before typed lowering"),
-                Err(error) => error,
-            };
-            assert_eq!(
-                error.to_string(),
-                "scenario serialized form is invalid: unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
-            );
-        }
+    fn current_signal_driven_plan_fields_pass_validation() {
+        let input = "fault_model = 'signal_bindings_v2'\nsignal = []\nfault_binding = []";
+        assert_eq!(require_current_fault_schema(input), Ok(()));
     }
 
     #[test]
-    fn signal_driven_plan_fields_pass_the_migration_check() {
-        let input = "fault_model = 'signal_bindings_v2'\nsignal = []\nfault_binding = []";
-        assert_eq!(require_current_fault_schema(input), Ok(()));
+    fn noncurrent_fault_schema_is_rejected() {
+        let Err(error) = require_current_fault_schema("fault_model = 'not-current'") else {
+            panic!("a noncurrent fault schema must fail before typed lowering");
+        };
+        assert_eq!(
+            error.to_string(),
+            "scenario serialized form is invalid: unsupported fault schema; use `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
+        );
     }
 }

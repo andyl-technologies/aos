@@ -1788,41 +1788,6 @@ impl DebugMultiVcpuPolicy {
     }
 }
 
-/// Contract for read-only gdbstub fallback while the S14 spike is unresolved.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DebugGdbstubStepPolicy {
-    /// Whether the gdbstub attach/step behavior remains a named spike.
-    pub spike_required: bool,
-    /// Whether debugger attach defaults to read-only.
-    pub read_only_attach_default: bool,
-    /// Whether stepping is routed through Crucible deterministic step verbs.
-    pub crucible_driven_step_reverse_step: bool,
-    /// Whether raw gdb single-step is disabled until the spike is green.
-    pub raw_gdb_single_step_disabled_until_green: bool,
-}
-
-impl DebugGdbstubStepPolicy {
-    /// Builds the conservative S14 fallback policy.
-    #[must_use]
-    pub const fn disabled_raw_single_step_until_green() -> Self {
-        Self {
-            spike_required: true,
-            read_only_attach_default: true,
-            crucible_driven_step_reverse_step: true,
-            raw_gdb_single_step_disabled_until_green: true,
-        }
-    }
-
-    /// Returns whether the fallback prevents raw gdb stepping from perturbing time.
-    #[must_use]
-    pub const fn proves_s14_fallback(&self) -> bool {
-        self.spike_required
-            && self.read_only_attach_default
-            && self.crucible_driven_step_reverse_step
-            && self.raw_gdb_single_step_disabled_until_green
-    }
-}
-
 /// Contract for the read-only versus mutating debug boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DebugReadMutationBoundaryPolicy {
@@ -1912,8 +1877,6 @@ pub struct DebugCliSurfaceContract {
     pub symbol_resolution: DebugSymbolResolutionPolicy,
     /// Multi-vCPU debugger coherence policy.
     pub multi_vcpu: DebugMultiVcpuPolicy,
-    /// Gdbstub attach/step fallback policy.
-    pub gdbstub_step: DebugGdbstubStepPolicy,
     /// Read-only versus mutating debug boundary policy.
     pub read_mutate_boundary: DebugReadMutationBoundaryPolicy,
     /// Reverse-latency and snapshot-completeness policy.
@@ -1948,7 +1911,6 @@ impl DebugCliSurfaceContract {
             delegates_to_gdbstub_proxy: true,
             symbol_resolution: DebugSymbolResolutionPolicy::no_symbol_server(),
             multi_vcpu: DebugMultiVcpuPolicy::coherent_round_robin_threads(),
-            gdbstub_step: DebugGdbstubStepPolicy::disabled_raw_single_step_until_green(),
             read_mutate_boundary:
                 DebugReadMutationBoundaryPolicy::read_only_default_with_explicit_branching(),
             reverse_latency: DebugReverseLatencyPolicy::performance_only_checkpoint_cadence(),
@@ -2008,7 +1970,6 @@ impl DebugCliSurfaceContract {
             && self.delegates_to_gdbstub_proxy
             && self.symbol_resolution.proves_no_crucible_symbol_server()
             && self.multi_vcpu.proves_multi_vcpu_coherence()
-            && self.gdbstub_step.proves_s14_fallback()
             && self.read_mutate_boundary.proves_read_mutate_boundary()
             && self.reverse_latency.proves_reverse_latency_policy()
     }

@@ -76,12 +76,6 @@ impl GuardedCampaignReplayClosure {
         Ok(closure)
     }
 
-    /// Builds a closure from selections already authenticated during candidate decoding.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GuardedCampaignReplayClosureError`] when the supplied records
-    /// are incomplete, inconsistent, noncanonical, or exceed closure bounds.
     pub(crate) fn from_resolved_selections(
         scenario: &ScenarioDefForm,
         schedule: &Schedule,
@@ -123,28 +117,6 @@ impl GuardedCampaignReplayClosure {
         Ok(Self {
             selections: by_selection.into_values().collect(),
         })
-    }
-
-    /// Builds the exact empty closure for a schedule with no typed selections.
-    ///
-    /// This supports migration of historical replay artifacts whose schedules
-    /// predate campaign ownership but contain only decisions that need no
-    /// separately published choice records.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GuardedCampaignReplayClosureError`] when `schedule` contains
-    /// a malformed or typed selection decision.
-    pub fn empty_for_selection_free_schedule(
-        schedule: &Schedule,
-    ) -> Result<Self, GuardedCampaignReplayClosureError> {
-        if !schedule_selection_ids(schedule)?.is_empty() {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "an empty replay closure cannot authenticate a schedule selection",
-            });
-        }
-
-        Self::new(Vec::new())
     }
 
     #[cfg(test)]
@@ -363,10 +335,8 @@ impl GuardedCampaignReplayClosure {
 /// closure does not cover the exact supplied scenario and schedule.
 pub fn validate_remote_resume_replay_closure(
     scenario: &ScenarioDefForm,
-    // crucible-lint: allow host-nondeterminism-state -- the canonical configuration is reconstructed from authenticated schedule evidence and is only compared with the exact closure identity.
     configuration: &Configuration,
     checkpoint: &crucible::Checkpoint,
-    // crucible-lint: allow host-nondeterminism-state -- the API envelope is untrusted transport input until every scenario, configuration, checkpoint, and payload identity below matches.
     envelope: &crucible_api::ResumeReplayClosure,
 ) -> Result<(), GuardedCampaignReplayClosureError> {
     if envelope.schema_version() != GuardedCampaignReplayClosure::SCHEMA_VERSION {
@@ -463,7 +433,7 @@ pub enum GuardedCampaignReplayClosureError {
     },
 }
 
-fn schedule_selection_ids(
+pub(super) fn schedule_selection_ids(
     schedule: &Schedule,
 ) -> Result<Vec<SelectionId>, GuardedCampaignReplayClosureError> {
     let mut ids = BTreeSet::new();

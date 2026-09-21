@@ -146,7 +146,7 @@ impl<'a> CandidateEnumerationBasis<'a> {
         self
     }
 
-    /// Adds the exact active-policy projection used by feedback versions 11 through 15.
+    /// Adds the exact active-policy projection used by progressive implementation 16.
     pub(super) const fn with_feedback(
         mut self,
         feedback_projection: Option<CandidateFeedbackProjection<'a>>,
@@ -209,7 +209,6 @@ pub(super) enum CandidateSourceProfile {
         initial_count: u64,
         feedback_interval: u64,
         exhausts_domain: bool,
-        score_intervals: bool,
     },
     CorpusMutation,
 }
@@ -277,13 +276,7 @@ impl CandidateSourceProfile {
     }
 
     pub(super) const fn scores_intervals(self) -> bool {
-        matches!(
-            self,
-            Self::ProgressiveInteger {
-                score_intervals: true,
-                ..
-            }
-        )
+        matches!(self, Self::ProgressiveInteger { .. })
     }
 
     pub(super) const fn scores_interval_at(self, ordinal: u64) -> bool {
@@ -291,7 +284,6 @@ impl CandidateSourceProfile {
             self,
             Self::ProgressiveInteger {
                 initial_count,
-                score_intervals: true,
                 ..
             } if ordinal > initial_count
         )
@@ -335,57 +327,6 @@ struct ExactMeanDiscontinuity {
 struct FeedbackEndpoint {
     edge: Option<crate::BranchEdgeId>,
     score_micros: i64,
-}
-
-#[derive(Clone, Copy)]
-struct FeedbackIntervalTerms {
-    landmarks: bool,
-    objective_discontinuity: bool,
-    novelty_discontinuity: bool,
-    finding_discontinuity: bool,
-    rarity_discontinuity: bool,
-}
-
-impl FeedbackIntervalTerms {
-    fn for_implementation(version: u32) -> Self {
-        Self {
-            landmarks: matches!(
-                version,
-                crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            ),
-            objective_discontinuity: matches!(
-                version,
-                crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            ),
-            novelty_discontinuity: matches!(
-                version,
-                crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            ),
-            finding_discontinuity: matches!(
-                version,
-                crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            ),
-            rarity_discontinuity: version
-                == crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        }
-    }
-}
-
-impl ExactMeanDiscontinuity {
-    const ZERO: Self = Self {
-        numerator: 0,
-        denominator: 1,
-    };
 }
 
 impl Ord for ExactMeanDiscontinuity {
@@ -536,21 +477,11 @@ impl CampaignRepository {
                 initial_strata,
                 feedback_interval,
             },
-            implementation_version,
+            crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
             ChoiceDomain::Integer(integer),
         ) = (spec.algorithm(), spec.implementation_version(), domain)
         else {
             return Ok(None);
-        };
-        let score_intervals = match implementation_version {
-            crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => false,
-            crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            | crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION => true,
-            _ => return Ok(None),
         };
         if *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
             return Err(integrity("progressive-generator-initial-strata-limit"));
@@ -574,7 +505,6 @@ impl CampaignRepository {
             initial_count,
             feedback_interval: *feedback_interval,
             exhausts_domain: cardinality <= u128::from(budget),
-            score_intervals,
         }))
     }
 
@@ -696,11 +626,6 @@ impl CampaignRepository {
             (
                 CandidateGeneratorAlgorithm::PermutedInteger,
                 crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => permuted_integer_candidate_count(integer).map(Some),
-            (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(integer),
             ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => {
                 modeled_uniform_integer_candidate_count(request, integer).map(Some)
@@ -924,13 +849,6 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::PermutedInteger,
                 crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(integer),
-            ) => permuted_integer_candidate(request, integer, ordinal)
-                .map(ChoiceValue::Integer)
-                .map(Some),
-            (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
             ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => {
                 modeled_uniform_integer_candidate(request, integer, ordinal)
                     .map(ChoiceValue::Integer)
@@ -1058,15 +976,6 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::PermutedInteger,
                 crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(integer),
-            ) => ordinals()?
-                .map(|ordinal| {
-                    permuted_integer_candidate(request, integer, ordinal).map(ChoiceValue::Integer)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
             ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => ordinals()?
                 .map(|ordinal| {
                     modeled_uniform_integer_candidate(request, integer, ordinal)
@@ -1101,22 +1010,7 @@ impl CampaignRepository {
             return Ok(Some(value));
         }
 
-        let generator = request
-            .source()
-            .generator()
-            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
-        let spec = self.read_generator(generator.content_id())?;
-        let (
-            CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. },
-            crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-            ChoiceDomain::Integer(integer),
-        ) = (spec.algorithm(), spec.implementation_version(), domain)
-        else {
-            return Ok(None);
-        };
-        progressive_integer_candidate(*initial_strata, integer, ordinal)
-            .map(ChoiceValue::Integer)
-            .map(Some)
+        Ok(None)
     }
 
     fn corpus_mutation_next_candidate(
@@ -1174,7 +1068,11 @@ impl CampaignRepository {
             else {
                 return Err(integrity("progressive-generator-basis-mismatch"));
             };
-            let terms = FeedbackIntervalTerms::for_implementation(spec.implementation_version());
+            if spec.implementation_version()
+                != crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            {
+                return Err(integrity("progressive-generator-basis-mismatch"));
+            }
             if ordinal <= u64::from(*initial_strata).min(count) {
                 return stratified_integer_candidate(*initial_strata, integer, ordinal)
                     .map(ChoiceValue::Integer)
@@ -1208,7 +1106,6 @@ impl CampaignRepository {
                 domain.semantic_id(),
                 &proposed,
                 feedback,
-                terms,
             )
             .map(ChoiceValue::Integer)
             .map(Some);
@@ -1592,24 +1489,6 @@ impl CampaignRepository {
                 .into_iter()
                 .map(ChoiceValue::Integer)
                 .collect(),
-            (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => {
-                let count = permuted_integer_candidate_count(integer)?;
-                let count = usize::try_from(count)
-                    .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
-                require_mixture_work_capacity(remaining_work, count)?;
-                (1..=count)
-                    .map(|index| {
-                        let ordinal = u64::try_from(index)
-                            .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
-                        permuted_integer_candidate(request, integer, ordinal)
-                            .map(ChoiceValue::Integer)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-            }
             (
                 CandidateGeneratorAlgorithm::WeightedCategorical { weights },
                 crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,

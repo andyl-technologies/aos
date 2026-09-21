@@ -5,6 +5,16 @@ use super::*;
 pub(super) fn emit_constants(out: &mut String) {
     emit_define_u64_hex(out, "CRUCIBLE_SHMEM_REGION_MAGIC", REGION_MAGIC);
     emit_define_u32(out, "CRUCIBLE_SHMEM_ABI_VERSION", ABI_VERSION);
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_CEILING",
+        ADVANCE_STOP_CONDITION_CEILING,
+    );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE",
+        ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE,
+    );
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_FRAME_DATA", MAX_FRAME_DATA);
     emit_define_u32(
         out,
@@ -174,7 +184,10 @@ pub(super) fn emit_constants(out: &mut String) {
             ("STATUS", NODE_SLOT_STATUS_OFFSET),
             ("KIND", NODE_SLOT_KIND_OFFSET),
             ("DEVICE_IO_ACTIVE", NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET),
-            ("PAD0", NODE_SLOT_PAD0_OFFSET),
+            (
+                "ADVANCE_STOP_CONDITION",
+                NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET,
+            ),
             ("PUBLISH_GEN", NODE_SLOT_PUBLISH_GEN_OFFSET),
             (
                 "CONTROL_BOUNDARY_ACK",
@@ -224,6 +237,56 @@ pub(super) fn emit_constants(out: &mut String) {
                 "LOGICAL_TIME_RESTORE_ACK",
                 NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
             ),
+            (
+                "CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER",
+                NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+            ),
+            (
+                "CONTROL_BOUNDARY_CAPTURE_REQUEST",
+                NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+            ),
+            ("PAD3", NODE_SLOT_PAD3_OFFSET),
+            (
+                "TIMER_WITNESS_GENERATION",
+                NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_DEADLINE_NS",
+                NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_DEADLINE_ICOUNT",
+                NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_ARMED_RAW_ICOUNT",
+                NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_EXPIRE_NS",
+                NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_VIRTUAL_NS",
+                NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_RAW_ICOUNT",
+                NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_COMPLETED",
+                NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_RESERVED",
+                NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET,
+            ),
+            (
+                "ADVANCE_PUBLICATION_SEQUENCE",
+                NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET,
+            ),
+            ("PAD4", NODE_SLOT_PAD4_OFFSET),
         ],
     );
     out.push('\n');
@@ -338,7 +401,6 @@ pub(super) fn emit_constants(out: &mut String) {
                 "CAPTURE_REQUEST",
                 FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET,
             ),
-            ("RESERVED", FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET),
             ("WORDS", FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET),
         ],
     );

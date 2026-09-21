@@ -1,7 +1,7 @@
 //! Bounded local exploration policy and branch-request construction.
 //!
-//! The campaign owner uses these types to translate one local
-//! search into ordinary campaign policy, planner, branch-request, and
+//! The guarded campaign owner uses these types to translate one local search
+//! into ordinary campaign policy, planner, branch-request, and
 //! observation transitions. The CLI never owns a second frontier or expands a
 //! choice outside the authenticated campaign repository.
 
@@ -33,6 +33,33 @@ type AuthorizedBeamPlanner =
 pub(super) type LocalCampaignPlannerServiceError =
     AuthorizedPlannerServiceError<CampaignCodecError, LocalPlannerMeterError>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalCampaignPlannerKind {
+    Search(crucible_campaign::CanonicalSearchStrategy),
+    Puct,
+    Beam,
+}
+
+impl From<Option<GuardedCampaignExplorationStrategy>> for LocalCampaignPlannerKind {
+    fn from(strategy: Option<GuardedCampaignExplorationStrategy>) -> Self {
+        match strategy {
+            Some(GuardedCampaignExplorationStrategy::BreadthFirst) => {
+                Self::Search(crucible_campaign::CanonicalSearchStrategy::BreadthFirst)
+            }
+            Some(GuardedCampaignExplorationStrategy::DepthFirst) => {
+                Self::Search(crucible_campaign::CanonicalSearchStrategy::DepthFirst)
+            }
+            Some(GuardedCampaignExplorationStrategy::Priority { seed }) => {
+                Self::Search(crucible_campaign::CanonicalSearchStrategy::Priority {
+                    seed: seed.bytes(),
+                })
+            }
+            Some(GuardedCampaignExplorationStrategy::CoverageGuided) => Self::Puct,
+            None => Self::Beam,
+        }
+    }
+}
+
 /// Search order implemented by the local campaign's canonical planner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GuardedCampaignExplorationStrategy {
@@ -40,7 +67,7 @@ pub enum GuardedCampaignExplorationStrategy {
     BreadthFirst,
     /// Expands the deepest pending path first.
     DepthFirst,
-    /// Expands by the deterministic seeded depth score.
+    /// Expands by the deterministic depth score under an exact seed.
     Priority {
         /// Strategy-local seed used only to order the frontier.
         seed: Seed,
@@ -95,12 +122,6 @@ impl GuardedCampaignExploration {
         self.maximum_attempts
     }
 
-    /// Returns the maximum authenticated branch-path depth, when bounded.
-    #[must_use]
-    pub const fn maximum_depth(self) -> Option<u64> {
-        self.maximum_depth
-    }
-
     /// Returns whether the owner completes after its first accepted finding.
     #[must_use]
     pub const fn stop_on_finding(self) -> bool {
@@ -129,12 +150,6 @@ impl GuardedCampaignExploration {
         }
         self.execution_quanta_timeout = Some(execution_quanta);
         Ok(self)
-    }
-
-    /// Returns the authenticated attempt timeout, when configured.
-    #[must_use]
-    pub const fn execution_quanta_timeout(self) -> Option<u64> {
-        self.execution_quanta_timeout
     }
 
     pub(super) fn attempt_stop(self) -> StopCondition {
@@ -289,17 +304,21 @@ where
         },
     };
     CampaignPolicy::new(
-        lineage.scenario(),
-        CampaignSeed::from_bytes(seed.bytes()),
-        CampaignMode::Strict,
-        explorer,
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        stop_conditions,
-        FairnessPolicy::new(0, 0).map_err(GuardedDefaultCampaignRunError::Codec)?,
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            lineage.scenario(),
+            CampaignSeed::from_bytes(seed.bytes()),
+            CampaignMode::Strict,
+            explorer,
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            stop_conditions,
+            FairnessPolicy::new(0, 0).map_err(GuardedDefaultCampaignRunError::Codec)?,
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .and_then(|policy| {
         policy.with_intervention_learning_policy(
@@ -319,68 +338,55 @@ where
 {
     let planning_budget = PlanningBudget::new(1, 1, 16_384, 32 * 1024 * 1024, 4096)
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
-    let (engine, artifact, initial_state, service) =
-        match exploration.map(GuardedCampaignExploration::strategy) {
-            Some(strategy @ GuardedCampaignExplorationStrategy::BreadthFirst)
-            | Some(strategy @ GuardedCampaignExplorationStrategy::DepthFirst)
-            | Some(strategy @ GuardedCampaignExplorationStrategy::Priority { .. }) => {
-                let strategy = match strategy {
-                    GuardedCampaignExplorationStrategy::BreadthFirst => {
-                        crucible_campaign::CanonicalSearchStrategy::BreadthFirst
-                    }
-                    GuardedCampaignExplorationStrategy::DepthFirst => {
-                        crucible_campaign::CanonicalSearchStrategy::DepthFirst
-                    }
-                    GuardedCampaignExplorationStrategy::Priority { seed } => {
-                        crucible_campaign::CanonicalSearchStrategy::Priority { seed: seed.bytes() }
-                    }
-                    GuardedCampaignExplorationStrategy::CoverageGuided => unreachable!(),
-                };
-                let basis = repository
-                    .publish_canonical_search_planner_basis(strategy)
-                    .map_err(GuardedDefaultCampaignRunError::Repository)?;
-                (
-                    basis.engine().clone(),
-                    basis.artifact().clone(),
-                    basis.initial_state().clone(),
-                    LocalCampaignPlannerService::Search(AuthorizedPlannerService::new(
-                        crucible_campaign::CanonicalSearchPlanner::new(strategy),
-                        LocalPlannerMeter,
-                        planner_authority.clone(),
-                    )),
-                )
-            }
-            Some(GuardedCampaignExplorationStrategy::CoverageGuided) => {
-                let basis = repository
-                    .publish_canonical_puct_planner_basis()
-                    .map_err(GuardedDefaultCampaignRunError::Repository)?;
-                (
-                    basis.engine().clone(),
-                    basis.artifact().clone(),
-                    basis.initial_state().clone(),
-                    LocalCampaignPlannerService::Puct(AuthorizedPlannerService::new(
-                        crucible_campaign::CanonicalPuctPlanner,
-                        LocalPlannerMeter,
-                        planner_authority.clone(),
-                    )),
-                )
-            }
-            None => {
-                let basis = repository
-                    .publish_canonical_beam_planner_basis()
-                    .map_err(GuardedDefaultCampaignRunError::Repository)?;
-                (
-                    basis.engine().clone(),
-                    basis.artifact().clone(),
-                    basis.initial_state().clone(),
-                    LocalCampaignPlannerService::Beam(AuthorizedPlannerService::new(
-                        crucible_campaign::CanonicalBeamPlanner,
-                        LocalPlannerMeter,
-                        planner_authority.clone(),
-                    )),
-                )
-            }
-        };
+    let planner_kind =
+        LocalCampaignPlannerKind::from(exploration.map(GuardedCampaignExploration::strategy));
+    let (engine, artifact, initial_state, service) = match planner_kind {
+        LocalCampaignPlannerKind::Search(strategy) => {
+            let basis = repository
+                .publish_canonical_search_planner_basis(strategy)
+                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+            (
+                basis.engine().clone(),
+                basis.artifact().clone(),
+                basis.initial_state().clone(),
+                LocalCampaignPlannerService::Search(AuthorizedPlannerService::new(
+                    crucible_campaign::CanonicalSearchPlanner::new(strategy),
+                    LocalPlannerMeter,
+                    planner_authority.clone(),
+                )),
+            )
+        }
+        LocalCampaignPlannerKind::Puct => {
+            let basis = repository
+                .publish_canonical_puct_planner_basis()
+                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+            (
+                basis.engine().clone(),
+                basis.artifact().clone(),
+                basis.initial_state().clone(),
+                LocalCampaignPlannerService::Puct(AuthorizedPlannerService::new(
+                    crucible_campaign::CanonicalPuctPlanner,
+                    LocalPlannerMeter,
+                    planner_authority.clone(),
+                )),
+            )
+        }
+        LocalCampaignPlannerKind::Beam => {
+            let basis = repository
+                .publish_canonical_beam_planner_basis()
+                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+            (
+                basis.engine().clone(),
+                basis.artifact().clone(),
+                basis.initial_state().clone(),
+                LocalCampaignPlannerService::Beam(AuthorizedPlannerService::new(
+                    crucible_campaign::CanonicalBeamPlanner,
+                    LocalPlannerMeter,
+                    planner_authority.clone(),
+                )),
+            )
+        }
+    };
     let planner = CampaignPlannerDriver::new(
         std::sync::Arc::clone(repository),
         PlannerClient::new(service, planner_authority),
@@ -391,19 +397,11 @@ where
         planning_budget,
     )
     .map_err(GuardedDefaultCampaignRunError::PlannerConfiguration)?;
-    Ok(
-        match exploration.map(GuardedCampaignExploration::strategy) {
-            Some(
-                GuardedCampaignExplorationStrategy::BreadthFirst
-                | GuardedCampaignExplorationStrategy::DepthFirst
-                | GuardedCampaignExplorationStrategy::Priority { .. },
-            ) => planner.require_exhaustive_policy(),
-            Some(GuardedCampaignExplorationStrategy::CoverageGuided) => {
-                planner.require_tree_search_policy()
-            }
-            None => planner.require_beam_policy(),
-        },
-    )
+    Ok(match planner_kind {
+        LocalCampaignPlannerKind::Search(_) => planner.require_exhaustive_policy(),
+        LocalCampaignPlannerKind::Puct => planner.require_tree_search_policy(),
+        LocalCampaignPlannerKind::Beam => planner.require_beam_policy(),
+    })
 }
 
 pub(super) fn publish_all_candidates_generator(
@@ -432,7 +430,7 @@ where
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
     let path_depth = u64::try_from(path.edges().len()).unwrap_or(u64::MAX);
     if exploration
-        .maximum_depth()
+        .maximum_depth
         .is_some_and(|maximum| path_depth >= maximum)
     {
         return Ok(ExplorationBranchDecision::DepthBound);
@@ -463,10 +461,12 @@ where
         &command_basis,
     ));
     let request = BranchRequest::new(
-        opportunity.branch_point_id(observation.child()),
-        observation.child_content(),
-        opportunity_id,
-        opportunity.domain(),
+        BranchRequest::identity(
+            opportunity.branch_point_id(observation.child()),
+            observation.child_content(),
+            opportunity_id,
+            opportunity.domain(),
+        ),
         CandidateSource::generated(all_candidates),
         BranchRequestCause::Operator(command),
         BranchBudget::new(maximum_attempts, maximum_attempts)
@@ -500,4 +500,44 @@ where
                 | crucible_campaign::StopOutcome::ScenarioFailure(_)
                 | crucible_campaign::StopOutcome::ModeledTimeout(_)
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_planner_kind_is_total_for_every_exploration_strategy() {
+        assert_eq!(
+            LocalCampaignPlannerKind::from(Some(GuardedCampaignExplorationStrategy::BreadthFirst,)),
+            LocalCampaignPlannerKind::Search(
+                crucible_campaign::CanonicalSearchStrategy::BreadthFirst,
+            )
+        );
+        assert_eq!(
+            LocalCampaignPlannerKind::from(Some(GuardedCampaignExplorationStrategy::DepthFirst,)),
+            LocalCampaignPlannerKind::Search(
+                crucible_campaign::CanonicalSearchStrategy::DepthFirst,
+            )
+        );
+        let seed = Seed::from_u64(37);
+        assert_eq!(
+            LocalCampaignPlannerKind::from(Some(GuardedCampaignExplorationStrategy::Priority {
+                seed
+            },)),
+            LocalCampaignPlannerKind::Search(
+                crucible_campaign::CanonicalSearchStrategy::Priority { seed: seed.bytes() },
+            )
+        );
+        assert_eq!(
+            LocalCampaignPlannerKind::from(Some(
+                GuardedCampaignExplorationStrategy::CoverageGuided,
+            )),
+            LocalCampaignPlannerKind::Puct
+        );
+        assert_eq!(
+            LocalCampaignPlannerKind::from(None),
+            LocalCampaignPlannerKind::Beam
+        );
+    }
 }

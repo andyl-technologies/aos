@@ -8,6 +8,7 @@ publish = false
 [features]
 default = []
 destructive-recovery-faults = ["crucible-daemon/destructive-recovery-faults"]
+packaged-midpoint-flight = []
 test-double = ["crucible-session/test-double"]
 
 [[bin]]
@@ -47,6 +48,7 @@ url = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+crucible-api = { path = "../crucible-api", features = ["test-support"] }
 crucible-cas = { path = "../crucible-cas" }
 crucible-core = { package = "crucible", path = "../crucible" }
 crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }

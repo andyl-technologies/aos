@@ -14,7 +14,12 @@ use crucible_qemu::{
     QemuNodeChild, QemuPreparedRunDirectory, QemuVmRealizationError,
 };
 
-use super::{LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner};
+use super::SelectedExactCheckpointRoot;
+use super::{
+    LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,
+    QemuAttemptSelectedHostResourceFactory,
+};
+use crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure;
 use crate::{QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner};
 
 /// Linux workspace retained by a prepared portable observation resume.
@@ -219,6 +224,37 @@ where
             contract,
             terminal: false,
         })
+    }
+}
+
+impl<H> QemuAttemptSelectedHostResourceFactory for RetainedQemuAttemptHostResourceFactory<H>
+where
+    H: QemuAttemptHostResourceOwner,
+{
+    fn begin_selected(
+        &mut self,
+        resources: AttemptResourceLimits,
+        selected_checkpoint: Option<SelectedExactCheckpointRoot>,
+    ) -> Result<
+        (Self::Owner, Option<SelectedExactCheckpointRoot>),
+        QemuAttemptResourceGuardBeginFailure,
+    > {
+        if selected_checkpoint.is_some() {
+            return Err(
+                QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                    QemuVmRealizationError::InvalidCheckpoint {
+                        role: "retained observation workspace",
+                        message: String::from(
+                            "retained observation workspaces cannot authorize an exact resume root",
+                        ),
+                    },
+                    selected_checkpoint,
+                ),
+            );
+        }
+        self.begin(resources)
+            .map(|owner| (owner, None))
+            .map_err(QemuAttemptResourceGuardBeginFailure::after_checkpoint_claim)
     }
 }
 
@@ -479,7 +515,7 @@ mod tests {
         let (_parent, root, counters, workspace) = workspace_fixture();
         let mut source_factory = ComposedQemuAttemptResourceGuardFactory::new(workspace.factory());
         let source_guard = source_factory
-            .begin(resources(), ExecutionCancellation::default())
+            .begin(resources(), ExecutionCancellation::default(), None)
             .expect("source execution lease");
         let mut source = QemuAttemptGenerationResourceOwner::new(source_guard, 1)
             .expect("source generation owner");
@@ -490,7 +526,7 @@ mod tests {
         let mut restore_factory = ComposedQemuAttemptResourceGuardFactory::new(workspace.factory());
         assert!(
             restore_factory
-                .begin(resources(), ExecutionCancellation::default())
+                .begin(resources(), ExecutionCancellation::default(), None)
                 .is_err()
         );
         assert!(root.exists());
@@ -501,7 +537,7 @@ mod tests {
             .expect("source generation reaped");
         source.finish().expect("source execution lease released");
         let restore_guard = restore_factory
-            .begin(resources(), ExecutionCancellation::default())
+            .begin(resources(), ExecutionCancellation::default(), None)
             .expect("restore lease after source reap");
         let mut restore = QemuAttemptGenerationResourceOwner::new(restore_guard, 1)
             .expect("restored generation owner");
@@ -527,7 +563,7 @@ mod tests {
         let cancellation = ExecutionCancellation::default();
         let mut factory = ComposedQemuAttemptResourceGuardFactory::new(workspace.factory());
         let guard = factory
-            .begin(resources(), cancellation.clone())
+            .begin(resources(), cancellation.clone(), None)
             .expect("observation execution lease");
 
         cancellation.cancel();

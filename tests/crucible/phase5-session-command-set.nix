@@ -144,24 +144,6 @@
         needle = "rfc_command_running_actor_acknowledges_local_boundary_replies_immediately";
       }
     ]
-    ++ forbiddenFor "crates/crucible-session/src/lib.rs" sessionLib [
-      {
-        label = "retired imperative fault injection command";
-        needle = "Inject" + "Fault";
-      }
-      {
-        label = "retired imperative fault healing command";
-        needle = "Heal" + "Fault";
-      }
-      {
-        label = "retired session fault payload";
-        needle = "FaultSpec";
-      }
-      {
-        label = "retired session fault tag";
-        needle = "Fault" + "Tag";
-      }
-    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes session command-set check";

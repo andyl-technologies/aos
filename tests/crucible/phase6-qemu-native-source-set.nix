@@ -32,7 +32,7 @@ pkgs.mkDerivation {
         PASS
         check=${attrPath}
         tasks=${builtins.concatStringsSep "," taskIds}
-        patch=0200-crucible-retain-complete-native-source-sets.patch
+        patch=crucible-qemu-11.1.1.patch
         complete_explicit_native_source_closure=true
         unowned_backend_node_and_consumer_rejected=true
         original_read_only_access_preserved=true

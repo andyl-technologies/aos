@@ -55,7 +55,7 @@ impl ProductionVmPortableReplayGuestAssetPaths {
 pub struct ProductionVmPortableReplayAssetPaths {
     guest_assets: Vec<ProductionVmPortableReplayGuestAssetPaths>,
     initrd: Option<PathBuf>,
-    root_image_format: ProductionRootImageFormat,
+    root_image_format: QemuRootImageFormat,
 }
 
 impl ProductionVmPortableReplayAssetPaths {
@@ -73,7 +73,7 @@ impl ProductionVmPortableReplayAssetPaths {
 
     /// Returns the immutable root-image format passed to QEMU.
     #[must_use]
-    pub const fn root_image_format(&self) -> ProductionRootImageFormat {
+    pub const fn root_image_format(&self) -> QemuRootImageFormat {
         self.root_image_format
     }
 }
@@ -282,10 +282,10 @@ mod tests {
             directory.path().join("run"),
         )
         .with_initrd(&initrd)
-        .with_root_image_format(ProductionRootImageFormat::Raw);
+        .with_root_image_format(QemuRootImageFormat::Raw);
         let selected = config.portable_replay_asset_paths(&scenario)?;
 
-        assert_eq!(selected.root_image_format(), ProductionRootImageFormat::Raw);
+        assert_eq!(selected.root_image_format(), QemuRootImageFormat::Raw);
         assert_eq!(selected.initrd(), Some(initrd.as_path()));
         assert_eq!(selected.guest_assets().len(), 1);
         assert_eq!(selected.guest_assets()[0].kernel(), kernel.as_path());

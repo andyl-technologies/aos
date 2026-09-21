@@ -2,11 +2,11 @@
 //!
 //! Each PATCH body is first written as an immutable, digest-named staging
 //! object and only then committed to the portable database continuation state.
-//! Cancellation first makes the database state authoritative, then removes
-//! unreachable staging objects on a best-effort basis. This makes retries safe
-//! across native Hub processes, Worker isolates, and short-lived OCI bearer
-//! tokens without exposing a resumable session after its only bytes were
-//! deleted.
+//! Cancellation first makes the database state authoritative, then leaves the
+//! unreachable staging objects as durable work for the bounded recovery
+//! controller. This makes retries safe across native Hub processes, Worker
+//! isolates, and short-lived OCI bearer tokens without exposing a resumable
+//! session after its cleanup becomes pending.
 
 mod manifest;
 
@@ -506,40 +506,20 @@ impl RpcService {
                 "upload finalization already owns the session",
             );
         }
-        let chunks = match self.db.oci_upload_chunks(upload_id).await {
-            Ok(chunks) => chunks,
-            Err(_) => return unavailable_response("upload state is unavailable", false),
-        };
-        let cancelled = self
+        if self
             .db
             .cancel_oci_upload(upload_id, owner, owner, upload.resource_version, now())
-            .await;
-        let cancelled = match cancelled {
-            Ok(cancelled) => cancelled,
-            Err(_) => {
-                return unavailable_response("upload cancellation could not be committed", false);
-            }
-        };
-
-        // Cancellation is authoritative before physical cleanup. Reversing
-        // this order can delete the only staged copy while a failed database
-        // transaction leaves the session active and apparently resumable.
-        // Orphaned chunks are unreachable and the retention reconciler can
-        // retry their deletion without resurrecting a cancelled session.
-        let cleanup = OciUploadCleanupRecord {
-            upload: cancelled,
-            chunks,
-        };
-        if let Err(error) =
-            cleanup_upload_staging(&self.db, self.surface_write.as_ref(), &cleanup, now()).await
+            .await
+            .is_err()
         {
-            tracing::warn!(
-                upload_id,
-                %error,
-                "cancelled OCI upload left staging cleanup pending"
-            );
+            return unavailable_response("upload cancellation could not be committed", false);
         }
 
+        // The terminal database transition is the cancellation authority.
+        // Physical deletion is deliberately left to the bounded recovery
+        // controller, whose durable candidate record survives a disconnected
+        // client and avoids making a DELETE response wait on every staged
+        // chunk or a remote storage endpoint.
         let mut response = StatusCode::NO_CONTENT.into_response();
         add_distribution_version(&mut response);
         response

@@ -5,6 +5,9 @@
 
 use super::*;
 
+#[cfg(unix)]
+use std::os::fd::BorrowedFd;
+
 /// Plugin IPC control channel for setup and teardown only.
 pub trait QemuPluginIpcControlChannel: Send {
     /// Sends the plugin IPC `Quit` control message.
@@ -193,6 +196,15 @@ pub trait QemuShmemHotPathChannel: Send {
         &mut self,
     ) -> Result<QemuLogicalTimeCalibration, QemuNodeChannelError>;
 
+    /// Reads the most recent plugin-validated native timer callback witness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when shared-memory state cannot be observed.
+    fn virtual_timer_fire_witness(
+        &mut self,
+    ) -> Result<Option<QemuVirtualTimerFireWitness>, QemuNodeChannelError>;
+
     /// Starts a split quantum by publishing `horizon` through shared memory.
     ///
     /// # Errors
@@ -202,6 +214,7 @@ pub trait QemuShmemHotPathChannel: Send {
     fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError>;
 
     /// Polls a split quantum without consuming its pending token.
@@ -309,7 +322,7 @@ pub trait QemuShmemHotPathChannel: Send {
         &mut self,
         horizon: ExecutionHorizon,
     ) -> Result<AdvanceOutcome, QemuNodeChannelError> {
-        let pending = self.start_quantum(horizon)?;
+        let pending = self.start_quantum(horizon, crate::QemuQuantumStopCondition::Ceiling)?;
         self.finish_quantum(pending)
             .map(|completion| completion.outcome)
     }
@@ -339,7 +352,7 @@ pub trait QemuShmemHotPathChannel: Send {
     /// Returns [`QemuNodeChannelError`] when the causal transport is corrupt or
     /// contains an entry after the completed boundary.
     // crucible-lint: allow host-nondeterminism-state -- this boundary returns values without admitting them into engine state.
-    fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, QemuNodeChannelError> {
+    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, QemuNodeChannelError> {
         Ok(Vec::new())
     }
 
@@ -407,10 +420,6 @@ pub trait QemuShmemHotPathChannel: Send {
 
     /// Delivers a deterministic frame at its scheduler-resolved instruction count.
     ///
-    /// Channels that do not expose timestamped injection may inherit the legacy
-    /// boundary-relative delivery behavior. Production shared-memory channels
-    /// override this method so the event-log timestamp reaches QEMU unchanged.
-    ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when the frame cannot be delivered at
@@ -419,10 +428,7 @@ pub trait QemuShmemHotPathChannel: Send {
         &mut self,
         input: BackendInput,
         delivery_icount: Icount,
-    ) -> Result<(), QemuNodeChannelError> {
-        let _ = delivery_icount;
-        self.deliver_frame(input)
-    }
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Reads one emitted frame from the shared-memory output ring.
     ///
@@ -510,7 +516,7 @@ impl QemuNodePendingQuantum {
 }
 
 /// QMP machine-control channel for snapshot and quit commands.
-pub trait QemuQmpMachineControlChannel: Send {
+pub(crate) trait QemuQmpMachineControlChannel: Send {
     /// Stops guest execution for a checkpoint transaction.
     ///
     /// # Errors
@@ -526,95 +532,62 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// running-state transition. The next bounded step proves execution.
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
 
-    /// Queries QEMU's exact hot-fork readiness proof report.
+    /// Imports one descriptor for an exact RAM checkpoint operation.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_readiness(
+    /// Returns [`QemuNodeChannelError`] when descriptor transfer is unavailable
+    /// or QEMU cannot retain the named descriptor.
+    #[cfg(unix)]
+    fn install_exact_checkpoint_descriptor(
         &mut self,
-    ) -> Result<crate::QmpHotForkReadiness, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_readiness",
-            "hot-fork readiness is not implemented by this QMP channel",
-        ))
-    }
+        _name: &crate::QmpDescriptorName,
+        _descriptor: BorrowedFd<'_>,
+    ) -> Result<(), QemuNodeChannelError>;
 
-    /// Queries QEMU's exact bounded active-thread registry.
+    /// Captures one direct or parent-relative exact checkpoint candidate.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_thread_inventory(
+    /// Returns [`QemuNodeChannelError`] when the channel does not implement the
+    /// exact checkpoint protocol or QEMU rejects the request.
+    fn capture_exact_checkpoint(
         &mut self,
-    ) -> Result<crate::QmpHotForkThreadInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_thread_inventory",
-            "hot-fork thread inventory is not implemented by this QMP channel",
-        ))
-    }
+        _request: &crate::QmpCheckpointCaptureRequest,
+    ) -> Result<crate::QmpCheckpointCapture, QemuNodeChannelError>;
 
-    /// Queries QEMU's exact bounded observational RCU inventory.
+    /// Commits the active exact checkpoint candidate.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_rcu_inventory(
+    /// Returns [`QemuNodeChannelError`] when the channel does not implement the
+    /// exact checkpoint protocol or QEMU rejects the identity.
+    fn commit_exact_checkpoint(
         &mut self,
-    ) -> Result<crate::QmpHotForkRcuInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_rcu_inventory",
-            "hot-fork RCU inventory is not implemented by this QMP channel",
-        ))
-    }
+        _identity: crate::QmpCheckpointIdentity,
+    ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError>;
 
-    /// Queries QEMU's exact bounded observational AioContext inventory.
+    /// Aborts the active exact checkpoint candidate.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_aio_inventory(
+    /// Returns [`QemuNodeChannelError`] when the channel does not implement the
+    /// exact checkpoint protocol or QEMU cannot prove the expected parent.
+    fn abort_exact_checkpoint(
         &mut self,
-    ) -> Result<crate::QmpHotForkAioInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_aio_inventory",
-            "hot-fork AIO inventory is not implemented by this QMP channel",
-        ))
-    }
+        _identity: crate::QmpCheckpointIdentity,
+        _expected_committed: Option<crate::QmpCheckpointIdentity>,
+    ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError>;
 
-    /// Queries QEMU's exact bounded allocated-AIO-handler inventory.
+    /// Queries QEMU's committed exact checkpoint epoch.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_aio_handler_inventory(
+    /// Returns [`QemuNodeChannelError`] when the channel does not implement the
+    /// exact checkpoint protocol or the epoch response is invalid.
+    fn query_exact_checkpoint_epoch(
         &mut self,
-    ) -> Result<crate::QmpHotForkAioHandlerInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_aio_handler_inventory",
-            "hot-fork AIO-handler inventory is not implemented by this QMP channel",
-        ))
-    }
-
-    /// Queries QEMU's exact bounded allocated-block-backend inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_block_backend_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkBlockBackendInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_block_backend_inventory",
-            "hot-fork block-backend inventory is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError>;
 
     /// Queries QEMU's exact sealed Crucible plugin-resource inventory.
     ///
@@ -624,12 +597,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// versioned response validation fails.
     fn query_hot_fork_plugin_resource_inventory(
         &mut self,
-    ) -> Result<crate::QmpHotForkPluginResourceInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_plugin_resource_inventory",
-            "hot-fork plugin-resource inventory is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkPluginResourceInventory, QemuNodeChannelError>;
 
     /// Queries QEMU's exact registered fork-child runtime state.
     ///
@@ -639,12 +607,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// versioned response validation fails.
     fn query_hot_fork_child_runtime(
         &mut self,
-    ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_child_runtime",
-            "hot-fork child-runtime observation is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError>;
 
     /// Queries the retained Crucible plugin callback/ring/worker barrier.
     ///
@@ -654,12 +617,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// versioned response validation fails.
     fn query_hot_fork_plugin_barrier(
         &mut self,
-    ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_plugin_barrier",
-            "hot-fork plugin barrier is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError>;
 
     /// Starts or advances QEMU's retained hot-fork template transaction.
     ///
@@ -670,12 +628,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     fn prepare_hot_fork_template(
         &mut self,
         _block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
-    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "prepare_hot_fork_template",
-            "hot-fork template coordination is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError>;
 
     /// Acquires all retained template barriers before child-resource staging.
     ///
@@ -686,12 +639,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     fn prepare_hot_fork_template_barriers(
         &mut self,
         _block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
-    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "prepare_hot_fork_template_barriers",
-            "bounded hot-fork barrier acquisition is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError>;
 
     /// Queries QEMU's retained hot-fork template transaction.
     ///
@@ -701,12 +649,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// response validation fails.
     fn query_hot_fork_template(
         &mut self,
-    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_template",
-            "hot-fork template coordination is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError>;
 
     /// Aborts QEMU's retained hot-fork template transaction.
     ///
@@ -716,12 +659,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// rollback, or strict response validation fails.
     fn abort_hot_fork_template(
         &mut self,
-    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "abort_hot_fork_template",
-            "hot-fork template coordination is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError>;
 
     /// Forks one exact retained template after all private child resources are sealed.
     ///
@@ -734,14 +672,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     fn hot_fork(
         &mut self,
         _request: crate::QmpHotForkRequest,
-    ) -> Result<crate::QmpHotForkState, QemuHotForkCommandError> {
-        Err(QemuHotForkCommandError::Rejected {
-            source: QemuNodeChannelError::new(
-                "fork retained hot-fork template",
-                "hot-fork execution is not implemented by this QMP channel",
-            ),
-        })
-    }
+    ) -> Result<crate::QmpHotForkState, QemuHotForkCommandError>;
 
     /// Queries one exact source-QEMU child-process record through reap.
     ///
@@ -753,12 +684,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     fn query_hot_fork_child_process(
         &mut self,
         _generation: u64,
-    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query retained hot-fork child process",
-            "hot-fork child-process observation is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError>;
 
     /// Releases one exact source-QEMU child-process record after reap.
     ///
@@ -771,12 +697,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     fn release_hot_fork_child_process(
         &mut self,
         _generation: u64,
-    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "release retained hot-fork child process",
-            "hot-fork child-process release is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError>;
 
     /// Imports and retains one target-attempt process contract.
     ///
@@ -793,12 +714,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _cancellation: BorrowedFd<'_>,
         _identity: crate::QmpHotForkChildProcessContractIdentity,
         _template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "install hot-fork child process contract",
-            "hot-fork child process contract transfer is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError>;
 
     /// Releases one exact QEMU-owned target process contract.
     ///
@@ -811,12 +727,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         &mut self,
         _names: &crate::QmpHotForkChildProcessContractNames,
         _identity: crate::QmpHotForkChildProcessContractIdentity,
-    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "release hot-fork child process contract",
-            "hot-fork child process contract release is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError>;
 
     /// Queries QEMU's retained target process contract.
     ///
@@ -826,12 +737,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// validation fails.
     fn query_hot_fork_child_process_contract(
         &mut self,
-    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query hot-fork child process contract",
-            "hot-fork child process contract query is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildProcessContractState, QemuNodeChannelError>;
 
     /// Imports every child-private destination and stages the one-shot plan.
     ///
@@ -846,12 +752,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _descriptors: &[BorrowedFd<'_>],
         _maximum_bytes: u64,
         _template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "install hot-fork child files",
-            "hot-fork child file transfer is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError>;
 
     /// Releases one exact QEMU-owned child-private file plan.
     ///
@@ -863,12 +764,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     fn release_hot_fork_child_files(
         &mut self,
         _generation: u64,
-    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "release hot-fork child files",
-            "hot-fork child file release is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError>;
 
     /// Queries QEMU's retained child-private file plan.
     ///
@@ -878,12 +774,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// validation fails.
     fn query_hot_fork_child_files(
         &mut self,
-    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query hot-fork child files",
-            "hot-fork child file query is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildFilesState, QemuNodeChannelError>;
 
     /// Imports one held branch-private ring descriptor into the QEMU template.
     ///
@@ -898,12 +789,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _name: &crate::QmpDescriptorName,
         _descriptor: BorrowedFd<'_>,
         _identity: crucible_shmem::SetupRegionBackingIdentity,
-    ) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "install hot-fork private ring descriptor",
-            "hot-fork descriptor transfer is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Closes one branch-private ring descriptor retained by the QEMU template.
     ///
@@ -917,12 +803,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         &mut self,
         _name: &crate::QmpDescriptorName,
         _identity: crucible_shmem::SetupRegionBackingIdentity,
-    ) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "close hot-fork private ring descriptor",
-            "hot-fork descriptor close is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Queries QEMU's exact retained branch-private ring descriptor state.
     ///
@@ -932,12 +813,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// response validation fails.
     fn query_hot_fork_private_rings(
         &mut self,
-    ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query hot-fork private rings",
-            "hot-fork private-ring query is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError>;
 
     /// Imports branch-private plugin control and wake endpoints into QEMU.
     ///
@@ -955,12 +831,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _wake: BorrowedFd<'_>,
         _identity: crate::QmpHotForkPluginEndpointIdentity,
         _private_ring_generation: u64,
-    ) -> Result<crate::QmpHotForkPluginEndpointState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "install hot-fork plugin endpoints",
-            "hot-fork plugin endpoint transfer is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkPluginEndpointState, QemuNodeChannelError>;
 
     /// Closes plugin endpoints retained by the QEMU template and monitor.
     ///
@@ -974,12 +845,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _control_name: &crate::QmpDescriptorName,
         _wake_name: &crate::QmpDescriptorName,
         _identity: crate::QmpHotForkPluginEndpointIdentity,
-    ) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "close hot-fork plugin endpoints",
-            "hot-fork plugin endpoint close is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Imports one branch-private child diagnostics stream into QEMU.
     ///
@@ -994,12 +860,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _descriptor: BorrowedFd<'_>,
         _socket_cookie: u64,
         _template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "install hot-fork child diagnostics",
-            "hot-fork child diagnostics transfer is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError>;
 
     /// Closes the exact child diagnostics stream retained by QEMU and monitor.
     ///
@@ -1012,12 +873,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         &mut self,
         _name: &crate::QmpDescriptorName,
         _socket_cookie: u64,
-    ) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "close hot-fork child diagnostics",
-            "hot-fork child diagnostics close is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Queries QEMU's exact retained child diagnostics state.
     ///
@@ -1027,12 +883,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// validation fails.
     fn query_hot_fork_child_diagnostics(
         &mut self,
-    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query hot-fork child diagnostics",
-            "hot-fork child diagnostics query is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildDiagnosticState, QemuNodeChannelError>;
 
     /// Imports one branch-private child QMP stream into QEMU.
     ///
@@ -1047,12 +898,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _descriptor: BorrowedFd<'_>,
         _socket_cookie: u64,
         _template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "install hot-fork child QMP",
-            "hot-fork child QMP transfer is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError>;
 
     /// Closes the exact child QMP stream retained by QEMU and monitor.
     ///
@@ -1065,12 +911,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         &mut self,
         _name: &crate::QmpDescriptorName,
         _socket_cookie: u64,
-    ) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "close hot-fork child QMP",
-            "hot-fork child QMP close is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Queries QEMU's exact retained child QMP state.
     ///
@@ -1080,12 +921,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// validation fails.
     fn query_hot_fork_child_qmp(
         &mut self,
-    ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query hot-fork child QMP",
-            "hot-fork child QMP query is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError>;
 
     /// Imports one branch-private child console stream into QEMU.
     ///
@@ -1100,12 +936,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         _descriptor: BorrowedFd<'_>,
         _socket_cookie: u64,
         _template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "install hot-fork child console",
-            "hot-fork child console transfer is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError>;
 
     /// Closes the exact child console retained by QEMU and monitor.
     ///
@@ -1118,12 +949,7 @@ pub trait QemuQmpMachineControlChannel: Send {
         &mut self,
         _name: &crate::QmpDescriptorName,
         _socket_cookie: u64,
-    ) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "close hot-fork child console",
-            "hot-fork child console close is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<(), QemuNodeChannelError>;
 
     /// Queries QEMU's exact retained child-console state.
     ///
@@ -1133,72 +959,7 @@ pub trait QemuQmpMachineControlChannel: Send {
     /// validation fails.
     fn query_hot_fork_child_console(
         &mut self,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query hot-fork child console",
-            "hot-fork child console query is not implemented by this QMP channel",
-        ))
-    }
-
-    /// Queries QEMU's exact bounded allocated-bottom-half inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_bottom_half_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_bottom_half_inventory",
-            "hot-fork bottom-half inventory is not implemented by this QMP channel",
-        ))
-    }
-
-    /// Queries QEMU's exact bounded observational mutex ownership inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_mutex_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkMutexInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_mutex_inventory",
-            "hot-fork mutex inventory is not implemented by this QMP channel",
-        ))
-    }
-
-    /// Queries QEMU's exact bounded observational live-timer inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_timer_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkTimerInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_timer_inventory",
-            "hot-fork timer inventory is not implemented by this QMP channel",
-        ))
-    }
-
-    /// Queries QEMU's exact bounded monitor/parser inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the QMP operation or strict
-    /// versioned response validation fails.
-    fn query_hot_fork_monitor_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkMonitorInventory, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "query_hot_fork_monitor_inventory",
-            "hot-fork monitor inventory is not implemented by this QMP channel",
-        ))
-    }
+    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError>;
 
     /// Completes an authenticated terminal lifecycle transition without
     /// expecting QEMU to resume guest execution.

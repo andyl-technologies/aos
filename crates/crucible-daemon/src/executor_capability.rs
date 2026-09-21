@@ -265,7 +265,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::{AllowAllAttemptAdmission, ExecutorCapacity, MemoryAssignmentLedger};
+    use crate::executor_supervisor::AllowAllAttemptAdmission;
+    use crate::{ExecutorCapacity, MemoryAssignmentLedger};
 
     #[test]
     fn capacity_reports_track_exact_supervisor_reservations() {
@@ -405,23 +406,26 @@ mod tests {
             CampaignLineageId::parse(&typed_id(
                 "crucible.campaign.lineage",
                 "campaign-fact",
+                crucible_campaign::CampaignRecordKind::Lineage.schema_version(),
                 0x51,
             ))
             .expect("lineage"),
             AttemptId::parse(&typed_id(
                 "crucible.campaign.attempt",
                 "campaign-fact",
+                crucible_campaign::CampaignRecordKind::Attempt.schema_version(),
                 byte,
             ))
             .expect("attempt"),
             AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
             ExecutionRetentionIntent::Discard,
+            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
         )
         .expect("request")
     }
 
-    fn typed_id(tag: &str, kind: &str, byte: u8) -> String {
-        format!("{tag}@{kind}.1.{}", encode_hex(&[byte; 32]))
+    fn typed_id(tag: &str, kind: &str, schema_version: u32, byte: u8) -> String {
+        format!("{tag}@{kind}.{schema_version}.{}", encode_hex(&[byte; 32]))
     }
 
     fn encode_hex(bytes: &[u8]) -> String {

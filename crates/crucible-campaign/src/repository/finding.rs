@@ -18,30 +18,23 @@ pub struct FindingPublicationResult {
     pub replayed: bool,
 }
 
+pub(super) struct FindingPublicationInput<'a> {
+    pub(super) name: &'a str,
+    pub(super) expected_snapshot: CampaignSnapshotId,
+    pub(super) signature: FindingSignature,
+    pub(super) observation: ObservationId,
+    pub(super) reproduction: ReproductionArtifactId,
+    pub(super) minimized: Option<ReproductionArtifactId>,
+    pub(super) exact_pins: FindingExactPins,
+    pub(super) candidate_bundle: FindingCandidateBundleId,
+}
+
 impl CampaignRepository {
-    /// Publishes a finding with role-tagged exact-checkpoint retention.
-    ///
-    /// Rediscovery unions each role independently. The first observation and
-    /// original reproduction remain immutable, and a minimized reproduction
-    /// may be added exactly once.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error without advancing the ref when any referenced evidence
-    /// or role-tagged checkpoint fails authentication.
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
-    pub fn publish_finding_with_retention(
+    pub(super) fn publish_finding_with_candidate_bundle(
         &self,
-        name: &str,
-        expected_snapshot: CampaignSnapshotId,
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: FindingExactPins,
+        input: FindingPublicationInput<'_>,
     ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
-        self.publish_finding_with_candidate_bundle(
+        let FindingPublicationInput {
             name,
             expected_snapshot,
             signature,
@@ -49,23 +42,8 @@ impl CampaignRepository {
             reproduction,
             minimized,
             exact_pins,
-            None,
-        )
-    }
-
-    // crucible-lint: allow rust-allow -- this internal transaction keeps its complete authenticated basis explicit.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn publish_finding_with_candidate_bundle(
-        &self,
-        name: &str,
-        expected_snapshot: CampaignSnapshotId,
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: FindingExactPins,
-        candidate_bundle: Option<FindingCandidateBundleId>,
-    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
+            candidate_bundle,
+        } = input;
         let _guard = self.lock_mutation()?;
         let campaign_ref = campaign_ref(name)?;
         let current_content = self
@@ -99,19 +77,18 @@ impl CampaignRepository {
             reproduction,
             minimized,
         )?;
-        if let Some(candidate_bundle) = candidate_bundle {
-            let bundle = self.load_finding_candidate_bundle(candidate_bundle)?;
-            if bundle.signature() != &signature
-                || bundle.observation() != observation
-                || bundle.reproduction() != reproduction
-                || Some(bundle.minimized()) != minimized
-                || bundle.exact_pins() != &exact_pins
-            {
-                return Err(integrity(
-                    "finding-candidate-bundle-publication-basis-mismatch",
-                ));
-            }
+        let bundle = self.load_finding_candidate_bundle(candidate_bundle)?;
+        if bundle.signature() != &signature
+            || bundle.observation() != observation
+            || bundle.reproduction() != reproduction
+            || Some(bundle.minimized()) != minimized
+            || bundle.exact_pins() != &exact_pins
+        {
+            return Err(integrity(
+                "finding-candidate-bundle-publication-basis-mismatch",
+            ));
         }
+        let candidate_bundle = Some(candidate_bundle);
 
         let key = finding_signature_key(signature.cluster_key());
         let existing = self
@@ -274,41 +251,30 @@ impl CampaignRepository {
 
         let occurrence_set =
             FindingOccurrenceSet::new(occurrences, occurrence_count, latest_occurrence)?;
-        let finding = if let (
-            Some(candidate_bundle),
-            Some(candidate_occurrences),
-            Some(latest_candidate_bundle),
-        ) = (
+        let (Some(candidate_bundle), Some(candidate_occurrences), Some(latest_candidate_bundle)) = (
             selected_candidate_bundle,
             candidate_occurrences,
             latest_candidate_bundle,
-        ) {
-            Finding::new_with_candidate_occurrences(
-                signature,
-                representative,
-                original_reproduction,
-                first_seen,
-                occurrence_set,
-                selected_minimized,
-                pins,
-                candidate_bundle,
-                FindingCandidateOccurrenceSet::new(
-                    candidate_occurrences,
-                    candidate_occurrence_count,
-                    latest_candidate_bundle,
-                )?,
-            )?
-        } else {
-            Finding::new_with_retention(
-                signature,
-                representative,
-                original_reproduction,
-                first_seen,
-                occurrence_set,
-                selected_minimized,
-                pins,
-            )?
+        ) else {
+            return Err(integrity("finding-candidate-occurrence-authority"));
         };
+        let finding = Finding::new_with_candidate_occurrences(
+            Finding::basis(
+                signature,
+                representative,
+                original_reproduction,
+                first_seen,
+                occurrence_set,
+            ),
+            selected_minimized,
+            pins,
+            candidate_bundle,
+            FindingCandidateOccurrenceSet::new(
+                candidate_occurrences,
+                candidate_occurrence_count,
+                latest_candidate_bundle,
+            )?,
+        )?;
         let finding_id = finding.id()?;
         if self.merkle.get(current.snapshot.roots().findings, key)? == Some(finding_id.content_id())
         {
@@ -356,7 +322,7 @@ impl CampaignRepository {
                 .insert(published_candidate_occurrences, *key, *bundle)?
                 .content_id();
         }
-        if candidate_occurrences.is_some_and(|root| root != published_candidate_occurrences) {
+        if candidate_occurrences != published_candidate_occurrences {
             return Err(integrity(
                 "finding-candidate-occurrence-root-publication-mismatch",
             ));
@@ -444,15 +410,13 @@ impl CampaignRepository {
             {
                 return Err(integrity("finding-candidate-minimized-basis-mismatch"));
             }
-            if minimized_value.schema_version() >= 2 {
-                let minimization = minimized_value.minimization().ok_or_else(|| {
-                    integrity("finding-candidate-minimized-has-no-retained-trace")
-                })?;
-                if minimization.original() != reproduction_id {
-                    return Err(integrity(
-                        "finding-candidate-minimization-original-mismatch",
-                    ));
-                }
+            let minimization = minimized_value
+                .minimization()
+                .ok_or_else(|| integrity("finding-candidate-minimized-has-no-retained-trace"))?;
+            if minimization.original() != reproduction_id {
+                return Err(integrity(
+                    "finding-candidate-minimization-original-mismatch",
+                ));
             }
         }
         match signature.target() {
@@ -619,12 +583,10 @@ impl CampaignRepository {
                 || previous.first_seen_snapshot() != finding.first_seen_snapshot()
                 || finding.occurrences() != expected_occurrences
                 || finding.occurrence_count() != expected_count
-                || (previous.schema_version() >= 4 || finding.schema_version() >= 4)
-                    && (finding.candidate_occurrences() != expected_candidate_root
-                        || finding.candidate_occurrence_count() != expected_candidate_count
-                        || candidate_was_present
-                            && finding.latest_candidate_bundle()
-                                != previous.latest_candidate_bundle())
+                || finding.candidate_occurrences() != expected_candidate_root
+                || finding.candidate_occurrence_count() != expected_candidate_count
+                || candidate_was_present
+                    && finding.latest_candidate_bundle() != previous.latest_candidate_bundle()
                 || !previous.exact_pins().is_subset(finding.exact_pins())
                 || matches!(
                     (previous.minimized(), finding.minimized()),
@@ -668,11 +630,10 @@ impl CampaignRepository {
                 || finding.observation() != finding.latest_occurrence()
                 || finding.occurrences() != expected_occurrences
                 || finding.occurrence_count() != 1
-                || finding.schema_version() >= 4
-                    && (finding.candidate_occurrences() != expected_candidate_occurrences
-                        || finding.candidate_occurrence_count()
-                            != u32::from(finding.candidate_bundle().is_some())
-                        || finding.latest_candidate_bundle() != finding.candidate_bundle())
+                || finding.candidate_occurrences() != expected_candidate_occurrences
+                || finding.candidate_occurrence_count()
+                    != u32::from(finding.candidate_bundle().is_some())
+                || finding.latest_candidate_bundle() != finding.candidate_bundle()
             {
                 return Err(integrity("finding-transition-first-publication-basis"));
             }

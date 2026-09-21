@@ -11,9 +11,9 @@
 //! names, provision VMState, or decide when process reap permits release. Those
 //! responsibilities belong to the combined daemon-incarnation owner, which
 //! must serialize allocation and reuse of every project ID. Dropping this
-//! low-level authority without an explicit release leaks its pinned file
-//! descriptors while leaving the kernel quota active; that is the fail-closed
-//! fallback until the nondroppable combined owner consumes this module.
+//! low-level authority without an explicit release transfers its pinned file
+//! descriptors and active kernel quota to the owner's nondroppable quarantine;
+//! `Drop` must never release reusable authority before that transfer completes.
 
 use std::io;
 use std::mem::MaybeUninit;

@@ -1,4 +1,4 @@
-# Patch 0069 — `crucible-accelerator-fault-device`
+# Capability task 0069 — `crucible-accelerator-fault-device`
 
 ## Purpose
 
@@ -11,12 +11,13 @@ in-memory host test double.
 
 - Provides `qemu.accelerator.lifecycle.v1`, `qemu.accelerator.result.v1`,
   `qemu.accelerator.memory.v1`, and `qemu.accelerator.service.v1`.
-- Depends on 0047–0068, existing device callback/shared-memory infrastructure,
+- Requires the capabilities specified by capability tasks 0047–0068, the
+  existing device callback/shared-memory infrastructure,
   memory/DMA hooks, hardware-error support, and deterministic service queues.
 
 ## Production device coverage
 
-The patch provides one complete integration: the sim-only
+The atomic patch provides one complete integration: the sim-only
 `virtio-crucible-accelerator` production co-simulation device with closed
 GPU-compute, tensor/TPU, and FPGA-job classes. It exposes a versioned virtio
 transport to a guest and forwards bounded typed jobs/results through the public
@@ -42,7 +43,7 @@ can be installed.
 
 The device uses the virtio specification's vendor-specific device ID `65535`.
 QEMU's ordinary `virtio_init()` path deliberately accepts only IDs present in
-its standard device-name table, so patch 0069 adds `virtio_init_named()` for an
+its standard device-name table, so this capability adds `virtio_init_named()` for an
 explicit static-lifetime diagnostic name and uses it only for the co-sim device.
 The ordinary path retains both of its fail-fast table assertions. A generic
 unknown-ID fallback is forbidden: every other vendor-specific device must make
@@ -61,7 +62,7 @@ device-memory size, ECC-mode mask, closed job-kind count, and VMState support.
 The manifest codec is
 [`FaultAcceleratorCapabilityRowV1`](../../../../crates/crucible-shmem/src/shmem/fault_target_manifest.rs);
 the QEMU producer is
-[`qemu_plugin_crucible_fault_accelerator_manifest`](../../../../pkgs/emulation/qemu-patches/0069-crucible-accelerator-fault-device.patch).
+[`qemu_plugin_crucible_fault_accelerator_manifest`](../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch).
 
 The protocol has exactly one job kind per advertised class:
 
@@ -115,10 +116,11 @@ digests. Result records carry class/job/queue/sequence, status, output bounds,
 before/after digests, and mask/value digests. Memory records carry the configured
 range/ECC/syndrome, overlap, counters, before/after digests, and transform digest.
 Service records carry job identity, effective capacity/rates, exact accumulator
-remainders, thermal/power metadata, sizes, and state digests. Patch 0069
+remainders, thermal/power metadata, sizes, and state digests. This capability
 serializes device lifecycle, counters, service remainders, memory/ECC overlays,
 terminal state, and queue continuation; the host rejects checkpoints while
-requests, completions, or host jobs remain live. Patch 0074 extends accelerator
+requests, completions, or host jobs remain live. The capability specified by
+capability task 0074 extends accelerator
 VMState to include armed result opportunities and their reserved event slots;
 see the dedicated
 [`accelerator result opportunity`](25-accelerator-result-opportunity.md)
@@ -138,8 +140,9 @@ contract.
    outcome plus platform record where declared.
 6. Throttle service at exact ratios and checkpoint mid-job/queue.
 7. Fuzz descriptor/job schemas and limits; no malformed input escapes validation.
-8. Revert patch and fail live device gates; prove machines without the co-sim
-   device do not advertise accelerator fault capability.
+8. Run the live device gates against pristine QEMU and require capability
+   absence; prove machines without the co-sim device do not advertise the
+   accelerator fault capability.
 9. Arm a one-shot before a matching job, checkpoint before completion, restore,
    and prove the real guest result and occurrence evidence are identical.
 

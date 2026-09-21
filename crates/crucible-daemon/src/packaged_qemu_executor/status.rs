@@ -334,17 +334,13 @@ where
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
         let execution = queued.execution();
         let lease = self.lifecycles.begin(execution);
-        let (queued, result, checkpoint) = self.inner.execute(queued).into_parts();
+        let (queued, result) = self.inner.execute(queued).into_parts();
         if let Err(failure) = &result {
             let diagnostic = packaged_attempt_failure_diagnostic(execution, failure);
             let _ = writeln!(std::io::stderr().lock(), "{diagnostic}");
         }
         lease.finish();
-        AttemptWorkResult::new(queued, result).with_abandoned_checkpoint(checkpoint)
-    }
-
-    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
-        self.inner.take_abandoned_native_checkpoint()
+        AttemptWorkResult::new(queued, result)
     }
 
     fn reconcile_execution(
@@ -410,48 +406,26 @@ where
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: crucible_campaign::ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: crate::QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<
         Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
         AttemptWorkerFailure<Self::Error>,
     > {
-        self.inner.authenticate_resume_boundary(
-            checkpoints,
-            checkpoint,
-            scenario,
-            source,
-            initial,
-            post_selection,
-            context,
-        )
+        self.inner
+            .authenticate_resume_boundary(checkpoints, checkpoint, basis, context)
     }
 
     fn start_resume_lifecycle(
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: crucible_campaign::ExactCheckpointId,
-        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the canonical scenario unchanged and records only an operational phase.
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the canonical resume configurations unchanged.
-        initial: &Configuration,
-        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the optional post-selection configuration unchanged.
-        post_selection: Option<&Configuration>,
+        basis: crate::QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
-        let lifecycle = self.inner.start_resume_lifecycle(
-            checkpoints,
-            checkpoint,
-            scenario,
-            source,
-            initial,
-            post_selection,
-            context,
-        )?;
+        let lifecycle =
+            self.inner
+                .start_resume_lifecycle(checkpoints, checkpoint, basis, context)?;
         match context.runtime_basis() {
             Some(basis) => self.lifecycles.running(basis.execution()),
             None => self.lifecycles.invalidate(),
@@ -578,6 +552,10 @@ where
 
     fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
         self.inner.sample_fingerprint(node)
+    }
+
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        self.inner.prepare_terminal_fingerprints()
     }
 
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {

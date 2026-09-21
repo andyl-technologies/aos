@@ -39,7 +39,7 @@ Cross references: the `ScenarioDef` and its builder/serialized form are
 [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md); the fault
 taxonomy is [`17-fault-injection.md`](17-fault-injection.md); the assertion
 vocabulary is [`18-assertions-properties.md`](18-assertions-properties.md); the
-CLI is [`23-cli.md`](23-cli.md); search/fuzz/fork/save are
+CLI is [`23-cli.md`](23-cli.md); search/fuzz/campaign-branch/save are
 [`22-advanced-features.md`](22-advanced-features.md); the seeded firmware entropy
 boundary is [`04-determinism-contract.md`](04-determinism-contract.md) and
 [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md); the optional
@@ -213,22 +213,22 @@ let scenario = ScenarioBuilder::new()
 **Run + verify (determinism):**
 
 ```text
-  $ crucible run happy-path.scn
+  $ crucible run builtin:happy-path.scn
   crucible: seed = 0x000...02a (pinned in scenario)
   crucible: backend = qemu (patched QEMU + plugin discovered)
   ... event log (jsonl) ...
   crucible: PASSED in 8.412s virtual time (0.7s wall), 2 nodes, 0 violations
 
   # prove it is deterministic: 5 independent reductions, byte-identical
-  $ crucible verify happy-path.scn --runs 5 --adversarial
+  $ crucible verify builtin:happy-path.scn --runs 5 --adversarial
   crucible: 5/5 runs byte-identical (canonical log + fingerprint stream)
   crucible: DETERMINISTIC
 ```
 
 **Expected outcome.** `PASSED`; `verify` reports byte-identical runs even under
 the adversarial host matrix (24 §7). **Reproduce:** the scenario pins its seed,
-so `crucible run happy-path.scn` is already reproducible; `crucible replay` of any
-emitted artifact lands at the same state ([EX-2]).
+so the command `crucible run builtin:happy-path.scn` is already reproducible;
+`crucible replay` of any emitted artifact lands at the same state ([EX-2]).
 
 Implementation note (T-EX-1): `crucible::example_corpus` ships the
 `happy-path.scn` corpus fixture as a content-addressed `ScenarioDefForm` with two
@@ -362,7 +362,7 @@ deadline  = "30s"
 **Run:**
 
 ```text
-  $ crucible run partition-recovery.scn
+  $ crucible run builtin:partition-recovery.scn
   crucible: seed = 0x0000...063 (pinned)
   ... wait-ready fires at vt=3.140s; partition injected; heal-after armed ...
   ... heal fires at vt=13.140s (10s after wait-ready); reconcile observed ...
@@ -373,9 +373,10 @@ deadline  = "30s"
 and `converges-after-heal` is satisfied within 30 virtual seconds of the split.
 The **relative-timer** anchor (10s after the *observed* readiness) makes the
 inject→heal *phase* the same shape regardless of when readiness happens in any
-given run. **Reproduce:** `crucible verify partition-recovery.scn --runs 3` is
-byte-identical; a hypothetical convergence failure would print a `crucible replay`
-line for the exact `(seed, scenario, schedule)` that exhibited it.
+given run. **Reproduce:**
+`crucible verify builtin:partition-recovery.scn --runs 3` is byte-identical; a
+hypothetical convergence failure would print a `crucible replay` line for the
+exact `(seed, scenario, schedule)` that exhibited it.
 
 Implementation note (T-EX-2): `crucible::example_corpus` ships the
 `partition-recovery.scn` corpus fixture as a three-node, three-link
@@ -519,7 +520,7 @@ across five independent local reductions.
 size; `crucible fuzz` samples it under basic-block **coverage feedback** (22 §22.6,
 zero instrumentation); a discovered failure reduces to a **self-contained
 reproduction artifact**; `crucible replay` reproduces it **bit-identically**; and
-`save` / `resume` / `fork` let the developer walk the neighborhood of the failure.
+`save`, `resume`, and `campaign branch` let the developer walk the neighborhood of the failure.
 
 **Unmodified guest image.** The family generates a `Plan` of random faults (partition / loss /
 crash / latency, 17) over a generated topology, scaled by `fault_density`. Faults
@@ -567,7 +568,7 @@ let family = ScenarioFamily {
   crucible: FAILED — "no-split-brain" violated at vt=22.41s (reproduced exactly)
 ```
 
-**Walking the neighborhood with save / resume / fork:**
+**Walking the neighborhood with save, resume, and campaign branch:**
 
 ```text
   # save a checkpoint just before the violation, oracle-validated (23 §9, INV-2)
@@ -580,15 +581,14 @@ let family = ScenarioFamily {
   crucible[paused @ vt=22.5s]> query leaders
       db-0: leader(term=4)   db-3: leader(term=4)    ← the split-brain, frozen
 
-  # fork the SAME prefix down a different schedule to test a hypothesis:
-  # does delivering the delayed vote first avoid the double election?
-  $ crucible fork sv-7c12 --override 'deliver_order@22.13s=db-3-vote-first' --label hyp-a
-  crucible: forked child (CoW-shared with parent); appended overridden decision
-  crucible: PASSED — no split-brain under the alternate delivery order
+  # add a bounded alternate decision at the authenticated campaign opportunity
+  $ crucible campaign branch network-recovery --expected blake3:<snapshot> \
+      --command hyp-a --opportunity deliver-order-22.13s \
+      --domain vote-order --value discrete:db-3-vote-first
 ```
 
 **Expected outcome.** Fuzzing finds a `no-split-brain` violation; the artifact
-reproduces it bit-identically on any host; `save`/`resume`/`fork` let the
+reproduces it bit-identically on any host; `save`, `resume`, and `campaign branch` let the
 developer freeze the pre-failure state, inspect it, and test a fix hypothesis by
 overriding one decision — all on the *one* temporal graph (22 [ADV-2]), no second
 execution path. **Reproduce:** the artifact is the reproduction; `replay --check`
@@ -608,7 +608,7 @@ fingerprint streams (24 §4); it requires nothing in any guest. It works on the
 A.1–A.4 scenarios unchanged.
 
 ```text
-  $ crucible verify partition-recovery.scn --runs 16 --adversarial --bisect
+  $ crucible verify builtin:partition-recovery.scn --runs 16 --adversarial --bisect
   crucible: 16 reductions under the hostile host matrix (sched jitter, core 1..16)
   crucible: 16/16 byte-identical — DETERMINISTIC
 ```
@@ -785,13 +785,11 @@ with no white-box dependency.
   configuration path MUST always suffice ([G-3], [TRIG-3]). *Gate:* `gate:any-guest`.
   *Spec:* §B.2, §B.4.
 
-Implementation note (T-WL-2): the workload entropy-boundary proof composes the
-closed `GuestWorkloadBinary` selector with the QEMU deterministic launch profile.
-The `checks.crucible.phase4.workloadEntropyBoundary` gate asserts that guest
-RNG-backed workload bytes reproduce from the scenario-derived `fw_cfg` seed and
-seeded `virtio-rng` device, consumes the phase-1 booted guest's selected
-`crucible-httpget-workload` `WORKLOAD_RNG_HEX` transcript, and verifies that a
-host entropy source fails loudly before QEMU spawn.
+Implementation note (T-WL-2): the closed `GuestWorkloadBinary` selector composes
+with the concrete QEMU launch profile. The phase-1 guest entropy launch proves
+that RNG-backed workload bytes reproduce from the scenario-derived `fw_cfg`
+seed and seeded `virtio-rng` device. The launch validator rejects host entropy
+sources and unseeded guest RNG devices before QEMU spawn.
 
 Implementation note (T-WL-3): `GuestWorkloadSeed` delivers an explicit workload
 seed as plain black-box scenario configuration with `wseed=0x...` on the guest
@@ -1029,9 +1027,9 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `LatencyBump`) are [`17-fault-injection.md`](17-fault-injection.md); the
   assertion quantifiers (`Always`, `Eventually`) are
   [`18-assertions-properties.md`](18-assertions-properties.md).
-- The CLI verbs (`run`, `verify`, `save`, `resume`, `fork`, `replay`, `fuzz`,
+- The CLI verbs (`run`, `verify`, `save`, `resume`, `campaign branch`, `replay`, `fuzz`,
   `selftest`), exit codes, and the failure-time repro-command ergonomics are
-  [`23-cli.md`](23-cli.md); the search/fuzz/save/fork/oracle machinery is
+  [`23-cli.md`](23-cli.md); the search/fuzz/save/branch/oracle machinery is
   [`22-advanced-features.md`](22-advanced-features.md).
 - The seeded firmware entropy boundary the in-guest workload determinism rides on
   is [`04-determinism-contract.md`](04-determinism-contract.md) and
@@ -1063,11 +1061,10 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   bit-identically across runs with zero guest modification, and a workload that
   opens a new entropy source fails the determinism gate loudly. — satisfies
   [WL-4], [WL-5]; spec §B.2; cross-ref 04, 26.
-  Completed by `checks.crucible.phase4.workloadEntropyBoundary`: the workload
-  entropy test proves same-seed selected `crucible-httpget-workload`
+  Completed by `checks.crucible.phase1.guestEntropyLaunch` and the concrete
+  launch validation tests: same-seed selected `crucible-httpget-workload`
   `WORKLOAD_RNG_HEX` transcripts are byte-identical, changed scenario seeds
-  change the guest RNG stream, the phase-1 booted guest entropy gate remains
-  wired in, and host/unseeded entropy mutations fail loudly.
+  change the guest RNG stream, and host or unseeded entropy sources fail loudly.
 - [x] **T-WL-3** Implement explicit-workload-seed delivery via plain content-
   addressed config (cmdline/file) and, optionally, the white-box channel; assert
   the black-box config path always suffices and the white-box path is never
@@ -1149,7 +1146,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
 - [x] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
   `crucible fuzz` with basic-block coverage; verify a planted/discoverable failure
   reduces to a self-contained artifact that `crucible replay` reproduces
-  bit-identically, and that `save`/`resume`/`fork` walk the neighborhood. —
+  bit-identically, and that `save`/`resume`/`campaign branch` walk the neighborhood. —
   satisfies [EX-1], [EX-2], [EX-3]; spec §A.4; cross-ref 22, 06 §7.
   Completed by `checks.crucible.phase7.adversarialExampleVerify`: the built-in
   `fault-campaign.fam` fixture exports a deterministic `ScenarioFamily`

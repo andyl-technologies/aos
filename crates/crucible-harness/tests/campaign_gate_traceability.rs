@@ -10,10 +10,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crucible_harness::campaign_gates::{
-    CampaignGateContract, CampaignGateSpec, CampaignGateTargetKind, LibraryExactSelector,
-    campaign_gates, find_campaign_gate,
+    CampaignGateContract, CampaignGateSpec, CampaignGateTargetKind, ExactSelector, campaign_gates,
+    find_campaign_gate,
 };
 use crucible_harness::gate_targets::gate_targets;
+
+#[path = "campaign_gate_traceability/integration_exact.rs"]
+mod integration_exact;
+
+use integration_exact::{
+    IntegrationNixContract, integration_exact_target_failures, integration_selector_nix_failures,
+};
 
 const TRACEABILITY: &str =
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/requirement-traceability.tsv");
@@ -62,34 +69,49 @@ fn campaign_gate_catalog_is_complete_and_unambiguous() {
 }
 
 #[test]
-fn library_exact_targets_fail_closed_on_source_and_runner_drift() {
-    let selector = LibraryExactSelector {
+fn exact_targets_fail_closed_on_source_and_runner_drift() {
+    let selector = ExactSelector {
         source: "crates/example/src/native.rs",
         name: "native::flight::proves_equivalence",
     };
     let unignored_source = "#[test]\nfn proves_equivalence() {}\n";
-    let source_failures =
-        library_selector_source_failures("gate:fixture", &selector, unignored_source, true);
+    let source_failures = exact_selector_source_failures(
+        "gate:fixture",
+        selector.source,
+        selector.name,
+        unignored_source,
+        true,
+    );
     assert!(
         source_failures
             .iter()
             .any(|failure| failure.contains("not explicitly ignored"))
     );
 
-    let mismatched = LibraryExactSelector {
+    let mismatched = ExactSelector {
         source: selector.source,
         name: "native::flight::missing_selector",
     };
     let ignored_source = "#[test]\n#[ignore = \"native\"]\nfn proves_equivalence() {}\n";
-    let mismatch_failures =
-        library_selector_source_failures("gate:fixture", &mismatched, ignored_source, true);
+    let mismatch_failures = exact_selector_source_failures(
+        "gate:fixture",
+        mismatched.source,
+        mismatched.name,
+        ignored_source,
+        true,
+    );
     assert!(
         mismatch_failures
             .iter()
             .any(|failure| failure.contains("is absent"))
     );
-    let ordinary_failures =
-        library_selector_source_failures("gate:fixture", &selector, ignored_source, false);
+    let ordinary_failures = exact_selector_source_failures(
+        "gate:fixture",
+        selector.source,
+        selector.name,
+        ignored_source,
+        false,
+    );
     assert!(
         ordinary_failures
             .iter()
@@ -150,7 +172,7 @@ fn library_exact_targets_fail_closed_on_source_and_runner_drift() {
             .any(|failure| failure.contains("listing guard"))
     );
 
-    let duplicate_name = LibraryExactSelector {
+    let duplicate_name = ExactSelector {
         source: "crates/example/src/another_native.rs",
         name: selector.name,
     };
@@ -168,6 +190,41 @@ fn library_exact_targets_fail_closed_on_source_and_runner_drift() {
             .iter()
             .any(|failure| failure.contains("duplicate library exact selector"))
     );
+
+    let integration_selector = ExactSelector {
+        source: selector.source,
+        name: selector.name,
+    };
+    let integration_failures = integration_selector_nix_failures(IntegrationNixContract {
+        gate: "gate:fixture",
+        package: "example",
+        test_target: "example_process",
+        selectors: &[integration_selector],
+        runner: "example-flight",
+        evidence: &["proven=typed-product"],
+        nix: wrong_runner,
+        ignored: true,
+    });
+    assert!(
+        integration_failures
+            .iter()
+            .any(|failure| failure.contains("example --test example_process"))
+    );
+    assert!(
+        integration_failures
+            .iter()
+            .any(|failure| failure.contains("does not run example-flight"))
+    );
+    assert!(
+        integration_failures
+            .iter()
+            .any(|failure| failure.contains("one-passed"))
+    );
+    assert!(
+        integration_failures
+            .iter()
+            .any(|failure| failure.contains("omits evidence proven=typed-product"))
+    );
 }
 
 #[test]
@@ -177,30 +234,50 @@ fn registered_library_exact_targets_match_sources_and_nix() {
 
     for gate in campaign_gates() {
         let (targets, nix_attr) = match gate.contract {
-            CampaignGateContract::Automated { targets, nix_attr }
-            | CampaignGateContract::ComponentAutomated {
-                targets, nix_attr, ..
-            } => (targets, nix_attr),
-            CampaignGateContract::Manual { .. } | CampaignGateContract::Unsupported => continue,
+            CampaignGateContract::Automated { targets, nix_attr } => (targets, nix_attr),
+            CampaignGateContract::Manual { .. } => continue,
         };
         for target in targets {
-            let CampaignGateTargetKind::LibExact {
-                selectors,
-                nix_source,
-                ignored,
-            } = target.kind
-            else {
-                continue;
-            };
-            failures.extend(library_exact_target_failures(
-                &root,
-                gate.name,
-                target.package,
-                selectors,
-                nix_source,
-                nix_attr,
-                ignored,
-            ));
+            match target.kind {
+                CampaignGateTargetKind::LibExact {
+                    selectors,
+                    nix_source,
+                    ignored,
+                } => failures.extend(library_exact_target_failures(
+                    &root,
+                    gate.name,
+                    target.package,
+                    selectors,
+                    nix_source,
+                    nix_attr,
+                    ignored,
+                )),
+                CampaignGateTargetKind::LibExactAggregate {
+                    selectors,
+                    producer_nix_source,
+                    producer_nix_attr,
+                    producer_gate,
+                    aggregate_nix_source,
+                    evidence,
+                    ignored,
+                } => failures.extend(library_exact_aggregate_target_failures(
+                    &root,
+                    LibraryExactAggregateContract {
+                        gate: gate.name,
+                        package: target.package,
+                        selectors,
+                        producer_nix_source,
+                        producer_nix_attr,
+                        producer_gate,
+                        aggregate_nix_source,
+                        aggregate_nix_attr: nix_attr,
+                        evidence,
+                        ignored,
+                    },
+                )),
+                CampaignGateTargetKind::Integration { .. }
+                | CampaignGateTargetKind::IntegrationExact { .. } => {}
+            }
         }
     }
 
@@ -212,53 +289,82 @@ fn registered_library_exact_targets_match_sources_and_nix() {
 }
 
 #[test]
-fn component_automated_contract_validates_evidence_without_completing_gate()
--> Result<(), Box<dyn Error>> {
+fn registered_integration_exact_targets_match_sources_and_nix() {
+    let root = workspace_root();
+    let mut failures = Vec::new();
+
+    for gate in campaign_gates() {
+        let targets = match gate.contract {
+            CampaignGateContract::Automated { targets, .. } => targets,
+            CampaignGateContract::Manual { .. } => continue,
+        };
+        for target in targets {
+            if matches!(target.kind, CampaignGateTargetKind::IntegrationExact { .. }) {
+                failures.extend(integration_exact_target_failures(&root, gate.name, target));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "RFC-0020 integration exact targets drifted:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn hot_fork_isolation_binds_native_aggregate_evidence() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let gate = find_campaign_gate("gate:hot-fork-isolation")
         .ok_or("hot-fork-isolation gate is missing")?;
-    let CampaignGateContract::ComponentAutomated {
-        targets,
-        nix_attr,
-        remaining_scope,
-    } = gate.contract
-    else {
-        return Err("hot-fork-isolation must remain component-automated".into());
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
+        return Err("hot-fork-isolation must use the native automated aggregate".into());
     };
 
-    assert!(!remaining_scope.is_empty());
-    let wired_default = format!("\"{nix_attr}\" = component_evidence;");
-    let failures = contract_failures(&root, &wired_default, gate);
     assert_eq!(
-        failures,
-        [format!(
-            "{}: component automation does not complete the RFC contract; remaining scope: {}",
-            gate.name,
-            remaining_scope.join(",")
-        )]
+        nix_attr,
+        "checks.crucible.phase7.gates.hotForkIsolation.rawGate"
     );
-
-    let unwired_failures = contract_failures(&root, "", gate);
-    assert!(
-        unwired_failures
-            .iter()
-            .any(|failure| failure.contains("evaluated Nix target")
-                && failure.contains("not registered"))
+    assert_eq!(targets.len(), 1);
+    let CampaignGateTargetKind::LibExactAggregate {
+        selectors,
+        producer_nix_source,
+        producer_nix_attr,
+        producer_gate,
+        aggregate_nix_source,
+        evidence,
+        ignored,
+    } = targets[0].kind
+    else {
+        return Err("hot-fork-isolation must authenticate an exact native producer".into());
+    };
+    assert_eq!(selectors.len(), 5);
+    assert_eq!(
+        producer_nix_source,
+        "tests/crucible/phase7-qemu-hot-fork-atomic-world-vm.nix"
     );
-    assert!(
-        unwired_failures
-            .iter()
-            .any(|failure| failure.contains("does not complete the RFC contract"))
+    assert_eq!(
+        producer_nix_attr,
+        "checks.crucible.phase7.gates.worldForkAtomicity"
     );
+    assert_eq!(producer_gate, "gate:world-fork-atomicity");
+    assert_eq!(
+        aggregate_nix_source,
+        "tests/crucible/phase7-crucible-hot-fork-isolation.nix"
+    );
+    assert!(ignored);
+    assert_eq!(evidence.len(), 1);
+    assert!(evidence[0].contains("native_isolation_scopes="));
 
     let first_selector = targets
         .iter()
         .find_map(|target| match target.kind {
-            CampaignGateTargetKind::LibExact { selectors, .. } => selectors.first(),
+            CampaignGateTargetKind::LibExact { selectors, .. }
+            | CampaignGateTargetKind::LibExactAggregate { selectors, .. } => selectors.first(),
             CampaignGateTargetKind::Integration { .. }
-            | CampaignGateTargetKind::NixFlight { .. } => None,
+            | CampaignGateTargetKind::IntegrationExact { .. } => None,
         })
-        .ok_or("hot-fork-isolation component selector is missing")?;
+        .ok_or("hot-fork-isolation native selector is missing")?;
     let selector_source = fs::read_to_string(root.join(first_selector.source))?;
     let function_name = first_selector
         .name
@@ -270,70 +376,74 @@ fn component_automated_contract_validates_evidence_without_completing_gate()
         "fn removed_hot_fork_isolation_selector(",
     );
     assert!(
-        library_selector_source_failures(gate.name, first_selector, &drifted_source, false)
-            .iter()
-            .any(|failure| failure.contains("is absent"))
+        exact_selector_source_failures(
+            gate.name,
+            first_selector.source,
+            first_selector.name,
+            &drifted_source,
+            false,
+        )
+        .iter()
+        .any(|failure| failure.contains("is absent"))
     );
 
     Ok(())
 }
 
 #[test]
-fn world_fork_component_evidence_does_not_complete_the_canonical_gate() -> Result<(), Box<dyn Error>>
-{
-    let root = workspace_root();
+fn world_fork_native_matrix_completes_the_canonical_gate() -> Result<(), Box<dyn Error>> {
     let gate = find_campaign_gate("gate:world-fork-atomicity")
         .ok_or("world-fork-atomicity gate is missing")?;
-    let CampaignGateContract::ComponentAutomated {
-        nix_attr,
-        remaining_scope,
-        ..
-    } = gate.contract
-    else {
-        return Err("world-fork-atomicity must remain component-automated".into());
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
+        return Err("world-fork-atomicity must use the native automated matrix".into());
     };
 
-    assert_eq!(remaining_scope, ["native-real-qemu-matrix", "T-CAM-7.4"]);
-    let wired_default = format!("\"{nix_attr}\" = component_evidence;");
+    assert_eq!(nix_attr, "checks.crucible.phase7.gates.worldForkAtomicity");
+    assert_eq!(targets.len(), 1);
+    let CampaignGateTargetKind::LibExact {
+        selectors,
+        nix_source,
+        ignored,
+    } = targets[0].kind
+    else {
+        return Err("world-fork-atomicity must run exact daemon library tests".into());
+    };
+    assert_eq!(selectors.len(), 5);
     assert_eq!(
-        contract_failures(&root, &wired_default, gate),
-        [String::from(
-            "gate:world-fork-atomicity: component automation does not complete the RFC contract; remaining scope: native-real-qemu-matrix,T-CAM-7.4"
-        )]
+        nix_source,
+        "tests/crucible/phase7-qemu-hot-fork-atomic-world-vm.nix"
+    );
+    assert!(
+        ignored,
+        "native world-fork tests must be explicitly selected"
     );
 
     Ok(())
 }
 
 #[test]
-fn campaign_replay_component_evidence_keeps_production_scope_open() -> Result<(), Box<dyn Error>> {
+fn campaign_replay_binds_portable_and_production_qemu_evidence() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let gate =
         find_campaign_gate("gate:campaign-replay").ok_or("campaign-replay gate is missing")?;
-    let CampaignGateContract::ComponentAutomated {
-        targets,
-        nix_attr,
-        remaining_scope,
-    } = gate.contract
-    else {
-        return Err("campaign-replay must remain component-automated".into());
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
+        return Err("campaign-replay must be automated".into());
     };
 
-    assert_eq!(targets.len(), 2);
-    assert_eq!(remaining_scope, ["production-qemu", "native"]);
-    let wired_default = format!("\"{nix_attr}\" = component_evidence;");
+    assert_eq!(targets.len(), 3);
+    let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
+    assert!(contract_failures(&root, &default_nix, gate).is_empty());
     assert_eq!(
-        contract_failures(&root, &wired_default, gate),
-        [String::from(
-            "gate:campaign-replay: component automation does not complete the RFC contract; remaining scope: production-qemu,native"
-        )]
+        nix_attr,
+        "checks.crucible.phase4.gates.campaignReplay.rawGate"
     );
 
     Ok(())
 }
 
 #[test]
-fn typed_choice_product_checkpoint_uses_the_real_network_flight() -> Result<(), Box<dyn Error>> {
+fn typed_choice_product_checkpoint_uses_the_packaged_campaign_flight() -> Result<(), Box<dyn Error>>
+{
     let root = workspace_root();
     let gate = find_campaign_gate("gate:typed-choice-product-checkpoint")
         .ok_or("typed-choice product checkpoint gate is missing")?;
@@ -341,28 +451,47 @@ fn typed_choice_product_checkpoint_uses_the_real_network_flight() -> Result<(), 
         return Err("typed-choice product checkpoint must be automated".into());
     };
 
-    assert_eq!(
-        nix_attr,
-        "checks.crucible.phase2.gates.typedChoiceProductCheckpoint"
-    );
+    assert_eq!(nix_attr, "checks.crucible.phase4.packagedCampaignChoiceVm");
     assert_eq!(targets.len(), 1);
-    let CampaignGateTargetKind::NixFlight { nix_source } = targets[0].kind else {
-        return Err("typed-choice product checkpoint must use its Nix flight".into());
-    };
-    let source = fs::read_to_string(root.join(nix_source))?;
-    for evidence in [
-        "pkgs.qemu-crucible",
-        "crucible-qemu-live-selectable-product",
-        "guest=real-network-product-initramfs",
-        "restored_pending_exact=true",
-        "selected_value=discrete-fast,integer-7",
-        "source_process_force_crashed=true",
-    ] {
-        assert!(
-            source.contains(evidence),
-            "typed-choice product flight omits {evidence}"
+    assert_eq!(targets[0].package, "crucible-cli");
+    let CampaignGateTargetKind::IntegrationExact {
+        test_target,
+        selectors,
+        nix_sources,
+        runner,
+        evidence,
+        ignored,
+    } = targets[0].kind
+    else {
+        return Err(
+            "typed-choice product checkpoint must run exact packaged-campaign tests".into(),
         );
-    }
+    };
+    assert_eq!(test_target, "campaign_store_process");
+    assert_eq!(selectors.len(), 1);
+    assert_eq!(
+        selectors[0].name,
+        "packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart"
+    );
+    assert_eq!(
+        nix_sources,
+        [
+            "tests/crucible/phase4-packaged-campaign-choice-vm.nix",
+            "tests/crucible/phase4-packaged-campaign-vm.nix",
+        ]
+    );
+    assert_eq!(runner, "campaign-process-flight");
+    assert_eq!(
+        evidence,
+        [
+            "gate=gate:typed-choice-product-checkpoint",
+            "proven=typed-guest-registration,fresh-qemu-restore",
+        ]
+    );
+    assert!(ignored, "packaged QEMU flight must select its ignored test");
+
+    let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
+    assert!(contract_failures(&root, &default_nix, gate).is_empty());
 
     Ok(())
 }
@@ -465,9 +594,8 @@ fn validate_evaluated_nix_targets(failures: &mut BTreeSet<String>) {
     let cataloged = campaign_gates()
         .iter()
         .filter_map(|gate| match gate.contract {
-            CampaignGateContract::Automated { nix_attr, .. }
-            | CampaignGateContract::ComponentAutomated { nix_attr, .. } => Some(nix_attr),
-            CampaignGateContract::Manual { .. } | CampaignGateContract::Unsupported => None,
+            CampaignGateContract::Automated { nix_attr, .. } => Some(nix_attr),
+            CampaignGateContract::Manual { .. } => None,
         })
         .collect::<BTreeSet<_>>();
 
@@ -488,33 +616,10 @@ fn contract_failures(root: &Path, default_nix: &str, gate: &CampaignGateSpec) ->
         CampaignGateContract::Automated { targets, nix_attr } => {
             automated_contract_failures(root, default_nix, gate.name, targets, nix_attr)
         }
-        CampaignGateContract::ComponentAutomated {
-            targets,
-            nix_attr,
-            remaining_scope,
-        } => {
-            let mut failures =
-                automated_contract_failures(root, default_nix, gate.name, targets, nix_attr);
-            if remaining_scope.is_empty() {
-                failures.push(format!(
-                    "{}: component automation must name remaining scope",
-                    gate.name
-                ));
-            }
-            failures.push(format!(
-                "{}: component automation does not complete the RFC contract; remaining scope: {}",
-                gate.name,
-                remaining_scope.join(",")
-            ));
-            failures
-        }
         CampaignGateContract::Manual {
             artifact_contract,
             nix_attr,
         } => manual_contract_failures(root, default_nix, gate.name, artifact_contract, nix_attr),
-        CampaignGateContract::Unsupported => {
-            vec![format!("{}: no executable gate contract", gate.name)]
-        }
     }
 }
 
@@ -540,6 +645,9 @@ fn automated_contract_failures(
                     test_target,
                 ));
             }
+            CampaignGateTargetKind::IntegrationExact { .. } => {
+                failures.extend(integration_exact_target_failures(root, gate, automated))
+            }
             CampaignGateTargetKind::LibExact {
                 selectors,
                 nix_source,
@@ -555,9 +663,29 @@ fn automated_contract_failures(
                     ignored,
                 ));
             }
-            CampaignGateTargetKind::NixFlight { nix_source } => {
-                failures.extend(nix_flight_target_failures(root, gate, nix_source, nix_attr));
-            }
+            CampaignGateTargetKind::LibExactAggregate {
+                selectors,
+                producer_nix_source,
+                producer_nix_attr,
+                producer_gate,
+                aggregate_nix_source,
+                evidence,
+                ignored,
+            } => failures.extend(library_exact_aggregate_target_failures(
+                root,
+                LibraryExactAggregateContract {
+                    gate,
+                    package: automated.package,
+                    selectors,
+                    producer_nix_source,
+                    producer_nix_attr,
+                    producer_gate,
+                    aggregate_nix_source,
+                    aggregate_nix_attr: nix_attr,
+                    evidence,
+                    ignored,
+                },
+            )),
         }
     }
 
@@ -565,32 +693,6 @@ fn automated_contract_failures(
         failures.push(format!(
             "{gate}: evaluated Nix target {nix_attr} is not registered"
         ));
-    }
-
-    failures
-}
-
-fn nix_flight_target_failures(
-    root: &Path,
-    gate: &str,
-    nix_source: &str,
-    nix_attr: &str,
-) -> Vec<String> {
-    let source_path = root.join(nix_source);
-    let Ok(source) = fs::read_to_string(&source_path) else {
-        return vec![format!(
-            "{gate}: Nix flight source {} is missing",
-            source_path.display()
-        )];
-    };
-    let mut failures = Vec::new();
-    if !source.contains(&format!("attrPath ? \"{nix_attr}\"")) {
-        failures.push(format!(
-            "{gate}: Nix flight has the wrong default attribute"
-        ));
-    }
-    if !source.contains(&format!("gate={gate}")) {
-        failures.push(format!("{gate}: Nix flight has the wrong result gate"));
     }
 
     failures
@@ -604,15 +706,10 @@ fn integration_target_failures(
 ) -> Vec<String> {
     let mut failures = Vec::new();
     let mapped = gate_targets().iter().any(|target| {
-        target.gate == gate
-            && target.package == package
-            && target.test_target == test_target
-            && !target.placeholder
+        target.gate == gate && target.package == package && target.test_target == test_target
     });
     if !mapped {
-        failures.push(format!(
-            "{gate}: missing non-placeholder target {package}:{test_target}"
-        ));
+        failures.push(format!("{gate}: missing target {package}:{test_target}"));
     }
 
     let test_path = root
@@ -634,7 +731,7 @@ fn library_exact_target_failures(
     root: &Path,
     gate: &str,
     package: &str,
-    selectors: &[LibraryExactSelector],
+    selectors: &[ExactSelector],
     nix_source: &str,
     nix_attr: &str,
     ignored: bool,
@@ -661,8 +758,12 @@ fn library_exact_target_failures(
         }
         let source_path = root.join(selector.source);
         match fs::read_to_string(&source_path) {
-            Ok(source) => failures.extend(library_selector_source_failures(
-                gate, selector, &source, ignored,
+            Ok(source) => failures.extend(exact_selector_source_failures(
+                gate,
+                selector.source,
+                selector.name,
+                &source,
+                ignored,
             )),
             Err(_) => failures.push(format!(
                 "{gate}: library selector source {} is missing",
@@ -685,23 +786,87 @@ fn library_exact_target_failures(
     failures
 }
 
-fn library_selector_source_failures(
+struct LibraryExactAggregateContract<'a> {
+    gate: &'a str,
+    package: &'a str,
+    selectors: &'a [ExactSelector],
+    producer_nix_source: &'a str,
+    producer_nix_attr: &'a str,
+    producer_gate: &'a str,
+    aggregate_nix_source: &'a str,
+    aggregate_nix_attr: &'a str,
+    evidence: &'a [&'a str],
+    ignored: bool,
+}
+
+fn library_exact_aggregate_target_failures(
+    root: &Path,
+    contract: LibraryExactAggregateContract<'_>,
+) -> Vec<String> {
+    let mut failures = library_exact_target_failures(
+        root,
+        contract.producer_gate,
+        contract.package,
+        contract.selectors,
+        contract.producer_nix_source,
+        contract.producer_nix_attr,
+        contract.ignored,
+    );
+    let aggregate_path = root.join(contract.aggregate_nix_source);
+    match fs::read_to_string(&aggregate_path) {
+        Ok(aggregate) => {
+            if !aggregate.contains(&format!("attrPath ? \"{}\"", contract.aggregate_nix_attr)) {
+                failures.push(format!(
+                    "{}: aggregate Nix flight has the wrong default attribute",
+                    contract.gate
+                ));
+            }
+            if !aggregate.contains(&format!("gate={}", contract.gate)) {
+                failures.push(format!(
+                    "{}: aggregate Nix flight has the wrong result gate",
+                    contract.gate
+                ));
+            }
+            if !aggregate.contains("nativeIsolation") {
+                failures.push(format!(
+                    "{}: aggregate Nix flight omits its native evidence input",
+                    contract.gate
+                ));
+            }
+            for required in contract.evidence {
+                if !aggregate.contains(required) {
+                    failures.push(format!(
+                        "{}: aggregate Nix flight omits evidence {required}",
+                        contract.gate
+                    ));
+                }
+            }
+        }
+        Err(_) => failures.push(format!(
+            "{}: aggregate Nix source {} is missing",
+            contract.gate,
+            aggregate_path.display()
+        )),
+    }
+    failures
+}
+
+fn exact_selector_source_failures(
     gate: &str,
-    selector: &LibraryExactSelector,
+    selector_source: &str,
+    selector_name: &str,
     source: &str,
     ignored: bool,
 ) -> Vec<String> {
-    let Some(function_name) = selector.name.rsplit("::").next() else {
+    let Some(function_name) = selector_name.rsplit("::").next() else {
         return vec![format!(
-            "{gate}: library selector {} has no function name",
-            selector.name
+            "{gate}: exact selector {selector_name} has no function name"
         )];
     };
     let declaration = format!("fn {function_name}(");
     let Some(declaration_offset) = source.find(&declaration) else {
         return vec![format!(
-            "{gate}: library selector {} is absent from {}",
-            selector.name, selector.source
+            "{gate}: exact selector {selector_name} is absent from {selector_source}"
         )];
     };
     let mut saw_test = false;
@@ -723,20 +888,17 @@ fn library_selector_source_failures(
     }
     if !saw_test {
         return vec![format!(
-            "{gate}: library selector {} is not a test",
-            selector.name
+            "{gate}: exact selector {selector_name} is not a test"
         )];
     }
     if ignored && !saw_ignore {
         return vec![format!(
-            "{gate}: library selector {} is not explicitly ignored",
-            selector.name
+            "{gate}: exact selector {selector_name} is not explicitly ignored"
         )];
     }
     if !ignored && saw_ignore {
         return vec![format!(
-            "{gate}: ordinary library selector {} is unexpectedly ignored",
-            selector.name
+            "{gate}: ordinary exact selector {selector_name} is unexpectedly ignored"
         )];
     }
 
@@ -747,7 +909,7 @@ fn library_selector_nix_failures(
     gate: &str,
     package: &str,
     nix_attr: &str,
-    selectors: &[LibraryExactSelector],
+    selectors: &[ExactSelector],
     nix: &str,
     ignored: bool,
 ) -> Vec<String> {

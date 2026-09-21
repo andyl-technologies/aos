@@ -10,7 +10,7 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindingProductionReplayRuntimeIdentity {
     pub(super) qemu_build_id: String,
-    pub(super) qemu_patch_series_hash: String,
+    pub(super) qemu_atomic_patch_hash: String,
     pub(super) plugin_abi: String,
     pub(super) shmem_abi_version: String,
 }
@@ -24,13 +24,13 @@ impl FindingProductionReplayRuntimeIdentity {
     /// when a field is empty or exceeds its fixed string bound.
     pub fn new(
         qemu_build_id: impl Into<String>,
-        qemu_patch_series_hash: impl Into<String>,
+        qemu_atomic_patch_hash: impl Into<String>,
         plugin_abi: impl Into<String>,
         shmem_abi_version: impl Into<String>,
     ) -> Result<Self, FindingProductionReplayCaptureError> {
         let value = Self {
             qemu_build_id: qemu_build_id.into(),
-            qemu_patch_series_hash: qemu_patch_series_hash.into(),
+            qemu_atomic_patch_hash: qemu_atomic_patch_hash.into(),
             plugin_abi: plugin_abi.into(),
             shmem_abi_version: shmem_abi_version.into(),
         };
@@ -40,10 +40,10 @@ impl FindingProductionReplayRuntimeIdentity {
 
     /// Copies the authenticated identity of an installed QEMU/plugin pair.
     #[must_use]
-    pub fn from_authenticated(identity: &crucible_qemu::QemuLaunchArtifactIdentity) -> Self {
+    fn from_authenticated(identity: &crucible_qemu::QemuLaunchArtifactIdentity) -> Self {
         Self {
             qemu_build_id: identity.qemu_build_id().to_owned(),
-            qemu_patch_series_hash: identity.qemu_patch_series_hash().to_owned(),
+            qemu_atomic_patch_hash: identity.qemu_atomic_patch_hash().to_owned(),
             plugin_abi: identity.plugin_abi().to_owned(),
             shmem_abi_version: identity.shmem_abi_version().to_owned(),
         }
@@ -55,10 +55,10 @@ impl FindingProductionReplayRuntimeIdentity {
         &self.qemu_build_id
     }
 
-    /// Returns the QEMU patch-series identity.
+    /// Returns the QEMU atomic-patch identity.
     #[must_use]
-    pub fn qemu_patch_series_hash(&self) -> &str {
-        &self.qemu_patch_series_hash
+    pub fn qemu_atomic_patch_hash(&self) -> &str {
+        &self.qemu_atomic_patch_hash
     }
 
     /// Returns the matched plugin ABI label.
@@ -72,26 +72,6 @@ impl FindingProductionReplayRuntimeIdentity {
     pub fn shmem_abi_version(&self) -> &str {
         &self.shmem_abi_version
     }
-
-    /// Verifies an installed QEMU/plugin pair against this capture.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FindingProductionReplayCaptureError::RuntimeIdentity`] when
-    /// marker authentication fails or the installed identity differs.
-    pub fn verify_installed(
-        &self,
-        qemu: impl Into<std::path::PathBuf>,
-        plugin: impl Into<std::path::PathBuf>,
-    ) -> Result<crucible_qemu::QemuLaunchArtifactIdentity, FindingProductionReplayCaptureError>
-    {
-        let actual = crucible_qemu::QemuLaunchArtifactIdentity::authenticate(qemu, plugin)
-            .map_err(FindingProductionReplayCaptureError::RuntimeAuthentication)?;
-        if Self::from_authenticated(&actual) != *self {
-            return Err(FindingProductionReplayCaptureError::RuntimeIdentity);
-        }
-        Ok(actual)
-    }
 }
 
 /// On-disk format of the captured immutable guest root image.
@@ -104,11 +84,11 @@ pub enum FindingProductionReplayRootImageFormat {
     Raw,
 }
 
-impl From<crucible_api::ProductionRootImageFormat> for FindingProductionReplayRootImageFormat {
-    fn from(value: crucible_api::ProductionRootImageFormat) -> Self {
+impl From<crucible_qemu::QemuRootImageFormat> for FindingProductionReplayRootImageFormat {
+    fn from(value: crucible_qemu::QemuRootImageFormat) -> Self {
         match value {
-            crucible_api::ProductionRootImageFormat::Qcow2 => Self::Qcow2,
-            crucible_api::ProductionRootImageFormat::Raw => Self::Raw,
+            crucible_qemu::QemuRootImageFormat::Qcow2 => Self::Qcow2,
+            crucible_qemu::QemuRootImageFormat::Raw => Self::Raw,
         }
     }
 }
@@ -298,9 +278,11 @@ pub fn capture_finding_replay_shared_context(
         config.signal_artifacts(),
         config.world_artifacts(),
         limits,
-        &captured.unique_identities,
-        captured.unique_bytes,
-        static_byte_limit,
+        FindingProductionReplayBudget {
+            precharged_identities: &captured.unique_identities,
+            precharged_bytes: captured.unique_bytes,
+            total_byte_limit: static_byte_limit,
+        },
     );
     let lifecycle_objects = match lifecycle_result {
         Err(FindingProductionReplayCaptureError::LimitExceeded {

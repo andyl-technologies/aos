@@ -1,0 +1,47 @@
+schema = "aos.crucible.campaign-dogfood-contract.v1"
+gate = "gate:campaign-dogfood"
+rfc_section = "RFC-0020 sections 14.9 and 14.11"
+acceptance_state = "manual-evidence-required"
+actual_product_workload_required = true
+public_surfaces_only = true
+independent_handoff_required = true
+minimum_duration_hours = 24
+release_candidate_duration_hours = 72
+implementation_tasks = ["T-CAM-0.5", "T-CAM-7.7", "T-CAM-9.7"]
+
+[provenance]
+required = true
+fields = ["build_id", "source_revision", "qemu_identity", "plugin_identity", "host_profile", "store_profile", "scenario_identity", "policy_identity"]
+
+[command_journal]
+required = true
+records_exit_status = true
+records_structured_output = true
+redacts_secrets = true
+required_operations = ["start", "status", "watch", "steer", "pause", "archive-transfer", "restart", "resume", "finding-export", "replay", "handoff", "stop", "cleanup"]
+
+[scale]
+required = true
+minimum_executions = 10000
+exercises_backpressure = true
+exercises_resource_pressure = true
+exercises_policy_revision = true
+
+[resource_audit]
+required = true
+unexplained_live_resources_permitted = false
+resources = ["processes", "threads", "descriptors", "shared_memory", "disk_overlays", "staging_uploads", "object_pins", "writable_store_resources"]
+
+[artifacts]
+required = true
+items = ["runbook", "campaign-snapshots", "exact-reproduction", "thin-reproduction", "telemetry-timeline", "resource-audit", "defect-list", "handoff-record"]
+
+[sign_offs]
+required_roles = ["driver", "independent_reviewer", "release_owner"]
+unsigned_result = "blocked"
+
+[acceptance]
+allowed_results = ["pass", "fail", "blocked", "observation"]
+accepted_result = "pass"
+unexplained_workaround_permitted = false
+hidden_repair_permitted = false

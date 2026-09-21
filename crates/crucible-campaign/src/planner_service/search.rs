@@ -537,7 +537,7 @@ fn decode_hex_seed(encoded: &str) -> Result<[u8; 32], CampaignCodecError> {
         });
     }
     let mut seed = [0_u8; 32];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = decode_hex_nibble(pair[0])?;
         let low = decode_hex_nibble(pair[1])?;
         seed[index] = (high << 4) | low;
@@ -575,7 +575,7 @@ mod tests {
                 )),
                 crate::BranchRequestId::from_content_id(ContentId::for_bytes(
                     crucible_cas::content_store::ObjectKind::CampaignFact,
-                    2,
+                    9,
                     label,
                 ))
                 .expect("request id"),
@@ -881,20 +881,22 @@ mod tests {
             label,
         ));
         BranchRequest::new(
-            branch_point,
-            crate::ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
-                crucible_cas::content_store::ObjectKind::Configuration,
-                1,
-                label,
-            ))
-            .expect("parent configuration"),
-            crate::ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
-                crucible_cas::content_store::ObjectKind::CampaignFact,
-                1,
-                &[label, b" opportunity"].concat(),
-            ))
-            .expect("opportunity id"),
-            domain,
+            BranchRequest::identity(
+                branch_point,
+                crate::ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+                    crucible_cas::content_store::ObjectKind::Configuration,
+                    1,
+                    label,
+                ))
+                .expect("parent configuration"),
+                crate::ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
+                    crucible_cas::content_store::ObjectKind::CampaignFact,
+                    1,
+                    &[label, b" opportunity"].concat(),
+                ))
+                .expect("opportunity id"),
+                domain,
+            ),
             CandidateSource::finite(BTreeSet::from([crate::ChoiceValue::Boolean(false)]))
                 .expect("finite source"),
             BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
@@ -908,22 +910,26 @@ mod tests {
 
     fn search_policy() -> CampaignPolicy {
         CampaignPolicy::new(
-            crate::ScenarioDefId::from_hash(CampaignHash::derive(
-                "test.canonical-search.scenario",
-                b"scenario",
-            )),
-            CampaignSeed::from_bytes([0x44; 32]),
-            CampaignMode::Strict,
-            crate::ExplorerPolicy::Exhaustive {
-                maximum_cardinality: u64::MAX,
-            },
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeSet::new(),
-            FairnessPolicy::new(0, 0).expect("fairness"),
-            RetentionPolicy::new(true, 1, true, true),
-            true,
+            CampaignPolicy::identity(
+                crate::ScenarioDefId::from_hash(CampaignHash::derive(
+                    "test.canonical-search.scenario",
+                    b"scenario",
+                )),
+                CampaignSeed::from_bytes([0x44; 32]),
+                CampaignMode::Strict,
+                crate::ExplorerPolicy::Exhaustive {
+                    maximum_cardinality: u64::MAX,
+                },
+            ),
+            CampaignPolicy::rules(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                FairnessPolicy::new(0, 0).expect("fairness"),
+                RetentionPolicy::new(true, 1, true, true),
+                true,
+            ),
         )
         .expect("search policy")
     }

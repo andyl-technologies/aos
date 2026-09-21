@@ -5,6 +5,21 @@ use std::sync::atomic::Ordering;
 use super::{LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState};
 use crate::PluginShmemOrdering;
 
+pub(super) fn raw_icount_publication_is_superseded(
+    raw_icount_at_entry: u64,
+    raw_icount: u64,
+    latest_raw_icount: u64,
+) -> Result<bool, LiveVcpuTimeCallbackError> {
+    if raw_icount < raw_icount_at_entry {
+        return Err(LiveVcpuTimeCallbackError::IcountRegressed {
+            previous_icount: raw_icount_at_entry,
+            current_icount: raw_icount,
+        });
+    }
+
+    Ok(raw_icount < latest_raw_icount)
+}
+
 impl LiveVcpuTimeCallbackState {
     /// Reconstructs the plugin-local idle-jump offset after VMState load.
     pub(super) fn restore_logical_time_if_requested(
@@ -56,15 +71,6 @@ impl LiveVcpuTimeCallbackState {
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount
             .store(request.target_icount, Ordering::Release);
-        if let Some(fingerprint) = self.fingerprint.as_ref() {
-            // A fresh QEMU generation may have sampled the throwaway boot
-            // barrier priming state at the same coordinate as the restored
-            // VMState. Force the following exact pause to capture the loaded
-            // registers, RAM, and devices rather than retaining that sample.
-            fingerprint
-                .capture_submitted
-                .store(false, Ordering::Release);
-        }
         if acknowledge_boundary {
             PluginShmemOrdering::acknowledge_logical_time_restore(
                 self.slot.get(),

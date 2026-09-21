@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crucible::{RngDecision, RngStreamId};
+use crucible::{RngDecision, RngStreamId, try_step};
 use crucible_protocol::selectable_catalog_plan::{
     SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
     SelectablePlanLimits, SelectablePlanPendingRequest, SelectablePlanPhase,
@@ -30,14 +30,14 @@ fn node() -> NodeId {
 
 #[test]
 fn selectable_reply_pairing_rejects_another_valid_selection() {
-    use crucible::{AppRandomDecision, AppRandomSelectable, RngStreamId};
+    use crucible::{AppRandomSelectable, BackendRngEvidence, RngStreamId};
 
     let scenario = ScenarioDef::from_canonical_material(
         "crucible.test.vm-lifecycle.selectable-pairing",
         "scenario=selectable-pairing",
     );
     let parent = Configuration::genesis(scenario);
-    let live = AppRandomDecision {
+    let live = BackendRngEvidence {
         node: node(),
         stream: RngStreamId::from_name("app-random/node:4:vm-a/stream:7:pairing"),
         request_id: 19,
@@ -147,9 +147,19 @@ impl ProductionVmNodeLauncher for FailingFinishLauncher {
         Ok(())
     }
 
-    fn launch(
+    fn launch_fresh(
         &mut self,
         _request: ProductionVmNodeLaunchRequest<'_>,
+        _qemu_executable: &Path,
+        _root_image: &Path,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not spawn"))
+    }
+
+    fn launch_restored(
+        &mut self,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+        _exact: ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         Err(loop_factory_error("test launcher does not spawn"))
     }
@@ -188,9 +198,19 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
         Ok(())
     }
 
-    fn launch(
+    fn launch_fresh(
         &mut self,
         _request: ProductionVmNodeLaunchRequest<'_>,
+        _qemu_executable: &Path,
+        _root_image: &Path,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not spawn"))
+    }
+
+    fn launch_restored(
+        &mut self,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+        _exact: ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         Err(loop_factory_error("test launcher does not spawn"))
     }
@@ -217,20 +237,35 @@ impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
         Ok(())
     }
 
-    fn launch(
+    fn launch_fresh(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
+        _qemu_executable: &Path,
+        _root_image: &Path,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        let preparation = match request.preparation() {
-            ProductionVmNodePreparationKind::Fresh { .. } => "fresh",
-            ProductionVmNodePreparationKind::Exact { .. } => "exact",
-            ProductionVmNodePreparationKind::Replacement { .. } => "replacement",
-        };
         self.observations
             .lock()
             .unwrap_or_else(|_| panic!("preparation observation lock should remain healthy"))
             .push((
-                preparation,
+                "fresh",
+                request.run_directory().exists(),
+                request.generation(),
+            ));
+        Err(loop_factory_error(
+            "preparation-boundary launcher rejects before path access",
+        ))
+    }
+
+    fn launch_restored(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        _exact: ProductionVmExactNodeRestoreAdmission,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        self.observations
+            .lock()
+            .unwrap_or_else(|_| panic!("preparation observation lock should remain healthy"))
+            .push((
+                "exact",
                 request.run_directory().exists(),
                 request.generation(),
             ));
@@ -257,9 +292,11 @@ impl ProductionVmNodeLauncher for SelectablePlanRecordingLauncher {
         Ok(())
     }
 
-    fn launch(
+    fn launch_fresh(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
+        _qemu_executable: &Path,
+        _root_image: &Path,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         let Some(plan) = request.launch().selectable_catalog_plan() else {
             return Err(loop_factory_error("scenario selectable plan is absent"));
@@ -267,6 +304,23 @@ impl ProductionVmNodeLauncher for SelectablePlanRecordingLauncher {
         self.plans
             .lock()
             .unwrap_or_else(|_| panic!("selectable plan recorder should remain healthy"))
+            .push(plan.clone());
+        Err(loop_factory_error(
+            "selectable plan recorder rejects process spawn",
+        ))
+    }
+
+    fn launch_restored(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        _exact: ProductionVmExactNodeRestoreAdmission,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        let Some(plan) = request.launch().selectable_catalog_plan() else {
+            return Err(loop_factory_error("scenario selectable plan is absent"));
+        };
+        self.plans
+            .lock()
+            .unwrap_or_else(|_| panic!("selectable plan recorder lock should remain healthy"))
             .push(plan.clone());
         Err(loop_factory_error(
             "selectable plan recorder rejects process spawn",
@@ -540,11 +594,52 @@ fn initially_violated_scenario() -> ScenarioDefForm {
     .unwrap_or_else(|error| panic!("test scenario should validate: {error}"))
 }
 
+fn initially_violated_scenario_without_guest_asset_references() -> ScenarioDefForm {
+    let source = initially_violated_scenario();
+    let nodes = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .cloned()
+        .map(|mut node| {
+            node.kernel = None;
+            node.root_image = None;
+            node.initrd = None;
+            crucible::WorldNodeDef::Vm(node)
+        })
+        .chain(
+            source
+                .world()
+                .io_nodes()
+                .cloned()
+                .map(crucible::WorldNodeDef::Io),
+        )
+        .collect();
+    let world = World::from_node_defs_and_links(nodes, source.world().links().to_vec())
+        .unwrap_or_else(|error| panic!("test execution world should validate: {error}"))
+        .with_fault_topology(source.world().fault_topology().clone())
+        .unwrap_or_else(|error| panic!("test fault topology should validate: {error}"));
+
+    ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        &world,
+        source.plan(),
+        source.properties(),
+        source.measurements(),
+        source.seed(),
+        source.app_random_draw_cap(),
+    )
+    .and_then(|scenario| scenario.with_selectables(source.selectables().clone()))
+    .unwrap_or_else(|error| panic!("test execution scenario should validate: {error}"))
+}
+
 #[test]
 fn app_random_plugin_plan_requires_the_same_scheduler_selection_set()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = initially_violated_scenario();
-    let node = source.world().vm_nodes()[0].id.clone();
+    let Some(vm_node) = source.world().vm_nodes().first() else {
+        panic!("runtime fixture has one VM node");
+    };
+    let node = vm_node.id.clone();
     let stream =
         crucible_protocol::app_random_transport::app_random_stream_name(&node.name, "branch");
     let entry = crucible_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(
@@ -573,7 +668,7 @@ fn app_random_plugin_plan_requires_the_same_scheduler_selection_set()
 fn production_lifecycle_lends_generation_preparation_before_path_access() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let source = initially_violated_scenario();
+    let source = initially_violated_scenario_without_guest_asset_references();
     let scenario = source.scenario_def();
     let root_image = root.path().join("root.img");
     fs::write(&root_image, b"root image fixture")
@@ -613,8 +708,11 @@ fn production_lifecycle_lends_generation_preparation_before_path_access() {
 fn production_lifecycle_derives_node_local_selectable_catalog_from_scenario() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let source = initially_violated_scenario();
-    let node = source.world().vm_nodes()[0].id.clone();
+    let source = initially_violated_scenario_without_guest_asset_references();
+    let Some(vm_node) = source.world().vm_nodes().first() else {
+        panic!("runtime fixture has one VM node");
+    };
+    let node = vm_node.id.clone();
     let declaration = crucible::campaign::SelectableDeclaration::new(
         "product.recovery",
         crucible::campaign::ChoiceSource::Guest {
@@ -819,7 +917,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         .unwrap_or_else(|error| panic!("test trigger plan should lower: {error}"))
         .into_event_graph();
     let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
-    let nodes = ProductionNodeSet::new();
+    let nodes = QemuNodeSet::new();
     let artifacts = (!source.plan().fault_signals().programs().is_empty()).then(|| {
         let store: Arc<dyn crucible::model::DagStore> =
             Arc::new(crucible::model::MemoryDagStore::new());
@@ -864,7 +962,6 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         terminal_verdict: None,
         checkpoint_terminal_cause: None,
         initial_lifecycle_observations_pending: true,
-        logical_replay_boundary: None,
         branch: None,
         continuation_branches: VecDeque::new(),
         signal_fault_branches: VecDeque::new(),
@@ -876,7 +973,6 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         failed_host_io: BTreeMap::new(),
         storage_fault_observations,
         fault_runtime,
-        fault_evaluation_cursor,
         fault_replay_installed: false,
         fault_search_overrides_installed: false,
         icount_shift: 0,
@@ -911,6 +1007,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         source: source.clone(),
         config,
         checkpoint_targets: BTreeMap::new(),
+        exact_ram_parents: BTreeMap::new(),
         recorded_controls: Vec::new(),
         signal_artifact_objects: BTreeMap::new(),
         debug_backend_paths: BTreeMap::new(),
@@ -927,152 +1024,6 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         .reserve_lifecycle_state_encoding(source.plan().fault_signals().resource_limits(), 0, 0)
         .unwrap_or_else(|error| panic!("test lifecycle state should reserve: {error}"));
     lifecycle
-}
-
-#[test]
-fn logical_replay_boundary_preserves_semantic_state_and_disarms_the_attempt_cap() {
-    let source = nonterminal_signal_replay_scenario();
-    let mut lifecycle = production_loop_without_backends(&source);
-    lifecycle.initial_lifecycle_observations_pending = false;
-    let configuration = lifecycle.inner.loop_impl().configuration().clone();
-    let frontier = lifecycle.inner.loop_impl().frontier();
-    lifecycle.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
-        configuration: configuration.clone(),
-        frontier,
-    });
-    lifecycle.config.logical_replay_boundary = lifecycle.logical_replay_boundary.clone();
-    lifecycle
-        .inner
-        .loop_impl_mut()
-        .set_attempt_stop_frontier(Some(frontier))
-        .unwrap_or_else(|error| panic!("logical replay frontier should install: {error}"));
-    let quanta = lifecycle.inner.loop_impl().quanta();
-    let event_log_offset = lifecycle.inner.loop_impl().event_log_offset();
-
-    let outcome = lifecycle
-        .drive_quantum(QuantumRequest {
-            configuration: configuration.clone(),
-            control: Vec::new(),
-        })
-        .unwrap_or_else(|error| panic!("logical replay boundary should resolve: {error}"));
-
-    assert_eq!(outcome.configuration, configuration);
-    assert_eq!(outcome.frontier, frontier);
-    assert!(outcome.decisions.is_empty());
-    assert!(outcome.event_log_entries.is_empty());
-    assert!(outcome.event_log_segment_bytes.is_empty());
-    assert!(outcome.event_log_segment_text.is_empty());
-    assert_eq!(outcome.event_log_segment_hash, None);
-    assert_eq!(outcome.event_log_offset, event_log_offset);
-    assert_eq!(lifecycle.inner.loop_impl().quanta(), quanta);
-    assert!(lifecycle.logical_replay_boundary.is_none());
-    assert!(lifecycle.config.logical_replay_boundary.is_none());
-}
-
-#[test]
-fn checkpoint_readiness_disarms_a_reached_logical_replay_boundary() {
-    let source = nonterminal_signal_replay_scenario();
-    let mut lifecycle = production_loop_without_backends(&source);
-    let configuration = lifecycle.inner.loop_impl().configuration().clone();
-    let frontier = lifecycle.inner.loop_impl().frontier();
-    lifecycle.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
-        configuration,
-        frontier,
-    });
-    lifecycle.config.logical_replay_boundary = lifecycle.logical_replay_boundary.clone();
-    lifecycle
-        .inner
-        .loop_impl_mut()
-        .set_attempt_stop_frontier(Some(frontier))
-        .unwrap_or_else(|error| panic!("logical replay frontier should install: {error}"));
-    let quanta = lifecycle.inner.loop_impl().quanta();
-    let event_log_offset = lifecycle.inner.loop_impl().event_log_offset();
-
-    lifecycle
-        .exact_checkpoint_ready()
-        .unwrap_or_else(|error| panic!("reached replay boundary should settle: {error}"));
-
-    assert!(lifecycle.logical_replay_boundary.is_none());
-    assert!(lifecycle.config.logical_replay_boundary.is_none());
-    assert_eq!(lifecycle.inner.loop_impl().quanta(), quanta);
-    assert_eq!(
-        lifecycle.inner.loop_impl().event_log_offset(),
-        event_log_offset
-    );
-}
-
-#[test]
-fn logical_replay_boundary_allows_a_target_schedule_prefix_at_the_same_frontier() {
-    let source = nonterminal_signal_replay_scenario();
-    let mut lifecycle = production_loop_without_backends(&source);
-    let current = lifecycle.inner.loop_impl().configuration().clone();
-    let target = Configuration {
-        def: current.def.clone(),
-        schedule: Schedule::empty().appended(Decision::DeliveryOrder(
-            crucible::DeliveryOrderDecision {
-                at: lifecycle.inner.loop_impl().frontier(),
-                order: Vec::new(),
-            },
-        )),
-    };
-    lifecycle.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
-        configuration: target,
-        frontier: lifecycle.inner.loop_impl().frontier(),
-    });
-    lifecycle.config.logical_replay_boundary = lifecycle.logical_replay_boundary.clone();
-
-    assert_eq!(lifecycle.exact_checkpoint_ready(), Ok(false));
-    assert!(lifecycle.logical_replay_boundary.is_some());
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn logical_replay_boundary_disarms_on_the_reaching_quantum_and_allows_continuation()
--> Result<(), Box<dyn std::error::Error>> {
-    let source_node = crucible_qemu::scripted_hot_fork_source_with_script_for_test(
-        crucible_qemu::QemuTestHotForkOutcome::Forked,
-        Vec::new(),
-        None,
-        VecDeque::new(),
-        VecDeque::from([
-            crucible_qemu::QemuTestQuantumBoundary::Reached,
-            crucible_qemu::QemuTestQuantumBoundary::Reached,
-        ]),
-    )?;
-    let (_node, _generation, source_world) = prepared_hot_fork_source_world_for_test(source_node)?;
-    let mut lifecycle = source_world.recover()?;
-    lifecycle.initial_lifecycle_observations_pending = false;
-    let configuration = lifecycle.inner.loop_impl().configuration().clone();
-    let target_frontier = VirtualTime { ticks: 128 };
-    lifecycle.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
-        configuration: configuration.clone(),
-        frontier: target_frontier,
-    });
-    lifecycle.config.logical_replay_boundary = lifecycle.logical_replay_boundary.clone();
-    lifecycle
-        .inner
-        .loop_impl_mut()
-        .set_attempt_stop_frontier(Some(target_frontier))?;
-    let quanta = lifecycle.inner.loop_impl().quanta();
-
-    let reached = lifecycle.drive_quantum(QuantumRequest {
-        configuration,
-        control: Vec::new(),
-    })?;
-
-    assert_eq!(reached.frontier, target_frontier);
-    assert_eq!(lifecycle.inner.loop_impl().quanta(), quanta + 1);
-    assert!(lifecycle.logical_replay_boundary.is_none());
-    assert!(lifecycle.config.logical_replay_boundary.is_none());
-
-    let continued = lifecycle.drive_quantum(QuantumRequest {
-        configuration: reached.configuration,
-        control: Vec::new(),
-    })?;
-
-    assert!(continued.frontier > target_frontier);
-    lifecycle.shutdown()?;
-    Ok(())
 }
 
 #[test]
@@ -1195,158 +1146,26 @@ fn ordered_branch_reseeds_advance_without_dropping_a_generation() {
 }
 
 #[test]
-fn two_generation_reseeds_survive_fork_advance_save_and_refork() {
-    fn assert_branch(
-        actual: Option<&ProductionVmBranchConfig>,
-        expected: &ProductionVmBranchConfig,
-    ) {
-        let actual = actual.unwrap_or_else(|| panic!("controlled branch should remain active"));
-        assert_eq!(actual.base, expected.base);
-        assert_eq!(actual.frontier, expected.frontier);
-        assert_eq!(actual.decisions, expected.decisions);
-        assert_eq!(actual.seed, expected.seed);
-    }
-
-    let (source, lifecycle) = production_permanently_failed_loop_for_test()
-        .unwrap_or_else(|error| panic!("source lifecycle should build: {error}"));
-    let scenario = source.scenario_def();
-    let mut source_world = lifecycle
-        .prepare_hot_fork_source_world()
-        .unwrap_or_else(|error| panic!("initial source world should prepare: {error}"));
-    let continuation = source_world
-        .fork_continuation()
-        .unwrap_or_else(|error| panic!("initial continuation should fork: {error}"));
-    let first_run_state = tempfile::tempdir()
-        .unwrap_or_else(|error| panic!("first child run-state directory: {error}"));
-    let mut lifecycle = build_production_vm_lifecycle_loop_from_hot_fork_with_launcher(
-        &scenario,
-        &source,
-        continuation,
-        Vec::new(),
-        first_run_state.path(),
-        RecordingFinishLauncher {
-            finish_order: Arc::new(std::sync::Mutex::new(Vec::new())),
-        },
-    )
-    .unwrap_or_else(|error| panic!("initial child lifecycle should install: {error}"));
-    lifecycle.initial_lifecycle_observations_pending = false;
-
-    let configuration = lifecycle.inner.loop_impl().configuration().clone();
-    let frontier = lifecycle.inner.loop_impl().frontier();
-    let first_seed = Seed::from_u64(29);
-    let second_seed = Seed::from_u64(47);
-    let first_branch = ProductionVmBranchConfig {
-        base: configuration.clone(),
-        frontier,
-        decisions: Vec::new(),
-        seed: Some(first_seed),
-    };
-    let second_branch = ProductionVmBranchConfig {
-        base: configuration.clone(),
-        frontier,
-        decisions: Vec::new(),
-        seed: Some(second_seed),
-    };
-    lifecycle.branch = Some(first_branch);
-    lifecycle
-        .continuation_branches
-        .push_back(second_branch.clone());
-    lifecycle
-        .inner
-        .loop_impl_mut()
-        .set_branch_frontier_cap(frontier)
-        .unwrap_or_else(|error| panic!("first branch frontier should install: {error}"));
-
-    let first = lifecycle
-        .drive_quantum(QuantumRequest {
-            configuration,
-            control: Vec::new(),
-        })
-        .unwrap_or_else(|error| panic!("first controlled generation should advance: {error}"));
-    assert_eq!(
-        lifecycle.inner.loop_impl().future_decision_seed(),
-        first_seed
-    );
-    assert_branch(lifecycle.branch.as_ref(), &second_branch);
-    assert!(lifecycle.continuation_branches.is_empty());
-
-    let restore_config = lifecycle.config.clone();
-    let checkpoint = lifecycle
-        .capture_portable_exact_checkpoint()
-        .unwrap_or_else(|error| panic!("controlled generation should save exactly: {error}"));
-    let restored = build_production_vm_lifecycle_loop_from_exact_closure_with_launcher(
-        &scenario,
-        &source,
-        &restore_config,
-        checkpoint.identity(),
-        RecordingFinishLauncher {
-            finish_order: Arc::new(std::sync::Mutex::new(Vec::new())),
-        },
-    )
-    .unwrap_or_else(|error| panic!("saved controlled generation should restore: {error}"));
-    assert_branch(restored.branch.as_ref(), &second_branch);
-    assert!(restored.continuation_branches.is_empty());
-
-    let mut restored_source_world = restored
-        .prepare_hot_fork_source_world()
-        .unwrap_or_else(|error| panic!("restored source world should prepare: {error}"));
-    let descendant = restored_source_world
-        .fork_continuation()
-        .unwrap_or_else(|error| panic!("restored continuation should fork: {error}"));
-    let second_run_state = tempfile::tempdir()
-        .unwrap_or_else(|error| panic!("second child run-state directory: {error}"));
-    let mut descendant = build_production_vm_lifecycle_loop_from_hot_fork_with_launcher(
-        &scenario,
-        &source,
-        descendant,
-        Vec::new(),
-        second_run_state.path(),
-        RecordingFinishLauncher {
-            finish_order: Arc::new(std::sync::Mutex::new(Vec::new())),
-        },
-    )
-    .unwrap_or_else(|error| panic!("descendant lifecycle should install: {error}"));
-    assert_eq!(
-        descendant.inner.loop_impl().future_decision_seed(),
-        first_seed
-    );
-    assert_branch(descendant.branch.as_ref(), &second_branch);
-
-    descendant
-        .drive_quantum(QuantumRequest {
-            configuration: first.configuration,
-            control: Vec::new(),
-        })
-        .unwrap_or_else(|error| panic!("second controlled generation should advance: {error}"));
-    assert_eq!(
-        descendant.inner.loop_impl().future_decision_seed(),
-        second_seed
-    );
-    assert!(descendant.branch.is_none());
-    assert!(descendant.continuation_branches.is_empty());
-}
-
-#[test]
 fn ordered_branch_sequence_rejects_regressing_or_divergent_boundaries() {
     let source = nonterminal_signal_replay_scenario();
     let scenario = source.scenario_def();
     let base = Configuration::genesis(scenario.clone());
-    let first = crucible::try_step(
+    let first = try_step(
         &base,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("branch-sequence"),
             value: 1,
         }),
     )
-    .expect("first test decision should be valid");
-    let divergent = crucible::try_step(
+    .unwrap_or_else(|error| panic!("first test branch should be valid: {error}"));
+    let divergent = try_step(
         &base,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("branch-sequence"),
             value: 2,
         }),
     )
-    .expect("divergent test decision should be valid");
+    .unwrap_or_else(|error| panic!("divergent test branch should be valid: {error}"));
     let branch = |base, ticks| ProductionVmBranchConfig {
         base,
         frontier: VirtualTime { ticks },
@@ -1701,7 +1520,7 @@ fn production_lifecycle_rejects_typed_signal_branch_without_producer_choice() {
     lifecycle.initial_lifecycle_observations_pending = false;
     let parent = lifecycle.inner.loop_impl().configuration().clone();
     let frontier = lifecycle.inner.loop_impl().frontier();
-    let branch = promoted_signal_branch(&parent, frontier, b"missing-promoted-signal", 2);
+    let branch = promoted_signal_branch(&parent, frontier, b"missing-promoted-signal", 1);
     lifecycle.signal_fault_branches = VecDeque::from([branch.clone()]);
     lifecycle
         .inner

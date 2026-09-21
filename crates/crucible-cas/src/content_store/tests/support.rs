@@ -281,35 +281,6 @@ pub(super) fn write_back_graph_config(
     }
 }
 
-pub(super) fn filesystem_content_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    fn visit(root: &Path, path: &Path, snapshot: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
-        for entry in fs::read_dir(path).expect("read snapshot directory") {
-            let entry = entry.expect("read snapshot entry");
-            let entry_path = entry.path();
-            let relative = entry_path
-                .strip_prefix(root)
-                .expect("snapshot entry under root")
-                .to_path_buf();
-            let file_type = entry.file_type().expect("snapshot entry type");
-            if file_type.is_dir() {
-                snapshot.insert(relative, None);
-                visit(root, &entry_path, snapshot);
-            } else if file_type.is_file() {
-                snapshot.insert(
-                    relative,
-                    Some(fs::read(&entry_path).expect("read snapshot file")),
-                );
-            } else {
-                panic!("unexpected snapshot entry: {}", entry_path.display());
-            }
-        }
-    }
-
-    let mut snapshot = BTreeMap::new();
-    visit(root, root, &mut snapshot);
-    snapshot
-}
-
 pub(super) fn pack_file_count(root: &Path) -> usize {
     fs::read_dir(root.join("packs"))
         .expect("read pack directory")
@@ -616,14 +587,38 @@ impl ImmutableBlobBackend for FixedReadBackend {
     }
 }
 
-pub(super) struct DelayedMetricsBackend {
-    pub(super) child: Arc<MemoryBlobBackend>,
-    pub(super) delay: Duration,
+pub(super) struct OperationSynchronization {
+    requests: mpsc::SyncSender<mpsc::SyncSender<()>>,
 }
 
-impl ImmutableBlobBackend for DelayedMetricsBackend {
+impl OperationSynchronization {
+    pub(super) fn start() -> (Arc<Self>, thread::JoinHandle<()>) {
+        let (requests, receiver) = mpsc::sync_channel::<mpsc::SyncSender<()>>(0);
+        let controller = thread::spawn(move || {
+            while let Ok(release) = receiver.recv() {
+                release.send(()).expect("release synchronized operation");
+            }
+        });
+        (Arc::new(Self { requests }), controller)
+    }
+
+    fn rendezvous(&self) {
+        let (release, released) = mpsc::sync_channel(0);
+        self.requests
+            .send(release)
+            .expect("synchronize observed operation");
+        released.recv().expect("observe synchronized release");
+    }
+}
+
+pub(super) struct SynchronizedMetricsBackend {
+    pub(super) child: Arc<MemoryBlobBackend>,
+    pub(super) synchronization: Arc<OperationSynchronization>,
+}
+
+impl ImmutableBlobBackend for SynchronizedMetricsBackend {
     fn name(&self) -> &str {
-        "delayed-metrics"
+        "synchronized-metrics"
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -631,53 +626,53 @@ impl ImmutableBlobBackend for DelayedMetricsBackend {
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-        thread::sleep(self.delay);
+        self.synchronization.rendezvous();
         self.child.contains(id)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
-        thread::sleep(self.delay);
+        self.synchronization.rendezvous();
         let blob = self.child.read(id, range)?;
-        let source = Arc::new(DelayedBlobSource {
+        let source = Arc::new(SynchronizedBlobSource {
             source: blob.clone(),
-            delay: self.delay,
+            synchronization: Arc::clone(&self.synchronization),
         });
         Ok(blob.with_observed_source(source))
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
-        thread::sleep(self.delay);
+        self.synchronization.rendezvous();
         self.child.put_if_absent(id, source)
     }
 }
 
-pub(super) struct DelayedBlobSource {
+pub(super) struct SynchronizedBlobSource {
     pub(super) source: BlobHandle,
-    pub(super) delay: Duration,
+    pub(super) synchronization: Arc<OperationSynchronization>,
 }
 
-impl BlobSource for DelayedBlobSource {
+impl BlobSource for SynchronizedBlobSource {
     fn logical_length(&self) -> u64 {
         self.source.logical_length()
     }
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
-        thread::sleep(self.delay);
-        Ok(Box::new(DelayedBlobReader {
+        self.synchronization.rendezvous();
+        Ok(Box::new(SynchronizedBlobReader {
             reader: self.source.open()?,
-            delay: self.delay,
+            synchronization: Arc::clone(&self.synchronization),
         }))
     }
 }
 
-pub(super) struct DelayedBlobReader {
+pub(super) struct SynchronizedBlobReader {
     pub(super) reader: Box<dyn Read + Send>,
-    pub(super) delay: Duration,
+    pub(super) synchronization: Arc<OperationSynchronization>,
 }
 
-impl Read for DelayedBlobReader {
+impl Read for SynchronizedBlobReader {
     fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-        thread::sleep(self.delay);
+        self.synchronization.rendezvous();
         self.reader.read(output)
     }
 }

@@ -85,58 +85,28 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
 }
 
 #[test]
-fn prepare_setup_accepts_the_raw_v2_plan_without_promoting_it_to_v3() {
+fn prepare_setup_rejects_a_raw_app_random_body() {
     let layout = valid_layout();
     let setup = ReceivedSetup {
         region_len: layout.region_size,
         descriptors: ReceivedSetupDescriptors {
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
-            plugin_setup_plan_fd: test_legacy_plugin_setup_plan_fd(),
+            plugin_setup_plan_fd: test_sealed_setup_plan_fd(
+                &AppRandomBranchPlan::default().encode(),
+            ),
         },
     };
     let mut io = ScriptedIo::default();
 
-    let completion = prepare_setup_completion(
-        &mut io,
-        setup,
-        plugin_handshake_version(2, 0, layout.node_count),
-    )
-    .unwrap_or_else(|error| panic!("legacy v2 setup should complete: {error}"));
-    assert!(completion.app_random_branch_plan().entries().is_empty());
-    assert_eq!(completion.selectable_catalog_plan(), None);
-    assert!(io.written().is_empty());
-}
-
-#[test]
-fn prepare_setup_rejects_a_plan_body_from_the_other_negotiated_profile() {
-    for (proto_version, plugin_setup_plan_fd) in [
-        (CONTROL_PROTOCOL_VERSION, test_legacy_plugin_setup_plan_fd()),
-        (2, test_plugin_setup_plan_fd()),
-    ] {
-        let layout = valid_layout();
-        let setup = ReceivedSetup {
-            region_len: layout.region_size,
-            descriptors: ReceivedSetupDescriptors {
-                shmem_fd: valid_region_file(layout).into(),
-                wake_fd: wake_fd().into(),
-                plugin_setup_plan_fd,
-            },
-        };
-        let mut io = ScriptedIo::default();
-        assert!(matches!(
-            prepare_setup_completion(
-                &mut io,
-                setup,
-                plugin_handshake_version(proto_version, 0, layout.node_count),
-            ),
-            Err(PluginSetupError::ValidatePluginSetupPlan { .. })
-        ));
-        assert_eq!(
-            decode_single_setup_ack(io.written()),
-            SETUP_ACK_STATUS_SETUP_FAILED
-        );
-    }
+    assert!(matches!(
+        prepare_setup_completion(&mut io, setup, plugin_handshake(0, layout.node_count)),
+        Err(PluginSetupError::ValidatePluginSetupPlan { .. })
+    ));
+    assert_eq!(
+        decode_single_setup_ack(io.written()),
+        SETUP_ACK_STATUS_SETUP_FAILED
+    );
 }
 
 #[test]

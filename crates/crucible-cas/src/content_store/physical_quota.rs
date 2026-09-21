@@ -12,6 +12,8 @@ use std::collections::btree_map::Entry;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::admin::PhysicalRepairAuthority;
+
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
     BlobStoreAdmin, ByteRange, ContentId, ImmutableBlobBackend, PlannedDeleteDisposition,
@@ -249,5 +251,17 @@ impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
         self.store.guard.verify()?;
         self.child.delete_candidate(id)
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        self.store.guard.verify()?;
+        self.child
+            .repair_put_if_absent(authority, id, source)
+            .map(|receipt| self.store.rewrite_receipt(receipt))
     }
 }

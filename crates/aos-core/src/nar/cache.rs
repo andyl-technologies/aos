@@ -607,7 +607,7 @@ mod tests {
         // Lengths like 1, 3, 6, ... do not encode a whole number of bytes;
         // decode must return None, never index out of bounds.
         for len in 0..80 {
-            let input: String = std::iter::repeat('1').take(len).collect();
+            let input = "1".repeat(len);
             let _ = decode_nix_base32(&input); // must not panic
         }
         assert!(decode_nix_base32("1").is_none());

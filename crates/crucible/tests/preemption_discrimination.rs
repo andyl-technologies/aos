@@ -91,7 +91,7 @@ fn commanded_preemption_discriminates_a_known_two_vcpu_race() {
     let switch_a = vcpu_switch_at(4096, 1, 0);
     choice_a
         .record_preemption_override(switch_a.clone())
-        .expect("record preemption override");
+        .unwrap_or_else(|error| panic!("test preemption override should be accepted: {error}"));
     let outcome_a = modeled_last_writer(&switch_a);
 
     // Choice B: an explorer override that lands vCPU 1 — the same last writer as
@@ -101,7 +101,7 @@ fn commanded_preemption_discriminates_a_known_two_vcpu_race() {
     let switch_b = vcpu_switch_at(4096, 0, 1);
     choice_b
         .record_preemption_override(switch_b.clone())
-        .expect("record preemption override");
+        .unwrap_or_else(|error| panic!("test preemption override should be accepted: {error}"));
     let outcome_b = modeled_last_writer(&switch_b);
 
     // Discrimination: the two commanded choices resolve the race to different
@@ -146,11 +146,11 @@ fn commanded_preemption_discrimination_is_reproducible() {
     let mut first = DecisionRecorder::new(config.clone());
     first
         .record_preemption_override(switch.clone())
-        .expect("record preemption override");
+        .unwrap_or_else(|error| panic!("test preemption override should be accepted: {error}"));
     let mut second = DecisionRecorder::new(config);
     second
         .record_preemption_override(switch.clone())
-        .expect("record preemption override");
+        .unwrap_or_else(|error| panic!("test preemption override should be accepted: {error}"));
 
     assert_eq!(
         first.schedule().content_hash(),
@@ -188,11 +188,11 @@ fn single_vcpu_interrupt_timing_variation_is_distinct() {
     let mut deliver_early = DecisionRecorder::new(config.clone());
     deliver_early
         .record_preemption_override(early.clone())
-        .expect("record preemption override");
+        .unwrap_or_else(|error| panic!("test preemption override should be accepted: {error}"));
     let mut deliver_late = DecisionRecorder::new(config);
     deliver_late
         .record_preemption_override(late.clone())
-        .expect("record preemption override");
+        .unwrap_or_else(|error| panic!("test preemption override should be accepted: {error}"));
 
     assert_ne!(
         early.at, late.at,

@@ -1567,7 +1567,7 @@ impl CampaignRepository {
         })
     }
 
-    /// Returns whether the next exact ordinal requires version-11 PUCT input.
+    /// Returns whether the next exact ordinal requires progressive PUCT input.
     pub(in crate::repository) fn next_candidate_scores_intervals(
         &self,
         view: CandidateViewRoots,
@@ -1575,11 +1575,8 @@ impl CampaignRepository {
         request: &BranchRequest,
         domain: &ChoiceDomain,
     ) -> Result<bool, CampaignRepositoryError> {
-        let Some(CandidateSourceProfile::ProgressiveInteger {
-            initial_count,
-            score_intervals: true,
-            ..
-        }) = self.candidate_source_profile(request, domain)?
+        let Some(CandidateSourceProfile::ProgressiveInteger { initial_count, .. }) =
+            self.candidate_source_profile(request, domain)?
         else {
             return Ok(false);
         };

@@ -43,12 +43,7 @@ pub(super) fn binding_from_toml(
 ) -> Result<FaultBinding, FaultSignalAuthoringError> {
     let mut row = table(row, "fault binding")?;
     let id = take_typed(&mut row, "id")?;
-    let signals = match (row.remove("signal"), row.remove("signals")) {
-        (Some(_), Some(_)) => return Err(FaultSignalAuthoringError::ConflictingSignalFields),
-        (Some(value), None) => vec![from_toml_value(value)?],
-        (None, Some(value)) => from_toml_value(value)?,
-        (None, None) => return Err(FaultSignalAuthoringError::MissingField("signals")),
-    };
+    let signals: Vec<SignalId> = take_typed(&mut row, "signals")?;
     let sampling = decode_sampling(&mut row)?;
     let mapping = decode_mapping(take_value(&mut row, "mapping")?, &signals, program)?;
     let selector = selector_from_toml(take_value(&mut row, "selector")?, world)?;

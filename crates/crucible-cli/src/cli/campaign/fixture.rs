@@ -505,42 +505,49 @@ fn worked_network_policy(
     let guidance = GuidanceWeight::new("coverage", 250_000)
         .map_err(|error| fixture_error(format!("build coverage guidance: {error}")))?;
     CampaignPolicy::new(
-        encode_crucible_scenario_artifact(scenario)
-            .map_err(|error| fixture_error(format!("encode policy scenario artifact: {error}")))?
-            .scenario(),
-        CampaignSeed::from_bytes(
-            WORKED_NETWORK_SEED
-                .to_le_bytes()
-                .repeat(4)
-                .try_into()
-                .map_err(|_| {
-                    fixture_error("worked-network campaign seed did not contain 32 bytes")
-                })?,
-        ),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            puct: PuctPolicy::new(1_400_000, 250_000, 100_000),
-            widening: Some(
-                ProgressiveWideningPolicy::new(
-                    ExactRational::new(2, 1)
-                        .map_err(|error| fixture_error(format!("build widening k: {error}")))?,
-                    ExactRational::new(1, 2)
-                        .map_err(|error| fixture_error(format!("build widening alpha: {error}")))?,
-                    4,
-                    4_096,
-                    1,
-                )
-                .map_err(|error| fixture_error(format!("build widening policy: {error}")))?,
+        CampaignPolicy::identity(
+            encode_crucible_scenario_artifact(scenario)
+                .map_err(|error| {
+                    fixture_error(format!("encode policy scenario artifact: {error}"))
+                })?
+                .scenario(),
+            CampaignSeed::from_bytes(
+                WORKED_NETWORK_SEED
+                    .to_le_bytes()
+                    .repeat(4)
+                    .try_into()
+                    .map_err(|_| {
+                        fixture_error("worked-network campaign seed did not contain 32 bytes")
+                    })?,
             ),
-        },
-        choices,
-        objectives,
-        BTreeMap::from([(String::from("coverage"), guidance)]),
-        BTreeSet::from([String::from("campaign.complete")]),
-        FairnessPolicy::new(10, 32)
-            .map_err(|error| fixture_error(format!("build fairness policy: {error}")))?,
-        RetentionPolicy::new(true, 128, true, true),
-        true,
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                puct: PuctPolicy::new(1_400_000, 250_000, 100_000),
+                widening: Some(
+                    ProgressiveWideningPolicy::new(
+                        ExactRational::new(2, 1)
+                            .map_err(|error| fixture_error(format!("build widening k: {error}")))?,
+                        ExactRational::new(1, 2).map_err(|error| {
+                            fixture_error(format!("build widening alpha: {error}"))
+                        })?,
+                        4,
+                        4_096,
+                        1,
+                    )
+                    .map_err(|error| fixture_error(format!("build widening policy: {error}")))?,
+                ),
+            },
+        ),
+        CampaignPolicy::rules(
+            choices,
+            objectives,
+            BTreeMap::from([(String::from("coverage"), guidance)]),
+            BTreeSet::from([String::from("campaign.complete")]),
+            FairnessPolicy::new(10, 32)
+                .map_err(|error| fixture_error(format!("build fairness policy: {error}")))?,
+            RetentionPolicy::new(true, 128, true, true),
+            true,
+        ),
     )
     .map_err(|error| fixture_error(format!("build campaign policy: {error}")))
 }
@@ -549,7 +556,36 @@ fn generator(
     name: &'static str,
     algorithm: CandidateGeneratorAlgorithm,
 ) -> Result<CandidateGeneratorSpec, CliError> {
-    CandidateGeneratorSpec::new(1, algorithm)
+    let implementation_version = match &algorithm {
+        CandidateGeneratorAlgorithm::All => {
+            crucible_campaign::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION
+        }
+        CandidateGeneratorAlgorithm::WeightedCategorical { .. } => {
+            crucible_campaign::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION
+        }
+        CandidateGeneratorAlgorithm::StratifiedInteger { .. } => {
+            crucible_campaign::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+        }
+        CandidateGeneratorAlgorithm::BoundaryInteger => {
+            crucible_campaign::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+        }
+        CandidateGeneratorAlgorithm::LogInteger { .. } => {
+            crucible_campaign::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+        }
+        CandidateGeneratorAlgorithm::PermutedInteger => {
+            crucible_campaign::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+        }
+        CandidateGeneratorAlgorithm::ProgressiveInteger { .. } => {
+            crucible_campaign::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+        }
+        CandidateGeneratorAlgorithm::MutateNearCorpus { .. } => {
+            crucible_campaign::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION
+        }
+        CandidateGeneratorAlgorithm::OrderedMixture { .. } => {
+            crucible_campaign::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION
+        }
+    };
+    CandidateGeneratorSpec::new(implementation_version, algorithm)
         .map_err(|error| fixture_error(format!("build {name} generator: {error}")))
 }
 

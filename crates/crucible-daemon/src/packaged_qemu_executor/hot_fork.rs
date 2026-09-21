@@ -137,7 +137,7 @@ where
     fn checkout(
         &mut self,
         key: &QemuHotForkSourceWorldKey,
-    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+    ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         self.provider.checkout(key).map_err(Into::into)
     }
 
@@ -146,7 +146,7 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         key: &QemuHotForkSourceWorldKey,
-    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+    ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         if let Some(source) = self.provider.checkout(key)? {
             return Ok(Some(source));
         }
@@ -185,7 +185,7 @@ where
         }
     }
 
-    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+    fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
         self.provider.restore(source);
     }
 
@@ -219,10 +219,8 @@ where
         key: &QemuHotForkSourceWorldKey,
         checkpoint: crucible_campaign::ExactCheckpointId,
         failure: ManagedQemuHotForkAuthenticatedAdmissionFailure<PackagedQemuHotForkDemotionError>,
-    ) -> Result<
-        Option<ProductionVmHotForkSourceWorld>,
-        PackagedDemandedQemuHotForkSourceProviderError,
-    > {
+    ) -> Result<Option<QemuHotForkSourceWorldLease>, PackagedDemandedQemuHotForkSourceProviderError>
+    {
         let failure = match failure {
             ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding(failure) => {
                 let (source, error) = failure.into_parts();
@@ -253,6 +251,7 @@ where
             && matches!(
                 &error,
                 ManagedQemuHotForkSourceWorldAdmissionError::Rejected(_)
+                    | ManagedQemuHotForkSourceWorldAdmissionError::LeaseCapacity { .. }
             )
         {
             if let Err(source) = self
@@ -422,8 +421,7 @@ pub(super) fn authenticate_packaged_hot_fork_launch(
 }
 
 pub(super) fn compose_packaged_qemu_executor_with_baked_genesis<H>(
-    repository: Arc<CampaignRepository>,
-    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    storage: PackagedQemuExecutorStorage,
     hot_fork_retention: DirectoryHotCheckpointFallbackRetentionStore,
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
@@ -431,7 +429,10 @@ pub(super) fn compose_packaged_qemu_executor_with_baked_genesis<H>(
     baked: BTreeMap<ScenarioArtifactId, ProductionBakedGenesisCheckpoint>,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
-    H: QemuAttemptHostResourceFactory + Send + 'static,
+    H: QemuAttemptHostResourceFactory
+        + crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory
+        + Send
+        + 'static,
     H::Owner: QemuAttemptHostResourceOwner + Send + 'static,
     crate::ComposedQemuAttemptResourceGuard<H::Owner>: QemuAttemptProcessResourceGuard
         + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
@@ -449,8 +450,7 @@ where
     let hot_fork = config.hot_fork.clone();
 
     compose_packaged_qemu_executor_with_builders(
-        repository,
-        checkpoint_backend,
+        storage,
         basis,
         config,
         shared,
@@ -554,6 +554,7 @@ where
                 ExecutionRetentionIntent::Discard,
                 ExecutionCancellation::default(),
                 ExecutionCheckpointRequest::default(),
+                crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
             );
             for (lineage, fallback, mut source_factory) in source_factories {
                 let source = match source_factory.capture(&capture_context) {

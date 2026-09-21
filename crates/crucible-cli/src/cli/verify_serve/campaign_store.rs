@@ -15,13 +15,14 @@ use std::sync::Arc;
 use crucible_campaign::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
 use crucible_daemon::LinuxProjectQuotaBinder;
 use crucible_daemon::campaign_store_composition::{
-    ContentId, DirectoryRefBackend, DurabilityRequirement, MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES,
-    MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind, S3RefBackend, StoreEncryptionKey,
-    StoreEncryptionKeyId, StoreError, StoreGraph, StoreGraphAdmin, StoreGraphConfig,
-    StoreGraphKeyring, StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers,
-    StoreGraphPhysicalQuotaBinders, StoreGraphVerificationLimits, StoreNamespaceAuthorizer,
-    StoreNamespaceId, StoreNamespaceOperation, StoreNodeId, StoreNodeSpec,
-    StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId, StoreS3EndpointId,
+    ContentId, DirectoryRefBackend, DurabilityRequirement, ImmutableBlobBackend,
+    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind,
+    RefInventorySummary, RefStoreAdmin, S3RefBackend, StoreEncryptionKey, StoreEncryptionKeyId,
+    StoreError, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphKeyring,
+    StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
+    StoreGraphVerificationLimits, StoreNamespaceAuthorizer, StoreNamespaceId,
+    StoreNamespaceOperation, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
+    StorePhysicalQuotaPolicyId, StoreS3EndpointId, StoreTierPolicy,
 };
 use rustix::fs::{Mode, OFlags};
 use serde::Deserialize;
@@ -150,9 +151,7 @@ enum AuthoredStoreNodeSpec {
         routes: BTreeMap<String, String>,
     },
     Tiered {
-        tiers: Vec<String>,
-        write_tier: usize,
-        promote_reads: bool,
+        tiers: Vec<AuthoredStoreTierPolicy>,
     },
     ReadThrough {
         cache: String,
@@ -200,6 +199,15 @@ enum AuthoredStoreNodeSpec {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AuthoredStoreTierPolicy {
+    child: String,
+    readable: bool,
+    writable: bool,
+    promote_reads: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AuthoredDurabilityRequirement {
     minimum_durable_placements: u16,
     allow_deferred_write: bool,
@@ -243,14 +251,16 @@ enum ResolvedRefBackend {
 struct LoadedCampaignRepositoryStore {
     graph: Arc<StoreGraph>,
     refs: LoadedRefBackend,
-    maintenance: Option<StoreGraphAdmin>,
+    maintenance: StoreGraphAdmin,
+    capabilities: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CampaignStoreLoadMode {
-    Operational,
-    ArchiveObservational,
-    MaintenanceObservational,
+pub(super) struct AuthenticatedCampaignStoreCapabilities {
+    pub(super) configuration: [u8; 32],
+    pub(super) capabilities: Vec<String>,
+    pub(super) physical_placements: u64,
+    pub(super) reference_generation: String,
+    pub(super) references: u64,
 }
 
 pub(super) struct VerifiedCampaignStoreInventory {
@@ -269,22 +279,19 @@ pub(super) struct VerifiedCampaignStorePhysicalInventory {
 
 impl LoadedCampaignRepositoryStore {
     fn into_store(self) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
-        let maintenance = self
-            .maintenance
-            .ok_or_else(|| campaign_store_error("operational store maintenance is unavailable"))?;
         let result = match self.refs {
             LoadedRefBackend::Directory(refs) => {
                 crucible_daemon::CampaignLocalRepositoryStore::new_with_maintenance(
                     self.graph,
                     refs,
-                    maintenance,
+                    self.maintenance,
                 )
             }
             LoadedRefBackend::S3(refs) => {
                 crucible_daemon::CampaignLocalRepositoryStore::new_with_maintenance(
                     self.graph,
                     refs,
-                    maintenance,
+                    self.maintenance,
                 )
             }
         };
@@ -293,44 +300,20 @@ impl LoadedCampaignRepositoryStore {
         })
     }
 
-    fn into_store_and_graph(
-        self,
-    ) -> Result<
-        (
-            crucible_daemon::CampaignLocalRepositoryStore,
-            Arc<StoreGraph>,
-        ),
-        CliError,
-    > {
-        let graph = Arc::clone(&self.graph);
-        self.into_store().map(|store| (store, graph))
-    }
-
-    fn into_archive_planning_store(
-        self,
-    ) -> Result<
-        (
-            crucible_daemon::CampaignArchivePlanningStore,
-            Arc<StoreGraph>,
-        ),
-        CliError,
-    > {
-        if self.maintenance.is_some() {
-            return Err(campaign_store_error(
-                "archive planning store unexpectedly retained maintenance authority",
-            ));
-        }
-        let graph = Arc::clone(&self.graph);
-        let result = match self.refs {
-            LoadedRefBackend::Directory(refs) => {
-                crucible_daemon::CampaignArchivePlanningStore::new(self.graph, refs)
-            }
-            LoadedRefBackend::S3(refs) => {
-                crucible_daemon::CampaignArchivePlanningStore::new(self.graph, refs)
-            }
+    fn authenticate_ref_inventory(&self) -> Result<RefInventorySummary, StoreError> {
+        let admin: &dyn RefStoreAdmin = match &self.refs {
+            LoadedRefBackend::Directory(refs) => refs.as_ref(),
+            LoadedRefBackend::S3(refs) => refs.as_ref(),
         };
-        result.map(|store| (store, graph)).map_err(|error| {
-            campaign_store_error(format!("planning-store admission failed: {error}"))
+        let mut fence = admin.acquire_ref_inventory_fence()?;
+        fence.visit_refs(&mut |record| {
+            if self.graph.contains(record.target())? {
+                Ok(())
+            } else {
+                Err(StoreError::NotFound {
+                    id: record.target(),
+                })
+            }
         })
     }
 }
@@ -341,98 +324,55 @@ pub(super) fn load_campaign_repository_store(
     load_campaign_repository_graph(deployment_path)?.into_store()
 }
 
-pub(super) fn load_campaign_repository_store_and_graph(
-    deployment_path: &Path,
-) -> Result<
-    (
-        crucible_daemon::CampaignLocalRepositoryStore,
-        Arc<StoreGraph>,
-    ),
-    CliError,
-> {
-    load_campaign_repository_graph(deployment_path)?.into_store_and_graph()
-}
-
-pub(super) fn load_campaign_archive_planning_store(
-    deployment_path: &Path,
-) -> Result<
-    (
-        crucible_daemon::CampaignArchivePlanningStore,
-        Arc<StoreGraph>,
-    ),
-    CliError,
-> {
-    load_campaign_repository_graph_with_mode(
-        deployment_path,
-        CampaignStoreLoadMode::ArchiveObservational,
-    )?
-    .into_archive_planning_store()
-}
-
-/// Loads a repository and maintenance authority without creating or repairing state.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when the deployment or any existing persistent store
-/// state cannot be authenticated observationally.
-pub(super) fn load_campaign_repository_store_observational(
-    deployment_path: &Path,
-) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
-    load_campaign_repository_graph_with_mode(
-        deployment_path,
-        CampaignStoreLoadMode::MaintenanceObservational,
-    )?
-    .into_store()
-}
-
-pub(super) fn load_campaign_store_graph_observational(
+pub(super) fn load_campaign_store_graph(
     deployment_path: &Path,
 ) -> Result<Arc<StoreGraph>, CliError> {
-    Ok(load_campaign_repository_graph_with_mode(
-        deployment_path,
-        CampaignStoreLoadMode::MaintenanceObservational,
-    )?
-    .graph)
+    Ok(load_campaign_repository_graph(deployment_path)?.graph)
 }
 
-/// Loads a graph maintenance boundary without creating or repairing store state.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when the deployment or any existing persistent store
-/// state cannot be authenticated observationally.
-pub(super) fn load_campaign_store_maintenance_observational(
+pub(super) fn load_campaign_store_graph_with_admin(
     deployment_path: &Path,
 ) -> Result<(Arc<StoreGraph>, StoreGraphAdmin), CliError> {
-    let loaded = load_campaign_repository_graph_with_mode(
-        deployment_path,
-        CampaignStoreLoadMode::MaintenanceObservational,
-    )?;
-    let maintenance = loaded
-        .maintenance
-        .ok_or_else(|| campaign_store_error("observational store maintenance is unavailable"))?;
-    Ok((loaded.graph, maintenance))
+    let loaded = load_campaign_repository_graph(deployment_path)?;
+    Ok((loaded.graph, loaded.maintenance))
 }
 
 pub(super) fn verify_campaign_store_inventory(
     deployment_path: &Path,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
-    let loaded = load_campaign_repository_graph_with_mode(
-        deployment_path,
-        CampaignStoreLoadMode::MaintenanceObservational,
-    )?;
+    let loaded = load_campaign_repository_graph(deployment_path)?;
     verify_loaded_campaign_store_inventory(loaded, StoreGraphVerificationLimits::PRODUCTION)
+}
+
+pub(super) fn authenticate_campaign_store_capabilities(
+    deployment_path: &Path,
+) -> Result<AuthenticatedCampaignStoreCapabilities, CliError> {
+    let loaded = load_campaign_repository_graph(deployment_path)?;
+    let physical = loaded
+        .maintenance
+        .verify_physical_inventory(StoreGraphVerificationLimits::PRODUCTION)
+        .map_err(|error| {
+            campaign_store_error(format!("physical store authentication failed: {error}"))
+        })?;
+    let refs = loaded.authenticate_ref_inventory().map_err(|error| {
+        campaign_store_error(format!("reference store authentication failed: {error}"))
+    })?;
+
+    Ok(AuthenticatedCampaignStoreCapabilities {
+        configuration: physical.configuration().as_bytes(),
+        capabilities: loaded.capabilities,
+        physical_placements: physical.placements(),
+        reference_generation: refs.generation().to_hex(),
+        references: refs.refs(),
+    })
 }
 
 fn verify_loaded_campaign_store_inventory(
     loaded: LoadedCampaignRepositoryStore,
     limits: StoreGraphVerificationLimits,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
-    let maintenance = loaded
+    let verified = loaded
         .maintenance
-        .as_ref()
-        .ok_or_else(|| campaign_store_error("physical store maintenance is unavailable"))?;
-    let verified = maintenance
         .verify_physical_inventory(limits)
         .map_err(|error| {
             campaign_store_error(format!("physical store verification failed: {error}"))
@@ -459,13 +399,6 @@ fn verify_loaded_campaign_store_inventory(
 fn load_campaign_repository_graph(
     deployment_path: &Path,
 ) -> Result<LoadedCampaignRepositoryStore, CliError> {
-    load_campaign_repository_graph_with_mode(deployment_path, CampaignStoreLoadMode::Operational)
-}
-
-fn load_campaign_repository_graph_with_mode(
-    deployment_path: &Path,
-    mode: CampaignStoreLoadMode,
-) -> Result<LoadedCampaignRepositoryStore, CliError> {
     let bytes = read_secure_file(
         deployment_path,
         MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES,
@@ -479,11 +412,8 @@ fn load_campaign_repository_graph_with_mode(
     {
         return Err(campaign_store_error("unsupported schema or version"));
     }
-    let ref_backend = resolve_ref_backend(
-        deployment.version,
-        deployment.ref_directory.take(),
-        deployment.s3_ref.take(),
-    )?;
+    let ref_backend =
+        resolve_ref_backend(deployment.ref_directory.take(), deployment.s3_ref.take())?;
 
     let user_id = rustix::process::geteuid().as_raw();
     let group_id = rustix::process::getegid().as_raw();
@@ -672,88 +602,81 @@ fn load_campaign_repository_graph_with_mode(
             })?;
     }
 
+    let uses_campaign_profile = nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::ProfileValidated { .. }));
+    let mut capabilities = BTreeSet::new();
+    capabilities.extend(
+        required_keys
+            .iter()
+            .map(|id| format!("encryption-key:{}", id.as_str())),
+    );
+    capabilities.extend(
+        required_namespaces
+            .iter()
+            .map(|id| format!("namespace:{}", id.as_str())),
+    );
+    capabilities.extend(
+        required_physical_quotas
+            .iter()
+            .map(|id| format!("physical-quota:{}", id.as_str())),
+    );
+    capabilities.extend(
+        required_s3_endpoints
+            .iter()
+            .map(|id| format!("s3-endpoint:{}", id.as_str())),
+    );
+    if uses_campaign_profile {
+        capabilities.insert(format!(
+            "object-profile:{CAMPAIGN_OBJECT_PROFILE_POLICY_V1}"
+        ));
+    }
+    capabilities.insert(match &ref_backend {
+        ResolvedRefBackend::Directory(_) => "refs:directory".to_owned(),
+        ResolvedRefBackend::S3(refs) => format!("refs:s3:{}", refs.endpoint().as_str()),
+    });
+
     let s3_capabilities = load_s3_capabilities(authored_s3_endpoints)?;
 
     let root = StoreNodeId::new(deployment.root)
         .map_err(|error| campaign_store_error(format!("invalid root node ID: {error}")))?;
-    let config = StoreGraphConfig {
-        root,
-        admitted_kinds,
-        nodes,
-    };
-    let (graph, maintenance) = match mode {
-        CampaignStoreLoadMode::Operational => {
-            let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
-                config,
-                &keys,
-                &authorizers,
-                &profilers,
-                &physical_quotas,
-                &s3_capabilities.graph,
-            )
-            .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
-            (graph, Some(maintenance))
-        }
-        CampaignStoreLoadMode::ArchiveObservational => (
-            StoreGraph::build_observational_with_all_capabilities(
-                config,
-                &keys,
-                &authorizers,
-                &profilers,
-                &physical_quotas,
-                &s3_capabilities.graph,
-            )
-            .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?,
-            None,
-        ),
-        CampaignStoreLoadMode::MaintenanceObservational => {
-            let (graph, maintenance) =
-                StoreGraph::build_observational_with_admin_and_all_capabilities(
-                    config,
-                    &keys,
-                    &authorizers,
-                    &profilers,
-                    &physical_quotas,
-                    &s3_capabilities.graph,
-                )
-                .map_err(|error| {
-                    campaign_store_error(format!("graph admission failed: {error}"))
-                })?;
-            (graph, Some(maintenance))
-        }
-    };
-    let observational = mode != CampaignStoreLoadMode::Operational;
+    let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root,
+            admitted_kinds,
+            nodes,
+        },
+        &keys,
+        &authorizers,
+        &profilers,
+        &physical_quotas,
+        &s3_capabilities.graph,
+    )
+    .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
     let refs = match ref_backend {
-        ResolvedRefBackend::Directory(path) => LoadedRefBackend::Directory(Arc::new(match mode {
-            CampaignStoreLoadMode::Operational => DirectoryRefBackend::new(path),
-            CampaignStoreLoadMode::ArchiveObservational
-            | CampaignStoreLoadMode::MaintenanceObservational => {
-                DirectoryRefBackend::new_observational(path)
-            }
-        })),
-        ResolvedRefBackend::S3(refs) => {
-            LoadedRefBackend::S3(refs.build(&s3_capabilities, observational)?)
+        ResolvedRefBackend::Directory(path) => {
+            LoadedRefBackend::Directory(Arc::new(DirectoryRefBackend::new(path)))
         }
+        ResolvedRefBackend::S3(refs) => LoadedRefBackend::S3(refs.build(&s3_capabilities)?),
     };
     Ok(LoadedCampaignRepositoryStore {
         graph: Arc::new(graph),
         refs,
         maintenance,
+        capabilities: capabilities.into_iter().collect(),
     })
 }
 
 fn resolve_ref_backend(
-    version: u32,
     ref_directory: Option<PathBuf>,
     s3_ref: Option<AuthoredS3RefBackend>,
 ) -> Result<ResolvedRefBackend, CliError> {
-    match (version, ref_directory, s3_ref) {
-        (CAMPAIGN_STORE_VERSION_2, Some(path), None) => Ok(ResolvedRefBackend::Directory(path)),
-        (CAMPAIGN_STORE_VERSION_2, None, Some(refs)) => Ok(ResolvedRefBackend::S3(refs.resolve()?)),
-        (CAMPAIGN_STORE_VERSION_2, _, _) => Err(campaign_store_error(
+    match (ref_directory, s3_ref) {
+        (Some(path), None) => Ok(ResolvedRefBackend::Directory(path)),
+        (None, Some(refs)) => Ok(ResolvedRefBackend::S3(refs.resolve()?)),
+        _ => Err(campaign_store_error(
             "version-two deployment requires exactly one of ref_directory or s3_ref",
         )),
-        _ => Err(campaign_store_error("unsupported schema or version")),
     }
 }
 
@@ -846,14 +769,18 @@ impl AuthoredStoreNodeSpec {
             Self::Routed { routes } => Ok(StoreNodeSpec::Routed {
                 routes: parse_routes(routes)?,
             }),
-            Self::Tiered {
-                tiers,
-                write_tier,
-                promote_reads,
-            } => Ok(StoreNodeSpec::Tiered {
-                tiers: parse_node_ids(tiers, "tier")?,
-                write_tier,
-                promote_reads,
+            Self::Tiered { tiers } => Ok(StoreNodeSpec::Tiered {
+                tiers: tiers
+                    .into_iter()
+                    .map(|tier| {
+                        Ok(StoreTierPolicy {
+                            child: parse_node_id(tier.child, "tier child")?,
+                            readable: tier.readable,
+                            writable: tier.writable,
+                            promote_reads: tier.promote_reads,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CliError>>()?,
             }),
             Self::ReadThrough { cache, source } => Ok(StoreNodeSpec::ReadThrough {
                 cache: parse_node_id(cache, "read-through cache")?,
@@ -1131,7 +1058,9 @@ fn campaign_store_error(detail: impl std::fmt::Display) -> CliError {
 mod tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    use crucible_cas::content_store::{BlobHandle, ImmutableBlobBackend, StoreNodeKind};
+    use crucible_cas::content_store::{
+        BlobHandle, ImmutableBlobBackend, MutableRefBackend, RefName, StoreNodeKind,
+    };
     use tempfile::TempDir;
 
     use super::*;
@@ -1146,20 +1075,48 @@ mod tests {
         let graph = loaded.graph.clone();
         let bytes = b"initialize encrypted campaign storage";
         let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+        let LoadedRefBackend::Directory(refs) = &loaded.refs else {
+            panic!("local fixture must use directory refs");
+        };
+        let publication = refs
+            .acquire_publication_guard()
+            .expect("acquire fixture ref publication guard");
         graph
             .put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec()))
             .expect("initialize encrypted campaign storage");
+        refs.compare_exchange(
+            &RefName::new("campaigns/refresh").expect("fixture ref name"),
+            None,
+            id,
+        )
+        .expect("publish authenticated fixture ref");
+        drop(publication);
         drop(loaded);
         drop(graph);
-        load_campaign_repository_store(&deployment).expect("restart composed campaign store");
+        let authenticated = authenticate_campaign_store_capabilities(&deployment)
+            .expect("authenticate refreshed store capabilities");
+        assert_eq!(authenticated.physical_placements, 1);
+        assert_eq!(authenticated.references, 1);
+        assert_eq!(authenticated.reference_generation.len(), 64);
+        assert_eq!(
+            authenticated.capabilities,
+            vec![
+                "encryption-key:campaign-key",
+                "namespace:campaign/local",
+                "object-profile:crucible.campaign.object-profile.v1",
+                "refs:directory",
+            ]
+        );
 
         fs::write(&fixture.key, [0x52; 32]).expect("replace key generation");
-        let wrong_key =
-            load_campaign_repository_graph(&deployment).expect("construct wrong-key graph");
-        let _error = wrong_key
-            .graph
-            .contains(id)
-            .expect_err("changed key must not authenticate encrypted storage");
+        let Err(error) = authenticate_campaign_store_capabilities(&deployment) else {
+            panic!("changed key authenticated during credential refresh");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("physical store authentication failed")
+        );
     }
 
     #[test]
@@ -1269,12 +1226,8 @@ path = "/definitely/missing/campaign-store-key.bin"
                 .iter()
                 .any(|node| { node.kind == StoreNodeKind::S3 && node.capabilities.durable })
         );
-        let maintenance = loaded
-            .maintenance
-            .as_ref()
-            .expect("operational store retains maintenance");
-        assert_eq!(maintenance.physical().len(), 1);
-        assert_eq!(maintenance.s3_multipart_cleanup().len(), 1);
+        assert_eq!(loaded.maintenance.physical().len(), 1);
+        assert_eq!(loaded.maintenance.s3_multipart_cleanup().len(), 1);
         assert!(matches!(&loaded.refs, LoadedRefBackend::S3(_)));
         loaded.into_store().expect("bind maintained S3 store");
     }
@@ -1438,20 +1391,6 @@ unknown_secret_field = true
     }
 
     #[test]
-    fn campaign_store_deployment_rejects_schema_version_one() {
-        let fixture = StoreDeploymentFixture::new();
-        let deployment = fixture.write_deployment("");
-        let current = fs::read_to_string(&deployment).expect("read current deployment");
-        let retired = current.replacen("version = 2", "version = 1", 1);
-        fs::write(&deployment, retired).expect("write retired deployment");
-
-        let Err(error) = load_campaign_repository_store(&deployment) else {
-            panic!("schema-version-one deployment must fail closed");
-        };
-        assert!(error.to_string().contains("unsupported schema or version"));
-    }
-
-    #[test]
     fn serve_selects_the_composed_store_without_creating_default_leafs() {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");
@@ -1504,7 +1443,7 @@ campaign = "*"
             panic!("expected serve command");
         };
         validate_serve_invocation(args).expect("valid composed-store serve profile");
-        let service = open_local_campaign_service(args, None)
+        let service = open_local_campaign_service(args, None, None)
             .expect("open composed-store service")
             .expect("configured campaign service");
         assert!(!state.join("objects").exists());

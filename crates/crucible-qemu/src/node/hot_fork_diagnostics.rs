@@ -100,6 +100,7 @@ pub struct QemuHotForkChildDiagnosticConsumer {
     template_generation: u64,
     retained: Vec<u8>,
     eof: bool,
+    writer_detached: bool,
     captured: bool,
 }
 
@@ -112,6 +113,7 @@ impl std::fmt::Debug for QemuHotForkChildDiagnosticConsumer {
             .field("template_generation", &self.template_generation)
             .field("total_retained", &self.retained.len())
             .field("eof", &self.eof)
+            .field("writer_detached", &self.writer_detached)
             .field("captured", &self.captured)
             .finish_non_exhaustive()
     }
@@ -222,6 +224,46 @@ impl QemuHotForkChildDiagnosticConsumer {
             bytes: std::mem::take(&mut self.retained),
         }
     }
+
+    pub(super) fn mark_writer_detached(
+        &mut self,
+        descriptor_name: &crate::QmpDescriptorName,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.descriptor_name != *descriptor_name
+            || self.socket_cookie != socket_cookie
+            || self.template_generation != template_generation
+            || self.captured
+            || self.writer_detached
+        {
+            return Err(QemuNodeChannelError::new(
+                "detach hot-fork child diagnostics",
+                "child-owned diagnostics consumer does not match the consumed stage",
+            ));
+        }
+        self.writer_detached = true;
+        Ok(())
+    }
+
+    pub(super) fn finish_detached_capture(
+        &mut self,
+    ) -> Result<QemuHotForkChildDiagnosticCapture, QemuNodeChannelError> {
+        if !self.writer_detached || self.captured {
+            return Err(QemuNodeChannelError::new(
+                "finish detached hot-fork child diagnostics",
+                "diagnostic writer detachment was not authenticated or was already consumed",
+            ));
+        }
+        let final_drain = self.drain_available()?;
+        if !final_drain.eof() {
+            return Err(QemuNodeChannelError::new(
+                "finish detached hot-fork child diagnostics",
+                "a child diagnostics writer remains live after child teardown",
+            ));
+        }
+        Ok(self.take_capture())
+    }
 }
 
 /// Ownership state for one node-retained branch-private diagnostics stream.
@@ -313,15 +355,6 @@ impl QemuHotForkChildDiagnosticPair {
         }
     }
 
-    fn drain_available(
-        &mut self,
-    ) -> Result<QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticConsumeError> {
-        self.consumer
-            .as_mut()
-            .ok_or(QemuHotForkChildDiagnosticConsumeError::ConsumerTransferred)?
-            .drain_available_inner()
-    }
-
     fn take_consumer(
         &mut self,
     ) -> Result<QemuHotForkChildDiagnosticConsumer, QemuNodeChannelError> {
@@ -340,8 +373,6 @@ enum QemuHotForkChildDiagnosticConsumeError {
     Capacity { attempted: usize, limit: usize },
     #[error("read branch-private child diagnostics failed: {source}")]
     Read { source: io::Error },
-    #[error("branch-private diagnostics consumer was transferred to the child owner")]
-    ConsumerTransferred,
 }
 
 #[derive(Debug)]
@@ -450,394 +481,8 @@ pub enum QemuHotForkChildDiagnosticStageError {
     },
 }
 
-impl QemuNode {
-    /// Stages a fresh branch-private diagnostics stream in the retained template.
-    ///
-    /// The operation requires one acknowledged private-ring stage and must
-    /// precede plugin endpoint staging, which seals the complete child resource
-    /// plan. The host retains one nonblocking stream endpoint while QEMU owns an
-    /// authenticated duplicate of the child endpoint. No fork occurs here.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuHotForkChildDiagnosticStageError::Rejected`] before
-    /// transfer when the node or template basis is invalid. Once transfer
-    /// begins, every failure quarantines the node and returns
-    /// [`QemuHotForkChildDiagnosticStageError::TransferUncertain`].
-    pub fn stage_hot_fork_child_diagnostics(
-        &mut self,
-    ) -> Result<QemuHotForkChildDiagnosticStageProof, QemuHotForkChildDiagnosticStageError> {
-        if self.lifecycle_state != crate::QemuNodeLifecycleState::Running {
-            return Err(diagnostic_rejected(
-                "diagnostic staging requires a running node",
-            ));
-        }
-        if self.hot_fork_child_diagnostic_stage.is_some() {
-            return Err(diagnostic_rejected(
-                "node already retains a child diagnostics stage",
-            ));
-        }
-        if self.hot_fork_child_qmp_stage.is_some() {
-            return Err(diagnostic_rejected(
-                "child diagnostics must precede child QMP staging",
-            ));
-        }
-        if self.hot_fork_plugin_endpoint_stage.is_some() {
-            return Err(diagnostic_rejected(
-                "child diagnostics must precede plugin endpoint staging",
-            ));
-        }
-        let (ring_name, ring_identity) = match self.hot_fork_private_ring_stage.as_ref() {
-            Some(QemuHotForkPrivateRingStage::Installed(ring)) => {
-                (ring.descriptor_name().clone(), ring.backing_identity())
-            }
-            Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) => {
-                return Err(diagnostic_rejected(
-                    "private-ring descriptor ownership is uncertain",
-                ));
-            }
-            None => {
-                return Err(diagnostic_rejected(
-                    "child diagnostics require an installed private-ring descriptor",
-                ));
-            }
-        };
-        let qemu_ring = self
-            .channels
-            .qmp_machine_control
-            .query_hot_fork_private_rings()
-            .map_err(diagnostic_rejected_source)?;
-        let ring_basis_matches = qemu_ring.staged()
-            && qemu_ring.descriptor_name() == Some(&ring_name)
-            && qemu_ring.device() == ring_identity.device()
-            && qemu_ring.inode() == ring_identity.inode()
-            && qemu_ring.length() == ring_identity.length()
-            && qemu_ring.shrink_sealed()
-            && qemu_ring.source_mapping_bound()
-            && qemu_ring.generation() != 0;
-        if !ring_basis_matches {
-            return Err(diagnostic_rejected(
-                "QEMU private-ring stage no longer matches the node-owned mapping",
-            ));
-        }
-        let template_generation = qemu_ring.template_generation();
-        if template_generation == 0 {
-            return Err(diagnostic_rejected(
-                "child diagnostics require a template-bound private ring",
-            ));
-        }
-
-        let mut endpoint = create_diagnostic_pair(template_generation).map_err(|source| {
-            diagnostic_rejected_source(QemuNodeChannelError::new(
-                "prepare hot-fork child diagnostics",
-                source.to_string(),
-            ))
-        })?;
-        let transfer = self
-            .channels
-            .qmp_machine_control
-            .install_hot_fork_child_diagnostics(
-                &endpoint.descriptor_name,
-                endpoint.child.as_fd(),
-                endpoint.socket_cookie,
-                template_generation,
-            );
-        let qemu_state = match transfer {
-            Ok(state) => state,
-            Err(source) => {
-                self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
-                self.hot_fork_child_diagnostic_stage =
-                    Some(QemuHotForkChildDiagnosticStage::TransferUncertain(endpoint));
-                return Err(QemuHotForkChildDiagnosticStageError::TransferUncertain { source });
-            }
-        };
-        let exact = qemu_state.staged()
-            && qemu_state.descriptor_name() == Some(&endpoint.descriptor_name)
-            && qemu_state.socket_cookie() == Some(endpoint.socket_cookie)
-            && qemu_state.template_generation() == template_generation
-            && qemu_state.target_descriptor()
-                == Some(crate::QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD)
-            && !qemu_state.replacement_plan_bound();
-        if !exact {
-            let source = QemuNodeChannelError::new(
-                "install hot-fork child diagnostics",
-                "QEMU did not retain the exact unsealed diagnostics contribution",
-            );
-            self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
-            self.hot_fork_child_diagnostic_stage =
-                Some(QemuHotForkChildDiagnosticStage::TransferUncertain(endpoint));
-            return Err(QemuHotForkChildDiagnosticStageError::TransferUncertain { source });
-        }
-        endpoint.replacement_plan_bound = false;
-        let proof = endpoint.proof(QemuHotForkChildDiagnosticStageState::Installed);
-        self.hot_fork_child_diagnostic_stage =
-            Some(QemuHotForkChildDiagnosticStage::Installed(endpoint));
-        Ok(proof)
-    }
-
-    /// Returns evidence for the child diagnostics stream retained by this node.
-    #[must_use]
-    pub fn hot_fork_child_diagnostic_stage(&self) -> Option<QemuHotForkChildDiagnosticStageProof> {
-        self.hot_fork_child_diagnostic_stage
-            .as_ref()
-            .map(QemuHotForkChildDiagnosticStage::proof)
-    }
-
-    pub(super) fn take_hot_fork_child_diagnostic_consumer(
-        &mut self,
-    ) -> Result<QemuHotForkChildDiagnosticConsumer, QemuNodeChannelError> {
-        match self.hot_fork_child_diagnostic_stage.as_mut() {
-            Some(QemuHotForkChildDiagnosticStage::Installed(endpoint))
-                if endpoint.replacement_plan_bound =>
-            {
-                endpoint.take_consumer()
-            }
-            Some(QemuHotForkChildDiagnosticStage::Installed(_)) => Err(QemuNodeChannelError::new(
-                "take hot-fork child diagnostics consumer",
-                "diagnostics contribution is not bound to the sealed child plan",
-            )),
-            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) => {
-                Err(QemuNodeChannelError::new(
-                    "take hot-fork child diagnostics consumer",
-                    "diagnostic transfer ownership is uncertain",
-                ))
-            }
-            None => Err(QemuNodeChannelError::new(
-                "take hot-fork child diagnostics consumer",
-                "node retains no child diagnostics stage",
-            )),
-        }
-    }
-
-    /// Drains all currently available branch-private child diagnostic bytes.
-    ///
-    /// The operation never blocks and preserves a cumulative per-generation
-    /// bound even when the caller drains repeatedly. A production child owner
-    /// must call it often enough to release socket backpressure while the child
-    /// runs. The bytes remain node-owned until exact stage release.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when no acknowledged diagnostics stage
-    /// exists, stream I/O fails, or retaining the complete stream would exceed
-    /// [`MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES`]. I/O and capacity failures
-    /// quarantine the node because complete diagnostics can no longer be
-    /// established.
-    pub fn drain_hot_fork_child_diagnostics(
-        &mut self,
-    ) -> Result<QemuHotForkChildDiagnosticDrain, QemuNodeChannelError> {
-        if self.lifecycle_state != crate::QemuNodeLifecycleState::Running {
-            return Err(QemuNodeChannelError::new(
-                "drain hot-fork child diagnostics",
-                "diagnostic drain requires a running node",
-            ));
-        }
-        let result = match self.hot_fork_child_diagnostic_stage.as_mut() {
-            Some(QemuHotForkChildDiagnosticStage::Installed(endpoint)) => {
-                endpoint.drain_available()
-            }
-            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) => {
-                return Err(QemuNodeChannelError::new(
-                    "drain hot-fork child diagnostics",
-                    "diagnostic transfer ownership is uncertain",
-                ));
-            }
-            None => {
-                return Err(QemuNodeChannelError::new(
-                    "drain hot-fork child diagnostics",
-                    "node retains no child diagnostics stage",
-                ));
-            }
-        };
-        result.map_err(|source| {
-            self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
-            QemuNodeChannelError::new("drain hot-fork child diagnostics", source.to_string())
-        })
-    }
-
-    /// Returns the child diagnostics retained by this node so far.
-    ///
-    /// Unlike [`Self::drain_hot_fork_child_diagnostics`], this reads in every
-    /// lifecycle state: a failed fork quarantines the node, and the child's
-    /// last words on its diagnostics stream are the evidence a failure report
-    /// needs. Available bytes are drained first; the node state is otherwise
-    /// untouched.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when no acknowledged diagnostics stage
-    /// exists, its consumer was transferred to a child owner, or reading the
-    /// stream fails.
-    pub fn retained_hot_fork_child_diagnostics(&mut self) -> Result<Vec<u8>, QemuNodeChannelError> {
-        let consumer = match self.hot_fork_child_diagnostic_stage.as_mut() {
-            Some(QemuHotForkChildDiagnosticStage::Installed(endpoint)) => {
-                endpoint.consumer.as_mut()
-            }
-            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) | None => None,
-        };
-        let Some(consumer) = consumer else {
-            return Err(QemuNodeChannelError::new(
-                "read retained hot-fork child diagnostics",
-                "node retains no child diagnostics consumer",
-            ));
-        };
-        consumer.drain_available()?;
-        Ok(consumer.retained().to_vec())
-    }
-
-    /// Releases one acknowledged diagnostics stage in exact ownership order.
-    ///
-    /// Plugin endpoints and their sealed plan must be released first. QEMU
-    /// closes its retained duplicate, then the monitor name, before the node
-    /// shuts down the node-owned child writer and drains the host consumer to
-    /// EOF before returning the complete bounded capture.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the stage is absent or uncertain,
-    /// plugin resources remain retained, or either exact close fails.
-    pub fn release_hot_fork_child_diagnostics(
-        &mut self,
-    ) -> Result<QemuHotForkChildDiagnosticCapture, QemuNodeChannelError> {
-        let mut consumer = match self.hot_fork_child_diagnostic_stage.as_mut() {
-            Some(QemuHotForkChildDiagnosticStage::Installed(endpoint)) => {
-                endpoint.take_consumer()?
-            }
-            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) => {
-                return Err(QemuNodeChannelError::new(
-                    "release hot-fork child diagnostics",
-                    "diagnostic transfer ownership is uncertain",
-                ));
-            }
-            None => {
-                return Err(QemuNodeChannelError::new(
-                    "release hot-fork child diagnostics",
-                    "node retains no child diagnostics stage",
-                ));
-            }
-        };
-        let result = self.release_hot_fork_child_diagnostics_with_consumer(&mut consumer);
-        if result.is_err()
-            && let Some(QemuHotForkChildDiagnosticStage::Installed(endpoint)) =
-                self.hot_fork_child_diagnostic_stage.as_mut()
-            && endpoint.consumer.is_none()
-            && !consumer.captured
-        {
-            endpoint.consumer = Some(consumer);
-        }
-        result
-    }
-
-    /// Releases one acknowledged diagnostics stage with its child-owned consumer.
-    ///
-    /// A successful fork transfers the only host reader to its linear child
-    /// owner. After plugin and child-QMP teardown, that owner returns the exact
-    /// consumer here. The source closes QEMU's writer and its retained writer,
-    /// drains the external reader through EOF, and consumes the stage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when source release ordering is invalid,
-    /// the supplied consumer does not match the retained generation, an exact
-    /// close fails, or EOF and the bounded complete capture cannot be proven.
-    pub fn release_hot_fork_child_diagnostics_with_consumer(
-        &mut self,
-        consumer: &mut QemuHotForkChildDiagnosticConsumer,
-    ) -> Result<QemuHotForkChildDiagnosticCapture, QemuNodeChannelError> {
-        if self.lifecycle_state != crate::QemuNodeLifecycleState::Running {
-            return Err(QemuNodeChannelError::new(
-                "release hot-fork child diagnostics",
-                "diagnostic release requires a running node",
-            ));
-        }
-        if self.hot_fork_plugin_endpoint_stage.is_some() {
-            return Err(QemuNodeChannelError::new(
-                "release hot-fork child diagnostics",
-                "plugin endpoints must release their sealed plan first",
-            ));
-        }
-        if self.hot_fork_child_qmp_stage.is_some() {
-            return Err(QemuNodeChannelError::new(
-                "release hot-fork child diagnostics",
-                "child QMP must release its retained template contribution first",
-            ));
-        }
-        let (name, socket_cookie) = match self.hot_fork_child_diagnostic_stage.as_ref() {
-            Some(QemuHotForkChildDiagnosticStage::Installed(endpoint)) => {
-                if endpoint.consumer.is_some() || !consumer.matches_pair(endpoint) {
-                    return Err(QemuNodeChannelError::new(
-                        "release hot-fork child diagnostics",
-                        "child-owned diagnostics consumer does not match the retained stage",
-                    ));
-                }
-                (endpoint.descriptor_name.clone(), endpoint.socket_cookie)
-            }
-            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) => {
-                return Err(QemuNodeChannelError::new(
-                    "release hot-fork child diagnostics",
-                    "diagnostic transfer ownership is uncertain",
-                ));
-            }
-            None => {
-                return Err(QemuNodeChannelError::new(
-                    "release hot-fork child diagnostics",
-                    "node retains no child diagnostics stage",
-                ));
-            }
-        };
-        if let Err(source) = self
-            .channels
-            .qmp_machine_control
-            .close_hot_fork_child_diagnostics(&name, socket_cookie)
-        {
-            self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
-            return Err(source);
-        }
-        let final_drain = match self.hot_fork_child_diagnostic_stage.as_mut() {
-            Some(QemuHotForkChildDiagnosticStage::Installed(endpoint)) => endpoint
-                .child
-                .shutdown(Shutdown::Write)
-                .map_err(|source| {
-                    QemuNodeChannelError::new(
-                        "release hot-fork child diagnostics",
-                        format!("shut down retained child writer failed: {source}"),
-                    )
-                })
-                .and_then(|()| consumer.drain_available()),
-            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) | None => {
-                Err(QemuNodeChannelError::new(
-                    "release hot-fork child diagnostics",
-                    "diagnostic stage changed after acknowledged close",
-                ))
-            }
-        };
-        let final_drain = match final_drain {
-            Ok(drain) => drain,
-            Err(source) => {
-                self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
-                return Err(source);
-            }
-        };
-        if !final_drain.eof() {
-            self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
-            return Err(QemuNodeChannelError::new(
-                "release hot-fork child diagnostics",
-                "diagnostic writer remained live after acknowledged close",
-            ));
-        }
-        match self.hot_fork_child_diagnostic_stage.take() {
-            Some(QemuHotForkChildDiagnosticStage::Installed(_endpoint)) => {
-                Ok(consumer.take_capture())
-            }
-            Some(QemuHotForkChildDiagnosticStage::TransferUncertain(_)) | None => {
-                Err(QemuNodeChannelError::new(
-                    "release hot-fork child diagnostics",
-                    "diagnostic stage changed after acknowledged close",
-                ))
-            }
-        }
-    }
-}
+#[path = "hot_fork_diagnostics/staging.rs"]
+mod staging;
 
 fn diagnostic_rejected(message: impl Into<String>) -> QemuHotForkChildDiagnosticStageError {
     diagnostic_rejected_source(QemuNodeChannelError::new(
@@ -882,6 +527,7 @@ fn create_diagnostic_pair(
             template_generation,
             retained: Vec::new(),
             eof: false,
+            writer_detached: false,
             captured: false,
         }),
     })
@@ -951,10 +597,6 @@ mod tests {
         assert!(consumer.matches_pair(&first));
         assert!(!consumer.matches_pair(&second));
         assert!(first.take_consumer().is_err());
-        assert!(matches!(
-            first.drain_available(),
-            Err(QemuHotForkChildDiagnosticConsumeError::ConsumerTransferred)
-        ));
         Ok(())
     }
 }

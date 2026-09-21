@@ -264,7 +264,11 @@ pub(super) fn parse_search_content_hash(encoded: &str) -> Option<ContentHash> {
         return None;
     }
     let mut bytes = [0_u8; 32];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    let (pairs, remainder) = encoded.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    for (index, pair) in pairs.iter().enumerate() {
         bytes[index] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(ContentHash { bytes })

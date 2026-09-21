@@ -6,17 +6,21 @@ use super::*;
 fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        CampaignMode::Streaming,
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            CampaignMode::Streaming,
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("fast corpus-mutation policy");
     repository
@@ -82,10 +86,12 @@ fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
         BranchAcceptanceCount::between(0, 8).expect("proposal-window bounds")
     );
     let seed_request = BranchRequest::new(
-        mutation_request.branch_point(),
-        mutation_request.parent(),
-        mutation_request.opportunity(),
-        mutation_request.domain(),
+        BranchRequest::identity(
+            mutation_request.branch_point(),
+            mutation_request.parent(),
+            mutation_request.opportunity(),
+            mutation_request.domain(),
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
             IntegerValue::Unsigned(8),
         )]))
@@ -203,10 +209,12 @@ fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
     }
 
     let second_seed_request = BranchRequest::new(
-        mutation_request.branch_point(),
-        mutation_request.parent(),
-        mutation_request.opportunity(),
-        mutation_request.domain(),
+        BranchRequest::identity(
+            mutation_request.branch_point(),
+            mutation_request.parent(),
+            mutation_request.opportunity(),
+            mutation_request.domain(),
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
             IntegerValue::Unsigned(2),
         )]))
@@ -532,305 +540,17 @@ fn corpus_mutation_generator_enforces_exact_owner_bounds_before_writes() {
         )
     );
 
-    let suspended = CandidateGeneratorSpec::new(
-        crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION - 1,
-        CandidateGeneratorAlgorithm::MutateNearCorpus {
-            maximum_distance: 1,
-        },
-    )
-    .expect("suspended corpus-mutation generator");
-    let suspended_id = repository
-        .publish_generator(&suspended)
-        .expect("publish suspended corpus-mutation generator");
-    let (_, suspended_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        domain,
-        IntegerValue::Unsigned(5_000),
-        suspended_id,
-        "corpus-mutation-suspended",
-        1,
-    );
-    let suspended_discovery = repository
-        .discover_choice_opportunity(
-            "corpus-mutation-bounds",
-            empty_corpus.new_snapshot,
-            suspended_request.parent(),
-            suspended_request.opportunity(),
-        )
-        .expect("discover suspended opportunity");
-    let accepted = repository
-        .submit_branch_request(
-            "corpus-mutation-bounds",
-            suspended_discovery.new_snapshot,
-            &suspended_request,
-        )
-        .expect("retain suspended corpus-mutation request");
-    assert_eq!(
-        repository
-            .read_continuation_projection(
-                repository
-                    .lookup_frontier_projection(
-                        repository
-                            .read_snapshot(accepted.new_snapshot.content_id())
-                            .expect("suspended snapshot")
-                            .snapshot
-                            .roots()
-                            .exploration,
-                        suspended_request.id().expect("suspended request id"),
-                    )
-                    .expect("suspended frontier lookup")
-                    .0,
-            )
-            .expect("suspended frontier projection")
-            .state(),
-        ContinuationState::Open
-    );
-}
-
-#[test]
-fn progressive_integer_generator_enforces_exact_owner_bounds_before_writes() {
-    let (repository, lineage, policy, blobs) = counted_fixture();
-    let genesis = repository
-        .create_funded("progressive-bounds", &lineage, &policy, &BTreeMap::new())
-        .expect("create progressive bounds campaign");
-    let domain = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(0),
-            IntegerValue::Unsigned(5_000),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("scale"),
-            Vec::new(),
-        )
-        .expect("bounded progressive domain"),
-    );
-
-    let oversized_strata = CandidateGeneratorSpec::new(
-        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA + 1,
-            feedback_interval: 1,
-        },
-    )
-    .expect("oversized-strata generator");
-    let oversized_strata_id = repository
-        .publish_generator(&oversized_strata)
-        .expect("publish oversized-strata generator");
-    let (_, oversized_strata_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        IntegerValue::Unsigned(2_500),
-        oversized_strata_id,
-        "progressive-oversized-strata",
-        1,
-    );
-    let oversized_strata_discovery = repository
-        .discover_choice_opportunity(
-            "progressive-bounds",
-            genesis.snapshot_id(),
-            oversized_strata_request.parent(),
-            oversized_strata_request.opportunity(),
-        )
-        .expect("discover oversized-strata opportunity");
-    let before_strata = blobs
-        .object_count()
-        .expect("objects before strata rejection");
     assert!(matches!(
-        repository.submit_branch_request(
-            "progressive-bounds",
-            oversized_strata_discovery.new_snapshot,
-            &oversized_strata_request,
+        CandidateGeneratorSpec::new(
+            u32::MAX,
+            CandidateGeneratorAlgorithm::MutateNearCorpus {
+                maximum_distance: 1,
+            },
         ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "progressive-generator-initial-strata-limit"
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
         })
     ));
-    assert_eq!(
-        blobs
-            .object_count()
-            .expect("objects after strata rejection"),
-        before_strata
-    );
-
-    let bounded = CandidateGeneratorSpec::new(
-        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: 1,
-            feedback_interval: 1,
-        },
-    )
-    .expect("bounded progressive generator");
-    let bounded_id = repository
-        .publish_generator(&bounded)
-        .expect("publish bounded progressive generator");
-    let (_, oversized_budget_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        IntegerValue::Unsigned(2_500),
-        bounded_id,
-        "progressive-oversized-budget",
-        crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS + 1,
-    );
-    let oversized_budget_discovery = repository
-        .discover_choice_opportunity(
-            "progressive-bounds",
-            oversized_strata_discovery.new_snapshot,
-            oversized_budget_request.parent(),
-            oversized_budget_request.opportunity(),
-        )
-        .expect("discover oversized-budget opportunity");
-    let before_budget = blobs
-        .object_count()
-        .expect("objects before budget rejection");
-    assert!(matches!(
-        repository.submit_branch_request(
-            "progressive-bounds",
-            oversized_budget_discovery.new_snapshot,
-            &oversized_budget_request,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "progressive-generator-proposal-limit"
-        })
-    ));
-    assert_eq!(
-        blobs
-            .object_count()
-            .expect("objects after budget rejection"),
-        before_budget
-    );
-
-    let overflow = CandidateGeneratorSpec::new(
-        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: 1,
-            feedback_interval: u64::MAX,
-        },
-    )
-    .expect("overflow-threshold generator");
-    let overflow_id = repository
-        .publish_generator(&overflow)
-        .expect("publish overflow-threshold generator");
-    let overflow_domain = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(0),
-            IntegerValue::Unsigned(2),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("overflow scale"),
-            Vec::new(),
-        )
-        .expect("overflow domain"),
-    );
-    let (_, overflow_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        overflow_domain,
-        IntegerValue::Unsigned(1),
-        overflow_id,
-        "progressive-overflow",
-        3,
-    );
-    let overflow_discovery = repository
-        .discover_choice_opportunity(
-            "progressive-bounds",
-            oversized_budget_discovery.new_snapshot,
-            overflow_request.parent(),
-            overflow_request.opportunity(),
-        )
-        .expect("discover overflow-threshold opportunity");
-    let before_overflow = blobs
-        .object_count()
-        .expect("objects before overflow rejection");
-    assert!(matches!(
-        repository.submit_branch_request(
-            "progressive-bounds",
-            overflow_discovery.new_snapshot,
-            &overflow_request,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "progressive-generator-feedback-threshold-overflow"
-        })
-    ));
-    assert_eq!(
-        blobs
-            .object_count()
-            .expect("objects after overflow rejection"),
-        before_overflow
-    );
-
-    let legacy = CandidateGeneratorSpec::new(
-        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: 3,
-            feedback_interval: 2,
-        },
-    )
-    .expect("legacy progressive generator");
-    let legacy_id = repository
-        .publish_generator(&legacy)
-        .expect("publish legacy progressive generator");
-    let (_, legacy_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        IntegerValue::Unsigned(2_500),
-        legacy_id,
-        "progressive-legacy",
-        9,
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy progressive continuation"),
-        ContinuationState::Open
-    );
-
-    let exact_domain = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(0),
-            IntegerValue::Unsigned(4_095),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("exact scale"),
-            Vec::new(),
-        )
-        .expect("exact maximum domain"),
-    );
-    let exact = CandidateGeneratorSpec::new(
-        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA,
-            feedback_interval: 1,
-        },
-    )
-    .expect("exact maximum progressive generator");
-    let exact_id = repository
-        .publish_generator(&exact)
-        .expect("publish exact maximum generator");
-    let (_, exact_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        exact_domain.clone(),
-        IntegerValue::Unsigned(2_047),
-        exact_id,
-        "progressive-exact-maximum",
-        crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS,
-    );
-    assert_eq!(
-        repository
-            .candidate_at_with_feedback(&exact_request, &exact_domain, 4_096, 0)
-            .expect("maximum initial candidate"),
-        Some(ChoiceValue::Integer(IntegerValue::Unsigned(4_095)))
-    );
 }
 
 #[test]
@@ -915,10 +635,12 @@ fn boundary_integer_generator_uses_exact_static_order() {
         })
     ));
     let request = BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::generated(generator_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -928,40 +650,15 @@ fn boundary_integer_generator_uses_exact_static_order() {
         StopCondition::NextChoice,
     )
     .expect("request");
-    let legacy_generator = CandidateGeneratorSpec::new(
-        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::BoundaryInteger,
-    )
-    .expect("legacy boundary generator");
-    let legacy_generator_id = repository
-        .publish_generator(&legacy_generator)
-        .expect("publish legacy boundary generator");
-    let legacy_request = BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
-        CandidateSource::generated(legacy_generator_id),
-        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
-            "test",
-            b"generated-boundary-legacy-request",
-        ))),
-        request.budget(),
-        request.stop().clone(),
-    )
-    .expect("legacy boundary request");
-    assert_eq!(
-        repository
-            .static_candidate_count(&legacy_request, &domain)
-            .expect("legacy candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
+    assert!(matches!(
+        CandidateGeneratorSpec::new(
+            crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::BoundaryInteger,
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
+        })
+    ));
     let expected = [0, 20, 10, 6, 14, 2, 18, 8, 12, 4, 16]
         .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)));
     assert_eq!(
@@ -1065,10 +762,12 @@ fn boundary_integer_generator_uses_exact_static_order() {
         .publish_choice_opportunity(&signed_opportunity)
         .expect("publish signed opportunity");
     let signed_request = BranchRequest::new(
-        signed_opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        signed_opportunity.id().expect("signed opportunity id"),
-        signed_domain.id().expect("signed domain id"),
+        BranchRequest::identity(
+            signed_opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            signed_opportunity.id().expect("signed opportunity id"),
+            signed_domain.id().expect("signed domain id"),
+        ),
         CandidateSource::generated(generator_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -1307,35 +1006,15 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
         })
     ));
 
-    let legacy = CandidateGeneratorSpec::new(
-        crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::StratifiedInteger { strata: 4 },
-    )
-    .expect("legacy generator");
-    let legacy_id = repository
-        .publish_generator(&legacy)
-        .expect("publish legacy generator");
-    let (_, legacy_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        unsigned.clone(),
-        IntegerValue::Unsigned(10),
-        legacy_id,
-        "legacy",
-        4,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&legacy_request, &unsigned)
-            .expect("legacy candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
+    assert!(matches!(
+        CandidateGeneratorSpec::new(
+            crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::StratifiedInteger { strata: 4 },
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
+        })
+    ));
 
     let issued = repository
         .submit_known_branch_request("generated-stratified", genesis.snapshot_id(), &request)
@@ -1575,35 +1254,15 @@ fn log_integer_generator_uses_exact_rounded_powers() {
         })
     ));
 
-    let legacy = CandidateGeneratorSpec::new(
-        crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::LogInteger { base: 10 },
-    )
-    .expect("legacy generator");
-    let legacy_id = repository
-        .publish_generator(&legacy)
-        .expect("publish legacy generator");
-    let (_, legacy_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        unsigned.clone(),
-        IntegerValue::Unsigned(3),
-        legacy_id,
-        "log-legacy",
-        4,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&legacy_request, &unsigned)
-            .expect("legacy candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
+    assert!(matches!(
+        CandidateGeneratorSpec::new(
+            crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::LogInteger { base: 10 },
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
+        })
+    ));
 
     let issued = repository
         .submit_known_branch_request("generated-log", genesis.snapshot_id(), &request)
@@ -1656,349 +1315,6 @@ fn log_integer_generator_uses_exact_rounded_powers() {
         restarted
             .head("generated-log")
             .expect("rebuild log history")
-            .snapshot_id(),
-        first_issued.new_snapshot
-    );
-}
-
-#[test]
-fn permuted_integer_generator_is_keyed_bijective_and_restart_stable() {
-    let (repository, lineage, policy) = fixture();
-    let genesis = repository
-        .create_funded("generated-permuted", &lineage, &policy, &BTreeMap::new())
-        .expect("create");
-    let generator = CandidateGeneratorSpec::new(
-        crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::PermutedInteger,
-    )
-    .expect("permuted generator");
-    let generator_id = repository
-        .publish_generator(&generator)
-        .expect("publish permuted generator");
-    let unsigned = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(10),
-            IntegerValue::Unsigned(28),
-            2,
-            None,
-            ExactRational::new(1, 1).expect("scale"),
-            Vec::new(),
-        )
-        .expect("unsigned domain"),
-    );
-    let (unsigned, request) = generated_integer_request(
-        &repository,
-        &lineage,
-        unsigned,
-        IntegerValue::Unsigned(10),
-        generator_id,
-        "permuted-main",
-        10,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&request, &unsigned)
-            .expect("candidate count"),
-        Some(10)
-    );
-    let sequence = (1..=10)
-        .map(|ordinal| {
-            repository
-                .static_candidate_at(&request, &unsigned, ordinal)
-                .expect("candidate ordinal")
-                .expect("implemented source")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        sequence,
-        [26, 28, 24, 12, 10, 20, 14, 16, 18, 22]
-            .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)))
-    );
-    assert_eq!(
-        sequence.iter().cloned().collect::<BTreeSet<_>>(),
-        (10..=28)
-            .step_by(2)
-            .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)))
-            .collect()
-    );
-    assert!(matches!(
-        repository.static_candidate_at(&request, &unsigned, 11),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-ordinal-exceeds-source-cardinality"
-        })
-    ));
-
-    let (_, other_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        unsigned.clone(),
-        IntegerValue::Unsigned(10),
-        generator_id,
-        "permuted-other",
-        10,
-    );
-    let other_sequence = (1..=10)
-        .map(|ordinal| {
-            repository
-                .static_candidate_at(&other_request, &unsigned, ordinal)
-                .expect("other candidate ordinal")
-                .expect("implemented source")
-        })
-        .collect::<Vec<_>>();
-    assert_ne!(sequence, other_sequence);
-    assert_eq!(
-        other_sequence.iter().cloned().collect::<BTreeSet<_>>(),
-        sequence.iter().cloned().collect()
-    );
-
-    let singleton = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Signed64,
-            IntegerValue::Signed(42),
-            IntegerValue::Signed(42),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("singleton scale"),
-            Vec::new(),
-        )
-        .expect("singleton domain"),
-    );
-    let (singleton, singleton_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        singleton,
-        IntegerValue::Signed(42),
-        generator_id,
-        "permuted-singleton",
-        1,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_at(&singleton_request, &singleton, 1)
-            .expect("singleton candidate"),
-        Some(ChoiceValue::Integer(IntegerValue::Signed(42)))
-    );
-
-    let signed = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Signed64,
-            IntegerValue::Signed(-5),
-            IntegerValue::Signed(5),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("signed scale"),
-            Vec::new(),
-        )
-        .expect("signed domain"),
-    );
-    let (signed, signed_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        signed,
-        IntegerValue::Signed(0),
-        generator_id,
-        "permuted-signed",
-        11,
-    );
-    let signed_values = (1..=11)
-        .map(|ordinal| {
-            repository
-                .static_candidate_at(&signed_request, &signed, ordinal)
-                .expect("signed candidate")
-                .expect("implemented source")
-        })
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        signed_values,
-        (-5..=5)
-            .map(|value| ChoiceValue::Integer(IntegerValue::Signed(value)))
-            .collect()
-    );
-
-    let full_unsigned = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(0),
-            IntegerValue::Unsigned(u64::MAX),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("full scale"),
-            Vec::new(),
-        )
-        .expect("full unsigned domain"),
-    );
-    assert!(matches!(
-        repository.validate_generator_for_domain(generator_id, &full_unsigned),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "permuted-generator-cardinality-limit"
-        })
-    ));
-
-    let maximum = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(1),
-            IntegerValue::Unsigned(u64::MAX),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("maximum scale"),
-            Vec::new(),
-        )
-        .expect("maximum domain"),
-    );
-    let (maximum, maximum_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        maximum,
-        IntegerValue::Unsigned(1),
-        generator_id,
-        "permuted-maximum",
-        1,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&maximum_request, &maximum)
-            .expect("maximum candidate count"),
-        Some(u64::MAX)
-    );
-    assert!(matches!(
-        repository
-            .static_candidate_at(&maximum_request, &maximum, u64::MAX)
-            .expect("maximum ordinal"),
-        Some(ChoiceValue::Integer(IntegerValue::Unsigned(_)))
-    ));
-    let maximum_summary = repository
-        .branch_acceptance_summary(
-            repository
-                .head("generated-permuted")
-                .expect("permuted campaign head")
-                .snapshot()
-                .roots()
-                .graph,
-            &maximum_request,
-        )
-        .expect("maximum-cardinality acceptance summary");
-    assert_eq!(
-        maximum_summary.validated_cardinality(),
-        BranchAcceptanceCount::Exact(u64::MAX)
-    );
-    assert_eq!(
-        maximum_summary.deduplicated_existing_edges(),
-        BranchAcceptanceCount::Exact(0)
-    );
-    assert_eq!(
-        maximum_summary.remaining_lazy_candidates(),
-        BranchAcceptanceCount::Exact(1)
-    );
-
-    let (_, bounded_inspection_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        maximum.clone(),
-        IntegerValue::Unsigned(1),
-        generator_id,
-        "permuted-bounded-inspection",
-        65_537,
-    );
-    let bounded_summary = repository
-        .branch_acceptance_summary(
-            repository
-                .head("generated-permuted")
-                .expect("permuted campaign head")
-                .snapshot()
-                .roots()
-                .graph,
-            &bounded_inspection_request,
-        )
-        .expect("bounded large acceptance summary");
-    assert_eq!(
-        bounded_summary.validated_cardinality(),
-        BranchAcceptanceCount::Exact(u64::MAX)
-    );
-    assert_eq!(
-        bounded_summary.deduplicated_existing_edges(),
-        BranchAcceptanceCount::between(0, 1).expect("deduplication range")
-    );
-    assert_eq!(
-        bounded_summary.remaining_lazy_candidates(),
-        BranchAcceptanceCount::between(65_536, 65_537).expect("remaining range")
-    );
-
-    let legacy = CandidateGeneratorSpec::new(
-        crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::PermutedInteger,
-    )
-    .expect("legacy generator");
-    let legacy_id = repository
-        .publish_generator(&legacy)
-        .expect("publish legacy generator");
-    let (_, legacy_request) = generated_integer_request(
-        &repository,
-        &lineage,
-        unsigned.clone(),
-        IntegerValue::Unsigned(10),
-        legacy_id,
-        "permuted-legacy",
-        10,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&legacy_request, &unsigned)
-            .expect("legacy candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
-
-    let issued = repository
-        .submit_known_branch_request("generated-permuted", genesis.snapshot_id(), &request)
-        .expect("issue request");
-    let projection_id = repository
-        .project_finite_expansion(issued.new_snapshot, request.branch_point(), None, 10)
-        .expect("project permuted source");
-    assert_eq!(
-        repository
-            .load_expansion_state(projection_id)
-            .expect("load projection")
-            .continuations()
-            .get(&request.id().expect("request id")),
-        Some(&ContinuationState::Ready)
-    );
-    let head = repository.head("generated-permuted").expect("request head");
-    let wrong = finite_proposal(&request, &policy, &head, sequence[1].clone(), 1);
-    assert!(matches!(
-        repository.issue_proposal("generated-permuted", issued.new_snapshot, &wrong),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-source-order"
-        })
-    ));
-    assert_eq!(
-        repository
-            .head("generated-permuted")
-            .expect("unchanged head")
-            .snapshot_id(),
-        issued.new_snapshot
-    );
-    let first = finite_proposal(&request, &policy, &head, sequence[0].clone(), 1);
-    let first_issued = repository
-        .issue_proposal("generated-permuted", issued.new_snapshot, &first)
-        .expect("issue first permuted proposal");
-
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    assert_eq!(
-        restarted
-            .head("generated-permuted")
-            .expect("rebuild permuted history")
             .snapshot_id(),
         first_issued.new_snapshot
     );
@@ -2061,7 +1377,7 @@ fn modeled_uniform_integer_generator_bounds_full_width_and_restarts() {
         .publish_choice_opportunity(&opportunity)
         .expect("publish opportunity");
     let generator = CandidateGeneratorSpec::new(
-        crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::PermutedInteger,
     )
     .expect("modeled uniform generator");
@@ -2069,10 +1385,12 @@ fn modeled_uniform_integer_generator_bounds_full_width_and_restarts() {
         .publish_generator(&generator)
         .expect("publish generator");
     let request = BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::modeled_generated(model, generator_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -2115,10 +1433,12 @@ fn modeled_uniform_integer_generator_bounds_full_width_and_restarts() {
     ));
 
     let wrong_model = BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
+        BranchRequest::identity(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+        ),
         CandidateSource::modeled_generated(
             ProbabilityModelId::from_hash(CampaignHash::derive(
                 "test.modeled-uniform.v1",
@@ -2143,45 +1463,6 @@ fn modeled_uniform_integer_generator_bounds_full_width_and_restarts() {
     assert_eq!(
         blobs.object_count().expect("unchanged object count"),
         before_wrong_model
-    );
-
-    let legacy_generator = CandidateGeneratorSpec::new(
-        crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::PermutedInteger,
-    )
-    .expect("legacy generator");
-    let legacy_generator_id = repository
-        .publish_generator(&legacy_generator)
-        .expect("publish legacy generator");
-    let wrong_generator = BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
-        CandidateSource::modeled_generated(model, legacy_generator_id),
-        request.cause(),
-        request.budget(),
-        request.stop().clone(),
-    )
-    .expect("wrong-generator request");
-    let before_wrong_generator = blobs.object_count().expect("object count");
-    let wrong_generator_result = repository.submit_branch_request(
-        "modeled-uniform",
-        discovered.new_snapshot,
-        &wrong_generator,
-    );
-    assert!(
-        matches!(
-            wrong_generator_result,
-            Err(CampaignRepositoryError::Integrity {
-                reason: "modeled-generated-source-contract-mismatch"
-            })
-        ),
-        "unexpected wrong-generator result: {wrong_generator_result:?}"
-    );
-    assert_eq!(
-        blobs.object_count().expect("unchanged object count"),
-        before_wrong_generator
     );
 
     let requested = repository

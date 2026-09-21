@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 21
+abi_version = 25
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -52,6 +52,12 @@ selectable_reply_full_queue = "bounded-backpressure-no-overwrite"
 hot_fork_ring_producer_admission = "reversible-held-bit+in-flight-count"
 hot_fork_ring_consumer_admission = "reversible-held-bit+in-flight-count"
 hot_fork_ring_snapshot_precondition = "all-producers-and-consumers-held-and-drained"
+virtual_timer_witness = "plugin-validated-actual-qemu-clock-virtual-callback"
+virtual_timer_witness_publication = "node-slot-publish-generation-seqlock"
+virtual_timer_witness_noncurrent_version_policy = "reject"
+advance_stop_condition = "node-slot-byte-39"
+advance_stop_condition_unknown_tag = "reject"
+advance_stop_condition_next_idle = "publish-idle-without-authorizing-deadline"
 
 [representation]
 allowed = [

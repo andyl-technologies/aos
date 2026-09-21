@@ -30,7 +30,6 @@ fn cli_help_process_outputs_top_level_surface() -> Result<(), Box<dyn Error>> {
         "selftest",
         "save",
         "resume",
-        "fork",
         "replay",
         "search",
         "fuzz",
@@ -123,6 +122,8 @@ fn cli_production_selftest_help_excludes_test_double_options() -> Result<(), Box
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("Run the packaged determinism gates"));
+    assert!(stdout.contains("--campaign-deployment <PATH>"));
+    assert!(stdout.contains("Guarded local campaign-executor deployment capability"));
     assert!(!stdout.contains("--with-qemu"));
     assert!(!stdout.contains("double"));
     assert!(!stdout.contains("--corpus"));
@@ -199,7 +200,6 @@ fn cli_help_process_outputs_every_normative_subcommand_surface() -> Result<(), B
         ("selftest", "--gates <list>"),
         ("save", "--at <virtual-time|quiescence|property|marker>"),
         ("resume", "<SAVEPOINT>"),
-        ("fork", "--override <decision=value>"),
         ("replay", "--check <original-log>"),
         ("search", "--strategy <bfs|dfs|guided>"),
         ("fuzz", "<FAMILY|--family <path|hash>>"),
@@ -225,31 +225,44 @@ fn cli_help_process_outputs_every_normative_subcommand_surface() -> Result<(), B
 }
 
 #[test]
+fn cli_replay_help_exposes_bounded_scheduler_preemption() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["replay", "--help"])
+        .output()?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("--bounded-scheduler-preemption"));
+    assert!(stdout.contains(
+        "Inject and require authenticated bounded host scheduler preemption during live QEMU replay"
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn cli_help_process_hides_gate_only_flags() -> Result<(), Box<dyn Error>> {
-    for (subcommand, hidden_flag) in [
-        ("run", "--emit-mock-failure-artifact"),
-        ("search", "--retained-evidence"),
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-            .args([subcommand, "--help"])
-            .output()?;
-        assert!(
-            output.status.success(),
-            "crucible {subcommand} --help should exit 0; stdout=`{}` stderr=`{}`",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        let stdout = String::from_utf8(output.stdout)?;
-        assert!(
-            !stdout.contains(hidden_flag),
-            "hidden gate-only flag `{hidden_flag}` must stay out of {subcommand} help:\n{stdout}",
-        );
-        assert!(
-            output.stderr.is_empty(),
-            "crucible {subcommand} --help should not write stderr, got `{}`",
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["run", "--help"])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "crucible run --help should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        !stdout.contains("--emit-mock-failure-artifact"),
+        "hidden gate-only flag must stay out of run help:\n{stdout}",
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "crucible run --help should not write stderr, got `{}`",
+        String::from_utf8_lossy(&output.stderr),
+    );
     Ok(())
 }
 
@@ -323,12 +336,6 @@ fn cli_process_rejects_every_missing_normative_input() -> Result<(), Box<dyn Err
             &["resume", "blake3:savepoint", "--until", "virtual-time"][..],
             "--max-virtual-time <dur>",
         ),
-        ("fork savepoint", &["fork"][..], "<SAVEPOINT>"),
-        (
-            "fork virtual-time budget",
-            &["fork", "blake3:savepoint", "--until", "virtual-time"][..],
-            "--max-virtual-time <dur>",
-        ),
         ("replay artifact", &["replay"][..], "<ARTIFACT>"),
         ("search scenario", &["search"][..], "<SCENARIO>"),
         (
@@ -382,17 +389,6 @@ fn cli_process_rejects_normative_conflicts_and_incomplete_alternatives()
         (
             "fuzz positional plus flag family",
             &["fuzz", "family.toml", "--family", "blake3:family"][..],
-        ),
-        (
-            "fork seed plus decision override",
-            &[
-                "fork",
-                "blake3:savepoint",
-                "--seed",
-                "1",
-                "--override",
-                "decision=value",
-            ][..],
         ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_crucible"))

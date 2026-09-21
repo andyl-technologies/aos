@@ -42,19 +42,20 @@ use crucible_qemu::{
 use tempfile::tempdir;
 
 use crate::{
-    AllowAllAttemptAdmission, AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition,
+    AttachCampaignRuntimeRequest, CampaignRuntimeAttachmentDisposition,
     CanonicalPlannerProcessConfig, DirectoryHotCheckpointFallbackRetentionStore, ExecutorCapacity,
     ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig,
-    HotCheckpointFallbackRetentionStore, LocalExecutorCapabilityService, LocalExecutorSupervisor,
-    LoopbackCampaignService, LoopbackCampaignServiceError, LoopbackCampaignTimeouts,
-    LoopbackExecutorTimeouts, MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
-    PackagedQemuExecutorConfig, QemuAttemptCancellationSignal, QemuAttemptHostResourceFactory,
-    QemuAttemptHostResourceOwner, QemuHotForkTemplateKey,
+    HotCheckpointFallbackRetentionStore, HotCheckpointPoolKey, LocalExecutorCapabilityService,
+    LocalExecutorSupervisor, LoopbackCampaignService, LoopbackCampaignServiceError,
+    LoopbackCampaignTimeouts, LoopbackExecutorTimeouts, MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
+    MemoryAssignmentLedger, PackagedQemuExecutorConfig, QemuAttemptCancellationSignal,
+    QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
     serve_loopback_executor_component_connection_with_limits,
     serve_loopback_executor_component_once,
 };
 
 use super::*;
+use crate::executor_supervisor::AllowAllAttemptAdmission;
 
 #[derive(Debug)]
 struct UnusedPackagedHostFactory;
@@ -265,6 +266,34 @@ impl QemuAttemptHostResourceFactory for UnusedPackagedHostFactory {
     }
 }
 
+impl crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory
+    for UnusedPackagedHostFactory
+{
+    fn begin_selected(
+        &mut self,
+        resources: AttemptResourceLimits,
+        selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+    ) -> Result<
+        (
+            Self::Owner,
+            Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+        ),
+        crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure,
+    > {
+        if selected_checkpoint.is_some() {
+            return Err(
+                crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                    unused_packaged_host_error(),
+                    selected_checkpoint,
+                ),
+            );
+        }
+        self.begin(resources)
+            .map(|owner| (owner, None))
+            .map_err(Into::into)
+    }
+}
+
 impl QemuAttemptHostResourceOwner for UnusedPackagedHostOwner {
     type CancellationSignal = UnusedPackagedCancellation;
 
@@ -428,20 +457,24 @@ fn create_runtime_campaign_for_scenario(
     )
     .expect("widening policy");
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy");
     repository
@@ -599,55 +632,6 @@ fn runtime_attachment_requires_writable_component_authority_before_executor_io()
 }
 
 #[test]
-fn post_bind_attachment_rejects_missing_authority_and_read_only_before_executor_io() {
-    let (directory, config) = fixture();
-    let service = config.open().expect("bind service without authorities");
-    let attachments = service.runtime_attachment_handle();
-    let metadata = fs::metadata(directory.path()).expect("endpoint directory metadata");
-    let endpoint = ExecutorLoopbackEndpointConfig::new(
-        directory.path().join("missing-executor.sock"),
-        metadata.uid(),
-        metadata.gid(),
-        0o600,
-    )
-    .expect("missing executor endpoint contract");
-    assert!(matches!(
-        attachments.attach_endpoint(&endpoint, &runtime_config()),
-        Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable)
-    ));
-    drop(service);
-    assert!(matches!(
-        attachments.attached_campaigns(),
-        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
-    ));
-
-    let (directory, config) = fixture();
-    let read_only = CampaignLocalServiceConfig::new(
-        config.endpoint().clone(),
-        config.state_directory(),
-        config.policy_path(),
-        CampaignLocalServiceMode::ReadOnly,
-        config.server(),
-    )
-    .expect("read-only service configuration");
-    let service = read_only.open().expect("bind read-only service");
-    let attachments = service.runtime_attachment_handle();
-    let metadata = fs::metadata(directory.path()).expect("endpoint directory metadata");
-    let endpoint = ExecutorLoopbackEndpointConfig::new(
-        directory.path().join("missing-executor.sock"),
-        metadata.uid(),
-        metadata.gid(),
-        0o600,
-    )
-    .expect("missing executor endpoint contract");
-    assert!(matches!(
-        attachments.attach_endpoint(&endpoint, &runtime_config()),
-        Err(CampaignLocalServiceError::RuntimeReadOnly)
-    ));
-    drop(service);
-}
-
-#[test]
 fn multi_runtime_bind_rejects_an_empty_set_before_endpoint_mutation() {
     let (_directory, config) = fixture();
     let socket = config.endpoint().path().to_owned();
@@ -794,13 +778,15 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
     )
     .expect("packaged executor configuration");
     let packaged = crate::packaged_qemu_executor::compose_packaged_qemu_executor_for_scenarios(
-        Arc::clone(&prepared.repository),
-        prepared
-            .maintenance
-            .as_ref()
-            .expect("composed store maintenance")
-            .store
-            .clone(),
+        crate::packaged_qemu_executor::PackagedQemuExecutorStorage::new(
+            Arc::clone(&prepared.repository),
+            prepared
+                .maintenance
+                .as_ref()
+                .expect("composed store maintenance")
+                .store
+                .clone(),
+        ),
         ExecutorCompatibilityProfile::from_lineage(&alpha_lineage),
         BTreeSet::from([
             alpha_lineage.scenario_content(),
@@ -874,84 +860,6 @@ fn multi_runtime_bind_rejects_duplicate_campaigns_before_endpoint_mutation() {
         Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
     ));
     assert!(!socket.exists());
-}
-
-#[test]
-fn post_bind_attachment_is_bounded_live_and_does_not_retain_service_ownership() {
-    let (directory, config) = fixture();
-    let authority = directory.path().join("component-authority.bin");
-    write_component_authorities(&authority, [0x31; 32], [0x73; 32]);
-    let config = config
-        .with_component_authority_path(&authority)
-        .expect("component authority path");
-    let prepared = config.prepare().expect("prepare service");
-    let lineage = create_runtime_campaign(&prepared.repository, "dynamic");
-    let service = prepared.bind().expect("bind service without runtimes");
-    let attachments = service.runtime_attachment_handle();
-    let shutdown = service.shutdown_handle();
-    let server = thread::spawn(move || service.serve().expect("serve dynamic runtime"));
-
-    let metadata = fs::metadata(directory.path()).expect("runtime endpoint directory metadata");
-    let endpoint = ExecutorLoopbackEndpointConfig::new(
-        directory.path().join("dynamic-executor.sock"),
-        metadata.uid(),
-        metadata.gid(),
-        0o600,
-    )
-    .expect("runtime executor endpoint");
-    let managed = endpoint.bind().expect("bind runtime executor endpoint");
-    let (listener, endpoint_guard) = managed.into_parts();
-    let mut executor_service = executor_capability_service(&lineage, 0x42, b"dynamic-store");
-    let executor_server = thread::spawn(move || {
-        let _endpoint_guard = endpoint_guard;
-        let (mut stream, _) = listener.accept().expect("accept runtime executor");
-        serve_loopback_executor_component_connection_with_limits(
-            &mut stream,
-            &mut executor_service,
-            LoopbackExecutorTimeouts::default(),
-            MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
-        )
-        .expect("serve runtime executor connection");
-    });
-    attachments
-        .attach_endpoint(&endpoint, &named_runtime_config("dynamic"))
-        .expect("attach runtime after bind");
-    assert_eq!(
-        attachments
-            .attached_campaigns()
-            .expect("attached campaign inventory"),
-        [CampaignName::new("dynamic").expect("campaign name")]
-    );
-
-    let (duplicate, mut duplicate_peer) = UnixStream::pair().expect("duplicate executor pair");
-    assert!(matches!(
-        attachments.attach(duplicate, &named_runtime_config("dynamic")),
-        Err(CampaignLocalServiceError::DuplicateRuntimeCampaign)
-    ));
-    duplicate_peer
-        .set_nonblocking(true)
-        .expect("nonblocking duplicate peer");
-    let mut byte = [0_u8; 1];
-    assert_eq!(
-        duplicate_peer
-            .read(&mut byte)
-            .expect("duplicate executor closed before I/O"),
-        0
-    );
-
-    shutdown.shutdown();
-    server.join().expect("join campaign service");
-    executor_server.join().expect("join executor server");
-    assert!(matches!(
-        attachments.attached_campaigns(),
-        Err(CampaignLocalServiceError::RuntimeAttachmentClosed)
-    ));
-
-    let restarted = config
-        .open()
-        .expect("weak handle does not retain state lock");
-    restarted.shutdown_handle().shutdown();
-    restarted.serve().expect("serve restarted owner");
 }
 
 #[test]
@@ -1358,6 +1266,10 @@ fn external_store_uses_the_managed_lock_without_creating_default_leafs() {
     let prepared = config
         .prepare_with_store(store)
         .expect("prepare external repository store");
+    let maintenance = prepared
+        .store_maintenance_authority()
+        .expect("borrow stopped-owner maintenance authority");
+    assert_eq!(maintenance.configuration_id(), graph.configuration_id());
     assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
     assert!(!config.state_directory().join(REF_DIRECTORY).exists());
 
@@ -1398,6 +1310,50 @@ fn external_store_uses_the_managed_lock_without_creating_default_leafs() {
             .contains(configuration.content_id())
             .expect("restarted graph contains configuration")
     );
+}
+
+#[test]
+fn stopped_owner_denies_store_maintenance_without_graph_authority() {
+    let (directory, config) = fixture();
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "maintenance-denied-blobs",
+        directory.path().join("maintenance-denied-blobs"),
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(
+        directory.path().join("maintenance-denied-refs"),
+    ));
+    let store = CampaignLocalRepositoryStore::new(blobs, refs)
+        .expect("durable store without graph administration");
+    let prepared = config
+        .prepare_with_store(store)
+        .expect("prepare owner without maintenance authority");
+
+    assert!(matches!(
+        prepared.store_maintenance_authority(),
+        Err(CampaignLocalServiceError::StoreMaintenanceUnavailable)
+    ));
+}
+
+#[test]
+fn read_only_owner_denies_store_maintenance_with_graph_authority() {
+    let (directory, config) = fixture();
+    let read_only = CampaignLocalServiceConfig::new(
+        config.endpoint().clone(),
+        config.state_directory(),
+        config.policy_path(),
+        CampaignLocalServiceMode::ReadOnly,
+        config.server(),
+    )
+    .expect("read-only service configuration");
+    let (store, _graph) = external_graph_store(&directory);
+    let prepared = read_only
+        .prepare_with_store(store)
+        .expect("prepare read-only owner with graph authority");
+
+    assert!(matches!(
+        prepared.store_maintenance_authority(),
+        Err(CampaignLocalServiceError::StoreMaintenanceReadOnly)
+    ));
 }
 
 #[test]
@@ -1548,7 +1504,7 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
     ))
     .expect("hot-fallback lineage");
     let record = crate::HotCheckpointFallbackRecord::new(
-        QemuHotForkTemplateKey::new(lineage, scenario.scenario_def().id()),
+        HotCheckpointPoolKey::new(lineage, scenario.scenario_def().id()),
         crate::HotCheckpointFallback::Thin(configuration),
     );
     let slot = crate::HotCheckpointFallbackSlot::new(3).expect("hot-fallback slot");
@@ -1956,247 +1912,4 @@ fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
     assert_eq!(client.aborted(), 2);
 }
 
-#[test]
-fn external_store_rejects_a_nondurable_immutable_backend() {
-    let blobs = Arc::new(MemoryBlobBackend::new("volatile-campaign", 1024 * 1024));
-    let refs = Arc::new(MemoryRefBackend::new());
-    assert!(matches!(
-        CampaignLocalRepositoryStore::new(blobs, refs),
-        Err(CampaignLocalServiceError::InvalidRepositoryStore)
-    ));
-}
-
-#[test]
-fn external_store_rejects_a_nondurable_ref_backend() {
-    let directory = tempdir().expect("external store directory");
-    let blobs = Arc::new(DirectoryBlobBackend::new(
-        "durable-campaign",
-        directory.path().join("objects"),
-    ));
-    let refs = Arc::new(MemoryRefBackend::new());
-    assert!(matches!(
-        CampaignLocalRepositoryStore::new(blobs, refs),
-        Err(CampaignLocalServiceError::InvalidRepositoryStore)
-    ));
-}
-
-#[test]
-fn prepared_owner_imports_verified_artifacts_before_socket_bind() {
-    let (_directory, config) = fixture();
-    let prepared = config.prepare().expect("prepare local service");
-    assert!(!config.endpoint().path().exists());
-    assert!(matches!(
-        config.open(),
-        Err(CampaignLocalServiceError::StateInUse)
-    ));
-
-    let scenario = crucible::happy_path_scenario()
-        .expect("happy-path scenario")
-        .scenario;
-    let configuration = prepared
-        .import_configuration(&scenario, &crucible::Schedule::empty())
-        .expect("import verified configuration");
-    let generator =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
-    let generator_id = prepared
-        .import_generator(&generator)
-        .expect("import verified generator");
-    assert_ne!(configuration.content_id(), generator_id.content_id());
-    assert!(!config.endpoint().path().exists());
-
-    let service = prepared.bind().expect("bind prepared service");
-    assert!(config.endpoint().path().exists());
-    service.shutdown_handle().shutdown();
-    service.serve().expect("serve pre-stopped service");
-}
-
-#[test]
-fn component_authorities_are_authenticated_before_repository_open() {
-    let (directory, config) = fixture();
-    let authority_path = directory.path().join("component-authorities.bin");
-    write_component_authorities(&authority_path, [0x31; 32], [0x73; 32]);
-    let configured = config
-        .clone()
-        .with_component_authority_path(&authority_path)
-        .expect("component-authority path");
-    assert_eq!(
-        configured.component_authority_path(),
-        Some(authority_path.as_path())
-    );
-
-    let prepared = configured.prepare().expect("prepare with authorities");
-    assert!(!configured.endpoint().path().exists());
-    let service = prepared.bind().expect("bind authority-backed service");
-    service.shutdown_handle().shutdown();
-    service.serve().expect("serve pre-stopped service");
-}
-
-#[test]
-fn malformed_component_authorities_fail_before_repository_or_socket_mutation() {
-    let (directory, config) = fixture();
-    let authority_path = directory.path().join("component-authorities.bin");
-    write_component_authorities(&authority_path, [0x31; 32], [0x31; 32]);
-    let configured = config
-        .clone()
-        .with_component_authority_path(&authority_path)
-        .expect("component-authority path");
-    assert!(matches!(
-        configured.prepare(),
-        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
-    ));
-    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
-    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
-    assert!(!config.endpoint().path().exists());
-
-    write_component_authorities(&authority_path, [0; 32], [0x73; 32]);
-    assert!(matches!(
-        configured.prepare(),
-        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
-    ));
-    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
-    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
-    assert!(!config.endpoint().path().exists());
-
-    write_component_authorities(&authority_path, [0x31; 32], [0x73; 32]);
-    fs::set_permissions(&authority_path, Permissions::from_mode(0o640))
-        .expect("expose authority file");
-    assert!(matches!(
-        configured.prepare(),
-        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
-    ));
-    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
-    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
-    assert!(!config.endpoint().path().exists());
-
-    fs::set_permissions(&authority_path, Permissions::from_mode(0o600))
-        .expect("restore authority mode");
-    let target = directory.path().join("component-authority-target.bin");
-    fs::rename(&authority_path, &target).expect("move authority target");
-    symlink(&target, &authority_path).expect("component-authority symlink");
-    assert!(matches!(
-        configured.prepare(),
-        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
-    ));
-    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
-    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
-    assert!(!config.endpoint().path().exists());
-}
-
-#[test]
-fn component_authority_path_uses_the_deployment_path_profile() {
-    let (_directory, config) = fixture();
-    assert!(matches!(
-        config.with_component_authority_path("relative-authorities.bin"),
-        Err(CampaignLocalServiceError::InvalidComponentAuthorityPath)
-    ));
-}
-
-#[test]
-fn prepared_read_only_owner_rejects_artifact_import() {
-    let (_directory, config) = fixture();
-    let read_only = CampaignLocalServiceConfig::new(
-        config.endpoint().clone(),
-        config.state_directory(),
-        config.policy_path(),
-        CampaignLocalServiceMode::ReadOnly,
-        config.server(),
-    )
-    .expect("read-only config");
-    let prepared = read_only.prepare().expect("prepare read-only service");
-    let generator =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
-    assert!(matches!(
-        prepared.import_generator(&generator),
-        Err(CampaignLocalServiceError::ArtifactImportReadOnly)
-    ));
-    let maintenance = CampaignStoreMaintenanceConfig::new(Duration::from_millis(100), 1, 1, 1)
-        .expect("maintenance policy");
-    assert!(matches!(
-        prepared.with_store_maintenance(maintenance),
-        Err(CampaignLocalServiceError::StoreMaintenanceReadOnly)
-    ));
-    assert!(!read_only.endpoint().path().exists());
-}
-
-#[test]
-fn policy_and_state_ownership_fail_before_socket_bind() {
-    let (directory, config) = fixture();
-    fs::set_permissions(config.policy_path(), Permissions::from_mode(0o620))
-        .expect("writable policy");
-    assert!(matches!(
-        config.open(),
-        Err(CampaignLocalServiceError::InvalidPolicyFile)
-    ));
-    assert!(!config.endpoint().path().exists());
-
-    fs::set_permissions(config.policy_path(), Permissions::from_mode(0o600))
-        .expect("restore policy");
-    fs::set_permissions(config.state_directory(), Permissions::from_mode(0o770))
-        .expect("writable state");
-    assert!(matches!(
-        config.open(),
-        Err(CampaignLocalServiceError::InvalidStateDirectory)
-    ));
-    assert!(!config.endpoint().path().exists());
-
-    fs::set_permissions(config.state_directory(), Permissions::from_mode(0o700))
-        .expect("restore state");
-    let objects = config.state_directory().join(OBJECT_DIRECTORY);
-    fs::create_dir(&objects).expect("objects directory");
-    fs::set_permissions(&objects, Permissions::from_mode(0o750))
-        .expect("exposed objects directory");
-    assert!(matches!(
-        config.open(),
-        Err(CampaignLocalServiceError::InvalidStateSubdirectory)
-    ));
-    assert!(!config.endpoint().path().exists());
-    fs::remove_dir(&objects).expect("remove exposed objects directory");
-
-    let target = directory.path().join("policy-target");
-    fs::write(&target, b"not policy").expect("policy target");
-    let redirected = directory.path().join("redirected-policy.toml");
-    symlink(&target, &redirected).expect("policy symlink");
-    let symlink_config = CampaignLocalServiceConfig::new(
-        config.endpoint().clone(),
-        config.state_directory(),
-        redirected,
-        config.mode(),
-        config.server(),
-    )
-    .expect("symlink config");
-    assert!(matches!(
-        symlink_config.open(),
-        Err(CampaignLocalServiceError::InvalidPolicyFile)
-    ));
-    assert!(!config.endpoint().path().exists());
-}
-
-#[test]
-fn malformed_or_oversized_policy_is_read_only_failure() {
-    let (_directory, config) = fixture();
-    fs::write(config.policy_path(), b"schema = [").expect("malformed policy");
-    assert!(matches!(
-        config.open(),
-        Err(CampaignLocalServiceError::Policy(
-            UnixPeerCampaignPolicyLoadError::Toml { .. }
-        ))
-    ));
-    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
-    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
-    assert!(!config.endpoint().path().exists());
-
-    fs::write(
-        config.policy_path(),
-        vec![b' '; MAX_CAMPAIGN_POLICY_BYTES + 1],
-    )
-    .expect("oversized policy");
-    assert!(matches!(
-        config.open(),
-        Err(CampaignLocalServiceError::Policy(
-            UnixPeerCampaignPolicyLoadError::TooLarge
-        ))
-    ));
-    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
-    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
-    assert!(!config.endpoint().path().exists());
-}
+mod deployment_contracts;

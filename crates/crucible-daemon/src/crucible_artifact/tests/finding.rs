@@ -45,11 +45,14 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
         finding.replay
     );
 
+    let minimization_config = MinimizationConfig::automatic_interesting_suffix(
+        crucible::Seed::from_u64(0x5151),
+        finding.artifact.schedule(),
+    );
     let run = finding
-        .minimize(
-            MinimizationConfig::new(crucible::Seed::from_u64(0x5151)),
-            |_| Ok(Some(finding.finding_fingerprint)),
-        )
+        .minimize(minimization_config, |_| {
+            Ok(Some(finding.finding_fingerprint))
+        })
         .expect("verify deterministic minimization");
     let mislabeled = repository
         .publish_reproduction_artifact(
@@ -83,12 +86,16 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
     assert_eq!(minimization.original(), id);
     assert_eq!(
         minimization.policy_schema(),
-        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V2
+        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V3
     );
     assert!(
         minimization
             .policy()
-            .starts_with(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V2)
+            .starts_with(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3)
+    );
+    assert_eq!(
+        minimization.policy(),
+        encode_crucible_minimization_policy(minimization_config)
     );
 }
 
@@ -147,8 +154,11 @@ fn finding_candidate_preparation_deduplicates_bounded_replay_records_without_wri
     assert_eq!(transcript.minimization_pass.len(), first.attempts.len() + 1);
     assert_eq!(transcript.verification_pass.len(), first.attempts.len() + 1);
 
-    let observation_content =
-        ContentId::for_bytes(ObjectKind::Observation, 1, b"prepared-finding-observation");
+    let observation_content = ContentId::for_bytes(
+        ObjectKind::Observation,
+        crucible_campaign::CampaignRecordKind::Observation.schema_version(),
+        b"prepared-finding-observation",
+    );
     let observation = ObservationId::parse(&format!(
         "crucible.campaign.observation@{observation_content}"
     ))
@@ -285,8 +295,11 @@ fn finding_replay_retains_nonempty_configuration_target_and_causal_evidence() {
         )
         .expect("targeted replay pass");
     }
-    let observation_content =
-        ContentId::for_bytes(ObjectKind::Observation, 1, b"targeted-finding-observation");
+    let observation_content = ContentId::for_bytes(
+        ObjectKind::Observation,
+        crucible_campaign::CampaignRecordKind::Observation.schema_version(),
+        b"targeted-finding-observation",
+    );
     let observation = ObservationId::parse(&format!(
         "crucible.campaign.observation@{observation_content}"
     ))

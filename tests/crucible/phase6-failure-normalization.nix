@@ -11,6 +11,7 @@
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
+  failureSignatureMaterial = builtins.readFile ../../crates/crucible/src/model/failure/material.rs;
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/src/lib.rs;
@@ -198,7 +199,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ forbiddenFailuresFor "crates/crucible/src/model/failure/material.rs" failureSignatureMaterial [
       {
         label = "deferred causal slice";
         needle = "until the T-TRI-2 cone normalization";

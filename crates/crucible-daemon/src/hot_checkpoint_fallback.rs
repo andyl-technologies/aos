@@ -9,21 +9,17 @@
 use std::sync::Arc;
 
 // crucible-lint: allow host-nondeterminism-state -- immutable decoded configurations are authenticated by content identity, never changed using host observations.
-use crucible::{BackendError, Configuration, ContentHash};
+use crucible::{Configuration, ContentHash};
 use crucible_campaign::{
     CampaignExecutorStore, CampaignHash, CampaignRepositoryError, ConfigurationId, ScenarioDefId,
 };
-use crucible_qemu::{QemuNode, QemuPreparedHotForkTemplate, QemuVmRealizationError};
+use crucible_qemu::QemuVmRealizationError;
 use thiserror::Error;
 
 use crate::{
-    CrucibleArtifactError, ExactCheckpointStore, ExactCheckpointStoreError,
-    FixedQemuHotForkTemplateFactory, HotCheckpointFallback, HotCheckpointPlannedDemotion,
-    HotCheckpointTemplateDemotionFailure, HotCheckpointTemplateDemotionSink,
-    ProductionBakedGenesisReplayCatalogFactory, QemuAttemptResourceGuardFactory,
-    QemuHotForkFactoryQuarantine, QemuHotForkPooledLifecycle, QemuHotForkTemplateKey,
-    QemuHotForkTemplateLauncher, decode_crucible_configuration_artifact_with_selections,
-    decode_crucible_scenario_artifact,
+    CrucibleArtifactError, ExactCheckpointStore, ExactCheckpointStoreError, HotCheckpointFallback,
+    HotCheckpointPlannedDemotion, HotCheckpointPoolKey, ProductionBakedGenesisReplayCatalogFactory,
+    decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
 };
 
 mod sealed {
@@ -79,7 +75,7 @@ pub trait HotCheckpointFallbackAuthenticator {
     /// ownership or fallback retention.
     fn authenticate_fallback(
         &self,
-        key: QemuHotForkTemplateKey,
+        key: HotCheckpointPoolKey,
         fallback: HotCheckpointFallback,
     ) -> Result<(), Self::Error>;
 }
@@ -136,7 +132,7 @@ where
 
     fn authenticate_exact(
         &self,
-        key: QemuHotForkTemplateKey,
+        key: HotCheckpointPoolKey,
         checkpoint: crucible_campaign::ExactCheckpointId,
     ) -> Result<(), QemuHotCheckpointFallbackAuthenticationError> {
         let lineage = self.campaign.load_lineage(key.lineage())?;
@@ -159,18 +155,12 @@ where
                 },
             );
         }
-        if loaded
-            .as_single_node()
-            .is_some_and(|single| single.scheduler().is_none())
-        {
-            return Err(QemuHotCheckpointFallbackAuthenticationError::MissingCampaignContinuation);
-        }
         Ok(())
     }
 
     fn authenticate_thin(
         &self,
-        key: QemuHotForkTemplateKey,
+        key: HotCheckpointPoolKey,
         configuration: crucible_campaign::ConfigurationArtifactId,
     ) -> Result<(), QemuHotCheckpointFallbackAuthenticationError> {
         let lineage = self.campaign.load_lineage(key.lineage())?;
@@ -218,7 +208,7 @@ where
 
     fn authenticate_fallback(
         &self,
-        key: QemuHotForkTemplateKey,
+        key: HotCheckpointPoolKey,
         fallback: HotCheckpointFallback,
     ) -> Result<(), Self::Error> {
         match fallback {
@@ -231,7 +221,7 @@ where
 }
 
 fn require_decoded_configuration(
-    key: QemuHotForkTemplateKey,
+    key: HotCheckpointPoolKey,
     // crucible-lint: allow host-nondeterminism-state -- only compares the authenticated immutable identity with the retained source; no modeled mutation is permitted.
     configuration: &Configuration,
 ) -> Result<(), QemuHotCheckpointFallbackAuthenticationError> {
@@ -277,12 +267,71 @@ pub enum QemuHotCheckpointFallbackAuthenticationError {
     /// The thin configuration names another lineage artifact.
     #[error("hot-checkpoint thin fallback differs from its retained lineage")]
     ThinLineageMismatch,
-    /// A compatibility exact root has no complete campaign scheduler state.
-    #[error("hot-checkpoint exact fallback has no complete campaign continuation")]
-    MissingCampaignContinuation,
     /// The native baked-genesis catalog cannot realize the thin fallback.
     #[error("hot-checkpoint thin fallback has no authenticated native replay base")]
     ThinBase(#[from] QemuVmRealizationError),
+}
+
+/// Sink that completes an orderly hot-to-exact/thin source transition.
+pub trait HotCheckpointTemplateDemotionSink<F> {
+    /// Stable demotion or source-shutdown failure.
+    type Error;
+
+    /// Preflights one exact fallback without changing source ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable authentication or availability diagnostic.
+    fn validate_fallback(
+        &mut self,
+        key: HotCheckpointPoolKey,
+        fallback: HotCheckpointFallback,
+    ) -> Result<(), Self::Error>;
+
+    /// Demotes one retired idle source exactly as planned.
+    ///
+    /// # Errors
+    ///
+    /// Returns the source authority whenever teardown cannot be attested.
+    fn demote(
+        &mut self,
+        factory: F,
+        plan: HotCheckpointPlannedDemotion,
+    ) -> Result<(), HotCheckpointTemplateDemotionFailure<F, Self::Error>>;
+}
+
+/// Failed orderly demotion retaining the exact source authority.
+#[must_use = "restore the source coordinate or transfer the authority to quarantine"]
+pub struct HotCheckpointTemplateDemotionFailure<F, E> {
+    factory: Box<F>,
+    error: E,
+}
+
+impl<F, E> HotCheckpointTemplateDemotionFailure<F, E> {
+    /// Constructs a failure from its retained source and diagnostic.
+    pub fn new(factory: F, error: E) -> Self {
+        Self {
+            factory: Box::new(factory),
+            error,
+        }
+    }
+
+    /// Consumes the failure into its retained source and diagnostic.
+    pub fn into_parts(self) -> (F, E) {
+        (*self.factory, self.error)
+    }
+}
+
+impl<F, E> std::fmt::Debug for HotCheckpointTemplateDemotionFailure<F, E>
+where
+    E: std::fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HotCheckpointTemplateDemotionFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Irreversible source-release operation used after fallback authentication.
@@ -301,95 +350,6 @@ pub trait HotCheckpointSourceDemoter<F> {
         factory: F,
         plan: HotCheckpointPlannedDemotion,
     ) -> Result<(), HotCheckpointTemplateDemotionFailure<F, Self::Error>>;
-}
-
-/// Concrete retirement adapter for one idle fixed real-QEMU source.
-///
-/// The adapter consumes the source from its fixed factory, drains final
-/// observations, and requires an attested backend reap. Failed shutdown never
-/// repopulates the reusable slot: the factory receives the exact mutated source
-/// in its terminal quarantine before ownership returns to the manager.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct QemuFixedHotCheckpointSourceDemoter;
-
-impl<R, X, Q> HotCheckpointSourceDemoter<FixedQemuHotForkTemplateFactory<R, X, Q>>
-    for QemuFixedHotCheckpointSourceDemoter
-where
-    R: QemuAttemptResourceGuardFactory,
-    X: QemuHotForkTemplateLauncher<R::Guard, Template = QemuPreparedHotForkTemplate<QemuNode>>,
-    Q: QemuHotForkFactoryQuarantine<
-            QemuPreparedHotForkTemplate<QemuNode>,
-            QemuHotForkPooledLifecycle<X::Lifecycle>,
-        >,
-{
-    type Error = QemuFixedHotCheckpointSourceDemotionError;
-
-    fn demote_source(
-        &mut self,
-        mut factory: FixedQemuHotForkTemplateFactory<R, X, Q>,
-        plan: HotCheckpointPlannedDemotion,
-    ) -> Result<
-        (),
-        HotCheckpointTemplateDemotionFailure<FixedQemuHotForkTemplateFactory<R, X, Q>, Self::Error>,
-    > {
-        let expected = plan.slot().template_key();
-        let actual = factory.template_key();
-        if actual != expected {
-            return Err(HotCheckpointTemplateDemotionFailure::new(
-                factory,
-                QemuFixedHotCheckpointSourceDemotionError::TemplateKeyMismatch { expected, actual },
-            ));
-        }
-
-        let Some(bound) = factory.take_idle_template() else {
-            return Err(HotCheckpointTemplateDemotionFailure::new(
-                factory,
-                QemuFixedHotCheckpointSourceDemotionError::TemplateUnavailable,
-            ));
-        };
-        let retained_key = bound.key();
-        if retained_key != expected {
-            factory.quarantine_failed_demotion(bound);
-            return Err(HotCheckpointTemplateDemotionFailure::new(
-                factory,
-                QemuFixedHotCheckpointSourceDemotionError::TemplateKeyMismatch {
-                    expected,
-                    actual: retained_key,
-                },
-            ));
-        }
-        let (key, source) = bound.into_parts();
-        match source.shutdown_for_demotion() {
-            Ok(()) => Ok(()),
-            Err(failure) => {
-                let (template, source) = failure.into_parts();
-                factory.quarantine_failed_demotion_source(key, template);
-                Err(HotCheckpointTemplateDemotionFailure::new(
-                    factory,
-                    QemuFixedHotCheckpointSourceDemotionError::Shutdown(source),
-                ))
-            }
-        }
-    }
-}
-
-/// Failure to retire one fixed real-QEMU hot source.
-#[derive(Debug, Error)]
-pub enum QemuFixedHotCheckpointSourceDemotionError {
-    /// The manager attempted to retire a factory from another exact slot.
-    #[error("retained hot-checkpoint source key differs from its demotion plan")]
-    TemplateKeyMismatch {
-        /// Key named by the authenticated demotion plan.
-        expected: QemuHotForkTemplateKey,
-        /// Key retained by the fixed source factory.
-        actual: QemuHotForkTemplateKey,
-    },
-    /// The fixed source is active or was already quarantined.
-    #[error("fixed hot-checkpoint source is not idle for demotion")]
-    TemplateUnavailable,
-    /// Final event draining or source shutdown/reap failed.
-    #[error("fixed hot-checkpoint source shutdown failed: {0}")]
-    Shutdown(BackendError),
 }
 
 /// Demotion sink that enforces fallback authentication before source teardown.
@@ -413,12 +373,6 @@ impl<A, S> AuthenticatedHotCheckpointDemotionSink<A, S> {
     pub const fn authenticator(&self) -> &A {
         &self.authenticator
     }
-
-    /// Returns the source demoter.
-    #[must_use]
-    pub const fn source_demoter(&self) -> &S {
-        &self.source
-    }
 }
 
 impl<F, A, S> HotCheckpointTemplateDemotionSink<F> for AuthenticatedHotCheckpointDemotionSink<A, S>
@@ -430,7 +384,7 @@ where
 
     fn validate_fallback(
         &mut self,
-        key: QemuHotForkTemplateKey,
+        key: HotCheckpointPoolKey,
         fallback: HotCheckpointFallback,
     ) -> Result<(), Self::Error> {
         self.authenticator

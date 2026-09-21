@@ -2,7 +2,9 @@
 
 use crucible_campaign::{CampaignHash, ExactCheckpointId, ExecutionId};
 
-use super::{AttemptAdvance, LocalExecutorError, LocalExecutorSupervisor};
+use super::{
+    AttemptAdvance, LocalExecutorError, LocalExecutorSupervisor, SelectedExactCheckpointRoot,
+};
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey, AttemptRuntimeState,
     CheckpointPromotionExecutionBasis,
@@ -77,8 +79,6 @@ impl CheckpointPromotionRecovery {
     }
 
     /// Returns the execution contract retained for regeneration after restart.
-    ///
-    /// Version-five operational records predate this basis and return `None`.
     #[must_use]
     pub const fn promotion_basis(self) -> Option<CheckpointPromotionExecutionBasis> {
         self.promotion_basis
@@ -86,49 +86,54 @@ impl CheckpointPromotionRecovery {
 }
 
 /// Restart-recoverable identity of one raw paused root awaiting validation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct PausedCheckpointPromotionRecovery {
     key: AttemptExecutionKey,
     execution_basis: CampaignHash,
     execution: ExecutionId,
     source: ExactCheckpointId,
     promotion_basis: CheckpointPromotionExecutionBasis,
+    selected_checkpoint: Option<SelectedExactCheckpointRoot>,
 }
 
 impl PausedCheckpointPromotionRecovery {
     /// Returns the exact lineage-qualified attempt key.
     #[must_use]
-    pub const fn key(self) -> AttemptExecutionKey {
+    pub const fn key(&self) -> AttemptExecutionKey {
         self.key
     }
 
     /// Returns the assignment-neutral execution-contract digest.
     #[must_use]
-    pub const fn execution_basis(self) -> CampaignHash {
+    pub const fn execution_basis(&self) -> CampaignHash {
         self.execution_basis
     }
 
     /// Returns the execution that produced the raw paused root.
     #[must_use]
-    pub const fn execution(self) -> ExecutionId {
+    pub const fn execution(&self) -> ExecutionId {
         self.execution
     }
 
     /// Returns the complete raw root awaiting replay-oracle validation.
     #[must_use]
-    pub const fn source(self) -> ExactCheckpointId {
+    pub const fn source(&self) -> ExactCheckpointId {
         self.source
     }
 
     /// Returns the exact resource and retention basis of the paused execution.
     #[must_use]
-    pub const fn promotion_basis(self) -> CheckpointPromotionExecutionBasis {
+    pub const fn promotion_basis(&self) -> CheckpointPromotionExecutionBasis {
         self.promotion_basis
+    }
+
+    pub(crate) fn selected_checkpoint(&mut self) -> &mut Option<SelectedExactCheckpointRoot> {
+        &mut self.selected_checkpoint
     }
 }
 
 /// One durable paused-root recovery phase discovered during executor startup.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum CheckpointPromotionRestartWork {
     /// A raw paused root still needs replay-oracle comparison and publication.
     Paused(PausedCheckpointPromotionRecovery),
@@ -173,55 +178,18 @@ where
                 execution,
                 source: checkpoint,
                 promotion_basis,
+                selected_checkpoint: Some(SelectedExactCheckpointRoot::after_durable_checkpoint(
+                    checkpoint,
+                )),
             }),
             Some(_) | None => None,
         })
     }
 
-    /// Loads one staged paused-root promotion for restart recovery.
+    /// Streams restartable staged paused-root promotion phases.
     ///
-    /// This is a short operational-ledger read. Immutable-root authentication
-    /// and any replay rerun occur after the caller releases actor ownership.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalExecutorError::Ledger`] when the durable record cannot be
-    /// read safely.
-    pub fn checkpoint_promotion_recovery(
-        &self,
-        key: AttemptExecutionKey,
-    ) -> Result<Option<CheckpointPromotionRecovery>, LocalExecutorError<L::Error>> {
-        let state = self
-            .ledger
-            .load_attempt(key)
-            .map_err(LocalExecutorError::Ledger)?;
-        Ok(match state {
-            Some(AttemptRuntimeState::CheckpointPromoting {
-                execution_basis,
-                execution,
-                source_checkpoint,
-                promoted_checkpoint,
-                promotion_basis,
-                ..
-            }) => Some(CheckpointPromotionRecovery {
-                key,
-                execution_basis,
-                execution,
-                source: source_checkpoint,
-                promoted: promoted_checkpoint,
-                promotion_basis,
-            }),
-            Some(_) | None => None,
-        })
-    }
-
-    /// Streams restartable raw and staged paused-root promotion phases.
-    ///
-    /// Legacy raw pauses without a retained resource/retention basis remain
-    /// durable checkpoint roots but are deliberately omitted because a new
-    /// guarded replay session cannot reconstruct their admitted contract.
-    /// Staged legacy pairs remain discoverable because a complete replacement
-    /// can still be authenticated and reconciled without launching QEMU.
+    /// Each reported source pair retains the resource and retention basis
+    /// required to authenticate the replacement without launching QEMU.
     /// Immutable checkpoint authentication and replay work must happen only
     /// after the caller releases supervisor ownership.
     ///
@@ -248,6 +216,9 @@ where
                         execution,
                         source: checkpoint,
                         promotion_basis,
+                        selected_checkpoint: Some(
+                            SelectedExactCheckpointRoot::after_durable_checkpoint(checkpoint),
+                        ),
                     },
                 )),
                 AttemptRuntimeState::CheckpointPromoting {
@@ -416,81 +387,6 @@ where
                 execution: current_execution,
                 ..
             } if current_execution == execution => Err(LocalExecutorError::ConflictingCheckpoint),
-            AttemptRuntimeState::Running { .. }
-            | AttemptRuntimeState::CheckpointRequested { .. }
-            | AttemptRuntimeState::CheckpointPublishing { .. }
-            | AttemptRuntimeState::Paused { .. }
-            | AttemptRuntimeState::CheckpointPromoting { .. }
-            | AttemptRuntimeState::Publishing { .. }
-            | AttemptRuntimeState::Completed { .. }
-            | AttemptRuntimeState::Canceled { .. }
-            | AttemptRuntimeState::TerminalFailure { .. } => {
-                Ok(CheckpointPromotionCompletionOutcome::NotCurrent)
-            }
-        }
-    }
-
-    /// Clears a legacy promotion basis after authenticating its complete paused root.
-    ///
-    /// The caller's token must name the exact execution contract, execution,
-    /// checkpoint, and promotion basis still present in the ledger. A concurrent
-    /// resume or any other state transition wins without being overwritten.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalExecutorError::Ledger`] when the current record cannot be
-    /// read or the exact migration cannot be committed durably.
-    pub(crate) fn complete_validated_checkpoint_promotion(
-        &mut self,
-        recovery: PausedCheckpointPromotionRecovery,
-    ) -> Result<CheckpointPromotionCompletionOutcome, LocalExecutorError<L::Error>> {
-        let key = recovery.key();
-        let current = self
-            .ledger
-            .load_attempt(key)
-            .map_err(LocalExecutorError::Ledger)?;
-        let Some(current) = current else {
-            return Ok(CheckpointPromotionCompletionOutcome::NotCurrent);
-        };
-        match current {
-            AttemptRuntimeState::Paused {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                checkpoint,
-                promotion_basis: Some(promotion_basis),
-            } if execution_basis == recovery.execution_basis()
-                && execution == recovery.execution()
-                && checkpoint == recovery.source()
-                && promotion_basis == recovery.promotion_basis() =>
-            {
-                let next = AttemptRuntimeState::Paused {
-                    execution_basis,
-                    origin,
-                    daemon_epoch,
-                    execution,
-                    checkpoint,
-                    promotion_basis: None,
-                };
-                let advance = self.advance_attempt(key, current, Some(next))?;
-                if let AttemptAdvance::CommittedAfterError(error) = advance {
-                    return Err(LocalExecutorError::Ledger(error));
-                }
-                Ok(CheckpointPromotionCompletionOutcome::Promoted)
-            }
-            AttemptRuntimeState::Paused {
-                execution_basis,
-                execution,
-                checkpoint,
-                promotion_basis: None,
-                ..
-            } if execution_basis == recovery.execution_basis()
-                && execution == recovery.execution()
-                && checkpoint == recovery.source() =>
-            {
-                Ok(CheckpointPromotionCompletionOutcome::AlreadyPromoted)
-            }
             AttemptRuntimeState::Running { .. }
             | AttemptRuntimeState::CheckpointRequested { .. }
             | AttemptRuntimeState::CheckpointPublishing { .. }

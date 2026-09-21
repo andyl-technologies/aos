@@ -200,9 +200,9 @@ impl QuantumLoop for SingleScheduler {
         self.append_observations_at_boundary(events, at, SchedulerEvaluationBoundaryKind::Quantum)
     }
 
-    fn append_backend_causal_decisions(
+    fn append_backend_rng_evidence(
         &mut self,
-        decisions: Vec<Decision>,
+        evidence: Vec<BackendRngEvidence>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -218,15 +218,8 @@ impl QuantumLoop for SingleScheduler {
             self.decision_seed,
             &self.decision_rng_cursor,
         );
-        let mut discovered_choices = Vec::with_capacity(decisions.len());
-        for decision in decisions {
-            let Decision::AppRandom(expected) = decision else {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "live backend emitted a causal decision other than app-random",
-                    ),
-                });
-            };
+        let mut discovered_choices = Vec::with_capacity(evidence.len());
+        for expected in evidence {
             let parent = recorder
                 .app_random_selection_parent(&expected)
                 .map_err(|error| SchedulerError::BoundaryViolation {
@@ -253,7 +246,7 @@ impl QuantumLoop for SingleScheduler {
                 discovery
             } else {
                 recorder
-                    .normalize_app_random_request(expected)
+                    .admit_backend_rng_evidence(expected)
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!("live backend app-random decision was rejected: {error}"),
                     })?

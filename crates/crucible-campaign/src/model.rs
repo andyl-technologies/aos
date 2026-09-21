@@ -180,7 +180,7 @@ impl CampaignLineage {
         &self.crucible_version
     }
 
-    /// Returns the QEMU build and patch-series identity.
+    /// Returns the QEMU build and atomic-patch identity.
     #[must_use]
     pub fn qemu_build(&self) -> &str {
         &self.qemu_build

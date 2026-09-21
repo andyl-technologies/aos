@@ -236,10 +236,12 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
     );
 
     let duplicate_request = BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
+        BranchRequest::identity(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+        ),
         request.source().clone(),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -345,10 +347,12 @@ fn attempt_admission_enforces_request_budget_without_materializing_accounting() 
         "admission-budget",
     );
     let request = BranchRequest::new(
-        base.branch_point(),
-        base.parent(),
-        base.opportunity(),
-        base.domain(),
+        BranchRequest::identity(
+            base.branch_point(),
+            base.parent(),
+            base.opportunity(),
+            base.domain(),
+        ),
         base.source().clone(),
         base.cause(),
         BranchBudget::new(2, 1).expect("limited budget"),
@@ -454,10 +458,12 @@ fn policy_bound_admission_validates_every_request_cause() {
 
     for (index, cause) in causes.into_iter().enumerate() {
         let request = BranchRequest::new(
-            base.branch_point(),
-            base.parent(),
-            base.opportunity(),
-            base.domain(),
+            BranchRequest::identity(
+                base.branch_point(),
+                base.parent(),
+                base.opportunity(),
+                base.domain(),
+            ),
             base.source().clone(),
             cause,
             base.budget(),
@@ -594,6 +600,7 @@ fn admission_policy_binding_rejects_forgery_and_survives_policy_activation() {
         admitted.attempt,
         AttemptResourceLimits::new(1, 512 * 1024 * 1024, 0, 10_000).expect("resource limits"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("submit request");
     let observation = ObservationId::from_content_id(
@@ -678,10 +685,12 @@ fn post_activation_additional_cause_keeps_each_admission_policy() {
         )
         .expect("activate revised policy");
     let duplicate_request = BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
+        BranchRequest::identity(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+        ),
         request.source().clone(),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -751,17 +760,21 @@ fn retention_policy_revision(
     policy: &CampaignPolicy,
 ) -> (CampaignPolicy, CampaignPolicyId) {
     let revision = CampaignPolicy::new(
-        policy.scenario(),
-        policy.campaign_seed(),
-        policy.mode(),
-        policy.explorer().clone(),
-        policy.choice_policies().clone(),
-        policy.objectives().clone(),
-        policy.guidance().clone(),
-        policy.stop_conditions().clone(),
-        policy.fairness(),
-        RetentionPolicy::new(true, 2, true, true),
-        policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            policy.scenario(),
+            policy.campaign_seed(),
+            policy.mode(),
+            policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            policy.choice_policies().clone(),
+            policy.objectives().clone(),
+            policy.guidance().clone(),
+            policy.stop_conditions().clone(),
+            policy.fairness(),
+            RetentionPolicy::new(true, 2, true, true),
+            policy.admits_scenario_defaults(),
+        ),
     )
     .expect("retention policy revision");
     let revision_id = CampaignPolicyId::from_content_id(

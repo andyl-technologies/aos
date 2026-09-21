@@ -329,17 +329,22 @@ static void completion(void *opaque)
     poll_events();
 }
 
-static void tcg_exec(unsigned int cpu_index, uint64_t icount, void *opaque)
+static void tcg_exec(unsigned int cpu_index, void *opaque)
 {
     (void)cpu_index;
-    (void)icount;
     (void)opaque;
     poll_events();
 }
 
-static void at_exit(qemu_plugin_id_t id, void *opaque)
+static void tb_translate(struct qemu_plugin_tb *tb, void *opaque)
 {
-    (void)id;
+    (void)opaque;
+    qemu_plugin_register_vcpu_tb_exec_cb(
+        tb, tcg_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
+}
+
+static void at_exit(void *opaque)
+{
     (void)opaque;
     poll_events();
     if (!finished) {
@@ -465,7 +470,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
     memset(command.target_node_hash, 0x11, 32);
     qemu_plugin_register_crucible_fault_completion_cb(completion, NULL);
-    qemu_plugin_register_tcg_exec_cb(tcg_exec, NULL);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_translate, NULL);
     qemu_plugin_register_atexit_cb(id, at_exit, NULL);
     submit(CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION, 1, 64,
            0x61, true, NULL, disposition_payload,

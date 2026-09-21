@@ -48,8 +48,8 @@ fn normal_lifecycle_connects_handshakes_runs_via_shmem_and_quits() {
 fn lifecycle_events_are_derived_from_decoded_control_messages() {
     assert_eq!(
         ControlLifecycleEvent::from_plugin_msg(&PluginMsg::Hello {
-            proto_version: 2,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
         }),
         ControlLifecycleEvent::PluginHello
     );
@@ -63,8 +63,8 @@ fn lifecycle_events_are_derived_from_decoded_control_messages() {
     );
     assert_eq!(
         ControlLifecycleEvent::from_host_msg(&HostMsg::HelloAck {
-            proto_version: 2,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
             slot_index: 0,
             node_count: 2,
         }),
@@ -88,19 +88,19 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
     let mut host = ControlLifecycleStream::connected_unix_stream(host_socket)?;
 
     plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 2,
-        abi_version: 1,
+        proto_version: 3,
+        abi_version: 25,
     }))?;
     assert_eq!(
         host.host_accept_handshake(HostHandshakeConfig {
-            proto_version: 2,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
             slot_index: 0,
             node_count: 1,
         })?,
         NegotiatedHandshake {
-            proto_version: 2,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
             slot_index: 0,
             node_count: 1,
         }
@@ -139,8 +139,8 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
     assert_eq!(host.state(), ControlLifecycleState::RunningViaSharedMemory);
 
     plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 2,
-        abi_version: 1,
+        proto_version: 3,
+        abi_version: 25,
     }))?;
     assert_eq!(
         host.host_read_run_control_frame(),
@@ -170,21 +170,21 @@ fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)?;
 
     host_socket.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 2,
-        abi_version: 2,
+        proto_version: 3,
+        abi_version: u32::MAX,
         slot_index: 0,
         node_count: 1,
     }))?;
 
     assert_eq!(
         plugin.plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 2,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
         }),
         Err(ControlLifecycleIoError::Handshake {
             source: HandshakeError::AbiMismatch {
-                plugin_abi: 1,
-                host_abi: 2,
+                plugin_abi: 25,
+                host_abi: u32::MAX,
             },
         })
     );
@@ -472,12 +472,12 @@ fn host_running_lifecycle_stream(
     let mut host = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 2,
-        abi_version: 1,
+        proto_version: 3,
+        abi_version: 25,
     }))?;
     host.host_accept_handshake(HostHandshakeConfig {
-        proto_version: 2,
-        abi_version: 1,
+        proto_version: 3,
+        abi_version: 25,
         slot_index: 0,
         node_count: 1,
     })?;
@@ -526,14 +526,14 @@ fn plugin_setup_lifecycle_stream(
     let mut plugin = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 2,
-        abi_version: 1,
+        proto_version: 3,
+        abi_version: 25,
         slot_index: 0,
         node_count: 1,
     }))?;
     plugin.plugin_start_handshake(PluginHandshakeConfig {
-        proto_version: 2,
-        abi_version: 1,
+        proto_version: 3,
+        abi_version: 25,
     })?;
     let _ = read_control_frame(peer)?;
 

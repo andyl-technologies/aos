@@ -30,7 +30,7 @@ use rustix::fs::{
 use thiserror::Error;
 
 use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
-use crate::{QemuNode, QemuNodeChild, QemuProcessIdentity, linux_process_identity};
+use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 mod attempt_owner;
 mod quarantine;
@@ -89,29 +89,19 @@ impl LinuxQemuCgroupLimits {
         })
     }
 
-    /// Returns the vCPU ceiling used to derive the aggregate CPU-time rate.
-    #[must_use]
-    pub const fn maximum_vcpus(self) -> u32 {
-        self.maximum_vcpus
-    }
-
-    /// Returns the admitted resident-memory ceiling.
-    #[must_use]
-    pub const fn maximum_resident_bytes(self) -> u64 {
-        self.maximum_resident_bytes
-    }
-
-    /// Returns the defensive cgroup task-count ceiling.
-    #[must_use]
-    pub const fn maximum_tasks(self) -> u32 {
-        self.maximum_tasks
-    }
-
     fn cpu_max(self) -> Result<String, LinuxQemuCgroupError> {
         let quota = u64::from(self.maximum_vcpus)
             .checked_mul(CPU_PERIOD_MICROS)
             .ok_or(LinuxQemuCgroupError::InvalidLimit)?;
         Ok(format!("{quota} {CPU_PERIOD_MICROS}\n"))
+    }
+
+    pub(crate) const fn maximum_vcpus(self) -> u32 {
+        self.maximum_vcpus
+    }
+
+    pub(crate) const fn maximum_resident_bytes(self) -> u64 {
+        self.maximum_resident_bytes
     }
 }
 
@@ -165,12 +155,6 @@ pub enum LinuxQemuCgroupError {
     #[error("QEMU cgroup path no longer names the pinned directory: {path}")]
     DirectoryIdentity {
         /// Attempt cgroup path.
-        path: PathBuf,
-    },
-    /// Sticky cancellation already closed this attempt to new children.
-    #[error("QEMU cgroup is already canceled: {path}")]
-    Canceled {
-        /// Closed attempt cgroup path.
         path: PathBuf,
     },
     /// This attempt already created its one persistent watcher.
@@ -256,111 +240,6 @@ pub struct LinuxQemuCgroupCleanupAuthority {
 }
 
 impl LinuxQemuCgroupCleanupAuthority {
-    /// Returns the incomplete cgroup path for diagnostics.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Kills every process unexpectedly moved into the incomplete child.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuCgroupError`] when the pinned child or `cgroup.kill`
-    /// cannot be opened or the kill request fails.
-    pub fn kill_members(&mut self) -> Result<(), LinuxQemuCgroupError> {
-        let path = self.path.clone();
-        self.pin_directory()?;
-        let directory = self
-            .directory
-            .as_ref()
-            .ok_or_else(|| LinuxQemuCgroupError::DirectoryIdentity { path: path.clone() })?;
-        let mut kill = open_control(directory, &path, "cgroup.kill", ControlAccess::Write)?;
-        write_kill(&mut kill, &path)
-    }
-
-    /// Returns whether the incomplete child contains a process.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuCgroupError`] when the child or `cgroup.events`
-    /// cannot be authenticated and read within the control-size bound.
-    pub fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
-        let path = self.path.clone();
-        self.pin_directory()?;
-        let directory = self
-            .directory
-            .as_ref()
-            .ok_or_else(|| LinuxQemuCgroupError::DirectoryIdentity { path: path.clone() })?;
-        let mut events = open_control(directory, &path, "cgroup.events", ControlAccess::Read)?;
-        read_populated(&mut events, &path)
-    }
-
-    /// Removes the incomplete child after proving it is empty and still named.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuCgroupCleanupReleaseError`] with this complete
-    /// authority when validation or removal fails.
-    pub fn remove_if_empty(mut self) -> Result<(), LinuxQemuCgroupCleanupReleaseError> {
-        let populated = match self.is_populated() {
-            Ok(populated) => populated,
-            Err(source) => {
-                return Err(LinuxQemuCgroupCleanupReleaseError {
-                    authority: Box::new(self),
-                    source,
-                });
-            }
-        };
-        if populated {
-            let source = LinuxQemuCgroupError::InvalidEvents {
-                path: self.path.clone(),
-                message: String::from("incomplete cgroup remained populated at release"),
-            };
-            return Err(LinuxQemuCgroupCleanupReleaseError {
-                authority: Box::new(self),
-                source,
-            });
-        }
-        if let Err(source) = self.pin_directory() {
-            return Err(LinuxQemuCgroupCleanupReleaseError {
-                authority: Box::new(self),
-                source,
-            });
-        }
-        let identity = self
-            .directory
-            .as_ref()
-            .ok_or_else(|| LinuxQemuCgroupError::DirectoryIdentity {
-                path: self.path.clone(),
-            })
-            .and_then(|directory| {
-                verify_directory_identity(&self.parent_directory, &self.name, directory, &self.path)
-            });
-        if let Err(source) = identity {
-            return Err(LinuxQemuCgroupCleanupReleaseError {
-                authority: Box::new(self),
-                source,
-            });
-        }
-        if let Err(source) = unlinkat(
-            &self.parent_directory,
-            self.name.as_str(),
-            AtFlags::REMOVEDIR,
-        ) {
-            let source = LinuxQemuCgroupError::Io {
-                operation: "remove incomplete QEMU attempt cgroup",
-                path: self.path.clone(),
-                source: source.into(),
-            };
-            return Err(LinuxQemuCgroupCleanupReleaseError {
-                authority: Box::new(self),
-                source,
-            });
-        }
-        Ok(())
-    }
-
     fn pin_directory(&mut self) -> Result<(), LinuxQemuCgroupError> {
         if self.directory.is_none() {
             self.directory = Some(open_directory_at(
@@ -373,27 +252,6 @@ impl LinuxQemuCgroupCleanupAuthority {
     }
 }
 
-/// Failed incomplete-child removal that retains the cleanup authority.
-#[derive(Debug, Error)]
-#[error("failed to release incomplete QEMU cgroup: {source}")]
-pub struct LinuxQemuCgroupCleanupReleaseError {
-    authority: Box<LinuxQemuCgroupCleanupAuthority>,
-    source: LinuxQemuCgroupError,
-}
-
-impl LinuxQemuCgroupCleanupReleaseError {
-    /// Returns the removal failure without consuming retained authority.
-    #[must_use]
-    pub const fn source_error(&self) -> &LinuxQemuCgroupError {
-        &self.source
-    }
-
-    /// Recovers cleanup authority for kill, quarantine, or retry.
-    pub fn into_authority(self) -> LinuxQemuCgroupCleanupAuthority {
-        *self.authority
-    }
-}
-
 /// Failed cgroup removal that retains the complete supervision authority.
 #[derive(Debug, Error)]
 #[error("failed to release QEMU cgroup: {source}")]
@@ -402,110 +260,7 @@ pub struct LinuxQemuCgroupReleaseError {
     source: LinuxQemuCgroupError,
 }
 
-/// Authenticated direct-child wait authority retained for reap or quarantine.
-#[derive(Debug)]
-#[must_use = "the direct child must be reaped or transferred to quarantine"]
-pub struct LinuxQemuDirectChild {
-    identity: QemuProcessIdentity,
-    child: QemuNodeChild,
-    cgroup_path: PathBuf,
-    attempt_lifecycle: Arc<AtomicU8>,
-}
-
-impl LinuxQemuDirectChild {
-    /// Returns the exact process-generation identity authenticated at handoff.
-    #[must_use]
-    pub const fn identity(&self) -> &QemuProcessIdentity {
-        &self.identity
-    }
-
-    /// Returns whether this direct-child authority observed `waitpid` success.
-    #[must_use]
-    pub const fn is_reaped(&self) -> bool {
-        self.child.reaped()
-    }
-
-    /// Force-kills and reaps the exact retained direct child.
-    ///
-    /// The caller must run this blocking wait on its dedicated supervision or
-    /// quarantine worker. The authority remains owned by `self` on every
-    /// error, so a failed wait cannot discard the only direct-child handle.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuCgroupError::ProcessMembership`] if a still-running
-    /// child no longer has the authenticated process identity. Returns
-    /// [`LinuxQemuCgroupError::Io`] when polling, killing, or reaping the direct
-    /// child fails.
-    pub fn kill_and_reap_blocking(&mut self) -> Result<(), LinuxQemuCgroupError> {
-        if self.child.reaped() {
-            return Ok(());
-        }
-        if self
-            .child
-            .try_wait_natural_exit()
-            .map_err(|source| LinuxQemuCgroupError::Io {
-                operation: "poll retained QEMU direct child",
-                path: self.cgroup_path.clone(),
-                source: io::Error::other(source),
-            })?
-            .is_some()
-        {
-            return Ok(());
-        }
-        if linux_process_identity(self.identity.process_id)
-            .map_err(|source| LinuxQemuCgroupError::Io {
-                operation: "authenticate retained QEMU direct child",
-                path: self.cgroup_path.clone(),
-                source: io::Error::other(source),
-            })?
-            .as_ref()
-            != Some(&self.identity)
-        {
-            return Err(LinuxQemuCgroupError::ProcessMembership {
-                path: self.cgroup_path.clone(),
-            });
-        }
-        self.child
-            .force_kill_and_reap_failed_realization()
-            .map_err(|source| LinuxQemuCgroupError::Io {
-                operation: "kill and reap retained QEMU direct child",
-                path: self.cgroup_path.clone(),
-                source: io::Error::other(source),
-            })
-    }
-}
-
-/// Failed direct-child authentication with the wait authority retained.
-#[derive(Debug, Error)]
-#[error("failed to authenticate QEMU direct child: {source}")]
-#[must_use = "recover the direct child for reap or quarantine"]
-pub struct LinuxQemuDirectChildAuthenticationError {
-    source: LinuxQemuCgroupError,
-    child: Box<QemuNodeChild>,
-}
-
-impl LinuxQemuDirectChildAuthenticationError {
-    /// Returns the authentication failure without consuming the child handle.
-    #[must_use]
-    pub const fn source_error(&self) -> &LinuxQemuCgroupError {
-        &self.source
-    }
-
-    /// Recovers the exact direct-child wait authority after failed handoff.
-    #[must_use]
-    pub fn into_child(self) -> QemuNodeChild {
-        *self.child
-    }
-}
-
 impl LinuxQemuCgroupReleaseError {
-    /// Returns the removal failure without consuming the retained authority.
-    #[must_use]
-    pub const fn source_error(&self) -> &LinuxQemuCgroupError {
-        &self.source
-    }
-
     /// Recovers the complete cgroup authority for kill, reap, or retry.
     pub fn into_group(self) -> LinuxQemuCgroup {
         *self.group
@@ -636,16 +391,6 @@ impl LinuxQemuCgroupControl {
         write_kill(&mut self.cgroup_kill, &self.path)
     }
 
-    /// Signals sticky cancellation and kills every current member.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first cancellation or kill failure.
-    pub fn cancel(&mut self) -> Result<(), LinuxQemuCgroupError> {
-        self.signal_cancellation()?;
-        self.kill_members()
-    }
-
     /// Returns whether this cgroup currently contains a live process.
     ///
     /// # Errors
@@ -657,32 +402,19 @@ impl LinuxQemuCgroupControl {
     }
 }
 
-/// Terminal outcome of one persistent cgroup cancellation watcher.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LinuxQemuCgroupWatcherOutcome {
-    /// Terminal closure was latched and the cgroup became empty.
-    ClosedAndEmpty,
-}
-
 /// Persistent cancellation and kill owner for one attempt cgroup.
 #[derive(Debug)]
 #[must_use = "the watcher must be joined or transferred to quarantine"]
 pub struct LinuxQemuCgroupWatcher {
     cancellation_event: OwnedFd,
     watcher_state: Arc<AtomicU8>,
-    join: Option<JoinHandle<LinuxQemuCgroupWatcherThreadResult>>,
+    join: Option<JoinHandle<LinuxQemuCgroupControl>>,
     path: PathBuf,
-}
-
-#[derive(Debug)]
-struct LinuxQemuCgroupWatcherThreadResult {
-    outcome: LinuxQemuCgroupWatcherOutcome,
-    authority: LinuxQemuCgroupControl,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LinuxQemuCgroupWatcherAttempt {
-    Closed(LinuxQemuCgroupWatcherOutcome),
+    Closed,
     Retry,
     Panicked,
 }
@@ -730,9 +462,9 @@ impl LinuxQemuCgroupWatcher {
         let join = match thread::Builder::new()
             .name(String::from("crucible-qemu-cgroup"))
             .spawn(move || {
-                let outcome = loop {
+                loop {
                     match run_cgroup_watcher_attempt(|| cgroup_watcher_loop(&mut control)) {
-                        LinuxQemuCgroupWatcherAttempt::Closed(outcome) => break outcome,
+                        LinuxQemuCgroupWatcherAttempt::Closed => break,
                         LinuxQemuCgroupWatcherAttempt::Retry => {
                             let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
                             thread::sleep(CGROUP_KILL_INTERVAL);
@@ -748,12 +480,9 @@ impl LinuxQemuCgroupWatcher {
                             }
                         }
                     }
-                };
-                let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
-                LinuxQemuCgroupWatcherThreadResult {
-                    outcome,
-                    authority: control,
                 }
+                let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
+                control
             }) {
             Ok(join) => join,
             Err(source) => {
@@ -778,19 +507,6 @@ impl LinuxQemuCgroupWatcher {
         })
     }
 
-    /// Signals sticky cancellation and waits for an empty cgroup attestation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuCgroupWatcherWaitError`] with the live watcher on a
-    /// timeout, or a terminal watcher error after its thread exits.
-    pub fn cancel_and_wait(
-        self,
-        timeout: Duration,
-    ) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupWatcherWaitError> {
-        self.close_and_wait(timeout)
-    }
-
     /// Closes the watcher after the caller has independently reaped QEMU.
     ///
     /// Ordinary finalization deliberately latches the same sticky event as
@@ -802,17 +518,11 @@ impl LinuxQemuCgroupWatcher {
     ///
     /// Returns [`LinuxQemuCgroupWatcherWaitError`] with the live watcher on a
     /// signal failure or timeout, or a terminal watcher error after exit.
-    pub fn finish_and_wait(
-        self,
-        timeout: Duration,
-    ) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupWatcherWaitError> {
+    pub fn finish_and_wait(self, timeout: Duration) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
         self.close_and_wait(timeout)
     }
 
-    fn close_and_wait(
-        self,
-        timeout: Duration,
-    ) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupWatcherWaitError> {
+    fn close_and_wait(self, timeout: Duration) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
         if let Err(source) =
             signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd())
         {
@@ -834,10 +544,7 @@ impl LinuxQemuCgroupWatcher {
     /// Crucible state.
     // crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
     #[allow(clippy::disallowed_methods)]
-    pub fn wait(
-        mut self,
-        timeout: Duration,
-    ) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupWatcherWaitError> {
+    pub fn wait(mut self, timeout: Duration) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
         let Some(deadline) = Instant::now().checked_add(timeout) else {
             return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
                 watcher: Box::new(self),
@@ -866,9 +573,9 @@ impl LinuxQemuCgroupWatcher {
             });
         };
         match join.join() {
-            Ok(result) => {
-                drop(result.authority);
-                Ok(result.outcome)
+            Ok(authority) => {
+                drop(authority);
+                Ok(())
             }
             Err(_) => Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
                 path: self.path.clone(),
@@ -946,24 +653,22 @@ impl LinuxQemuCgroupWatcherWaitError {
     }
 }
 
-fn cgroup_watcher_loop(
-    control: &mut LinuxQemuCgroupControl,
-) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupError> {
+fn cgroup_watcher_loop(control: &mut LinuxQemuCgroupControl) -> Result<(), LinuxQemuCgroupError> {
     wait_for_cgroup_watcher_signal(control.cancellation_event.as_raw_fd(), &control.path)?;
     loop {
         control.kill_members()?;
         if !control.is_populated()? {
-            return Ok(LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty);
+            return Ok(());
         }
         thread::sleep(CGROUP_KILL_INTERVAL);
     }
 }
 
 fn run_cgroup_watcher_attempt(
-    attempt: impl FnOnce() -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupError>,
+    attempt: impl FnOnce() -> Result<(), LinuxQemuCgroupError>,
 ) -> LinuxQemuCgroupWatcherAttempt {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(attempt)) {
-        Ok(Ok(outcome)) => LinuxQemuCgroupWatcherAttempt::Closed(outcome),
+        Ok(Ok(())) => LinuxQemuCgroupWatcherAttempt::Closed,
         Ok(Err(_)) => LinuxQemuCgroupWatcherAttempt::Retry,
         Err(_) => LinuxQemuCgroupWatcherAttempt::Panicked,
     }
@@ -1041,12 +746,6 @@ impl LinuxQemuCgroupRoot {
             path: path.to_owned(),
             directory,
         })
-    }
-
-    /// Returns the configured delegated-root path for diagnostics.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Creates and configures one attempt child below this exclusive root.
@@ -1196,15 +895,6 @@ impl LinuxQemuCgroup {
         })
     }
 
-    /// Returns the configured cgroup path for diagnostics.
-    ///
-    /// Pinned directory descriptors, not this potentially stale path, remain
-    /// authoritative for control-file access and removal.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Duplicates cancellation/kill authority for the supervisor watcher.
     ///
     /// # Errors
@@ -1245,11 +935,12 @@ impl LinuxQemuCgroup {
     /// Returns [`LinuxQemuCgroupError`] when the watcher is not running, the
     /// child credentials overlap the supervisor, descriptors cannot be
     /// duplicated, or the sealed contract rejects their provenance.
-    pub fn child_process_contract(
+    pub(crate) fn child_process_contract(
         &self,
         maximum_writable_bytes: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
+        exact_checkpoint_root: Option<crucible::ContentHash>,
     ) -> Result<QemuChildProcessContract, LinuxQemuCgroupError> {
         if self.control.watcher_state.load(Ordering::Acquire) != WATCHER_RUNNING {
             return Err(LinuxQemuCgroupError::WatcherNotRunning {
@@ -1289,10 +980,10 @@ impl LinuxQemuCgroup {
             )?,
             cgroup_procs,
             cancellation_event,
-            self.limits.maximum_vcpus,
-            self.limits.maximum_resident_bytes,
+            self.limits,
             maximum_writable_bytes,
             credentials,
+            exact_checkpoint_root,
         )
         .map_err(|source| LinuxQemuCgroupError::Io {
             operation: "seal QEMU child process contract",
@@ -1307,7 +998,7 @@ impl LinuxQemuCgroup {
     ///
     /// Returns [`LinuxQemuCgroupError`] when process identity changed or its PID
     /// is absent from the authoritative `cgroup.procs` membership set.
-    pub fn verify_process_member(
+    fn verify_process_member(
         &mut self,
         process: &QemuProcessIdentity,
     ) -> Result<(), LinuxQemuCgroupError> {
@@ -1338,105 +1029,6 @@ impl LinuxQemuCgroup {
             });
         }
         Ok(())
-    }
-
-    /// Authenticates the exact process generation owned by `child` as a member.
-    ///
-    /// The returned identity binds the direct-child PID, Linux start-time
-    /// ticks, and canonical executable. Membership validation brackets its
-    /// bounded `cgroup.procs` scan with that same complete identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuCgroupError::ProcessMembership`] when the direct child
-    /// no longer has a readable identity or is not an exact member of this
-    /// cgroup, and returns [`LinuxQemuCgroupError::Io`] on `/proc` or cgroup
-    /// validation failure.
-    pub fn authenticate_child(
-        &mut self,
-        child: &QemuNodeChild,
-    ) -> Result<QemuProcessIdentity, LinuxQemuCgroupError> {
-        self.authenticate_process_id(child.process_id())
-    }
-
-    /// Retains the authenticated direct-child wait handle for reap or quarantine.
-    ///
-    /// Authentication derives the PID/start-time/executable identity from the
-    /// owned child and brackets the bounded membership scan with that identity.
-    /// The returned authority must remain co-owned with this cgroup and its
-    /// watcher until direct-child reap and cgroup emptiness are both attested.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuDirectChildAuthenticationError`] with the original
-    /// child handle when process identity or cgroup membership cannot be
-    /// authenticated.
-    pub fn retain_child(
-        &mut self,
-        child: QemuNodeChild,
-    ) -> Result<LinuxQemuDirectChild, LinuxQemuDirectChildAuthenticationError> {
-        match self.authenticate_child(&child) {
-            Ok(identity) => Ok(LinuxQemuDirectChild {
-                identity,
-                child,
-                cgroup_path: self.path.clone(),
-                attempt_lifecycle: Arc::clone(&self.control.watcher_state),
-            }),
-            Err(source) => Err(LinuxQemuDirectChildAuthenticationError {
-                source,
-                child: Box::new(child),
-            }),
-        }
-    }
-
-    /// Extracts and authenticates the direct child from a failed live node.
-    ///
-    /// Consuming the node drops its modeled channels and backend capabilities;
-    /// a direct-child wait handle crosses into the cgroup reap authority. An
-    /// externally parented hot-fork node returns `Ok(None)` because its outer
-    /// lifecycle, rather than this cgroup helper, retains source-status and
-    /// process cleanup authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuDirectChildAuthenticationError`] with the extracted
-    /// child when its exact process generation is no longer a member of this
-    /// cgroup.
-    pub fn retain_failed_node(
-        &mut self,
-        node: QemuNode,
-    ) -> Result<Option<LinuxQemuDirectChild>, LinuxQemuDirectChildAuthenticationError> {
-        node.into_direct_child_for_quarantine()
-            .map(|child| self.retain_child(child).map(Some))
-            .unwrap_or(Ok(None))
-    }
-
-    /// Transfers this group, its watcher, and one retained child to quarantine.
-    ///
-    /// The detached owner retries direct-child reap, terminal watcher join, and
-    /// authenticated cgroup removal without depending on the returned
-    /// observation handle. All three inputs must carry the same unforgeable
-    /// watcher-lifecycle token.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`quarantine::LinuxQemuAttemptProcessQuarantineStartError`] with
-    /// every authority retained when the lifecycle basis differs or the worker
-    /// cannot start. Ignoring that error leaks the authorities fail-closed.
-    pub fn quarantine_process(
-        self,
-        watcher: LinuxQemuCgroupWatcher,
-        child: LinuxQemuDirectChild,
-    ) -> Result<
-        quarantine::LinuxQemuAttemptProcessQuarantine,
-        quarantine::LinuxQemuAttemptProcessQuarantineStartError,
-    > {
-        quarantine::LinuxQemuAttemptProcessQuarantine::start(self, watcher, child)
-    }
-
-    fn owns_child_authority(&self, child: &LinuxQemuDirectChild) -> bool {
-        self.path == child.cgroup_path
-            && Arc::ptr_eq(&self.control.watcher_state, &child.attempt_lifecycle)
     }
 
     fn authenticate_process_id(
@@ -1970,7 +1562,6 @@ fn read_control(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::process::Command;
 
     use super::*;
 
@@ -2068,9 +1659,9 @@ mod tests {
     fn cgroup_limits_render_exact_cpu_quota() -> Result<(), LinuxQemuCgroupError> {
         let limits = LinuxQemuCgroupLimits::new(4, 512 * 1024 * 1024, 16)?;
         assert_eq!(limits.cpu_max()?, "400000 100000\n");
-        assert_eq!(limits.maximum_vcpus(), 4);
-        assert_eq!(limits.maximum_resident_bytes(), 512 * 1024 * 1024);
-        assert_eq!(limits.maximum_tasks(), 16);
+        assert_eq!(limits.maximum_vcpus, 4);
+        assert_eq!(limits.maximum_resident_bytes, 512 * 1024 * 1024);
+        assert_eq!(limits.maximum_tasks, 16);
         assert!(LinuxQemuCgroupLimits::new(0, 1, 1).is_err());
         assert!(LinuxQemuCgroupLimits::new(1, 0, 1).is_err());
         assert!(LinuxQemuCgroupLimits::new(1, 1, 0).is_err());
@@ -2394,10 +1985,7 @@ mod tests {
         let watcher_state = Arc::clone(&control.watcher_state);
         let watcher = LinuxQemuCgroupWatcher::start(control)?;
 
-        assert_eq!(
-            watcher.cancel_and_wait(Duration::from_secs(1))?,
-            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
-        );
+        watcher.finish_and_wait(Duration::from_secs(1))?;
         assert_eq!(watcher_state.load(Ordering::Acquire), WATCHER_TERMINAL);
         assert_eq!(fs::read(directory.path().join("cgroup.kill"))?, b"1\n");
         Ok(())
@@ -2417,7 +2005,7 @@ mod tests {
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 65_533, 65_532),
+            group.child_process_contract(4096, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         let watcher = group.start_watcher()?;
@@ -2425,10 +2013,7 @@ mod tests {
             group.start_watcher(),
             Err(LinuxQemuCgroupError::WatcherAlreadyStarted { .. })
         ));
-        assert_eq!(
-            watcher.finish_and_wait(Duration::from_secs(1))?,
-            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
-        );
+        watcher.finish_and_wait(Duration::from_secs(1))?;
         Ok(())
     }
 
@@ -2453,10 +2038,7 @@ mod tests {
         };
 
         write_eventfd(cancellation_event.as_raw_fd(), 1)?;
-        assert_eq!(
-            watcher.wait(Duration::from_secs(1))?,
-            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
-        );
+        watcher.wait(Duration::from_secs(1))?;
         Ok(())
     }
 
@@ -2476,7 +2058,7 @@ mod tests {
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 65_533, 65_532),
+            group.child_process_contract(4096, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         Ok(())
@@ -2488,7 +2070,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), true)?;
         let watcher = LinuxQemuCgroupWatcher::start(control)?;
-        let error = match watcher.cancel_and_wait(Duration::from_millis(20)) {
+        let error = match watcher.finish_and_wait(Duration::from_millis(20)) {
             Ok(_) => panic!("populated watcher unexpectedly terminated"),
             Err(error) => error,
         };
@@ -2498,10 +2080,7 @@ mod tests {
         };
 
         fs::write(directory.path().join("cgroup.events"), b"populated 0\n")?;
-        assert_eq!(
-            watcher.wait(Duration::from_secs(1))?,
-            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
-        );
+        watcher.wait(Duration::from_secs(1))?;
         Ok(())
     }
 
@@ -2513,10 +2092,7 @@ mod tests {
             watcher_control_fixture(stopped_directory.path(), false)?;
         let finish_state = Arc::clone(&control.watcher_state);
         let watcher = LinuxQemuCgroupWatcher::start(control)?;
-        assert_eq!(
-            watcher.finish_and_wait(Duration::from_secs(1))?,
-            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
-        );
+        watcher.finish_and_wait(Duration::from_secs(1))?;
         assert_eq!(finish_state.load(Ordering::Acquire), WATCHER_TERMINAL);
         assert_eq!(
             fs::read(stopped_directory.path().join("cgroup.kill"))?,
@@ -2600,7 +2176,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(
-            error.source_error(),
+            &error.source,
             LinuxQemuCgroupError::InvalidEvents { .. }
         ));
         let mut group = error.into_group();
@@ -2642,7 +2218,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(
-            error.source_error(),
+            &error.source,
             LinuxQemuCgroupError::DirectoryIdentity { .. }
         ));
         assert!(cgroup_path.exists());
@@ -2712,179 +2288,6 @@ mod tests {
         })?;
         assert!(contains_member_pid(&mut file, &path, 1499, 1500)?);
         assert!(contains_member_pid(&mut file, &path, 1501, 1499).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn direct_child_identity_is_authenticated_across_membership_scan()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let process_id = std::process::id();
-        fs::write(
-            directory.path().join("cgroup.procs"),
-            format!("{process_id}\n"),
-        )?;
-        let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), true)?;
-        let mut group = LinuxQemuCgroup {
-            path: directory.path().to_owned(),
-            parent_directory: open_directory(
-                directory.path(),
-                "open direct-child identity parent fixture",
-            )?,
-            name: String::from("direct-child-identity"),
-            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
-            control,
-        };
-
-        let expected = linux_process_identity(process_id)?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "test process disappeared"))?;
-        assert_eq!(group.authenticate_process_id(process_id)?, expected);
-
-        let other_process_id = if process_id == 1 { 2 } else { 1 };
-        fs::write(
-            directory.path().join("cgroup.procs"),
-            format!("{other_process_id}\n"),
-        )?;
-        assert!(matches!(
-            group.authenticate_process_id(process_id),
-            Err(LinuxQemuCgroupError::ProcessMembership { .. })
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn direct_child_wait_authority_survives_handoff_until_reap()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let child = QemuNodeChild::new(Command::new("sleep").arg("60").spawn()?);
-        let process_id = child.process_id();
-        fs::write(
-            directory.path().join("cgroup.procs"),
-            format!("{process_id}\n"),
-        )?;
-        let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), true)?;
-        let mut group = LinuxQemuCgroup {
-            path: directory.path().to_owned(),
-            parent_directory: open_directory(
-                directory.path(),
-                "open direct-child handoff parent fixture",
-            )?,
-            name: String::from("direct-child-handoff"),
-            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
-            control,
-        };
-
-        let mut retained = group
-            .retain_child(child)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        assert_eq!(retained.identity().process_id, process_id);
-        assert!(!retained.is_reaped());
-
-        retained.kill_and_reap_blocking()?;
-        assert!(retained.is_reaped());
-        assert!(linux_process_identity(process_id)?.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn direct_child_authority_rejects_same_path_cgroup_reincarnation()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let child = QemuNodeChild::new(Command::new("sleep").arg("60").spawn()?);
-        let process_id = child.process_id();
-        fs::write(
-            directory.path().join("cgroup.procs"),
-            format!("{process_id}\n"),
-        )?;
-        let (first_control, _first_reader) = watcher_control_fixture(directory.path(), true)?;
-        let mut first = LinuxQemuCgroup {
-            path: directory.path().to_owned(),
-            parent_directory: open_directory(
-                directory.path(),
-                "open first lifecycle parent fixture",
-            )?,
-            name: String::from("same-path"),
-            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
-            control: first_control,
-        };
-        let child = first
-            .retain_child(child)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        assert!(first.owns_child_authority(&child));
-
-        let (second_control, _second_reader) = watcher_control_fixture(directory.path(), true)?;
-        let second = LinuxQemuCgroup {
-            path: directory.path().to_owned(),
-            parent_directory: open_directory(
-                directory.path(),
-                "open second lifecycle parent fixture",
-            )?,
-            name: String::from("same-path"),
-            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
-            control: second_control,
-        };
-        assert!(!second.owns_child_authority(&child));
-
-        let mut child = child;
-        child.kill_and_reap_blocking()?;
-        Ok(())
-    }
-
-    #[test]
-    fn quarantine_start_error_retains_every_cross_incarnation_authority()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let child = QemuNodeChild::new(Command::new("sleep").arg("60").spawn()?);
-        let process_id = child.process_id();
-        fs::write(
-            directory.path().join("cgroup.procs"),
-            format!("{process_id}\n"),
-        )?;
-        let (first_control, _first_reader) = watcher_control_fixture(directory.path(), false)?;
-        let mut first = LinuxQemuCgroup {
-            path: directory.path().to_owned(),
-            parent_directory: open_directory(
-                directory.path(),
-                "open first quarantine-incarnation fixture",
-            )?,
-            name: String::from("same-path"),
-            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
-            control: first_control,
-        };
-        let child = first
-            .retain_child(child)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-
-        let (second_control, _second_reader) = watcher_control_fixture(directory.path(), false)?;
-        let mut second = LinuxQemuCgroup {
-            path: directory.path().to_owned(),
-            parent_directory: open_directory(
-                directory.path(),
-                "open second quarantine-incarnation fixture",
-            )?,
-            name: String::from("same-path"),
-            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
-            control: second_control,
-        };
-        let watcher = second.start_watcher()?;
-        let error = match second.quarantine_process(watcher, child) {
-            Ok(_) => panic!("cross-incarnation quarantine unexpectedly started"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error.source_error(),
-            LinuxQemuCgroupError::ProcessMembership { .. }
-        ));
-        let (_second, watcher, mut child) = error
-            .into_parts()
-            .ok_or_else(|| io::Error::other("quarantine startup lost retained authority"))?;
-
-        child.kill_and_reap_blocking()?;
-        assert_eq!(
-            watcher.finish_and_wait(Duration::from_secs(1))?,
-            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
-        );
-        assert!(linux_process_identity(process_id)?.is_none());
         Ok(())
     }
 }

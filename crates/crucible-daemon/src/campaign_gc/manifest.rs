@@ -24,9 +24,9 @@
 //!   backend_length:u16be || backend_utf8
 //!   content_id_length:u16be || content_id_utf8
 //!   logical_length:u64be
-//! reason:u8 # 0 unreachable, 1 reachable reconstructible cache
-//! if reason == 1:
-//!   required_backend_length:u16be || required_backend_utf8
+//!   reason:u8 # 0 unreachable, 1 reachable cache
+//!   if reason == 1:
+//!     required_backend_length:u16be || required_backend_utf8
 //! ```
 
 use std::cmp::Ordering;
@@ -168,9 +168,9 @@ pub struct CampaignGcCandidate {
 pub enum CampaignGcCandidateReason {
     /// The logical object is absent from the authenticated reachable closure.
     Unreachable,
-    /// A reachable copy is a reconstructible cache backed by a required copy.
+    /// A reachable cache copy is backed by an independent required copy.
     ReachableCache {
-        /// Physical backend whose v2 plan basis authenticates the required copy.
+        /// Physical backend whose plan basis authenticates the required copy.
         required_backend: String,
     },
 }
@@ -418,7 +418,7 @@ impl CampaignGcCandidateManifest {
             .count() as u64
     }
 
-    /// Returns reachable cache candidates authorized by graph policy.
+    /// Returns reachable cache candidates authorized by current policy.
     #[must_use]
     pub fn reachable_cache_candidates(&self) -> u64 {
         self.candidates

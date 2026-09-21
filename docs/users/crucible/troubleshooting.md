@@ -29,7 +29,7 @@ Do not add an arbitrary host QEMU to `PATH`; Crucible does not consult it.
 
 QEMU and the plugin must come from the same Crucible package set. Rebuild
 `pkg-crucible` rather than mixing outputs from different commits or copying only
-the shared object. The CLI validates the QEMU build ID, patch-series hash,
+the shared object. The CLI validates the QEMU build ID, atomic-patch hash,
 shared-memory ABI, and plugin ABI before launch.
 
 ### Kernel or root image is missing
@@ -82,13 +82,13 @@ a predictable ledger path, then pass that path to `triage`.
 
 ### Reproduction build identity mismatch
 
-Replay requires the engine, artifact ABI, QEMU build, patch series, shared-memory
+Replay requires the engine, artifact ABI, QEMU build, atomic patch, shared-memory
 ABI, guest-host protocol, RPC ABI, and plugin ABI recorded by the producer.
 Rebuild or recover the exact package revision that created the artifact.
 
-Production replay accepts the v3 live-QEMU artifact contract only. A v2 or
-model-only artifact must be reproduced with the older matching Crucible build;
-the current CLI will not silently reinterpret it.
+Production replay accepts only the v4 live-QEMU artifact contract. Any other
+contract fails closed before execution; the current CLI has no compatibility
+decoder.
 
 Do not bypass this check: replay under a different deterministic substrate is a
 different experiment.
@@ -126,7 +126,7 @@ Retain the emitted `.crucible` artifact and replay it before changing the test:
 ./result/bin/crucible replay <artifact>
 ```
 
-Then save or fork immediately before the failure boundary if an alternate
+Then save immediately before the failure boundary if an alternate
 schedule needs investigation.
 
 If replay reports a terminal, event-stream, or fingerprint-stream divergence,
@@ -170,7 +170,6 @@ Use subcommand help for exact current syntax:
 Common mistakes include:
 
 - using `--until virtual-time` without `--max-virtual-time`;
-- combining a fork seed with `--override`;
 - passing both positional `FAMILY` and `--family` to `fuzz`;
 - selecting multiple debugger coordinates; and
 - using `--format markdown` for an event-log-producing command.

@@ -157,12 +157,12 @@ inline control bytes, so they are
 passed as ancillary data on the control socket rather than serialized into a
 payload.
 
-- **[PROTO-8]** Control-protocol v2 and v3 require the host to hand the plugin
+- **[PROTO-8]** Control-protocol v3 requires the host to hand the plugin
   exactly three file descriptors — the
   **shmem fd** (a `memfd` or equivalent mapping the region of
   [`13-shmem-abi.md`](13-shmem-abi.md)) and the node's **wake fd** (an `eventfd`
   used as the edge-triggered nudge), followed by a sealed regular memfd carrying
-  the version-negotiated node-local plugin plan — as `SCM_RIGHTS` ancillary data
+  the current-version node-local plugin plan — as `SCM_RIGHTS` ancillary data
   attached to the `Setup` frame (§3.7). The fds MUST be attached in a fixed
   order: shmem fd first, wake fd second, plugin-plan fd third. The plugin MUST
   read exactly three fds from the `Setup`
@@ -179,8 +179,8 @@ payload.
 
 ```text
  offset  size  field
-   0      4    proto_version : u32 BE. Highest control-protocol version the
-                               plugin speaks (§4).
+   0      4    proto_version : u32 BE. Exact control-protocol version the plugin
+                               requires (§4).
    4      4    abi_version   : u32 BE. Shmem ABI version the plugin was built
                                against (the version constant of
                                13-shmem-abi.md).
@@ -196,8 +196,7 @@ payload.
 
 ```text
  offset  size  field
-   0      4    proto_version : u32 BE. The single negotiated protocol version
-                               the host has chosen (<= the plugin's; §4).
+   0      4    proto_version : u32 BE. The exact current protocol version (§4).
    4      4    abi_version   : u32 BE. The shmem ABI version the host built the
                                region with. MUST equal the plugin's abi_version.
    8      4    slot_index    : u32 BE. This node's zero-based index into the
@@ -206,7 +205,7 @@ payload.
                                the plugin can bounds-check slot_index.
 ```
 
-- **[PROTO-11]** `HelloAck` MUST carry the negotiated `proto_version`, the host's
+- **[PROTO-11]** `HelloAck` MUST carry the exact current `proto_version`, the host's
   `abi_version`, the node's `slot_index`, and the `node_count`. The plugin MUST
   verify `slot_index < node_count` and MUST verify the `abi_version` cross-check
   of [PROTO-13] before proceeding to `Setup`. *Gate:* `gate:abi-conformance`.
@@ -232,23 +231,12 @@ reject a truncated region.
   fd for exactly `region_len` bytes, validate the region header/ABI marker per
   [`13-shmem-abi.md`](13-shmem-abi.md), arm the wake fd, and authenticate the
   third descriptor as a regular memfd sealed against write, growth, shrink, and
-  seal changes. Under negotiated v2, the branch-plan body is at most 4 MiB and
-  has the exact grammar
-  `8-byte "CRUCABP1" magic | u32 BE version=1 | u32 BE entry_count | entries`,
-  with no trailing bytes and at most 4,096 entries. Each entry is
-  `u64 BE draw_index | u64 BE expected_raw_value | u64 BE selected_value |
-  32-byte SelectionId digest | u16 BE stream_name_len |
-  UTF-8 canonical_stream_name`; draw indices are strictly increasing and a
-  stream name is 1..=1,024 bytes in the canonical length-framed app-random
-  syntax. Under negotiated v3, the third descriptor instead carries the
-  canonical `CRUCSUP1` version-1 composite defined by RFC-0020 §02.7: its exact
+  seal changes. The third descriptor carries the canonical `CRUCSUP2`
+  version-2 composite defined by RFC-0020 §02.7: its exact
   length fields partition one canonical app-random plan and one canonical
   selectable catalog plan, its total length is at most 36 MiB plus 28 bytes,
-  and no alternate or trailing encoding is accepted. A v2 peer MUST reject the
-  composite body and a v3 peer MUST reject the raw v2 body. Only then may the
-  plugin reply `SetupAck`. A host with any non-default selectable catalog or
-  continuation MUST reject negotiation below v3 rather than silently sending
-  only the app-random subplan. *Gate:*
+  and no alternate or trailing encoding is accepted. Only then may the plugin
+  reply `SetupAck`. *Gate:*
   `gate:abi-conformance`. *Spec:* §3.7, §5.
 
 ### 3.8 `SetupAck` (plugin → host, tag `0x02`)
@@ -289,7 +277,7 @@ handshake:
  Plugin                                    Host
    │                                         │
    │── Hello(proto=P_p, abi=A_p) ───────────►│
-   │                                         │  choose proto = min(P_p, P_h)
+   │                                         │  require proto = current
    │                                         │  require abi: A_p == A_h
    │◄─ HelloAck(proto, abi=A_h, slot, n) ────│
    │   (or close socket on mismatch, §5.4)   │
@@ -301,28 +289,27 @@ handshake:
    │        ... run entirely via shmem ...    │
 ```
 
-- **[PROTO-15]** Protocol-version negotiation MUST select a single version equal
-  to the minimum of the plugin's offered `proto_version` and the host's supported
-  maximum, and the host MUST echo the chosen version in `HelloAck`. Both sides
-  MUST then speak exactly that version. If the host cannot satisfy any version the
-  plugin can speak (no overlap), the host MUST refuse the connection per §5.4 and
-  MUST NOT send `Setup`. *Gate:* `gate:abi-conformance`. *Spec:* §4.
+- **[PROTO-15]** The host and plugin MUST each require the exact current
+  `proto_version`, and the host MUST echo that version in `HelloAck`. Any
+  mismatch aborts setup before `Setup` is sent. *Gate:* `gate:abi-conformance`.
+  *Spec:* §4.
 
 - **[PROTO-16]** The shmem `abi_version` cross-check MUST be exact: the host MUST
   reject the connection if the plugin's `abi_version` does not equal the host's
   shmem-region `abi_version` ([`13-shmem-abi.md`](13-shmem-abi.md)), because the
   two sides share a byte-for-byte memory layout and a mismatch is unrecoverable.
-  This check is independent of `proto_version` negotiation: a compatible control
+  This check is independent of the exact `proto_version` match: a current control
   protocol with an incompatible shmem ABI MUST still be rejected. *Gate:*
   `gate:abi-conformance`. *Spec:* §4.
 
-- **[PROTO-17]** Forward/backward-compatibility policy (per [G-8]): a change that
+- **[PROTO-17]** Versioning policy (per [G-8]): a change that
   adds a new tag, grows a payload, or alters field meaning MUST bump
   `proto_version` and regenerate the golden vectors (§6) in the same change. A
   decoder MUST reject unknown tags and over-long-or-short payloads rather than
   silently accept them; there is no "ignore unknown trailing bytes" leniency on
-  this channel, so that two peers either agree on the exact wire shape or fail
-  loudly at the handshake. A shmem layout change is governed separately by
+  this channel. A decoder accepts only the current protocol, so that two peers
+  either agree on the exact wire shape or fail loudly at the handshake. A
+  shmem layout change is governed separately by
   `abi_version` ([`13-shmem-abi.md`](13-shmem-abi.md)). *Gate:*
   `gate:abi-conformance`. *Spec:* §4.
 
@@ -333,7 +320,7 @@ handshake:
 ```text
  1. connect      host creates socketpair; plugin opens its end at load.
  2. Hello        plugin -> host  (proto + abi versions)
- 3. HelloAck     host -> plugin  (negotiated proto, abi, slot, node_count)
+ 3. HelloAck     host -> plugin  (exact proto, abi, slot, node_count)
  4. Setup        host -> plugin  (region_len + [shmem_fd, wake_fd, branch_plan_fd])
  5. SetupAck     plugin -> host  (status = ready)
  6. RUN          all sync via shmem cells + SPSC queues + wake fd;
@@ -391,7 +378,7 @@ the *order* and the *guarantee*.
 
 - **[PROTO-21]** Any of the following MUST abort the node's setup cleanly and
   trigger the shutdown escalation (§5.3) rather than hang or panic:
-  (a) `proto_version` has no overlap (§4); (b) `abi_version` mismatch ([PROTO-16]);
+  (a) `proto_version` is not current (§4); (b) `abi_version` mismatch ([PROTO-16]);
   (c) `slot_index >= node_count` ([PROTO-11]); (d) wrong ancillary fd count
   ([PROTO-8]); (e) `region_len` smaller than the layout requires, or a failed
   shmem-header/ABI-marker validation ([PROTO-12]); (f) a `SetupAck` status that is
@@ -475,14 +462,14 @@ The control channel is determinism-neutral by construction.
   and `HostMsg` with typed errors (empty, unknown tag, short/long payload,
   oversize length) and the frame read/write helpers (truncated prefix/payload
   rejected). — satisfies [PROTO-5], [PROTO-6], [PROTO-22]; spec §6.
-- [x] **T-PROTO-3** Implement the control-protocol v2/v3 `SCM_RIGHTS` descriptor
+- [x] **T-PROTO-3** Implement the control-protocol v3 `SCM_RIGHTS` descriptor
   handover on `Setup`: host attaches
-  `[shmem_fd, wake_fd, plugin_setup_plan_fd]` in fixed order; v2 carries raw
-  `CRUCABP1`, v3 carries composite `CRUCSUP1`, and the plugin reads exactly
+  `[shmem_fd, wake_fd, plugin_setup_plan_fd]` in fixed order; the plan fd carries
+  composite `CRUCSUP2`, and the plugin reads exactly
   three fds and fails setup on any other count. — satisfies [PROTO-8],
   [PROTO-9], [PROTO-12]; spec §3.4, §3.7.
 - [x] **T-PROTO-4** Implement the handshake: plugin sends `Hello(proto, abi)`,
-  host negotiates `proto = min(...)`, cross-checks `abi` exactly against the
+  host exact-checks `proto`, cross-checks `abi` exactly against the
   shmem ABI version, and replies `HelloAck(proto, abi, slot_index, node_count)`;
   plugin bounds-checks `slot_index < node_count`. — satisfies [PROTO-3],
   [PROTO-10], [PROTO-11], [PROTO-15], [PROTO-16], [PROTO-17]; spec §3.5, §3.6, §4.
@@ -507,7 +494,13 @@ The control channel is determinism-neutral by construction.
 - [x] **T-PROTO-8** Implement clean failure handling for all setup failure modes
   (no version overlap, ABI mismatch, bad slot, wrong fd count, short/invalid
   region, non-zero SetupAck, premature socket close): abort the node, escalate
-  teardown, reap the child. — satisfies [PROTO-21]; spec §5.4.
+  teardown, reap the child. The current
+  `checks.crucible.phase2.qemuProductionSetupFailure` contract exercises
+  descriptor handoff, a non-ready setup acknowledgement, plugin-side validation
+  of a real corrupted mapped region, and the production launch cleanup that
+  reaps real children after both invalid-region and post-descriptor failed-ACK
+  setup before scheduler admission. The shutdown-escalation gate
+  consumes that result. — satisfies [PROTO-21]; spec §5.4.
 - [x] **T-PROTO-9** Freeze the protocol golden-vector corpus (Hello, HelloAck,
   Setup payload, SetupAck, Quit at the current `proto_version`) and wire it into
   `gate:abi-conformance` with the version-bump-regenerates rule. — satisfies

@@ -32,7 +32,7 @@ pkgs.mkDerivation {
         PASS
         check=${attrPath}
         tasks=${builtins.concatStringsSep "," taskIds}
-        patch=0199-crucible-retain-native-vmstate-source-ownership.patch
+        patch=crucible-qemu-11.1.1.patch
         native_vmstate_freeze_restore=true
         exact_read_only_file_identity=true
         changed_inode_rejected_before_replacement=true

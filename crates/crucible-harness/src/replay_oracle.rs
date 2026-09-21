@@ -76,8 +76,8 @@ pub struct ReplayOracleBuildIdentity {
     pub backend: String,
     /// Deterministic backend build identifier.
     pub backend_build_id: String,
-    /// Hash of the ordered QEMU patch series applied to the producer backend.
-    pub qemu_patch_series_hash: String,
+    /// Hash of the ordered QEMU atomic patch applied to the producer backend.
+    pub qemu_atomic_patch_hash: String,
     /// Shared-memory ABI version used by the producer backend.
     pub shmem_abi_version: String,
     /// Guest-host channel protocol version used by the producer backend.
@@ -1265,7 +1265,7 @@ mod tests {
             harness_abi: String::from("replay-oracle-artifact-v1"),
             backend: String::from("unit-test"),
             backend_build_id: String::from("unit-test-build"),
-            qemu_patch_series_hash: String::from(
+            qemu_atomic_patch_hash: String::from(
                 "crucible-hash:1dd48f47cea3da029d47aeb44cb8b4ead05dc367833bcddb365e0810253c10ce",
             ),
             shmem_abi_version: crate::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),

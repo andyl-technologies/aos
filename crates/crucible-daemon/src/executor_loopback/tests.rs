@@ -147,26 +147,87 @@ impl ExecutorService for FailingExecutor {
     }
 }
 
-#[test]
-fn direct_and_loopback_services_return_identical_checked_responses() {
-    let request = request(0x11);
-    let direct = ExecutorClient::new(RejectingExecutor)
-        .submit_attempt(&request)
-        .expect("direct checked response");
+impl ExecutorCapabilityService for FailingExecutor {
+    fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
+        Err(InjectedServiceFailure)
+    }
 
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
-    let server = thread::spawn(move || {
-        serve_loopback_executor_once(&mut server_stream, &mut RejectingExecutor)
-            .expect("serve request");
-    });
-    let loopback = ExecutorClient::new(
-        LoopbackExecutorService::new(client_stream).expect("configure client deadlines"),
-    )
-    .submit_attempt(&request)
-    .expect("loopback checked response");
-    server.join().expect("server thread");
+    fn watch_capacity(
+        &mut self,
+        _request: &WatchExecutorCapacityRequest,
+    ) -> Result<ExecutorCapacityReport, Self::Error> {
+        Err(InjectedServiceFailure)
+    }
+}
 
-    assert_eq!(loopback, direct);
+impl ExecutorStatusService for FailingExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        _request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        Err(InjectedServiceFailure)
+    }
+}
+
+impl ExecutorControlService for FailingExecutor {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        _request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        Err(InjectedServiceFailure)
+    }
+
+    fn cancel_attempt_execution(
+        &mut self,
+        _request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        Err(InjectedServiceFailure)
+    }
+}
+
+impl ExecutorResumeService for FailingExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        _request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        Err(InjectedServiceFailure)
+    }
+}
+
+// These helpers exercise malformed framing without exposing a production
+// submit-only server surface.
+fn serve_test_submit_once<S: ExecutorService>(
+    stream: &mut UnixStream,
+    service: &mut S,
+) -> Result<(), LoopbackExecutorServerError<S::Error>> {
+    serve_test_submit_once_with_timeouts(stream, service, LoopbackExecutorTimeouts::default())
+}
+
+fn serve_test_submit_once_with_timeouts<S: ExecutorService>(
+    stream: &mut UnixStream,
+    service: &mut S,
+    timeouts: LoopbackExecutorTimeouts,
+) -> Result<(), LoopbackExecutorServerError<S::Error>> {
+    let result: Result<(), LoopbackExecutorServerError<S::Error>> = (|| {
+        configure_stream(stream, timeouts)?;
+        let request = read_frame(stream, SUBMIT_ATTEMPT_REQUEST_KIND, timeouts.read)?;
+        let request = SubmitAttemptRequest::from_canonical_bytes(&request)?;
+        let response = service
+            .submit_attempt(&request)
+            .map_err(LoopbackExecutorServerError::Service)?;
+        response.validate_for(&request)?;
+        write_frame(
+            stream,
+            SUBMIT_ATTEMPT_RESPONSE_KIND,
+            &response.canonical_bytes(),
+            timeouts.write,
+        )?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    result
 }
 
 #[test]
@@ -337,7 +398,7 @@ fn direct_and_loopback_resume_requests_are_identical() {
     let (description, report) = capability_fixture();
     let assignment = request(0x1c);
     let checkpoint = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.2.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
         encode_hex(&[0x64; 32]),
     ))
     .expect("checkpoint");
@@ -842,7 +903,7 @@ fn frame_bounds_and_reserved_bytes_fail_before_service_invocation() {
     header[9] = 1;
     client.write_all(&header).expect("write malformed header");
     assert!(matches!(
-        serve_loopback_executor_once(&mut server, &mut RejectingExecutor),
+        serve_test_submit_once(&mut server, &mut RejectingExecutor),
         Err(LoopbackExecutorServerError::Protocol(
             LoopbackExecutorProtocolError::InvalidFrame {
                 reason: "nonzero-reserved-bits"
@@ -859,7 +920,7 @@ fn frame_bounds_and_reserved_bytes_fail_before_service_invocation() {
     header[12..].copy_from_slice(&oversized.to_be_bytes());
     client.write_all(&header).expect("write oversized header");
     assert!(matches!(
-        serve_loopback_executor_once(&mut server, &mut RejectingExecutor),
+        serve_test_submit_once(&mut server, &mut RejectingExecutor),
         Err(LoopbackExecutorServerError::Protocol(
             LoopbackExecutorProtocolError::InvalidFrame {
                 reason: "component-message-too-large"
@@ -1083,24 +1144,6 @@ fn client_poisons_after_cross_execution_checkpoint_response() {
 }
 
 #[test]
-fn executor_loopback_v4_rejects_v3_frames() {
-    let (mut client, mut server) = UnixStream::pair().expect("loopback pair");
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
-    header[..8].copy_from_slice(b"CRUCEX03");
-    header[8] = SUBMIT_ATTEMPT_REQUEST_KIND;
-    client.write_all(&header).expect("write legacy header");
-
-    assert!(matches!(
-        serve_loopback_executor_once(&mut server, &mut RejectingExecutor),
-        Err(LoopbackExecutorServerError::Protocol(
-            LoopbackExecutorProtocolError::InvalidFrame {
-                reason: "unsupported-frame-version"
-            }
-        ))
-    ));
-}
-
-#[test]
 fn partial_frames_and_nonreading_peers_hit_finite_deadlines() {
     let deadlines =
         LoopbackExecutorTimeouts::new(Duration::from_millis(20), Duration::from_millis(20))
@@ -1109,7 +1152,7 @@ fn partial_frames_and_nonreading_peers_hit_finite_deadlines() {
     let (mut client, mut server) = UnixStream::pair().expect("partial-header pair");
     client.write_all(b"C").expect("write partial header");
     assert!(matches!(
-        serve_loopback_executor_once_with_timeouts(&mut server, &mut RejectingExecutor, deadlines,),
+        serve_test_submit_once_with_timeouts(&mut server, &mut RejectingExecutor, deadlines,),
         Err(LoopbackExecutorServerError::Protocol(
             LoopbackExecutorProtocolError::Io(_)
         ))
@@ -1123,7 +1166,7 @@ fn partial_frames_and_nonreading_peers_hit_finite_deadlines() {
     client.write_all(&header).expect("write body header");
     client.write_all(b"x").expect("write partial body");
     assert!(matches!(
-        serve_loopback_executor_once_with_timeouts(&mut server, &mut RejectingExecutor, deadlines,),
+        serve_test_submit_once_with_timeouts(&mut server, &mut RejectingExecutor, deadlines,),
         Err(LoopbackExecutorServerError::Protocol(
             LoopbackExecutorProtocolError::Io(_)
         ))
@@ -1142,11 +1185,7 @@ fn partial_frames_and_nonreading_peers_hit_finite_deadlines() {
         }
     });
     assert!(matches!(
-        serve_loopback_executor_once_with_timeouts(
-            &mut drip_server,
-            &mut RejectingExecutor,
-            deadlines,
-        ),
+        serve_test_submit_once_with_timeouts(&mut drip_server, &mut RejectingExecutor, deadlines,),
         Err(LoopbackExecutorServerError::Protocol(
             LoopbackExecutorProtocolError::Io(_)
         ))
@@ -1177,18 +1216,21 @@ fn partial_frames_and_nonreading_peers_hit_finite_deadlines() {
 }
 
 #[test]
-fn service_failure_closes_the_stream_and_unblocks_the_client() {
-    let request = request(0x23);
+fn component_service_failure_closes_the_stream_and_unblocks_the_client() {
     let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
     let server = thread::spawn(move || {
         assert!(matches!(
-            serve_loopback_executor_once(&mut server_stream, &mut FailingExecutor),
+            serve_loopback_executor_component_once(
+                &mut server_stream,
+                &mut FailingExecutor,
+                LoopbackExecutorTimeouts::default(),
+            ),
             Err(LoopbackExecutorServerError::Service(InjectedServiceFailure))
         ));
     });
     let error = LoopbackExecutorService::new(client_stream)
         .expect("configure client deadlines")
-        .submit_attempt(&request)
+        .describe_executor()
         .expect_err("service failure must unblock client");
     server.join().expect("server thread");
     assert!(matches!(error, LoopbackExecutorProtocolError::Io(_)));
@@ -1201,17 +1243,20 @@ fn request(assignment_byte: u8) -> SubmitAttemptRequest {
         CampaignLineageId::parse(&typed_id(
             "crucible.campaign.lineage",
             "campaign-fact",
+            1,
             0x41,
         ))
         .expect("lineage"),
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
+            8,
             0x51,
         ))
         .expect("attempt"),
         AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("request")
 }
@@ -1295,8 +1340,8 @@ fn assert_no_new_connection(listener: &UnixListener) {
     }
 }
 
-fn typed_id(tag: &str, kind: &str, byte: u8) -> String {
-    format!("{tag}@{kind}.1.{}", encode_hex(&[byte; 32]))
+fn typed_id(tag: &str, kind: &str, schema_version: u32, byte: u8) -> String {
+    format!("{tag}@{kind}.{schema_version}.{}", encode_hex(&[byte; 32]))
 }
 
 fn encode_hex(bytes: &[u8]) -> String {

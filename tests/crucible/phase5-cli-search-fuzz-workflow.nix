@@ -39,7 +39,7 @@
       }
       {
         label = "T-CLI-13 retained evidence CLI progress";
-        needle = "hidden retained-evidence fixture input";
+        needle = "public search\n  path accepts `--retained-evidence`";
       }
       {
         label = "T-CLI-13 terminal retained evidence CLI progress";
@@ -47,7 +47,7 @@
       }
       {
         label = "T-CLI-13 terminal retained sometimes CLI progress";
-        needle = "terminal `sometimes` failures through local-double\n  `search`";
+        needle = "terminal `sometimes` failures through search";
       }
       {
         label = "T-CLI-13 local-double sampled API progress";
@@ -125,7 +125,7 @@
       }
       {
         label = "phase5 CLI retained evidence fixture progress";
-        needle = "hidden local-double\n  `crucible.search-retained-evidence.v1` retained-evidence fixture loading";
+        needle = "public\n  `crucible.search-retained-evidence.v1` retained-evidence loading";
       }
       {
         label = "phase5 CLI terminal retained evidence fixture progress";
@@ -133,7 +133,7 @@
       }
       {
         label = "phase5 CLI terminal retained sometimes fixture progress";
-        needle = "local-double CLI coverage for retained\n  after-quiescence and terminal `sometimes` failures";
+        needle = "CLI coverage for retained\n  after-quiescence and terminal `sometimes` failures";
       }
       {
         label = "phase5 CLI retained evidence white-box validation progress";
@@ -223,7 +223,7 @@
       }
       {
         label = "search retained evidence argument";
-        needle = "retained_evidence: Option<PathBuf>";
+        needle = "#[arg(long, value_name = \"path\")]\n    retained_evidence: Option<PathBuf>";
       }
       {
         label = "search retained evidence plan";
@@ -474,10 +474,6 @@
         needle = "!search_line.contains(\"counterexample=\")";
       }
       {
-        label = "fuzz runner blocker";
-        needle = "requires the exploration-engine driver over phase-6 fuzzing policies tracked by T-CLI-13";
-      }
-      {
         label = "scenario family TOML loader";
         needle = "fn load_fuzz_family_file";
       }
@@ -518,8 +514,8 @@
         needle = "enum FuzzDispatchRoute";
       }
       {
-        label = "built-in fuzz proof route";
-        needle = "FuzzDispatchRoute::BuiltInFaultCampaignProof";
+        label = "packaged-QEMU fuzz route";
+        needle = "Some(FuzzDispatchRoute::LocalPackagedBackend)";
       }
       {
         label = "local-double fuzz injectable family runner";

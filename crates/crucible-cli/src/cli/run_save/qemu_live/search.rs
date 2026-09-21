@@ -147,12 +147,22 @@ fn search_finding_reproduction_artifact_bytes(
         LiveQemuArtifactEvidence {
             contract: LiveQemuReplayContract {
                 producer: String::from("campaign-search"),
+                execution_owner: RunExecutionOwner::Campaign,
+                execution_mode: RunExecutionMode::ToCompletion,
+                initial_configuration: format_content_hash_ref(
+                    crucible::Configuration::genesis(model.artifact.scenario_def()).id(),
+                ),
+                initial_scenario: scenario.to_compact_binary(),
+                initial_schedule: crucible::Schedule::empty().to_compact_binary(),
                 terminal_condition: String::from("stopped"),
                 terminal_status: status.label().to_string(),
                 terminal_outcome: terminal_outcome_label(Some(finding.outcome)).to_string(),
                 terminal_configuration: format_content_hash_ref(finding.failure.configuration),
                 final_frontier_ticks: finding.frontier.ticks,
                 final_quanta: finding.quanta,
+                final_event_log_len: u64::try_from(finding.event_frames.len()).unwrap_or(u64::MAX),
+                final_schedule: model.artifact.schedule().to_compact_binary(),
+                terminal_savepoint: None,
                 budget_timed_out: finding.outcome == OutcomeKind::Timeout,
                 max_virtual_time_ticks: None,
                 max_quanta: None,
@@ -165,6 +175,7 @@ fn search_finding_reproduction_artifact_bytes(
                 startup_controls: Vec::new(),
                 initial_controls: Vec::new(),
                 controls: Vec::new(),
+                reproduction_commands: Vec::new(),
             },
             event_stream: canonical_verify_log_stream_bytes(&[], &finding.event_frames),
             fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
@@ -240,7 +251,6 @@ pub(crate) fn run_local_qemu_search_workflow(
         plan.findings_out.as_deref(),
         execution.findings,
         execution.reproduction_artifacts,
-        execution.finding_exports,
     )?;
     Ok(execution.outcome)
 }
@@ -251,7 +261,6 @@ struct QemuSearchExecution {
     expansions: u64,
     findings: Vec<crate::cli_report::TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
-    finding_exports: Vec<GuardedCampaignFindingExport>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -297,20 +306,19 @@ fn run_local_qemu_search_scenario(
             ));
         }
     };
-    let coverage = if plan.engine_strategy == crucible::SearchStrategy::CoverageGuided {
-        production_api::ProductionPluginSwitch::On
-    } else {
-        production_api::ProductionPluginSwitch::Off
-    };
+    let coverage = plan.engine_strategy == crucible::SearchStrategy::CoverageGuided;
     let lifecycle_artifacts =
         std::sync::Arc::new(crucible::LocalDagStore::new(plan.store_root.clone()));
-    let lifecycle = production_qemu_lifecycle_config(backend)?
-        .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
-        .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
-        .with_coverage(coverage)
-        .with_world_artifacts(lifecycle_artifacts.clone())
-        .with_signal_artifacts(lifecycle_artifacts);
+    let lifecycle = crucible_daemon::with_production_qemu_coverage(
+        production_qemu_lifecycle_config(backend)?,
+        coverage,
+    )
+    .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
+    .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
+    .with_world_artifacts(lifecycle_artifacts.clone())
+    .with_signal_artifacts(lifecycle_artifacts);
     let deployment = load_guarded_campaign_deployment(plan.campaign_deployment.as_deref())?;
+    let verify_determinism_findings = deployment.verify_determinism_findings;
     if deployment.resources.maximum_execution_quanta() < LIVE_EXPLORATION_QUANTUM_LIMIT {
         return Err(backend_error(format!(
             "campaign deployment admits {} execution quanta, below the search requirement of {}",
@@ -349,9 +357,7 @@ fn run_local_qemu_search_scenario(
     )
     .with_exploration(exploration)
     .with_watch_frames();
-    if deployment.verify_determinism_findings {
-        request = request.with_determinism_finding_verification();
-    }
+    request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     if let Some(oracle) = QemuSearchSupplementalOracle::from_plan(plan)? {
         request = request.with_supplemental_finding_oracle(Box::new(oracle));
     }
@@ -510,7 +516,6 @@ fn campaign_search_outcome(
         expansions: campaign.branch_acceptances().len() as u64,
         findings: evidence,
         reproduction_artifacts: reproductions,
-        finding_exports: vec![campaign.finding_export().clone()],
     })
 }
 
@@ -526,7 +531,6 @@ fn run_local_qemu_mutation_search_workflow(
     let mut selected_outcome = None;
     let mut findings = Vec::new();
     let mut reproduction_artifacts = Vec::new();
-    let mut finding_exports = Vec::new();
     let mut budget = MutationSearchBudget::new(plan.max_states);
 
     for (index, materialized) in mutation_plans.into_iter().enumerate() {
@@ -557,7 +561,6 @@ fn run_local_qemu_mutation_search_workflow(
         budget.charge_states(execution.materialized_states);
         findings.extend(execution.findings);
         reproduction_artifacts.extend(execution.reproduction_artifacts);
-        finding_exports.extend(execution.finding_exports);
         let mut outcome = execution.outcome;
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
@@ -606,7 +609,6 @@ fn run_local_qemu_mutation_search_workflow(
         plan.findings_out.as_deref(),
         findings,
         reproduction_artifacts,
-        finding_exports,
     )?;
     if outcome.reproduction_artifact.is_none() && !outcome.side_reproduction_artifacts.is_empty() {
         let (_, primary) = outcome.side_reproduction_artifacts.remove(0);

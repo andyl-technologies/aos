@@ -13,8 +13,8 @@ use crucible_campaign::{
     CampaignCodecError, CampaignHash, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
     CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain,
     ChoiceRngStreamId, ChoiceSource, ChoiceValue, ConfigurationId, ExactRational, IntegerDomain,
-    IntegerRepresentation, IntegerValue, MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-    ModelSampleEvidence, ModelSampleVerifier, ProbabilityModelId, ScenarioDefId,
+    IntegerRepresentation, IntegerValue, ModelSampleEvidence, ModelSampleVerifier,
+    PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, ProbabilityModelId, ScenarioDefId,
     SelectableDeclaration, Selection, SelectionOrigin,
 };
 use crucible_protocol::WHITEBOX_DOORBELL_PROTOCOL_VERSION;
@@ -24,7 +24,7 @@ use crucible_protocol::app_random_transport::{
 use thiserror::Error;
 
 use crate::{
-    AppRandomDecision, Configuration, Decision, NodeId, RngDecision, RngStreamId, ScenarioDef,
+    BackendRngEvidence, Configuration, Decision, NodeId, RngDecision, RngStreamId, ScenarioDef,
 };
 
 const APP_RANDOM_DOMAIN_SEMANTIC_VERSION: u32 = 1;
@@ -154,7 +154,7 @@ impl AppRandomSelectable {
     /// width/value pair or its producer components exceed campaign bounds.
     pub fn from_decision(
         scenario: &ScenarioDef,
-        decision: &AppRandomDecision,
+        decision: &BackendRngEvidence,
     ) -> Result<Self, AppRandomSelectableError> {
         validate_width(decision.width)?;
         if mask_to_width(decision.value, decision.width) != decision.value {
@@ -248,7 +248,7 @@ impl AppRandomSelectable {
         &self,
     ) -> Result<(CandidateGeneratorSpec, CandidateSource), AppRandomSelectableError> {
         let generator = CandidateGeneratorSpec::new(
-            MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
             CandidateGeneratorAlgorithm::PermutedInteger,
         )?;
         let source = CandidateSource::modeled_generated(self.model.id(), generator.id()?);
@@ -314,7 +314,7 @@ impl AppRandomSelectable {
     /// reproduce its served value.
     pub fn normalize_sample(
         &self,
-        decision: &AppRandomDecision,
+        decision: &BackendRngEvidence,
         raw_draw: u64,
     ) -> Result<Selection, AppRandomSelectableError> {
         if decision.node != self.node
@@ -348,7 +348,7 @@ impl AppRandomSelectable {
         &self,
         selection: &Selection,
         parent: &Configuration,
-    ) -> Result<AppRandomDecision, AppRandomSelectableError> {
+    ) -> Result<BackendRngEvidence, AppRandomSelectableError> {
         if campaign_scenario_id(&parent.def) != self.opportunity.scenario() {
             return Err(AppRandomSelectableError::ParentScenarioMismatch);
         }
@@ -372,7 +372,7 @@ impl AppRandomSelectable {
         let ChoiceValue::Integer(IntegerValue::Unsigned(value)) = selection.value() else {
             return Err(AppRandomSelectableError::NonUnsignedValue);
         };
-        Ok(AppRandomDecision {
+        Ok(BackendRngEvidence {
             node: self.node.clone(),
             stream: self.stream.clone(),
             request_id: self.request_id,
@@ -459,7 +459,6 @@ pub(crate) fn is_app_random_model_selection(selection: &Selection) -> bool {
 
 pub(crate) fn is_app_random_schedule_decision(decisions: &[Decision], index: usize) -> bool {
     match decisions.get(index) {
-        Some(Decision::AppRandom(_)) => true,
         Some(Decision::Selection(selection)) if selection.is_app_random_model_sample() => true,
         Some(Decision::Selection(selection)) if selection.is_campaign_branch() => {
             let Some(previous) = index.checked_sub(1).and_then(|index| decisions.get(index)) else {
@@ -773,7 +772,7 @@ mod tests {
     fn seeded_sample_round_trips_through_typed_selection() {
         let subject = selectable_fixture("guest/backoff");
         let raw_draw = 0xfedc_ba98_7654_3210;
-        let observed = AppRandomDecision {
+        let observed = BackendRngEvidence {
             node: NodeId {
                 name: String::from("node-a"),
             },
@@ -836,7 +835,7 @@ mod tests {
 
         assert_eq!(
             generator.implementation_version(),
-            MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
         );
         assert_eq!(
             generator.algorithm(),
@@ -915,7 +914,7 @@ mod tests {
         ));
 
         let subject = selectable_fixture("guest/backoff");
-        let mismatched = AppRandomDecision {
+        let mismatched = BackendRngEvidence {
             node: NodeId {
                 name: String::from("node-a"),
             },

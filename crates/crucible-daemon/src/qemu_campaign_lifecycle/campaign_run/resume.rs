@@ -1,112 +1,21 @@
-//! Authenticated checkpoint admission through campaign ownership.
+//! Guarded checkpoint admission through campaign ownership.
 //!
-//! This module authenticates a v3 logical checkpoint, retains the exact
+//! This module authenticates a modeled checkpoint, retains the exact
 //! source observation and physical capture, and verifies the typed `Ready`
 //! and continuation facts before exposing a resume proof to CLI callers.
 
 use super::*;
 
-/// Modeled scheduler control for one campaign-owned continuation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GuardedCampaignContinuationControl {
-    /// Re-seeds deterministic scheduler streams after the source boundary.
-    Reseed {
-        /// Exact scheduler frontier where the new seed begins.
-        frontier: VirtualTime,
-        /// Complete deterministic stream seed.
-        seed: Seed,
-    },
-    /// Applies ordered live-network overrides after the source boundary.
-    SchedulerOverrides {
-        /// Exact scheduler frontier where override matching begins.
-        frontier: VirtualTime,
-        /// Canonical scheduler override records in requested order.
-        decisions: Vec<Vec<u8>>,
-    },
-}
-
-impl GuardedCampaignContinuationControl {
-    /// Re-seeds every post-boundary deterministic scheduler stream.
-    #[must_use]
-    pub fn reseed(frontier: VirtualTime, seed: Seed) -> Self {
-        Self::Reseed { frontier, seed }
-    }
-
-    /// Applies an ordered set of post-boundary live-network overrides.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GuardedCampaignContinuationControlError`] when the set is
-    /// empty, duplicated, or exceeds the campaign attempt-input bounds.
-    pub fn scheduler_overrides(
-        frontier: VirtualTime,
-        overrides: Vec<crucible::OverrideDecision>,
-    ) -> Result<Self, GuardedCampaignContinuationControlError> {
-        let decisions: Vec<Vec<u8>> = overrides
-            .into_iter()
-            .map(|decision| {
-                Schedule::from_decisions([crucible::Decision::Override(decision)])
-                    .to_compact_binary()
-            })
-            .collect();
-        crucible_campaign::AttemptContinuationInput::validate_scheduler_overrides(&decisions)?;
-        Ok(Self::SchedulerOverrides {
-            frontier,
-            decisions,
-        })
-    }
-
-    pub(super) const fn source_frontier_ticks(&self) -> u64 {
-        match self {
-            Self::Reseed { frontier, .. } | Self::SchedulerOverrides { frontier, .. } => {
-                frontier.ticks
-            }
-        }
-    }
-
-    pub(super) fn input(
-        &self,
-        source_observation: ObservationId,
-    ) -> Result<crucible_campaign::AttemptContinuationInput, CampaignCodecError> {
-        match self {
-            Self::Reseed { frontier, seed } => Ok(
-                crucible_campaign::AttemptContinuationInput::scheduler_reseed(
-                    source_observation,
-                    frontier.ticks,
-                    seed.bytes(),
-                ),
-            ),
-            Self::SchedulerOverrides {
-                frontier,
-                decisions,
-            } => crucible_campaign::AttemptContinuationInput::scheduler_overrides(
-                source_observation,
-                frontier.ticks,
-                decisions.clone(),
-            ),
-        }
-    }
-}
-
-/// Failure while constructing a campaign-owned continuation control.
-#[derive(Debug, Error)]
-pub enum GuardedCampaignContinuationControlError {
-    /// The bounded campaign attempt input rejected the control set.
-    #[error("campaign continuation input is invalid: {0}")]
-    Campaign(#[from] CampaignCodecError),
-}
-
 pub(super) struct GuardedDefaultCampaignResumeSource {
     pub(super) checkpoint: Checkpoint,
     pub(super) final_stop: StopCondition,
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
-    pub(super) continuation_control: Option<GuardedCampaignContinuationControl>,
     pub(super) source_observation_proof: Option<ObservationStopProof>,
     pub(super) source_observation_evidence: Option<crate::CrucibleMeasurementReplayEvidence>,
     pub(super) capture_only: bool,
 }
 
-/// Authenticated source admission for a checkpoint resumed by the campaign owner.
+/// Authenticated source admission for a recorded checkpoint resumed by the campaign owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardedDefaultCampaignResumeProof {
     source_checkpoint: crucible::ContentHash,
@@ -120,7 +29,7 @@ pub struct GuardedDefaultCampaignResumeProof {
 }
 
 impl GuardedDefaultCampaignResumeProof {
-    /// Returns the authenticated logical checkpoint supplied by the handle reader.
+    /// Returns the authenticated logical checkpoint supplied by the resume request.
     #[must_use]
     pub const fn source_checkpoint(&self) -> crucible::ContentHash {
         self.source_checkpoint
@@ -223,11 +132,6 @@ where
     if !source_stop_matches {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
-    if source.continuation_control.as_ref().is_some_and(|control| {
-        control.source_frontier_ticks() != source.checkpoint.virtual_time.ticks
-    }) {
-        return Err(GuardedDefaultCampaignInvariantError::ContinuationInputMismatch.into());
-    }
     match (
         source.source_observation_proof.as_ref(),
         source.source_observation_evidence.as_ref(),
@@ -247,13 +151,9 @@ where
     if request.initial_schedule.decisions().iter().any(|decision| {
         !matches!(
             decision,
-            // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is checked only against the supported portable-resume taxonomy.
             crucible::Decision::DeliveryOrder(_)
-                // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is checked only against the supported portable-resume taxonomy.
                 | crucible::Decision::RngDraw(_)
-                // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is checked only against the supported portable-resume taxonomy.
                 | crucible::Decision::Preemption(_)
-                // crucible-lint: allow host-nondeterminism-state -- this typed choice is authenticated by the exact replay closure below.
                 | crucible::Decision::Selection(_)
         )
     }) {
@@ -263,7 +163,6 @@ where
         .validate_for_schedule(&request.scenario, &request.initial_schedule)
         .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
     if request.initial_schedule.decisions().iter().any(|decision| {
-        // crucible-lint: allow host-nondeterminism-state -- this authenticated replay decision is inspected only to reject unsupported model-sampled selections before execution.
         let crucible::Decision::Selection(decision) = decision else {
             return false;
         };
@@ -286,7 +185,6 @@ where
 
     // Reconstruct the authenticated checkpoint rather than trusting caller-owned
     // state, blob references, metadata, or continuation closure fields.
-    // crucible-lint: allow host-nondeterminism-state -- the source configuration is reconstructed only from the authenticated scenario and replay schedule.
     let configuration = Configuration {
         def: request.scenario.scenario_def(),
         schedule: request.initial_schedule.clone(),
@@ -294,7 +192,6 @@ where
     let parent = if configuration.schedule.is_empty() {
         None
     } else {
-        // crucible-lint: allow host-nondeterminism-state -- the parent configuration is the deterministic authenticated schedule prefix and contains no host observation.
         Some(Configuration {
             def: configuration.def.clone(),
             schedule: configuration
@@ -319,58 +216,33 @@ where
     Ok(())
 }
 
-pub(super) fn continuation_lifecycle_config<E>(
-    request: &GuardedDefaultCampaignRunRequest,
-) -> Result<ProductionVmLifecycleConfig, GuardedDefaultCampaignRunError<E>>
-where
-    E: Error + 'static,
-{
-    let Some(source) = &request.resume_source else {
-        return Ok(request.lifecycle.clone());
-    };
-    let Some(control) = &source.continuation_control else {
-        return Ok(request.lifecycle.clone());
-    };
-    if control.source_frontier_ticks() != source.checkpoint.virtual_time.ticks {
-        return Err(GuardedDefaultCampaignInvariantError::ContinuationInputMismatch.into());
-    }
-    let GuardedCampaignContinuationControl::SchedulerOverrides { decisions, .. } = control else {
-        return Ok(request.lifecycle.clone());
-    };
-    let mut points = BTreeSet::new();
-    for bytes in decisions {
-        let schedule = Schedule::from_compact_binary(bytes)
-            .map_err(|_| GuardedDefaultCampaignInvariantError::InvalidContinuationInput)?;
-        if schedule.to_compact_binary() != *bytes {
-            return Err(GuardedDefaultCampaignInvariantError::InvalidContinuationInput.into());
-        }
-        let [crucible::Decision::Override(decision)] = schedule.decisions() else {
-            return Err(GuardedDefaultCampaignInvariantError::InvalidContinuationInput.into());
-        };
-        if !crucible::live_world_network_override_matches_world(request.scenario.world(), decision)
-            || !points.insert(decision.point.key.clone())
-        {
-            return Err(GuardedDefaultCampaignInvariantError::InvalidContinuationInput.into());
-        }
-    }
-    Ok(request.lifecycle.clone())
+pub(super) struct ResumeProofMaterialization<'a> {
+    pub(super) repository: &'a Arc<CampaignRepository>,
+    pub(super) final_snapshot: CampaignSnapshotId,
+    pub(super) lineage: &'a CampaignLineage,
+    pub(super) observations: &'a [GuardedDefaultCampaignObservation],
+    pub(super) terminal: &'a GuardedDefaultCampaignObservation,
+    pub(super) terminal_evidence: &'a QemuAttemptExecutionEvidenceSnapshot,
+    pub(super) proof: Option<DefaultRunResumeProof>,
+    pub(super) source: Option<&'a GuardedDefaultCampaignResumeSource>,
 }
 
-// crucible-lint: allow rust-allow -- the explicit inputs keep every repository, lineage, terminal-evidence, and source binding visible at resume-proof materialization.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn materialize_resume_proof<E>(
-    repository: &Arc<CampaignRepository>,
-    final_snapshot: CampaignSnapshotId,
-    lineage: &CampaignLineage,
-    observations: &[GuardedDefaultCampaignObservation],
-    terminal: &GuardedDefaultCampaignObservation,
-    terminal_evidence: &QemuAttemptExecutionEvidenceSnapshot,
-    proof: Option<DefaultRunResumeProof>,
-    source: Option<&GuardedDefaultCampaignResumeSource>,
+    input: ResumeProofMaterialization<'_>,
 ) -> Result<Option<GuardedDefaultCampaignResumeProof>, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
 {
+    let ResumeProofMaterialization {
+        repository,
+        final_snapshot,
+        lineage,
+        observations,
+        terminal,
+        terminal_evidence,
+        proof,
+        source,
+    } = input;
     let (proof, source) = match (proof, source) {
         (Some(proof), Some(source)) => (proof, source),
         (None, None) => return Ok(None),
@@ -383,12 +255,6 @@ where
         .iter()
         .find(|observation| observation.id() == proof.source_observation)
         .ok_or(GuardedDefaultCampaignInvariantError::MissingResumeProof)?;
-    let expected_continuation_input = source
-        .continuation_control
-        .as_ref()
-        .map(|control| control.input(proof.source_observation))
-        .transpose()
-        .map_err(GuardedDefaultCampaignRunError::Codec)?;
     if proof.source_checkpoint != source.checkpoint.id
         || proof.source_configuration != expected_configuration
         || proof.source_frontier != source.checkpoint.virtual_time
@@ -506,7 +372,7 @@ where
                 || capture.reached != expected_configuration
                 || capture.evidence != proof.source_evidence
                 || continuation_attempt.stop() != &source.final_stop
-                || continuation_attempt.continuation_input() != expected_continuation_input.as_ref()
+                || continuation_attempt.continuation_input().is_some()
                 || continuation_source.selection() != selection
                 || continuation_source.provenance().request != capture.request
                 || continuation_source.provenance().ready != ready

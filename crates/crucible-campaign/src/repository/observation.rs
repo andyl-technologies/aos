@@ -184,11 +184,16 @@ impl CampaignRepository {
             });
         }
 
+        let maintain_choice_index = self
+            .merkle
+            .get(current.snapshot.roots().graph, choice_index_anchor_key())?
+            .is_some();
         let projection = self.project_observation(
             &current,
             observation_id.content_id(),
             observation,
             &mut choice_cache,
+            maintain_choice_index,
         )?;
         self.preflight_observation_closure(&current, observation, &mut choice_cache)?;
         let observation_content = self.put_observation(observation)?;
@@ -219,7 +224,7 @@ impl CampaignRepository {
             let prior_choice_index = self
                 .merkle
                 .get(roots.graph, choice_index_anchor_key())?
-                .ok_or_else(|| integrity("current-campaign-choice-index-is-missing"))?;
+                .unwrap_or(MerkleMap::empty_content_id()?);
             let published_choice_index =
                 self.insert_upserts(prior_choice_index, &projection.choice_index)?;
             if projection.graph.get(&choice_index_anchor_key()).copied()
@@ -339,6 +344,9 @@ impl CampaignRepository {
             observation_id.content_id(),
             &observation,
             choice_cache,
+            self.merkle
+                .get(prior.graph, choice_index_anchor_key())?
+                .is_some(),
         )?;
         for (before, after, upserts, reason) in [
             (
@@ -394,6 +402,7 @@ impl CampaignRepository {
         observation_content: ContentId,
         observation: &Observation,
         choice_cache: &mut ChoiceValidationCache,
+        maintain_choice_index: bool,
     ) -> Result<ObservationProjection, CampaignRepositoryError> {
         self.validate_observation_references_cached(observation, choice_cache)?;
         let roots = parent.snapshot.roots();
@@ -470,12 +479,12 @@ impl CampaignRepository {
             );
         }
         self.validate_compatible_upserts(roots.graph, &graph, "observation-graph-conflict")?;
-        let choice_index = self
-            .merkle
-            .get(roots.graph, choice_index_anchor_key())?
-            .ok_or_else(|| integrity("current-campaign-choice-index-is-missing"))?;
         let mut choice_index_upserts = BTreeMap::new();
-        if !observation.discovered_choices().is_empty() {
+        if maintain_choice_index && !observation.discovered_choices().is_empty() {
+            let choice_index = self
+                .merkle
+                .get(roots.graph, choice_index_anchor_key())?
+                .unwrap_or(MerkleMap::empty_content_id()?);
             for choice_id in observation.discovered_choices() {
                 choice_index_upserts
                     .insert(choice_index_order_key(*choice_id), choice_id.content_id());
@@ -740,39 +749,6 @@ impl CampaignRepository {
         Ok(())
     }
 
-    pub(super) fn strict_migration_sequence_anchor(
-        &self,
-        accounting: ContentId,
-        transition: ContentId,
-    ) -> Result<ContentId, CampaignRepositoryError> {
-        // Streaming retains a prior strict anchor but may complete later
-        // ordinals around holes. Advance only through the authenticated
-        // contiguous prefix; the derivation fact represents ordinal zero when
-        // the first admission is still open.
-        let sequence = self.merkle.get(accounting, observation_sequence_key())?;
-        let baseline = self.strict_sequence_anchor_ordinal(accounting, sequence)?;
-        let admitted = self.accounted_attempts(accounting)?;
-        if baseline > admitted {
-            return Err(integrity("strict-completion-sequence-past-admission-head"));
-        }
-
-        let mut anchor = sequence.filter(|_| baseline != 0).unwrap_or(transition);
-        let Some(mut candidate) = baseline.checked_add(1) else {
-            return Err(integrity("strict-completion-sequence-overflow"));
-        };
-        while candidate <= admitted {
-            let ordinal = AdmissionOrdinal::new(candidate);
-            let Some(completion) = self.completion_at_ordinal(accounting, ordinal)? else {
-                break;
-            };
-            anchor = completion;
-            candidate = candidate
-                .checked_add(1)
-                .ok_or_else(|| integrity("strict-completion-sequence-overflow"))?;
-        }
-        Ok(anchor)
-    }
-
     fn next_strict_completion_ordinal(
         &self,
         accounting: ContentId,
@@ -816,13 +792,9 @@ impl CampaignRepository {
             }
             crate::CampaignRecordKind::Fact => match self.read_fact(sequence)? {
                 CampaignFact::AttemptClosed { ordinal, .. } => ordinal,
-                CampaignFact::CampaignDerived(derivation) => {
-                    self.validate_strict_migration_marker(derivation)?;
-                    return Ok(0);
-                }
                 _ => {
                     return Err(integrity(
-                        "strict-completion-sequence-fact-is-not-a-completion-or-migration",
+                        "strict-completion-sequence-fact-is-not-a-completion",
                     ));
                 }
             },
@@ -836,21 +808,6 @@ impl CampaignRepository {
             return Err(integrity("strict-completion-sequence-has-zero-ordinal"));
         }
         Ok(ordinal.value())
-    }
-
-    fn validate_strict_migration_marker(
-        &self,
-        derivation: CampaignDerivation,
-    ) -> Result<(), CampaignRepositoryError> {
-        let source = self.read_snapshot(derivation.source().content_id())?;
-        let prior = self.read_policy(source.snapshot.active_policy().content_id())?;
-        let next = self.read_policy(derivation.active_policy().content_id())?;
-        if !is_streaming_to_strict_migration(prior.mode(), next.mode()) {
-            return Err(integrity(
-                "strict-completion-sequence-has-invalid-migration-marker",
-            ));
-        }
-        Ok(())
     }
 
     fn completion_at_ordinal(

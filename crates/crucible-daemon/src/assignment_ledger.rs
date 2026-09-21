@@ -5,6 +5,8 @@
 //! attempt identity, so restart recovery does not materialize daemon history in
 //! memory. Every file is bounded, checksummed, strictly decoded, and published
 //! through an fsynced staging file followed by an atomic link or rename.
+//! Startup accepts only a bounded inventory of exact v15 attempt records; stale
+//! staging names and every noncurrent record shape fail closed.
 //! Retention administration is a separate mutable capability whose fence binds
 //! one combined operational-root scan to a persistent generation.
 //!
@@ -16,30 +18,28 @@
 //!   retention-state-v1
 //!   assignments/<two-hex>/<assignment-id-hex>
 //!   attempts/<two-hex>/<attempt-key-hash>
-//!   attempts/<two-hex>/.staging-*.removing-v1-<device>-<inode>
 //! ```
-//!
-//! The final form is a zero-length migration tombstone. Runtime inventory
-//! admits it only when its exact logical name and physical identity are sealed
-//! by the completed assignment rewrite receipt.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::owned_advisory_lock::OwnedAdvisoryLock;
 use crucible_campaign::{
-    AssignmentId, AttemptExecutionScope, AttemptId, AttemptResourceLimits, AttemptStartMode,
-    CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, CampaignSnapshotId,
-    ConfigurationArtifactId, DaemonEpoch, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
-    FindingCandidateBundleId, FindingReplayCaptureEvidenceId, FindingReplayCaptureSet,
-    ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
-    attempt_execution_basis_digest_for_start_mode,
+    AssignmentId, AttemptAdmissionId, AttemptExecutionScope, AttemptId, AttemptResourceLimits,
+    AttemptRetentionPolicyBasis, AttemptRetentionPolicyDisposition, AttemptStartMode,
+    CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, CampaignPolicyId,
+    CampaignSnapshotId, ConfigurationArtifactId, DaemonEpoch, ExactCheckpointId, ExecutionId,
+    ExecutionRetentionIntent, FindingCandidateBundleId, ObservationId, SubmitAttemptRequest,
+    SubmitAttemptResponse, attempt_execution_basis_digest_for_start_mode,
 };
+
+use crate::owned_advisory_lock::OwnedAdvisoryLock;
+
+mod record_codec;
+
+use record_codec::*;
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
 const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v15\0";
@@ -48,13 +48,12 @@ const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-rec
 const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-state.v1\0";
 const RETENTION_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-retention-state.v1";
 const RETENTION_GENERATION_DOMAIN: &str = "crucible.executor.assignment-retention-generation.v1";
-const ABSENT_RETENTION_GENERATION_DOMAIN: &str =
-    "crucible.executor.absent-assignment-retention-generation.v1";
 const RETENTION_STATE_FILE: &str = "retention-state-v1";
 const MAX_LEDGER_RECORD_BYTES: u64 = 16 * 1024;
-const MAX_PUBLISHING_FINDING_EXACT_ROOTS: usize = 3;
 const MAX_RETENTION_STATE_BYTES: u64 = 256;
 const MAX_TYPED_ID_BYTES: usize = 256;
+const MAX_RUNTIME_ATTEMPT_RECORDS: usize = 1_000_000;
+const MAX_RUNTIME_ATTEMPT_SHARDS: usize = 256;
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MEMORY_LEDGER_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -261,15 +260,6 @@ impl CompletedFindingCandidate {
         }
     }
 
-    /// Returns the candidate while its operational GC root remains live.
-    #[must_use]
-    pub const fn pending_candidate(self) -> Option<FindingCandidateBundleId> {
-        match self {
-            Self::Pending(candidate) => Some(candidate),
-            Self::None | Self::Acknowledged(_) => None,
-        }
-    }
-
     /// Reports whether the exact candidate was acknowledged as incorporated.
     #[must_use]
     pub const fn is_acknowledged(self) -> bool {
@@ -283,6 +273,7 @@ pub struct CheckpointPromotionExecutionBasis {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     start_mode: AttemptStartMode,
+    retention_policy: AttemptRetentionPolicyDisposition,
 }
 
 impl CheckpointPromotionExecutionBasis {
@@ -291,11 +282,13 @@ impl CheckpointPromotionExecutionBasis {
     pub const fn new(
         resources: AttemptResourceLimits,
         retention: ExecutionRetentionIntent,
+        retention_policy: AttemptRetentionPolicyDisposition,
     ) -> Self {
         Self {
             resources,
             retention,
             start_mode: AttemptStartMode::Execute,
+            retention_policy,
         }
     }
 
@@ -305,11 +298,13 @@ impl CheckpointPromotionExecutionBasis {
         resources: AttemptResourceLimits,
         retention: ExecutionRetentionIntent,
         start_mode: AttemptStartMode,
+        retention_policy: AttemptRetentionPolicyDisposition,
     ) -> Self {
         Self {
             resources,
             retention,
             start_mode,
+            retention_policy,
         }
     }
 
@@ -329,6 +324,12 @@ impl CheckpointPromotionExecutionBasis {
     #[must_use]
     pub const fn start_mode(self) -> AttemptStartMode {
         self.start_mode
+    }
+
+    /// Returns the exact automatic-finding retention policy disposition.
+    #[must_use]
+    pub const fn retention_policy(self) -> AttemptRetentionPolicyDisposition {
+        self.retention_policy
     }
 }
 
@@ -367,7 +368,7 @@ impl AttemptExecutionKey {
         )
     }
 
-    /// Returns the exact compatibility lineage.
+    /// Returns the exact campaign lineage.
     #[must_use]
     pub const fn lineage(self) -> CampaignLineageId {
         self.lineage
@@ -387,18 +388,13 @@ impl AttemptExecutionKey {
 
     /// Returns the stable digest used for ledger and journal storage paths.
     ///
-    /// Semantic keys preserve the original version 1 digest exactly. Scoped
-    /// capture keys use a separate version 2 domain and bind the canonical
-    /// scope bytes, so no capture can alias semantic state.
+    /// Every key binds its canonical scope bytes under the sole current domain,
+    /// so semantic and capture execution state cannot alias.
     #[must_use]
     pub fn storage_digest(self) -> CampaignHash {
         let mut material = Vec::with_capacity(256);
         push_bytes(&mut material, self.lineage.to_text().as_bytes());
         push_bytes(&mut material, self.attempt.to_text().as_bytes());
-        if self.scope == AttemptExecutionScope::Semantic {
-            return CampaignHash::derive("crucible.executor.attempt-execution-key.v1", &material);
-        }
-
         push_bytes(&mut material, &self.scope.canonical_bytes());
         CampaignHash::derive("crucible.executor.attempt-execution-key.v2", &material)
     }
@@ -488,13 +484,6 @@ pub enum AttemptRuntimeState {
         observation: ObservationId,
         /// Expected finding candidate retained before immutable publication.
         finding_candidate: Option<FindingCandidateBundleId>,
-        /// Portable capture manifests retained before candidate publication.
-        finding_replay_captures: Option<FindingReplayCaptureSet>,
-        /// Exact checkpoints retained until the finding candidate is published.
-        finding_exact_retention_roots:
-            [Option<ExactCheckpointId>; MAX_PUBLISHING_FINDING_EXACT_ROOTS],
-        /// Digest of the complete prepared-result payload staged for recovery.
-        prepared_result_digest: Option<CampaignHash>,
     },
     /// One execution published an immutable observation.
     Completed {
@@ -510,8 +499,6 @@ pub enum AttemptRuntimeState {
         observation: ObservationId,
         /// Candidate identity and operational-retention disposition.
         finding_candidate: CompletedFindingCandidate,
-        /// Digest of the complete prepared-result payload authenticated at publication.
-        prepared_result_digest: Option<CampaignHash>,
     },
     /// The daemon accepted cancellation before canonical completion.
     Canceled {
@@ -637,22 +624,6 @@ impl AttemptRuntimeState {
         }
     }
 
-    /// Returns the full prepared-result digest retained for publication recovery.
-    #[must_use]
-    pub const fn prepared_result_digest(self) -> Option<CampaignHash> {
-        match self {
-            Self::Publishing {
-                prepared_result_digest,
-                ..
-            }
-            | Self::Completed {
-                prepared_result_digest,
-                ..
-            } => prepared_result_digest,
-            _ => None,
-        }
-    }
-
     /// Returns the finding candidate reported with completion, when present.
     #[must_use]
     pub const fn finding_candidate(self) -> Option<FindingCandidateBundleId> {
@@ -675,7 +646,7 @@ impl AttemptRuntimeState {
 
     /// Returns the candidate that remains an operational retention root.
     #[must_use]
-    pub const fn pending_finding_candidate(self) -> Option<FindingCandidateBundleId> {
+    const fn pending_finding_candidate(self) -> Option<FindingCandidateBundleId> {
         match self {
             Self::Publishing {
                 finding_candidate, ..
@@ -693,42 +664,6 @@ impl AttemptRuntimeState {
             | Self::Canceled { .. }
             | Self::TerminalFailure { .. } => None,
         }
-    }
-
-    /// Returns capture manifests retained during candidate publication.
-    #[must_use]
-    pub const fn pending_finding_replay_captures(self) -> Option<FindingReplayCaptureSet> {
-        match self {
-            Self::Publishing {
-                finding_replay_captures,
-                ..
-            } => finding_replay_captures,
-            _ => None,
-        }
-    }
-
-    /// Returns exact roots retained while finding publication is incomplete.
-    #[must_use]
-    pub const fn pending_finding_exact_retention_roots(
-        self,
-    ) -> [Option<ExactCheckpointId>; MAX_PUBLISHING_FINDING_EXACT_ROOTS] {
-        match self {
-            Self::Publishing {
-                finding_exact_retention_roots,
-                ..
-            } => finding_exact_retention_roots,
-            _ => [None; MAX_PUBLISHING_FINDING_EXACT_ROOTS],
-        }
-    }
-
-    /// Reports whether the candidate identity is an incorporated tombstone.
-    #[must_use]
-    pub const fn finding_candidate_acknowledged(self) -> bool {
-        matches!(
-            self,
-            Self::Completed { finding_candidate, .. }
-                if finding_candidate.is_acknowledged()
-        )
     }
 
     /// Returns an exact-checkpoint retention root, when one is durable.
@@ -775,7 +710,7 @@ impl AttemptRuntimeState {
         }
     }
 
-    pub(crate) fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 7] {
+    pub(crate) fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 4] {
         let current = self.checkpoint();
         let promotion_source = self
             .promotion_source_checkpoint()
@@ -791,20 +726,11 @@ impl AttemptRuntimeState {
                         && Some(*checkpoint) != promotion_source
                         && Some(*checkpoint) != resume_input
                 });
-        let finding_exact = self.pending_finding_exact_retention_roots();
-        [
-            current,
-            promotion_source,
-            resume_input,
-            certificate_source,
-            finding_exact[0],
-            finding_exact[1],
-            finding_exact[2],
-        ]
+        [current, promotion_source, resume_input, certificate_source]
     }
 
     /// Returns complete checkpoint roots known to be materialized in this state.
-    pub(crate) fn materialized_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 7] {
+    pub(crate) fn materialized_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 4] {
         let current = match self {
             Self::Paused { checkpoint, .. } => Some(checkpoint),
             Self::Running { .. }
@@ -828,23 +754,10 @@ impl AttemptRuntimeState {
                         && Some(*checkpoint) != promotion_source
                         && Some(*checkpoint) != resume_input
                 });
-        let finding_exact = self.pending_finding_exact_retention_roots();
-        [
-            current,
-            promotion_source,
-            resume_input,
-            certificate_source,
-            finding_exact[0],
-            finding_exact[1],
-            finding_exact[2],
-        ]
+        [current, promotion_source, resume_input, certificate_source]
     }
 
     fn validates_for_key(self, key: AttemptExecutionKey) -> bool {
-        if !self.validates_finding_exact_retention_roots() {
-            return false;
-        }
-
         let scoped_capture = matches!(key.scope(), AttemptExecutionScope::SavepointCapture { .. });
         if scoped_capture
             && (self.origin() != AttemptExecutionOrigin::Initial
@@ -872,34 +785,6 @@ impl AttemptRuntimeState {
             return false;
         }
         promotion_basis.is_none_or(|basis| basis.start_mode().execution_scope() == key.scope())
-    }
-
-    fn validates_finding_exact_retention_roots(self) -> bool {
-        let Self::Publishing {
-            finding_candidate,
-            finding_exact_retention_roots,
-            ..
-        } = self
-        else {
-            return true;
-        };
-
-        let mut previous = None;
-        let mut found_empty = false;
-        for root in finding_exact_retention_roots {
-            let Some(root) = root else {
-                found_empty = true;
-                continue;
-            };
-            if finding_candidate.is_none()
-                || found_empty
-                || previous.is_some_and(|previous| previous >= root)
-            {
-                return false;
-            }
-            previous = Some(root);
-        }
-        true
     }
 }
 
@@ -961,16 +846,10 @@ impl AssignmentRetentionGeneration {
 pub enum AssignmentRetentionRoot {
     /// One in-progress or completed observation publication.
     Observation(ObservationId),
-    /// One staged observation whose immutable root may not exist yet.
-    PublishingObservation(ObservationId),
     /// One in-progress or paused exact-checkpoint publication.
     ExactCheckpoint(ExactCheckpointId),
     /// One executor-produced finding candidate awaiting incorporation acknowledgement.
     FindingCandidate(FindingCandidateBundleId),
-    /// One staged finding candidate whose immutable root may not exist yet.
-    PublishingFindingCandidate(FindingCandidateBundleId),
-    /// One portable finding replay capture manifest awaiting candidate publication.
-    FindingReplayCapture(FindingReplayCaptureEvidenceId),
 }
 
 /// Terminal evidence that one fenced assignment-ledger inventory completed.
@@ -981,7 +860,6 @@ pub struct AssignmentRetentionSummary {
     observation_roots: u64,
     checkpoint_roots: u64,
     finding_candidate_roots: u64,
-    finding_replay_capture_roots: u64,
 }
 
 impl AssignmentRetentionSummary {
@@ -1000,7 +878,6 @@ impl AssignmentRetentionSummary {
             observation_roots,
             checkpoint_roots,
             finding_candidate_roots,
-            finding_replay_capture_roots: 0,
         }
     }
 
@@ -1034,12 +911,6 @@ impl AssignmentRetentionSummary {
         self.finding_candidate_roots
     }
 
-    /// Returns the number of portable replay capture manifests emitted.
-    #[must_use]
-    pub const fn finding_replay_capture_roots(self) -> u64 {
-        self.finding_replay_capture_roots
-    }
-
     fn visit(
         &mut self,
         state: AttemptRuntimeState,
@@ -1051,41 +922,19 @@ impl AssignmentRetentionSummary {
             .attempt_records
             .checked_add(1)
             .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
-        let publishing = matches!(state, AttemptRuntimeState::Publishing { .. });
         if let Some(observation) = state.observation() {
             self.observation_roots = self
                 .observation_roots
                 .checked_add(1)
                 .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
-            visitor(if publishing {
-                AssignmentRetentionRoot::PublishingObservation(observation)
-            } else {
-                AssignmentRetentionRoot::Observation(observation)
-            })?;
+            visitor(AssignmentRetentionRoot::Observation(observation))?;
         }
         if let Some(candidate) = state.pending_finding_candidate() {
             self.finding_candidate_roots = self
                 .finding_candidate_roots
                 .checked_add(1)
                 .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
-            visitor(if publishing {
-                AssignmentRetentionRoot::PublishingFindingCandidate(candidate)
-            } else {
-                AssignmentRetentionRoot::FindingCandidate(candidate)
-            })?;
-        }
-        if let Some(captures) = state.pending_finding_replay_captures() {
-            for capture in captures
-                .references()
-                .into_iter()
-                .filter_map(crucible_campaign::FindingReplayCaptureReference::evidence)
-            {
-                self.finding_replay_capture_roots = self
-                    .finding_replay_capture_roots
-                    .checked_add(1)
-                    .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
-                visitor(AssignmentRetentionRoot::FindingReplayCapture(capture))?;
-            }
+            visitor(AssignmentRetentionRoot::FindingCandidate(candidate))?;
         }
         for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
             self.checkpoint_roots = self
@@ -1517,46 +1366,12 @@ pub enum AssignmentLedgerError {
     GenerationExhausted,
 }
 
-/// Bounded result of an explicit assignment-record format migration.
-#[derive(Debug)]
-pub(crate) struct AssignmentMigrationSummary {
-    /// Number of authenticated attempt records examined.
-    pub records: usize,
-    /// Number of legacy records replaced with v15 records.
-    pub migrated: usize,
-    /// Pinned durable assignment rewrite receipt.
-    pub(crate) receipt: crate::operational_state_migration::receipt::PhaseReceipt,
-}
-
 /// Crash-safe directory ledger with one nonblocking process writer lock.
 pub struct DirectoryAssignmentLedger {
     root: PathBuf,
     authority: crate::anchored_fs::AnchoredDirectory,
     writer_lock: OwnedAdvisoryLock,
     retention_state: AssignmentRetentionState,
-}
-
-fn anchored_lock_error(
-    error: crate::anchored_fs::AnchoredFsError,
-    operation: &'static str,
-    path: &Path,
-) -> AssignmentLedgerError {
-    let (_, _, source) = error.into_io_parts(operation);
-    io_error(operation, path, source)
-}
-
-/// Authenticated retention access to an existing or absent optional directory ledger.
-///
-/// A missing ledger root represents a deployment without an executor. Present
-/// state retains the same exclusive lock and strict authentication as
-/// [`DirectoryAssignmentLedger::open_existing`].
-pub struct DirectoryAssignmentRetentionReader {
-    state: DirectoryAssignmentRetentionReaderState,
-}
-
-enum DirectoryAssignmentRetentionReaderState {
-    Authenticated(DirectoryAssignmentLedger),
-    Absent,
 }
 
 impl DirectoryAssignmentLedger {
@@ -1572,104 +1387,26 @@ impl DirectoryAssignmentLedger {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, AssignmentLedgerError> {
         let root = root.into();
         create_directory_durable(&root)?;
-        let authority =
-            crate::anchored_fs::AnchoredDirectory::new(root.clone()).map_err(|error| {
-                io_error(
-                    "open-anchored-ledger",
-                    &root,
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-                )
-            })?;
-        let storage_root = authority.anchored_path();
+        let authority = crate::anchored_fs::AnchoredDirectory::open(root.clone())
+            .map_err(|source| anchored_ledger_error(source, "open-ledger-root"))?;
         let lock_path = root.join("writer.lock");
-        let writer_lock = authority
+        let lock_file = authority
             .open_or_create_regular(&lock_path, "open-writer-lock")
-            .map_err(|error| anchored_lock_error(error, "open-writer-lock", &lock_path))?;
-        let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(writer_lock)
-            .map_err(|error| anchored_lock_error(error, "lock-writer", &lock_path))?;
-        if crate::operational_state_migration::receipt::marker_present_guarded(&authority)
-            .map_err(|source| io_error("inspect-operational-state-migration", &root, source))?
-        {
-            return Err(corrupt("operational-state-migration-active"));
-        }
-        validate_runtime_attempt_inventory(&storage_root, &authority)?;
-        sync_directory(&storage_root)?;
-        let retention_state = load_or_create_retention_state(&storage_root)?;
+            .map_err(|source| anchored_ledger_error(source, "open-writer-lock"))?;
+        let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(lock_file)
+            .map_err(|source| anchored_ledger_error(source, "lock-writer"))?;
+        validate_runtime_attempt_inventory(&authority)?;
+        authority
+            .sync()
+            .map_err(|source| anchored_ledger_error(source, "sync-ledger-root"))?;
+        let retention_state = load_or_create_retention_state(&authority, &root)?;
         let ledger = Self {
             root,
             authority,
             writer_lock,
             retention_state,
         };
-        ledger.verify_runtime_fence()?;
-        Ok(ledger)
-    }
-
-    /// Opens an existing durable ledger without creating or repairing state.
-    ///
-    /// This form is used while a GC plan is still observational. The root,
-    /// writer lock, and retention state must already exist, and an absent
-    /// retention state is rejected rather than initialized.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AssignmentLedgerError`] when required state is absent or
-    /// malformed, another writer owns it, or the lock cannot be acquired.
-    pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self, AssignmentLedgerError> {
-        Self::open_existing_inner(root.into(), false)
-    }
-
-    pub(crate) fn open_existing_for_migration(
-        root: impl Into<PathBuf>,
-    ) -> Result<Self, AssignmentLedgerError> {
-        Self::open_existing_inner(root.into(), true)
-    }
-
-    fn open_existing_inner(
-        root: PathBuf,
-        permit_migration: bool,
-    ) -> Result<Self, AssignmentLedgerError> {
-        require_existing_directory(&root)?;
-        let authority =
-            crate::anchored_fs::AnchoredDirectory::new(root.clone()).map_err(|error| {
-                io_error(
-                    "open-anchored-ledger",
-                    &root,
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-                )
-            })?;
-        let storage_root = authority.anchored_path();
-        let lock_path = root.join("writer.lock");
-        let writer_lock = authority
-            .open_regular_optional(&lock_path, "open-writer-lock")
-            .map_err(|error| anchored_lock_error(error, "open-writer-lock", &lock_path))?
-            .ok_or_else(|| corrupt("writer-lock-missing"))?;
-        let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(writer_lock)
-            .map_err(|error| anchored_lock_error(error, "lock-writer", &lock_path))?;
-        if !permit_migration
-            && crate::operational_state_migration::receipt::marker_present_guarded(&authority)
-                .map_err(|source| io_error("inspect-operational-state-migration", &root, source))?
-        {
-            return Err(corrupt("operational-state-migration-active"));
-        }
-        if !permit_migration {
-            validate_runtime_attempt_inventory(&storage_root, &authority)?;
-        }
-        let retention_path = storage_root.join(RETENTION_STATE_FILE);
-        let retention_bytes = read_optional_with_limit(
-            &retention_path,
-            MAX_RETENTION_STATE_BYTES,
-            "retention-state-size",
-        )?
-        .ok_or_else(|| corrupt("retention-state-missing"))?;
-        let retention_state = decode_retention_state(&retention_bytes)?;
-        let ledger = Self {
-            root,
-            authority,
-            writer_lock,
-            retention_state,
-        };
-        ledger.verify_writer_authority()?;
+        ledger.verify_authority()?;
         Ok(ledger)
     }
 
@@ -1679,147 +1416,62 @@ impl DirectoryAssignmentLedger {
         &self.root
     }
 
-    pub(crate) fn authority(&self) -> &crate::anchored_fs::AnchoredDirectory {
-        &self.authority
-    }
-
-    pub(crate) fn verify_writer_authority(&self) -> Result<(), AssignmentLedgerError> {
-        self.writer_lock
-            .verify_path_binding()
-            .map_err(|error| anchored_lock_error(error, "verify-writer-lock", &self.root))?;
-        self.authority
-            .verify_path_binding()
-            .map_err(|error| anchored_lock_error(error, "verify-ledger-root", &self.root))
-    }
-
-    fn verify_runtime_fence(&self) -> Result<(), AssignmentLedgerError> {
-        self.verify_writer_authority()?;
-        if crate::operational_state_migration::receipt::marker_present_guarded(&self.authority)
-            .map_err(|source| io_error("inspect-operational-state-migration", &self.root, source))?
-        {
-            return Err(corrupt("operational-state-migration-active"));
-        }
-        self.verify_writer_authority()
-    }
-
-    /// Authenticates and converts legacy attempt records to v15.
-    ///
-    /// The ledger's exclusive writer lock remains held for the whole operation.
-    /// Every record is authenticated and staged before the first replacement.
-    /// The operation is idempotent after interruption.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AssignmentLedgerError`] when the inventory exceeds
-    /// `maximum_records`, any source record is invalid, or durable publication
-    /// fails.
-    pub(crate) fn migrate_attempt_records(
-        &self,
-        receipt_guard: &crate::anchored_fs::AnchoredDirectory,
-        maximum_entries: usize,
-        maximum_bytes: u64,
-    ) -> Result<AssignmentMigrationSummary, crate::OperationalStateMigrationError> {
-        migration::migrate_attempt_records(self, receipt_guard, maximum_entries, maximum_bytes)
-    }
-
-    #[cfg(test)]
-    fn migrate_attempt_records_for_test(
-        &self,
-        maximum_records: usize,
-    ) -> Result<AssignmentMigrationSummary, crate::OperationalStateMigrationError> {
-        let receipt_parent = tempfile::tempdir().map_err(|source| AssignmentLedgerError::Io {
-            operation: "create-test-migration-receipt",
-            path: self.root.clone(),
-            source,
-        })?;
-        let receipt = receipt_parent.path().join("receipt");
-        let receipt_guard =
-            crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
-                &receipt,
-            )?;
-        self.migrate_attempt_records(
-            &receipt_guard,
-            maximum_records.saturating_add(256),
-            u64::MAX,
-        )
-    }
-
     fn assignment_path(&self, assignment: AssignmentId) -> PathBuf {
         let encoded = encode_hex(&assignment.as_bytes());
-        self.authority
-            .anchored_path()
+        self.root
             .join("assignments")
             .join(&encoded[..2])
             .join(encoded)
     }
 
     fn attempt_path(&self, key: AttemptExecutionKey) -> PathBuf {
-        attempt_path_at(&self.authority.anchored_path(), key)
+        attempt_path_at(&self.root, key)
     }
 
     fn advance_retention_state(&mut self) -> Result<(), AssignmentLedgerError> {
-        self.verify_runtime_fence()?;
         let mut next = self.retention_state;
         next.advance()?;
-        persist_retention_state(&self.authority.anchored_path(), next)?;
+        self.verify_authority()?;
+        persist_retention_state(&self.authority, &self.root, next)?;
+        self.verify_authority()?;
         self.retention_state = next;
-        self.verify_runtime_fence()
+        Ok(())
     }
 
     fn visit_attempt_records(
         &self,
         visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
     ) -> Result<(), AssignmentLedgerError> {
-        self.verify_runtime_fence()?;
-        let complete = visit_directory_attempt_states_bounded_with_authority(
-            &self.authority.anchored_path(),
-            usize::MAX,
+        self.verify_authority()?;
+        let complete = visit_directory_attempt_states_with_authority(
             &self.authority,
+            &self.root,
+            MAX_RUNTIME_ATTEMPT_RECORDS,
             visitor,
         )?;
         if !complete {
-            return Err(corrupt(
-                "attempt-record-count-exceeds-process-address-space",
-            ));
+            return Err(corrupt("runtime-attempt-inventory-limit"));
         }
-        self.verify_runtime_fence()
+        self.verify_authority()?;
+        Ok(())
+    }
+
+    fn verify_authority(&self) -> Result<(), AssignmentLedgerError> {
+        self.writer_lock
+            .verify_path_binding()
+            .map_err(|source| anchored_ledger_error(source, "verify-writer-lock"))?;
+        self.authority
+            .verify_path_binding()
+            .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))
     }
 }
 
-impl DirectoryAssignmentRetentionReader {
-    /// Opens an authenticated ledger or represents an absent optional ledger.
-    ///
-    /// Only a missing root is treated as an empty ledger. A present root that
-    /// is inaccessible, malformed, incomplete, or concurrently owned fails
-    /// closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AssignmentLedgerError`] when present state cannot be
-    /// authenticated without creating or repairing any path.
-    pub fn open_optional_existing(root: impl Into<PathBuf>) -> Result<Self, AssignmentLedgerError> {
-        let root = root.into();
-        match fs::symlink_metadata(&root) {
-            Ok(_) => Ok(Self {
-                state: DirectoryAssignmentRetentionReaderState::Authenticated(
-                    DirectoryAssignmentLedger::open_existing(root)?,
-                ),
-            }),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Self {
-                state: DirectoryAssignmentRetentionReaderState::Absent,
-            }),
-            Err(source) => Err(io_error("inspect-optional-directory", &root, source)),
-        }
-    }
-
-    /// Reports whether an existing ledger was authenticated.
-    #[must_use]
-    pub const fn is_present(&self) -> bool {
-        matches!(
-            &self.state,
-            DirectoryAssignmentRetentionReaderState::Authenticated(_)
-        )
-    }
+fn anchored_ledger_error(
+    source: crate::anchored_fs::AnchoredFsError,
+    operation: &'static str,
+) -> AssignmentLedgerError {
+    let (operation, path, source) = source.into_io_parts(operation);
+    io_error(operation, &path, source)
 }
 
 fn attempt_path_at(root: &Path, key: AttemptExecutionKey) -> PathBuf {
@@ -1831,9 +1483,19 @@ fn attempt_path_at(root: &Path, key: AttemptExecutionKey) -> PathBuf {
 pub(crate) fn directory_assignment_retention_generation(
     root: &Path,
 ) -> Result<AssignmentRetentionGeneration, AssignmentLedgerError> {
+    let authority = crate::anchored_fs::AnchoredDirectory::open(root.to_owned())
+        .map_err(|source| anchored_ledger_error(source, "open-ledger-root"))?;
     let path = root.join(RETENTION_STATE_FILE);
-    let bytes = read_optional_with_limit(&path, MAX_RETENTION_STATE_BYTES, "retention-state-size")?
-        .ok_or_else(|| corrupt("retention-state-is-missing"))?;
+    let bytes = read_optional_with_limit(
+        &authority,
+        &path,
+        MAX_RETENTION_STATE_BYTES,
+        "retention-state-size",
+    )?
+    .ok_or_else(|| corrupt("retention-state-is-missing"))?;
+    authority
+        .verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))?;
     decode_retention_state(&bytes).map(AssignmentRetentionState::digest)
 }
 
@@ -1854,270 +1516,102 @@ pub fn visit_directory_attempt_states_bounded(
     maximum: usize,
     visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
 ) -> Result<bool, AssignmentLedgerError> {
-    let authority =
-        crate::anchored_fs::AnchoredDirectory::new(root.to_owned()).map_err(|error| {
-            let (operation, path, source) = error.into_io_parts("open-ledger-inventory-root");
-            io_error(operation, &path, source)
-        })?;
-    visit_directory_attempt_states_bounded_with_authority(root, maximum, &authority, visitor)
+    let authority = crate::anchored_fs::AnchoredDirectory::open(root.to_owned())
+        .map_err(|source| anchored_ledger_error(source, "open-ledger-root"))?;
+    visit_directory_attempt_states_with_authority(&authority, root, maximum, visitor)
 }
 
-fn visit_directory_attempt_states_bounded_with_authority(
+fn visit_directory_attempt_states_with_authority(
+    authority: &crate::anchored_fs::AnchoredDirectory,
     root: &Path,
     maximum: usize,
-    authority: &crate::anchored_fs::AnchoredDirectory,
     visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
 ) -> Result<bool, AssignmentLedgerError> {
-    visit_bounded_ledger_inventory(
-        root,
-        maximum,
-        crate::operational_state_migration::MAX_OPERATIONAL_STATE_RUNTIME_ENTRIES,
-        u64::MAX,
-        false,
-        Some(authority),
-        &mut |entry| {
-            let AttemptInventoryEntry::Record(path) = entry else {
-                return Ok(());
-            };
-            let bytes = read_optional_bounded(path)?
+    let attempts = root.join("attempts");
+    let Some(attempts_authority) = authority
+        .open_directory_optional(&attempts, "open-attempt-root")
+        .map_err(|source| anchored_ledger_error(source, "open-attempt-root"))?
+    else {
+        return Ok(true);
+    };
+    let shards = attempts_authority
+        .entry_names(MAX_RUNTIME_ATTEMPT_SHARDS, "read-attempt-root-shards")
+        .map_err(|source| anchored_ledger_error(source, "read-attempt-root-shards"))?;
+    let mut visited = 0_usize;
+    for shard_name in shards {
+        let shard_name = shard_name
+            .to_str()
+            .ok_or_else(|| corrupt("attempt-root-shard-name"))?;
+        if shard_name.len() != 2
+            || !shard_name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(corrupt("attempt-root-shard-name"));
+        }
+        let shard_path = attempts.join(shard_name);
+        let shard_authority = attempts_authority
+            .open_directory(&shard_path, "open-attempt-root-shard")
+            .map_err(|source| anchored_ledger_error(source, "open-attempt-root-shard"))?;
+        let records = shard_authority
+            .entry_names(MAX_RUNTIME_ATTEMPT_RECORDS, "read-attempt-root-records")
+            .map_err(|source| anchored_ledger_error(source, "read-attempt-root-records"))?;
+        for name in records {
+            let path = shard_path.join(&name);
+            let name = name
+                .to_str()
+                .ok_or_else(|| corrupt("attempt-root-record-name"))?;
+            if name.starts_with('.') {
+                return Err(corrupt("attempt-root-unknown-hidden-entry"));
+            }
+            if name.len() != 64
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(corrupt("attempt-root-record-name"));
+            }
+            if visited >= maximum {
+                return Ok(false);
+            }
+            let bytes = read_optional_bounded(&shard_authority, &path)?
                 .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
             let (key, state) = decode_attempt_state(&bytes)?;
             if attempt_path_at(root, key) != path {
                 return Err(corrupt("attempt-root-record-path-identity-mismatch"));
             }
             visitor(key, state);
-            Ok(())
-        },
-    )
+            visited = visited
+                .checked_add(1)
+                .ok_or_else(|| corrupt("attempt-record-count-overflow"))?;
+        }
+        shard_authority
+            .verify_path_binding()
+            .map_err(|source| anchored_ledger_error(source, "verify-attempt-root-shard"))?;
+    }
+    attempts_authority
+        .verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-attempt-root"))?;
+    authority
+        .verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))?;
+    Ok(true)
 }
 
 fn validate_runtime_attempt_inventory(
-    root: &Path,
     authority: &crate::anchored_fs::AnchoredDirectory,
 ) -> Result<(), AssignmentLedgerError> {
-    let maximum = crate::operational_state_migration::MAX_OPERATIONAL_STATE_RUNTIME_ENTRIES;
-    if visit_bounded_ledger_inventory(
-        root,
-        maximum,
-        maximum,
-        u64::MAX,
-        false,
-        Some(authority),
-        &mut |entry| {
-            let AttemptInventoryEntry::Record(path) = entry else {
-                return Ok(());
-            };
-            let bytes = read_optional_bounded(path)?
-                .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
-            decode_attempt_state(&bytes).map(|_| ())
-        },
-    )? {
+    let complete = visit_directory_attempt_states_with_authority(
+        authority,
+        authority.path(),
+        MAX_RUNTIME_ATTEMPT_RECORDS,
+        &mut |_key, _state| {},
+    )?;
+    if complete {
         Ok(())
     } else {
         Err(corrupt("runtime-attempt-inventory-limit"))
     }
-}
-
-const ATTEMPT_MIGRATION_OUTPUT_SCHEMA: &str = "crucible.executor.attempt-state-record.v15";
-
-fn sealed_assignment_cleanup_keys(
-    guard: &crate::anchored_fs::AnchoredDirectory,
-) -> Result<Option<std::collections::BTreeSet<String>>, AssignmentLedgerError> {
-    let Some(receipts) =
-        crate::operational_state_migration::receipt::completed_receipt_directory_guarded(guard)
-            .map_err(|source| {
-                io_error("open-completed-migration-receipts", guard.path(), source)
-            })?
-    else {
-        return Ok(None);
-    };
-    let receipt = crate::operational_state_migration::receipt::load_phase_receipt(
-        &receipts,
-        crate::operational_state_migration::receipt::ASSIGNMENT_RECEIPT,
-        ATTEMPT_MIGRATION_OUTPUT_SCHEMA,
-    )
-    .map_err(|_| corrupt("assignment-migration-receipt"))?
-    .ok_or_else(|| corrupt("assignment-migration-receipt-missing"))?;
-    Ok(Some(
-        receipt
-            .objects
-            .into_iter()
-            .filter(|object| object.key.starts_with("cleanup/"))
-            .map(|object| object.key)
-            .collect(),
-    ))
-}
-
-fn attempt_cleanup_key(
-    shard: &std::ffi::OsStr,
-    name: &std::ffi::OsStr,
-    device: u64,
-    inode: u64,
-) -> String {
-    let identity = crate::operational_state_migration::receipt::authenticated_id(
-        "crucible.assignment-migration-cleanup.v1",
-        &[
-            shard.as_bytes(),
-            name.as_bytes(),
-            &device.to_be_bytes(),
-            &inode.to_be_bytes(),
-        ],
-    );
-    format!("cleanup/{identity}")
-}
-
-enum AttemptInventoryEntry<'a> {
-    Record(&'a Path),
-    Staging(&'a Path),
-    Removal(&'a Path),
-    Tombstone,
-}
-
-fn visit_bounded_ledger_inventory(
-    root: &Path,
-    maximum_records: usize,
-    maximum_entries: usize,
-    maximum_bytes: u64,
-    permit_staging: bool,
-    authority: Option<&crate::anchored_fs::AnchoredDirectory>,
-    visitor: &mut dyn FnMut(AttemptInventoryEntry<'_>) -> Result<(), AssignmentLedgerError>,
-) -> Result<bool, AssignmentLedgerError> {
-    let cleanup_keys = if permit_staging {
-        None
-    } else {
-        sealed_assignment_cleanup_keys(
-            authority.ok_or_else(|| corrupt("ledger-inventory-authority-missing"))?,
-        )?
-    };
-    let mut pending = vec![root.to_owned()];
-    let mut entries = 0usize;
-    let mut bytes = 0u64;
-    let mut records = 0usize;
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)
-            .map_err(|source| io_error("read-bounded-ledger-inventory", &directory, source))?
-        {
-            let entry = entry.map_err(|source| {
-                io_error("read-bounded-ledger-inventory-entry", &directory, source)
-            })?;
-            entries = entries
-                .checked_add(1)
-                .ok_or_else(|| corrupt("ledger-inventory-entry-limit"))?;
-            if entries > maximum_entries {
-                return Err(corrupt("ledger-inventory-entry-limit"));
-            }
-            let path = entry.path();
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|source| io_error("inspect-ledger-inventory-entry", &path, source))?;
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| corrupt("ledger-inventory-path"))?;
-            let components = relative.iter().collect::<Vec<_>>();
-            if metadata.file_type().is_symlink() {
-                return Err(corrupt("ledger-inventory-symlink"));
-            }
-            if metadata.is_dir() {
-                let valid = match components.as_slice() {
-                    [kind] => *kind == "assignments" || *kind == "attempts",
-                    [kind, shard] => {
-                        (*kind == "assignments" || *kind == "attempts")
-                            && shard.to_str().is_some_and(|name| is_lower_hex(name, 2))
-                    }
-                    _ => false,
-                };
-                if !valid {
-                    return Err(corrupt("attempt-root-shard-shape"));
-                }
-                pending.push(path);
-            } else if metadata.is_file() {
-                bytes = bytes
-                    .checked_add(metadata.len())
-                    .ok_or_else(|| corrupt("ledger-inventory-byte-limit"))?;
-                if bytes > maximum_bytes {
-                    return Err(corrupt("ledger-inventory-byte-limit"));
-                }
-                match components.as_slice() {
-                    [name]
-                        if *name == "writer.lock"
-                            || *name == RETENTION_STATE_FILE
-                            || *name
-                                == crate::operational_state_migration::receipt::ACTIVE_MARKER => {}
-                    [kind, shard, name]
-                        if *kind == "assignments"
-                            && shard.to_str().is_some_and(|name| is_lower_hex(name, 2))
-                            && name.to_str().is_some_and(|name| is_lower_hex(name, 32)) => {}
-                    [kind, shard, name]
-                        if *kind == "attempts"
-                            && shard.to_str().is_some_and(|name| is_lower_hex(name, 2)) =>
-                    {
-                        let name = name
-                            .to_str()
-                            .ok_or_else(|| corrupt("attempt-root-record-name"))?;
-                        let removal =
-                            crate::anchored_fs::removal_original_name(std::ffi::OsStr::new(name));
-                        if is_lower_hex(name, 64) {
-                            if records >= maximum_records {
-                                return Ok(false);
-                            }
-                            records += 1;
-                            visitor(AttemptInventoryEntry::Record(&path))?;
-                        } else if permit_staging && is_staging_name(name) {
-                            visitor(AttemptInventoryEntry::Staging(&path))?;
-                        } else if removal
-                            .as_deref()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(is_staging_name)
-                        {
-                            if permit_staging {
-                                visitor(AttemptInventoryEntry::Removal(&path))?;
-                            } else if metadata.len() == 0
-                                && cleanup_keys.as_ref().is_some_and(|keys| {
-                                    removal.as_deref().is_some_and(|logical_name| {
-                                        keys.contains(&attempt_cleanup_key(
-                                            shard,
-                                            logical_name,
-                                            metadata.dev(),
-                                            metadata.ino(),
-                                        ))
-                                    })
-                                })
-                            {
-                                visitor(AttemptInventoryEntry::Tombstone)?;
-                            } else {
-                                return Err(corrupt("attempt-root-record-shape"));
-                            }
-                        } else {
-                            return Err(corrupt("attempt-root-record-shape"));
-                        }
-                    }
-                    _ => return Err(corrupt("ledger-inventory-root-shape")),
-                }
-            } else {
-                return Err(corrupt("ledger-inventory-entry-type"));
-            }
-        }
-    }
-    Ok(true)
-}
-
-fn is_lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn is_staging_name(name: &str) -> bool {
-    let Some((process, ordinal)) = name
-        .strip_prefix(".staging-")
-        .and_then(|s| s.split_once('-'))
-    else {
-        return false;
-    };
-    !process.is_empty()
-        && process.bytes().all(|byte| byte.is_ascii_digit())
-        && !ordinal.is_empty()
-        && ordinal.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 impl AssignmentLedger for DirectoryAssignmentLedger {
@@ -2127,18 +1621,16 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &self,
         assignment: AssignmentId,
     ) -> Result<Option<AssignmentRecord>, Self::Error> {
-        self.verify_runtime_fence()?;
+        self.verify_authority()?;
         let path = self.assignment_path(assignment);
-        let Some(bytes) = read_optional_bounded(&path)? else {
-            self.verify_runtime_fence()?;
+        let Some(bytes) = read_optional_bounded(&self.authority, &path)? else {
             return Ok(None);
         };
-        sync_record_parent(&path)?;
+        sync_record_parent(&self.authority, &path)?;
         let record = decode_assignment_record(&bytes)?;
         if record.request.assignment() != assignment {
             return Err(corrupt("assignment-path-identity-mismatch"));
         }
-        self.verify_runtime_fence()?;
         Ok(Some(record))
     }
 
@@ -2146,7 +1638,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &mut self,
         record: &AssignmentRecord,
     ) -> Result<AssignmentPublish, Self::Error> {
-        self.verify_runtime_fence()?;
+        self.verify_authority()?;
         let assignment = record.request.assignment();
         if let Some(existing) = self.load_assignment(assignment)? {
             return Ok(if existing == *record {
@@ -2157,40 +1649,36 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         }
 
         let path = self.assignment_path(assignment);
-        let published = publish_immutable(&path, &encode_assignment_record(record))?;
+        let published =
+            publish_immutable(&self.authority, &path, &encode_assignment_record(record))?;
+        self.verify_authority()?;
         if published {
-            self.verify_runtime_fence()?;
             return Ok(AssignmentPublish::Stored);
         }
         let existing = self
             .load_assignment(assignment)?
             .ok_or_else(|| corrupt("assignment-publish-lost-race"))?;
-        let disposition = if existing == *record {
+        Ok(if existing == *record {
             AssignmentPublish::Existing
         } else {
             AssignmentPublish::Conflict
-        };
-        self.verify_runtime_fence()?;
-        Ok(disposition)
+        })
     }
 
     fn load_attempt(
         &self,
         key: AttemptExecutionKey,
     ) -> Result<Option<AttemptRuntimeState>, Self::Error> {
-        self.verify_runtime_fence()?;
+        self.verify_authority()?;
         let path = self.attempt_path(key);
-        let Some(bytes) = read_optional_bounded(&path)? else {
-            sync_record_parent_if_present(&path)?;
-            self.verify_runtime_fence()?;
+        let Some(bytes) = read_optional_bounded(&self.authority, &path)? else {
             return Ok(None);
         };
-        sync_record_parent(&path)?;
+        sync_record_parent(&self.authority, &path)?;
         let (recorded_key, state) = decode_attempt_state(&bytes)?;
         if recorded_key != key {
             return Err(corrupt("attempt-path-identity-mismatch"));
         }
-        self.verify_runtime_fence()?;
         Ok(Some(state))
     }
 
@@ -2200,7 +1688,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         expected: Option<AttemptRuntimeState>,
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptStateCas, Self::Error> {
-        self.verify_runtime_fence()?;
+        self.verify_authority()?;
         if next.is_some_and(|state| !state.validates_for_key(key)) {
             return Err(corrupt("attempt-state-does-not-match-execution-scope"));
         }
@@ -2211,10 +1699,12 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         self.advance_retention_state()?;
         let path = self.attempt_path(key);
         match next {
-            Some(next) => replace_mutable(&path, &encode_attempt_state(key, next))?,
-            None => remove_mutable(&path)?,
+            Some(next) => {
+                replace_mutable(&self.authority, &path, &encode_attempt_state(key, next))?
+            }
+            None => remove_mutable(&self.authority, &path)?,
         }
-        self.verify_runtime_fence()?;
+        self.verify_authority()?;
         Ok(AttemptStateCas::Advanced)
     }
 
@@ -2259,25 +1749,8 @@ impl AssignmentRetentionAdmin for DirectoryAssignmentLedger {
     }
 }
 
-impl AssignmentRetentionAdmin for DirectoryAssignmentRetentionReader {
-    type Error = AssignmentLedgerError;
-
-    fn acquire_retention_fence(&mut self) -> AssignmentRetentionFenceResult<'_, Self::Error> {
-        Ok(Box::new(DirectoryAssignmentRetentionReaderFence {
-            state: &mut self.state,
-        }))
-    }
-}
-
-type AssignmentRetentionFenceResult<'a, BackendError> =
-    Result<Box<dyn AssignmentRetentionFence<BackendError = BackendError> + 'a>, BackendError>;
-
 struct DirectoryAssignmentRetentionFence<'a> {
     ledger: &'a mut DirectoryAssignmentLedger,
-}
-
-struct DirectoryAssignmentRetentionReaderFence<'a> {
-    state: &'a mut DirectoryAssignmentRetentionReaderState,
 }
 
 impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
@@ -2325,65 +1798,181 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
     }
 }
 
-impl AssignmentRetentionFence for DirectoryAssignmentRetentionReaderFence<'_> {
-    type BackendError = AssignmentLedgerError;
+fn read_optional_bounded(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+) -> Result<Option<Vec<u8>>, AssignmentLedgerError> {
+    read_optional_with_limit(authority, path, MAX_LEDGER_RECORD_BYTES, "record-size")
+}
 
-    fn visit_roots(
-        &mut self,
-        visitor: &mut dyn FnMut(
-            AssignmentRetentionRoot,
-        ) -> Result<(), AssignmentRetentionVisitorError>,
-    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>
-    {
-        match self.state {
-            DirectoryAssignmentRetentionReaderState::Authenticated(ledger) => {
-                DirectoryAssignmentRetentionFence { ledger }.visit_roots(visitor)
-            }
-            DirectoryAssignmentRetentionReaderState::Absent => {
-                let generation = AssignmentRetentionGeneration::from_bytes(
-                    CampaignHash::derive(ABSENT_RETENTION_GENERATION_DOMAIN, &[]).as_bytes(),
-                );
-                Ok(AssignmentRetentionSummary::new(generation, 0, 0, 0, 0))
-            }
-        }
+fn read_optional_with_limit(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+    limit: u64,
+    size_reason: &'static str,
+) -> Result<Option<Vec<u8>>, AssignmentLedgerError> {
+    let Some(file) = authority
+        .open_regular_optional(path, "open-record")
+        .map_err(|source| anchored_ledger_error(source, "open-record"))?
+    else {
+        return Ok(None);
+    };
+    let bytes = file
+        .read_bounded(limit)
+        .map_err(|source| anchored_ledger_error(source, "read-record"))?;
+    if bytes.len() as u64 > limit {
+        return Err(corrupt(size_reason));
     }
+    file.verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-record"))?;
+    authority
+        .verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))?;
+    Ok(Some(bytes))
+}
 
-    fn load_attempt(
-        &mut self,
-        key: AttemptExecutionKey,
-    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError> {
-        match self.state {
-            DirectoryAssignmentRetentionReaderState::Authenticated(ledger) => {
-                ledger.load_attempt(key)
-            }
-            DirectoryAssignmentRetentionReaderState::Absent => Ok(None),
-        }
-    }
+fn publish_immutable(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<bool, AssignmentLedgerError> {
+    let directory = record_directory(authority, path)?;
+    let staging = create_staging(&directory)?;
+    staging
+        .write_all_sync(bytes)
+        .map_err(|source| anchored_ledger_error(source, "write-assignment-staging"))?;
+    let published = directory
+        .link_file_noreplace(&staging, path, "publish-assignment")
+        .map_err(|source| anchored_ledger_error(source, "publish-assignment"))?;
+    directory
+        .remove_file(&staging, "remove-assignment-staging")
+        .map_err(|source| anchored_ledger_error(source, "remove-assignment-staging"))?;
+    directory
+        .sync()
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))?;
+    Ok(published)
+}
 
-    fn compare_exchange_attempt(
-        &mut self,
-        key: AttemptExecutionKey,
-        expected: Option<AttemptRuntimeState>,
-        next: Option<AttemptRuntimeState>,
-    ) -> Result<AttemptStateCas, Self::BackendError> {
-        match self.state {
-            DirectoryAssignmentRetentionReaderState::Authenticated(ledger) => {
-                ledger.compare_exchange_attempt(key, expected, next)
+fn replace_mutable(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), AssignmentLedgerError> {
+    let directory = record_directory(authority, path)?;
+    let staging = create_staging(&directory)?;
+    staging
+        .write_all_sync(bytes)
+        .map_err(|source| anchored_ledger_error(source, "write-attempt-staging"))?;
+    directory
+        .rename_file(&staging, path, false, "publish-attempt-state")
+        .map_err(|source| anchored_ledger_error(source, "publish-attempt-state"))?;
+    directory
+        .sync()
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))
+}
+
+fn remove_mutable(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+) -> Result<(), AssignmentLedgerError> {
+    authority
+        .remove_regular_optional(path, "remove-attempt-state")
+        .map_err(|source| anchored_ledger_error(source, "remove-attempt-state"))?;
+    authority
+        .sync_parent(path, "sync-record-directory")
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))
+}
+
+fn record_directory(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+) -> Result<crate::anchored_fs::AnchoredDirectory, AssignmentLedgerError> {
+    let directory = path
+        .parent()
+        .ok_or_else(|| corrupt("record-path-has-no-parent"))?;
+    authority
+        .ensure_directory(directory, "create-record-directory")
+        .map_err(|source| anchored_ledger_error(source, "create-record-directory"))
+}
+
+fn sync_record_parent(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+) -> Result<(), AssignmentLedgerError> {
+    authority
+        .sync_parent(path, "sync-record-directory")
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))
+}
+
+fn create_staging(
+    directory: &crate::anchored_fs::AnchoredDirectory,
+) -> Result<crate::anchored_fs::AnchoredFile, AssignmentLedgerError> {
+    loop {
+        let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = directory
+            .path()
+            .join(format!(".staging-{}-{ordinal}", std::process::id()));
+        match directory.create_new_regular(&path, "create-staging") {
+            Ok(file) => return Ok(file),
+            Err(crate::anchored_fs::AnchoredFsError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                continue;
             }
-            DirectoryAssignmentRetentionReaderState::Absent => {
-                Ok(AttemptStateCas::Conflict { current: None })
-            }
+            Err(source) => return Err(anchored_ledger_error(source, "create-staging")),
         }
     }
 }
 
-mod codec;
-mod migration;
+fn create_directory_durable(path: &Path) -> Result<(), AssignmentLedgerError> {
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        return Ok(());
+    }
+    if path.is_dir() {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| corrupt("directory-has-no-parent"))?;
+    if parent != path {
+        create_directory_durable(parent)?;
+    }
+    match fs::create_dir(path) {
+        Ok(()) => sync_directory(parent),
+        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {
+            Ok(())
+        }
+        Err(source) => Err(io_error("create-directory", path, source)),
+    }
+}
 
-#[cfg(test)]
-use migration::*;
+fn sync_directory(path: &Path) -> Result<(), AssignmentLedgerError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| io_error("sync-directory", path, source))
+}
 
-use codec::*;
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn corrupt(reason: &'static str) -> AssignmentLedgerError {
+    AssignmentLedgerError::Corrupt { reason }
+}
+
+fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> AssignmentLedgerError {
+    AssignmentLedgerError::Io {
+        operation,
+        path: path.to_path_buf(),
+        source,
+    }
+}
 
 #[cfg(test)]
 mod tests;

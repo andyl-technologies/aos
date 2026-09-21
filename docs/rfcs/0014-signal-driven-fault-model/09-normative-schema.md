@@ -18,12 +18,11 @@ fault_model = "signal_bindings_v2"
 seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 
-Version 6 introduced the scenario-owned measurement-definition component
-specified by RFC-0020 §08.2-§08.3. Version 7 adds the scenario-owned selectable
-catalog and its declaration/request ceilings specified by RFC-0020 §02. Normal
-TOML and compact-binary admission accepts version 7 only; versions 5 and 6 fail
-closed. Reproduction artifacts likewise require outer version 7 carrying a
-version-7 scenario form.
+Version 7 contains the scenario-owned measurement-definition component from
+RFC-0020 §08.2-§08.3 and the scenario-owned selectable catalog and ceilings
+from RFC-0020 §02. Current readers and writers accept only version 7. Any other
+TOML document, compact scenario envelope, or reproduction artifact is rejected
+before it can enter the model.
 
 The canonical v7 `[scenario]` table additionally carries the nonzero bounded
 `selectable_declarations_per_node`, `selectable_declarations_per_world`,
@@ -305,10 +304,9 @@ semantic_version = 1
 state = "down"
 ```
 
-`signal = "id"` is accepted only as canonical input syntax for exactly one
-signal and serializes as `signals = ["id"]`. `sampling` is `at_boundary`,
-`at_opportunity`, `at_change`, an explicit positive `cadence_nanos`, or
-`at_event`. An `at_event` binding requires an `event_parent` table whose kind is
+`signals` is a nonempty list. `sampling` is `at_boundary`, `at_opportunity`,
+`at_change`, an explicit positive `cadence_nanos`, or `at_event`. An `at_event`
+binding requires an `event_parent` table whose kind is
 exactly `virtual_time`, `opportunity_operation`, `opportunity_state`, or
 `node_counter`; `node_counter` also requires a stable node signal ID. Event
 inputs and their declared parent projection are canonical identity, and an
@@ -548,7 +546,7 @@ in schema order and arrays in canonical or semantic order as appropriate.
 
 ## 9.10 Network adapter checkpoint encoding
 
-Network adapter checkpoint semantic version 7 encodes the evaluation
+Network adapter checkpoint semantic version 8 encodes the evaluation
 coordinate, per-coordinate and journal sequences, observation journal, token
 buckets, queues, burst state, state machines, connection tables, shared-medium
 ledgers, backpressure, custody queues, contact-service reservations, and all
@@ -563,7 +561,7 @@ The enclosing production fault-runtime checkpoint is version 4 and binds the
 network adapter bytes to the scheduler network checkpoint, committed scheduler
 frontier, pending routed frames, live QEMU node snapshots, and the canonical
 network-state digest. The QEMU node-continuation checkpoint is independently
-version 3. For each node it captures both shared-memory network rings, the next
+version 7. For each node it captures both shared-memory network rings, the next
 router-to-plugin producer sequence, the next host-consumer sequence for the
 plugin-to-router ring, and the next plugin-producer sequence after all live
 outbound frames. Restore requires the live outbound frames to form the exact

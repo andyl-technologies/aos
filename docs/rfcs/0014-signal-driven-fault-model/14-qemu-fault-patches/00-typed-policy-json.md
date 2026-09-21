@@ -334,6 +334,6 @@ to select exactly one shape above. It must reject `null`, `{}`, the right shape
 in the wrong field, unknown/missing/duplicate members, wrong scalar types,
 unknown variants, noncanonical bytes, limit violations, inconsistent optional
 presence flags, and trailing data. Each policy variant has a positive vector and
-at least one negative vector in the live QEMU microtests. Patch 0070's final
+at least one negative vector in the live QEMU microtests. Capability task 0070's final
 gate feeds every accepted host vector through the independently compiled C
 parser and compares its typed re-encoding/digest with the host golden.

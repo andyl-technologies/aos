@@ -91,7 +91,7 @@
       }
       {
         label = "ceiling acquire load";
-        needle = "pub fn load_node_ceiling";
+        needle = "pub fn load_scheduler_advance";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [

@@ -15,11 +15,9 @@ use thiserror::Error;
 
 mod app_random;
 mod resource_limits;
-mod state_dump;
 mod whitebox;
 pub use app_random::{
-    AppRandomArgsParseError, PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER,
-    PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS, PLUGIN_ARG_APP_RANDOM_BRANCH_SEED,
+    AppRandomArgsParseError, PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS,
     PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS, PLUGIN_ARG_APP_RANDOM_CAP,
     PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET, PLUGIN_ARG_APP_RANDOM_NODE, PLUGIN_ARG_APP_RANDOM_POSITIONS,
     PLUGIN_ARG_APP_RANDOM_SEED, PluginAppRandomConfig,
@@ -28,9 +26,6 @@ pub use resource_limits::{
     HARD_STORAGE_COMPLETED_HISTORY_EPOCHS, HARD_STORAGE_COMPLETED_HISTORY_GAPS,
     PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS, PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS,
     PluginStorageHistoryLimits,
-};
-pub use state_dump::{
-    PLUGIN_ARG_STATE_DUMP_PATH, PLUGIN_ARG_STATE_DUMP_TARGET, PluginStateDumpConfig,
 };
 pub use whitebox::{
     WHITEBOX_SETUP_AARCH64_HINT_INERT_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
@@ -58,10 +53,6 @@ pub const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 /// The optional single-VM fingerprint sampling switch argument key.
 pub const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
-/// The optional fingerprint capture-mode argument key.
-pub const PLUGIN_ARG_FINGERPRINT_MODE: &str = "fingerprint_mode";
-/// The optional gate-only synchronous fingerprint-oracle switch argument key.
-pub const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
 /// Parsed QEMU plugin launch arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginArgs {
@@ -77,9 +68,6 @@ pub struct PluginArgs {
     app_random: Option<PluginAppRandomConfig>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
-    fingerprint_mode: PluginFingerprintSamplingMode,
-    fingerprint_oracle: PluginSwitch,
-    state_dump: Option<PluginStateDumpConfig>,
 }
 
 impl PluginArgs {
@@ -105,18 +93,6 @@ impl PluginArgs {
         let app_random = app_random::parse(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
-        let fingerprint_mode = parse_optional_fingerprint_mode(&parsed)?;
-        if fingerprint_mode == PluginFingerprintSamplingMode::OnDemand && !fingerprint.is_on() {
-            return Err(PluginArgsParseError::FingerprintModeWithoutFingerprint);
-        }
-        let fingerprint_oracle = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT_ORACLE)?;
-        if fingerprint_oracle.is_on() && !fingerprint.is_on() {
-            return Err(PluginArgsParseError::FingerprintOracleWithoutFingerprint);
-        }
-        let state_dump = state_dump::parse(&parsed, fingerprint)?;
-        if fingerprint_mode == PluginFingerprintSamplingMode::OnDemand && state_dump.is_some() {
-            return Err(PluginArgsParseError::StateDumpWithOnDemandFingerprint);
-        }
         let inherited_fds = parse_inherited_fds(&parsed)?;
 
         Ok(Self {
@@ -132,9 +108,6 @@ impl PluginArgs {
             app_random,
             coverage,
             fingerprint,
-            fingerprint_mode,
-            fingerprint_oracle,
-            state_dump,
         })
     }
 
@@ -210,24 +183,6 @@ impl PluginArgs {
         self.fingerprint
     }
 
-    /// Returns the immutable fingerprint capture mode for this process.
-    #[must_use]
-    pub const fn fingerprint_mode(&self) -> PluginFingerprintSamplingMode {
-        self.fingerprint_mode
-    }
-
-    /// Returns whether gate-only synchronous fingerprint comparison is enabled.
-    #[must_use]
-    pub const fn fingerprint_oracle(&self) -> PluginSwitch {
-        self.fingerprint_oracle
-    }
-
-    /// Returns the optional exact-boundary terminal raw-state dump request.
-    #[must_use]
-    pub const fn state_dump(&self) -> Option<&PluginStateDumpConfig> {
-        self.state_dump.as_ref()
-    }
-
     /// Validates the slot against the host-advertised node count.
     ///
     /// # Errors
@@ -274,16 +229,6 @@ impl PluginSwitch {
     pub const fn is_on(self) -> bool {
         matches!(self, Self::On)
     }
-}
-
-/// Controls when an enabled sampler captures exact guest state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PluginFingerprintSamplingMode {
-    /// Captures at every exact scheduler quantum and explicit control boundary.
-    #[default]
-    EveryQuantum,
-    /// Captures only at an explicitly requested control boundary.
-    OnDemand,
 }
 
 /// An error produced while parsing QEMU plugin launch arguments.
@@ -387,39 +332,6 @@ pub enum PluginArgsParseError {
     /// Only one of the inherited descriptor keys was supplied.
     #[error("plugin inherited descriptors require both `shmemfd` and `wakefd`")]
     IncompleteInheritedDescriptors,
-    /// Only one member of the terminal state-dump argument pair was supplied.
-    #[error("plugin terminal state dump requires both target and output path")]
-    IncompleteStateDump,
-    /// A terminal state dump was requested without fingerprint boundary sampling.
-    #[error("plugin terminal state dump requires `fingerprint=on`")]
-    StateDumpWithoutFingerprint,
-    /// The synchronous oracle was requested without fingerprint boundary sampling.
-    #[error("plugin fingerprint oracle requires `fingerprint=on`")]
-    FingerprintOracleWithoutFingerprint,
-    /// A non-default fingerprint mode was requested without fingerprint sampling.
-    #[error("plugin fingerprint capture mode requires `fingerprint=on`")]
-    FingerprintModeWithoutFingerprint,
-    /// A terminal state dump depends on automatic exact-ceiling sampling.
-    #[error("plugin terminal state dump is incompatible with on-demand fingerprint mode")]
-    StateDumpWithOnDemandFingerprint,
-    /// The fingerprint capture mode was not a supported canonical value.
-    #[error("plugin fingerprint mode is invalid: `{value}`")]
-    InvalidFingerprintMode {
-        /// Rejected mode text.
-        value: String,
-    },
-    /// The terminal state-dump target was not a nonzero instruction count.
-    #[error("plugin state-dump target is invalid: `{value}`")]
-    InvalidStateDumpTarget {
-        /// Rejected target text.
-        value: String,
-    },
-    /// The terminal state-dump path was not an absolute comma-free path.
-    #[error("plugin state-dump path is invalid: `{value}`")]
-    InvalidStateDumpPath {
-        /// Rejected path text.
-        value: String,
-    },
     /// The slot was not within `0..node_count`.
     #[error("plugin slot {slot} is outside 0..{node_count}")]
     SlotOutOfRange {
@@ -552,7 +464,7 @@ fn parse_required_hash(
         });
     }
     let mut hash = [0_u8; 32];
-    for (output, pair) in hash.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+    for (output, pair) in hash.iter_mut().zip(value.as_bytes().as_chunks::<2>().0) {
         let high = hex_nibble(pair[0]).ok_or_else(|| PluginArgsParseError::InvalidHash {
             key,
             value: value.to_owned(),
@@ -594,18 +506,6 @@ fn parse_optional_switch(
     }
 }
 
-fn parse_optional_fingerprint_mode(
-    parsed: &ParsedPluginArgs<'_>,
-) -> Result<PluginFingerprintSamplingMode, PluginArgsParseError> {
-    match parsed.value(PLUGIN_ARG_FINGERPRINT_MODE) {
-        Some("every-quantum") | None => Ok(PluginFingerprintSamplingMode::EveryQuantum),
-        Some("on-demand-v1") => Ok(PluginFingerprintSamplingMode::OnDemand),
-        Some(value) => Err(PluginArgsParseError::InvalidFingerprintMode {
-            value: value.to_owned(),
-        }),
-    }
-}
-
 fn parse_inherited_fds(
     parsed: &ParsedPluginArgs<'_>,
 ) -> Result<Option<PluginInheritedFds>, PluginArgsParseError> {
@@ -635,11 +535,8 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_WHITEBOX_SETUP
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
-            | PLUGIN_ARG_FINGERPRINT_MODE
-            | PLUGIN_ARG_FINGERPRINT_ORACLE
     ) || app_random::is_key(key)
         || resource_limits::is_key(key)
-        || state_dump::is_key(key)
 }
 
 #[cfg(test)]

@@ -52,7 +52,7 @@ test that enforces it, and a back-pointer to the defining section.
 | `SCHED` | Cross-node scheduling | 08 |
 | `TIME` | Virtual time / icount | 09 |
 | `QEMU` | QEMU integration (host side) | 10 |
-| `PATCH` | QEMU patch series | 11 |
+| `PATCH` | atomic QEMU patch | 11 |
 | `PLUG` | QEMU plugin (in-VM) | 12 |
 | `BOUND` | Licensing and Crucible/QEMU process boundary | 37 |
 | `SHM` | Shared-memory co-sim ABI | 13 |

@@ -6,10 +6,8 @@
 //! lock is released. Publication and ledger failures retain their phase token
 //! and retry that phase without re-running modeled execution.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
@@ -19,18 +17,15 @@ use crate::executor_supervisor::LocalExecutionActivity;
 use crucible_api::{
     ProductionExactCheckpointRetirement, retire_production_exact_checkpoint_catalog,
 };
-#[cfg(test)]
-use crucible_campaign::CampaignExecutorPublicationGuard;
 use crucible_campaign::{
     AttemptExecutionScope, CampaignExecutorStore, CampaignRepositoryGcExclusionGuard,
     CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExactCheckpointId,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
     ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
-    FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition,
-    FindingExactRetentionIncomplete, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptRequest,
-    SubmitAttemptResponse, WatchExecutorCapacityRequest,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, SubmitAttemptRequest, SubmitAttemptResponse,
+    WatchExecutorCapacityRequest,
 };
 
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
@@ -41,48 +36,30 @@ use crate::{
     AttemptWorkerFailure, AttemptWorkerReconcileError, CapturedAttemptCheckpoint,
     CheckpointHandoffFailure, CheckpointPublicationOutcome, CheckpointResultAbortToken,
     CheckpointResultStageOutcome, CompletionValidationFailure, DirectoryPreparedResultJournal,
-    ExactCheckpointStore, FindingReplayCaptureStore, HotCheckpointFallback, LocalAttemptWorker,
+    ExactCheckpointStore, FindingReplayCaptureStore, LocalAttemptWorker,
     LocalExecutorCapabilityService, LocalExecutorError, LocalExecutorSupervisor,
     PreparedAttemptCheckpoint, PreparedAttemptRecoveryOutcome, PreparedAttemptResult,
-    PreparedAttemptWorkResult, PreparedCheckpointResult, PreparedFindingExactRetention,
-    PreparedResultJournalError, PublishedAttemptResult, QueuedAttempt, StagedAttemptResult,
+    PreparedAttemptWorkResult, PreparedCheckpointResult, PreparedResultJournalError,
+    PreparedResultJournalNamespace, PublishedAttemptResult, QueuedAttempt, StagedAttemptResult,
     abort_checkpoint_result, abort_prepared_attempt_result, abort_published_attempt_result,
     abort_staged_attempt_result, journal_prepared_attempt_result, prepare_attempt_result,
     publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
     reconcile_published_attempt_result, reconcile_published_checkpoint_result,
     recover_prepared_attempt_result, retry_pending_attempt_result, retry_pending_checkpoint_result,
-    stage_prepared_attempt_result, stage_prepared_checkpoint_result,
+    stage_prepared_attempt_result, stage_prepared_attempt_result_journal,
+    stage_prepared_checkpoint_result,
 };
 
 mod completion;
 pub use completion::LocalExecutorPoolCompletion;
 use completion::{PoolCompletionState, WorkerCompletion};
-
 mod promotion;
-pub use promotion::{
-    LocalCheckpointPromotionWorker, MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE,
-    MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS, ProductionCheckpointPromotionWorker,
-};
-use promotion::{PromotionQueue, promotion_worker_loop};
-
-struct DisabledCheckpointPromotionWorker;
-
-impl LocalCheckpointPromotionWorker for DisabledCheckpointPromotionWorker {
-    type Error = ();
-
-    fn prepare(
-        &mut self,
-        _work: crate::CheckpointPromotionRestartWork,
-        _cancellation: crate::ExecutionCancellation,
-    ) -> Result<crate::PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>>
-    {
-        Err(AttemptWorkerFailure::Terminal(()))
-    }
-}
+use promotion::{DisabledCheckpointPromotionWorker, PromotionQueue, promotion_worker_loop};
+pub(crate) use promotion::{LocalCheckpointPromotionWorker, ProductionCheckpointPromotionWorker};
+pub use promotion::{MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE, MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS};
 
 /// Maximum execution threads accepted by one local executor pool.
 pub const MAX_LOCAL_EXECUTOR_WORKERS: usize = 256;
-
 const WORKER_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 pub(crate) const WORKER_SHUTDOWN_WAIT: Duration = Duration::from_secs(30);
 const POOL_RUNNING: u8 = 0;
@@ -92,55 +69,18 @@ const POOL_POISONED: u8 = 2;
 /// Durable prepared-result location used by production semantic workers.
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedResultJournalConfig {
-    pub(crate) namespace: crate::PreparedResultJournalNamespace,
+    namespace: PreparedResultJournalNamespace,
     maximum_payload_bytes: usize,
-    #[cfg(test)]
-    before_journal: Option<Arc<PreparedResultJournalTestBarrier>>,
 }
 
 impl PreparedResultJournalConfig {
     pub(crate) fn new(
-        namespace: PathBuf,
+        namespace: PreparedResultJournalNamespace,
         maximum_payload_bytes: usize,
-    ) -> Result<Self, PreparedResultJournalError> {
-        Ok(Self {
-            namespace: crate::PreparedResultJournalNamespace::open(namespace)?,
-            maximum_payload_bytes,
-            #[cfg(test)]
-            before_journal: None,
-        })
-    }
-
-    #[cfg(test)]
-    fn with_before_journal_barrier(
-        mut self,
-        barrier: Arc<PreparedResultJournalTestBarrier>,
     ) -> Self {
-        self.before_journal = Some(barrier);
-        self
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-struct PreparedResultJournalTestBarrier {
-    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
-    release: Arc<(Mutex<bool>, Condvar)>,
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used)]
-impl PreparedResultJournalTestBarrier {
-    fn wait(&self) {
-        let Some(entered) = self.entered.lock().expect("journal barrier signal").take() else {
-            return;
-        };
-        entered.send(()).expect("journal barrier observer");
-
-        let (released, changed) = self.release.as_ref();
-        let mut released = released.lock().expect("journal barrier release");
-        while !*released {
-            released = changed.wait(released).expect("journal barrier wake");
+        Self {
+            namespace,
+            maximum_payload_bytes,
         }
     }
 }
@@ -436,7 +376,6 @@ where
             Vec::<DisabledCheckpointPromotionWorker>::new(),
             None,
             None,
-            None,
         )
     }
 
@@ -448,7 +387,6 @@ where
         workers: Vec<W>,
         checkpoint_observer: Arc<dyn PausedCheckpointObserver>,
         prepared_results: Option<PreparedResultJournalConfig>,
-        hot_checkpoint_retention: Option<Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
@@ -461,51 +399,10 @@ where
             Vec::<DisabledCheckpointPromotionWorker>::new(),
             Some(checkpoint_observer),
             prepared_results,
-            hot_checkpoint_retention,
-        )
-    }
-
-    /// Starts fixed semantic and paused-checkpoint promotion workers.
-    ///
-    /// Startup inventories compact raw/staged promotion records before any
-    /// service handle is returned. Promotion workers run repository, QEMU, and
-    /// immutable-store phases outside supervisor ownership and borrow the actor
-    /// only for exact ledger transitions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid semantic or promotion worker counts, more
-    /// than 65,536 durable restart items, an unreadable restart inventory, or an
-    /// operating-system thread-spawn failure.
-    pub fn start_with_checkpoint_promotions<W, P>(
-        executor: LocalExecutorCapabilityService<L, V>,
-        store: CampaignExecutorStore,
-        checkpoints: Arc<ExactCheckpointStore>,
-        workers: Vec<W>,
-        promotion_workers: Vec<P>,
-    ) -> Result<Self, LocalExecutorPoolConfigError>
-    where
-        W: LocalAttemptWorker + Send + 'static,
-        P: LocalCheckpointPromotionWorker + Send + 'static,
-    {
-        if promotion_workers.is_empty() {
-            return Err(LocalExecutorPoolConfigError::ZeroPromotionWorkers);
-        }
-        Self::start_inner(
-            executor,
-            store,
-            checkpoints,
-            workers,
-            promotion_workers,
-            None,
-            None,
-            None,
         )
     }
 
     /// Starts fixed semantic and promotion workers with one paused-root owner.
-    // crucible-lint: allow rust-allow -- pool startup keeps each independently owned worker authority explicit.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_with_checkpoint_promotions_and_observer<W, P>(
         executor: LocalExecutorCapabilityService<L, V>,
         store: CampaignExecutorStore,
@@ -514,7 +411,6 @@ where
         promotion_workers: Vec<P>,
         checkpoint_observer: Arc<dyn PausedCheckpointObserver>,
         prepared_results: Option<PreparedResultJournalConfig>,
-        hot_checkpoint_retention: Option<Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
@@ -531,12 +427,9 @@ where
             promotion_workers,
             Some(checkpoint_observer),
             prepared_results,
-            hot_checkpoint_retention,
         )
     }
 
-    // crucible-lint: allow rust-allow -- the private constructor preserves the public startup boundaries without a second configuration model.
-    #[allow(clippy::too_many_arguments)]
     fn start_inner<W, P>(
         executor: LocalExecutorCapabilityService<L, V>,
         store: CampaignExecutorStore,
@@ -545,7 +438,6 @@ where
         promotion_workers: Vec<P>,
         checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
         prepared_results: Option<PreparedResultJournalConfig>,
-        hot_checkpoint_retention: Option<Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
@@ -603,7 +495,6 @@ where
             restart_work,
             checkpoint_observer,
             prepared_results,
-            hot_checkpoint_retention,
         ));
         let total_workers = worker_count
             .checked_add(promotion_worker_count)
@@ -1013,14 +904,11 @@ struct SharedExecutor<L, V> {
     promotion_worker_count: usize,
     checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
     prepared_results: Option<PreparedResultJournalConfig>,
-    hot_checkpoint_retention: Option<Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>>,
     completion: Arc<PoolCompletionState>,
     counters: PoolCounters,
 }
 
 impl<L, V> SharedExecutor<L, V> {
-    // crucible-lint: allow rust-allow -- shared state construction keeps worker counts and optional publication authorities explicit.
-    #[allow(clippy::too_many_arguments)]
     fn new(
         executor: LocalExecutorCapabilityService<L, V>,
         checkpoints: Arc<ExactCheckpointStore>,
@@ -1029,7 +917,6 @@ impl<L, V> SharedExecutor<L, V> {
         restart_work: Vec<crate::CheckpointPromotionRestartWork>,
         checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
         prepared_results: Option<PreparedResultJournalConfig>,
-        hot_checkpoint_retention: Option<Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>>,
     ) -> Self {
         let validator = executor.supervisor().admission_validator();
         Self {
@@ -1044,7 +931,6 @@ impl<L, V> SharedExecutor<L, V> {
             promotion_worker_count,
             checkpoint_observer,
             prepared_results,
-            hot_checkpoint_retention,
             completion: Arc::new(PoolCompletionState::new(
                 worker_count.saturating_add(promotion_worker_count),
             )),
@@ -1212,10 +1098,8 @@ where
             }
             match shared
                 .checkpoints
-                .prepare_attempt_checkpoint_with_cancellation(
-                    capture.reopenable_copy(),
-                    self.queued.cancellation(),
-                ) {
+                .prepare_attempt_checkpoint_with_cancellation(capture, self.queued.cancellation())
+            {
                 Ok(prepared) => break prepared,
                 Err(crate::ExactCheckpointStoreError::Canceled) => {
                     return Err(CheckpointHandoffFailure::Canceled);
@@ -1444,7 +1328,6 @@ fn worker_loop<L, V, W>(
 {
     loop {
         let Some(queued) = take_next_queued(&shared) else {
-            complete_native_checkpoint_cleanup(&shared, worker.take_abandoned_native_checkpoint());
             return;
         };
         let queued = match recover_before_execution(&shared, &store, queued) {
@@ -1465,18 +1348,8 @@ fn worker_loop<L, V, W>(
         let cancellation = queued.cancellation().clone();
         match catch_unwind(AssertUnwindSafe(|| worker.execute(queued))) {
             Ok(work) if cancellation.is_canceled() => {
-                let (queued, result, abandoned_checkpoint) = work.into_parts();
-                complete_native_checkpoint_cleanup(&shared, abandoned_checkpoint);
-                let produced_result = match result {
-                    Ok(product) => {
-                        retire_native_checkpoint_source(
-                            &shared,
-                            product.into_abandoned_retirement(),
-                        );
-                        true
-                    }
-                    Err(_) => false,
-                };
+                let (queued, result) = work.into_parts();
+                let produced_result = result.is_ok();
                 reconcile_worker_failure(&shared, queued, AttemptWorkerFailure::Canceled(()));
                 if produced_result {
                     reconcile_worker_execution(
@@ -1494,10 +1367,6 @@ fn worker_loop<L, V, W>(
             Err(_) => {
                 shared.poison();
                 reconcile_panicked_worker(&shared, key, execution);
-                complete_native_checkpoint_cleanup(
-                    &shared,
-                    worker.take_abandoned_native_checkpoint(),
-                );
             }
         }
     }
@@ -1531,8 +1400,13 @@ where
             reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
             return RecoveryDisposition::Stopped;
         }
-        if !recover_or_remove_staged_journal(shared, config, &queued) {
-            return RecoveryDisposition::Stopped;
+        match recover_or_remove_staged_journal(shared, config, &queued) {
+            Ok(true) => {}
+            Ok(false) => return RecoveryDisposition::Stopped,
+            Err(source) => {
+                reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+                return RecoveryDisposition::Stopped;
+            }
         }
         match recover_prepared_attempt_result(
             store,
@@ -1567,7 +1441,7 @@ fn recover_or_remove_staged_journal<L, V>(
     shared: &SharedExecutor<L, V>,
     config: &PreparedResultJournalConfig,
     queued: &QueuedAttempt,
-) -> bool
+) -> Result<bool, PreparedResultJournalError>
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
@@ -1580,7 +1454,7 @@ where
                 Err(poisoned) => {
                     drop(poisoned.into_inner());
                     shared.poison();
-                    return false;
+                    return Ok(false);
                 }
             };
             match executor.supervisor().ledger().load_attempt(key) {
@@ -1604,21 +1478,15 @@ where
                 thread::sleep(WORKER_RETRY_INTERVAL);
                 continue;
             }
-            Err(_) => {
-                shared.poison();
-                return false;
-            }
+            Err(source) => return Err(source),
         };
         let Some(mut staged) = staged else {
-            return true;
+            return Ok(true);
         };
 
         let Some(AttemptRuntimeState::Publishing {
             observation,
             finding_candidate,
-            finding_replay_captures,
-            finding_exact_retention_roots,
-            prepared_result_digest,
             ..
         }) = state
         else {
@@ -1627,99 +1495,34 @@ where
                 &config.namespace,
                 key,
             ) {
-                Ok(_) => return true,
+                Ok(_) => return Ok(true),
                 Err(PreparedResultJournalError::Io { .. }) => {
                     increment(&shared.counters.publication_retries);
                     thread::sleep(WORKER_RETRY_INTERVAL);
                     continue;
                 }
-                Err(_) => {
-                    shared.poison();
-                    return false;
-                }
+                Err(source) => return Err(source),
             }
         };
-        let Some((
-            journal_observation,
-            journal_candidate,
-            journal_captures,
-            journal_exact_roots,
-            journal_digest,
-        )) = prepared_journal_publication_identity(&staged)
-        else {
+        let journal_observation = staged.result().observation().observation().id();
+        let journal_candidate = staged
+            .result()
+            .finding()
+            .map(crate::PreparedCrucibleFindingCandidate::id)
+            .transpose();
+        if journal_observation != Ok(observation) || journal_candidate != Ok(finding_candidate) {
             shared.poison();
-            return false;
-        };
-        let common_identity_matches = journal_observation == observation
-            && journal_candidate == finding_candidate
-            && journal_captures == finding_replay_captures;
-        let versioned_identity_matches = match prepared_result_digest {
-            Some(digest) => {
-                journal_exact_roots == finding_exact_retention_roots
-                    && journal_digest == Some(digest)
-            }
-            None => finding_exact_retention_roots == [None; 3] && journal_exact_roots == [None; 3],
-        };
-        if !common_identity_matches || !versioned_identity_matches {
-            shared.poison();
-            return false;
+            return Ok(false);
         }
         match staged.commit_staged() {
-            Ok(()) => return true,
+            Ok(()) => return Ok(true),
             Err(PreparedResultJournalError::Io { .. }) => {
                 increment(&shared.counters.publication_retries);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(_) => {
-                shared.poison();
-                return false;
-            }
+            Err(source) => return Err(source),
         }
     }
-}
-
-type PreparedJournalPublicationIdentity = (
-    crucible_campaign::ObservationId,
-    Option<crucible_campaign::FindingCandidateBundleId>,
-    Option<crucible_campaign::FindingReplayCaptureSet>,
-    [Option<ExactCheckpointId>; 3],
-    Option<crucible_campaign::CampaignHash>,
-);
-
-fn prepared_journal_publication_identity(
-    journal: &DirectoryPreparedResultJournal,
-) -> Option<PreparedJournalPublicationIdentity> {
-    let observation = journal.result().observation().observation().id().ok()?;
-    let finding = journal.result().finding();
-    let finding_candidate = finding
-        .map(crate::PreparedCrucibleFindingCandidate::id)
-        .transpose()
-        .ok()?;
-    let finding_replay_captures = finding.and_then(|finding| finding.bundle().replay_captures());
-    let mut roots = [None; 3];
-    if let Some(bundle) = finding.map(|finding| finding.bundle())
-        && bundle.exact_retention().is_some_and(|retention| {
-            retention.disposition() == FindingExactRetentionDisposition::Complete
-        })
-    {
-        for (slot, root) in roots
-            .iter_mut()
-            .zip(bundle.exact_pins().all().iter().copied())
-        {
-            *slot = Some(root);
-        }
-        if bundle.exact_pins().all().len() > roots.len() {
-            return None;
-        }
-    }
-    let prepared_result_digest = journal.prepared_result_digest();
-    Some((
-        observation,
-        finding_candidate,
-        finding_replay_captures,
-        roots,
-        Some(prepared_result_digest),
-    ))
 }
 
 fn recovery_failure_is_retryable(source: &AttemptResultRecoveryFailure) -> bool {
@@ -1784,17 +1587,9 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    let (queued, result, abandoned_checkpoint) = work.into_parts();
-    complete_native_checkpoint_cleanup(shared, abandoned_checkpoint);
-    let work = crate::AttemptWorkResult::new(queued, result);
     let prepared = match prepare_attempt_result(store, &shared.checkpoints, work) {
         Ok(prepared) => prepared,
-        Err(AttemptResultPreparationError::Worker {
-            queued,
-            failure,
-            retirement,
-        }) => {
-            complete_native_checkpoint_cleanup(shared, retirement);
+        Err(AttemptResultPreparationError::Worker { queued, failure }) => {
             reconcile_worker_failure(shared, *queued, failure);
             return None;
         }
@@ -1803,12 +1598,12 @@ where
             mut source,
         }) => loop {
             if pending.queued().cancellation().is_canceled() {
-                let queued = retire_pending_attempt_result(shared, *pending);
+                let (queued, _) = pending.into_parts();
                 reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
                 return Some(AttemptExecutionDisposition::Canceled);
             }
             if source.executor_rejection() != ExecutorRejection::UnavailableInput {
-                let queued = retire_pending_attempt_result(shared, *pending);
+                let (queued, _) = pending.into_parts();
                 reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
                 return Some(AttemptExecutionDisposition::Failed);
             }
@@ -1825,17 +1620,12 @@ where
                     pending = next;
                     source = next_source;
                 }
-                Err(AttemptResultPreparationError::Worker {
-                    queued,
-                    failure,
-                    retirement,
-                }) => {
-                    complete_native_checkpoint_cleanup(shared, retirement);
+                Err(AttemptResultPreparationError::Worker { queued, failure }) => {
                     reconcile_worker_failure(shared, *queued, failure);
                     return None;
                 }
                 Err(AttemptResultPreparationError::Checkpoint { pending, source }) => {
-                    let queued = retire_pending_checkpoint_result(shared, *pending);
+                    let (queued, _) = pending.into_parts();
                     reconcile_worker_failure(
                         shared,
                         queued,
@@ -1850,12 +1640,12 @@ where
             mut source,
         }) => loop {
             if pending.queued().cancellation().is_canceled() {
-                let queued = retire_pending_checkpoint_result(shared, *pending);
+                let (queued, _) = pending.into_parts();
                 reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
                 return Some(AttemptExecutionDisposition::Canceled);
             }
             if !source.is_retryable() {
-                let queued = retire_pending_checkpoint_result(shared, *pending);
+                let (queued, _) = pending.into_parts();
                 reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
                 return Some(AttemptExecutionDisposition::Failed);
             }
@@ -1872,17 +1662,12 @@ where
                     pending = next;
                     source = next_source;
                 }
-                Err(AttemptResultPreparationError::Worker {
-                    queued,
-                    failure,
-                    retirement,
-                }) => {
-                    complete_native_checkpoint_cleanup(shared, retirement);
+                Err(AttemptResultPreparationError::Worker { queued, failure }) => {
                     reconcile_worker_failure(shared, *queued, failure);
                     return None;
                 }
                 Err(AttemptResultPreparationError::Candidate { pending, source }) => {
-                    let queued = retire_pending_attempt_result(shared, *pending);
+                    let (queued, _) = pending.into_parts();
                     reconcile_worker_failure(
                         shared,
                         queued,
@@ -1922,36 +1707,6 @@ where
     Some(reconcile_prepared_result(shared, store, prepared))
 }
 
-fn retire_pending_attempt_result<L, V>(
-    shared: &SharedExecutor<L, V>,
-    pending: crate::PendingAttemptResult,
-) -> QueuedAttempt
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let (queued, _candidate, retention) = pending.into_parts();
-    let retirement = retention
-        .as_ref()
-        .and_then(PreparedFindingExactRetention::checkpoint)
-        .and_then(CapturedAttemptCheckpoint::native_retirement);
-    retire_native_checkpoint_source(shared, retirement);
-    queued
-}
-
-fn retire_pending_checkpoint_result<L, V>(
-    shared: &SharedExecutor<L, V>,
-    pending: crate::PendingCheckpointResult,
-) -> QueuedAttempt
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let (queued, checkpoint) = pending.into_parts();
-    retire_native_checkpoint_source(shared, checkpoint.native_retirement());
-    queued
-}
-
 enum CaptureRootDisposition {
     Prepared {
         prepared: Box<PreparedAttemptResult>,
@@ -1978,52 +1733,56 @@ where
         Some(Err(source)) => return stop_capture_handoff(shared, prepared, source),
         None => None,
     };
-    let exact_retention = prepared
-        .take_finding_exact_retention()
-        .map(|retention| prepare_finding_exact_retention(shared, retention));
-    if captures.is_none() && exact_retention.is_none() {
-        return CaptureRootDisposition::Prepared {
-            prepared: Box::new(prepared),
-            journaled: false,
-        };
+    let Some(config) = &shared.prepared_results else {
+        if captures.is_none() {
+            return CaptureRootDisposition::Prepared {
+                prepared: Box::new(prepared),
+                journaled: false,
+            };
+        }
+        return stop_capture_handoff(
+            shared,
+            prepared,
+            crate::PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding replay capture requires prepared-result journal",
+            },
+        );
     };
 
-    let guard = loop {
-        if prepared.queued().cancellation().is_canceled() {
-            retire_prepared_finding_exact_retention(shared, exact_retention);
-            abort_prepared(shared, prepared);
-            return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
-        }
-        match store.acquire_finding_replay_publication_guard() {
-            Ok(guard) => break guard,
-            Err(source) if source.executor_rejection() == ExecutorRejection::UnavailableInput => {
-                increment(&shared.counters.publication_retries);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(source) => {
-                retire_prepared_finding_exact_retention(shared, exact_retention);
-                return stop_capture_handoff(shared, prepared, source);
-            }
-        }
-    };
-
-    if let Some(captures) = &captures {
-        loop {
+    let guard = if captures.is_some() {
+        Some(loop {
             if prepared.queued().cancellation().is_canceled() {
-                drop(guard);
-                retire_prepared_finding_exact_retention(shared, exact_retention);
                 abort_prepared(shared, prepared);
                 return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
             }
-            match FindingReplayCaptureStore::publish_set(&guard, captures) {
+            match store.acquire_finding_replay_publication_guard() {
+                Ok(guard) => break guard,
+                Err(source)
+                    if source.executor_rejection() == ExecutorRejection::UnavailableInput =>
+                {
+                    increment(&shared.counters.publication_retries);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                }
+                Err(source) => return stop_capture_handoff(shared, prepared, source),
+            }
+        })
+    } else {
+        None
+    };
+
+    if let (Some(guard), Some(captures)) = (&guard, &captures) {
+        loop {
+            if prepared.queued().cancellation().is_canceled() {
+                abort_prepared(shared, prepared);
+                return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
+            }
+            match FindingReplayCaptureStore::publish_set(guard, captures) {
                 Ok(()) => break,
                 Err(source) if source.is_retryable() => {
                     increment(&shared.counters.publication_retries);
                     thread::sleep(WORKER_RETRY_INTERVAL);
                 }
                 Err(source) => {
-                    drop(guard);
-                    retire_prepared_finding_exact_retention(shared, exact_retention);
                     return stop_capture_handoff(shared, prepared, source);
                 }
             }
@@ -2034,53 +1793,41 @@ where
         && let Err(source) = prepared.bind_production_replay_captures(captures.references())
     {
         drop(guard);
-        retire_prepared_finding_exact_retention(shared, exact_retention);
-        return stop_capture_handoff(shared, prepared, source);
-    }
-    if let Some(exact_retention) = exact_retention
-        && let Err(source) = bind_finding_exact_retention(shared, &mut prepared, exact_retention)
-    {
-        drop(guard);
         return stop_capture_handoff(shared, prepared, source);
     }
 
-    if prepared.result().finding().is_some_and(|finding| {
-        matches!(
-            finding
-                .bundle()
-                .exact_retention()
-                .map(|retention| retention.disposition()),
-            Some(FindingExactRetentionDisposition::Complete)
-        )
-    }) {
-        loop {
-            if prepared.queued().cancellation().is_canceled() {
-                drop(guard);
-                abort_prepared(shared, prepared);
-                return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
+    let mut prepared = loop {
+        if prepared.queued().cancellation().is_canceled() {
+            drop(guard);
+            abort_prepared(shared, prepared);
+            return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
+        }
+        match stage_prepared_attempt_result_journal(
+            &config.namespace,
+            config.maximum_payload_bytes,
+            prepared,
+        ) {
+            Ok((journaled, _)) => break journaled,
+            Err(error)
+                if matches!(error.source.as_ref(), PreparedResultJournalError::Io { .. }) =>
+            {
+                prepared = *error.prepared;
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            match crate::executor_worker::publish_prepared_semantic_attempt_result(
-                store,
-                prepared.result(),
-            ) {
-                Ok(_) => break,
-                Err(source)
-                    if source.executor_rejection() == ExecutorRejection::UnavailableInput =>
-                {
-                    increment(&shared.counters.publication_retries);
-                    thread::sleep(WORKER_RETRY_INTERVAL);
+            Err(error) => {
+                drop(guard);
+                match (*error.prepared).into_queued_without_journal() {
+                    Ok(queued) => reconcile_worker_failure(
+                        shared,
+                        queued,
+                        AttemptWorkerFailure::Terminal(*error.source),
+                    ),
+                    Err(prepared) => retain_forever(shared, prepared),
                 }
-                Err(source) => {
-                    drop(guard);
-                    return stop_capture_handoff(shared, prepared, source);
-                }
+                return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Failed);
             }
         }
-    }
-
-    let Some(mut prepared) = stage_journal_before_publication_root(shared, prepared) else {
-        drop(guard);
-        return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Failed);
     };
 
     loop {
@@ -2093,28 +1840,8 @@ where
         match stage_prepared_attempt_result(executor.supervisor_mut(), prepared) {
             Ok(AttemptResultStageOutcome::Publish(staged)) => {
                 drop(executor);
-                let mut prepared = (*staged).into_prepared();
-                loop {
-                    match prepared.commit_staged_journal() {
-                        Ok(journaled) => {
-                            prepared = journaled;
-                            break;
-                        }
-                        Err(error)
-                            if matches!(error.source, PreparedResultJournalError::Io { .. }) =>
-                        {
-                            prepared = *error.prepared;
-                            increment(&shared.counters.publication_retries);
-                            thread::sleep(WORKER_RETRY_INTERVAL);
-                        }
-                        Err(error) => retain_forever(shared, (error.prepared, guard)),
-                    }
-                }
-                drop(guard);
-                return CaptureRootDisposition::Prepared {
-                    prepared: Box::new(prepared),
-                    journaled: true,
-                };
+                prepared = (*staged).into_prepared();
+                break;
             }
             Ok(AttemptResultStageOutcome::Finished { prepared, outcome }) => {
                 drop(executor);
@@ -2138,247 +1865,40 @@ where
             }
         }
     }
-}
 
-fn stage_journal_before_publication_root<L, V>(
-    shared: &SharedExecutor<L, V>,
-    mut prepared: PreparedAttemptResult,
-) -> Option<PreparedAttemptResult>
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let Some(config) = &shared.prepared_results else {
-        return Some(prepared);
-    };
     loop {
-        if prepared.queued().cancellation().is_canceled() {
-            abort_prepared(shared, prepared);
-            return None;
-        }
-        #[cfg(test)]
-        if let Some(barrier) = &config.before_journal {
-            barrier.wait();
-        }
-        match crate::stage_prepared_attempt_result_journal(
-            &config.namespace,
-            config.maximum_payload_bytes,
-            prepared,
-        ) {
-            Ok((journaled, _)) => return Some(journaled),
-            Err(error) if matches!(error.source, PreparedResultJournalError::Io { .. }) => {
+        match prepared.commit_staged_journal() {
+            Ok(journaled) => {
+                drop(guard);
+                return CaptureRootDisposition::Prepared {
+                    prepared: Box::new(journaled),
+                    journaled: true,
+                };
+            }
+            Err(error)
+                if matches!(error.source.as_ref(), PreparedResultJournalError::Io { .. }) =>
+            {
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(error) => {
-                let source = error.source;
-                match (*error.prepared).into_queued_without_journal() {
-                    Ok(queued) => reconcile_worker_failure(
-                        shared,
-                        queued,
-                        AttemptWorkerFailure::Terminal(source),
-                    ),
-                    Err(prepared) => retain_forever(shared, prepared),
-                }
-                return None;
-            }
+            Err(error) => retain_forever(shared, (error.prepared, guard)),
         }
     }
 }
-
-#[cfg(test)]
-fn journal_before_releasing_finding_guard<L, V>(
-    shared: &SharedExecutor<L, V>,
-    prepared: PreparedAttemptResult,
-    guard: CampaignExecutorPublicationGuard<'_>,
-) -> Option<PreparedAttemptResult>
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let journaled = journal_before_stage(shared, prepared);
-    drop(guard);
-    journaled
-}
-
-enum PreparedFindingExactRetentionPhase {
-    Disabled {
-        basis: crucible_campaign::AttemptRetentionPolicyBasis,
-    },
-    Incomplete {
-        basis: crucible_campaign::AttemptRetentionPolicyBasis,
-        reason: FindingExactRetentionIncomplete,
-        retirement: Option<ProductionExactCheckpointRetirement>,
-    },
-    Captured {
-        basis: crucible_campaign::AttemptRetentionPolicyBasis,
-        checkpoint: PreparedAttemptCheckpoint,
-        retirement: Option<ProductionExactCheckpointRetirement>,
-    },
-}
-
-fn prepare_finding_exact_retention<L, V>(
-    shared: &SharedExecutor<L, V>,
-    retention: PreparedFindingExactRetention,
-) -> PreparedFindingExactRetentionPhase
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    match retention {
-        PreparedFindingExactRetention::Disabled { basis } => {
-            PreparedFindingExactRetentionPhase::Disabled { basis }
-        }
-        PreparedFindingExactRetention::Incomplete {
-            basis,
-            reason,
-            discarded_checkpoint,
-        } => PreparedFindingExactRetentionPhase::Incomplete {
-            basis,
-            reason,
-            retirement: discarded_checkpoint
-                .as_ref()
-                .and_then(CapturedAttemptCheckpoint::native_retirement),
-        },
-        PreparedFindingExactRetention::Captured { basis, checkpoint } => {
-            let retirement = checkpoint.native_retirement();
-            match shared.checkpoints.prepare_attempt_checkpoint(checkpoint) {
-                Ok(checkpoint) => PreparedFindingExactRetentionPhase::Captured {
-                    basis,
-                    checkpoint,
-                    retirement,
-                },
-                Err(_) => PreparedFindingExactRetentionPhase::Incomplete {
-                    basis,
-                    reason: FindingExactRetentionIncomplete::CandidateAuthenticationFailed,
-                    retirement,
-                },
-            }
-        }
-    }
-}
-
-fn retire_prepared_finding_exact_retention<L, V>(
-    shared: &SharedExecutor<L, V>,
-    retention: Option<PreparedFindingExactRetentionPhase>,
-) where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let retirement = retention.and_then(|retention| match retention {
-        PreparedFindingExactRetentionPhase::Disabled { .. } => None,
-        PreparedFindingExactRetentionPhase::Incomplete { retirement, .. }
-        | PreparedFindingExactRetentionPhase::Captured { retirement, .. } => retirement,
-    });
-    retire_native_checkpoint_source(shared, retirement);
-}
-
-fn bind_finding_exact_retention<L, V>(
-    shared: &SharedExecutor<L, V>,
-    prepared: &mut PreparedAttemptResult,
-    retention: PreparedFindingExactRetentionPhase,
-) -> Result<(), crate::PreparedSemanticResultCodecError>
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let (basis, exact_pins, authenticated_candidates, disposition, retirement, evidence) =
-        match retention {
-            PreparedFindingExactRetentionPhase::Disabled { basis } => (
-                basis,
-                FindingExactPins::default(),
-                0,
-                FindingExactRetentionDisposition::Disabled,
-                None,
-                None,
-            ),
-            PreparedFindingExactRetentionPhase::Incomplete {
-                basis,
-                reason,
-                retirement,
-            } => (
-                basis,
-                FindingExactPins::default(),
-                0,
-                FindingExactRetentionDisposition::Incomplete(reason),
-                retirement,
-                None,
-            ),
-            PreparedFindingExactRetentionPhase::Captured {
-                basis,
-                checkpoint,
-                retirement,
-            } => {
-                let publication = shared.checkpoints.publish_attempt_checkpoint(&checkpoint);
-                let selected = match publication {
-                    Ok(publication) => {
-                        select_finding_exact_retention(shared, prepared, publication.root())
-                    }
-                    Err(_) => Err(FindingExactRetentionIncomplete::DurableStagingFailed),
-                };
-                match selected {
-                    Ok((pins, candidates, evidence)) => (
-                        basis,
-                        pins,
-                        candidates,
-                        FindingExactRetentionDisposition::Complete,
-                        retirement,
-                        Some(evidence),
-                    ),
-                    Err(reason) => (
-                        basis,
-                        FindingExactPins::default(),
-                        0,
-                        FindingExactRetentionDisposition::Incomplete(reason),
-                        retirement,
-                        None,
-                    ),
-                }
-            }
-        };
-
-    retire_native_checkpoint_source(shared, retirement);
-    let exact_retention = FindingExactRetention::new(
-        basis.snapshot(),
-        basis.policy(),
-        basis.admission(),
-        authenticated_candidates,
-        disposition,
-    )
-    .map_err(|_| crate::PreparedSemanticResultCodecError::Inconsistent {
-        component: "finding exact retention evidence",
-    })?;
-    prepared.bind_finding_exact_retention(exact_pins, exact_retention, evidence)
-}
-
-mod finding_retention;
-
-use finding_retention::select_finding_exact_retention;
-pub(crate) use finding_retention::{
-    FindingExactCandidateAccumulator, select_finding_exact_retention_from_candidates,
-};
 
 fn stop_capture_handoff<L, V, E>(
     shared: &SharedExecutor<L, V>,
-    mut prepared: PreparedAttemptResult,
+    prepared: PreparedAttemptResult,
     source: E,
 ) -> CaptureRootDisposition
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    let native_retirement = prepared
-        .take_finding_exact_retention()
-        .and_then(|retention| {
-            retention
-                .checkpoint()
-                .and_then(CapturedAttemptCheckpoint::native_retirement)
-        });
-    retire_native_checkpoint_source(shared, native_retirement);
     match prepared.into_queued_without_journal() {
         Ok(queued) => {
-            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source))
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
         }
         Err(prepared) => retain_forever(shared, prepared),
     }
@@ -2401,29 +1921,25 @@ where
             abort_prepared(shared, prepared);
             return None;
         }
-        #[cfg(test)]
-        if let Some(barrier) = &config.before_journal {
-            barrier.wait();
-        }
         match journal_prepared_attempt_result(
             &config.namespace,
             config.maximum_payload_bytes,
             prepared,
         ) {
             Ok((journaled, _)) => return Some(journaled),
-            Err(error) if matches!(error.source, PreparedResultJournalError::Io { .. }) => {
-                prepared = *error.prepared;
-                increment(&shared.counters.publication_retries);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
             Err(error) => {
-                let source = error.source;
+                if matches!(error.source.as_ref(), PreparedResultJournalError::Io { .. }) {
+                    prepared = *error.prepared;
+                    increment(&shared.counters.publication_retries);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                    continue;
+                }
                 match (*error.prepared).into_queued_without_journal() {
                     Ok(queued) => {
                         reconcile_worker_failure(
                             shared,
                             queued,
-                            AttemptWorkerFailure::Terminal(source),
+                            AttemptWorkerFailure::Terminal(*error.source),
                         );
                     }
                     Err(prepared) => retain_forever(shared, prepared),
@@ -2657,74 +2173,19 @@ fn retire_native_checkpoint_source<L, V>(
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    if let Some(retirement) = retire_native_checkpoint_source_until_terminal(shared, retirement) {
-        retain_forever(shared, retirement);
-    }
-}
-
-fn retire_native_checkpoint_source_until_terminal<L, V>(
-    shared: &SharedExecutor<L, V>,
-    retirement: Option<ProductionExactCheckpointRetirement>,
-) -> Option<ProductionExactCheckpointRetirement>
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let retirement = retirement?;
+    let Some(retirement) = retirement else {
+        return;
+    };
     loop {
         match retire_production_exact_checkpoint_catalog(&retirement) {
-            Ok(_) => return None,
+            Ok(_) => return,
             Err(error) if error.is_retryable() => {
                 increment(&shared.counters.publication_retries);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(_) => return Some(retirement),
+            Err(_) => retain_forever(shared, retirement),
         }
     }
-}
-
-fn complete_native_checkpoint_cleanup<L, V>(
-    shared: &SharedExecutor<L, V>,
-    cleanup: Option<crate::NativeCheckpointCleanup>,
-) where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let Some(cleanup) = cleanup else {
-        return;
-    };
-    let (retirements, mut quarantines) = partition_native_checkpoint_cleanup(cleanup);
-    for retirement in retirements {
-        if let Some(retirement) =
-            retire_native_checkpoint_source_until_terminal(shared, Some(retirement))
-        {
-            quarantines.push(retirement);
-        }
-    }
-    if !quarantines.is_empty() {
-        retain_forever(shared, quarantines);
-    }
-}
-
-fn partition_native_checkpoint_cleanup(
-    cleanup: crate::NativeCheckpointCleanup,
-) -> (
-    Vec<ProductionExactCheckpointRetirement>,
-    Vec<ProductionExactCheckpointRetirement>,
-) {
-    let mut retirements = Vec::new();
-    let mut quarantines = Vec::new();
-    let mut pending = vec![cleanup];
-    while let Some(cleanup) = pending.pop() {
-        match cleanup {
-            crate::NativeCheckpointCleanup::Retire(retirement) => retirements.push(retirement),
-            crate::NativeCheckpointCleanup::Quarantine(retirement) => {
-                quarantines.push(retirement);
-            }
-            crate::NativeCheckpointCleanup::Batch(cleanups) => pending.extend(cleanups),
-        }
-    }
-    (retirements, quarantines)
 }
 
 fn record_checkpoint_stage_outcome<L, V>(
@@ -2776,9 +2237,491 @@ fn observe_promoted_checkpoint<L, V>(
     true
 }
 
-mod reconciliation;
+enum StageDisposition {
+    Publish(Box<StagedAttemptResult>),
+    Finished(AttemptExecutionDisposition),
+}
 
-use reconciliation::*;
+enum PublishDisposition {
+    Published(Box<PublishedAttemptResult>),
+    Finished(AttemptExecutionDisposition),
+}
+
+fn stage_prepared<L, V>(
+    shared: &SharedExecutor<L, V>,
+    mut prepared: PreparedAttemptResult,
+) -> StageDisposition
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        if prepared.queued().cancellation().is_canceled() {
+            abort_prepared(shared, prepared);
+            return StageDisposition::Finished(AttemptExecutionDisposition::Canceled);
+        }
+        let mut executor = lock_or_retain(shared, &prepared);
+        match stage_prepared_attempt_result(executor.supervisor_mut(), prepared) {
+            Ok(AttemptResultStageOutcome::Publish(staged)) => {
+                return StageDisposition::Publish(staged);
+            }
+            Ok(AttemptResultStageOutcome::Finished { prepared, outcome }) => {
+                drop(executor);
+                cleanup_prepared_journal(shared, *prepared);
+                record_outcome(shared, outcome);
+                return StageDisposition::Finished(worker_reconcile_disposition(outcome));
+            }
+            Err(error) if supervisor_error_is_retryable(&error.source) => {
+                prepared = *error.prepared;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                prepared = *error.prepared;
+                drop(executor);
+                abort_prepared(shared, prepared);
+                return StageDisposition::Finished(AttemptExecutionDisposition::Failed);
+            }
+        }
+    }
+}
+
+fn publish_staged<L, V>(
+    shared: &SharedExecutor<L, V>,
+    store: &CampaignExecutorStore,
+    mut staged: Box<StagedAttemptResult>,
+) -> PublishDisposition
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        if staged.queued().cancellation().is_canceled() {
+            abort_staged(shared, staged);
+            return PublishDisposition::Finished(AttemptExecutionDisposition::Canceled);
+        }
+        let exact_authenticator =
+            crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator::new(
+                store,
+                &shared.checkpoints,
+            );
+        match publish_prepared_attempt_result(store, &exact_authenticator, staged) {
+            Ok(published) => return PublishDisposition::Published(Box::new(published)),
+            Err(error)
+                if error.source.executor_rejection() == ExecutorRejection::UnavailableInput =>
+            {
+                staged = error.staged;
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                abort_staged(shared, error.staged);
+                return PublishDisposition::Finished(AttemptExecutionDisposition::Failed);
+            }
+        }
+    }
+}
+
+fn reconcile_published<L, V>(
+    shared: &SharedExecutor<L, V>,
+    mut published: PublishedAttemptResult,
+) -> AttemptExecutionDisposition
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        if published.queued().cancellation().is_canceled() {
+            abort_published(shared, published);
+            return AttemptExecutionDisposition::Canceled;
+        }
+        let mut executor = lock_or_retain(shared, &published);
+        match reconcile_published_attempt_result::<L, V, ()>(executor.supervisor_mut(), published) {
+            Ok(outcome) => {
+                record_outcome(shared, outcome);
+                return worker_reconcile_disposition(outcome);
+            }
+            Err(AttemptWorkerReconcileError::CompletionPending {
+                published: next,
+                source,
+            }) if supervisor_error_is_retryable(&source) => {
+                published = *next;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(AttemptWorkerReconcileError::CompletionPending {
+                published: next, ..
+            }) => {
+                published = *next;
+                drop(executor);
+                abort_published(shared, published);
+                return AttemptExecutionDisposition::Failed;
+            }
+            Err(AttemptWorkerReconcileError::JournalCleanupPending {
+                published: next,
+                source,
+            }) if matches!(source.as_ref(), PreparedResultJournalError::Io { .. }) => {
+                published = *next;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(AttemptWorkerReconcileError::JournalCleanupPending {
+                published: next, ..
+            }) => {
+                drop(executor);
+                retain_forever(shared, next);
+            }
+            Err(_) => {
+                drop(executor);
+                shared.poison();
+                return AttemptExecutionDisposition::Failed;
+            }
+        }
+    }
+}
+
+fn reconcile_worker_failure<L, V, W>(
+    shared: &SharedExecutor<L, V>,
+    mut queued: QueuedAttempt,
+    mut failure: AttemptWorkerFailure<W>,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        let mut executor = lock_or_retain(shared, &queued);
+        match reconcile_attempt_failure(executor.supervisor_mut(), queued, failure) {
+            Err(AttemptWorkerReconcileError::Worker(_)) => {
+                increment(&shared.counters.retry_requeues);
+                shared.ready.notify_one();
+                return;
+            }
+            Err(
+                AttemptWorkerReconcileError::Stopped { .. }
+                | AttemptWorkerReconcileError::TerminalStopped { .. },
+            )
+            | Ok(()) => {
+                increment(&shared.counters.terminal_stops);
+                return;
+            }
+            Err(AttemptWorkerReconcileError::FailurePending {
+                queued: next,
+                failure: next_failure,
+                source,
+            }) if supervisor_error_is_retryable(&source) => {
+                queued = *next;
+                failure = next_failure;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(AttemptWorkerReconcileError::FailurePending {
+                queued: next,
+                failure: next_failure,
+                ..
+            }) => {
+                drop(executor);
+                retain_forever(shared, (*next, next_failure));
+            }
+            Err(
+                AttemptWorkerReconcileError::CompletionPending { published, .. }
+                | AttemptWorkerReconcileError::JournalCleanupPending { published, .. },
+            ) => {
+                drop(executor);
+                retain_forever(shared, published);
+            }
+        }
+    }
+}
+
+fn abort_prepared<L, V>(shared: &SharedExecutor<L, V>, mut prepared: PreparedAttemptResult)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        let mut executor = lock_or_retain(shared, &prepared);
+        match abort_prepared_attempt_result(executor.supervisor_mut(), prepared) {
+            Ok((_, completed)) => {
+                drop(executor);
+                cleanup_prepared_journal(shared, completed);
+                increment(&shared.counters.terminal_stops);
+                return;
+            }
+            Err(error) if supervisor_error_is_retryable(&error.source) => {
+                prepared = *error.prepared;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                drop(executor);
+                retain_forever(shared, error.prepared);
+            }
+        }
+    }
+}
+
+fn abort_staged<L, V>(shared: &SharedExecutor<L, V>, mut staged: Box<StagedAttemptResult>)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        let mut executor = lock_or_retain(shared, &staged);
+        match abort_staged_attempt_result(executor.supervisor_mut(), staged) {
+            Ok((_, completed)) => {
+                drop(executor);
+                cleanup_staged_journal(shared, completed);
+                increment(&shared.counters.terminal_stops);
+                return;
+            }
+            Err(error) if supervisor_error_is_retryable(&error.source) => {
+                staged = error.staged;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                drop(executor);
+                retain_forever(shared, error.staged);
+            }
+        }
+    }
+}
+
+fn abort_published<L, V>(shared: &SharedExecutor<L, V>, mut published: PublishedAttemptResult)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        let mut executor = lock_or_retain(shared, &published);
+        match abort_published_attempt_result(executor.supervisor_mut(), published) {
+            Ok((_, completed)) => {
+                drop(executor);
+                cleanup_published_journal(shared, completed);
+                increment(&shared.counters.terminal_stops);
+                return;
+            }
+            Err(error) if supervisor_error_is_retryable(&error.source) => {
+                published = *error.published;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                drop(executor);
+                retain_forever(shared, error.published);
+            }
+        }
+    }
+}
+
+trait PreparedJournalCleanup {
+    fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError>;
+}
+
+impl PreparedJournalCleanup for PreparedAttemptResult {
+    fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
+        self.remove_journal()
+    }
+}
+
+impl PreparedJournalCleanup for Box<StagedAttemptResult> {
+    fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
+        self.remove_journal()
+    }
+}
+
+impl PreparedJournalCleanup for PublishedAttemptResult {
+    fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
+        self.remove_journal()
+    }
+}
+
+fn cleanup_prepared_journal<L, V>(shared: &SharedExecutor<L, V>, prepared: PreparedAttemptResult)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    cleanup_journal(shared, prepared);
+}
+
+fn cleanup_staged_journal<L, V>(shared: &SharedExecutor<L, V>, staged: Box<StagedAttemptResult>)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    cleanup_journal(shared, staged);
+}
+
+fn cleanup_published_journal<L, V>(shared: &SharedExecutor<L, V>, published: PublishedAttemptResult)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    cleanup_journal(shared, published);
+}
+
+fn cleanup_journal<L, V, T>(shared: &SharedExecutor<L, V>, token: T)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+    T: PreparedJournalCleanup,
+{
+    loop {
+        match token.remove_prepared_journal() {
+            Ok(()) => return,
+            Err(PreparedResultJournalError::Io { .. }) => {
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => retain_forever(shared, token),
+        }
+    }
+}
+
+fn reconcile_panicked_worker<L, V>(
+    shared: &SharedExecutor<L, V>,
+    key: AttemptExecutionKey,
+    execution: crucible_campaign::ExecutionId,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        let mut executor = match shared.executor.lock() {
+            Ok(executor) => executor,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                retain_forever(shared, (key, execution));
+            }
+        };
+        shared.bump_ownership_revision();
+        match executor
+            .supervisor_mut()
+            .reconcile_panicked_worker(key, execution)
+        {
+            Ok(_) => return,
+            Err(error) if supervisor_error_is_retryable(&error) => {
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => {
+                drop(executor);
+                retain_forever(shared, (key, execution));
+            }
+        }
+    }
+}
+
+fn lock_or_retain<'a, L, V, T>(
+    shared: &'a SharedExecutor<L, V>,
+    token: &T,
+) -> MutexGuard<'a, LocalExecutorCapabilityService<L, V>> {
+    match shared.executor.lock() {
+        Ok(executor) => {
+            shared.bump_ownership_revision();
+            executor
+        }
+        Err(poisoned) => {
+            drop(poisoned.into_inner());
+            retain_forever(shared, token);
+        }
+    }
+}
+
+fn retain_forever<L, V, T>(shared: &SharedExecutor<L, V>, token: T) -> ! {
+    shared.fail_closed();
+    shared.completion.signal_retained();
+    let _retained = token;
+    loop {
+        thread::park();
+    }
+}
+
+fn supervisor_error_is_retryable<E>(error: &LocalExecutorError<E>) -> bool {
+    matches!(
+        error,
+        LocalExecutorError::Ledger(_)
+            | LocalExecutorError::CompletionValidation {
+                reason: CompletionValidationFailure::UnavailableInput,
+            }
+    )
+}
+
+fn reconcile_worker_execution<L, V, W>(
+    shared: &SharedExecutor<L, V>,
+    worker: &mut W,
+    disposition: AttemptExecutionDisposition,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+    W: LocalAttemptWorker,
+{
+    loop {
+        match worker.reconcile_execution(disposition) {
+            Ok(AttemptExecutionReconciliationStep::Complete) => return,
+            Ok(AttemptExecutionReconciliationStep::Progressed) => thread::yield_now(),
+            Err(AttemptWorkerFailure::Retryable(_)) => {
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(AttemptWorkerFailure::Canceled(_) | AttemptWorkerFailure::Terminal(_)) => {
+                shared.poison();
+                return;
+            }
+        }
+    }
+}
+
+fn worker_reconcile_disposition(
+    outcome: crate::AttemptWorkerReconcileOutcome,
+) -> AttemptExecutionDisposition {
+    match outcome {
+        crate::AttemptWorkerReconcileOutcome::Reconciled {
+            observation,
+            completion:
+                crate::CompletionOutcome::Completed | crate::CompletionOutcome::AlreadyCompleted,
+        } => AttemptExecutionDisposition::Observation(observation),
+        crate::AttemptWorkerReconcileOutcome::Discarded {
+            completion: crate::CompletionOutcome::Canceled,
+            ..
+        } => AttemptExecutionDisposition::Canceled,
+        crate::AttemptWorkerReconcileOutcome::Discarded {
+            completion: crate::CompletionOutcome::NotCurrent,
+            ..
+        }
+        | crate::AttemptWorkerReconcileOutcome::Reconciled { .. }
+        | crate::AttemptWorkerReconcileOutcome::Discarded { .. } => {
+            AttemptExecutionDisposition::Failed
+        }
+    }
+}
+
+fn record_outcome<L, V>(
+    shared: &SharedExecutor<L, V>,
+    outcome: crate::AttemptWorkerReconcileOutcome,
+) {
+    match outcome {
+        crate::AttemptWorkerReconcileOutcome::Reconciled { .. } => {
+            increment(&shared.counters.reconciled);
+        }
+        crate::AttemptWorkerReconcileOutcome::Discarded { .. } => {
+            increment(&shared.counters.discarded);
+        }
+    }
+}
+
+fn increment(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(1))
+    });
+}
 
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;

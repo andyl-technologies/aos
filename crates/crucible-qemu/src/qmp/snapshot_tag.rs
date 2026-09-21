@@ -4,20 +4,20 @@ use crucible::{Checkpoint, ContentHash};
 
 /// QMP snapshot tag derived from a checkpoint content address.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QmpSnapshotTag {
+pub(crate) struct QmpSnapshotTag {
     tag: String,
 }
 
 impl QmpSnapshotTag {
     /// Derives a QMP-safe snapshot tag from a checkpoint handle.
     #[must_use]
-    pub fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
+    pub(crate) fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
         Self::from_checkpoint_content_address(checkpoint.id)
     }
 
     /// Derives a QMP-safe snapshot tag from a checkpoint content address.
     #[must_use]
-    pub fn from_checkpoint_content_address(address: ContentHash) -> Self {
+    pub(crate) fn from_checkpoint_content_address(address: ContentHash) -> Self {
         Self {
             tag: format!("crucible-{}", lowercase_hex(&address.bytes)),
         }
@@ -25,7 +25,7 @@ impl QmpSnapshotTag {
 
     /// Returns the QMP snapshot tag string.
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.tag
     }
 }

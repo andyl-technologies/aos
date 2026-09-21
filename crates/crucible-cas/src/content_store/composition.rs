@@ -213,12 +213,17 @@ impl ImmutableBlobBackend for DurabilityPolicyStore {
     }
 }
 
-/// Ordered read tiers with one explicit write tier and optional read promotion.
+pub(super) struct TieredStoreChild {
+    pub(super) backend: Arc<dyn ImmutableBlobBackend>,
+    pub(super) readable: bool,
+    pub(super) writable: bool,
+    pub(super) promote_reads: bool,
+}
+
+/// Ordered storage tiers with an explicit policy for each child.
 pub struct TieredStore {
     name: String,
-    tiers: Vec<Arc<dyn ImmutableBlobBackend>>,
-    write_tier: usize,
-    promote_reads: bool,
+    tiers: Vec<TieredStoreChild>,
 }
 
 impl TieredStore {
@@ -229,35 +234,39 @@ impl TieredStore {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::InvalidComposition`] for no tiers or an invalid
-    /// write-tier index.
-    pub fn new(
-        name: impl Into<String>,
-        tiers: Vec<Arc<dyn ImmutableBlobBackend>>,
-        write_tier: usize,
-        promote_reads: bool,
-    ) -> Result<Self, StoreError> {
+    /// Returns [`StoreError::InvalidComposition`] for no tiers, a tier with no
+    /// role, or a policy with no readable or writable child.
+    pub fn new(name: impl Into<String>, tiers: Vec<TieredStoreChild>) -> Result<Self, StoreError> {
         if tiers.is_empty() {
             return Err(StoreError::InvalidComposition {
                 reason: "tiered store requires at least one child",
             });
         }
-        if write_tier >= tiers.len() {
+        if tiers
+            .iter()
+            .any(|tier| !tier.readable && (!tier.writable || tier.promote_reads))
+        {
             return Err(StoreError::InvalidComposition {
-                reason: "tiered store write tier is out of range",
+                reason: "tiered store child policy is invalid",
+            });
+        }
+        if !tiers.iter().any(|tier| tier.readable) || !tiers.iter().any(|tier| tier.writable) {
+            return Err(StoreError::InvalidComposition {
+                reason: "tiered store requires readable and writable children",
             });
         }
         Ok(Self {
             name: name.into(),
             tiers,
-            write_tier,
-            promote_reads,
         })
     }
 
     fn read_full(&self, id: ContentId) -> Result<(usize, BlobHandle), StoreError> {
         for (index, tier) in self.tiers.iter().enumerate() {
-            match tier.read(id, None) {
+            if !tier.readable {
+                continue;
+            }
+            match tier.backend.read(id, None) {
                 Ok(blob) => {
                     return Ok((index, blob));
                 }
@@ -275,16 +284,41 @@ impl ImmutableBlobBackend for TieredStore {
     }
 
     fn capabilities(&self) -> BackendCapabilities {
-        let mut capabilities = self.tiers[self.write_tier].capabilities();
-        capabilities.range_read = self.tiers.iter().all(|tier| tier.capabilities().range_read);
+        let writable = self.tiers.iter().filter(|tier| tier.writable);
+        let mut capabilities = BackendCapabilities {
+            durable: false,
+            deferred_write: false,
+            range_read: true,
+            streaming_read: true,
+            conditional_create: true,
+            streaming_put: true,
+            repair_inventory: true,
+            planned_delete: true,
+        };
+        for tier in writable {
+            let child = tier.backend.capabilities();
+            capabilities.durable |= child.durable;
+            capabilities.deferred_write |= child.deferred_write;
+            capabilities.conditional_create &= child.conditional_create;
+            capabilities.streaming_put &= child.streaming_put;
+            capabilities.repair_inventory &= child.repair_inventory;
+            capabilities.planned_delete &= child.planned_delete;
+        }
+        capabilities.range_read = self
+            .tiers
+            .iter()
+            .filter(|tier| tier.readable)
+            .all(|tier| tier.backend.capabilities().range_read);
         capabilities.streaming_read = self
             .tiers
             .iter()
-            .all(|tier| tier.capabilities().streaming_read)
-            && (!self.promote_reads
-                || self.tiers[..self.tiers.len().saturating_sub(1)]
-                    .iter()
-                    .all(|tier| tier.capabilities().streaming_put));
+            .filter(|tier| tier.readable)
+            .all(|tier| tier.backend.capabilities().streaming_read)
+            && self
+                .tiers
+                .iter()
+                .filter(|tier| tier.promote_reads)
+                .all(|tier| tier.backend.capabilities().streaming_put);
         capabilities
     }
 
@@ -298,16 +332,23 @@ impl ImmutableBlobBackend for TieredStore {
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         let (found_tier, blob) = self.read_full(id)?;
-        if self.promote_reads && found_tier > 0 {
-            for tier in &self.tiers[..found_tier] {
-                let _promotion = tier.put_if_absent(id, &blob);
+        if found_tier > 0 {
+            for tier in self.tiers[..found_tier]
+                .iter()
+                .filter(|tier| tier.promote_reads)
+            {
+                let _promotion = tier.backend.put_if_absent(id, &blob);
             }
         }
         blob.slice(range)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
-        self.tiers[self.write_tier].put_if_absent(id, source)
+        let mut placements = Vec::new();
+        for tier in self.tiers.iter().filter(|tier| tier.writable) {
+            placements.extend(tier.backend.put_if_absent(id, source)?.placements);
+        }
+        Ok(PutReceipt { id, placements })
     }
 }
 
@@ -316,7 +357,6 @@ pub struct ReadThroughStore {
     name: String,
     cache: Arc<dyn ImmutableBlobBackend>,
     source: Arc<dyn ImmutableBlobBackend>,
-    promote_reads: bool,
 }
 
 impl ReadThroughStore {
@@ -331,25 +371,6 @@ impl ReadThroughStore {
             name: name.into(),
             cache,
             source,
-            promote_reads: true,
-        }
-    }
-
-    /// Builds a read-through view that never populates the cache.
-    ///
-    /// Source and cache reads keep their ordinary authentication and failure
-    /// semantics. A source hit is returned directly when the cache misses.
-    #[must_use]
-    pub fn new_observational(
-        name: impl Into<String>,
-        cache: Arc<dyn ImmutableBlobBackend>,
-        source: Arc<dyn ImmutableBlobBackend>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            cache,
-            source,
-            promote_reads: false,
         }
     }
 
@@ -361,9 +382,7 @@ impl ReadThroughStore {
                 // Promotion is an operational cache optimization. A cache
                 // outage or quota limit cannot make an authenticated source
                 // object unavailable to the logical caller.
-                if self.promote_reads {
-                    let _promotion = self.cache.put_if_absent(id, &blob);
-                }
+                let _promotion = self.cache.put_if_absent(id, &blob);
                 Ok(blob)
             }
             Err(error) => Err(error),

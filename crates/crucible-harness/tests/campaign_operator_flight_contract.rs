@@ -84,9 +84,8 @@ struct Automation {
     executor_restart: String,
     credential_refresh: String,
     store_repair: String,
-    operational_state_migration: String,
     store_gc: String,
-    store_repack: String,
+    store_transform_packed: String,
     evidence_export: String,
 }
 
@@ -217,12 +216,21 @@ fn operator_contract_is_executable_without_claiming_manual_acceptance() -> Resul
     assert!(contract.sign_offs.distinct_authorized_keys);
     assert_eq!(contract.sign_offs.unsigned_result, "blocked");
     assert_eq!(contract.sign_offs.automated_result, "prerequisite-only");
+    assert!(
+        contract
+            .evidence
+            .authenticated_exports
+            .contains(&String::from("store-packed-transform-plan-and-result"))
+    );
+    assert_eq!(
+        contract.automation.store_transform_packed,
+        "crucible --format jsonl store transform packed --store STORE --node NODE --journal JOURNAL plan|apply"
+    );
     for public_surface in [
         contract.automation.service_start,
         contract.automation.store_repair,
-        contract.automation.operational_state_migration,
         contract.automation.store_gc,
-        contract.automation.store_repack,
+        contract.automation.store_transform_packed,
     ] {
         assert!(public_surface.contains("crucible"));
     }

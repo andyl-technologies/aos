@@ -4,10 +4,8 @@
 //! admitted attempts and graph observations while preserving every typed object
 //! that a raw replay signature may reference.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use super::{
     CrucibleArtifactError, FindingReplayPass, MAX_CONFIGURATION_BRANCH_PREFIX_BYTES,
@@ -33,6 +31,12 @@ use crucible_cas::content_store::ContentId;
 pub type FindingProductionReplayMaterialOutcome = crate::FindingProductionReplayCaptureOutcome<
     Arc<crate::FindingProductionReplayCaptureMaterial>,
 >;
+
+mod accumulator;
+use accumulator::ReplayRecordAccumulator;
+pub(crate) use accumulator::validate_recorded_replay_configuration;
+#[cfg(test)]
+use accumulator::validate_replay_configuration;
 
 /// Stable reason that an exact minimization candidate could not be materialized.
 ///
@@ -298,7 +302,7 @@ impl CrucibleFindingReplayEvidence {
     /// Returns [`CrucibleArtifactError`] if a signature is already present or
     /// the supplied target, property, or causal evidence is not owned by this
     /// exact replay.
-    pub fn with_signature(
+    pub(crate) fn with_signature(
         mut self,
         signature: FindingSignature,
     ) -> Result<Self, CrucibleArtifactError> {
@@ -731,39 +735,7 @@ impl CrucibleFindingReplayTranscript {
         Ok(())
     }
 
-    /// Records one oracle result in the independent verification pass.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CrucibleArtifactError`] when typed identities fail or the
-    /// cumulative retained-record limit is exceeded.
-    pub fn record_verification(
-        &mut self,
-        candidate: &FindingReproductionArtifact,
-        replay: CrucibleFindingReplayEvidence,
-    ) -> Result<(), CrucibleArtifactError> {
-        self.record_verification_outcome(
-            candidate,
-            AutomaticFindingReplayOutcome::observed(replay, Vec::new()),
-        )
-    }
-
-    /// Records one typed oracle outcome in the independent verification pass.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CrucibleArtifactError`] when the outcome does not name the
-    /// exact candidate or the cumulative retained-record limit is exceeded.
-    pub fn record_verification_outcome(
-        &mut self,
-        candidate: &FindingReproductionArtifact,
-        replay: AutomaticFindingReplayOutcome,
-    ) -> Result<(), CrucibleArtifactError> {
-        let preserves_signature = replay.signature().is_some();
-        self.record_verification_outcome_with_acceptance(candidate, replay, preserves_signature)
-    }
-
-    pub(super) fn record_verification_outcome_with_acceptance(
+    pub(crate) fn record_verification_outcome_with_acceptance(
         &mut self,
         candidate: &FindingReproductionArtifact,
         replay: AutomaticFindingReplayOutcome,
@@ -1034,464 +1006,6 @@ impl RetainedFindingTriageEvidence {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct ReplayRecordAccumulator {
-    ids: BTreeSet<crucible_cas::content_store::ContentId>,
-    configurations: Vec<ConfigurationArtifact>,
-    measurements: Vec<MeasurementSet>,
-    properties: Vec<PropertyVerdictSet>,
-    coverage: Vec<CoverageProjection>,
-    declarations: Vec<SelectableDeclaration>,
-    domains: Vec<ChoiceDomain>,
-    opportunities: Vec<ChoiceOpportunity>,
-    selections: Vec<Selection>,
-    canonical_bytes: usize,
-}
-
-impl ReplayRecordAccumulator {
-    const fn new() -> Self {
-        Self {
-            ids: BTreeSet::new(),
-            configurations: Vec::new(),
-            measurements: Vec::new(),
-            properties: Vec::new(),
-            coverage: Vec::new(),
-            declarations: Vec::new(),
-            domains: Vec::new(),
-            opportunities: Vec::new(),
-            selections: Vec::new(),
-            canonical_bytes: 0,
-        }
-    }
-
-    #[cfg(test)]
-    fn record(
-        &mut self,
-        replay: CrucibleFindingReplayEvidence,
-    ) -> Result<RecordedFindingReplay, CrucibleArtifactError> {
-        self.record_observed(replay)
-    }
-
-    fn record_outcome(
-        &mut self,
-        candidate: &FindingReproductionArtifact,
-        replay: AutomaticFindingReplayOutcome,
-    ) -> Result<RecordedFindingReplay, CrucibleArtifactError> {
-        match replay {
-            AutomaticFindingReplayOutcome::Observed { evidence, .. } => {
-                validate_replay_configuration(candidate, &evidence)?;
-                self.record_observed(*evidence)
-            }
-            AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
-                configuration,
-                reason,
-            } => {
-                validate_incompatible_configuration(candidate, &configuration)?;
-                let configuration_id = configuration.id()?;
-                let canonical_bytes = configuration.canonical_bytes().len();
-                if self.ids.insert(configuration_id.content_id()) {
-                    self.canonical_bytes = self
-                        .canonical_bytes
-                        .checked_add(canonical_bytes)
-                        .ok_or(CampaignCodecError::LimitExceeded {
-                            limit: "finding-replay-retained-record-bytes",
-                        })?;
-                    if self.ids.len() > MAX_CRUCIBLE_FINDING_REPLAY_RECORDS
-                        || self.canonical_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES
-                    {
-                        return Err(CampaignCodecError::LimitExceeded {
-                            limit: "finding-replay-retained-record-bytes",
-                        }
-                        .into());
-                    }
-                    self.configurations.push(configuration);
-                }
-                Ok(RecordedFindingReplay::DeterministicallyIncompatible {
-                    configuration: configuration_id,
-                    reason,
-                })
-            }
-        }
-    }
-
-    fn record_observed(
-        &mut self,
-        replay: CrucibleFindingReplayEvidence,
-    ) -> Result<RecordedFindingReplay, CrucibleArtifactError> {
-        replay.validate_signature_ownership()?;
-        let configuration = replay.configuration.id()?;
-        let measurements = replay.measurements.id()?;
-        let properties = replay.properties.id()?;
-        let coverage = replay.coverage.id()?;
-        let opportunities = replay
-            .opportunities
-            .iter()
-            .map(ChoiceOpportunity::id)
-            .collect::<Result<Vec<_>, _>>()?;
-        let selections = replay
-            .selections
-            .iter()
-            .map(Selection::id)
-            .collect::<Result<Vec<_>, _>>()?;
-        let next_canonical_bytes = self.preflight(&replay)?;
-        let recorded = RecordedFindingReplay::Observed {
-            signature: replay.signature.map(Box::new),
-            configuration,
-            measurements,
-            properties,
-            coverage,
-            opportunities,
-            selections,
-        };
-
-        if self.ids.insert(configuration.content_id()) {
-            self.configurations.push(replay.configuration);
-        }
-        if self.ids.insert(replay.measurements.id()?.content_id()) {
-            self.measurements.push(replay.measurements);
-        }
-        if self.ids.insert(replay.properties.id()?.content_id()) {
-            self.properties.push(replay.properties);
-        }
-        if self.ids.insert(replay.coverage.id()?.content_id()) {
-            self.coverage.push(replay.coverage);
-        }
-        for declaration in replay.declarations {
-            if self.ids.insert(declaration.id()?.content_id()) {
-                self.declarations.push(declaration);
-            }
-        }
-        for domain in replay.domains {
-            if self.ids.insert(domain.id()?.content_id()) {
-                self.domains.push(domain);
-            }
-        }
-        for opportunity in replay.opportunities {
-            if self.ids.insert(opportunity.id()?.content_id()) {
-                self.opportunities.push(opportunity);
-            }
-        }
-        for selection in replay.selections {
-            if self.ids.insert(selection.id()?.content_id()) {
-                self.selections.push(selection);
-            }
-        }
-        self.canonical_bytes = next_canonical_bytes;
-        Ok(recorded)
-    }
-
-    fn preflight(
-        &self,
-        replay: &CrucibleFindingReplayEvidence,
-    ) -> Result<usize, CrucibleArtifactError> {
-        let mut candidate_records = BTreeMap::from([
-            (
-                replay.configuration.id()?.content_id(),
-                replay.configuration.canonical_bytes().len(),
-            ),
-            (
-                replay.measurements.id()?.content_id(),
-                replay.measurements.canonical_bytes().len(),
-            ),
-            (
-                replay.properties.id()?.content_id(),
-                replay.properties.canonical_bytes().len(),
-            ),
-            (
-                replay.coverage.id()?.content_id(),
-                replay.coverage.canonical_bytes().len(),
-            ),
-        ]);
-        for declaration in &replay.declarations {
-            candidate_records.insert(
-                declaration.id()?.content_id(),
-                declaration.canonical_bytes().len(),
-            );
-        }
-        for domain in &replay.domains {
-            candidate_records.insert(domain.id()?.content_id(), domain.canonical_bytes().len());
-        }
-        for opportunity in &replay.opportunities {
-            candidate_records.insert(
-                opportunity.id()?.content_id(),
-                opportunity.canonical_bytes().len(),
-            );
-        }
-        for selection in &replay.selections {
-            candidate_records.insert(
-                selection.id()?.content_id(),
-                selection.canonical_bytes().len(),
-            );
-        }
-
-        let new_records = candidate_records
-            .keys()
-            .filter(|id| !self.ids.contains(id))
-            .count();
-        if self
-            .ids
-            .len()
-            .checked_add(new_records)
-            .is_none_or(|count| count > MAX_CRUCIBLE_FINDING_REPLAY_RECORDS)
-        {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-count",
-            }
-            .into());
-        }
-        let record_bytes = candidate_records
-            .iter()
-            .filter(|(id, _)| !self.ids.contains(id))
-            .try_fold(0usize, |total, (_, bytes)| total.checked_add(*bytes))
-            .ok_or(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-bytes",
-            })?;
-        let signature_bytes = replay
-            .signature
-            .as_ref()
-            .map_or(0, |signature| signature.canonical_bytes().len());
-        let next_bytes = self
-            .canonical_bytes
-            .checked_add(record_bytes)
-            .and_then(|bytes| bytes.checked_add(signature_bytes))
-            .ok_or(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-bytes",
-            })?;
-        if next_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-bytes",
-            }
-            .into());
-        }
-        Ok(next_bytes)
-    }
-
-    pub(super) fn finish(self) -> PreparedFindingReplayRecords {
-        PreparedFindingReplayRecords {
-            configurations: self.configurations,
-            measurements: self.measurements,
-            properties: self.properties,
-            coverage: self.coverage,
-            declarations: self.declarations,
-            domains: self.domains,
-            opportunities: self.opportunities,
-            selections: self.selections,
-            record_count: self.ids.len(),
-            canonical_bytes: self.canonical_bytes,
-        }
-    }
-}
-
-pub(super) fn validate_replay_configuration(
-    candidate: &FindingReproductionArtifact,
-    replay: &CrucibleFindingReplayEvidence,
-) -> Result<(), CrucibleArtifactError> {
-    let scenario = candidate.artifact.scenario_form();
-    let scenario_artifact = encode_crucible_scenario_artifact(scenario)?;
-    let expected =
-        encode_crucible_configuration_artifact(&scenario_artifact, candidate.artifact.schedule())?;
-    if replay.configuration != expected {
-        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "finding replay candidate configuration",
-        });
-    }
-    validate_owned_replay_selections(candidate, replay)?;
-    replay.validate_signature_ownership()
-}
-
-fn validate_incompatible_configuration(
-    candidate: &FindingReproductionArtifact,
-    replay: &ConfigurationArtifact,
-) -> Result<(), CrucibleArtifactError> {
-    let scenario = candidate.artifact.scenario_form();
-    let scenario_artifact = encode_crucible_scenario_artifact(scenario)?;
-    let expected =
-        encode_crucible_configuration_artifact(&scenario_artifact, candidate.artifact.schedule())?;
-    if replay != &expected {
-        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "finding incompatible replay candidate configuration",
-        });
-    }
-    Ok(())
-}
-
-fn validate_owned_replay_selections(
-    candidate: &FindingReproductionArtifact,
-    replay: &CrucibleFindingReplayEvidence,
-) -> Result<(), CrucibleArtifactError> {
-    let declarations = replay
-        .declarations
-        .iter()
-        .map(|value| value.id().map(|id| (id, value)))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let domains = replay
-        .domains
-        .iter()
-        .map(|value| value.id().map(|id| (id, value)))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let mut choices = BTreeMap::new();
-    for opportunity in &replay.opportunities {
-        let declaration = declarations.get(&opportunity.declaration()).ok_or(
-            CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay choice declaration",
-            },
-        )?;
-        let domain = domains.get(&opportunity.domain()).ok_or(
-            CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay choice domain",
-            },
-        )?;
-        opportunity.validate_references(declaration, domain)?;
-        if opportunity.scenario() != replay.configuration.scenario() {
-            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay choice scenario",
-            });
-        }
-        choices.insert(opportunity.id()?, (opportunity, declaration, domain));
-    }
-
-    let selections = replay
-        .selections
-        .iter()
-        .map(|selection| selection.id().map(|id| (id, selection)))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let mut embedded = BTreeSet::new();
-    let mut covered_signal_fault_overrides = BTreeSet::new();
-    let configuration = Configuration {
-        def: candidate.artifact.scenario_def().clone(),
-        schedule: candidate.artifact.schedule().clone(),
-    };
-    let selection_count = configuration
-        .schedule
-        .decisions()
-        .iter()
-        .filter(|decision| matches!(decision, Decision::Selection(_)))
-        .count();
-    if selection_count > MAX_CONFIGURATION_SELECTION_DECISIONS {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
-    }
-    let campaign_branch_count = replay
-        .selections
-        .iter()
-        .filter(|selection| matches!(selection.origin(), SelectionOrigin::CampaignBranch { .. }))
-        .count();
-    if replay
-        .configuration
-        .payload()
-        .len()
-        .checked_mul(campaign_branch_count)
-        .is_none_or(|bytes| bytes > MAX_CONFIGURATION_BRANCH_PREFIX_BYTES)
-    {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
-    }
-    for (index, decision) in configuration.schedule.decisions().iter().enumerate() {
-        let Decision::Selection(decision) = decision else {
-            continue;
-        };
-        let decoded = decision.selection()?;
-        let id = decoded.id()?;
-        let selection =
-            selections
-                .get(&id)
-                .ok_or(CrucibleArtifactError::SemanticIdentityMismatch {
-                    artifact: "finding replay embedded selection",
-                })?;
-        if **selection != decoded || !embedded.insert(id) {
-            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay embedded selection",
-            });
-        }
-        let (opportunity, declaration, domain) = choices.get(&selection.opportunity()).ok_or(
-            CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay selection opportunity",
-            },
-        )?;
-        match selection.origin() {
-            SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
-                selection.validate_replay(opportunity, domain)?;
-            }
-            SelectionOrigin::CampaignBranch { .. } => {
-                let parent = Configuration {
-                    def: configuration.def.clone(),
-                    schedule: configuration.schedule.prefix(index)?,
-                };
-                selection.validate_branch_replay(
-                    opportunity,
-                    domain,
-                    opportunity.branch_point_id(campaign_configuration_id(parent.id())),
-                )?;
-                if matches!(
-                    opportunity.source(),
-                    crucible_campaign::ChoiceSource::Environment { adapter, .. }
-                        if adapter == crucible::SIGNAL_FAULT_CAMPAIGN_ADAPTER
-                ) {
-                    let selectable = SignalFaultSelectable::from_records(
-                        &parent,
-                        declaration,
-                        opportunity,
-                        domain,
-                    )?;
-                    let branch = selectable.resolve_branch(selection)?;
-                    let end = index
-                        .checked_add(branch.decisions().len())
-                        .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
-                    if end > configuration.schedule.len()
-                        || configuration.schedule.decisions()[index..end] != *branch.decisions()
-                    {
-                        return Err(CrucibleArtifactError::SignalFaultScheduleMismatch);
-                    }
-                    if branch.decisions().len() == 2 {
-                        covered_signal_fault_overrides.insert(index + 1);
-                    }
-                }
-            }
-            SelectionOrigin::ModelSample(_) => {
-                crucible::validate_app_random_model_selection(
-                    selection,
-                    declaration,
-                    opportunity,
-                    domain,
-                )
-                .map_err(|_| CrucibleArtifactError::UnverifiedModelSelection)?;
-            }
-        }
-    }
-    if embedded.len() != selections.len() {
-        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "finding replay selection set",
-        });
-    }
-    if configuration
-        .schedule
-        .decisions()
-        .iter()
-        .enumerate()
-        .any(|(index, decision)| {
-            matches!(decision, Decision::Override(override_decision)
-                if override_decision.point.key.starts_with("signal-fault/")
-                    && !covered_signal_fault_overrides.contains(&index))
-        })
-    {
-        return Err(CrucibleArtifactError::UnboundSignalFaultOverride);
-    }
-    Ok(())
-}
-
-pub(super) fn validate_recorded_replay_configuration(
-    candidate: &FindingReproductionArtifact,
-    replay: &RecordedFindingReplay,
-) -> Result<(), CrucibleArtifactError> {
-    let scenario = encode_crucible_scenario_artifact(candidate.artifact.scenario_form())?;
-    let expected =
-        encode_crucible_configuration_artifact(&scenario, candidate.artifact.schedule())?;
-    if replay.configuration() != expected.id()? {
-        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "finding replay candidate configuration",
-        });
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- exact fixture failures should stop these accounting tests.
 #[allow(clippy::expect_used)]
@@ -1629,203 +1143,15 @@ mod tests {
         let (_finding, replay, signature_bytes) = replay_fixture();
         let mut records = ReplayRecordAccumulator::new();
 
-        records.record(replay.clone()).expect("first replay");
+        records
+            .record_observed(replay.clone())
+            .expect("first replay");
         let first_count = records.ids.len();
         let first_bytes = records.canonical_bytes;
-        records.record(replay).expect("duplicate replay");
+        records.record_observed(replay).expect("duplicate replay");
 
         assert_eq!(records.ids.len(), first_count);
         assert_eq!(records.canonical_bytes, first_bytes + signature_bytes);
-    }
-
-    fn replay_with_production_capture(
-        replay: CrucibleFindingReplayEvidence,
-    ) -> AutomaticFindingReplayOutcome {
-        AutomaticFindingReplayOutcome::observed(replay, Vec::new()).with_production_replay(
-            crate::FindingProductionReplayCaptureOutcome::Incomplete(
-                crate::FindingProductionReplayIncomplete::MissingEventLogPrefix,
-            ),
-        )
-    }
-
-    fn record_transcript_pass(
-        transcript: &mut CrucibleFindingReplayTranscript,
-        pass: FindingReplayPass,
-        candidate: &FindingReproductionArtifact,
-        replay: AutomaticFindingReplayOutcome,
-    ) -> Result<(), CrucibleArtifactError> {
-        match pass {
-            FindingReplayPass::Minimization => {
-                transcript.record_minimization_outcome(candidate, replay)
-            }
-            FindingReplayPass::Verification => {
-                transcript.record_verification_outcome(candidate, replay)
-            }
-        }
-    }
-
-    #[test]
-    fn transcript_admission_is_atomic_across_identity_failure_and_retry() {
-        let (finding, replay, _) = replay_fixture();
-        let wrong_scenario = crucible::crash_restart_scenario()
-            .expect("crash-restart scenario")
-            .scenario;
-        let wrong_configuration = Configuration {
-            def: wrong_scenario.scenario_def(),
-            schedule: Schedule::empty(),
-        };
-        let wrong_finding = reproduction(
-            &wrong_scenario,
-            &wrong_configuration,
-            b"wrong-replay-candidate",
-        );
-
-        for pass in [
-            FindingReplayPass::Minimization,
-            FindingReplayPass::Verification,
-        ] {
-            let outcome = replay_with_production_capture(replay.clone());
-            let mut transcript = CrucibleFindingReplayTranscript::new();
-            let before = transcript.clone();
-
-            assert!(matches!(
-                record_transcript_pass(&mut transcript, pass, &wrong_finding, outcome.clone()),
-                Err(CrucibleArtifactError::SemanticIdentityMismatch {
-                    artifact: "finding replay candidate configuration"
-                })
-            ));
-            assert_eq!(transcript, before);
-
-            record_transcript_pass(&mut transcript, pass, &finding, outcome)
-                .expect("identical replay admitted after corrected candidate identity");
-            assert!(transcript.production.has_capture);
-            assert_eq!(
-                transcript.minimization_pass.len() + transcript.verification_pass.len(),
-                1
-            );
-        }
-    }
-
-    #[test]
-    fn transcript_admission_is_atomic_across_byte_failure_and_retry() {
-        let (finding, replay, _) = replay_fixture();
-
-        for pass in [
-            FindingReplayPass::Minimization,
-            FindingReplayPass::Verification,
-        ] {
-            let outcome = replay_with_production_capture(replay.clone());
-            let mut transcript = CrucibleFindingReplayTranscript::new();
-            transcript.records.canonical_bytes = MAX_CRUCIBLE_FINDING_REPLAY_BYTES;
-            let before = transcript.clone();
-
-            assert!(matches!(
-                record_transcript_pass(&mut transcript, pass, &finding, outcome.clone()),
-                Err(CrucibleArtifactError::Campaign(
-                    CampaignCodecError::LimitExceeded {
-                        limit: "finding-replay-retained-record-bytes"
-                    }
-                ))
-            ));
-            assert_eq!(transcript, before);
-
-            transcript.records.canonical_bytes = 0;
-            record_transcript_pass(&mut transcript, pass, &finding, outcome)
-                .expect("identical replay admitted after byte capacity became available");
-            assert!(transcript.production.has_capture);
-            assert_eq!(
-                transcript.minimization_pass.len() + transcript.verification_pass.len(),
-                1
-            );
-        }
-    }
-
-    #[test]
-    fn production_replay_retention_selects_the_four_named_required_outcomes() {
-        let (_finding, replay, _) = replay_fixture();
-        let signature = replay.signature().expect("signed replay").clone();
-        let mut retained = RetainedFindingProductionReplayEvidence::new();
-        let outcome = |reason| {
-            Some(crate::FindingProductionReplayCaptureOutcome::Incomplete(
-                reason,
-            ))
-        };
-
-        retained
-            .record(
-                FindingReplayPass::Minimization,
-                true,
-                true,
-                outcome(crate::FindingProductionReplayIncomplete::MissingEventLogPrefix),
-                Some(signature.clone()),
-            )
-            .expect("minimization original");
-        retained
-            .record(
-                FindingReplayPass::Minimization,
-                false,
-                false,
-                outcome(crate::FindingProductionReplayIncomplete::MissingTerminalFingerprints),
-                Some(signature.clone()),
-            )
-            .expect("discarded minimization candidate");
-        retained
-            .record(
-                FindingReplayPass::Minimization,
-                false,
-                true,
-                outcome(crate::FindingProductionReplayIncomplete::MissingSignalArtifactStore),
-                Some(signature.clone()),
-            )
-            .expect("selected minimization candidate");
-        retained
-            .record(
-                FindingReplayPass::Verification,
-                true,
-                true,
-                outcome(crate::FindingProductionReplayIncomplete::MissingWorldArtifactStore),
-                Some(signature.clone()),
-            )
-            .expect("verification original");
-        retained
-            .record(
-                FindingReplayPass::Verification,
-                false,
-                true,
-                outcome(crate::FindingProductionReplayIncomplete::PublicationLimitExceeded),
-                Some(signature),
-            )
-            .expect("verification selected");
-
-        let Some((min_original, min_selected, verify_original, verify_selected)) =
-            retained.into_parts().expect("complete required replay set")
-        else {
-            panic!("production replay retention was unexpectedly disabled")
-        };
-        assert_eq!(
-            min_original.capture,
-            crate::FindingProductionReplayCaptureOutcome::Incomplete(
-                crate::FindingProductionReplayIncomplete::MissingEventLogPrefix
-            )
-        );
-        assert_eq!(
-            min_selected.capture,
-            crate::FindingProductionReplayCaptureOutcome::Incomplete(
-                crate::FindingProductionReplayIncomplete::MissingSignalArtifactStore
-            )
-        );
-        assert_eq!(
-            verify_original.capture,
-            crate::FindingProductionReplayCaptureOutcome::Incomplete(
-                crate::FindingProductionReplayIncomplete::MissingWorldArtifactStore
-            )
-        );
-        assert_eq!(
-            verify_selected.capture,
-            crate::FindingProductionReplayCaptureOutcome::Incomplete(
-                crate::FindingProductionReplayIncomplete::PublicationLimitExceeded
-            )
-        );
     }
 
     #[test]
@@ -1836,7 +1162,7 @@ mod tests {
         let before = records.clone();
 
         assert!(matches!(
-            records.record(replay.clone()),
+            records.record_observed(replay.clone()),
             Err(CrucibleArtifactError::Campaign(
                 CampaignCodecError::LimitExceeded {
                     limit: "finding-replay-retained-record-bytes"
@@ -1846,7 +1172,9 @@ mod tests {
         assert_eq!(records, before);
 
         records.canonical_bytes = 0;
-        records.record(replay).expect("retry admitted replay");
+        records
+            .record_observed(replay)
+            .expect("retry admitted replay");
         assert_eq!(records.ids.len(), 4);
     }
 

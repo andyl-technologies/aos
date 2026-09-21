@@ -32,12 +32,12 @@ fn block_snapshot_codec_round_trips_complete_device_state() {
         })
     );
 
-    let mut prior_version = bytes.clone();
+    let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.block-snapshot.v".len();
-    assert_eq!(prior_version[version_index], b'3');
-    prior_version[version_index] = b'2';
+    assert_eq!(unsupported_version[version_index], b'3');
+    unsupported_version[version_index] = b'?';
     assert_eq!(
-        BlockSnapshot::from_canonical_bytes(&prior_version),
+        BlockSnapshot::from_canonical_bytes(&unsupported_version),
         Err(BlockSnapshotCodecError::Version)
     );
 

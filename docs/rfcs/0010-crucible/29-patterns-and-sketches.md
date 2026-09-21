@@ -697,8 +697,8 @@ pub trait SimulationBackend: Send {
     /// Returns an error if a node's state cannot be captured.
     async fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError>;
 
-    /// Restore the backend to a prior snapshot (the `loadvm` branch of
-    /// `instantiate`, 05 §5).
+    /// Restore the backend from a version-nine descriptor checkpoint (the
+    /// exact branch of `instantiate`, 05 §5).
     ///
     /// # Errors
     /// Returns an error if the snapshot cannot be restored.
@@ -1014,15 +1014,15 @@ genesis, the tip of a run, or a non-tip prefix — is **one recursive function**
 whose base case is the *baked* genesis snapshot. `instantiate` prefers a stored
 snapshot of exactly the configuration; failing that, recurses to the nearest
 cached ancestor and replays the missing schedule suffix forward; failing even
-that, recurses toward genesis, whose base case is a `loadvm` of the baked blob,
-not a cold boot. The only true cold boot in the system lives inside `bake`. This
+that, recurses toward genesis, whose base case restores the baked version-nine
+descriptor set. The only true cold boot in the system lives inside `bake`. This
 collapses start, resume, and fork into call sites of one function distinguished
 only by which configuration they pass — deleting the lifecycle-bug class of
 divergent boot/resume/fork code paths.
 
 **Invariants.** `instantiate` is the single entry point; start/resume/fork differ
 only in the configuration argument and there are no separate realization paths
-([EXEC-14]); the resolution order is exact-snapshot → ancestor-replay → genesis,
+([EXEC-14]); the resolution order is exact checkpoint → ancestor-replay → genesis,
 terminating at the baked snapshot ([EXEC-15]); the only cold boot is inside
 `bake`, never in the hot loop ([EXEC-16]); every branch yields a content-equal
 `RuntimeState` for the same configuration — the branch is a performance decision,
@@ -1041,9 +1041,9 @@ not an observable one (the replay oracle, [EXEC-17], [INV-2]).
 /// Propagates store, replay, and backend errors; a replay that diverges from
 /// the oracle localizes to the first differing decision (05 §8, [EXEC-24]).
 pub fn instantiate(graph: &TemporalGraph, config: &Configuration) -> Result<RuntimeState, ExecError> {
-    // 1. Exact snapshot of *this* configuration: warm resume / fork target.
+    // 1. Version-nine descriptor checkpoint: warm resume / fork target.
     if let Some(snap) = graph.cached_snapshot(config.id())? {
-        return RuntimeState::loadvm(snap);
+        return RuntimeState::restore_exact_checkpoint(snap);
     }
     // 2. Nearest materialized prefix on this path: recurse, then replay forward.
     if let Some(anc) = graph.nearest_cached_ancestor(config)? {
@@ -1052,17 +1052,16 @@ pub fn instantiate(graph: &TemporalGraph, config: &Configuration) -> Result<Runt
         rt.replay(&config.def, suffix)?; // step forward over the missing suffix
         return Ok(rt);
     }
-    // 3. Cold case: only genesis reaches here, and its base case is the *baked*
-    //    snapshot (a loadvm, not a boot). The one true boot lives in `bake`.
+    // 3. Genesis case: restore the baked version-nine descriptor set. The one
+    //    true boot lives in `bake`.
     debug_assert!(config.is_genesis());
     let baked = graph.genesis_snapshot(&config.def)?; // baked once, 05 §6
-    RuntimeState::loadvm(baked)
+    RuntimeState::restore_baked_checkpoint(baked)
 }
 
 /// start / resume / fork are the same call, distinguished only by which
 /// configuration is handed to `instantiate` (05 §5 "start ≡ resume ≡ fork",
-/// [EXEC-14]). There is no `boot()` distinct from `loadvm()` distinct from
-/// `fork()`.
+/// [EXEC-14]).
 pub fn start(graph: &TemporalGraph, def: ScenarioDef) -> Result<RuntimeState, ExecError> {
     instantiate(graph, &Configuration::genesis(def)) // (def, [])
 }
@@ -1083,7 +1082,7 @@ fork is faithful, and snapshot completeness holds — all from a single equality
 check, precisely because the model collapsed them into one ([EXEC-31]).
 
 - **[PAT-11]** The runtime realizer SHOULD follow the recursive `instantiate`
-  shape in §29.9: resolve exact-snapshot → ancestor-replay → genesis, terminate
+  shape in §29.9: resolve exact checkpoint → ancestor-replay → genesis, terminate
   at the baked snapshot, and implement start/resume/fork as call sites differing
   only in the configuration argument with no separate realization paths. The
   only cold boot MUST live inside `bake`. *Spec:*
@@ -1142,7 +1141,7 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     streams fork from the root seed through stable name hashes instead of a
     shared root cursor, same-name node/link streams use separate fixed domains,
     construction order and unrelated world edits do not perturb existing
-    streams, and every recorded `Decision::RngDraw` / `Decision::AppRandom`
+    streams, and every recorded `Decision::RngDraw` / `BackendRngEvidence`
     carries its domain-qualified `RngStreamId` in the schedule.
     `checks.crucible.phase1.decisionRng` and
     `checks.crucible.phase1.decisionRecording` gate the pattern.
@@ -1158,19 +1157,18 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     `crucible::SimDouble` quantum-loop adapter, while scheduler-liveness uses an
     initialized `crucible::SimDouble` liveness harness, without constructing
     real QEMU.
-- [x] **T-PAT-9** Ensure the runtime realizer follows the §29.9 recursive
-  `instantiate` shape with start ≡ resume ≡ fork and the cold boot confined to
-  `bake`. — satisfies [PAT-11], [PAT-12]; realized by **T-EXEC-6**,
+- [x] **T-PAT-9** Ensure each runtime realization operation crosses one typed,
+  authenticated boundary and cold boot remains confined to baked-genesis capture.
+  — satisfies [PAT-11], [PAT-12]; realized by **T-EXEC-6**,
   **T-EXEC-7**, **T-EXEC-8**, **T-EXEC-17** (spec 05 §§5–6, §11).
-  - Completed by `crucible::instantiate`, `TemporalGraph::with_baked_genesis`,
-    `crucible::bake`, `crucible_qemu::instantiate_qemu_vm`, and the
-    same-configuration-twice fingerprint gate: the model resolves exact
-    snapshot, ancestor replay, then baked genesis; QEMU lifecycle owners pass
-    their selected configuration to one instantiate coordinator and leave cold
-    boot inside `bake_qemu_genesis_vm`; and the fingerprint gate validates
-    start/resume/fork/snapshot-completeness through one equality.
+  - Completed by the atomic exact-resume lifecycle and the separately typed
+    baked-genesis replay catalog. The exact path constructs one authenticated
+    `QemuProductionExactRestoreRequest`; baked replay consumes
+    `ProductionVmReplayExactNodeRestoreAdmission`; cold boot remains inside baked
+    capture.
     `checks.crucible.phase1.executionInstantiate`,
     `checks.crucible.phase1.executionBake`,
+    `checks.crucible.phase1.executionLifecycleRoutes`, and
     `checks.crucible.phase1.gates.singleVmFingerprint` gate the pattern.
 - [x] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex/eventfd wakes follow the
   §29.3 shape and carry the `loom`/property concurrency tests. — satisfies
@@ -1186,7 +1184,7 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     and acquire-observed peer indices; `NodeSlot` exposes the scheduler ceiling
     handoff, acquire node-side ceiling loads, race-free idle precondition checks,
     and non-private futex wait/wake path. `RegionAllocation` and the borrowed
-    `NodeSlot::publish_scheduler_inbox_and_ceiling` path preflight capacity,
+    `NodeSlot::publish_scheduler_inbox_and_advance` path preflight capacity,
     enqueue pending frames, publish the ceiling, and only then wake. The SPSC
     gate test carries the local loom-style model and seeded property corpus for
     no loss, duplicate, FIFO drift, torn frame, early read, full/empty, and

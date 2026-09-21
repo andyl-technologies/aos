@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn mandatory_envelope_round_trips_and_rejects_raw_legacy_evidence() {
+    fn mandatory_envelope_round_trips_and_rejects_unauthenticated_evidence() {
         let (envelope, event, target_node_hash) = fixture();
         let decoded = decode_node_event_envelope(&envelope, &event, target_node_hash)
             .unwrap_or_else(|error| panic!("valid envelope: {error}"));

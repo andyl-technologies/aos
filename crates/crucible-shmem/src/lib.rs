@@ -57,7 +57,7 @@
 //! 36      1     status
 //! 37      1     kind
 //! 38      1     device_io_active
-//! 39      1     padding
+//! 39      1     advance_stop_condition
 //! 40      4     publish_gen
 //! 44      4     control_boundary_ack
 //! 48      8     device_completion_deadline_icount
@@ -74,6 +74,20 @@
 //! 112     8     logical_time_restore_target
 //! 120     4     logical_time_restore_request
 //! 124     4     logical_time_restore_ack
+//! 128     8     control_boundary_fault_command_frontier
+//! 136     4     control_boundary_capture_request
+//! 140     4     padding
+//! 144     8     timer_witness_generation
+//! 152     8     timer_witness_deadline_ns
+//! 160     8     timer_witness_deadline_icount
+//! 168     8     timer_witness_armed_raw_icount
+//! 176     8     timer_witness_fired_expire_ns
+//! 184     8     timer_witness_fired_virtual_ns
+//! 192     8     timer_witness_fired_raw_icount
+//! 200     4     timer_witness_completed
+//! 204     4     timer_witness_reserved
+//! 208     8     advance_publication_sequence
+//! 216     40    alignment padding
 //! ```
 //!
 //! SPSC ring header wire layout:
@@ -186,27 +200,11 @@ pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Current shared-memory ABI version.
 ///
-/// Version 8 adds the per-node logical-time calibration restore transaction so
-/// a fresh plugin can reconstruct idle-jump time after QEMU loads VMState.
-/// Version 9 adds typed node-fault commands and an independent lossless stream
-/// for actual QEMU fault-rule occurrences.
-/// Version 10 appends bounded bidirectional guest-introspection rings per VM.
-/// Version 11 appends bounded accelerator request/completion rings per VM.
-/// Version 12 adds an explicit accelerator completion-capacity field and moves
-/// accelerator payload bytes to preserve a canonical bounded result envelope.
-/// Version 13 adds the canonical typed fault-command/result/event transports.
-/// Version 14 assigns the former node-slot padding at offset 44 to the plugin's
-/// drained-control-boundary publication acknowledgement.
-/// Version 15 assigns one frame-entry padding byte to the consumer-owned
-/// canonical backpressure-retention state.
-/// Version 18 appends one single-entry host-to-plugin selectable-reply ring per
-/// logical VM without changing any prior section offset.
-/// Version 19 assigns producer cache-line padding to reversible hot-fork
-/// producer admission. Version 20 assigns consumer cache-line padding to the
-/// matching reversible consumer admission barrier. Version 21 makes the
-/// logical-time restore acknowledgement commit an atomic coverage-generation
-/// reset before the restored guest can become authoritative.
-pub const ABI_VERSION: u32 = 21;
+/// The current layout includes logical-time restore, typed fault transports,
+/// guest introspection, accelerator traffic, selectable replies, reversible
+/// hot-fork admission, coverage reset, timer witnesses, and advance-stop
+/// publication. The generated C view and golden vectors pin every offset.
+pub const ABI_VERSION: u32 = 25;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

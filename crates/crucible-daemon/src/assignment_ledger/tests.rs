@@ -4,7 +4,6 @@
 #![allow(clippy::expect_used)]
 
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::symlink;
 
 use crucible_campaign::{
@@ -13,77 +12,6 @@ use crucible_campaign::{
 };
 
 use super::*;
-
-#[test]
-fn existing_ledger_open_never_initializes_missing_state() {
-    let temporary = tempfile::tempdir().expect("ledger parent");
-    let root = temporary.path().join("ledger");
-
-    assert!(DirectoryAssignmentLedger::open_existing(&root).is_err());
-    assert!(!root.exists());
-
-    drop(DirectoryAssignmentLedger::open(&root).expect("initialize ledger"));
-    let ledger = DirectoryAssignmentLedger::open_existing(&root).expect("open existing ledger");
-    assert_eq!(ledger.root(), root);
-    drop(ledger);
-
-    fs::rename(
-        root.join(RETENTION_STATE_FILE),
-        root.join("real-retention-state"),
-    )
-    .expect("move real retention state");
-    symlink("real-retention-state", root.join(RETENTION_STATE_FILE))
-        .expect("replace retention state with symlink");
-    assert!(DirectoryAssignmentLedger::open_existing(&root).is_err());
-    fs::remove_file(root.join(RETENTION_STATE_FILE)).expect("remove retention symlink");
-    fs::rename(
-        root.join("real-retention-state"),
-        root.join(RETENTION_STATE_FILE),
-    )
-    .expect("restore retention state");
-
-    fs::rename(root.join("writer.lock"), root.join("real.lock")).expect("move real lock");
-    symlink("real.lock", root.join("writer.lock")).expect("replace lock with symlink");
-    assert!(DirectoryAssignmentLedger::open_existing(&root).is_err());
-}
-
-#[test]
-fn optional_retention_reader_treats_only_a_missing_root_as_empty() {
-    let temporary = tempfile::tempdir().expect("ledger parent");
-    let root = temporary.path().join("optional-ledger");
-
-    let mut absent = DirectoryAssignmentRetentionReader::open_optional_existing(&root)
-        .expect("missing optional ledger");
-    assert!(!absent.is_present());
-    let summary = absent
-        .acquire_retention_fence()
-        .expect("absent ledger fence")
-        .visit_roots(&mut |_| Ok(()))
-        .expect("empty absent inventory");
-    assert_eq!(summary.attempt_records(), 0);
-    assert_eq!(summary.observation_roots(), 0);
-    assert_eq!(summary.checkpoint_roots(), 0);
-    drop(absent);
-    assert!(!root.exists());
-
-    fs::write(&root, b"not a ledger").expect("write malformed ledger root");
-    assert!(DirectoryAssignmentRetentionReader::open_optional_existing(&root).is_err());
-    fs::remove_file(&root).expect("remove malformed ledger root");
-    fs::create_dir(&root).expect("create incomplete ledger root");
-    assert!(DirectoryAssignmentRetentionReader::open_optional_existing(&root).is_err());
-    assert!(
-        fs::read_dir(&root)
-            .expect("read incomplete ledger")
-            .next()
-            .is_none()
-    );
-
-    fs::remove_dir(&root).expect("remove incomplete ledger root");
-    drop(DirectoryAssignmentLedger::open(&root).expect("initialize ledger"));
-    let present = DirectoryAssignmentRetentionReader::open_optional_existing(&root)
-        .expect("open existing optional ledger");
-    assert!(present.is_present());
-}
 
 #[test]
 fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
@@ -105,53 +33,118 @@ fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
 }
 
 #[test]
-fn writer_lock_replacement_during_open_fails_closed() {
-    let directory = tempfile::tempdir().expect("ledger directory");
-    let moved_parent = tempfile::tempdir().expect("moved lock parent");
-    drop(DirectoryAssignmentLedger::open(directory.path()).expect("initialize ledger"));
-    let lock = directory.path().join("writer.lock");
-    let moved = moved_parent.path().join("writer.lock");
-    crate::owned_advisory_lock::install_lock_race_hook({
-        let lock = lock.clone();
-        let moved = moved.clone();
-        move || {
-            fs::rename(&lock, &moved).expect("move locked file");
-            fs::write(&lock, b"replacement").expect("replace lock file");
-        }
-    });
+fn directory_ledger_fences_a_replaced_root_and_writer_lock() {
+    for replaced in ["root", "writer-lock"] {
+        let parent = tempfile::tempdir().expect("ledger parent");
+        let root = parent.path().join("ledger");
+        fs::create_dir(&root).expect("ledger root");
+        let mut ledger = DirectoryAssignmentLedger::open(&root).expect("ledger owner");
+        let detached = parent.path().join(format!("detached-{replaced}"));
 
-    assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
-    assert_eq!(fs::read(lock).expect("replacement remains"), b"replacement");
+        if replaced == "root" {
+            fs::rename(&root, &detached).expect("detach ledger root");
+            fs::create_dir(&root).expect("replacement ledger root");
+        } else {
+            let lock = root.join("writer.lock");
+            fs::rename(&lock, &detached).expect("detach writer lock");
+            fs::write(&lock, []).expect("replacement writer lock");
+        }
+
+        let record = AssignmentRecord::new(
+            request(0x15, 0x35, 1),
+            SubmitAttemptResponse::new(
+                &request(0x15, 0x35, 1),
+                SubmitAttemptDisposition::Accepted {
+                    execution: execution(0x55),
+                },
+            )
+            .expect("response"),
+        )
+        .expect("record");
+        assert!(ledger.publish_assignment(&record).is_err());
+    }
 }
 
 #[test]
-fn writer_lock_replacement_after_open_blocks_subsequent_mutation() {
+fn directory_ledger_rejects_stale_staging_at_open() {
     let directory = tempfile::tempdir().expect("ledger directory");
-    let moved_parent = tempfile::tempdir().expect("moved lock parent");
-    let mut ledger = DirectoryAssignmentLedger::open(directory.path()).expect("first writer");
-    let lock = directory.path().join("writer.lock");
-    let moved = moved_parent.path().join("writer.lock");
-    fs::rename(&lock, &moved).expect("move locked file");
-    fs::write(&lock, b"replacement").expect("replace lock file");
-    let replacement_inode = fs::metadata(&lock).expect("replacement metadata").ino();
-    let second = DirectoryAssignmentLedger::open_existing(directory.path())
-        .expect("replacement lock has an independent owner");
+    {
+        let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("initialize ledger");
+        drop(ledger);
+    }
+    let shard = directory.path().join("attempts/ab");
+    fs::create_dir_all(&shard).expect("attempt shard");
+    fs::write(shard.join(".staging-12-34"), b"stale").expect("stale staging record");
 
-    let request = request(0x71, 0x72, 1);
-    let response = SubmitAttemptResponse::new(
-        &request,
-        SubmitAttemptDisposition::Accepted {
-            execution: execution(0x73),
-        },
-    )
-    .expect("accepted response");
-    let record = AssignmentRecord::new(request, response).expect("assignment record");
-    assert!(ledger.publish_assignment(&record).is_err());
+    assert!(DirectoryAssignmentLedger::open(directory.path()).is_err());
+}
+
+#[test]
+fn directory_ledger_rejects_a_writer_lock_symlink() {
+    let parent = tempfile::tempdir().expect("ledger parent");
+    let root = parent.path().join("ledger");
+    fs::create_dir(&root).expect("ledger root");
+    let target = parent.path().join("outside-lock");
+    fs::write(&target, b"outside").expect("outside file");
+    symlink(&target, root.join("writer.lock")).expect("writer lock symlink");
+
+    assert!(DirectoryAssignmentLedger::open(&root).is_err());
+    assert_eq!(fs::read(target).expect("outside bytes"), b"outside");
+}
+
+#[test]
+fn directory_ledger_rejects_a_replaced_attempt_shard_without_external_access() {
+    let parent = tempfile::tempdir().expect("ledger parent");
+    let root = parent.path().join("ledger");
+    fs::create_dir(&root).expect("ledger root");
+    let mut ledger = DirectoryAssignmentLedger::open(&root).expect("ledger owner");
+    let request = request(0x16, 0x36, 1);
+    let key = AttemptExecutionKey::for_request(&request);
+    let state = AttemptRuntimeState::Running {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x56),
+    };
+    ledger
+        .compare_exchange_attempt(key, None, Some(state))
+        .expect("publish initial state");
+
+    let record = ledger.attempt_path(key);
+    let shard = record.parent().expect("attempt shard").to_path_buf();
+    let detached = parent.path().join("detached-shard");
+    let outside = parent.path().join("outside-shard");
+    fs::create_dir(&outside).expect("outside shard");
+    let outside_record = outside.join(record.file_name().expect("record name"));
+    let exact_bytes = fs::read(&record).expect("exact state bytes");
+    fs::write(&outside_record, &exact_bytes).expect("outside state bytes");
+    fs::rename(&shard, &detached).expect("detach attempt shard");
+    symlink(&outside, &shard).expect("replace shard with symlink");
+
+    for error in [
+        ledger.load_attempt(key).expect_err("reject shard symlink"),
+        ledger
+            .compare_exchange_attempt(key, Some(state), None)
+            .expect_err("reject shard symlink before mutation"),
+    ] {
+        let AssignmentLedgerError::Io { source, .. } = error else {
+            panic!("shard symlink must fail during descriptor-relative resolution");
+        };
+        assert_eq!(
+            source.raw_os_error(),
+            Some(rustix::io::Errno::LOOP.raw_os_error())
+        );
+    }
     assert_eq!(
-        fs::metadata(&lock).expect("replacement survives").ino(),
-        replacement_inode
+        fs::read(&outside_record).expect("outside state remains"),
+        exact_bytes
     );
-    drop(second);
+    assert_eq!(
+        fs::read_dir(&outside)
+            .expect("outside shard inventory")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -182,10 +175,6 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         execution: execution(0x51),
         observation: observation(0x71),
         finding_candidate: CompletedFindingCandidate::Pending(finding_candidate(0x72)),
-        prepared_result_digest: Some(CampaignHash::derive(
-            "crucible.test.prepared-result",
-            b"current completed payload",
-        )),
     };
     let publishing = AttemptRuntimeState::Publishing {
         execution_basis,
@@ -194,9 +183,6 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         execution: execution(0x51),
         observation: observation(0x71),
         finding_candidate: Some(finding_candidate(0x72)),
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [Some(checkpoint(0x73)), Some(checkpoint(0x74)), None],
-        prepared_result_digest: None,
     };
 
     {
@@ -240,11 +226,6 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
             .visit_observation_roots(&mut |root| roots.push(root))
             .expect("stream publishing roots");
         assert_eq!(roots, vec![observation(0x71)]);
-        let mut checkpoint_roots = Vec::new();
-        ledger
-            .visit_checkpoint_roots(&mut |root| checkpoint_roots.push(root))
-            .expect("stream publishing exact roots");
-        assert_eq!(checkpoint_roots, vec![checkpoint(0x73), checkpoint(0x74)]);
         assert_eq!(
             ledger
                 .compare_exchange_attempt(key, Some(publishing), Some(completed))
@@ -273,44 +254,23 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
 }
 
 #[test]
-fn publishing_exact_roots_require_a_dense_sorted_candidate_owned_set() {
-    let request = request(0x14, 0x34, 1);
-    let key = AttemptExecutionKey::for_request(&request);
-    let publishing =
-        |finding_candidate, finding_exact_retention_roots| AttemptRuntimeState::Publishing {
-            execution_basis: request.execution_basis_digest(),
-            origin: AttemptExecutionOrigin::Initial,
-            daemon_epoch: request.daemon_epoch(),
-            execution: execution(0x54),
-            observation: observation(0x74),
-            finding_candidate,
-            finding_replay_captures: None,
-            finding_exact_retention_roots,
-            prepared_result_digest: None,
-        };
-    let invalid = [
-        publishing(None, [Some(checkpoint(0x81)), None, None]),
-        publishing(
-            Some(finding_candidate(0x75)),
-            [None, Some(checkpoint(0x81)), None],
-        ),
-        publishing(
-            Some(finding_candidate(0x75)),
-            [Some(checkpoint(0x81)), Some(checkpoint(0x81)), None],
-        ),
-        publishing(
-            Some(finding_candidate(0x75)),
-            [Some(checkpoint(0x82)), Some(checkpoint(0x81)), None],
-        ),
-    ];
+fn current_storage_digest_binds_every_scope_under_one_domain() {
+    let semantic_request = request(0x17, 0x37, 1);
+    let capture_request =
+        savepoint_capture_request(0x18, 0x37, 1, campaign_fact(0x57), configuration(0x58));
 
-    for state in invalid {
-        let mut ledger = MemoryAssignmentLedger::default();
+    for key in [
+        AttemptExecutionKey::for_request(&semantic_request),
+        AttemptExecutionKey::for_request(&capture_request),
+    ] {
+        let mut material = Vec::new();
+        push_bytes(&mut material, key.lineage().to_text().as_bytes());
+        push_bytes(&mut material, key.attempt().to_text().as_bytes());
+        push_bytes(&mut material, &key.scope().canonical_bytes());
+
         assert_eq!(
-            ledger
-                .compare_exchange_attempt(key, None, Some(state))
-                .expect("infallible ledger"),
-            AttemptStateCas::Conflict { current: None }
+            key.storage_digest(),
+            CampaignHash::derive("crucible.executor.attempt-execution-key.v2", &material)
         );
     }
 }
@@ -404,6 +364,7 @@ fn scoped_capture_state_rejects_semantic_and_mismatched_promotion_shapes() {
             AttemptStartMode::CaptureMaterializedStart {
                 configuration: configuration(0x57),
             },
+            capture.retention_policy(),
         )),
     };
     let mut memory = MemoryAssignmentLedger::default();
@@ -450,6 +411,7 @@ fn assignment_identity_conflict_never_overwrites_first_response() {
         request.attempt(),
         AttemptResourceLimits::new(2, 4096, 8192, 17).expect("changed resources"),
         request.retention(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("changed request");
     let conflicting = AssignmentRecord::new(
@@ -489,6 +451,7 @@ fn checkpoint_states_round_trip_and_remain_gc_roots_after_restart() {
     let promotion_basis = Some(CheckpointPromotionExecutionBasis::new(
         request.resources(),
         request.retention(),
+        request.retention_policy(),
     ));
     let running = AttemptRuntimeState::Running {
         execution_basis: basis,
@@ -599,6 +562,7 @@ fn current_checkpoint_promotion_basis_must_match_the_execution_digest() {
         promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
             mismatched_resources,
             request.retention(),
+            request.retention_policy(),
         )),
     };
 
@@ -608,422 +572,6 @@ fn current_checkpoint_promotion_basis_must_match_the_execution_digest() {
             reason: "checkpoint-promotion-execution-basis-mismatch"
         })
     ));
-}
-
-#[test]
-fn unsupported_attempt_state_schema_fails_closed() {
-    let request = request(0x2c, 0x4c, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = AttemptRuntimeState::Running {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x6c),
-    };
-    let encoded = encode_attempt_state(key, state);
-    let mut payload = open_sealed(&encoded, ATTEMPT_STATE_CHECKSUM_DOMAIN)
-        .expect("open current attempt state")
-        .to_vec();
-    payload[ATTEMPT_STATE_MAGIC.len() - 3] = b'x';
-
-    assert!(matches!(
-        decode_attempt_state(&seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN)),
-        Err(AssignmentLedgerError::Corrupt {
-            reason: "record-magic"
-        })
-    ));
-}
-
-#[test]
-fn migration_v14_publishing_preserves_the_prepared_result_digest() {
-    let request = request(0x2c, 0x4c, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = AttemptRuntimeState::Publishing {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x6c),
-        observation: observation(0x8d),
-        finding_candidate: Some(finding_candidate(0x8e)),
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [Some(checkpoint(0x8f)), None, None],
-        prepared_result_digest: Some(CampaignHash::derive(
-            "crucible.test.prepared-result",
-            b"legacy v14 publishing payload",
-        )),
-    };
-    let encoded = encode_attempt_state(key, state);
-    let mut payload = open_sealed(&encoded, ATTEMPT_STATE_CHECKSUM_DOMAIN)
-        .expect("open current publishing state")
-        .to_vec();
-    assert_eq!(ATTEMPT_STATE_MAGIC.len(), legacy_magic(14).len());
-    payload[..ATTEMPT_STATE_MAGIC.len()].copy_from_slice(&legacy_magic(14));
-    let legacy = seal(payload, &legacy_domain(14));
-
-    assert!(decode_attempt_state(&legacy).is_err());
-    assert_eq!(
-        decode_migratable_attempt_state(&legacy).expect("decode migratable v14 publishing state"),
-        (key, state)
-    );
-}
-
-#[test]
-fn assignment_migration_validates_all_records_before_replacement() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-    let first_request = request(0x2d, 0x4d, 1);
-    let first_key = AttemptExecutionKey::new(first_request.lineage(), first_request.attempt());
-    let first_state = publishing_state(&first_request, 0x6d, 0x8d);
-    let first_path = write_v14_attempt_state(&ledger, first_key, first_state);
-    let second_request = request(0x2e, 0x4e, 1);
-    let second_key = AttemptExecutionKey::new(second_request.lineage(), second_request.attempt());
-    let second_path = ledger.attempt_path(second_key);
-    fs::create_dir_all(second_path.parent().expect("second record parent"))
-        .expect("create second record parent");
-    fs::write(&second_path, b"corrupt attempt record").expect("write corrupt record");
-
-    assert!(ledger.migrate_attempt_records_for_test(2).is_err());
-    let unchanged = fs::read(first_path).expect("read unchanged legacy record");
-    assert!(decode_attempt_state(&unchanged).is_err());
-    assert_eq!(
-        decode_migratable_attempt_state(&unchanged).expect("authenticate unchanged legacy record"),
-        (first_key, first_state)
-    );
-}
-
-#[test]
-fn assignment_migration_rejects_a_raced_forged_receipt_before_replacement() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-    let request = request(0x36, 0x56, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = publishing_state(&request, 0x76, 0x96);
-    let record = write_v14_attempt_state(&ledger, key, state);
-    let original = fs::read(&record).expect("legacy source");
-    let receipt_parent = tempfile::tempdir().expect("receipt parent");
-    let receipt_path = receipt_parent.path().join("receipt");
-    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
-        &receipt_path,
-    )
-    .expect("receipt directory");
-    crate::operational_state_migration::receipt::install_receipt_publish_race_hook({
-        let destination =
-            receipt_path.join(crate::operational_state_migration::receipt::ASSIGNMENT_RECEIPT);
-        move || fs::write(destination, b"forged receipt").expect("install forged receipt")
-    });
-
-    assert!(matches!(
-        ledger.migrate_attempt_records(&receipt, 257, u64::MAX),
-        Err(crate::OperationalStateMigrationError::InvalidReceipt)
-    ));
-    assert_eq!(fs::read(record).expect("legacy source remains"), original);
-}
-
-#[test]
-fn assignment_migration_resumes_a_mixed_current_and_v14_inventory() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let mut ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-    let current_request = request(0x2f, 0x4f, 1);
-    let current_key =
-        AttemptExecutionKey::new(current_request.lineage(), current_request.attempt());
-    let current_state = publishing_state(&current_request, 0x6f, 0x8f);
-    assert_eq!(
-        ledger
-            .compare_exchange_attempt(current_key, None, Some(current_state))
-            .expect("write current record"),
-        AttemptStateCas::Advanced
-    );
-    let legacy_request = request(0x30, 0x50, 1);
-    let legacy_key = AttemptExecutionKey::new(legacy_request.lineage(), legacy_request.attempt());
-    let legacy_state = publishing_state(&legacy_request, 0x70, 0x90);
-    write_v14_attempt_state(&ledger, legacy_key, legacy_state);
-
-    let summary = ledger
-        .migrate_attempt_records_for_test(2)
-        .expect("resume mixed migration");
-    assert_eq!(summary.records, 2);
-    assert_eq!(summary.migrated, 1);
-    assert_eq!(
-        ledger.load_attempt(current_key).expect("current state"),
-        Some(current_state)
-    );
-    assert_eq!(
-        ledger.load_attempt(legacy_key).expect("migrated state"),
-        Some(legacy_state)
-    );
-}
-
-#[test]
-fn assignment_migration_reconciles_bounded_orphan_staging() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-    let request = request(0x31, 0x51, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = publishing_state(&request, 0x71, 0x91);
-    let record = write_v14_attempt_state(&ledger, key, state);
-    let staging = record
-        .parent()
-        .expect("attempt shard")
-        .join(".staging-123-456");
-    let stale_bytes = b"interrupted staging bytes";
-    fs::write(&staging, stale_bytes).expect("stale staging");
-    let metadata = staging.metadata().expect("staging metadata");
-    let quarantine = staging.with_file_name(format!(
-        ".{}.removing-v1-{:x}-{:x}",
-        staging.file_name().expect("staging name").to_string_lossy(),
-        metadata.dev(),
-        metadata.ino()
-    ));
-
-    let receipt_parent = tempfile::tempdir().expect("receipt parent");
-    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
-        &receipt_parent.path().join("receipt"),
-    )
-    .expect("receipt directory");
-    let summary = ledger
-        .migrate_attempt_records(&receipt, 258, u64::MAX)
-        .expect("resume with stale staging");
-    assert_eq!(summary.migrated, 1);
-    assert!(!staging.exists());
-    assert_eq!(quarantine.metadata().expect("cleanup tombstone").len(), 0);
-    assert_eq!(
-        ledger.load_attempt(key).expect("migrated state"),
-        Some(state)
-    );
-
-    fs::write(&quarantine, stale_bytes).expect("restore post-rename crash bytes");
-
-    ledger
-        .migrate_attempt_records(&receipt, 258, u64::MAX)
-        .expect("finish interrupted staging removal");
-    assert_eq!(quarantine.metadata().expect("finished tombstone").len(), 0);
-    let stable_entries = fs::read_dir(record.parent().expect("attempt shard"))
-        .expect("inventory shard")
-        .count();
-    for _ in 0..3 {
-        ledger
-            .migrate_attempt_records(&receipt, 258, u64::MAX)
-            .expect("repeat idempotent migration");
-    }
-    assert_eq!(
-        fs::read_dir(record.parent().expect("attempt shard"))
-            .expect("inventory shard")
-            .count(),
-        stable_entries
-    );
-
-    let forged_source = record
-        .parent()
-        .expect("attempt shard")
-        .join(".staging-forged");
-    fs::write(&forged_source, stale_bytes).expect("same-bytes forged staging");
-    let metadata = forged_source.metadata().expect("forged metadata");
-    let forged = forged_source.with_file_name(format!(
-        ".staging-forged.removing-v1-{:x}-{:x}",
-        metadata.dev(),
-        metadata.ino()
-    ));
-    fs::rename(forged_source, &forged).expect("publish forged quarantine");
-    assert!(
-        ledger
-            .migrate_attempt_records(&receipt, 258, u64::MAX)
-            .is_err()
-    );
-    assert!(forged.exists());
-}
-
-#[test]
-fn assignment_migration_recovers_an_interrupted_destination_write() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-    let request = request(0x34, 0x54, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = publishing_state(&request, 0x74, 0x94);
-    let record = write_v14_attempt_state(&ledger, key, state);
-    let current = encode_attempt_state(key, state);
-    let receipt_parent = tempfile::tempdir().expect("receipt parent");
-    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
-        &receipt_parent.path().join("receipt"),
-    )
-    .expect("receipt directory");
-
-    let staging = record
-        .parent()
-        .expect("attempt shard")
-        .join(".staging-123-456");
-    fs::write(&staging, &current).expect("retain staged current record");
-    fs::write(&record, &current[..current.len() / 2]).expect("interrupt destination write");
-
-    ledger
-        .migrate_attempt_records(&receipt, 257, u64::MAX)
-        .expect("resume interrupted destination write");
-    assert_eq!(
-        ledger.load_attempt(key).expect("current state"),
-        Some(state)
-    );
-    assert!(!staging.exists());
-}
-
-#[test]
-fn assignment_generated_staging_cleanup_is_presealed_and_resumable() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-    let request = request(0x35, 0x55, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = publishing_state(&request, 0x75, 0x95);
-    let record = write_v14_attempt_state(&ledger, key, state);
-    let current = encode_attempt_state(key, state);
-    let receipt_parent = tempfile::tempdir().expect("receipt parent");
-    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
-        &receipt_parent.path().join("receipt"),
-    )
-    .expect("receipt directory");
-
-    let summary = ledger
-        .migrate_attempt_records(&receipt, 257, u64::MAX)
-        .expect("migrate with generated staging");
-    let shard = record.parent().expect("attempt shard");
-    let quarantine = fs::read_dir(shard)
-        .expect("inventory generated cleanup")
-        .map(|entry| entry.expect("staging entry"))
-        .find(|entry| {
-            crate::anchored_fs::removal_original_name(&entry.file_name())
-                .as_deref()
-                .and_then(|name| name.to_str())
-                .is_some_and(super::is_staging_name)
-        })
-        .expect("generated staging tombstone")
-        .path();
-    assert_eq!(quarantine.metadata().expect("tombstone").len(), 0);
-    assert!(summary.receipt.objects.iter().any(|object| {
-        object.source_object_id
-            == crate::operational_state_migration::receipt::authenticated_id(
-                "crucible.assignment-migration-cleanup-source.v1",
-                &[&current],
-            )
-    }));
-
-    fs::write(&quarantine, &current).expect("restore post-rename generated stage");
-    ledger
-        .migrate_attempt_records(&receipt, 257, u64::MAX)
-        .expect("resume generated staging destruction");
-    assert_eq!(quarantine.metadata().expect("resumed tombstone").len(), 0);
-}
-
-#[test]
-fn runtime_open_rejects_unfenced_assignment_staging() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let mut ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-    let request = request(0x32, 0x52, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = publishing_state(&request, 0x72, 0x92);
-    assert_eq!(
-        ledger
-            .compare_exchange_attempt(key, None, Some(state))
-            .expect("write current record"),
-        AttemptStateCas::Advanced
-    );
-    let record = super::attempt_path_at(directory.path(), key);
-    let staging = record
-        .parent()
-        .expect("attempt shard")
-        .join(".staging-123-456");
-    fs::write(&staging, b"interrupted staging bytes").expect("stale staging");
-    drop(ledger);
-
-    assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
-    fs::remove_file(&staging).expect("remove unfenced staging");
-    fs::write(&staging, []).expect("empty forged staging");
-    let metadata = staging.metadata().expect("forged staging identity");
-    let forged = staging.with_file_name(format!(
-        ".{}.removing-v1-{:x}-{:x}",
-        staging.file_name().expect("staging name").to_string_lossy(),
-        metadata.dev(),
-        metadata.ino()
-    ));
-    fs::rename(staging, &forged).expect("publish unsealed tombstone");
-    assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
-}
-
-#[test]
-fn assignment_migration_rejects_unknown_root_entries() {
-    for kind in ["file", "directory", "symlink"] {
-        let directory = tempfile::tempdir().expect("ledger tempdir");
-        let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-        let junk = directory.path().join(format!("unknown-{kind}"));
-        match kind {
-            "file" => fs::write(&junk, b"junk").expect("junk file"),
-            "directory" => fs::create_dir(&junk).expect("junk directory"),
-            "symlink" => std::os::unix::fs::symlink("missing", &junk).expect("junk symlink"),
-            _ => unreachable!(),
-        }
-
-        assert!(ledger.migrate_attempt_records_for_test(1).is_err());
-        drop(ledger);
-        assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
-    }
-}
-
-#[test]
-fn assignment_migration_destination_replacement_fails_pinned_commit_check() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
-    let request = request(0x33, 0x53, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let record = write_v14_attempt_state(&ledger, key, publishing_state(&request, 0x73, 0x93));
-    let source = ledger
-        .authority()
-        .open_regular_optional(&record, "pin-test-migration-source")
-        .expect("open source")
-        .expect("source exists");
-    let moved = record.with_extension("moved");
-    fs::rename(&record, &moved).expect("move authenticated destination");
-    fs::write(&record, b"replacement").expect("replace destination");
-
-    assert!(source.replace_contents(b"staged-current").is_err());
-    assert_eq!(
-        fs::read(&record).expect("replacement bytes"),
-        b"replacement"
-    );
-    assert_ne!(
-        fs::read(&moved).expect("moved source bytes"),
-        b"staged-current"
-    );
-}
-
-fn publishing_state(
-    request: &SubmitAttemptRequest,
-    execution_marker: u8,
-    observation_marker: u8,
-) -> AttemptRuntimeState {
-    AttemptRuntimeState::Publishing {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(execution_marker),
-        observation: observation(observation_marker),
-        finding_candidate: None,
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [None; 3],
-        prepared_result_digest: None,
-    }
-}
-
-fn write_v14_attempt_state(
-    ledger: &DirectoryAssignmentLedger,
-    key: AttemptExecutionKey,
-    state: AttemptRuntimeState,
-) -> PathBuf {
-    let encoded = encode_attempt_state(key, state);
-    let mut payload = open_sealed(&encoded, ATTEMPT_STATE_CHECKSUM_DOMAIN)
-        .expect("open current state")
-        .to_vec();
-    payload[..ATTEMPT_STATE_MAGIC.len()].copy_from_slice(&legacy_magic(14));
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt record parent"))
-        .expect("create attempt record parent");
-    fs::write(&path, seal(payload, &legacy_domain(14))).expect("write v14 attempt record");
-    path
 }
 
 #[test]
@@ -1040,6 +588,7 @@ fn materialized_start_capture_basis_round_trips_and_rejects_unknown_modes() {
             capture.resources(),
             capture.retention(),
             capture.start_mode(),
+            capture.retention_policy(),
         )),
     };
 
@@ -1059,6 +608,7 @@ fn materialized_start_capture_basis_round_trips_and_rejects_unknown_modes() {
         promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
             execute.resources(),
             execute.retention(),
+            execute.retention_policy(),
         )),
     };
     let encoded_execute = encode_attempt_state(
@@ -1068,7 +618,11 @@ fn materialized_start_capture_basis_round_trips_and_rejects_unknown_modes() {
     let mut payload = open_sealed(&encoded_execute, ATTEMPT_STATE_CHECKSUM_DOMAIN)
         .expect("open current attempt state")
         .to_vec();
-    *payload.last_mut().expect("start mode tag") = 0xff;
+    let start_mode_tag = payload
+        .len()
+        .checked_sub(2)
+        .expect("start mode precedes retention policy");
+    payload[start_mode_tag] = 0xff;
     assert!(matches!(
         decode_attempt_state(&seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN)),
         Err(AssignmentLedgerError::Corrupt {
@@ -1208,7 +762,7 @@ fn selected_origin_round_trips_and_retains_certificate_resume_and_output_roots()
 fn directory_ledger_rejects_corrupt_bounded_records() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let request = request(0x13, 0x33, 1);
-    {
+    let path = {
         let mut ledger =
             DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
         let record = AssignmentRecord::new(
@@ -1225,9 +779,14 @@ fn directory_ledger_rejects_corrupt_bounded_records() {
         ledger
             .publish_assignment(&record)
             .expect("publish assignment");
-        let path = ledger.assignment_path(request.assignment());
-        fs::write(path, b"truncated-record").expect("corrupt assignment file");
-    }
+        let encoded = encode_hex(&request.assignment().as_bytes());
+        directory
+            .path()
+            .join("assignments")
+            .join(&encoded[..2])
+            .join(encoded)
+    };
+    fs::write(&path, b"truncated-record").expect("corrupt assignment file");
 
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("reopen durable ledger");
     assert!(matches!(
@@ -1276,9 +835,6 @@ fn memory_retention_inventory_is_generation_bound_and_single_pass() {
         execution: execution(0x61),
         observation: observation(0x81),
         finding_candidate: Some(finding_candidate(0x91)),
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [None; 3],
-        prepared_result_digest: None,
     };
     let second = request(0x22, 0x42, 1);
     let second_key = AttemptExecutionKey::new(second.lineage(), second.attempt());
@@ -1373,17 +929,11 @@ fn memory_retention_inventory_is_generation_bound_and_single_pass() {
     assert_eq!(summary.observation_roots(), 1);
     assert_eq!(summary.checkpoint_roots(), 1);
     assert_eq!(summary.finding_candidate_roots(), 1);
-    assert!(
-        roots.contains(&AssignmentRetentionRoot::PublishingObservation(
-            observation(0x81)
-        ))
-    );
+    assert!(roots.contains(&AssignmentRetentionRoot::Observation(observation(0x81))));
     assert!(roots.contains(&AssignmentRetentionRoot::ExactCheckpoint(checkpoint(0x82))));
-    assert!(
-        roots.contains(&AssignmentRetentionRoot::PublishingFindingCandidate(
-            finding_candidate(0x91)
-        ))
-    );
+    assert!(roots.contains(&AssignmentRetentionRoot::FindingCandidate(
+        finding_candidate(0x91)
+    )));
 
     let failure = {
         let mut fence = ledger
@@ -1411,9 +961,6 @@ fn directory_retention_generation_survives_restart_and_distinguishes_aba() {
         execution: execution(0x63),
         observation: observation(0x83),
         finding_candidate: None,
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [None; 3],
-        prepared_result_digest: None,
     };
     let running = AttemptRuntimeState::Running {
         execution_basis: request.execution_basis_digest(),
@@ -1493,9 +1040,6 @@ fn directory_retention_inventory_rejects_misplaced_attempt_records() {
         execution: execution(0x64),
         observation: observation(0x84),
         finding_candidate: None,
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [None; 3],
-        prepared_result_digest: None,
     };
     let mut ledger =
         DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
@@ -1532,448 +1076,6 @@ fn directory_retention_inventory_rejects_misplaced_attempt_records() {
     ));
 }
 
-fn legacy_domain(version: u8) -> String {
-    format!("crucible.executor.attempt-state-record.v{version}")
-}
-
-fn legacy_magic(version: u8) -> Vec<u8> {
-    let mut magic = legacy_domain(version).into_bytes();
-    magic.push(0);
-    magic
-}
-
-fn legacy_attempt_payload(
-    version: u8,
-    key: AttemptExecutionKey,
-    state: AttemptRuntimeState,
-) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(&legacy_magic(version));
-    push_bytes(&mut payload, key.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, key.attempt().to_text().as_bytes());
-    if version >= 11 {
-        push_bytes(&mut payload, &key.scope().canonical_bytes());
-    }
-    payload.extend_from_slice(&state.execution_basis().as_bytes());
-    if version >= 4 {
-        encode_attempt_origin(&mut payload, state.origin());
-    }
-    payload
-}
-
-fn persist_and_assert_legacy_migration(
-    key: AttemptExecutionKey,
-    state: AttemptRuntimeState,
-    payload: Vec<u8>,
-    version: u8,
-) {
-    let directory = tempfile::tempdir().expect("legacy ledger tempdir");
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open legacy ledger");
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, &legacy_domain(version))).expect("write legacy attempt state");
-
-    let summary = ledger
-        .migrate_attempt_records_for_test(256)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-    assert_eq!(
-        ledger.load_attempt(key).expect("load migrated state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn every_legacy_assignment_version_migrates_to_v15() {
-    let request = self::request(0x15, 0x35, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = AttemptRuntimeState::Completed {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x55),
-        observation: observation(0x75),
-        finding_candidate: CompletedFindingCandidate::None,
-        prepared_result_digest: None,
-    };
-
-    let mut payload = legacy_attempt_payload(1, key, state);
-    payload.push(1);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x55).as_bytes());
-    push_bytes(&mut payload, observation(0x75).to_text().as_bytes());
-    persist_and_assert_legacy_migration(key, state, payload, 1);
-
-    let request = self::request(0x16, 0x36, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = AttemptRuntimeState::Publishing {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x56),
-        observation: observation(0x76),
-        finding_candidate: None,
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [None; 3],
-        prepared_result_digest: None,
-    };
-
-    let mut payload = legacy_attempt_payload(2, key, state);
-    payload.push(3);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x56).as_bytes());
-    push_bytes(&mut payload, observation(0x76).to_text().as_bytes());
-    persist_and_assert_legacy_migration(key, state, payload, 2);
-
-    let request = self::request(0x17, 0x37, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let state = AttemptRuntimeState::Paused {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x57),
-        checkpoint: checkpoint(0x77),
-        promotion_basis: None,
-    };
-
-    let mut payload = legacy_attempt_payload(3, key, state);
-    payload.push(6);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x57).as_bytes());
-    push_bytes(&mut payload, checkpoint(0x77).to_text().as_bytes());
-    persist_and_assert_legacy_migration(key, state, payload, 3);
-
-    let request = self::request(0x19, 0x39, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let origin = AttemptExecutionOrigin::ExactCheckpoint {
-        assignment: request.assignment(),
-        request_digest: CampaignHash::derive("crucible.test.legacy-v4-resume.v1", b"resume"),
-        prior_execution: execution(0x58),
-        checkpoint: checkpoint(0x78),
-    };
-    let state = AttemptRuntimeState::Paused {
-        execution_basis: request.execution_basis_digest(),
-        origin,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x59),
-        checkpoint: checkpoint(0x79),
-        promotion_basis: None,
-    };
-
-    let mut payload = legacy_attempt_payload(4, key, state);
-    payload.push(6);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x59).as_bytes());
-    push_bytes(&mut payload, checkpoint(0x79).to_text().as_bytes());
-    persist_and_assert_legacy_migration(key, state, payload, 4);
-
-    let request = self::request(0x1a, 0x3a, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let origin = AttemptExecutionOrigin::Initial;
-    let state = AttemptRuntimeState::CheckpointPromoting {
-        execution_basis: request.execution_basis_digest(),
-        origin,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x5a),
-        source_checkpoint: checkpoint(0x7a),
-        promoted_checkpoint: checkpoint(0x7b),
-        promotion_basis: None,
-    };
-
-    let mut payload = legacy_attempt_payload(5, key, state);
-    payload.push(7);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x5a).as_bytes());
-    push_bytes(&mut payload, checkpoint(0x7a).to_text().as_bytes());
-    push_bytes(&mut payload, checkpoint(0x7b).to_text().as_bytes());
-    persist_and_assert_legacy_migration(key, state, payload, 5);
-
-    let request = self::request(0x1d, 0x3d, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let origin = AttemptExecutionOrigin::Initial;
-    let promotion_basis =
-        CheckpointPromotionExecutionBasis::new(request.resources(), request.retention());
-    let state = AttemptRuntimeState::Paused {
-        execution_basis: request.execution_basis_digest(),
-        origin,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x5d),
-        checkpoint: checkpoint(0x7d),
-        promotion_basis: Some(promotion_basis),
-    };
-
-    let mut payload = legacy_attempt_payload(6, key, state);
-    payload.push(6);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x5d).as_bytes());
-    push_bytes(&mut payload, checkpoint(0x7d).to_text().as_bytes());
-    encode_legacy_checkpoint_promotion_basis(&mut payload, promotion_basis);
-    persist_and_assert_legacy_migration(key, state, payload, 6);
-
-    let request = self::request(0x1e, 0x3e, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let origin = AttemptExecutionOrigin::Initial;
-    let state = AttemptRuntimeState::Publishing {
-        execution_basis: request.execution_basis_digest(),
-        origin,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x5e),
-        observation: observation(0x7e),
-        finding_candidate: None,
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [None; 3],
-        prepared_result_digest: None,
-    };
-
-    let mut payload = legacy_attempt_payload(7, key, state);
-    payload.push(3);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x5e).as_bytes());
-    push_bytes(&mut payload, observation(0x7e).to_text().as_bytes());
-    persist_and_assert_legacy_migration(key, state, payload, 7);
-
-    let request = self::request(0x1f, 0x3f, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let candidate = finding_candidate(0x7f);
-    let state = AttemptRuntimeState::Completed {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x5f),
-        observation: observation(0x7f),
-        finding_candidate: CompletedFindingCandidate::Pending(candidate),
-        prepared_result_digest: None,
-    };
-
-    let mut payload = legacy_attempt_payload(8, key, state);
-    payload.push(1);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x5f).as_bytes());
-    push_bytes(&mut payload, observation(0x7f).to_text().as_bytes());
-    encode_optional_finding_candidate(&mut payload, Some(candidate));
-    persist_and_assert_legacy_migration(key, state, payload, 8);
-
-    let request = self::request(0x20, 0x40, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let candidate = finding_candidate(0x80);
-    let state = AttemptRuntimeState::Completed {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x60),
-        observation: observation(0x80),
-        finding_candidate: CompletedFindingCandidate::Acknowledged(candidate),
-        prepared_result_digest: None,
-    };
-
-    let mut payload = legacy_attempt_payload(9, key, state);
-    payload.push(1);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x60).as_bytes());
-    push_bytes(&mut payload, observation(0x80).to_text().as_bytes());
-    encode_optional_finding_candidate(&mut payload, Some(candidate));
-    payload.push(1);
-    persist_and_assert_legacy_migration(key, state, payload, 9);
-
-    let request = self::request(0x21, 0x41, 1);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let promotion_basis =
-        CheckpointPromotionExecutionBasis::new(request.resources(), request.retention());
-    let state = AttemptRuntimeState::Paused {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x61),
-        checkpoint: checkpoint(0x81),
-        promotion_basis: Some(promotion_basis),
-    };
-
-    let mut payload = legacy_attempt_payload(9, key, state);
-    payload.push(6);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x61).as_bytes());
-    push_bytes(&mut payload, checkpoint(0x81).to_text().as_bytes());
-    encode_legacy_checkpoint_promotion_basis(&mut payload, promotion_basis);
-    persist_and_assert_legacy_migration(key, state, payload, 9);
-
-    let configuration = configuration(0x91);
-    let request = capture_request(0x22, 0x42, 1, configuration);
-    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
-    let promotion_basis = CheckpointPromotionExecutionBasis::new_for_start_mode(
-        request.resources(),
-        request.retention(),
-        request.start_mode(),
-    );
-    let state = AttemptRuntimeState::Paused {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x62),
-        checkpoint: checkpoint(0x82),
-        promotion_basis: Some(promotion_basis),
-    };
-
-    let mut payload = legacy_attempt_payload(10, key, state);
-    payload.push(6);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x62).as_bytes());
-    push_bytes(&mut payload, checkpoint(0x82).to_text().as_bytes());
-    encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
-    persist_and_assert_legacy_migration(key, state, payload, 10);
-
-    let capture_fact = campaign_fact(0x92);
-    let request = savepoint_capture_request(0x23, 0x43, 1, capture_fact, self::configuration(0x93));
-    let key = AttemptExecutionKey::for_request(&request);
-    let promotion_basis = CheckpointPromotionExecutionBasis::new_for_start_mode(
-        request.resources(),
-        request.retention(),
-        request.start_mode(),
-    );
-    let state = AttemptRuntimeState::Paused {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x63),
-        checkpoint: checkpoint(0x83),
-        promotion_basis: Some(promotion_basis),
-    };
-
-    let mut payload = legacy_attempt_payload(11, key, state);
-    payload.push(6);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x63).as_bytes());
-    push_bytes(&mut payload, checkpoint(0x83).to_text().as_bytes());
-    encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
-    persist_and_assert_legacy_migration(key, state, payload, 11);
-
-    let request = self::request(0x71, 0x72, 1);
-    let key = AttemptExecutionKey::for_request(&request);
-    let state = AttemptRuntimeState::Publishing {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x73),
-        observation: observation(0x74),
-        finding_candidate: Some(finding_candidate(0x75)),
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [None; 3],
-        prepared_result_digest: None,
-    };
-
-    let mut payload = legacy_attempt_payload(12, key, state);
-    payload.push(3);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x73).as_bytes());
-    push_bytes(&mut payload, observation(0x74).to_text().as_bytes());
-    encode_optional_finding_candidate(&mut payload, Some(finding_candidate(0x75)));
-    persist_and_assert_legacy_migration(key, state, payload, 12);
-
-    let request = self::request(0x76, 0x77, 1);
-    let key = AttemptExecutionKey::for_request(&request);
-    let state = AttemptRuntimeState::Publishing {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution: execution(0x78),
-        observation: observation(0x79),
-        finding_candidate: Some(finding_candidate(0x7a)),
-        finding_replay_captures: None,
-        finding_exact_retention_roots: [None; 3],
-        prepared_result_digest: None,
-    };
-
-    let mut payload = legacy_attempt_payload(13, key, state);
-    payload.push(3);
-    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
-    payload.extend_from_slice(&execution(0x78).as_bytes());
-    push_bytes(&mut payload, observation(0x79).to_text().as_bytes());
-    encode_optional_finding_candidate(&mut payload, Some(finding_candidate(0x7a)));
-    encode_optional_finding_replay_captures(&mut payload, None);
-    persist_and_assert_legacy_migration(key, state, payload, 13);
-}
-
-#[test]
-fn v11_rejects_v12_selected_origin_and_promotion_tags() {
-    let request = request(0x24, 0x44, 1);
-    let key = AttemptExecutionKey::for_request(&request);
-
-    let mut selected_origin = Vec::with_capacity(512);
-    selected_origin.extend_from_slice(&legacy_magic(11));
-    push_bytes(&mut selected_origin, request.lineage().to_text().as_bytes());
-    push_bytes(&mut selected_origin, request.attempt().to_text().as_bytes());
-    push_bytes(
-        &mut selected_origin,
-        &request.execution_scope().canonical_bytes(),
-    );
-    selected_origin.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    selected_origin.push(2);
-    assert!(matches!(
-        decode_migratable_attempt_state(&seal(selected_origin, &legacy_domain(11),)),
-        Err(AssignmentLedgerError::Corrupt {
-            reason: "attempt-state-origin-unknown-tag"
-        })
-    ));
-
-    let mut selected_promotion = Vec::with_capacity(512);
-    selected_promotion.extend_from_slice(&legacy_magic(11));
-    push_bytes(
-        &mut selected_promotion,
-        request.lineage().to_text().as_bytes(),
-    );
-    push_bytes(
-        &mut selected_promotion,
-        request.attempt().to_text().as_bytes(),
-    );
-    push_bytes(
-        &mut selected_promotion,
-        &request.execution_scope().canonical_bytes(),
-    );
-    selected_promotion.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut selected_promotion, AttemptExecutionOrigin::Initial);
-    selected_promotion.push(6);
-    selected_promotion.extend_from_slice(&request.daemon_epoch().as_bytes());
-    selected_promotion.extend_from_slice(&execution(0x64).as_bytes());
-    push_bytes(
-        &mut selected_promotion,
-        checkpoint(0x84).to_text().as_bytes(),
-    );
-    selected_promotion.push(1);
-    selected_promotion.extend_from_slice(&request.resources().maximum_vcpus().to_be_bytes());
-    selected_promotion
-        .extend_from_slice(&request.resources().maximum_resident_bytes().to_be_bytes());
-    selected_promotion.extend_from_slice(&request.resources().maximum_disk_bytes().to_be_bytes());
-    selected_promotion
-        .extend_from_slice(&request.resources().maximum_execution_quanta().to_be_bytes());
-    selected_promotion.push(1);
-    selected_promotion.push(3);
-    assert!(matches!(
-        decode_migratable_attempt_state(&seal(selected_promotion, &legacy_domain(11),)),
-        Err(AssignmentLedgerError::Corrupt {
-            reason: "checkpoint-promotion-start-mode-tag"
-        })
-    ));
-
-    assert_eq!(key.scope(), AttemptExecutionScope::Semantic);
-}
-
-fn encode_legacy_checkpoint_promotion_basis(
-    payload: &mut Vec<u8>,
-    basis: CheckpointPromotionExecutionBasis,
-) {
-    payload.push(1);
-    let resources = basis.resources();
-    payload.extend_from_slice(&resources.maximum_vcpus().to_be_bytes());
-    payload.extend_from_slice(&resources.maximum_resident_bytes().to_be_bytes());
-    payload.extend_from_slice(&resources.maximum_disk_bytes().to_be_bytes());
-    payload.extend_from_slice(&resources.maximum_execution_quanta().to_be_bytes());
-    payload.push(match basis.retention() {
-        ExecutionRetentionIntent::Discard => 0,
-        ExecutionRetentionIntent::RetainOnFailure => 1,
-        ExecutionRetentionIntent::RetainAlways => 2,
-    });
-}
-
 fn request(assignment_byte: u8, attempt_byte: u8, vcpus: u32) -> SubmitAttemptRequest {
     SubmitAttemptRequest::new(
         AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
@@ -1981,17 +1083,20 @@ fn request(assignment_byte: u8, attempt_byte: u8, vcpus: u32) -> SubmitAttemptRe
         CampaignLineageId::parse(&typed_id(
             "crucible.campaign.lineage",
             "campaign-fact",
+            1,
             0x41,
         ))
         .expect("lineage"),
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
+            8,
             attempt_byte,
         ))
         .expect("attempt"),
         AttemptResourceLimits::new(vcpus, 4096, 8192, 16).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("request")
 }
@@ -2002,25 +1107,30 @@ fn capture_request(
     vcpus: u32,
     configuration: ConfigurationArtifactId,
 ) -> SubmitAttemptRequest {
-    SubmitAttemptRequest::new_capture_materialized_start(
+    SubmitAttemptRequest::new(
         AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
         DaemonEpoch::from_bytes([0x21; 16]).expect("daemon epoch"),
         CampaignLineageId::parse(&typed_id(
             "crucible.campaign.lineage",
             "campaign-fact",
+            1,
             0x41,
         ))
         .expect("lineage"),
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
+            8,
             attempt_byte,
         ))
         .expect("attempt"),
         AttemptResourceLimits::new(vcpus, 4096, 8192, 16).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
-        configuration,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_capture_materialized_start(assignment, configuration)
+    })
     .expect("capture request")
 }
 
@@ -2031,32 +1141,36 @@ fn savepoint_capture_request(
     request: CampaignFactId,
     configuration: ConfigurationArtifactId,
 ) -> SubmitAttemptRequest {
-    SubmitAttemptRequest::new_savepoint_capture(
+    SubmitAttemptRequest::new(
         AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
         DaemonEpoch::from_bytes([0x21; 16]).expect("daemon epoch"),
         CampaignLineageId::parse(&typed_id(
             "crucible.campaign.lineage",
             "campaign-fact",
+            1,
             0x41,
         ))
         .expect("lineage"),
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
+            8,
             attempt_byte,
         ))
         .expect("attempt"),
         AttemptResourceLimits::new(vcpus, 4096, 8192, 16).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
-        request,
-        configuration,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(assignment, request, configuration)
+    })
     .expect("savepoint capture request")
 }
 
 fn campaign_fact(byte: u8) -> CampaignFactId {
     CampaignFactId::parse(&format!(
-        "crucible.campaign.fact@campaign-fact.10.{}",
+        "crucible.campaign.fact@campaign-fact.14.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("campaign fact")
@@ -2066,6 +1180,7 @@ fn configuration(byte: u8) -> ConfigurationArtifactId {
     ConfigurationArtifactId::parse(&typed_id(
         "crucible.campaign.configuration-artifact",
         "configuration",
+        1,
         byte,
     ))
     .expect("configuration")
@@ -2075,23 +1190,23 @@ fn observation(byte: u8) -> ObservationId {
     ObservationId::parse(&typed_id(
         "crucible.campaign.observation",
         "observation",
+        12,
         byte,
     ))
     .expect("observation")
 }
 
 fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
-    FindingCandidateBundleId::parse(&typed_id(
-        "crucible.campaign.finding-candidate-bundle",
-        "finding",
-        byte,
+    FindingCandidateBundleId::parse(&format!(
+        "crucible.campaign.finding-candidate-bundle@finding.6.{}",
+        encode_hex(&[byte; 32])
     ))
     .expect("finding candidate")
 }
 
 fn checkpoint(byte: u8) -> ExactCheckpointId {
     ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.2.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("checkpoint")
@@ -2101,6 +1216,6 @@ fn execution(byte: u8) -> ExecutionId {
     ExecutionId::from_bytes([byte; 16]).expect("execution")
 }
 
-fn typed_id(tag: &str, kind: &str, byte: u8) -> String {
-    format!("{tag}@{kind}.1.{}", encode_hex(&[byte; 32]))
+fn typed_id(tag: &str, kind: &str, version: u32, byte: u8) -> String {
+    format!("{tag}@{kind}.{version}.{}", encode_hex(&[byte; 32]))
 }

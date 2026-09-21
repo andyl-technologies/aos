@@ -156,6 +156,18 @@ pub enum PlannedDeleteDisposition {
     AlreadyAbsent,
 }
 
+/// Unforgeable authority for graph-owned physical repair publication.
+#[doc(hidden)]
+pub struct PhysicalRepairAuthority {
+    _private: (),
+}
+
+impl PhysicalRepairAuthority {
+    pub(crate) const fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
 /// Exclusive physical-inventory authority held across validation and deletion.
 ///
 /// Normal conditional puts into the same cooperating backend must block while
@@ -190,6 +202,26 @@ pub trait BlobInventoryFence {
     /// until its final logical entry is removed or a later repack reclaims the
     /// sparse pack. This primitive does not decide reachability.
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError>;
+
+    /// Publishes an authenticated repair while retaining this exclusive fence.
+    ///
+    /// This operation is available only to the store graph's repair authority.
+    /// Backends that cannot retain their mutation fence through publication
+    /// reject repair rather than falling back to an unfenced conditional put.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unauthorized`] when this backend does not provide
+    /// generation-fenced repair publication, or another backend error when the
+    /// authenticated placement cannot be published durably.
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        _id: ContentId,
+        _source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        Err(StoreError::Unauthorized)
+    }
 }
 
 /// Separate administrative capability for a physical blob backend.

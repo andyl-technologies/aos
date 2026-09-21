@@ -13,28 +13,44 @@ mod support;
 
 use support::*;
 
+fn encoded_remaining_request_attempts(budget: &crate::PlannerCandidateBudget) -> u64 {
+    let bytes = budget.canonical_bytes();
+    let encoded = bytes
+        .get(bytes.len().saturating_sub(std::mem::size_of::<u64>())..)
+        .expect("candidate budget request allowance bytes");
+    u64::from_be_bytes(
+        encoded
+            .try_into()
+            .expect("candidate budget request allowance width"),
+    )
+}
+
 #[test]
 fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_metric() {
     let (repository, lineage, base_policy) = fixture();
     let metric = "boundary.latency";
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Beam {
-            width: 1,
-            novelty_reserve: 0,
-        },
-        base_policy.choice_policies().clone(),
-        BTreeMap::from([(
-            metric.to_owned(),
-            Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000).expect("Beam objective"),
-        )]),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Beam {
+                width: 1,
+                novelty_reserve: 0,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            BTreeMap::from([(
+                metric.to_owned(),
+                Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000).expect("Beam objective"),
+            )]),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("Beam policy")
     .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
@@ -159,25 +175,29 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
         .expect("publish coverage");
     let selected_observation = Observation::new(
         selected_admission.attempt,
-        selected_configuration,
-        selected_content,
-        selected_path.id().expect("selected path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        selected_measurements,
-        properties_id,
-        coverage,
+        Observation::outcome(
+            selected_configuration,
+            selected_content,
+            selected_path.id().expect("selected path"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            selected_measurements,
+            properties_id,
+            coverage,
+        ),
         BTreeSet::from([selected_continuation.opportunity()]),
     )
     .expect("selected observation");
     let filtered_observation = Observation::new(
         filtered_admission.attempt,
-        filtered_configuration,
-        filtered_content,
-        filtered_path.id().expect("filtered path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        filtered_measurements,
-        properties_id,
-        coverage,
+        Observation::outcome(
+            filtered_configuration,
+            filtered_content,
+            filtered_path.id().expect("filtered path"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            filtered_measurements,
+            properties_id,
+            coverage,
+        ),
         BTreeSet::from([filtered_continuation.opportunity()]),
     )
     .expect("filtered observation");
@@ -378,20 +398,24 @@ fn beam_named_boundary_metric_selects_the_deeper_survivor_and_filters_missing_me
 fn beam_projection_failure_discards_partial_cache_state() {
     let (repository, lineage, base_policy) = fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Beam {
-            width: 1,
-            novelty_reserve: 0,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Beam {
+                width: 1,
+                novelty_reserve: 0,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("Beam cache failure policy");
     let name = "beam-cache-failure";
@@ -1138,7 +1162,7 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
                         original.remaining_proposals(),
                         original.remaining_attempts(),
                         original.requires_new_attempt(),
-                        original.remaining_request_attempts(),
+                        encoded_remaining_request_attempts(&original),
                     )
                     .expect("rebind budget");
                     ObjectEnvelope::for_candidate_budget(&budget).expect("forged budget envelope")
@@ -1281,19 +1305,23 @@ fn canonical_search_driver_carries_a_first_page_winner_through_restart_and_accep
     let (repository, lineage, base_policy, _, planner_authority, debugger_authority) =
         authorized_fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 100,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 100,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("exhaustive search policy");
     let name = "canonical-search-driver-restart";
@@ -1653,19 +1681,23 @@ fn canonical_search_request_rejects_forged_domain_semantics_and_parent_ancestry(
 fn canonical_search_request_rejects_coherent_unrelated_parent_before_acceptance() {
     let (repository, lineage, base_policy, _, planner_authority, _) = authorized_fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 100,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 100,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("exhaustive search policy");
     let name = "canonical-search-forged-acceptance";
@@ -1890,13 +1922,15 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
         .expect("publish coverage");
     let observation = Observation::new(
         admitted.attempt,
-        child,
-        child_content,
-        path.id().expect("path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::from([guided.opportunity()]),
     )
     .expect("completed observation");
@@ -2107,16 +2141,6 @@ fn canonical_puct_planner_ranks_every_ready_offer_and_replays_owner_guidance() {
     decoded
         .validate_for(&ranking_request)
         .expect("validate decoded ranking response");
-
-    let mut retired_response = ranking_response.canonical_bytes();
-    retired_response[..4].copy_from_slice(&1_u32.to_be_bytes());
-    let error = crate::GetCampaignPlannerRankingsResponse::from_canonical_bytes(&retired_response)
-        .expect_err("schema-v1 ranking response must fail closed");
-    assert!(
-        error
-            .to_string()
-            .contains("unsupported campaign planner-ranking response schema")
-    );
 }
 
 #[test]
@@ -2755,10 +2779,12 @@ fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
     assert!(invocation.scan_page().complete());
 
     let planner_request = BranchRequest::new(
-        source_request.branch_point(),
-        source_request.parent(),
-        source_request.opportunity(),
-        source_request.domain(),
+        BranchRequest::identity(
+            source_request.branch_point(),
+            source_request.parent(),
+            source_request.opportunity(),
+            source_request.domain(),
+        ),
         source_request.source().clone(),
         BranchRequestCause::Planner(invocation.id().expect("invocation id")),
         source_request.budget(),
@@ -3153,13 +3179,15 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
         .expect("admit second convergent attempt");
     let second_observation = Observation::new(
         second_admitted.attempt,
-        first_observation.child(),
-        first_observation.child_content(),
-        second_path.id().expect("second path id"),
-        first_observation.stop().clone(),
-        first_observation.measurements(),
-        first_observation.properties(),
-        first_observation.coverage(),
+        Observation::outcome(
+            first_observation.child(),
+            first_observation.child_content(),
+            second_path.id().expect("second path id"),
+            first_observation.stop().clone(),
+            first_observation.measurements(),
+            first_observation.properties(),
+            first_observation.coverage(),
+        ),
         first_observation.discovered_choices().clone(),
     )
     .expect("second convergent observation");
@@ -3183,10 +3211,12 @@ fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
         .expect("nested domain");
     let branch_point = opportunity.branch_point_id(first_observation.child());
     let nested_request = BranchRequest::new(
-        branch_point,
-        first_observation.child_content(),
-        opportunity_id,
-        opportunity.domain(),
+        BranchRequest::identity(
+            branch_point,
+            first_observation.child_content(),
+            opportunity_id,
+            opportunity.domain(),
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),
@@ -3349,7 +3379,7 @@ fn planner_cursor_and_imported_root_fail_closed() {
     );
     let fabricated_source = BranchRequestId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
-        2,
+        9,
         b"fabricated planner cursor",
     ))
     .expect("fabricated source");

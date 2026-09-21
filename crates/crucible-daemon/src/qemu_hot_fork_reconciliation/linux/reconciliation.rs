@@ -10,7 +10,7 @@ where
 
     fn child_basis(&self) -> QemuHotForkReconciliationChildBasis {
         QemuHotForkReconciliationChildBasis::new(
-            self.basis.request().child_process_generation(),
+            self.basis.request().child_process_contract_generation(),
             self.basis.child_process_id(),
         )
     }
@@ -63,7 +63,11 @@ where
                     self.installed_node = None;
                     self.installed_node_id = None;
                     self.host_continuation = None;
-                    self.source_release = LinuxSourceReleasePhase::PluginEndpoints;
+                    self.source_release = if self.detached_resources.is_some() {
+                        LinuxSourceReleasePhase::Diagnostics
+                    } else {
+                        LinuxSourceReleasePhase::PluginEndpoints
+                    };
                 }
                 LinuxSourceReleasePhase::PluginEndpoints => {
                     self.with_source_mut(|source| source.release_plugin_endpoints())?;
@@ -81,11 +85,22 @@ where
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::Diagnostics => {
-                    let process_owner = Arc::clone(&self.process_owner);
-                    self.diagnostics = Some(process_owner.with_source(|source| {
-                        source.release_child_diagnostics(&mut self.diagnostics_consumer)
-                    })?);
-                    self.source_release = LinuxSourceReleasePhase::PrivateRing;
+                    self.diagnostics = Some(match self.detached_resources.as_ref() {
+                        Some(detached) => {
+                            detached.finish_diagnostics(&mut self.diagnostics_consumer)?
+                        }
+                        None => {
+                            let process_owner = Arc::clone(&self.process_owner);
+                            process_owner.with_source(|source| {
+                                source.release_child_diagnostics(&mut self.diagnostics_consumer)
+                            })?
+                        }
+                    });
+                    self.source_release = if self.detached_resources.is_some() {
+                        LinuxSourceReleasePhase::Complete
+                    } else {
+                        LinuxSourceReleasePhase::PrivateRing
+                    };
                     return Ok(false);
                 }
                 LinuxSourceReleasePhase::PrivateRing => {
@@ -119,6 +134,13 @@ where
     }
 
     fn release_process_contract(&mut self) -> Result<(), Self::Error> {
+        if let Some(detached) = self.detached_resources.as_ref() {
+            detached
+                .verify_final_basis(self.basis.request(), self.basis.child_process_id())
+                .map_err(LinuxQemuHotForkReconciliationError::Source)?;
+            self.detached_resources = None;
+            return Ok(());
+        }
         let state = self.with_source_mut(|source| source.release_child_process_contract())?;
         if state.staged()
             || state.consumed()

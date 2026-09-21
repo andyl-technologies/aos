@@ -1,0 +1,49 @@
+schema = "aos.crucible.e2e-determinism-evidence-contract.v1"
+gate = "gate:e2e-determinism"
+rfc_section = "RFC-0010 section 24.11"
+acceptance_state = "manual-evidence-required"
+physical_cross_host_required = true
+minimum_distinct_physical_hosts = 2
+live_packaged_qemu_required = true
+tcg_only = true
+varied_core_counts = [1, 2, 4]
+hostile_profiles = ["quiet-single-core", "randomized-worker-two-core", "loaded-io-stall-four-core"]
+implementation_tasks = ["T-HARN-23", "T-PKG-15"]
+
+[provenance]
+required = true
+fields = ["crucible_package_identity", "scenario_sha256", "qemu_binary_sha256", "qemu_identity_sha256", "plugin_sha256", "kernel_sha256", "root_image_sha256", "physical_host_id", "physical_host_attestation_sha256"]
+exact_closure_match_required = true
+distinct_physical_host_attestations_required = true
+
+[command_journal]
+required = true
+records_exit_status = true
+records_structured_output = true
+redacts_secrets = true
+required_operations = ["populate-store", "verify", "replay", "verify-cross-host"]
+
+[matrix]
+randomized_worker_scheduling = true
+wall_clock_jitter = true
+host_io_stall = true
+bounded_scheduler_preemption = true
+required_core_counts = [1, 2, 4]
+
+[artifacts]
+required = true
+items = ["producer/manifest.env", "producer/physical-host-attestation.env", "producer/sign-off.env", "producer/command-journal.tsv", "producer/canonical-results.tsv", "producer/reproduction.crucible", "producer/profiles/*/store-populate.log", "producer/profiles/*/verify.jsonl", "reproducer/manifest.env", "reproducer/physical-host-attestation.env", "reproducer/sign-off.env", "reproducer/command-journal.tsv", "reproducer/canonical-results.tsv", "reproducer/profiles/*/store-populate.log", "reproducer/replay.jsonl", "release-sign-off.env", "command-journal.tsv", "result"]
+byte_identical_reproduction_artifact_required = true
+byte_identical_canonical_results_required = true
+
+[sign_offs]
+required_roles = ["producer_host_operator", "reproducer_host_operator", "release_owner"]
+distinct_operator_identities_required = true
+unsigned_result = "blocked"
+
+[acceptance]
+allowed_results = ["pass", "fail", "blocked"]
+accepted_result = "pass"
+same_host_result = "blocked"
+missing_evidence_result = "blocked"
+retry_to_obtain_pass_permitted = false
