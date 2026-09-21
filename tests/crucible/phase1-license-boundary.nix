@@ -283,7 +283,17 @@ in
 
           suite_nix="$CRUCIBLE_GATE_SOURCE/pkgs/tools/crucible/crucible.nix"
           release_nix="$CRUCIBLE_GATE_SOURCE/pkgs/tools/crucible/_release-manifest.nix"
-          grep -Fq 'runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux];' "$suite_nix"
+          sed -n '/^  suite = mkDerivation {$/,/^  };$/p' "$suite_nix" \
+            | sed -n '/^    runtimeDeps =/,/^    propagatedDeps = /p' \
+            | sed '/^[[:space:]]*#/d' \
+            | tr '\n' ' ' \
+            | sed 's/[[:space:]][[:space:]]*/ /g' \
+            > "$TMPDIR/crucible-suite-runtime-deps"
+          if ! grep -Fq 'runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux] ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash]; propagatedDeps = [];' \
+            "$TMPDIR/crucible-suite-runtime-deps"; then
+            echo "Crucible suite runtime dependencies must retain the matching QEMU source and cross-Linux Bash wrapper" >&2
+            exit 1
+          fi
           grep -Fq 'license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];' "$suite_nix"
           grep -Fq 'correspondingSource = qemu-crucible-source;' "$suite_nix"
           grep -Fq 'standalone_release=false' "$CRUCIBLE_GATE_SOURCE/pkgs/emulation/qemu.nix"
