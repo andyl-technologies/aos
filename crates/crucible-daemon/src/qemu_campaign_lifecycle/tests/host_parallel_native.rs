@@ -13,7 +13,9 @@ use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 use super::*;
 use crate::{
     ComposedQemuAttemptResourceGuardFactory, ExactCheckpointStore, LinuxQemuAttemptHostConfig,
-    LinuxQemuAttemptHostResourceFactory,
+    LinuxQemuAttemptHostResourceFactory, ProductionBakedGenesisReplayCatalogFactory,
+    SharedQemuAttemptHostResourceFactory, capture_production_baked_genesis,
+    promote_test_checkpoint_for_resume,
 };
 
 const RENDEZVOUS_ICOUNT: u64 = 8_000_000;
@@ -199,7 +201,7 @@ fn run_failure_and_exact_recovery(
     let prepared = checkpoint_store
         .prepare_attempt_checkpoint(&captured)
         .expect("prepare pre-failure exact checkpoint");
-    let checkpoint = checkpoint_store
+    let raw_checkpoint = checkpoint_store
         .publish_attempt_checkpoint(&prepared)
         .expect("publish pre-failure exact checkpoint")
         .root();
@@ -248,6 +250,14 @@ fn run_failure_and_exact_recovery(
     QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle)
         .expect("contain poisoned production lifecycle");
 
+    let checkpoint = replay_validate_checkpoint(
+        paths,
+        source,
+        input,
+        &checkpoint_store,
+        raw_checkpoint,
+        &context,
+    );
     let origin = exact_checkpoint_origin(checkpoint);
     let selected = Some(
         crate::executor_supervisor::SelectedExactCheckpointRoot::from_test_checkpoint(checkpoint),
@@ -259,6 +269,19 @@ fn run_failure_and_exact_recovery(
         lifecycle_config(paths, "host-recovery", 2),
         ComposedQemuAttemptResourceGuardFactory::new(open_host(paths, "host-recovery", 24_300)),
     );
+    recovery_factory
+        .authenticate_resume_boundary(
+            &checkpoint_store,
+            checkpoint,
+            QemuExactResumeBasis::new(
+                &source.scenario_def(),
+                source,
+                &before.logical.configuration,
+                None,
+            ),
+            &recovery_context,
+        )
+        .expect("inspect authenticated pre-failure exact checkpoint");
     let mut recovered = recovery_factory
         .begin_resume(
             &checkpoint_store,
@@ -277,6 +300,30 @@ fn run_failure_and_exact_recovery(
     drive_until_host_round(&mut recovered, source, 2);
     QemuFreshAttemptLifecycleOwner::shutdown(&mut recovered)
         .expect("shutdown exact-recovered production lifecycle");
+    let spent = match recovery_factory.authenticate_resume_boundary(
+        &checkpoint_store,
+        checkpoint,
+        QemuExactResumeBasis::new(
+            &source.scenario_def(),
+            source,
+            &before.logical.configuration,
+            None,
+        ),
+        &recovery_context,
+    ) {
+        Ok(_) => panic!("spent replay promotion authority must reject reuse"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        spent,
+        QemuAttemptProductionVmLifecycleError::CheckpointRestore(source)
+            if matches!(
+                source.downcast_ref::<ProductionAttemptCheckpointRestoreError>(),
+                Some(ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+                    checkpoint: rejected,
+                }) if *rejected == checkpoint
+            )
+    ));
 
     FailureEvidence {
         healthy_peer_advanced,
@@ -284,6 +331,43 @@ fn run_failure_and_exact_recovery(
         retry_poisoned,
         authenticated_exact_recovery,
     }
+}
+
+fn replay_validate_checkpoint(
+    paths: &NativePaths,
+    source: &ScenarioDefForm,
+    input: &CrucibleAttemptExecution,
+    checkpoints: &ExactCheckpointStore,
+    raw: ExactCheckpointId,
+    context: &AttemptExecutionContext,
+) -> ExactCheckpointId {
+    let capture_context = execution_context(input, 5);
+    let mut baked_factory = QemuAttemptProductionVmLifecycleFactory::new(
+        lifecycle_config(paths, "host-replay-genesis", 2),
+        ComposedQemuAttemptResourceGuardFactory::new(open_host(
+            paths,
+            "host-replay-genesis",
+            24_250,
+        )),
+    );
+    let baked = capture_production_baked_genesis(&mut baked_factory, source, &capture_context)
+        .expect("capture production baked genesis for checkpoint replay");
+    let resources = ComposedQemuAttemptResourceGuardFactory::new(
+        SharedQemuAttemptHostResourceFactory::new(open_host(paths, "host-replay-oracle", 24_260)),
+    );
+    let mut replay_factory = ProductionBakedGenesisReplayCatalogFactory::new([baked], resources)
+        .expect("build production baked-genesis replay catalog");
+
+    promote_test_checkpoint_for_resume(
+        checkpoints,
+        raw,
+        input,
+        input.start().configuration(),
+        None,
+        &paths.run_state_root.join("host-replay-oracle"),
+        context,
+        &mut replay_factory,
+    )
 }
 
 fn drive_until_host_round(

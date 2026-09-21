@@ -8,7 +8,11 @@ use crucible::model::DagStore;
 use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 
 use super::*;
-use crate::QemuExactResumeBasis;
+use crate::{
+    ProductionBakedGenesisCheckpoint, ProductionBakedGenesisReplayCatalogFactory,
+    QemuExactResumeBasis, SharedQemuAttemptHostResourceFactory, capture_production_baked_genesis,
+    promote_test_checkpoint_for_resume,
+};
 
 const POST_CHOICE_QUANTA: u64 = 512;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
@@ -84,6 +88,15 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         .expect("capture authenticated shared-fault replay trace");
     QemuFreshAttemptLifecycleOwner::shutdown(&mut checkpoint_source)
         .expect("shutdown checkpoint capture source");
+    let baked = capture_replay_genesis(
+        &paths,
+        "equivalence-replay-genesis",
+        6_025,
+        &source,
+        Arc::clone(&artifacts),
+        &input,
+        0x97,
+    );
 
     let thin_context = execution_context(&input, 0x96);
     let mut thin_reference = begin_fresh_with_fault_replay(
@@ -130,8 +143,17 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         source.clone(),
         checkpoint_boundary.configuration.clone(),
     );
+    let (exact_checkpoints, exact_checkpoint) = promote_exact_checkpoint(
+        &paths,
+        "equivalence-replay-oracle-reference",
+        6_275,
+        &input,
+        &baked,
+        checkpoint,
+        0x98,
+    );
     let exact_context =
-        execution_context(&exact_input, 0x92).with_resume_checkpoint(Some(checkpoint));
+        execution_context(&exact_input, 0x92).with_resume_checkpoint(Some(exact_checkpoint));
     let mut exact_reference = begin_exact(
         &paths,
         "equivalence-exact-reference",
@@ -139,8 +161,8 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         &source,
         Arc::clone(&artifacts),
         ExactResume {
-            store: &checkpoints,
-            checkpoint,
+            store: &exact_checkpoints,
+            checkpoint: exact_checkpoint,
             boundary: &checkpoint_boundary.configuration,
         },
         &exact_context,
@@ -163,8 +185,17 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
     QemuFreshAttemptLifecycleOwner::shutdown(&mut exact_reference)
         .expect("shutdown exact reference");
 
+    let (template_checkpoints, template_checkpoint) = promote_exact_checkpoint(
+        &paths,
+        "equivalence-replay-oracle-template",
+        6_375,
+        &input,
+        &baked,
+        checkpoint,
+        0x99,
+    );
     let exact_template_context =
-        execution_context(&exact_input, 0x93).with_resume_checkpoint(Some(checkpoint));
+        execution_context(&exact_input, 0x93).with_resume_checkpoint(Some(template_checkpoint));
     let mut exact_template_source = begin_exact(
         &paths,
         "equivalence-exact-template-source",
@@ -172,8 +203,8 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         &source,
         artifacts,
         ExactResume {
-            store: &checkpoints,
-            checkpoint,
+            store: &template_checkpoints,
+            checkpoint: template_checkpoint,
             boundary: &checkpoint_boundary.configuration,
         },
         &exact_template_context,
@@ -210,7 +241,7 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         project_id_start: 6_500,
         source,
         expected_boundary: &checkpoint_boundary,
-        checkpoint: Some(checkpoint),
+        checkpoint: Some(template_checkpoint),
         execution_byte: 0x95,
         world: exact_world,
         topology: EquivalenceTopology::MultiNode,
@@ -282,6 +313,15 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         .root();
     QemuFreshAttemptLifecycleOwner::shutdown(&mut checkpoint_source)
         .expect("shutdown single-node checkpoint source");
+    let baked = capture_replay_genesis(
+        &paths,
+        "single-replay-genesis",
+        7_025,
+        &source,
+        Arc::clone(&artifacts),
+        &input,
+        0xa7,
+    );
 
     let thin_context = execution_context(&input, 0xa6);
     let mut thin_reference = begin_fresh(
@@ -343,8 +383,17 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         source.clone(),
         checkpoint_boundary.configuration.clone(),
     );
+    let (exact_checkpoints, exact_checkpoint) = promote_exact_checkpoint(
+        &paths,
+        "single-replay-oracle-reference",
+        7_275,
+        &input,
+        &baked,
+        checkpoint,
+        0xa8,
+    );
     let exact_context =
-        execution_context(&exact_input, 0xa2).with_resume_checkpoint(Some(checkpoint));
+        execution_context(&exact_input, 0xa2).with_resume_checkpoint(Some(exact_checkpoint));
     let mut exact_reference = begin_exact(
         &paths,
         "single-exact-reference",
@@ -352,8 +401,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         &source,
         Arc::clone(&artifacts),
         ExactResume {
-            store: &checkpoints,
-            checkpoint,
+            store: &exact_checkpoints,
+            checkpoint: exact_checkpoint,
             boundary: &checkpoint_boundary.configuration,
         },
         &exact_context,
@@ -376,8 +425,17 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     QemuFreshAttemptLifecycleOwner::shutdown(&mut exact_reference)
         .expect("shutdown single-node exact reference");
 
+    let (template_checkpoints, template_checkpoint) = promote_exact_checkpoint(
+        &paths,
+        "single-replay-oracle-template",
+        7_375,
+        &input,
+        &baked,
+        checkpoint,
+        0xa9,
+    );
     let exact_template_context =
-        execution_context(&exact_input, 0xa3).with_resume_checkpoint(Some(checkpoint));
+        execution_context(&exact_input, 0xa3).with_resume_checkpoint(Some(template_checkpoint));
     let mut exact_template_source = begin_exact(
         &paths,
         "single-exact-template-source",
@@ -385,8 +443,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         &source,
         artifacts,
         ExactResume {
-            store: &checkpoints,
-            checkpoint,
+            store: &template_checkpoints,
+            checkpoint: template_checkpoint,
             boundary: &checkpoint_boundary.configuration,
         },
         &exact_template_context,
@@ -412,7 +470,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         project_id_start: 7_500,
         source,
         expected_boundary: &checkpoint_boundary,
-        checkpoint: Some(checkpoint),
+        checkpoint: Some(template_checkpoint),
         execution_byte: 0xa5,
         world: exact_world,
         topology: EquivalenceTopology::SingleNode,
@@ -701,6 +759,15 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         .root();
     QemuFreshAttemptLifecycleOwner::shutdown(&mut checkpoint_source)
         .expect("shutdown performance checkpoint source");
+    let baked = capture_replay_genesis(
+        &paths,
+        "performance-replay-genesis",
+        9_025,
+        &source,
+        Arc::clone(&artifacts),
+        &input,
+        0xdf,
+    );
 
     let mut hot_setup = 0_u64;
     let mut exact_setup = 0_u64;
@@ -710,6 +777,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         let source_lane = format!("performance-source-{index}");
         let hot_lane = format!("performance-hot-{index}");
         let exact_lane = format!("performance-exact-{index}");
+        let replay_lane = format!("performance-replay-oracle-{index}");
         let context = execution_context(&input, 0xe1 + u8::try_from(index).expect("corpus byte"));
         let mut live_source = begin_fresh(
             &paths,
@@ -759,11 +827,20 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
             source.clone(),
             checkpoint_boundary.configuration.clone(),
         );
+        let (exact_checkpoints, exact_checkpoint) = promote_exact_checkpoint(
+            &paths,
+            &replay_lane,
+            9_275 + u32::try_from(index).expect("corpus project") * 100,
+            &input,
+            &baked,
+            checkpoint,
+            0xd0 + u8::try_from(index).expect("corpus byte"),
+        );
         let exact_context = execution_context(
             &exact_input,
             0xf0 + u8::try_from(index).expect("corpus byte"),
         )
-        .with_resume_checkpoint(Some(checkpoint));
+        .with_resume_checkpoint(Some(exact_checkpoint));
         let exact_started = operational_monotonic_nanoseconds();
         let mut exact = begin_exact(
             &paths,
@@ -772,8 +849,8 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
             &source,
             Arc::clone(&artifacts),
             ExactResume {
-                store: &checkpoints,
-                checkpoint,
+                store: &exact_checkpoints,
+                checkpoint: exact_checkpoint,
                 boundary: &checkpoint_boundary.configuration,
             },
             &exact_context,
@@ -947,6 +1024,58 @@ fn begin_exact(
             context,
         )
         .expect("restore exact equivalence world")
+}
+
+fn capture_replay_genesis(
+    paths: &NativeGatePaths,
+    lane: &str,
+    project_id_start: u32,
+    source: &crucible::ScenarioDefForm,
+    artifacts: Arc<dyn DagStore>,
+    input: &CrucibleAttemptExecution,
+    execution_byte: u8,
+) -> ProductionBakedGenesisCheckpoint {
+    let context = execution_context(input, execution_byte);
+    let host = open_host(paths, lane, project_id_start);
+    let config = lifecycle_config(paths, paths.run_state_root.join(lane), artifacts);
+    let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
+        config,
+        ComposedQemuAttemptResourceGuardFactory::new(host),
+    );
+
+    capture_production_baked_genesis(&mut factory, source, &context)
+        .expect("capture production baked genesis for exact replay")
+}
+
+fn promote_exact_checkpoint(
+    paths: &NativeGatePaths,
+    lane: &str,
+    project_id_start: u32,
+    source_input: &CrucibleAttemptExecution,
+    baked: &ProductionBakedGenesisCheckpoint,
+    raw: ExactCheckpointId,
+    execution_byte: u8,
+) -> (ExactCheckpointStore, ExactCheckpointId) {
+    let checkpoints = checkpoint_store();
+    let context = execution_context(source_input, execution_byte);
+    let resources = ComposedQemuAttemptResourceGuardFactory::new(
+        SharedQemuAttemptHostResourceFactory::new(open_host(paths, lane, project_id_start)),
+    );
+    let mut replay_factory =
+        ProductionBakedGenesisReplayCatalogFactory::new([baked.clone()], resources)
+            .expect("build production baked-genesis replay catalog");
+    let promoted = promote_test_checkpoint_for_resume(
+        &checkpoints,
+        raw,
+        source_input,
+        source_input.start().configuration(),
+        None,
+        &paths.run_state_root.join(lane),
+        &context,
+        &mut replay_factory,
+    );
+
+    (checkpoints, promoted)
 }
 
 fn checkpoint_store() -> ExactCheckpointStore {
