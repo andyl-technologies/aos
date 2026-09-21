@@ -54,6 +54,8 @@ mod destination_slot;
 mod public_api_authorization;
 
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
+#[cfg(target_os = "linux")]
+const PUBLIC_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-public-request.v1\0";
 const MAXIMUM_ACTIVATION_BYTES: usize = 1024 * 1024;
 const MAXIMUM_PENDING_OPERATIONS: usize = 1_000_000;
 const MAXIMUM_RECONCILIATION_QUANTUM: usize = 4096;
@@ -171,6 +173,30 @@ pub trait ActivatedOperationCompiler {
         canonical_request: &[u8],
         request_digest: [u8; 32],
     ) -> Result<OperationPlan, OperationCompilationError>;
+
+    /// Compiles a public request using live transport evidence and current protected state.
+    ///
+    /// The peer is transport evidence, not authority. Implementations must
+    /// resolve `capability_id` in `journal`, authorize the exact method/body,
+    /// enforce the peer's principal and project, and derive all required current
+    /// resource fences. The default rejects; public requests never fall back
+    /// to the byte-only compiler entry point.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported public admission or failed authentication,
+    /// authorization, canonical encoding, policy, or preconditions.
+    #[cfg(target_os = "linux")]
+    fn compile_public(
+        &mut self,
+        _journal: &mut crate::Journal,
+        _peer: &crate::public_api_session::PublicApiPeer,
+        _capability_id: aos_sandbox_core::CapabilityId,
+        _canonical_request: &[u8],
+        _request_digest: [u8; 32],
+    ) -> Result<OperationPlan, OperationCompilationError> {
+        Err(OperationCompilationError::Rejected)
+    }
 }
 
 /// Reports one attempted durable reconciliation transition.
@@ -4885,6 +4911,63 @@ where
             canonical_request,
             request_digest,
         )?;
+        self.accept_compiled_plan(plan, request_digest)
+    }
+
+    /// Admits one public request with live TLS peer evidence and protected compilation.
+    ///
+    /// The RPC owner must supply the exact canonical method/body received on
+    /// the stream owning `peer`. Principal and project are independently bound
+    /// into the admission digest. Session exporters and capability handles are
+    /// deliberately excluded from that digest so a freshly authorized reconnect
+    /// can replay the same semantic request. Every attempt still requires current
+    /// protected authorization; possession of a prior digest grants nothing.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty or oversized input, stale peer evidence, unsupported public
+    /// compilation, authorization failure, digest mismatch, or durable admission
+    /// failure. Compilation success is never reported as durable acceptance.
+    #[cfg(target_os = "linux")]
+    pub fn admit_public(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+    ) -> Result<AcceptOutcome, ControllerServiceError> {
+        if canonical_request.is_empty() {
+            return Err(ControllerServiceError::EmptyRequest);
+        }
+        if canonical_request.len() > self.limits.maximum_request_bytes {
+            return Err(ControllerServiceError::RequestTooLarge);
+        }
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+
+        let request_digest = public_controller_request_digest(
+            self.scope,
+            peer.principal(),
+            peer.project(),
+            canonical_request,
+        );
+        let plan = self.compiler.compile_public(
+            self.reconciler.journal_mut(),
+            peer,
+            capability_id,
+            canonical_request,
+            request_digest,
+        )?;
+
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        self.accept_compiled_plan(plan, request_digest)
+    }
+
+    fn accept_compiled_plan(
+        &mut self,
+        plan: OperationPlan,
+        request_digest: [u8; 32],
+    ) -> Result<AcceptOutcome, ControllerServiceError> {
         if plan.request_digest() != request_digest {
             return Err(ControllerServiceError::CompilerDigestMismatch);
         }
@@ -4992,6 +5075,24 @@ pub enum ControllerServiceError {
     /// Durable admission or reconciliation failed.
     #[error(transparent)]
     Reconciler(#[from] ReconcilerError),
+}
+
+#[cfg(target_os = "linux")]
+fn public_controller_request_digest(
+    scope: ControllerRequestScopeV1,
+    principal: aos_sandbox_core::PrincipalId,
+    project: aos_sandbox_core::ProjectId,
+    canonical_request: &[u8],
+) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(PUBLIC_REQUEST_DIGEST_DOMAIN)
+        .chain_update(scope.digest().as_bytes())
+        .chain_update(principal.as_bytes())
+        .chain_update(project.as_bytes())
+        .chain_update((canonical_request.len() as u64).to_be_bytes())
+        .chain_update(canonical_request)
+        .finalize()
+        .into()
 }
 
 fn controller_request_digest(
@@ -5133,6 +5234,59 @@ mod tests {
 
     fn scope() -> ControllerRequestScopeV1 {
         ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0x42; 32])).unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn public_admission_digest_binds_authenticated_identity_scope_and_body() {
+        use aos_sandbox_core::{PrincipalId, ProjectId};
+
+        let principal = PrincipalId::from_bytes([1; 16]);
+        let project = ProjectId::from_bytes([2; 16]);
+        let request = b"canonical method and body";
+        let digest = public_controller_request_digest(scope(), principal, project, request);
+
+        assert_eq!(
+            digest,
+            public_controller_request_digest(scope(), principal, project, request)
+        );
+        assert_ne!(digest, controller_request_digest(scope(), request));
+        assert_ne!(
+            digest,
+            public_controller_request_digest(
+                scope(),
+                PrincipalId::from_bytes([3; 16]),
+                project,
+                request
+            )
+        );
+        assert_ne!(
+            digest,
+            public_controller_request_digest(
+                scope(),
+                principal,
+                ProjectId::from_bytes([4; 16]),
+                request
+            )
+        );
+        assert_ne!(
+            digest,
+            public_controller_request_digest(
+                ControllerRequestScopeV1::new(ObjectDigest::from_bytes([5; 32])).unwrap(),
+                principal,
+                project,
+                request,
+            )
+        );
+        assert_ne!(
+            digest,
+            public_controller_request_digest(
+                scope(),
+                principal,
+                project,
+                b"another method and body"
+            )
+        );
     }
 
     fn controller(

@@ -305,6 +305,11 @@ the outstanding work concrete:
   for current authorization and precondition checks. Compilation must not
   create a second journal owner or independently commit desired/effect
   admission; protected authorization maintenance does not accept a request.
+  The separate public admission entry point carries live TLS peer evidence
+  into compilation, binds principal/project into the request digest, and
+  rechecks peer liveness before atomic admission. Its compiler hook rejects by
+  default and never falls back to byte-only compilation. The packaged daemon
+  has not selected a public compiler or registered a caller of this entry point.
 - The controller's Host catalog publication now uses the protected descriptor
   request path. The packaged broker entry points accept sessions through
   `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end
