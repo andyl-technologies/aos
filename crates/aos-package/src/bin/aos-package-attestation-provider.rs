@@ -1,4 +1,4 @@
-//! Runs the systemd platform's package-attestation quote terminal.
+//! Produces the local package-attestation quote for the AOS package service.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -14,7 +14,7 @@ const TEMPORARY_RESULT_PATH: &str = "/var/lib/aos-attest/quote.json.tmp";
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("aos-systemd-attestation-provider: {error:#}");
+        eprintln!("aos-package-attestation-provider: {error:#}");
         std::process::exit(1);
     }
 }

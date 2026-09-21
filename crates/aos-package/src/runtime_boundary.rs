@@ -516,7 +516,7 @@ mod tests {
             &["source", "hello"][..],
             &["docs", "search", "hello"][..],
             &["options", "show", "services.example.enable"][..],
-            &["schema"][..],
+            &["schema", "hello"][..],
             &["rollback", "--list"][..],
             &["registry", "list"][..],
         ] {

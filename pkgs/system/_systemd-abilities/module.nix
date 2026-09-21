@@ -6,7 +6,6 @@
     ./listener-claims.nix
     ./manager.nix
     ./package-store-read-view.nix
-    ./package-attestation-quote.nix
     ./policy-implementations.nix
     ./platform/image.nix
     ./verity-root.nix

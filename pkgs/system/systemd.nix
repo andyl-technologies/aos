@@ -670,11 +670,6 @@ in
           EOF
           chmod +x "$out/libexec/aos-systemd-provider"
 
-          cat > "$out/libexec/aos-systemd-attestation-provider" << EOF
-          #!${bash}/bin/bash
-          exec "${aos-systemd-provider}/bin/aos-systemd-attestation-provider" "\$@"
-          EOF
-          chmod +x "$out/libexec/aos-systemd-attestation-provider"
         '';
       }
       {
