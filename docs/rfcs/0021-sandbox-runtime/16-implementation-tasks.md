@@ -352,8 +352,16 @@ the outstanding work concrete:
   certificate-to-principal/project registration, and connection-bound peer
   evidence. The controller's internal authorization adapter joins that evidence
   to current protected capabilities and independently checks the authenticated
-  project, but has no production RPC caller. The transport grants no capability
-  and is not yet connected to a production listener or CLI transport. Shared
+  project, but has no production mutation RPC caller. The opt-in
+  `controllerService.publicApi.enable` endpoint at
+  `/run/aos/sandboxd/public.sock` connects this transport to discovery only.
+  Activation requires all four public TLS credentials before readiness;
+  connection metadata comes from the accepted TLS stream and is rechecked per
+  request. Admission is bounded to 32 connections and eight concurrent
+  handshakes. Socket access and identity headers grant no authority. Mutation
+  services and the CLI transport remain unconnected. Credential formats and
+  activation constraints are documented in the
+  [controller deployment notes](../../sandbox-controller.md). Shared
   production TLS configuration has in-memory client/server handshake coverage
   for mandatory client proof, trust and certificate usage, TLS 1.3/HTTP/2,
   disabled resumption, and fresh connection exporters. Deployed credential

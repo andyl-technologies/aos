@@ -10,7 +10,9 @@
 //!
 //! The first production tranche deliberately exposes only the read-only
 //! public feature registry and `GetNodeCapabilities` diagnostic RPCs to root
-//! on a local Unix socket.
+//! on a local Unix socket. An opt-in public Unix endpoint offers the same
+//! discovery data to explicitly registered mutually authenticated TLS clients;
+//! socket credentials or request headers do not identify those clients.
 //! UID 0 is trusted here as the local administrator, not as another node
 //! service role. The responses contain no catalog rows, resources, credentials,
 //! operation state, or mutation surface. The feature registry describes the
@@ -64,6 +66,8 @@ use aos_sandbox::{
     ResourceInventoryError, SingleNodeEffectExecutor,
 };
 
+mod public_api;
+
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const JOURNAL_NAME: &str = "controller.journal";
 const DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
@@ -114,7 +118,9 @@ where
 
 /// Runs the controller from systemd's protected runtime environment.
 ///
-/// Positional arguments are the fixed decimal controller UID and GID. The node
+/// Positional arguments are the fixed decimal controller UID and GID. The
+/// optional `--public-api` flag requires all four protected public TLS credentials
+/// and enables registered-client discovery at the fixed public socket. The node
 /// identity is read from `CREDENTIALS_DIRECTORY/node-id`; broker endpoints,
 /// cgroups, journal location, and root-only diagnostic socket are fixed
 /// production paths.
@@ -135,6 +141,11 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .build()
         .map_err(ControllerRuntimeError::Runtime)?;
     let listener = runtime.block_on(into_async_diagnostic_listener(listener))?;
+    let public_listener = if configuration.public_api {
+        Some(runtime.block_on(public_api::bind(configuration.uid))?)
+    } else {
+        None
+    };
     let capabilities = Arc::new(Mutex::new(CapabilityState::starting(node_id)));
     let (events_tx, events_rx) = mpsc::channel();
     let worker_capabilities = Arc::clone(&capabilities);
@@ -148,10 +159,20 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     SystemdReadyNotifier::from_environment()?.notify_ready()?;
 
     let service = Arc::new(CapabilityService { capabilities });
+    let public_application = axum::Router::new().fallback_service(
+        DiscoveryServiceExt::register(Arc::clone(&service), connectrpc::Router::new())
+            .into_axum_service(),
+    );
     let connect = DiscoveryServiceExt::register(Arc::clone(&service), connectrpc::Router::new());
     let connect = OperationServiceExt::register(service, connect).into_axum_service();
     let application = axum::Router::new().fallback_service(connect);
-    let result = runtime.block_on(serve_until_worker_failure(listener, application, events_rx));
+    let result = runtime.block_on(serve_until_worker_failure(
+        listener,
+        application,
+        public_listener,
+        public_application,
+        events_rx,
+    ));
     runtime.shutdown_timeout(Duration::from_secs(1));
     result
 }
@@ -159,10 +180,13 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
 async fn serve_until_worker_failure(
     listener: AuthenticatedDiagnosticListener,
     application: axum::Router,
+    public_listener: Option<public_api::PublicListener>,
+    public_application: axum::Router,
     events: mpsc::Receiver<WorkerEvent>,
 ) -> Result<(), ControllerRuntimeError> {
     let worker = tokio::task::spawn_blocking(move || events.recv());
     tokio::select! {
+        result = public_api::serve(public_listener, public_application) => result,
         result = axum::serve(listener, application) => {
             result.map_err(ControllerRuntimeError::DiagnosticServer)
         }
@@ -724,37 +748,41 @@ fn read_node_id() -> Result<[u8; 16], ControllerRuntimeError> {
 fn bind_diagnostic_socket(
     configuration: &RuntimeConfiguration,
 ) -> Result<std::os::unix::net::UnixListener, ControllerRuntimeError> {
-    let parent = configuration
-        .diagnostic_socket
+    bind_controller_socket(&configuration.diagnostic_socket, configuration.uid, 0o660)
+}
+
+fn bind_controller_socket(
+    path: &Path,
+    uid: u32,
+    mode: u32,
+) -> Result<std::os::unix::net::UnixListener, ControllerRuntimeError> {
+    let parent = path
         .parent()
         .ok_or(ControllerRuntimeError::UnsafeDiagnosticSocket)?;
     let parent_metadata = std::fs::symlink_metadata(parent)
         .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
     if !parent_metadata.file_type().is_dir()
-        || parent_metadata.uid() != configuration.uid
+        || parent_metadata.uid() != uid
         || parent_metadata.permissions().mode() & 0o022 != 0
     {
         return Err(ControllerRuntimeError::UnsafeDiagnosticSocket);
     }
-    match std::fs::symlink_metadata(&configuration.diagnostic_socket) {
-        Ok(metadata) if metadata.file_type().is_socket() && metadata.uid() == configuration.uid => {
-            std::fs::remove_file(&configuration.diagnostic_socket)
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() && metadata.uid() == uid => {
+            std::fs::remove_file(path)
                 .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
         }
         Ok(_) => return Err(ControllerRuntimeError::UnsafeDiagnosticSocket),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(ControllerRuntimeError::DiagnosticSocketFilesystem(error)),
     }
-    let listener = std::os::unix::net::UnixListener::bind(&configuration.diagnostic_socket)
+    let listener = std::os::unix::net::UnixListener::bind(path)
         .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
     listener
         .set_nonblocking(true)
         .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
-    std::fs::set_permissions(
-        &configuration.diagnostic_socket,
-        std::fs::Permissions::from_mode(0o660),
-    )
-    .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
     Ok(listener)
 }
 
@@ -764,6 +792,7 @@ struct RuntimeConfiguration {
     gid: u32,
     state_directory: PathBuf,
     diagnostic_socket: PathBuf,
+    public_api: bool,
 }
 
 impl RuntimeConfiguration {
@@ -772,9 +801,18 @@ impl RuntimeConfiguration {
         let _program = arguments.next();
         let uid = parse_identity(arguments.next(), "controller UID")?;
         let gid = parse_identity(arguments.next(), "controller GID")?;
+        let public_api = match arguments.next().as_deref() {
+            None => false,
+            Some("--public-api") => true,
+            Some(_) => {
+                return Err(ControllerRuntimeError::InvalidArguments(
+                    "invalid public API activation",
+                ));
+            }
+        };
         if arguments.next().is_some() {
             return Err(ControllerRuntimeError::InvalidArguments(
-                "usage: aos-sandboxd CONTROLLER_UID CONTROLLER_GID",
+                "usage: aos-sandboxd CONTROLLER_UID CONTROLLER_GID [--public-api]",
             ));
         }
         Ok(Self {
@@ -782,6 +820,7 @@ impl RuntimeConfiguration {
             gid,
             state_directory: PathBuf::from(STATE_DIRECTORY),
             diagnostic_socket: PathBuf::from(DIAGNOSTIC_SOCKET),
+            public_api,
         })
     }
 
@@ -1123,6 +1162,12 @@ impl SystemdReadyNotifier {
 /// Reports activation, recovery, reconciliation, or serving failure.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerRuntimeError {
+    /// Protected public TLS credentials are missing, unsafe, or invalid.
+    #[error(transparent)]
+    PublicSession(#[from] aos_sandbox::public_api_session::PublicApiSessionError),
+    /// The authenticated public server could not bind or serve.
+    #[error("controller public API failed: {0}")]
+    PublicServer(std::io::Error),
     /// Positional activation arguments are absent or invalid.
     #[error("invalid controller arguments: {0}")]
     InvalidArguments(&'static str),
@@ -1198,6 +1243,7 @@ mod tests {
             gid: rustix::process::getgid().as_raw(),
             state_directory: directory.path().join("state"),
             diagnostic_socket: directory.path().join("diagnostics.sock"),
+            public_api: false,
         }
     }
 

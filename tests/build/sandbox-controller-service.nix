@@ -63,6 +63,10 @@
     else true;
 
   systemdOptions = {lib, ...}: {
+    options.assertions = lib.mkOption {
+      type = lib.types.listOf lib.types.anything;
+      default = [];
+    };
     options.systemd.services = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = {};
@@ -104,6 +108,22 @@
   };
   controllerServiceConfig =
     controllerEvaluation.config.systemd.services.aos-sandboxd.serviceConfig;
+  publicMissing = controllerEvaluation.extendModules {
+    modules = [{aos.sandbox.controllerService.publicApi.enable = true;}];
+  };
+  publicComplete = publicMissing.extendModules {
+    modules = [
+      {
+        aos.sandbox.controllerService.credentials = {
+          publicApiServerCert = "test-public-cert";
+          publicApiServerKey = "test-public-key";
+          publicApiClientCa = "test-client-ca";
+          publicApiPrincipals = "test-principals";
+        };
+      }
+    ];
+  };
+  publicServiceConfig = publicComplete.config.systemd.services.aos-sandboxd.serviceConfig;
 
   hostEvaluation = lib.evalModules {
     specialArgs = {inherit pkgs;};
@@ -142,6 +162,14 @@ in
   assert controllerServiceConfig.TimeoutStartSec == "90s";
   assert builtins.length controllerServiceConfig.LoadCredential == 13;
   assert builtins.length controllerServiceConfig.ExecStartPre == 24;
+  assert controllerServiceConfig.RuntimeDirectoryMode == "0750";
+  assert !lib.hasSuffix " --public-api" controllerServiceConfig.ExecStart;
+  assert builtins.length (builtins.filter (check: !check.assertion) publicMissing.config.assertions) == 4;
+  assert lib.all (check: check.assertion) publicComplete.config.assertions;
+  assert lib.hasSuffix " --public-api" publicServiceConfig.ExecStart;
+  assert publicServiceConfig.RuntimeDirectoryMode == "0755";
+  assert builtins.length publicServiceConfig.LoadCredential == 17;
+  assert builtins.elem "public-api-server-key:/run/credentials/@system/test-public-key" publicServiceConfig.LoadCredential;
   assert ! (hostServiceConfig ? Slice);
   assert requires ''LoadCredential = nodeCredentials'' moduleSource;
   assert requires ''required = true;'' moduleSource;

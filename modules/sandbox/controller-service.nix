@@ -46,9 +46,21 @@
   nodeCredentials =
     lib.optional (cfg.credentials.nodeId != null)
     "node-id:/run/credentials/@system/${cfg.credentials.nodeId}";
+  publicCredentialNames = {
+    publicApiServerCert = "public-api-server-cert";
+    publicApiServerKey = "public-api-server-key";
+    publicApiClientCa = "public-api-client-ca";
+    publicApiPrincipals = "public-api-principals";
+  };
+  publicCredentials = lib.optionals cfg.publicApi.enable (
+    lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
+    (lib.filterAttrs (option: _: cfg.credentials.${option} != null) publicCredentialNames)
+  );
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
+
+    publicApi.enable = lib.mkEnableOption "registered mutual-TLS discovery on /run/aos/sandboxd/public.sock (mutation RPCs remain unavailable)";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -65,7 +77,14 @@ in {
           description = "External system credential containing the raw nonzero 16-byte node identity.";
         };
       }
-      // brokerSession.mkOptions brokerSessionEndpoints;
+      // brokerSession.mkOptions brokerSessionEndpoints
+      // lib.mapAttrs (_: name:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "External protected credential loaded as ${name} for the public TLS endpoint.";
+        })
+      publicCredentialNames;
   };
 
   config = lib.mkIf cfg.enable {
@@ -92,7 +111,12 @@ in {
           message = "aos.sandbox.controllerService requires aos.sandbox.networkBroker";
         }
       ]
-      ++ brokerSessionConfiguration.assertions;
+      ++ brokerSessionConfiguration.assertions
+      ++ lib.mapAttrsToList (option: _: {
+        assertion = !cfg.publicApi.enable || cfg.credentials.${option} != null;
+        message = "aos.sandbox.controllerService.credentials.${option} is required when publicApi.enable is true";
+      })
+      publicCredentialNames;
 
     systemd.services.aos-sandboxd = {
       description = "AOS unprivileged sandbox node controller";
@@ -118,9 +142,11 @@ in {
       serviceConfig = {
         Type = "notify";
         NotifyAccess = "main";
-        ExecStart = "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}";
+        ExecStart =
+          "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
+          + lib.optionalString cfg.publicApi.enable " --public-api";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        LoadCredential = nodeCredentials ++ brokerSessionConfiguration.loadCredentials;
+        LoadCredential = nodeCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";
@@ -129,7 +155,12 @@ in {
         StateDirectory = "aos/sandboxd";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandboxd";
-        RuntimeDirectoryMode = "0750";
+        # Traversal grants no access to diagnostics or authority; the public
+        # socket accepts only registered mutually authenticated TLS clients.
+        RuntimeDirectoryMode =
+          if cfg.publicApi.enable
+          then "0755"
+          else "0750";
         UMask = "0077";
 
         CapabilityBoundingSet = "";
