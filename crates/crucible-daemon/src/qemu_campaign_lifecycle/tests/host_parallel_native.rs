@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crucible::model::WorldNodeDef;
-use crucible::{Plan, Properties, QuantumRequest, Seed};
+use crucible::{ContentAddressedBlobRef, ContentHash, Plan, Properties, QuantumRequest, Seed};
 use crucible_campaign::{AssignmentId, CampaignHash, ExactCheckpointId};
 use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 
@@ -68,7 +68,7 @@ struct FailureEvidence {
 #[ignore = "requires packaged QEMU, cgroup v2, and project quotas"]
 fn production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable() {
     let paths = NativePaths::from_environment();
-    let source = two_node_source(&paths.fixture);
+    let source = two_node_source(&paths.fixture, &paths.kernel, &paths.root_image);
     let input = execution_input(source.clone());
 
     let serial = run_successful_lane(&paths, &source, &input, "host-serial", 24_000, 1);
@@ -447,16 +447,22 @@ fn checkpoint_store(root: &Path) -> ExactCheckpointStore {
     ExactCheckpointStore::new(backend, MAX_CHECKPOINT_BYTES).expect("open exact checkpoint store")
 }
 
-fn two_node_source(fixture: &Path) -> ScenarioDefForm {
+fn two_node_source(fixture: &Path, kernel: &Path, root_image: &Path) -> ScenarioDefForm {
     let fixture = fs::read_to_string(fixture).expect("read production host-parallel scenario");
     let base = ScenarioDefForm::from_canonical_toml(&fixture).expect("parse scenario fixture");
+    let kernel = content_addressed_file(kernel, "kernel");
+    let root_image = content_addressed_file(root_image, "root image");
     let nodes = base
         .world()
         .vm_nodes()
         .iter()
         .take(2)
         .cloned()
-        .map(WorldNodeDef::Vm)
+        .map(|mut node| {
+            node.kernel = Some(kernel);
+            node.root_image = Some(root_image);
+            WorldNodeDef::Vm(node)
+        })
         .collect();
     let world = World::from_node_defs_and_links(nodes, Vec::new()).expect("build two-node world");
     ScenarioDefForm::from_components(
@@ -466,6 +472,39 @@ fn two_node_source(fixture: &Path) -> ScenarioDefForm {
         Seed::from_u64(29),
     )
     .expect("build production host-parallel source")
+}
+
+fn content_addressed_file(path: &Path, label: &str) -> ContentAddressedBlobRef {
+    let file = fs::File::open(path)
+        .unwrap_or_else(|error| panic!("open selected {label} {}: {error}", path.display()));
+    let hash = ContentHash::from_reader(file)
+        .unwrap_or_else(|error| panic!("hash selected {label} {}: {error}", path.display()));
+    ContentAddressedBlobRef::from_hash(hash)
+}
+
+#[test]
+fn host_parallel_source_binds_selected_guest_asset_bytes() {
+    let temporary = tempfile::tempdir().expect("create guest asset fixture directory");
+    let kernel = temporary.path().join("vmlinuz");
+    let root_image = temporary.path().join("root.ext4");
+    fs::write(&kernel, b"current production kernel").expect("write kernel fixture");
+    fs::write(&root_image, b"current production root image").expect("write root fixture");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
+
+    let source = two_node_source(&fixture, &kernel, &root_image);
+    let expected_kernel =
+        ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"current production kernel"));
+    let expected_root_image = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
+        b"current production root image",
+    ));
+    let nodes = source.world().vm_nodes().iter().collect::<Vec<_>>();
+
+    assert_eq!(nodes.len(), 2);
+    for node in nodes {
+        assert_eq!(node.kernel, Some(expected_kernel));
+        assert_eq!(node.root_image, Some(expected_root_image));
+    }
 }
 
 fn execution_input(source: ScenarioDefForm) -> CrucibleAttemptExecution {
