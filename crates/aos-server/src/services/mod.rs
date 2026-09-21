@@ -16,11 +16,11 @@
 //! [`crate::routes::router`], so REST and RPC traffic share one listener.
 //! The `require_rpc_*` helpers in this module mirror the REST auth
 //! extractors: they pull the `Authorization: Bearer` JWT out of the RPC
-//! [`Context`] and enforce view/permission checks, mapping failures to
+//! [`RequestContext`] and enforce view/permission checks, mapping failures to
 //! `unauthenticated` / `permission_denied` ConnectRPC error codes.
 
 use axum::http::header;
-use connectrpc::{ConnectError, Context, ErrorCode};
+use connectrpc::{ConnectError, ErrorCode, RequestContext};
 
 use crate::auth::{Claims, claims_from_bearer_header};
 use crate::routes::AppState;
@@ -36,7 +36,10 @@ pub mod gc;
 ///
 /// Returns an `unauthenticated` error if the `Authorization` header is
 /// missing, not valid ASCII, or does not carry a valid bearer JWT.
-pub(crate) fn require_rpc_claims(ctx: &Context, state: &AppState) -> Result<Claims, ConnectError> {
+pub(crate) fn require_rpc_claims(
+    ctx: &RequestContext,
+    state: &AppState,
+) -> Result<Claims, ConnectError> {
     let auth_header = ctx
         .header(&header::AUTHORIZATION)
         .ok_or_else(|| {
@@ -61,7 +64,7 @@ pub(crate) fn require_rpc_claims(ctx: &Context, state: &AppState) -> Result<Clai
 /// Returns an `unauthenticated` error for a missing/invalid JWT, or
 /// `permission_denied` if the claims do not cover the view.
 pub(crate) fn require_rpc_view(
-    ctx: &Context,
+    ctx: &RequestContext,
     state: &AppState,
     view: &str,
 ) -> Result<Claims, ConnectError> {
@@ -82,7 +85,7 @@ pub(crate) fn require_rpc_view(
 /// Returns an `unauthenticated` error for a missing/invalid JWT, or
 /// `permission_denied` if the claims lack the view or the permission.
 pub(crate) fn require_rpc_permission(
-    ctx: &Context,
+    ctx: &RequestContext,
     state: &AppState,
     view: &str,
     permission: &str,
@@ -108,7 +111,7 @@ pub(crate) fn require_rpc_permission(
 /// Returns an `unauthenticated` error for a missing/invalid JWT, or
 /// `permission_denied` if the claims lack the view or `read` permission.
 pub(crate) fn require_rpc_read_access(
-    ctx: &Context,
+    ctx: &RequestContext,
     state: &AppState,
     view: &str,
     anonymous_read: bool,

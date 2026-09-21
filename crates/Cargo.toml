@@ -186,8 +186,8 @@ tempfile = "3"
 libc = "0.2"
 
 # ConnectRPC
-connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "axum"] }
-buffa = "0.3"
+connectrpc = { version = "0.9", features = ["server", "client", "client-tls", "axum"] }
+buffa = "0.9.2"
 prost = "0.13"
 prost-build = "0.13"
 pbjson = "0.7"
