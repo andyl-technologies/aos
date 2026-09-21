@@ -278,23 +278,33 @@ in
         ];
 
       installPhase =
-        if isArmCross
-        then ''
-          mkdir -p "$out/bin" "$out/lib" "$out/share/licenses/workerd"
-          cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"
-          cp LICENSE "$out/share/licenses/workerd/LICENSE"
-          for library in libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
-            cp -L "${targetGcc}/${stdenv.hostPlatform.config}/lib64/$library" "$out/lib/$library"
-            chmod u+w "$out/lib/$library"
-            patchelf --set-rpath "${glibc}/lib:$out/lib" "$out/lib/$library"
-          done
-          patchelf --set-rpath "${glibc}/lib:$out/lib" "$out/bin/workerd"
-        ''
-        else ''
-          mkdir -p "$out/bin" "$out/share/licenses/workerd"
-          cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"
-          cp LICENSE "$out/share/licenses/workerd/LICENSE"
-          "$out/bin/workerd" --version
+        (
+          if isArmCross
+          then ''
+            mkdir -p "$out/bin" "$out/lib" "$out/share/licenses/workerd"
+            cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"
+            cp LICENSE "$out/share/licenses/workerd/LICENSE"
+            for library in libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
+              cp -L "${targetGcc}/${stdenv.hostPlatform.config}/lib64/$library" "$out/lib/$library"
+              chmod u+w "$out/lib/$library"
+              patchelf --set-rpath "${glibc}/lib:$out/lib" "$out/lib/$library"
+            done
+            mkdir -p "$out/share/licenses/workerd/gcc-runtime"
+            cp ${targetGcc.src}/COPYING3 ${targetGcc.src}/COPYING.RUNTIME \
+              "$out/share/licenses/workerd/gcc-runtime/"
+            patchelf --set-rpath "${glibc}/lib:$out/lib" "$out/bin/workerd"
+          ''
+          else ''
+            mkdir -p "$out/bin" "$out/share/licenses/workerd"
+            cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"
+            cp LICENSE "$out/share/licenses/workerd/LICENSE"
+            "$out/bin/workerd" --version
+          ''
+        )
+        + ''
+          ${python3}/bin/python3 ${./install-modern-notices.py} \
+            "$TMPDIR/repo-overrides" ${pyodide} \
+            "$out/share/licenses/workerd/dependencies"
         '';
 
       meta = {
