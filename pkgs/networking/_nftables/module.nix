@@ -95,11 +95,25 @@ in {
     };
   };
 
-  config.aos.abilities = lib.mkMerge [
-    contribution.declarations
-    (lib.mkIf cfg.enable (lib.mkMerge [
-      {instances.${consumerInstance} = {};}
-      contribution.configured
-    ]))
+  config = lib.mkMerge [
+    {aos.abilities = contribution.declarations;}
+    (lib.mkIf cfg.enable {
+      aos.abilities = lib.mkMerge [
+        {instances.${consumerInstance} = {};}
+        contribution.configured
+      ];
+      aos.contributions.runtimeChecks.firewall = {
+        description = "nftables firewall checks";
+        checks = [
+          {
+            name = "ruleset-loaded";
+            description = "nftables ruleset is loaded";
+            script = ''
+              vm.succeed("nft list ruleset")
+            '';
+          }
+        ];
+      };
+    })
   ];
 }

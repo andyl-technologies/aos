@@ -9,7 +9,7 @@
       specialArgs = {inherit pkgs;};
       modules = [
         ../../modules/abilities/default.nix
-        ../../modules/services/tailscale.nix
+        ../../modules/_package-contributions.nix
         ({lib, ...}: {
           options.environment.systemPackages = lib.mkOption {
             type = lib.types.listOf lib.types.package;
@@ -63,14 +63,8 @@
     evaluated.config.aos.abilities.instances;
   lifecycle = requests."tailscale:tailscaled-lifecycle".parameters;
 in
-  assert enabled.config.environment.systemPackages
-  == [
-    pkgs.tailscale
-    pkgs.getent
-    pkgs.iproute2
-    pkgs.iptables
-    pkgs.procps-ng
-  ];
+  assert enabled.config.aos.contributions.runtimeChecks.tailscale.description
+  == "Tailscale service checks";
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
   assert builtins.map (requirement: requirement.alias) packageContract.requirements

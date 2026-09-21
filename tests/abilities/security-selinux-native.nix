@@ -6,10 +6,7 @@
   evaluate = import ./base-module-evaluation.nix {inherit lib pkgs;};
   evaluated = evaluate {
     name = "security-selinux";
-    module = {
-      imports = [../../modules/security/selinux.nix];
-      aos.security.selinux.enable = true;
-    };
+    module.aos.security.selinux.enable = true;
     packages = [pkgs.refpolicy pkgs.systemd];
   };
   config = evaluated.config;

@@ -231,7 +231,28 @@ in {
       builtins.map (contribution: {aos.abilities = contribution.declarations;}) contributions
     ))
     (lib.mkIf cfg.enable (lib.mkMerge (
-      [{aos.abilities.instances.docker = {};}]
+      [
+        {
+          aos.abilities.instances.docker = {};
+          aos.contributions.runtimeChecks.docker = {
+            description = "Docker service checks";
+            checks = [
+              {
+                name = "docker-api";
+                description = "The Docker CLI reaches the local daemon and plugins";
+                script = ''
+                  vm.wait_until_succeeds(
+                      "docker version --format '{{.Server.Version}}'", timeout=60
+                  )
+                  vm.succeed("docker info --format '{{.Driver}}' | grep -Fx '${cfg.storageDriver}'")
+                  vm.succeed("docker buildx version")
+                  vm.succeed("docker compose version")
+                '';
+              }
+            ];
+          };
+        }
+      ]
       ++ builtins.map (contribution: {aos.abilities = contribution.configured;}) contributions
     )))
   ];

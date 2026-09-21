@@ -249,6 +249,19 @@ in {
         [{instances.${consumerInstance} = {};}]
         ++ builtins.map (contribution: contribution.configured) contributions
       );
+      aos.contributions.runtimeChecks.zram = {
+        description = "Compressed swap checks";
+        checks = [
+          {
+            name = "zram-swap-device";
+            description = "The configured zram swap device is initialized";
+            script = ''
+              vm.wait_until_succeeds("test -b /dev/zram0", timeout=30)
+              vm.succeed("test $(cat /sys/block/zram0/disksize) -gt 0")
+            '';
+          }
+        ];
+      };
     })
   ];
 }

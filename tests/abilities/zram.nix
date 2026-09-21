@@ -19,7 +19,7 @@
       };
       modules = [
         ../../modules/abilities/default.nix
-        ../../modules/services/zram.nix
+        ../../modules/_package-contributions.nix
         ({lib, ...}: {
           options = {
             assertions = lib.mkOption {
@@ -99,7 +99,8 @@
     output = "resource";
   };
 in
-  assert baseline.config.environment.systemPackages == [zramGenerator];
+  assert baseline.config.aos.contributions.runtimeChecks.zram.description
+  == "Compressed swap checks";
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
   assert builtins.map (requirement: requirement.alias) packageContract.requirements

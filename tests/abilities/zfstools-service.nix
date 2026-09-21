@@ -12,7 +12,6 @@
         ../../modules/abilities/storage.nix
         ../../modules/base/_manager-contributions.nix
         ../../modules/image/_platform.nix
-        ../../modules/services/zfs-auto-snapshot.nix
         {
           options = {
             assertions = lib.mkOption {

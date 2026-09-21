@@ -420,7 +420,40 @@ in {
       (contribution: {aos.abilities = contribution.declarations;})
       contributions))
     (lib.mkIf cfg.enable (lib.mkMerge (
-      [{aos.abilities.instances.service = {};}]
+      [
+        {
+          aos.abilities.instances.service = {};
+          aos.contributions.runtimeChecks.chrony = {
+            description = "NTP time sync checks";
+            checks =
+              [
+                {
+                  name = "chronyd-responsive";
+                  description = "chronyd accepts control queries";
+                  script = ''
+                    vm.wait_until_succeeds("chronyc tracking", timeout=30)
+                  '';
+                }
+                {
+                  name = "chrony-sources";
+                  description = "chronyd exposes its configured time sources";
+                  script = ''
+                    vm.succeed("chronyc sources")
+                  '';
+                }
+              ]
+              ++ lib.optionals cfg.nts.enable [
+                {
+                  name = "chrony-authentication-data";
+                  description = "chronyd exposes source authentication state";
+                  script = ''
+                    vm.succeed("chronyc authdata")
+                  '';
+                }
+              ];
+          };
+        }
+      ]
       ++ builtins.map
       (contribution: {aos.abilities = contribution.configured;})
       contributions

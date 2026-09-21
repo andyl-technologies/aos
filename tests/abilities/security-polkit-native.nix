@@ -6,10 +6,7 @@
   evaluate = import ./base-module-evaluation.nix {inherit lib pkgs;};
   evaluated = evaluate {
     name = "security-polkit";
-    module = {
-      imports = [../../modules/security/polkit.nix];
-      aos.security.polkit.enable = true;
-    };
+    module.aos.security.polkit.enable = true;
     packages = [pkgs.polkit pkgs.dbus pkgs.systemd];
   };
   config = evaluated.config;
