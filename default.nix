@@ -731,6 +731,9 @@
       source = ./tests/fleet/runtime-module-composition.nix;
     };
   };
+  recoveryPackageRule = builtins.head (
+    builtins.filter (rule: rule.name == "aos-recovery") releaseQualification.package_rules
+  );
   recoveryPackageScenario =
     if hostPlatform.isLinux
     then
@@ -738,7 +741,7 @@
         name = "aos-qualification-${hostPlatform.system}-aos-recovery";
         packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
         imageExecutable = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
-        systemVariant = "server";
+        systemVariant = recoveryPackageRule.execution.system_variant;
       }
     else null;
   k3sPackageScenarios = lib.optionalAttrs hostPlatform.isLinux (

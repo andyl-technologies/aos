@@ -65,7 +65,8 @@
   mkDerivation,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceSource,
+  aosWorkspaceVendor,
   rust,
   wasm-bindgen-cli,
   nodejs,
@@ -76,8 +77,6 @@
   cargoFeatures ? "",
 }: let
   version = "0.1.0";
-  repoRoot = ../..;
-  repoRootString = toString repoRoot;
 
   # Every generator and generated browser input is consumed on Linux even
   # when the final WebAssembly distribution is evaluated for Darwin.
@@ -138,35 +137,12 @@
   # The Cargo workspace plus its generated API-manifest input are the source.
   # `aos-proto-types` validates that manifest in its build script, so the Worker
   # artifact must carry the same RFC subtree as the native Hub package.
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-hub-worker-workspace-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != "target"
-      && base != ".git"
-      && (
-        pathString
-        == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
-  };
+  src = aosWorkspaceSource;
 
   # The native `esbuild` binary inside the vendored miniflare/wrangler closure
   # (the platform package, not the `#!/usr/bin/env node` JS launcher).
   esbuildBin = "${buildMiniflare}/lib/node_modules/@esbuild/linux-x64/bin/esbuild";
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-4G8waM8fsmqSjIgkaitrG3HmPy2e6KShpDDJn7THqZc=";
-  };
+  cargoDeps = aosWorkspaceVendor;
   qualifiedFeatures =
     if cargoFeatures == ""
     then ""
@@ -207,8 +183,24 @@
 in
   mkHubDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };

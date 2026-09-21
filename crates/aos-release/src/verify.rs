@@ -1221,6 +1221,20 @@ pub(crate) mod tests {
             .find(|package| package.name == "example")
             .unwrap();
         package.platforms.retain(|cell| cell.platform == platform);
+        for cell in &mut plan
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "example")
+            .unwrap()
+            .platforms
+        {
+            if cell.platform != platform {
+                cell.decision = MatrixCell::NotApplicable {
+                    rule: "recovery-execution-fixture".into(),
+                    reason: "This fixture exercises recovery on x86_64 Linux only.".into(),
+                };
+            }
+        }
         let package_subjects = match &package.platforms[0].decision {
             MatrixCell::Artifact { artifact } => artifact.artifact_ids.clone(),
             MatrixCell::Blocked { .. } | MatrixCell::NotApplicable { .. } => unreachable!(),

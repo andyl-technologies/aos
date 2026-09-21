@@ -5,16 +5,16 @@
   fetchGoModules,
   buildPackages,
 }: let
-  version = "3.6.7";
+  version = "3.7.13";
   src = fetchurl {
     name = "traefik-v${version}.tar.gz";
     urls = ["https://github.com/traefik/traefik/archive/refs/tags/v${version}.tar.gz"];
-    hash = "sha256-hOK1pnwCNzJoR5ZkZuE0VVzr5secK40xR1Lm4lUM+/A=";
+    hash = "sha256-wc/1kmF0De86OT6ixNfH0BhOuOs5yIQCsm6zs+RzW5Y=";
   };
   modules = fetchGoModules {
     inherit src;
     name = "k3s-traefik-go-modules";
-    hash = "sha256-LD3x58d+Yu+zlS5HO6NDkqNziukZvB4Fuzezc6d0HTA=";
+    hash = "sha256-iGtGGy3jsM5KnoWK097xcsBd1GhxuhseytW/bjeyy7w=";
   };
   dashboard = import ./_k3s-dashboard.nix {
     inherit src version buildPackages;
