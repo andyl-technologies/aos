@@ -7,6 +7,10 @@
 //! current-session authority still requires the live endpoint before and after
 //! every read.
 
+mod owner;
+
+use owner::JournalOwnerV1;
+
 use std::path::{Path, PathBuf};
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
@@ -226,6 +230,7 @@ pub(crate) struct ProtectedBrokerSessionJournalV1 {
     directory: PathBuf,
     name: String,
     limits: JournalLimits,
+    owner: JournalOwnerV1,
     endpoint: ProtectedEndpointV1,
 }
 
@@ -1185,7 +1190,7 @@ impl ProtectedBrokerSessionJournalV1 {
         }
     }
 
-    /// Opens a root-owned journal for one protected client endpoint.
+    /// Opens a service-owned journal for one protected client endpoint.
     ///
     /// # Errors
     ///
@@ -1228,19 +1233,24 @@ impl ProtectedBrokerSessionJournalV1 {
     }
 
     fn open(
-        endpoint: ProtectedEndpointV1,
+        mut endpoint: ProtectedEndpointV1,
         directory: impl AsRef<Path>,
         name: &str,
         limits: JournalLimits,
     ) -> Result<Self, BrokerSessionSecurityError> {
         let directory = directory.as_ref().to_path_buf();
-        let (journal, _) = Journal::open_protected_at(&directory, name, limits)
+        endpoint.revalidate()?;
+        let owner = JournalOwnerV1::capture(endpoint.role());
+        let (journal, _) = owner
+            .open(&directory, name, limits)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        endpoint.revalidate()?;
         let mut authority = Self {
             journal: Some(journal),
             directory,
             name: name.to_owned(),
             limits,
+            owner,
             endpoint,
         };
         authority.validate_all()?;
@@ -1250,7 +1260,9 @@ impl ProtectedBrokerSessionJournalV1 {
     fn reopen_storage(&mut self) -> Result<(), BrokerSessionSecurityError> {
         self.endpoint.revalidate()?;
         drop(self.journal.take());
-        let (journal, _) = Journal::open_protected_at(&self.directory, &self.name, self.limits)
+        let (journal, _) = self
+            .owner
+            .open(&self.directory, &self.name, self.limits)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         self.journal = Some(journal);
         self.validate_all()?;

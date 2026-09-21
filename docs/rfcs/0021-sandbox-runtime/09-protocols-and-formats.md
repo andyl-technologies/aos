@@ -1290,7 +1290,11 @@ protected read, replays every retained signature and method semantic through
 the traffic machine, and alone mints move-only resend or outstanding-outcome
 state. Public dormant all-role custody internally selects fixed controller
 client or Host/Storage/Mount/Network broker endpoint roots, the fixed
-`session.journal` basename, root-owned opening, and closed replay limits. Raw
+`session.journal` basename, role-owned protected opening, and closed replay limits.
+Broker journals remain root-owned; client journals use the pinned service
+execution's UID so the unprivileged controller can own its state. Both paths
+retain strict root-to-owner ancestor, no-symlink, exact-mode, and exact-owner
+checks, and reopen reuses the captured owner after endpoint revalidation. Raw
 endpoint loaders, journal openers, paths, basenames, and limits are not public
 authority inputs.
 Only completion of the adopted-socket handshake opens the protected journal.

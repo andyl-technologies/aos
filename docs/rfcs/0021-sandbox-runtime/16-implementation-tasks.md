@@ -311,6 +311,11 @@ the outstanding work concrete:
   fixed protected sessions, check
   the controller's node identity, and fence snapshot commits against intervening
   controller-journal changes. Network also rejects existing checkpoint history.
+  Client session journals use the pinned service UID, matching the unprivileged
+  controller's installed custody; broker journals retain root-only ownership.
+  Enabled controller endpoints require the manifest and both role-local keys
+  during configuration evaluation. Idle broker-only bootstrap may omit all
+  three and reject traffic until provisioned; partial custody remains invalid.
   Host publication binds signed requests and receipts to the exact durable
   pending catalog, transfers a sealed descriptor, and retains the authenticated
   session after successful requests. In-process backpressure and ambiguous

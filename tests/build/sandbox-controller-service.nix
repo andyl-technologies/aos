@@ -12,6 +12,46 @@
   resourceInventorySource =
     builtins.readFile ../../crates/aos-sandbox/src/resource_inventory.rs;
   packageSource = builtins.readFile ../../pkgs/tools/aos-sandboxd.nix;
+  brokerSession = import ../../modules/sandbox/_broker-session-credentials.nix {inherit lib pkgs;};
+  credentialEndpoint = {
+    name = "host";
+    description = "controller-to-host";
+    role = "client";
+    required = true;
+    journalRoot = "/var/lib/aos/sandboxd/broker-session/host";
+    options = {
+      manifest = "manifest";
+      hello = "hello";
+      record = "record";
+    };
+  };
+  credentialState = credentials: brokerSession.configure credentials [credentialEndpoint];
+  missingCredentials = credentialState {
+    manifest = null;
+    hello = null;
+    record = null;
+  };
+  partialCredentials = credentialState {
+    manifest = "test-manifest";
+    hello = "test-hello";
+    record = null;
+  };
+  completeCredentials = credentialState {
+    manifest = "test-manifest";
+    hello = "test-hello";
+    record = "test-record";
+  };
+  bootstrapCredentials = brokerSession.configure {
+    manifest = null;
+    hello = null;
+    record = null;
+  } [(credentialEndpoint // {required = false;})];
+  controllerCredentialNames = lib.listToAttrs (lib.concatMap (endpoint:
+    map (suffix: {
+      name = "brokerSession${endpoint}${suffix}";
+      value = "test-session-credential";
+    }) ["Manifest" "HelloKey" "RecordKey"])
+  ["Host" "Storage" "Mount" "Network"]);
 
   requires = fragment: source:
     if lib.hasInfix fragment source
@@ -51,7 +91,7 @@
           };
           controllerService = {
             enable = true;
-            credentials.nodeId = "sandbox-node-id";
+            credentials = controllerCredentialNames // {nodeId = "sandbox-node-id";};
           };
           hostBroker.enable = true;
           storageBroker.enable = true;
@@ -84,14 +124,27 @@
   hostServiceConfig =
     hostEvaluation.config.systemd.services.aos-sandbox-hostd.serviceConfig;
 in
+  assert lib.all (check: !check.assertion) missingCredentials.assertions;
+  assert lib.all (check: !check.assertion) partialCredentials.assertions;
+  assert lib.all (check: check.assertion) completeCredentials.assertions;
+  assert lib.all (check: check.assertion) bootstrapCredentials.assertions;
+  assert bootstrapCredentials.installCommands == [];
+  assert missingCredentials.loadCredentials == [];
+  assert partialCredentials.installCommands == [];
+  assert builtins.length completeCredentials.loadCredentials == 3;
+  assert builtins.length completeCredentials.installCommands == 6;
+  assert builtins.elem "host-record-key:/run/credentials/@system/test-record" completeCredentials.loadCredentials;
   assert controllerServiceConfig.Type == "notify";
   assert controllerServiceConfig.CapabilityBoundingSet == "";
   assert controllerServiceConfig.User == "aos-sandboxd";
   assert controllerServiceConfig.Slice == "aos-control.slice";
   assert controllerServiceConfig.MemoryMax == "512M";
   assert controllerServiceConfig.TimeoutStartSec == "90s";
+  assert builtins.length controllerServiceConfig.LoadCredential == 13;
+  assert builtins.length controllerServiceConfig.ExecStartPre == 24;
   assert ! (hostServiceConfig ? Slice);
   assert requires ''LoadCredential = nodeCredentials'' moduleSource;
+  assert requires ''required = true;'' moduleSource;
   assert requires ''aos-sandbox-hostd.service'' moduleSource;
   assert requires ''aos-storaged.service'' moduleSource;
   assert requires ''aos-sandbox-mountd.service'' moduleSource;

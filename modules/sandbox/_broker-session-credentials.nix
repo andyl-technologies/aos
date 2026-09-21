@@ -51,8 +51,8 @@
   in {
     assertions = [
       {
-        assertion = !anyConfigured || completelyConfigured;
-        message = "${endpoint.description} broker-session manifest and both role-local keys must be configured together";
+        assertion = completelyConfigured || (!(endpoint.required or false) && !anyConfigured);
+        message = "${endpoint.description} requires its broker-session manifest and both role-local keys together; active controller endpoints cannot omit them";
       }
     ];
 

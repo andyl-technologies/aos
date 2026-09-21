@@ -13,6 +13,7 @@
     endpoint
     // {
       role = "client";
+      required = true;
       description = "controller-to-${endpoint.name}";
       options = {
         manifest = "brokerSession${endpoint.optionName}Manifest";
