@@ -403,7 +403,10 @@ in {
           else cfg.enrollAuthDir;
         lockdown._effectiveModuleSigningCert =
           if externalFinalization
-          then "${configArtifacts.module-signing-certificate-public}/certificate.pem"
+          then
+            if frozenArtifacts ? "module-signing-certificate-public"
+            then "${configArtifacts.module-signing-certificate-public}/certificate.pem"
+            else "${moduleCertificateSource}/certificate.pem"
           else cfg.lockdown.moduleSigningCert;
       };
       assertions = [
