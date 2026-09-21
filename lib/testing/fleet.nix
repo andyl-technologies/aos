@@ -1,9 +1,8 @@
 # lib/testing/fleet.nix — Multi-VM test orchestrator (QEMU-only).
 #
-# Each machine boots through the production initrd path (stage-1 systemd
-# → systemd-repart substrate → switch-root → stage-2 systemd). Per-machine
-# identity (hostname, /etc/hosts, eth0 .network, the guest-agent unit) is
-# baked into the image's /etc via `extendModules`. Tests may additionally
+# Each machine boots through the selected platform's production initrd path.
+# Per-machine identity and test transport configuration are baked into the
+# image through `extendModules`. Tests may additionally
 # attach a read-only `aos-metadata` ISO to exercise the production
 # cloud-metadata provisioning path.
 # Inter-VM L2 is QEMU's `-netdev socket,mcast=…` transport — host-local
@@ -127,74 +126,39 @@
 
   # ── Per-machine identity module (baked via extendModules) ──────────
   # Bakes each machine's identity into the image.
-  # Instead of delivering hostname / hosts / .network / ssh-key / agent-unit
+  # Instead of delivering hostname, hosts, SSH keys, and platform test wiring
   # over a metadata channel at first boot, they are baked straight into the
   # machine image's `/etc` (the system EROFS, gen-0) by overlaying this module
   # onto the machine's already-evaluated system with `extendModules`. On the
   # the initrd `aos-config-seed` leaves the per-generation `/etc` lower empty,
   # so all of `/etc` comes from this baked EROFS — exactly what these entries
-  # populate. The same module uses the production systemd-repart substrate.
+  # populate. The selected image package supplies its platform-specific half.
   #
-  #   `sshAuthorizedKey` — non-null only in the interactive launcher; adds the
-  #   root pubkey (mode 0600) and a DHCP .network for the debug NIC.
-  #   `bakeAgentUnit` — emit the test-only unit for image/repart machines. The
-  #   direct-kernel baked-/var path already carries the same agent.
+  # `bakeAgentUnit` tells the selected platform whether the mutable test disk
+  # already carries the guest-agent activation.
   mkNewpathModule = {
     m,
     hostsEntries,
     bakeAgentUnit,
     sshAuthorizedKey ? null,
-  }: {
-    lib,
-    pkgs,
-    config,
-    ...
-  }: let
-    agentPackage = config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
-    agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
-    runtimeAgentUnit = pkgs.writeTextFile {
-      name = "aos-fleet-test-agent-runtime-unit";
-      destination = "/aos-test-agent.service";
-      text = ''
-        [Unit]
-        Description=AOS VM Test Guest Agent
-        RefuseManualStop=true
-
-        [Service]
-        Type=simple
-        ExecStart=${agentPath}
-        Restart=on-failure
-        RestartSec=1
-        Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
-      '';
-    };
+  }: {lib, ...}: let
+    platform = m.system.config.aos.image.platform;
+    platformModule =
+      if platform == null
+      then throw "fleet machine requires a selected image-builder ability"
+      else
+        platform.testMachineModule {
+          inherit bakeAgentUnit sshAuthorizedKey;
+          inherit (m) debugMac ip mac;
+          defaultAgentPackage = pkgs.aos-test-agent;
+          inherit (pkgs) writeTextFile;
+        };
   in {
-    # Fleet machines are driven through the guest agent (virtio-serial), never
-    # an interactive serial console. The debug profile's initrd serial debug
-    # shells run persistent Bash processes on ttyS0 and tty0. The former
-    # corrupts the serial log, while the latter makes switch-root wait for its
-    # 90-second stop timeout. Fleet tests have no interactive console, so mask
-    # both (harmless if the debug profile isn't present).
-    boot.initrd.systemd.maskedUnits = [
-      "debug-shell-console.service"
-      "debug-shell-serial.service"
-    ];
+    imports = [platformModule];
 
-    # Direct-kernel tests boot a mutable ext4 rootfs assembled by mkTestDisk;
-    # it has no UKI-authenticated roothash and therefore cannot satisfy the
-    # production dm-verity identity gate. Image-boot tests keep the system's
-    # real verity setting and exercise the complete signed boot chain.
+    # Direct-kernel tests have no authenticated root hash. Image-boot tests keep
+    # the evaluated system's integrity policy and exercise its full boot chain.
     aos.security.verity.enable = lib.mkIf (m.bootMode == "kernel") (lib.mkForce false);
-
-    # Image-boot machines take their cmdline from the UKI, not the driver's
-    # `-append`; match the kernel-boot append so the serial log stays
-    # informative (`forward_to_console` — systemd unit progress after journald
-    # starts) and NICs enumerate deterministically as ethN (`net.ifnames=0`).
-    aos.boot.kernelParams = [
-      "systemd.journald.forward_to_console=1"
-      "net.ifnames=0"
-    ];
-
     aos.networking.hostName = m.name;
 
     environment.etc =
@@ -203,54 +167,17 @@
           127.0.0.1 localhost
           ${hostsEntries}
         '';
-        "systemd/network/10-fleet-eth0.network".text = ''
-          [Match]
-          MACAddress=${m.mac}
-
-          [Network]
-          Address=${m.ip}/24
-        '';
       }
       // lib.optionalAttrs (m.packages != []) {
         "aos/packages.d/fleet-seed".text =
-          lib.concatMapStrings (p: "${p}\n") m.packages;
+          lib.concatMapStrings (package: "${package}\n") m.packages;
       }
       // lib.optionalAttrs (sshAuthorizedKey != null) {
         "ssh/authorized_keys/root" = {
           text = "${sshAuthorizedKey}\n";
           mode = "0600";
         };
-        "systemd/network/20-debug-eth1.network".text = ''
-          [Match]
-          MACAddress=${m.debugMac}
-
-          [Network]
-          DHCP=ipv4
-        '';
       };
-
-    systemd.services = lib.optionalAttrs bakeAgentUnit {
-      "aos-test-agent-bootstrap" = {
-        description = "Install the AOS VM test control channel";
-        wantedBy = ["multi-user.target"];
-        before = ["aos-eval.service"];
-        stopOnRemoval = false;
-        unitConfig.RefuseManualStop = true;
-        serviceConfig = {
-          Type = "oneshot";
-        };
-        # Configuration generations replace /etc, so the control channel used
-        # to drive and inspect that replacement must not live there. Install
-        # the long-running unit in systemd's runtime namespace instead.
-        script = ''
-          ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
-          ${pkgs.coreutils}/bin/ln -sfn ${runtimeAgentUnit}/aos-test-agent.service \
-            /run/systemd/system/aos-test-agent.service
-          ${pkgs.systemd}/bin/systemctl daemon-reload
-          ${pkgs.systemd}/bin/systemctl start aos-test-agent.service
-        '';
-      };
-    };
   };
 
   # Bake per-machine identity and optional debug access into the effective
@@ -364,6 +291,7 @@
           extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
+          kernelParams = effectiveSystem.config.aos.image.platform.testKernelParams;
         }
         // (
           if m.bootMode == "image"
@@ -450,6 +378,7 @@
                     kernel = builtins.toString mb.kernel;
                     initrd = "${builtins.toString mb.initrd}/initrd.img";
                     disk = "${builtins.toString mb.disk}/disk.img";
+                    kernel_params = mb.kernelParams;
                     metadata =
                       if mb.metadataISO == null
                       then null
@@ -457,8 +386,8 @@
                   }
                   // (lib.optionalAttrs (mb.varProvisioning == "repart") {
                     # Base disk ships no /var; grow the per-run copy by this
-                    # many MiB so systemd-repart has room to create /var on first boot
-                    # (driver: aos_test_driver/qemu.py).
+                    # many MiB so the selected platform can create /var on
+                    # first boot (driver: aos_test_driver/qemu.py).
                     var_size_mib = mb.varSizeMiB;
                   })
               )
@@ -643,7 +572,7 @@
               -nographic \
               -kernel "''${VMLINUZ_${mb.name}}" \
               -initrd "''${INITRD_${mb.name}}" \
-              -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
+              -append ${lib.escapeShellArg (lib.concatStringsSep " " mb.kernelParams)} \
               -drive file="$FLEET_DIR/${mb.name}-disk.img",format=raw,if=virtio \
               ${lib.optionalString mb.hostStoreMount ''
               -fsdev local,id=aos_host_store,path=/nix/store,security_model=none,readonly=on \
