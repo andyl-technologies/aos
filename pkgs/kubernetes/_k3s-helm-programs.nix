@@ -89,7 +89,7 @@
     pname = "helm-set-status";
     version = "0.3.0";
     src = sources.set-status;
-    moduleHash = "sha256-+MIfOJl1fiFZ6XYXLqu5Er2klxd5+Tg1cB3dczX1D0Y=";
+    moduleHash = "sha256-hWrBagrVbm12nJhDKQm44PzKYIpiMadV9Fk3bYUeUCs=";
     command = "./cmd/helm-set-status";
     versionFlags = "-X main.version=0.3.0";
     cgo = true;
@@ -99,28 +99,28 @@
     pname = "mapkubeapis";
     version = "0.6.1";
     src = sources.mapkubeapis;
-    moduleHash = "sha256-TyJXqVTuIeVScGt6nueNwQ5OZkA5LSSl33eOu4bvoYo=";
+    moduleHash = "sha256-VIBXg92Yd/za2zo3qK1KDH/Yqac2Eq8oor+k+rwZYKY=";
     command = "./cmd/mapkubeapis";
     versionFlags = "-X main.version=0.6.1";
   };
 in {
   helm = buildProgram {
     pname = "helm";
-    version = "3.19.5";
+    version = "3.22.0";
     src = sources.helm;
-    moduleHash = "sha256-AKelZroc7C1ii+cRPF+srKatW89ZjgoUpq9EycEdxi8=";
+    moduleHash = "sha256-jejngQsIKEhH5/6mwoB4OxQuz0p8ooSvaRYDqaByudQ=";
     command = "./cmd/helm";
     prepare = ''
       # Helm derives its offline Kubernetes capabilities from the module pin.
       kubernetes_minor=$(sed -n 's|^[[:space:]]*k8s.io/apimachinery v0\.\([0-9]*\)\..*|\1|p' go.mod)
       test -n "$kubernetes_minor"
     '';
-    versionFlags = "-X helm.sh/helm/v3/internal/version.version=v3.19.5 -X helm.sh/helm/v3/pkg/lint/rules.k8sVersionMajor=1 -X helm.sh/helm/v3/pkg/lint/rules.k8sVersionMinor=$kubernetes_minor -X helm.sh/helm/v3/pkg/chartutil.k8sVersionMajor=1 -X helm.sh/helm/v3/pkg/chartutil.k8sVersionMinor=$kubernetes_minor";
+    versionFlags = "-X helm.sh/helm/v3/internal/version.version=v3.22.0 -X helm.sh/helm/v3/pkg/lint/rules.k8sVersionMajor=1 -X helm.sh/helm/v3/pkg/lint/rules.k8sVersionMinor=$kubernetes_minor -X helm.sh/helm/v3/pkg/chartutil.k8sVersionMajor=1 -X helm.sh/helm/v3/pkg/chartutil.k8sVersionMinor=$kubernetes_minor";
   };
 
   plugins = mkDerivation {
     pname = "k3s-helm-plugins";
-    version = "3.19.5";
+    version = "3.22.0";
     src = [sources.set-status sources.mapkubeapis];
     buildDeps = [];
     runtimeDeps = [setStatus mapKubeApis];

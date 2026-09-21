@@ -71,7 +71,9 @@ buildStdenv.mkDerivation {
       script = ''
         make SHELL="$CONFIG_SHELL" install MAKEINFO=true
 
-        for tool in ar as ld nm objcopy objdump ranlib readelf size strings strip; do
+        # Native-target installs use unprefixed names, including gold; cross
+        # installs use target-prefixed names. Expose both spellings in either case.
+        for tool in ar as ld ld.gold nm objcopy objdump ranlib readelf size strings strip; do
           prefixed="$out/bin/${hostPlatform.config}-$tool"
           unprefixed="$out/bin/$tool"
 
@@ -83,8 +85,6 @@ buildStdenv.mkDerivation {
             ln -s "$tool" "$prefixed"
           fi
         done
-        test -x "$out/bin/${hostPlatform.config}-ld.gold"
-        ln -s "${hostPlatform.config}-ld.gold" "$out/bin/ld.gold"
       '';
     }
   ];
