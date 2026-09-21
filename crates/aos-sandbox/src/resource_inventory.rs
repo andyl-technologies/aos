@@ -52,7 +52,7 @@ pub(crate) mod authenticated;
     reason = "authenticated controller checkpoint wiring remains intentionally absent"
 )]
 mod checkpoint;
-pub use authenticated::StorageInventoryObservationFenceV1;
+pub use authenticated::{NetworkInventoryObservationFenceV1, StorageInventoryObservationFenceV1};
 mod format;
 
 #[doc(hidden)]

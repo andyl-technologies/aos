@@ -240,6 +240,17 @@ domain_inventory_owner!(
     "Network"
 );
 
+impl DormantNetworkLifecycleInventoryOwnerV1 {
+    /// Issues a fresh query and rechecks its protected terminal currentness.
+    pub(crate) fn current_inventory_observation(
+        &mut self,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Network)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+}
+
 /// Retains an exact lifecycle inventory exchange at its resumable boundary.
 #[must_use = "resume the exact exchange or retain its protected custody"]
 pub struct DormantLifecycleInventoryQueryRecoveryV1 {

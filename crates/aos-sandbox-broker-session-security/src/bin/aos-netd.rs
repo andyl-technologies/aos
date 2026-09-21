@@ -93,19 +93,23 @@ fn run() -> Result<(), NetworkDaemonErrorV1> {
 
     loop {
         let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
-        let session = match activation.accept_authenticated(accept_deadline) {
+        let mut session = match activation.accept_authenticated(accept_deadline) {
             Ok(session) => session,
             Err(ProductionBrokerSessionActivationErrorV1::Deadline) => continue,
             Err(error) => return Err(error.into()),
         };
-        let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
-        let mut callsite = network.callsite();
-        if let Err(error) =
-            session.serve_production_network_request(&mut callsite, request_deadline)
-        {
-            // Request completion consumes session custody even on failure.
-            // Reconnect and exact replay are the only continuation mechanism.
-            eprintln!("aos-netd: authenticated request failed: {error}");
+        loop {
+            let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
+            let mut callsite = network.callsite();
+            match session.serve_production_network_request(&mut callsite, request_deadline) {
+                Ok(retained) => session = retained,
+                Err(error) => {
+                    // Success keeps the authenticated sequence owner; only a
+                    // failed exchange requires reconnect and protected recovery.
+                    eprintln!("aos-netd: authenticated request failed: {error}");
+                    break;
+                }
+            }
         }
     }
 }

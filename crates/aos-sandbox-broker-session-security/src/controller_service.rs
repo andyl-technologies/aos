@@ -58,9 +58,9 @@ use aos_sandbox::{
     ActivatedOperationCompiler, ControllerRequestScopeV1, ControllerServiceError,
     DestinationSlotInventoryClient, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
     HostCatalogReconciliationError, HostCatalogReconciliationV1, Journal, JournalError,
-    MountAttemptError, MountInventoryClient, NetworkResourceInventoryClient, NodeController,
-    NodeControllerLimits, OperationCompilationError, OperationPlan, Reconciler,
-    ResourceInventoryError, ResourceInventoryServiceIdentity, SingleNodeEffectExecutor,
+    MountAttemptError, MountInventoryClient, NodeController, NodeControllerLimits,
+    OperationCompilationError, OperationPlan, Reconciler, ResourceInventoryError,
+    SingleNodeEffectExecutor,
 };
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
@@ -68,13 +68,11 @@ const JOURNAL_NAME: &str = "controller.journal";
 const DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const HOST_SOCKET: &str = "/run/aos/sandbox-host/control.sock";
 const MOUNT_SOCKET: &str = "/run/aos/sandbox-mount/control.sock";
-const NETWORK_SOCKET: &str = "/run/aos/sandbox-network/control.sock";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const CONTROL_SLICE: &str = "aos.slice/aos-control.slice";
 const HOST_SLICE: &str = "system.slice";
 const HOST_SERVICE: &str = "aos-sandbox-hostd.service";
 const MOUNT_CGROUP: &str = "aos-sandbox-mountd.service";
-const NETWORK_CGROUP: &str = "aos-netd.service";
 const NODE_ID_CREDENTIAL: &str = "node-id";
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
 const HOST_PUBLICATION_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
@@ -87,6 +85,7 @@ type ProductionController = NodeController<UnavailableCompiler, UnavailableExecu
 #[derive(Default)]
 struct ControllerBrokerSessions {
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
+    network: Option<crate::DormantNetworkLifecycleInventoryOwnerV1>,
 }
 
 /// Composes explicitly supplied controller and public-client dependencies without activation.
@@ -369,9 +368,7 @@ fn refresh_catalog(
         .record_destination_slot_inventory(destination_inventory_client()?)
         .map_err(classify_mount_error)?;
     let storage = authenticated_storage_inventory(controller, node_id, sessions)?;
-    let network = controller
-        .record_network_resource_inventory(network_inventory_client()?)
-        .map_err(classify_resource_error)?;
+    let network = authenticated_network_inventory(controller, node_id, sessions)?;
 
     match controller
         .prepare_host_catalog(storage, network, mounts, destinations)
@@ -457,13 +454,39 @@ fn authenticated_storage_inventory(
         .map_err(classify_resource_error)
 }
 
-fn network_inventory_client() -> Result<NetworkResourceInventoryClient, CycleFailure> {
-    let identity = ResourceInventoryServiceIdentity {
-        uid: 0,
-        gid: 0,
-        cgroup: service_cgroup(CONTROL_SLICE, NETWORK_CGROUP)?,
-    };
-    NetworkResourceInventoryClient::connect(Path::new(NETWORK_SOCKET), identity)
+fn authenticated_network_inventory(
+    controller: &mut ProductionController,
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
+) -> Result<aos_sandbox::DurableNetworkResourceInventorySnapshotV1, CycleFailure> {
+    if sessions.network.is_none() {
+        let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+            crate::ProtectedBrokerSessionFixedEndpointV1::ControllerNetworkClient,
+        )
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        let deadline = crate::production_deadline_after(Duration::from_secs(10))
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        let mut session = custody
+            .connect_production_client_session(deadline)
+            .map_err(classify_protected_handshake_error)?;
+        session
+            .require_current_node(node_id)
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        sessions.network =
+            Some(crate::DormantNetworkLifecycleInventoryOwnerV1::from_protected_session(session));
+    }
+    let inventory = sessions.network.as_mut().ok_or_else(|| {
+        CycleFailure::Fatal("protected Network session was not retained".to_owned())
+    })?;
+    let fence = controller
+        .begin_authenticated_network_inventory()
+        .map_err(classify_resource_error)?;
+    let outcome = inventory
+        .current_inventory_observation()
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+
+    controller
+        .complete_authenticated_network_inventory(fence, &outcome)
         .map_err(classify_resource_error)
 }
 
@@ -1390,8 +1413,8 @@ mod tests {
             Path::new("system.slice/aos-sandbox-hostd.service")
         );
         assert_eq!(
-            service_cgroup_path(CONTROL_SLICE, NETWORK_CGROUP),
-            Path::new("aos.slice/aos-control.slice/aos-netd.service")
+            service_cgroup_path(CONTROL_SLICE, MOUNT_CGROUP),
+            Path::new("aos.slice/aos-control.slice/aos-sandbox-mountd.service")
         );
     }
 
