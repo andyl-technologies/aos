@@ -153,6 +153,11 @@ pub enum OperationCompilationError {
 /// closed schema and include normalized method, principal, project, and
 /// authority context in `canonical_request`. The supplied digest is the exact
 /// service-computed value that the returned plan must retain.
+/// The controller lends its sole journal writer for current authorization and
+/// precondition checks. Implementations must not retain a second journal owner,
+/// commit desired-state/effect admission themselves, or perform external effects.
+/// Authorization maintenance such as advancing the protected time floor may
+/// commit before admission; it must never represent acceptance of the request.
 pub trait ActivatedOperationCompiler {
     /// Compiles one bounded canonical request without performing effects.
     ///
@@ -162,6 +167,7 @@ pub trait ActivatedOperationCompiler {
     /// authentication, authorization, policy, or compare-and-swap checks.
     fn compile(
         &mut self,
+        journal: &mut crate::Journal,
         canonical_request: &[u8],
         request_digest: [u8; 32],
     ) -> Result<OperationPlan, OperationCompilationError>;
@@ -4874,7 +4880,11 @@ where
             return Err(ControllerServiceError::RequestTooLarge);
         }
         let request_digest = controller_request_digest(self.scope, canonical_request);
-        let plan = self.compiler.compile(canonical_request, request_digest)?;
+        let plan = self.compiler.compile(
+            self.reconciler.journal_mut(),
+            canonical_request,
+            request_digest,
+        )?;
         if plan.request_digest() != request_digest {
             return Err(ControllerServiceError::CompilerDigestMismatch);
         }
@@ -5090,6 +5100,7 @@ mod tests {
     impl ActivatedOperationCompiler for Compiler {
         fn compile(
             &mut self,
+            _journal: &mut Journal,
             request: &[u8],
             request_digest: [u8; 32],
         ) -> Result<OperationPlan, OperationCompilationError> {
@@ -5191,6 +5202,75 @@ mod tests {
                 .publisher_policies(PublisherPolicyLimits::default())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn compilation_observes_revocation_in_the_controllers_sole_journal() {
+        use aos_sandbox_core::CapabilityId;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        struct CurrentRegistryCompiler(CapabilityId);
+
+        impl ActivatedOperationCompiler for CurrentRegistryCompiler {
+            fn compile(
+                &mut self,
+                journal: &mut Journal,
+                request: &[u8],
+                digest: [u8; 32],
+            ) -> Result<OperationPlan, OperationCompilationError> {
+                // This fixture checks journal plumbing, not complete request authorization.
+                let registry =
+                    PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())
+                        .map_err(|_| OperationCompilationError::Rejected)?;
+                registry
+                    .resolve_current(self.0)
+                    .map_err(|_| OperationCompilationError::Rejected)?;
+                drop(registry);
+                Compiler.compile(journal, request, digest)
+            }
+        }
+
+        let directory = TestDirectory::new();
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            &directory.0,
+            "protected.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let capability_id = CapabilityId::new();
+        PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default())
+            .unwrap()
+            .install_from_trusted_controller(
+                [1; 16],
+                crate::publisher_authority::tests::capability(capability_id, 200),
+            )
+            .unwrap();
+        let mut controller = NodeController::new(
+            scope(),
+            NodeControllerLimits::default(),
+            CurrentRegistryCompiler(capability_id),
+            Reconciler::new(journal, Executor::default()),
+        );
+
+        assert!(controller.admit(&[7]).is_ok());
+        controller
+            .publisher_capabilities(PublisherAuthorityLimits::default())
+            .unwrap()
+            .revoke_from_trusted_controller([2; 16], capability_id)
+            .unwrap();
+
+        assert!(matches!(
+            controller.admit(&[8]),
+            Err(ControllerServiceError::Compilation(
+                OperationCompilationError::Rejected
+            ))
+        ));
+        let journal = controller.reconciler.journal_mut();
+        assert!(journal.get(RecordNamespace::DesiredState, &[8]).is_none());
+        assert!(journal.get(RecordNamespace::Operation, &[8; 16]).is_none());
     }
 
     #[test]

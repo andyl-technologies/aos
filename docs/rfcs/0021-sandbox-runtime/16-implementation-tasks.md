@@ -301,6 +301,10 @@ the outstanding work concrete:
   attempts inventory publication but rejects pending mutation work.
   Replace those unavailable dependencies with the authenticated request
   compiler and durable effect dispatcher, including restart recovery.
+  Admission now lends the reconciler's sole journal writer to the compiler
+  for current authorization and precondition checks. Compilation must not
+  create a second journal owner or independently commit desired/effect
+  admission; protected authorization maintenance does not accept a request.
 - The controller's Host catalog publication now uses the protected descriptor
   request path. The packaged broker entry points accept sessions through
   `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end

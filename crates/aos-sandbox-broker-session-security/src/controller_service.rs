@@ -814,6 +814,7 @@ struct UnavailableCompiler;
 impl ActivatedOperationCompiler for UnavailableCompiler {
     fn compile(
         &mut self,
+        _journal: &mut Journal,
         _canonical_request: &[u8],
         _request_digest: [u8; 32],
     ) -> Result<OperationPlan, OperationCompilationError> {

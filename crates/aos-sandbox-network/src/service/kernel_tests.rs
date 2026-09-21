@@ -29,6 +29,7 @@ struct UnusedCompiler;
 impl ActivatedOperationCompiler for UnusedCompiler {
     fn compile(
         &mut self,
+        _journal: &mut aos_sandbox::Journal,
         _canonical_request: &[u8],
         _request_digest: [u8; 32],
     ) -> Result<OperationPlan, OperationCompilationError> {

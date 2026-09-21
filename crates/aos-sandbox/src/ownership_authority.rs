@@ -2629,6 +2629,7 @@ mod tests {
         impl ActivatedOperationCompiler for CompositionCompiler {
             fn compile(
                 &mut self,
+                _journal: &mut crate::Journal,
                 _canonical_request: &[u8],
                 _request_digest: [u8; 32],
             ) -> Result<OperationPlan, OperationCompilationError> {
