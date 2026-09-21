@@ -85,6 +85,7 @@
 
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  hasModernSourceRuntime = !stdenv.isCross || stdenv.hostPlatform.system == "aarch64-linux";
   targetNodeArch =
     if stdenv.hostPlatform.darwinArch == "arm64" || stdenv.hostPlatform.system == "aarch64-linux"
     then "arm64"
@@ -93,6 +94,10 @@
     if targetNodeArch == "arm64"
     then "arm64"
     else "x86_64";
+  workerdLinuxArch =
+    if targetNodeArch == "arm64"
+    then "arm64"
+    else "64";
 
   # esbuild's JavaScript launcher honors ESBUILD_BINARY_PATH. Building the
   # small Go command directly avoids retaining its Linux npm platform package.
@@ -137,7 +142,7 @@ in
     runtimeDeps =
       [nodejs sharpAddon targetEsbuild]
       ++ [bash workerd]
-      ++ lib.optionals (!stdenv.isCross) [modernWorkerd];
+      ++ lib.optionals hasModernSourceRuntime [modernWorkerd];
 
     phases = [
       {
@@ -373,7 +378,6 @@ in
               esac
               {
                 printf '%s\n' '#!${bash}/bin/bash'
-                printf '%s\n' 'export MINIFLARE_WORKERD_PATH="${workerd}/bin/workerd"'
                 printf '%s\n' 'export ESBUILD_BINARY_PATH="${targetEsbuild}/bin/esbuild"'
                 printf 'exec %s "%s/%s" "$@"\n' '${nodejs}/bin/node' "$NM" "$entry"
               } > "$out/bin/$command"
@@ -432,17 +436,17 @@ in
       }
       {
         name = "install-source-workerd";
-        script = lib.optionalString (!stdenv.isCross) ''
+        script = lib.optionalString hasModernSourceRuntime ''
           NM="$out/lib/node_modules"
           # Each npm resolver must retain its matching runtime version: Wrangler
           # and the standalone Miniflare command use different protocol releases.
           rm -rf "$NM"/@cloudflare/workerd-* \
             "$NM"/wrangler/node_modules/@cloudflare/workerd-*
-          mkdir -p "$NM/@cloudflare/workerd-linux-64/bin" \
-            "$NM/wrangler/node_modules/@cloudflare/workerd-linux-64/bin"
-          ln -s ${workerd}/bin/workerd "$NM/@cloudflare/workerd-linux-64/bin/workerd"
+          mkdir -p "$NM/@cloudflare/workerd-linux-${workerdLinuxArch}/bin" \
+            "$NM/wrangler/node_modules/@cloudflare/workerd-linux-${workerdLinuxArch}/bin"
+          ln -s ${workerd}/bin/workerd "$NM/@cloudflare/workerd-linux-${workerdLinuxArch}/bin/workerd"
           ln -s ${modernWorkerd}/bin/workerd \
-            "$NM/wrangler/node_modules/@cloudflare/workerd-linux-64/bin/workerd"
+            "$NM/wrangler/node_modules/@cloudflare/workerd-linux-${workerdLinuxArch}/bin/workerd"
         '';
       }
       {
