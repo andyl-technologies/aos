@@ -15,7 +15,7 @@
   loader = requests."audit:audit-rules-lifecycle".parameters;
 in
   assert config.aos.contributions.kernelParameters.audit == ["audit=1"];
-  assert config.aos.contributions.runtimeChecks.audit.description == "Audit policy checks";
+  assert config.aos.abilities.runtimeChecks."audit:audit".description == "Audit policy checks";
   assert daemon.service == "auditd";
   assert daemon.execution_model == "foreground";
   assert daemon.configuration_change_action == "reload";

@@ -2,7 +2,6 @@
 {
   abilitySelection ? null,
   lib,
-  options,
   ...
 }: let
   selectedBindings =
@@ -33,9 +32,7 @@
 in {
   config =
     lib.mkIf (
-      selectedBindings
-      != []
-      && lib.hasAttrByPath ["environment" "etc"] options
+      selectedBindings != []
     ) {
       assertions = [
         {

@@ -75,7 +75,7 @@
   lifecycle = requests."docker-engine:docker-lifecycle".parameters;
   start = (builtins.head lifecycle.start).executable;
 in
-  assert enabled.config.aos.contributions.runtimeChecks.docker.description
+  assert enabled.config.aos.abilities.runtimeChecks."docker-engine:docker".description
   == "Docker service checks";
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];

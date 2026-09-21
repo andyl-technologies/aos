@@ -383,22 +383,26 @@ in {
           }
         ]
         ++ builtins.map (contribution: contribution.configured) contributions
-      );
-      aos.contributions.runtimeChecks.dnsmasq = {
-        description = "dnsmasq service checks";
-        checks = [
+        ++ [
           {
-            name = "local-dns-query";
-            description = "dnsmasq answers a local DNS request";
-            script = ''
-              vm.wait_until_succeeds(
-                  "dig -p ${toString cfg.port} @127.0.0.1 localhost A +short | grep -Fx 127.0.0.1",
-                  timeout=30,
-              )
-            '';
+            runtimeChecks.dnsmasq = {
+              description = "dnsmasq service checks";
+              checks = [
+                {
+                  name = "local-dns-query";
+                  description = "dnsmasq answers a local DNS request";
+                  script = ''
+                    vm.wait_until_succeeds(
+                        "dig -p ${toString cfg.port} @127.0.0.1 localhost A +short | grep -Fx 127.0.0.1",
+                        timeout=30,
+                    )
+                  '';
+                }
+              ];
+            };
           }
-        ];
-      };
+        ]
+      );
     })
   ];
 }

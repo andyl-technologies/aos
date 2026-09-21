@@ -113,8 +113,6 @@
     };
   });
 in {
-  imports = [./_runtime-check-contributions.nix];
-
   options.system.checks = lib.mkOption {
     type = lib.types.attrsOf checkSpecType;
     default = {};
@@ -209,7 +207,7 @@ in {
   };
 
   config = lib.mkMerge [
-    {system.checks = config.aos.contributions.runtimeChecks;}
+    {system.checks = config.aos.abilities.runtimeChecks;}
     {
     system.checks.boot-basics = {
       description = "Core boot verification";

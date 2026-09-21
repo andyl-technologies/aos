@@ -64,7 +64,7 @@
     packageContract.option_declarations;
   request = enabled.config.aos.abilities.requests."nftables:ruleset";
 in
-  assert enabled.config.aos.contributions.runtimeChecks.firewall.description
+  assert enabled.config.aos.abilities.runtimeChecks."nftables:firewall".description
   == "nftables firewall checks";
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];

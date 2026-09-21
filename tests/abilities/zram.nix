@@ -99,7 +99,7 @@
     output = "resource";
   };
 in
-  assert baseline.config.aos.contributions.runtimeChecks.zram.description
+  assert baseline.config.aos.abilities.runtimeChecks."zram-generator:zram".description
   == "Compressed swap checks";
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];

@@ -114,7 +114,7 @@ in
     startSession = true;
     setLoginUid = true;
   };
-  assert config.aos.contributions.runtimeChecks.ssh.description == "SSH server checks";
+  assert config.aos.abilities.runtimeChecks."openssh:ssh".description == "SSH server checks";
   assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
   assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "ssh/sshd_config");

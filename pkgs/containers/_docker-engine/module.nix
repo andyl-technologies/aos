@@ -234,7 +234,7 @@ in {
       [
         {
           aos.abilities.instances.docker = {};
-          aos.contributions.runtimeChecks.docker = {
+          aos.abilities.runtimeChecks.docker = {
             description = "Docker service checks";
             checks = [
               {

@@ -63,7 +63,7 @@
     evaluated.config.aos.abilities.instances;
   lifecycle = requests."tailscale:tailscaled-lifecycle".parameters;
 in
-  assert enabled.config.aos.contributions.runtimeChecks.tailscale.description
+  assert enabled.config.aos.abilities.runtimeChecks."tailscale:tailscale".description
   == "Tailscale service checks";
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
