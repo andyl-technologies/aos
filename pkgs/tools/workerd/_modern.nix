@@ -1,6 +1,8 @@
 ##! Source build of the Workers runtime used by current Wrangler.
 {
   mkBazelPackage,
+  runCommand,
+  tcl,
   fetchurl,
   callPackage,
   lib,
@@ -31,6 +33,11 @@
 }: let
   version = "1.20260801.1";
   nativeClang = callPackage ./_native-clang.nix {};
+  tclBuildTool = runCommand "workerd-modern-tcl-build-tool" {} ''
+    mkdir -p "$out/bin"
+    test -x "${tcl}/bin/tclsh9.0"
+    ln -s "${tcl}/bin/tclsh9.0" "$out/bin/tclsh"
+  '';
   cargoBazel = callPackage ./_cargo-bazel.nix {};
   rustRepository = callPackage ./_rust-repository.nix {};
   nodeRepository = callPackage ./_node-repository.nix {};
@@ -92,6 +99,7 @@ in
       };
 
       tools = [
+        tclBuildTool
         nativeClang
         llvm
         binutils
@@ -125,8 +133,10 @@ in
         "local_jdk"
         "+local_runtime_repo+aos_python"
         "rules_java++toolchains+local_jdk"
+        "rules_cc++cc_configure_extension+local_config_cc"
+        "rules_cc++cc_configure_extension+local_config_cc_toolchains"
       ];
-      depsHash = "sha256-D7DtL0GQSjDSNh+35lLOu+LOadgnZYz/7oc8G5KIpxw=";
+      depsHash = "sha256-7vU7V20b8HnQHqpzW+2SuwkZihPmZMoUIpbfWZt+8TQ=";
       bazelTarget = "//src/workerd/server:workerd";
       bazelFlags =
         [
@@ -148,6 +158,14 @@ in
         configureEnvironment
         + ''
           sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' tools/unix/workspace-status.sh
+          # Patch the generator templates before Bazel creates executable launchers.
+          sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' \
+            "$TMPDIR/repo-overrides/aspect_rules_js+/js/private/js_binary.sh.tpl" \
+            "$TMPDIR/repo-overrides/aspect_rules_js+/js/private/node_wrapper.sh"
+          sed -i 's|^DEFAULT_STUB_SHEBANG = "#!/usr/bin/env python3"$|DEFAULT_STUB_SHEBANG = "#!${python3}/bin/python3"|' \
+            "$TMPDIR/repo-overrides/rules_python+/python/private/py_runtime_info.bzl"
+
+
         '';
       bazelBuildFlags = [
         "-c opt"
