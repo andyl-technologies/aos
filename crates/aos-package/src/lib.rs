@@ -357,10 +357,10 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: OptionsCommand,
     },
-    /// Export the canonical package-reference schema or an exact signed package reference
+    /// Export one exact signed package reference
     Schema {
         /// Installed package whose exact signed package reference should be exported
-        package: Option<String>,
+        package: String,
         /// Hub root URL for a remote package lookup
         #[arg(long)]
         hub: Option<String>,
@@ -867,7 +867,7 @@ pub enum DocumentationCommand {
         #[arg(long)]
         system: bool,
     },
-    /// Print the closed JSON Schema used by documentation tooling
+    /// Print the generated package metadata JSON Schema
     Schema {
         /// Fetch the schema from this Hub instead of using the checked local schema
         #[arg(long)]
@@ -3201,7 +3201,7 @@ pub async fn run(
     } = command
     {
         return documentation::run_schema(
-            package.as_deref(),
+            package,
             hub.as_deref(),
             registry.as_deref(),
             version.as_deref(),

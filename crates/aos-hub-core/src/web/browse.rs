@@ -2429,12 +2429,12 @@ pub async fn api_documentation_artifact(svc: &RpcService, slug: &str, digest: &s
     }
 }
 
-/// `GET /{slug}/-/api/docs/schema` — the closed document JSON Schema.
+/// `GET /{slug}/-/api/docs/schema` — the package metadata JSON Schema.
 pub async fn api_documentation_schema(svc: &RpcService, slug: &str) -> Rendered {
     if registry(svc, slug).await.is_none() {
         return Rendered::NotFound;
     }
-    let Ok(schema) = aos_doc_model::document_json_schema() else {
+    let Ok(schema) = aos_doc_model::documentation_metadata_json_schema() else {
         return Rendered::ServiceUnavailable;
     };
     match String::from_utf8(schema) {

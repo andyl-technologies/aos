@@ -121,16 +121,17 @@ pub const DOCUMENT_FORMAT: &str = "aos.package-reference/v1+json";
 /// Canonical schema identifier for the one signed package reference.
 pub const PACKAGE_REFERENCE_SCHEMA: &str = "aos.package-reference/v1";
 
-/// Generates the closed JSON Schema served to editors and language tooling.
+/// Generates the closed JSON Schema for the package metadata envelope.
 ///
-/// The schema is derived from the same Rust data contract that decodes package
-/// documentation. This keeps new variants and field changes visible to every
-/// frontend without a separately maintained schema snapshot.
+/// The schema is derived from the same Rust data contract that decodes
+/// [`PackageDocumentation`]. Ability and option schemas belong to an exact
+/// [`PackageDocumentationProjection`] and are read from its checked ability
+/// reference instead of a generic or separately maintained schema snapshot.
 ///
 /// # Errors
 ///
 /// Returns an error if the generated schema cannot be represented as JSON.
-pub fn document_json_schema() -> Result<Vec<u8>> {
+pub fn documentation_metadata_json_schema() -> Result<Vec<u8>> {
     let mut schema = serde_json::to_value(schemars::schema_for!(PackageDocumentation))?;
     let schema_property = schema
         .pointer_mut("/properties/schema")
@@ -602,42 +603,6 @@ impl PackageDocumentation {
             [(&self.package.name, 100), (&self.package.summary, 30)],
         ));
         rows
-    }
-
-    /// Compares configuration meaning with another exact package document.
-    ///
-    /// Explanatory prose and source locations do not produce option changes;
-    /// the comparison follows the same semantic projection as
-    /// [`Self::computed_semantic_schema_sha256`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the documents describe different packages or
-    /// platforms, or when either document is invalid.
-    pub fn compare(&self, other: &Self) -> Result<DocumentationComparison> {
-        self.validate()?;
-        other.validate()?;
-        if self.package.name != other.package.name {
-            return Err(DocumentationError::Invalid(format!(
-                "cannot compare package '{}' with '{}'",
-                self.package.name, other.package.name
-            )));
-        }
-        if self.package.platform != other.package.platform {
-            return Err(DocumentationError::Invalid(format!(
-                "cannot compare platform '{}' with '{}'",
-                self.package.platform, other.package.platform
-            )));
-        }
-
-        Ok(DocumentationComparison {
-            package: self.package.name.clone(),
-            from_version: self.package.version.clone(),
-            to_version: other.package.version.clone(),
-            semantic_changed: self.identity.semantic_schema_sha256
-                != other.identity.semantic_schema_sha256,
-            option_changes: Vec::new(),
-        })
     }
 
     /// Renders complete, escape-free plain text suitable for terminals.
@@ -2196,11 +2161,12 @@ mod tests {
     }
 
     #[test]
-    fn checked_json_schema_exposes_the_complete_tooling_contract() {
-        let bytes = document_json_schema().expect("generate documentation JSON Schema");
+    fn metadata_json_schema_is_derived_from_the_document_contract() {
+        let bytes =
+            documentation_metadata_json_schema().expect("generate documentation JSON Schema");
         assert_eq!(
             bytes,
-            document_json_schema().expect("regenerate documentation JSON Schema")
+            documentation_metadata_json_schema().expect("regenerate documentation JSON Schema")
         );
 
         let schema: Value = serde_json::from_slice(&bytes).expect("valid JSON Schema");
