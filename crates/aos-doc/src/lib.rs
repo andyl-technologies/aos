@@ -33,6 +33,7 @@ pub mod nix_parser;
 pub mod search;
 pub mod tui;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -102,7 +103,7 @@ pub async fn run(
     }
 
     // Check if we're on a TTY — if so, launch the TUI.
-    if atty::is(atty::Stream::Stdout) && printer.mode() == OutputMode::Normal {
+    if std::io::stdout().is_terminal() && printer.mode() == OutputMode::Normal {
         return tui::run(index).await;
     }
 
