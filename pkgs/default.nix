@@ -129,6 +129,20 @@
     };
   withDefaultMaintainers = withDistributionMeta {};
 
+  # Bootstrap tools retain their audited derivations, but need the same public
+  # metadata as their target builds. Never attach a different source version.
+  withBootstrapPublication = name: let
+    # Read only the declaration: realizing the target derivation here would
+    # recurse through the very bootstrap tools whose metadata we are filling.
+    package = callPackage (./base + "/${name}.nix") {
+      mkDerivation = attrs: attrs;
+    };
+    bootstrap = stdenv.${name};
+    version = (builtins.parseDrvName bootstrap.name).version;
+  in
+    assert version == package.version;
+      (withDistributionMeta package.meta bootstrap) // {inherit version;};
+
   exposeRenderer = import ./build-support/_expose-renderer.nix {
     inherit lib;
     pkgs = self;
@@ -1204,7 +1218,7 @@
       ];
     };
     meta = {
-      description = "GCC runtime shared libraries for ${stdenv.hostPlatform.system}";
+      description = "GCC runtime shared libraries (libstdc++.so, libgcc_s.so)";
       homepage = "https://gcc.gnu.org/";
       license = "GPL-3.0-or-later WITH GCC-exception-3.1";
     };
@@ -1626,6 +1640,7 @@
       gcc =
         (withDistributionMeta {
             description = "GNU Compiler Collection with AOS target and runtime defaults";
+            homepage = "https://gcc.gnu.org/";
             license = "GPL-3.0-or-later WITH GCC-exception-3.1";
           }
           (
@@ -1641,6 +1656,7 @@
       glibc =
         (withDistributionMeta {
             description = "GNU C Library for the AOS target runtime";
+            homepage = "https://www.gnu.org/software/libc/";
             license = "LGPL-2.1-or-later";
           }
           (
@@ -1712,6 +1728,7 @@
       getent =
         (withDistributionMeta {
             description = "Name service database lookup utility from GNU C Library";
+            homepage = "https://www.gnu.org/software/libc/";
             license = "LGPL-2.1-or-later";
           }
           (lib.getOutput "getent" stdenv.glibc))
@@ -1727,57 +1744,57 @@
       bash = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.bash
-        else stdenv.bash
+        else withBootstrapPublication "bash"
       );
       coreutils = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.coreutils
-        else stdenv.coreutils
+        else withBootstrapPublication "coreutils"
       );
       gnumake = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gnumake
-        else stdenv.gnumake
+        else withBootstrapPublication "gnumake"
       );
       sed = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.sed
-        else stdenv.sed
+        else withBootstrapPublication "sed"
       );
       grep = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.grep
-        else stdenv.grep
+        else withBootstrapPublication "grep"
       );
       findutils = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.findutils
-        else stdenv.findutils
+        else withBootstrapPublication "findutils"
       );
       gawk = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gawk
-        else stdenv.gawk
+        else withBootstrapPublication "gawk"
       );
       diffutils = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.diffutils
-        else stdenv.diffutils
+        else withBootstrapPublication "diffutils"
       );
       tar = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.tar
-        else stdenv.tar
+        else withBootstrapPublication "tar"
       );
       gzip = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gzip
-        else stdenv.gzip
+        else withBootstrapPublication "gzip"
       );
       patch = withDefaultMaintainers (
         if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.patch
-        else stdenv.patch
+        else withBootstrapPublication "patch"
       );
     }
     # --- Trivial builders, exposed flat on the package set ---

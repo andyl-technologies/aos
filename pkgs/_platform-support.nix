@@ -966,6 +966,15 @@ in rec {
       names;
   };
 
+  # Blocked cells remain in releaseInventory. Evaluating their derivations
+  # would force exactly the unsupported build graphs the policy records.
+  releaseDerivationNames = system: names:
+    builtins.filter (name: let
+      decision = publicationDecision system name;
+    in
+      decision.state == "eligible" && decision.blockers == [])
+    names;
+
   releaseDerivations = {
     system,
     packages,
@@ -1094,7 +1103,7 @@ in rec {
           }
           else null;
       }
-    ) (publicationEligibleNames system names);
+    ) (releaseDerivationNames system names);
   };
 
   publicationMatrix = names:

@@ -252,6 +252,9 @@
             kernel = evaluated.config.system.build.kernel;
             initrd = evaluated.config.system.build.initrd;
             image = evaluated.config.system.build.image;
+            # Null unless the variant defers signing to the release finalizer,
+            # in which case it replaces `image` as the variant's only output.
+            unsignedImageAssembly = evaluated.config.system.build.unsignedImageAssembly;
             containers = evaluated.config.system.build.containers;
             defaultContainer = evaluated.config.system.build.defaultContainer;
           };
@@ -393,6 +396,9 @@
         identity = qualificationExecutorIdentity;
       }
     else null;
+  recoveryPackageRule = builtins.head (
+    builtins.filter (rule: rule.name == "aos-recovery") releaseQualification.package_rules
+  );
   recoveryPackageScenario =
     if hostPlatform.isLinux
     then
@@ -400,7 +406,7 @@
         name = "aos-qualification-${hostPlatform.system}-aos-recovery";
         packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
         imageExecutable = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
-        systemVariant = "server";
+        systemVariant = recoveryPackageRule.execution.system_variant;
       }
     else null;
   k3sPackageScenarios = lib.optionalAttrs hostPlatform.isLinux (
@@ -453,8 +459,12 @@
       package-function = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
     }
     // lib.optionalAttrs hostPlatform.isLinux {
-      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
       "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
+    }
+    // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+      # ARM64 container qualification imports a report with the outer x86 host,
+      # TCG guest and container layers; the local runner observes only two.
+      "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
     };
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";

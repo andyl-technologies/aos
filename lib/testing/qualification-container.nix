@@ -7,6 +7,9 @@
   identity,
   assessmentRoot ? "/etc/aos-release/qualification-assessments",
   lifecycleCycles ? 10,
+  # A full-system guest cannot observe its outer host. Its operator collects
+  # this report, adds the observed outer layers, then invokes respond host-side.
+  reportOnly ? false,
 }: let
   runtimePath = lib.makeBinPath [
     pkgs.bash
@@ -76,7 +79,7 @@ in
         and ((.qualification_case.checks | sort) == ([
           "signed-index-and-platform-selection",
           "anonymous-pull",
-          "native-platform-execution",
+          "declared-platform-execution",
           "start-stop-network",
           "repeated-stop-start-and-recreate",
           "persistent-state",
@@ -355,7 +358,7 @@ in
         '.qualification_case.checks | map({key: ., value: {passed: true, detail:
           (if . == "signed-index-and-platform-selection" then "The signed manifest selected the native platform from the reconstructed OCI index."
            elif . == "anonymous-pull" then "The executor downloaded every OCI object anonymously before runtime import."
-           elif . == "native-platform-execution" then "The imported image executed on the requested native architecture."
+           elif . == "declared-platform-execution" then "The imported image executed on the requested native architecture."
            elif . == "start-stop-network" then "Every lifecycle fetched the retained state from the host HTTP server over loopback."
            elif . == "repeated-stop-start-and-recreate" then "Ten isolated create, start, stop, and remove lifecycles completed."
            elif . == "persistent-state" then "The bind-mounted state and complete cycle journal survived every recreation."
@@ -405,9 +408,15 @@ in
           assessment: $assessment[0]
         }' >scenario-report.json
 
-      exec ${pkgs.aos}/bin/aos release qualification respond \
-        --request "$request" \
-        --scenarios scenario-registry.json \
-        --report scenario-report.json \
-        --identity ${lib.escapeShellArg identity}
+      ${
+        if reportOnly
+        then "${pkgs.coreutils}/bin/cat scenario-report.json"
+        else ''
+          exec ${pkgs.aos}/bin/aos release qualification respond \
+            --request "$request" \
+            --scenarios scenario-registry.json \
+            --report scenario-report.json \
+            --identity ${lib.escapeShellArg identity}
+        ''
+      }
     ''

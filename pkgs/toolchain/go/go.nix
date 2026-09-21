@@ -85,7 +85,7 @@ in
       inherit mkDerivation version src update stdenv;
       pname = "go";
       nativeGo = buildPackages.go;
-      description = "Go ${version} — Darwin-hosted Go compiler and tools";
+      description = "Go programming language";
     }
   else if stdenv.isCross
   then
@@ -93,7 +93,7 @@ in
       inherit mkDerivation version src stdenv;
       pname = "go";
       nativeGo = buildPackages.go;
-      description = "Go ${version} — cross-built Linux-hosted Go compiler and tools";
+      description = "Go programming language";
     }
   else
     mkDerivation {

@@ -27,6 +27,9 @@ pub mod capabilities;
 pub mod claims;
 pub mod environment;
 
+#[cfg(test)]
+mod plan_tests;
+
 /// Schema of archived qualification contracts with untyped environments.
 pub const CONTRACT_V1: &str = "aos.release.qualification-contract/v1";
 
@@ -232,7 +235,7 @@ pub struct QualificationContract {
     pub thresholds: BTreeMap<String, QualificationThresholds>,
     /// Required reference environments.
     pub targets: Vec<QualificationTarget>,
-    /// Complete package classification, independent of platform eligibility.
+    /// Classification of every package eligible on at least one platform.
     pub package_rules: Vec<PackageRule>,
     /// Shared gate catalog.
     pub requirements: Vec<QualificationRequirement>,
@@ -611,9 +614,19 @@ impl QualificationContract {
         {
             bail!("release gates or evidence policy differ from the frozen qualification contract");
         }
+        // The complete inventory also retains packages excluded from every
+        // publication target. Blocked eligible targets still require rules.
         let packages: BTreeSet<_> = plan
             .packages
             .iter()
+            .filter(|package| {
+                package.platforms.iter().any(|cell| {
+                    !matches!(
+                        cell.decision,
+                        crate::platform::MatrixCell::NotApplicable { .. }
+                    )
+                })
+            })
             .map(|package| package.name.as_str())
             .collect();
         let rules: BTreeSet<_> = self
@@ -622,7 +635,9 @@ impl QualificationContract {
             .map(|rule| rule.name.as_str())
             .collect();
         if packages != rules {
-            bail!("qualification classification differs from the complete package inventory");
+            bail!(
+                "qualification classification differs from the publication-eligible package inventory"
+            );
         }
         if plan.images.is_empty() {
             bail!("server qualification requires the Linux image matrix");
@@ -636,6 +651,7 @@ impl QualificationContract {
                 bail!("required server image target is blocked or inapplicable");
             }
         }
+        self.validate_package_execution_images(plan)?;
         if self
             .thresholds_for(&plan.registry, plan.release_class)?
             .require_complete_matrix
@@ -647,6 +663,50 @@ impl QualificationContract {
             })
         {
             bail!("qualification profile requires a complete package matrix");
+        }
+        Ok(())
+    }
+
+    /// Rejects missing package execution images before builds or signatures.
+    fn validate_package_execution_images(&self, plan: &ReleasePlanV1) -> Result<()> {
+        use crate::platform::MatrixCell;
+
+        for package in &plan.packages {
+            let Some(execution) = self
+                .package_rules
+                .iter()
+                .find(|rule| rule.name == package.name)
+                .and_then(|rule| rule.execution.as_ref())
+            else {
+                continue;
+            };
+
+            for cell in package
+                .platforms
+                .iter()
+                .filter(|cell| matches!(cell.decision, MatrixCell::Artifact { .. }))
+            {
+                let variant = execution.system_variant();
+                let bound_image = plan
+                    .images
+                    .iter()
+                    .find(|image| image.system_variant == variant);
+                let image_cell = bound_image.and_then(|image| {
+                    image
+                        .platforms
+                        .iter()
+                        .find(|image_cell| image_cell.platform == cell.platform)
+                });
+                if !image_cell.is_some_and(|image_cell| {
+                    matches!(image_cell.decision, MatrixCell::Artifact { .. })
+                }) {
+                    bail!(
+                        "package {} requires execution image {variant} for {} in the release plan",
+                        package.name,
+                        cell.platform,
+                    );
+                }
+            }
         }
         Ok(())
     }

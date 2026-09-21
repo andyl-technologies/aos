@@ -117,7 +117,16 @@
     # Auto-enumerates both system names and image formats.
     systemPackages = aos: let
       sysNames = builtins.attrNames aos.systems;
-      forSystem = name: let
+
+      # A variant that defers signing to the release finalizer has no final
+      # image in Nix at all: `build.image` and `imageArtifacts` stay undefined
+      # and the unsigned assembly is the only buildable output. Signed disks
+      # for those variants come from `aos release finalize-image`.
+      externallyFinalized = name: assembly: {
+        "${name}-unsigned-image-assembly" = assembly;
+      };
+
+      selfContained = name: let
         formats = builtins.attrNames aos.systems.${name}.build.image;
         artifacts = aos.systems.${name}.config.system.build.imageArtifacts;
         artifactFormats = builtins.attrNames artifacts;
@@ -139,6 +148,13 @@
           )
           artifactFormats
         );
+
+      forSystem = name: let
+        assembly = aos.systems.${name}.build.unsignedImageAssembly;
+      in
+        if assembly == null
+        then selfContained name
+        else externallyFinalized name assembly;
     in
       builtins.foldl' (acc: name: acc // forSystem name) {} sysNames;
 

@@ -1013,6 +1013,20 @@ pub(crate) mod tests {
             .find(|package| package.name == "example")
             .unwrap();
         package.platforms.retain(|cell| cell.platform == platform);
+        for cell in &mut plan
+            .packages
+            .iter_mut()
+            .find(|package| package.name == "example")
+            .unwrap()
+            .platforms
+        {
+            if cell.platform != platform {
+                cell.decision = MatrixCell::NotApplicable {
+                    rule: "recovery-execution-fixture".into(),
+                    reason: "This fixture exercises recovery on x86_64 Linux only.".into(),
+                };
+            }
+        }
         let package_subjects = match &package.platforms[0].decision {
             MatrixCell::Artifact { artifact } => artifact.artifact_ids.clone(),
             MatrixCell::Blocked { .. } | MatrixCell::NotApplicable { .. } => unreachable!(),
@@ -1080,6 +1094,45 @@ pub(crate) mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn qualification_classifies_eligible_and_blocked_packages() -> anyhow::Result<()> {
+        use crate::platform::MatrixCell;
+
+        let (mut plan, _) = qualification_fixture()?;
+        let contract = plan.qualification.clone().unwrap();
+        let mut excluded = plan.packages[0].clone();
+        excluded.name = "excluded-source-component".into();
+        for cell in &mut excluded.platforms {
+            cell.decision = MatrixCell::NotApplicable {
+                rule: "source-only".into(),
+                reason: "Retained as source, never published as a package.".into(),
+            };
+        }
+        plan.packages.push(excluded);
+
+        contract.validate_plan(&plan)?;
+
+        let added = plan.packages.last_mut().unwrap();
+        added.platforms[0].decision = MatrixCell::Blocked {
+            required_work: "Complete target support.".into(),
+            failure_evidence: crate::digest::Sha256Digest::of_bytes(b"blocked"),
+        };
+        assert!(
+            contract
+                .validate_plan(&plan)
+                .unwrap_err()
+                .to_string()
+                .contains("publication-eligible package inventory")
+        );
+
+        plan.packages.pop();
+        let mut unclassified = plan.packages[0].clone();
+        unclassified.name = "unclassified-published-package".into();
+        plan.packages.push(unclassified);
+        assert!(contract.validate_plan(&plan).is_err());
         Ok(())
     }
 

@@ -65,7 +65,7 @@ in
         profiler = true;
         needsDownloadRustc = true;
         disableLld = true;
-        description = "Rust ${version} — Darwin-hosted compiler, Cargo, tools, and standard library";
+        description = "Rust programming language — compiler and cargo";
         inherit buildTool;
       }
     else if stdenv.hostPlatform.isLinux
@@ -83,7 +83,7 @@ in
         profiler = true;
         needsDownloadRustc = true;
         disableLld = true;
-        description = "Rust ${version} — Linux-hosted compiler, Cargo, tools, and standard library";
+        description = "Rust programming language — compiler and cargo";
       }
     else
       buildTool

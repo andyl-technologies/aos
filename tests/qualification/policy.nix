@@ -38,6 +38,25 @@
   };
   sourceRoot = builtins.head sourceEvidence.sourcePaths;
   testing = import ../../lib/testing {inherit pkgs lib;};
+  containerReport = reportOnly:
+    (import ../../lib/testing/qualification-container.nix {
+      inherit lib;
+      pkgs =
+        pkgs
+        // {
+          # A guest report producer must not depend on the host response binder.
+          aos =
+            if reportOnly
+            then throw "guest report uses aos"
+            else pkgs.aos;
+          writeShellScriptBin = _: script: script;
+        };
+    }) {
+      name = "container-report-fixture";
+      identity = "container-report-fixture";
+      inherit reportOnly;
+    };
+
   declarativeProbe = testing.mkQualificationPackageProbe {
     name = "fixture";
     spec = {
@@ -243,6 +262,10 @@
       true))
     .success;
 in
+  assert lib.hasInfix "cat scenario-report.json" (containerReport true);
+  assert !(lib.hasInfix "release qualification respond" (containerReport true));
+  assert lib.hasInfix "release qualification respond" (containerReport false);
+  assert lib.hasInfix "lifecycle_cycles" (containerReport true);
   assert fixture == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
@@ -268,11 +291,21 @@ in
   assert recoveryPackage.execution
   == {
     kind = "recovery-image";
-    system_variant = "server";
+    system_variant = "aos-testing";
   };
+  assert builtins.all (rule:
+    (rule.execution or null) == null || rule.execution.system_variant == "aos-testing")
+  contract.package_rules;
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
-  assert builtins.all (target: builtins.length target.environment.layers == 2) contract.targets;
+  assert builtins.all (target:
+    builtins.length target.environment.layers
+    == (
+      if target.id == "container-aarch64-linux"
+      then 3
+      else 2
+    ))
+  contract.targets;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
   assert executor.passthru.qualification.platform == "x86_64-linux";
   assert executor.passthru.qualification.caseScenarios == {};
@@ -319,7 +352,13 @@ in
     ]
   );
   assert builtins.match ".*/aos-qualification-${platform}-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
-  assert builtins.match ".*/aos-qualification-${platform}-container-lifecycle" releaseExecutor.passthru.qualification.scenarios."claim-container-${platform}-functional" != null;
+  assert builtins.match (
+    if platform == "aarch64-linux"
+    then ".*/aos-qualification-${platform}-report"
+    else ".*/aos-qualification-${platform}-container-lifecycle"
+  )
+  releaseExecutor.passthru.qualification.scenarios."claim-container-${platform}-functional"
+  != null;
   assert builtins.match ".*/aos-qualification-${platform}-image-lifecycle" releaseExecutor.passthru.qualification.scenarios."claim-disk-${platform}-functional" != null;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
   == [
