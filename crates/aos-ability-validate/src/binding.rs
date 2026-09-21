@@ -49,7 +49,7 @@ struct BindingInputIndex {
     inventory_by_instance: BTreeMap<InstanceId, Vec<usize>>,
     enabled_desired_by_instance: BTreeMap<InstanceId, Vec<usize>>,
     in_scope_instances: BTreeSet<InstanceId>,
-    request_packages: BTreeMap<InstanceId, aos_ability_model::LocalKey>,
+    request_authorities: BTreeMap<InstanceId, aos_ability_model::DeclarationAuthority>,
     requests: BTreeMap<RequestId, usize>,
 }
 

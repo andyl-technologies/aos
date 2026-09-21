@@ -416,13 +416,21 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
     fixture.binding_inputs.environment.providers[0].implementation = terminal_reference.clone();
     fixture.binding_inputs.desired_state.instances = vec![DesiredInstance {
         instance: provider.clone(),
-        package: package_digest,
+        authority: DeclarationAuthority::Package {
+            package: key("stateful-owner-provider"),
+        },
+        package: Some(package_digest),
         enabled: true,
         configuration: None,
     }];
     fixture.binding_inputs.packages = vec![package];
-    fixture.binding_inputs.desired_state.child_requests[0].package = key("stateful-owner-provider");
-    fixture.binding_plan.requests[0].package = key("stateful-owner-provider");
+    fixture.binding_inputs.desired_state.child_requests[0].authority =
+        DeclarationAuthority::Package {
+            package: key("stateful-owner-provider"),
+        };
+    fixture.binding_plan.requests[0].authority = DeclarationAuthority::Package {
+        package: key("stateful-owner-provider"),
+    };
 
     let owner_resource = ResourceId {
         provider: provider.clone(),
@@ -469,7 +477,9 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
     fixture.binding_plan.bindings[0].lifetime = ResourceLifetime::Persistent;
 
     let owner_request = BindingRequest {
-        package: key("stateful-owner-provider"),
+        authority: DeclarationAuthority::Package {
+            package: key("stateful-owner-provider"),
+        },
         id: RequestId {
             consumer: provider.clone(),
             scope: ScopePath::root(),
@@ -651,8 +661,10 @@ pub fn plan_fixture() -> PlanFixture {
         },
     };
     let request = BindingRequest {
-        package: aos_ability_model::LocalKey::new("test-package")
-            .expect("valid test package provenance"),
+        authority: DeclarationAuthority::Package {
+            package: aos_ability_model::LocalKey::new("test-package")
+                .expect("valid test package provenance"),
+        },
         id: RequestId {
             consumer: provider.clone(),
             scope: ScopePath::root(),

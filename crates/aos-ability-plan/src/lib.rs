@@ -34,10 +34,10 @@ pub use snapshot::{
 pub use source_stage::{
     CheckedSourceStageBundle, SOURCE_STAGE_BUNDLE_MAX_BYTES, SOURCE_STAGE_BUNDLE_SCHEMA,
     SourceStageBinding, SourceStageBundle, SourceStageBundleError,
-    SourceStageCompositionRequirement, SourceStageExecutionObserver, SourceStageFixedPoint,
-    SourceStageImplementation, SourceStageInstance, SourceStageOutput, SourceStageRequest,
-    SourceStageRequirementReference, SourceStageResolvedResource, SourceStageStaticContract,
-    SourceStageTransitionProvenance,
+    SourceStageCompositionRequirement, SourceStageDeclarationProvenance,
+    SourceStageExecutionObserver, SourceStageFixedPoint, SourceStageImplementation,
+    SourceStageInstance, SourceStageOutput, SourceStageRequest, SourceStageRequirementReference,
+    SourceStageResolvedResource, SourceStageStaticContract, SourceStageTransitionProvenance,
 };
 pub use transition::{
     AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,

@@ -104,21 +104,28 @@
     in {
       namespace = package;
       inherit package;
+      authority = {
+        kind = "package";
+        inherit package;
+      };
     }
     else if provenance == "@base"
     then {
       namespace = "aos";
       package = null;
+      authority.kind = "system";
     }
     else if builtins.elem provenance ["@host" "@host-import"]
     then {
       namespace = "operator";
       package = null;
+      authority.kind = "operator";
     }
     else if builtins.elem provenance ["@runtime" "@runtime-import"]
     then {
       namespace = "runtime";
       package = null;
+      authority.kind = "runtime";
     }
     else throw "Ability declaration has invalid module provenance '${provenance}'.";
   qualify = namespace: name:
@@ -230,7 +237,7 @@
           }
       )
       // {
-        inherit (identity) package;
+        inherit (identity) authority package;
         inherit localKey;
       }
       // (
@@ -255,7 +262,7 @@
           }
       )
       // {
-        inherit (identity) package;
+        inherit (identity) authority package;
         inherit localKey;
       }
       // (
@@ -334,6 +341,16 @@
       canonicalOrder = true;
     };
   stageType = abilityTypes.stage;
+  declarationAuthorityType = checkedType "declaration authority" "authenticated module definition authority" (value:
+    builtins.isAttrs value
+    && (
+      (builtins.attrNames value == ["kind"] && builtins.elem value.kind ["system" "operator" "runtime"])
+      || (
+        builtins.attrNames value == ["kind" "package"]
+        && value.kind == "package"
+        && packageNameType.check value.package
+      )
+    ));
   valuePhaseType = abilityTypes.valuePhase;
   lifetimeType = abilityTypes.lifetime;
   runtimeCheckType = abilityTypes.record {
@@ -1108,7 +1125,7 @@
       == null
       || (
         if matches == []
-        then config.aos.abilities.environment == null
+        then true
         else
           builtins.length matches
           == 1
@@ -1131,6 +1148,11 @@
       config.aos.abilities.instances;
 
   instanceBaseType = strictSubmodule {
+    authority = mkOption {
+      type = declarationAuthorityType;
+      internal = true;
+      description = "Authenticated module authority injected by the evaluator.";
+    };
     package = mkOption {
       type = moduleTypes.nullOr packageNameType;
       default = null;
@@ -1234,6 +1256,11 @@
     };
 
   requestBaseType = strictSubmodule {
+    authority = mkOption {
+      type = declarationAuthorityType;
+      internal = true;
+      description = "Authenticated module authority injected by the evaluator.";
+    };
     package = mkOption {
       type = moduleTypes.nullOr packageNameType;
       default = null;

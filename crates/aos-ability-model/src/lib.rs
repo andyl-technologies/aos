@@ -48,9 +48,9 @@ pub use document::{
     RequiredFeature, SkippedOperationRecord, VersionedDocument, decode_canonical, encode_canonical,
 };
 pub use identity::{
-    AggregateId, EnvironmentId, ExecutionStage, IncarnationId, InstanceId, InterfaceKey,
-    InterfaceName, InterfaceSelector, LocalKey, OperationId, PlanId, RelativePath, RequestId,
-    ResourceId, RevisionId, ScopePath, ScopedOperationKey, TransactionId,
+    AggregateId, DeclarationAuthority, EnvironmentId, ExecutionStage, IncarnationId, InstanceId,
+    InterfaceKey, InterfaceName, InterfaceSelector, LocalKey, OperationId, PlanId, RelativePath,
+    RequestId, ResourceId, RevisionId, ScopePath, ScopedOperationKey, TransactionId,
 };
 pub use interface::*;
 pub use limits::{ABILITY_LIMITS_V1, LimitProfile, MAX_SAFE_INTEGER};

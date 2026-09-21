@@ -290,7 +290,7 @@ fn transition_groups_for_outcome(
             .instances
             .iter()
             .find(|instance| instance.enabled && instance.instance == enabled.instance)
-            .map(|instance| instance.package)
+            .and_then(|instance| instance.package)
             .ok_or_else(|| TransitionError::MissingImplementation {
                 provider: enabled.instance.clone(),
             })?;
@@ -1277,7 +1277,7 @@ fn retained_transition_artifacts(
                     .desired_state()
                     .instances
                     .iter()
-                    .find(|instance| instance.package == *package_digest)
+                    .find(|instance| instance.package == Some(*package_digest))
                     .map(|instance| instance.instance.clone())
             })
             .or_else(|| evaluated_packages.get(package_digest).cloned())

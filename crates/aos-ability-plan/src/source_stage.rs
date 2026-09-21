@@ -9,11 +9,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context as _, Result as AnyResult, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, ArtifactIdentity, BindingPlanDocument, DesiredStateDocument,
-    EffectPlanDocument, EnvironmentDocument, EnvironmentId, InstanceId, InterfaceDocument,
-    InterfaceName, LocalKey, PackageDocument, PlanId, RequestId, RequirementDeclaration,
-    ResourceId, ResourceLifetime, ResourceReference, ResourceRevision, RevisionId, ScopePath,
-    ValuePhase, VersionedDocument,
+    ABILITY_LIMITS_V1, AbilityValue, ArtifactIdentity, BindingPlanDocument, DeclarationAuthority,
+    DesiredStateDocument, EffectPlanDocument, EnvironmentDocument, EnvironmentId, InstanceId,
+    InterfaceDocument, InterfaceName, LocalKey, PackageDocument, PlanId, RequestId,
+    RequirementDeclaration, ResourceId, ResourceLifetime, ResourceReference, ResourceRevision,
+    RevisionId, ScopePath, ValuePhase, VersionedDocument,
 };
 use aos_ability_validate::{
     BindingValidationInputs, CheckedEffectPlan, ValidationContext,
@@ -51,12 +51,14 @@ pub struct SourceStageStaticContract {
 pub struct SourceStageFixedPoint {
     /// Identifies the exact target environment selected by module evaluation.
     pub environment: EnvironmentId,
-    /// Retains configured instances with carrier-injected package provenance.
+    /// Retains configured instances with evaluator-injected declaration provenance.
     pub instances: BTreeMap<String, SourceStageInstance>,
     /// Retains canonical instance identities derived by the module system.
     pub instance_identities: BTreeMap<String, InstanceId>,
-    /// Retains package-authored root requests.
+    /// Retains evaluated root requests from every authenticated module authority.
     pub requests: BTreeMap<String, SourceStageRequest>,
+    /// Retains exact evaluated root requirement declarations.
+    pub requirements: BTreeMap<String, RequirementDeclaration>,
     /// Retains provider-authored child requests from the completed fixed point.
     pub composition_requests: BTreeMap<String, SourceStageRequest>,
     /// Retains exact child requirement contracts selected by composition.
@@ -90,10 +92,11 @@ pub struct SourceStageExecutionObserver {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceStageInstance {
-    /// Identifies the package carrier that declared the instance.
-    pub package: LocalKey,
-    /// Retains the package-local declaration key when the instance was package-authored.
-    pub local_key: Option<LocalKey>,
+    /// Retains the exact module authority and local declaration key.
+    pub provenance: SourceStageDeclarationProvenance,
+    /// Identifies the package implementation used by this instance, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<LocalKey>,
     /// Selects an instance's configured implementation, when it has one.
     ///
     /// Bindings remain authoritative for the implementations used through an
@@ -101,6 +104,16 @@ pub struct SourceStageInstance {
     pub implementation: Option<SourceStageImplementation>,
     /// Carries typed instance configuration.
     pub configuration: AbilityValue,
+}
+
+/// Retains module-evaluator provenance without conflating it with package artifacts.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceStageDeclarationProvenance {
+    /// Identifies the authenticated module authority that authored the declaration.
+    pub authority: DeclarationAuthority,
+    /// Names the declaration inside that authority's module scope.
+    pub local_key: LocalKey,
 }
 
 /// Identifies one implementation through retained package provenance.
@@ -117,16 +130,14 @@ pub struct SourceStageImplementation {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceStageRequest {
-    /// Identifies the package carrier that authored the request.
-    pub package: LocalKey,
+    /// Retains the exact module authority and local declaration key.
+    pub provenance: SourceStageDeclarationProvenance,
     /// Identifies the exact root or generated requirement declaration.
     pub requirement: SourceStageRequirementReference,
     /// Names the consuming instance declaration.
     pub consumer: String,
     /// Carries the authored request scope.
     pub scope: ScopePath,
-    /// Carries the authored local semantic key.
-    pub local_key: LocalKey,
     /// Declares the request's semantic resource lifetime.
     pub lifetime: ResourceLifetime,
     /// Carries typed request parameters.
@@ -137,13 +148,10 @@ pub struct SourceStageRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SourceStageRequirementReference {
-    /// Selects one requirement from an authenticated package projection.
-    Package {
-        /// Identifies the package that owns the requirement.
-        package: LocalKey,
-        /// Names the requirement inside the package's checked projection.
-        #[serde(rename = "localKey")]
-        local_key: LocalKey,
+    /// Selects one exact requirement from the completed module fixed point.
+    FixedPoint {
+        /// Names the evaluated requirement declaration retained in the bundle.
+        declaration: String,
     },
     /// Selects one generated requirement by its exact fixed-point declaration key.
     Composition {
@@ -402,7 +410,7 @@ fn selected_resource_implementation<'a>(
         .get(instance_name)
         .context("source resource instance has no canonical identity")?;
     ensure!(
-        instance.package == implementation_reference.package,
+        instance.package.as_ref() == Some(&implementation_reference.package),
         "source resource implementation crosses package provenance"
     );
     let package = packages
@@ -831,7 +839,7 @@ impl SourceStageBundle {
                     RequestId {
                         consumer: consumer.clone(),
                         scope: request.scope.clone(),
-                        key: request.local_key.clone(),
+                        key: request.provenance.local_key.clone(),
                     },
                 ))
             })
@@ -901,7 +909,7 @@ impl SourceStageFixedPoint {
                 .instance_identities
                 .get(name)
                 .ok_or(SourceStageBundleError::FixedPointAuthority)?;
-            if reference.package != instance.package {
+            if instance.package.as_ref() != Some(&reference.package) {
                 return Err(SourceStageBundleError::FixedPointAuthority);
             }
             let package = packages
@@ -1123,7 +1131,7 @@ mod tests {
                 let package = binding
                     .packages()
                     .iter()
-                    .find(|package| package.content_digest().ok() == Some(instance.package))
+                    .find(|package| package.content_digest().ok() == instance.package)
                     .expect("instance package");
                 let implementation = binding
                     .bindings()
@@ -1133,8 +1141,12 @@ mod tests {
                 (
                     name,
                     SourceStageInstance {
-                        package: package.package.name.clone(),
-                        local_key: None,
+                        provenance: SourceStageDeclarationProvenance {
+                            authority: instance.authority.clone(),
+                            local_key: LocalKey::new("fixture-instance")
+                                .expect("instance declaration key"),
+                        },
+                        package: Some(package.package.name.clone()),
                         implementation,
                         configuration: instance
                             .configuration
@@ -1149,8 +1161,12 @@ mod tests {
             instances
                 .entry(name)
                 .or_insert_with(|| SourceStageInstance {
-                    package: request.package.clone(),
-                    local_key: None,
+                    provenance: SourceStageDeclarationProvenance {
+                        authority: request.authority.clone(),
+                        local_key: LocalKey::new("fixture-consumer")
+                            .expect("consumer declaration key"),
+                    },
+                    package: request.authority.package().cloned(),
                     implementation: None,
                     configuration: AbilityValue::new(serde_json::json!({}))
                         .expect("consumer configuration"),
@@ -1167,8 +1183,14 @@ mod tests {
             instances
                 .entry(name)
                 .or_insert_with(|| SourceStageInstance {
-                    package: package.package.name.clone(),
-                    local_key: None,
+                    provenance: SourceStageDeclarationProvenance {
+                        authority: DeclarationAuthority::Package {
+                            package: package.package.name.clone(),
+                        },
+                        local_key: LocalKey::new("fixture-provider")
+                            .expect("provider declaration key"),
+                    },
+                    package: Some(package.package.name.clone()),
                     implementation: implementation_reference(binding.packages(), selected),
                     configuration: AbilityValue::new(serde_json::json!({}))
                         .expect("provider configuration"),
@@ -1189,20 +1211,45 @@ mod tests {
                 (
                     request_names[&request.id].clone(),
                     SourceStageRequest {
-                        package: request.package.clone(),
-                        requirement: SourceStageRequirementReference::Package {
-                            package: request.package.clone(),
-                            local_key: LocalKey::new("fixture").expect("requirement key"),
+                        provenance: SourceStageDeclarationProvenance {
+                            authority: request.authority.clone(),
+                            local_key: request.id.key.clone(),
+                        },
+                        requirement: SourceStageRequirementReference::FixedPoint {
+                            declaration: request_names[&request.id].clone(),
                         },
                         consumer: instance_names[&request.id.consumer].clone(),
                         scope: request.id.scope.clone(),
-                        local_key: request.id.key.clone(),
                         lifetime: request.lifetime,
                         parameters: request.parameters.clone(),
                     },
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let requirements = binding
+            .document()
+            .requests
+            .iter()
+            .map(|request| {
+                (
+                    request_names[&request.id].clone(),
+                    RequirementDeclaration {
+                        alias: request.id.key.clone(),
+                        description: "Source-stage fixture requirement.".to_string(),
+                        accepted_interfaces: request
+                            .accepted_interfaces
+                            .iter()
+                            .cloned()
+                            .map(Into::into)
+                            .collect(),
+                        methods: request.methods.clone(),
+                        guarantees: request.guarantees.clone(),
+                        strength: aos_ability_model::RequirementStrength::Required,
+                        fallback: None,
+                    },
+                )
+            })
+            .collect();
         let bindings = binding
             .bindings()
             .iter()
@@ -1257,6 +1304,7 @@ mod tests {
                 instances,
                 instance_identities,
                 requests,
+                requirements,
                 composition_requests: BTreeMap::new(),
                 composition_requirements: BTreeMap::new(),
                 bindings,

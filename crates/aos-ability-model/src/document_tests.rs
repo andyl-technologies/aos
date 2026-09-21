@@ -130,6 +130,10 @@ fn desired_instance_without_optional_configuration_round_trips_unchanged() {
             },
             "key": "nginx",
         },
+        "authority": {
+            "kind": "package",
+            "package": "nginx",
+        },
         "package": format!("sha256:{}", "0".repeat(64)),
         "enabled": true,
     });
@@ -141,6 +145,34 @@ fn desired_instance_without_optional_configuration_round_trips_unchanged() {
     assert_eq!(
         serde_json::to_value(decoded).expect("unconfigured instance serializes"),
         unconfigured
+    );
+}
+
+#[test]
+fn system_instance_without_package_artifact_round_trips_unchanged() {
+    let system_instance = serde_json::json!({
+        "instance": {
+            "environment": {
+                "authority": "test",
+                "key": "host",
+                "stage": "host",
+            },
+            "key": "kernel",
+        },
+        "authority": {
+            "kind": "system",
+        },
+        "enabled": true,
+    });
+
+    let decoded: DesiredInstance =
+        serde_json::from_value(system_instance.clone()).expect("system instance decodes");
+
+    assert_eq!(decoded.authority, DeclarationAuthority::System);
+    assert_eq!(decoded.package, None);
+    assert_eq!(
+        serde_json::to_value(decoded).expect("system instance serializes"),
+        system_instance
     );
 }
 

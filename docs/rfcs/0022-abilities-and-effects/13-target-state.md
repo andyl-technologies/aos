@@ -382,6 +382,25 @@ It produces concrete instances, provider definitions, desired resources, and
 conditional requirements. No second ability-specific module set owns or merges
 configuration.
 
+The evaluator stamps every concrete instance and request with its closed
+declaration authority: source-composed system configuration, authenticated
+operator configuration, generation-pinned runtime configuration, or one exact
+authenticated package module. That authority is not inferred from a qualified
+attribute name. A selected package artifact is a separate, optional identity:
+pure consumer instances need no package artifact, while provider instances and
+handler selections retain the exact package document and immutable artifact
+identities they execute. Validation compares requests with their consumer's
+module authority without pretending that system, operator, or runtime
+configuration was authored by a package.
+
+Source-composed stages serialize this completed fixed point directly. Their
+bundle retains the evaluated root requirement contracts referenced by concrete
+requests, the module authority and local key of every instance and request,
+and selected provider package artifacts as separate fields. Materialization
+does not reopen a package document to reconstruct a root requirement, infer an
+authority from a namespace, or assign a package owner to a package-free
+consumer.
+
 Image modules are source-backed paths retained with the in-image evaluator, so
 the evaluator replays the exact system graph that produced the image. Inline
 module values are limited to evaluation-only callers and explicitly

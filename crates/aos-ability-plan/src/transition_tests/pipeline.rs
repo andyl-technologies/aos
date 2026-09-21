@@ -419,10 +419,12 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     let mut candidates = Vec::new();
     for (name, consumer, provider, pure) in request_specs {
         let request = BindingRequest {
-            package: if consumer == application {
-                key("test-package")
-            } else {
-                pure_package.package.name.clone()
+            authority: DeclarationAuthority::Package {
+                package: if consumer == application {
+                    key("test-package")
+                } else {
+                    pure_package.package.name.clone()
+                },
             },
             id: RequestId {
                 consumer: consumer.clone(),
@@ -484,25 +486,37 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         instances: vec![
             DesiredInstance {
                 instance: configuration.clone(),
-                package: pure_package_digest,
+                authority: DeclarationAuthority::Package {
+                    package: pure_package.package.name.clone(),
+                },
+                package: Some(pure_package_digest),
                 enabled: true,
                 configuration: None,
             },
             DesiredInstance {
                 instance: root.clone(),
-                package: pure_package_digest,
+                authority: DeclarationAuthority::Package {
+                    package: pure_package.package.name.clone(),
+                },
+                package: Some(pure_package_digest),
                 enabled: true,
                 configuration: None,
             },
             DesiredInstance {
                 instance: service.clone(),
-                package: pure_package_digest,
+                authority: DeclarationAuthority::Package {
+                    package: pure_package.package.name.clone(),
+                },
+                package: Some(pure_package_digest),
                 enabled: true,
                 configuration: None,
             },
             DesiredInstance {
                 instance: terminal.clone(),
-                package: terminal_package_digest,
+                authority: DeclarationAuthority::Package {
+                    package: terminal_package.package.name.clone(),
+                },
+                package: Some(terminal_package_digest),
                 enabled: true,
                 configuration: None,
             },

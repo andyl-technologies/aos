@@ -8,8 +8,8 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{
-    AggregateId, IncarnationId, InstanceId, InterfaceKey, InterfaceName, LocalKey, RequestId,
-    ResourceId, RevisionId, ScopePath, ScopedOperationKey,
+    AggregateId, DeclarationAuthority, IncarnationId, InstanceId, InterfaceKey, InterfaceName,
+    LocalKey, RequestId, ResourceId, RevisionId, ScopePath, ScopedOperationKey,
 };
 use crate::interface::{
     GuaranteeKey, OutputDescriptor, ProviderImplementationReference, ValuePhase,
@@ -108,8 +108,8 @@ pub struct AuthorityGrant {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BindingRequest {
-    /// Identifies the package carrier that authored this request.
-    pub package: LocalKey,
+    /// Identifies the authenticated configuration authority that authored this request.
+    pub authority: DeclarationAuthority,
     /// Identifies the consuming instance and local request.
     pub id: RequestId,
     /// Lists exact accepted public descriptors in policy order.

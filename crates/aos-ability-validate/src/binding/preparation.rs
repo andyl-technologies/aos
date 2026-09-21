@@ -170,7 +170,7 @@ pub(crate) fn prepare_binding_candidates(
             index,
             context,
             &input_index.in_scope_instances,
-            &input_index.request_packages,
+            &input_index.request_authorities,
             &mut diagnostics,
         );
     }

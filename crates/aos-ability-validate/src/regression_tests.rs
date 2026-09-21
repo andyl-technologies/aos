@@ -2,20 +2,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_ability_model::document::{Contribution, PackageSubject, ProviderState};
+use aos_ability_model::document::{Contribution, DesiredInstance, PackageSubject, ProviderState};
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, AggregateOutput, AggregateOutputReference,
     AggregationContract, AggregationScope, ArtifactReference, BindingId, BranchMembership,
     ContributionPermission, ControllerAssignment, DecisionAlternative, DecisionNode,
-    DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind, DiagnosticCode,
-    ExportDeclaration, HandlerDescriptor, IncarnationId, LocalKey, MergeNode, MergedOutput,
-    MethodReference, MethodSemantics, ModuleLocator, OperationResultReference, OutputDescriptor,
-    PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation, PlanNodeKey,
-    ProviderAssignment, ProviderImplementation, ProviderStateFormat, RelativePath, RequiredFeature,
-    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId, ResourceLifetime,
-    ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey, RevisionId,
-    StringConstraint, ValueExpression, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
-    compare_edges, compare_operation_keys, compare_resource_ids,
+    DecisionPredicate, DecisionSelector, DeclarationAuthority, DependencyEdge, DependencyKind,
+    DiagnosticCode, ExportDeclaration, HandlerDescriptor, IncarnationId, LocalKey, MergeNode,
+    MergedOutput, MethodReference, MethodSemantics, ModuleLocator, OperationResultReference,
+    OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
+    PlanNodeKey, ProviderAssignment, ProviderImplementation, ProviderStateFormat, RelativePath,
+    RequiredFeature, RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId,
+    ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey,
+    RevisionId, StringConstraint, ValueExpression, ValuePhase, ValueSchema, ValueVisibility,
+    VersionedDocument, compare_edges, compare_operation_keys, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -23,6 +23,45 @@ use crate::test_support::{
     PlanFixture, checked_lifecycle_effect_plan, digest, key, operation_node, plan_fixture,
     planned_provider_chain_fixture, scoped, stateful_owner_plan_fixture,
 };
+
+#[test]
+fn system_authored_consumer_requires_no_package_artifact() {
+    let mut fixture = plan_fixture();
+    let consumer = fixture.binding_plan.requests[0].id.consumer.clone();
+    fixture.binding_inputs.desired_state.instances = vec![DesiredInstance {
+        instance: consumer,
+        authority: DeclarationAuthority::System,
+        package: None,
+        enabled: true,
+        configuration: None,
+    }];
+    fixture.binding_inputs.desired_state.child_requests[0].authority = DeclarationAuthority::System;
+    fixture.binding_plan.requests[0].authority = DeclarationAuthority::System;
+    fixture.refresh_commitments();
+
+    fixture
+        .validate()
+        .expect("system authority does not require a fabricated package artifact");
+}
+
+#[test]
+fn request_authority_must_match_its_consumer_declaration() {
+    let mut fixture = plan_fixture();
+    let consumer = fixture.binding_plan.requests[0].id.consumer.clone();
+    fixture.binding_inputs.desired_state.instances = vec![DesiredInstance {
+        instance: consumer,
+        authority: DeclarationAuthority::System,
+        package: None,
+        enabled: true,
+        configuration: None,
+    }];
+    fixture.binding_inputs.desired_state.child_requests[0].authority =
+        DeclarationAuthority::Operator;
+    fixture.binding_plan.requests[0].authority = DeclarationAuthority::Operator;
+    fixture.refresh_commitments();
+
+    assert_diagnostic(fixture, DiagnosticCode::BindingPrincipalMismatch);
+}
 
 #[test]
 fn operation_rejects_caller_authored_method_semantics() {

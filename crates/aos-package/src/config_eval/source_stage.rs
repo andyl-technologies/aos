@@ -1,10 +1,11 @@
 //! Hermetic materialization of one source-composed stage bundle.
 //!
 //! The materializer consumes the completed standard module fixed point and one
-//! bootable static contract. It enriches source declarations with identities
-//! from the authenticated package companions, validates the exact explicit
-//! bindings, constructs the pure effect graph, and emits the canonical source
-//! bundle. It performs no provider search and accepts no resolution policy.
+//! bootable static contract. It retains each declaration's authenticated module
+//! authority, resolves selected package artifacts through their authenticated
+//! companions, validates the exact explicit bindings, constructs the pure
+//! effect graph, and emits the canonical source bundle. It performs no provider
+//! search and accepts no resolution policy.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -473,9 +474,16 @@ impl<'a> SourceComposition<'a> {
             .map(|(name, instance)| {
                 Ok(DesiredInstance {
                     instance: self.instance_identity(name)?.clone(),
-                    package: *package_digests
-                        .get(&instance.package)
-                        .with_context(|| format!("source instance {name:?} has no package"))?,
+                    authority: instance.provenance.authority.clone(),
+                    package: instance
+                        .package
+                        .as_ref()
+                        .map(|package| {
+                            package_digests.get(package).copied().with_context(|| {
+                                format!("source instance {name:?} references an absent package")
+                            })
+                        })
+                        .transpose()?,
                     enabled: true,
                     configuration: Some(instance.configuration.clone()),
                 })
@@ -590,11 +598,11 @@ impl<'a> SourceComposition<'a> {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(BindingRequest {
-            package: source.package.clone(),
+            authority: source.provenance.authority.clone(),
             id: RequestId {
                 consumer: self.instance_identity(&source.consumer)?.clone(),
                 scope: source.scope.clone(),
-                key: source.local_key.clone(),
+                key: source.provenance.local_key.clone(),
             },
             accepted_interfaces,
             methods: requirement.methods.clone(),
@@ -753,16 +761,14 @@ impl<'a> SourceComposition<'a> {
         source: &SourceStageRequest,
     ) -> Result<&'a aos_ability_model::RequirementDeclaration> {
         match &source.requirement {
-            SourceStageRequirementReference::Package { package, local_key } => {
+            SourceStageRequirementReference::FixedPoint { declaration } => {
                 ensure!(
-                    self.fixed_point.requests.contains_key(name) && *package == source.package,
-                    "root request crosses package provenance"
+                    self.fixed_point.requests.contains_key(name),
+                    "child request references a root fixed-point requirement"
                 );
-                let package = self.package(package)?;
-                package
+                self.fixed_point
                     .requirements
-                    .iter()
-                    .find(|requirement| requirement.alias == *local_key)
+                    .get(declaration)
                     .with_context(|| format!("source root request {name:?} has no requirement"))
             }
             SourceStageRequirementReference::Composition { declaration } => {
@@ -791,7 +797,7 @@ impl<'a> SourceComposition<'a> {
             .get(&binding.provider_instance)
             .with_context(|| format!("binding {binding_name:?} has no provider instance"))?;
         ensure!(
-            binding.implementation.package == instance.package,
+            instance.package.as_ref() == Some(&binding.implementation.package),
             "binding crosses package provenance"
         );
         let package = self.package(&binding.implementation.package)?;

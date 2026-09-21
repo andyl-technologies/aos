@@ -91,7 +91,7 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
             .instances
             .iter()
             .find(|desired| desired.enabled && desired.instance == selection.instance)
-            .map(|desired| desired.package)
+            .and_then(|desired| desired.package)
             .ok_or_else(|| CompositionError::MissingImplementation {
                 provider: selection.instance.clone(),
             })?;
@@ -683,8 +683,11 @@ pub(super) fn validate_enabled_providers(
         .iter()
         .filter(|desired| desired.enabled)
     {
+        let Some(package_digest) = desired.package else {
+            continue;
+        };
         let package = package_index
-            .get(&desired.package)
+            .get(&package_digest)
             .map(|position| &packages[*position])
             .ok_or_else(|| CompositionError::MissingImplementation {
                 provider: desired.instance.clone(),
@@ -728,7 +731,13 @@ pub(super) fn validate_enabled_providers(
                 provider: selection.instance.clone(),
             })?;
         let package = package_index
-            .get(&desired.package)
+            .get(
+                &desired
+                    .package
+                    .ok_or_else(|| CompositionError::MissingImplementation {
+                        provider: selection.instance.clone(),
+                    })?,
+            )
             .map(|position| &packages[*position])
             .ok_or_else(|| CompositionError::MissingImplementation {
                 provider: selection.instance.clone(),
@@ -830,7 +839,8 @@ fn provider_artifacts(
         .instances
         .iter()
         .find(|instance| instance.enabled && instance.instance == *provider)
-        .and_then(|instance| package_index.get(&instance.package))
+        .and_then(|instance| instance.package)
+        .and_then(|package| package_index.get(&package))
         .map(|index| &packages[*index])
     else {
         return Vec::new();

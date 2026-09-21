@@ -6,12 +6,12 @@ use std::num::NonZeroU32;
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregationContract, AggregationScope, AuthorityGrant,
-    BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
-    GuaranteeDeclaration, HandlerDescriptor, InstanceId, InterfaceName, LocalKey, ModuleLocator,
-    ObligationKind, PackageDocument, PackageImplementation, ProviderImplementation,
-    ProviderImplementationReference, RelativePath, RequestId, RequiredFeature,
-    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
-    ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
+    BindingRequest, DeclarationAuthority, DeploymentObligation, DesiredStateDocument,
+    ExportDeclaration, GuaranteeDeclaration, HandlerDescriptor, InstanceId, InterfaceName,
+    LocalKey, ModuleLocator, ObligationKind, PackageDocument, PackageImplementation,
+    ProviderImplementation, ProviderImplementationReference, RelativePath, RequestId,
+    RequiredFeature, RequirementDeclaration, RequirementFallback, RequirementStrength,
+    ResourceLifetime, ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -51,7 +51,10 @@ impl PlannerFixture {
     fn enable_provider(&mut self, enabled: bool) {
         self.desired.instances = vec![DesiredInstance {
             instance: self.provider.clone(),
-            package: self.package,
+            authority: DeclarationAuthority::Package {
+                package: self.packages[0].package.name.clone(),
+            },
+            package: Some(self.package),
             enabled,
             configuration: None,
         }];
@@ -817,8 +820,10 @@ struct OscillatingRequirementSetup {
 fn configure_oscillating_requirement(fixture: &mut PlannerFixture) -> OscillatingRequirementSetup {
     let lower_alias = key("alternating-service");
     let lower_request = BindingRequest {
-        package: aos_ability_model::LocalKey::new("test-package")
-            .expect("valid test package provenance"),
+        authority: DeclarationAuthority::Package {
+            package: aos_ability_model::LocalKey::new("test-package")
+                .expect("valid test package provenance"),
+        },
         id: crate::child_request_id(&fixture.provider, lower_alias.clone())
             .expect("test child request is in scope"),
         accepted_interfaces: vec![fixture.implementation_interface()],
@@ -937,8 +942,10 @@ fn configure_recursive_fallback(fixture: &mut PlannerFixture) -> RecursiveFallba
 
     let lower_alias = key("lower-service");
     let lower_request = BindingRequest {
-        package: aos_ability_model::LocalKey::new("test-package")
-            .expect("valid test package provenance"),
+        authority: DeclarationAuthority::Package {
+            package: aos_ability_model::LocalKey::new("test-package")
+                .expect("valid test package provenance"),
+        },
         id: crate::child_request_id(&first_parent, lower_alias.clone())
             .expect("test child request is in scope"),
         accepted_interfaces: vec![fixture.implementation_interface()],
@@ -1334,8 +1341,10 @@ fn planner_fixture_with_contract(
         consumer_inventory.incarnation = None;
         environment.providers.push(consumer_inventory);
         let request = BindingRequest {
-            package: aos_ability_model::LocalKey::new("test-package")
-                .expect("valid test package provenance"),
+            authority: DeclarationAuthority::Package {
+                package: aos_ability_model::LocalKey::new("test-package")
+                    .expect("valid test package provenance"),
+            },
             id: RequestId {
                 consumer: consumer.clone(),
                 scope: ScopePath::root(),

@@ -607,12 +607,14 @@ fn build_view(
     }
     for instance in &binding_plan.desired_state().instances {
         insert_provider(&mut nodes, plan, &instance.instance);
-        insert_edge(
-            &mut edges,
-            NodeKey::Provider(instance.instance.clone()),
-            NodeKey::Package(instance.package),
-            InspectionRelation::RunsPackage,
-        );
+        if let Some(package) = instance.package {
+            insert_edge(
+                &mut edges,
+                NodeKey::Provider(instance.instance.clone()),
+                NodeKey::Package(package),
+                InspectionRelation::RunsPackage,
+            );
+        }
     }
     for request in &binding_plan.document().requests {
         insert_provider(&mut nodes, plan, &request.id.consumer);
