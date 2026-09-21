@@ -120,8 +120,9 @@ in {
         mode = "0440";
         text = sudoersText;
       };
-
-      aos.contributions.runtimeChecks.sudo = {
+    })
+    (lib.mkIf (cfg.enable && config.aos.abilities.environment != null) {
+      aos.abilities.runtimeChecks.sudo = {
         description = "sudo policy and privilege checks";
         checks =
           [

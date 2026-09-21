@@ -81,7 +81,7 @@ in
       };
     }
   ];
-  assert config.aos.contributions.runtimeChecks.selinux.description == "SELinux checks";
+  assert config.aos.abilities.runtimeChecks."refpolicy:selinux".description == "SELinux checks";
   assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
   assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "selinux/config");

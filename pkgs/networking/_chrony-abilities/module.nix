@@ -423,7 +423,7 @@ in {
       [
         {
           aos.abilities.instances.service = {};
-          aos.contributions.runtimeChecks.chrony = {
+          aos.abilities.runtimeChecks.chrony = {
             description = "NTP time sync checks";
             checks =
               [

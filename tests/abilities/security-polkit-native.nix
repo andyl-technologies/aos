@@ -79,7 +79,7 @@ in
     artifact = lib.abilities.packageOutput {package = "polkit";};
     path = "bin/pkexec";
   };
-  assert config.aos.contributions.runtimeChecks.polkit.description
+  assert config.aos.abilities.runtimeChecks."polkit:polkit".description
   == "polkit policy and privilege checks";
   assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
   assert (config.systemd.services or {}) == {};

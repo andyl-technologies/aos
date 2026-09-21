@@ -366,28 +366,32 @@ in {
             };
           }
         ];
-        runtimeChecks.selinux = {
-          description = "SELinux checks";
-          checks = [
-            {
-              name = "selinuxfs";
-              description = "/sys/fs/selinux is present";
-              script = ''
-                vm.succeed("test -d /sys/fs/selinux")
-              '';
-            }
-            {
-              name = "enforce-file";
-              description = "SELinux enforce file exists";
-              script = ''
-                vm.succeed("test -f /sys/fs/selinux/enforce")
-              '';
-            }
-          ];
-        };
       };
       aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
+        [
+          {instances.${consumerInstance} = {};}
+          {
+            runtimeChecks.selinux = {
+              description = "SELinux checks";
+              checks = [
+                {
+                  name = "selinuxfs";
+                  description = "/sys/fs/selinux is present";
+                  script = ''
+                    vm.succeed("test -d /sys/fs/selinux")
+                  '';
+                }
+                {
+                  name = "enforce-file";
+                  description = "SELinux enforce file exists";
+                  script = ''
+                    vm.succeed("test -f /sys/fs/selinux/enforce")
+                  '';
+                }
+              ];
+            };
+          }
+        ]
         ++ builtins.map (entry: entry.configured) contributions
       );
     })

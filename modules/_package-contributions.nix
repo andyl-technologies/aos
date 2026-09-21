@@ -12,6 +12,5 @@
     ./base/_kernel-parameter-contributions.nix
     ./base/_manager-contributions.nix
     ./base/_pam-contributions.nix
-    ./base/_runtime-check-contributions.nix
   ];
 }

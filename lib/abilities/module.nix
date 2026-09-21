@@ -276,8 +276,7 @@
         inherit localKey;
       }
     else value;
-  abilityMapType = collection: elementType: let
-    base = moduleTypes.attrsOf elementType;
+  qualifiedAbilityMapType = collection: base: let
     declarationName = identity: name:
       if
         identity.package
@@ -302,6 +301,8 @@
           })
         definitions);
     };
+  abilityMapType = collection: elementType:
+    qualifiedAbilityMapType collection (moduleTypes.attrsOf elementType);
   functionType = {
     name = "ability constructor";
     description = "pure ability constructor function";
@@ -335,6 +336,36 @@
   stageType = abilityTypes.stage;
   valuePhaseType = abilityTypes.valuePhase;
   lifetimeType = abilityTypes.lifetime;
+  runtimeCheckType = abilityTypes.record {
+    fields = {
+      name = abilityTypes.localKey;
+      description = abilityTypes.string {
+        maxLength = 4096;
+        syntax = null;
+      };
+      script = abilityTypes.string {
+        maxLength = abilityTypes.limits.maxStringLength;
+        syntax = null;
+      };
+    };
+  };
+  runtimeCheckGroupType = abilityTypes.record {
+    fields = {
+      description = abilityTypes.string {
+        maxLength = 4096;
+        syntax = null;
+      };
+      checks = abilityTypes.list {
+        element = runtimeCheckType;
+        maxItems = 256;
+      };
+    };
+  };
+  runtimeCheckMapType = qualifiedAbilityMapType "runtimeChecks" (abilityTypes.map {
+    keyMaxLength = 257;
+    maxEntries = 4096;
+    value = runtimeCheckGroupType;
+  });
 
   interfaceKeyType = abilityTypes.interfaceKey;
   implementationInterfaceType = moduleTypes.either localKeyType (moduleTypes.either declarationKeyType interfaceKeyType);
@@ -1600,6 +1631,12 @@ in {
       default = null;
       internal = true;
       description = "Deployment-owned environment identity, absent during static package projection.";
+    };
+    runtimeChecks = mkOption {
+      type = runtimeCheckMapType;
+      default = {};
+      contributable = true;
+      description = "Runtime qualification groups authored by ability providers and consumers.";
     };
     guarantees = mkOption {
       type = abilityMapType "guarantees" guaranteeDeclarationType;

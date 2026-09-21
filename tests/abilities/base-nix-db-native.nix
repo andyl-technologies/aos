@@ -42,11 +42,11 @@
   configurationEntry = providerRequests."aos-nix-store-provider:nix-configuration-entry".parameters;
   configurationSource = configurationEntry.entry.source;
   gcRootMount = providerRequests."aos-nix-store-provider:gcroot-mount".parameters;
-  runtimeChecks = config.aos.contributions.runtimeChecks.nix-store.checks;
+  runtimeChecks = config.aos.abilities.runtimeChecks."aos-nix-store-provider:nix-store".checks;
   checkScript = name: (builtins.head (builtins.filter (check: check.name == name) runtimeChecks)).script;
 in
   assert lib.filterAttrs (_: request: request.package == "aos-nix-store-provider") unselected.config.aos.abilities.requests == {};
-  assert unselected.config.aos.contributions.runtimeChecks == {};
+  assert unselected.config.aos.abilities.runtimeChecks == {};
   assert builtins.attrNames policyRequests == ["aos:nix-store-database"];
   assert policyRequests."aos:nix-store-database".parameters
   == {
@@ -97,7 +97,8 @@ in
   assert gcRootMount.destination.request == "aos-nix-store-provider:gcroot-directory";
   assert gcRootMount.destination.output == "planned-path";
   assert config.environment.etc == {};
-  assert builtins.attrNames config.aos.contributions.runtimeChecks == ["nix-store"];
+  assert (lib.abilities.types.schemaOf "runtime checks" evaluated.options.aos.abilities.runtimeChecks.type).kind == "map";
+  assert builtins.attrNames config.aos.abilities.runtimeChecks == ["aos-nix-store-provider:nix-store"];
   assert builtins.map (check: check.name) runtimeChecks
   == [
     "database-ready"

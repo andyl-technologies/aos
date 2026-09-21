@@ -201,7 +201,7 @@ in {
       [
         {
           aos.abilities.instances.service = {};
-          aos.contributions.runtimeChecks.tailscale = {
+          aos.abilities.runtimeChecks.tailscale = {
             description = "Tailscale service checks";
             checks = [
               {

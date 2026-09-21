@@ -2,7 +2,6 @@
 {
   config,
   lib,
-  options,
   packageArtifactFor ? _: throw "systemd provider composition requires authenticated package artifacts",
   packageName,
   ...
@@ -1250,53 +1249,10 @@ in {
   config.systemd.providerUnitPlans = staticPlans;
   config.systemd.providerManagerConfigurationPlans = managerWatchdogPlans;
   config.systemd.providerNetworkConfigurationPlans = networkConfigurationPlans;
-  config.aos.contributions.runtimeChecks =
-    lib.mkIf (
-      lib.hasAttrByPath ["aos" "contributions" "runtimeChecks"] options
-    ) {
-      systemd-infrastructure = {
-        description = "Selected systemd manager infrastructure checks";
-        checks = [
-          {
-            name = "boot-target";
-            description = "The selected systemd manager reaches its normal boot target";
-            script = ''
-              vm.succeed("systemctl is-active multi-user.target")
-            '';
-          }
-          {
-            name = "runtime-directory";
-            description = "The selected systemd manager publishes its runtime directory";
-            script = ''
-              vm.succeed("test -d /run/systemd/system")
-            '';
-          }
-          {
-            name = "timers";
-            description = "The selected systemd manager can enumerate timers";
-            script = ''
-              vm.succeed("systemctl list-timers --no-pager")
-            '';
-          }
-          {
-            name = "services";
-            description = "The selected systemd manager can enumerate services";
-            script = ''
-              vm.succeed("systemctl list-units --type=service --no-pager")
-            '';
-          }
-          {
-            name = "journal";
-            description = "The selected systemd journal is readable";
-            script = ''
-              vm.succeed("journalctl --no-pager -n 5")
-            '';
-          }
-        ];
-      };
-      systemd-resources = {
-        description = "Resolved logical service observations through the selected systemd provider";
-        checks = builtins.map qualificationChecks.serviceCheck qualifiedServiceResources;
-      };
+  config.aos.abilities.runtimeChecks = lib.mkIf (qualifiedServiceResources != []) {
+    systemd-resources = {
+      description = "Resolved logical service observations through the selected systemd provider";
+      checks = builtins.map qualificationChecks.serviceCheck qualifiedServiceResources;
     };
+  };
 }

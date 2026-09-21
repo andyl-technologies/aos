@@ -226,49 +226,48 @@ in {
           [{instances.${runtimeConsumer} = {};}]
           ++ builtins.map (contribution: contribution.configured) runtimeContributions
         )))
+      (lib.mkIf runtimeSelected {
+        runtimeChecks.nix-store = {
+          description = "Selected package-store readiness and retention checks";
+          checks = [
+            {
+              name = "database-ready";
+              description = "the selected package store initialized its local database";
+              script = ''
+                vm.succeed("${coreutilsArtifact}/bin/test -f /nix/var/nix/db/db.sqlite")
+              '';
+            }
+            {
+              name = "managed-config";
+              description = "the selected package store installed its single-user configuration";
+              script = ''
+                vm.succeed("${grepArtifact}/bin/grep -Fx 'build-users-group =' /etc/nix/nix.conf")
+              '';
+            }
+            {
+              name = "gcroot-bridge";
+              description = "durable AOS profiles are retained by the selected package store";
+              script = ''
+                vm.succeed(
+                    "${coreutilsArtifact}/bin/test "
+                    "$( ${coreutilsArtifact}/bin/stat -c %d:%i /var/lib/profiles) = "
+                    "$( ${coreutilsArtifact}/bin/stat -c %d:%i /nix/var/nix/gcroots/aos-profiles)"
+                )
+              '';
+            }
+            {
+              name = "current-system-valid";
+              description = "the selected package store recognizes the booted system closure";
+              script = ''
+                vm.succeed(
+                    "${nixArtifact}/bin/nix-store --check-validity "
+                    "$( ${coreutilsArtifact}/bin/readlink /run/current-system)"
+                )
+              '';
+            }
+          ];
+        };
+      })
     ];
-
-    aos.contributions.runtimeChecks = lib.mkIf runtimeSelected {
-      nix-store = {
-        description = "Selected package-store readiness and retention checks";
-        checks = [
-          {
-            name = "database-ready";
-            description = "the selected package store initialized its local database";
-            script = ''
-              vm.succeed("${coreutilsArtifact}/bin/test -f /nix/var/nix/db/db.sqlite")
-            '';
-          }
-          {
-            name = "managed-config";
-            description = "the selected package store installed its single-user configuration";
-            script = ''
-              vm.succeed("${grepArtifact}/bin/grep -Fx 'build-users-group =' /etc/nix/nix.conf")
-            '';
-          }
-          {
-            name = "gcroot-bridge";
-            description = "durable AOS profiles are retained by the selected package store";
-            script = ''
-              vm.succeed(
-                  "${coreutilsArtifact}/bin/test "
-                  "$( ${coreutilsArtifact}/bin/stat -c %d:%i /var/lib/profiles) = "
-                  "$( ${coreutilsArtifact}/bin/stat -c %d:%i /nix/var/nix/gcroots/aos-profiles)"
-              )
-            '';
-          }
-          {
-            name = "current-system-valid";
-            description = "the selected package store recognizes the booted system closure";
-            script = ''
-              vm.succeed(
-                  "${nixArtifact}/bin/nix-store --check-validity "
-                  "$( ${coreutilsArtifact}/bin/readlink /run/current-system)"
-              )
-            '';
-          }
-        ];
-      };
-    };
   };
 }

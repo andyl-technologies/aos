@@ -45,7 +45,6 @@
       enableAbilitySelection = true;
       modules = [
         lib.abilities.module
-        ../../modules/base/_runtime-check-contributions.nix
         {
           aos.abilities = {
             environment = {
