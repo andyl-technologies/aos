@@ -53,20 +53,37 @@ pub(crate) struct AuthenticatedProductionAttemptResume {
 }
 
 impl AuthenticatedProductionAttemptResume {
-    pub(crate) const fn production_identity(&self) -> ContentHash {
-        self.production_identity
-    }
-
     pub(crate) fn configuration(&self) -> &Configuration {
         self.decoded.configuration()
     }
 
-    pub(crate) fn scheduler(&self) -> &SingleSchedulerCheckpoint {
-        self.decoded.scheduler()
-    }
-
     pub(crate) fn into_decoded(self) -> DecodedProductionExactCheckpoint {
         self.decoded
+    }
+}
+
+/// Authenticated production boundary that grants no launch capability.
+///
+/// Boundary inspection temporarily claims the live replay promotion while it
+/// validates the complete closure, then releases that claim before returning
+/// this value. Process launch must reauthenticate and consume the claim.
+pub(crate) struct AuthenticatedProductionAttemptBoundary {
+    production_identity: ContentHash,
+    configuration: Configuration,
+    scheduler: SingleSchedulerCheckpoint,
+}
+
+impl AuthenticatedProductionAttemptBoundary {
+    pub(crate) const fn production_identity(&self) -> ContentHash {
+        self.production_identity
+    }
+
+    pub(crate) const fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    pub(crate) const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
+        &self.scheduler
     }
 }
 
@@ -353,6 +370,69 @@ pub(crate) fn install_attempt_production_resume_checkpoint(
     post_selection: Option<&Configuration>,
     cancellation: &ExecutionCancellation,
 ) -> Result<AuthenticatedProductionAttemptResume, ProductionAttemptCheckpointRestoreError> {
+    let (resume, replay_claim) = authenticate_attempt_production_resume_checkpoint_inner(
+        checkpoints,
+        checkpoint,
+        source,
+        initial,
+        post_selection,
+        cancellation,
+    )?;
+    replay_claim.commit().map_err(map_production_store_error)?;
+    Ok(resume)
+}
+
+/// Authenticates a resume boundary without consuming its launch authority.
+///
+/// The complete promoted closure and attempt continuation receive the same
+/// validation as [`install_attempt_production_resume_checkpoint`]. The live
+/// promotion claim is released before this function returns, so the eventual
+/// launch must repeat authentication and atomically consume it.
+///
+/// # Errors
+///
+/// Returns the errors documented by
+/// [`install_attempt_production_resume_checkpoint`].
+pub(crate) fn authenticate_attempt_production_resume_boundary(
+    checkpoints: &ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    source: &ScenarioDefForm,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+    cancellation: &ExecutionCancellation,
+) -> Result<AuthenticatedProductionAttemptBoundary, ProductionAttemptCheckpointRestoreError> {
+    let (resume, replay_claim) = authenticate_attempt_production_resume_checkpoint_inner(
+        checkpoints,
+        checkpoint,
+        source,
+        initial,
+        post_selection,
+        cancellation,
+    )?;
+    let boundary = AuthenticatedProductionAttemptBoundary {
+        production_identity: resume.production_identity,
+        configuration: resume.decoded.configuration().clone(),
+        scheduler: resume.decoded.scheduler().clone(),
+    };
+    drop(replay_claim);
+
+    Ok(boundary)
+}
+
+fn authenticate_attempt_production_resume_checkpoint_inner<'a>(
+    checkpoints: &'a ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    source: &ScenarioDefForm,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+    cancellation: &ExecutionCancellation,
+) -> Result<
+    (
+        AuthenticatedProductionAttemptResume,
+        crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
+    ),
+    ProductionAttemptCheckpointRestoreError,
+> {
     check_production_cancellation(cancellation)?;
     let effective_start = post_selection.unwrap_or(initial);
     let scenario = source.scenario_def();
@@ -390,11 +470,13 @@ pub(crate) fn install_attempt_production_resume_checkpoint(
         );
     }
     validate_production_attempt_continuation(effective_start, decoded.configuration(), checkpoint)?;
-    replay_claim.commit().map_err(map_production_store_error)?;
-    Ok(AuthenticatedProductionAttemptResume {
-        production_identity: loaded.production_identity(),
-        decoded,
-    })
+    Ok((
+        AuthenticatedProductionAttemptResume {
+            production_identity: loaded.production_identity(),
+            decoded,
+        },
+        replay_claim,
+    ))
 }
 
 struct AttemptCheckpointInstallation<'a> {

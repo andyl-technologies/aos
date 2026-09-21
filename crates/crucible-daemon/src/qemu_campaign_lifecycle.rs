@@ -51,7 +51,8 @@ use crate::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
     QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuExactResumeBasis,
-    QemuSavepointReplayProof, QemuSelectedOriginVerifier, encode_crucible_configuration_artifact,
+    QemuSavepointReplayProof, QemuSelectedOriginVerifier,
+    authenticate_attempt_production_resume_boundary, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, install_attempt_production_resume_checkpoint,
 };
 
@@ -1568,7 +1569,7 @@ where
             post_selection,
         } = basis;
 
-        let installed = install_attempt_production_resume_checkpoint(
+        let boundary = authenticate_attempt_production_resume_boundary(
             checkpoints,
             checkpoint,
             source,
@@ -1579,12 +1580,12 @@ where
         .map_err(|error| {
             QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(error))
         })?;
-        let scheduler = installed.scheduler();
+        let scheduler = boundary.scheduler();
         if scheduler.retained_event_log_base_events() != 0 {
             return Err(QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary);
         }
         let proof = QemuSavepointReplayProof::from_reached_boundary(
-            installed.configuration(),
+            boundary.configuration(),
             scheduler.quanta(),
             scheduler.frontier(),
             scheduler.retained_event_log_entries(),
@@ -1594,12 +1595,12 @@ where
             self.config.run_state_root(),
             scenario,
             source,
-            installed.production_identity(),
+            boundary.production_identity(),
         )
         .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
         Ok((
             crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(
-                installed.configuration().clone(),
+                boundary.configuration().clone(),
                 proof,
             ),
             production_boundary,
