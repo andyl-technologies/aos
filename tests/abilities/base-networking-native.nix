@@ -7,14 +7,14 @@
   evaluated = evaluate {
     name = "base-networking";
     module = ../../modules/base/networking.nix;
-    packages = [pkgs.aos pkgs.systemd pkgs.aos-kernel-tunable-provider];
+    packages = [pkgs.systemd pkgs.aos-kernel-tunable-provider];
     extraModules = [../../modules/base/host-facts.nix];
   };
   config = evaluated.config;
   withStaticFacts = evaluate {
     name = "base-networking-static-facts";
     module = ../../modules/base/networking.nix;
-    packages = [pkgs.aos pkgs.systemd pkgs.aos-kernel-tunable-provider];
+    packages = [pkgs.systemd pkgs.aos-kernel-tunable-provider];
     extraModules = [
       ../../modules/base/host-facts.nix
       {

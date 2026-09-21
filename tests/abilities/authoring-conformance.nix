@@ -627,6 +627,27 @@
       }
     ];
   };
+  nonPackageProvenanceEvaluation = lib.evalModules {
+    modules = [lib.abilities.module];
+    operatorModules = [
+      {
+        config.aos.abilities.requirementTemplates.operator-policy = {
+          description = "Requires an operator-owned conformance interface.";
+          interface = "aos.test.operator";
+          abi = 1;
+        };
+      }
+    ];
+    runtimeModules = [
+      {
+        config.aos.abilities.requirementTemplates.runtime-policy = {
+          description = "Requires a runtime-owned conformance interface.";
+          interface = "aos.test.runtime";
+          abi = 1;
+        };
+      }
+    ];
+  };
   invalidCanonicalAbility = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
       modules = [
@@ -1637,7 +1658,7 @@ in
   assert corpus.schema == "aos.ability.authoring-conformance/v1";
   assert unique caseIds;
   assert builtins.attrNames (lib.abilities.module {config = null;}).options == ["aos"];
-  assert canonicalAbilityEvaluation.config.aos.abilities.requirementTemplates.database
+  assert canonicalAbilityEvaluation.config.aos.abilities.requirementTemplates."aos:database"
   == {
     abi = 1;
     description = "Requires the database lifecycle methods used by this conformance case.";
@@ -1645,8 +1666,34 @@ in
     fallback = null;
     guarantees = [];
     interface = "aos.test.database";
-    localKey = null;
+    localKey = "database";
     methods = ["start" "stop"];
+    package = null;
+    strength = "required";
+  };
+  assert nonPackageProvenanceEvaluation.config.aos.abilities.requirementTemplates."operator:operator-policy"
+  == {
+    abi = 1;
+    description = "Requires an operator-owned conformance interface.";
+    descriptor = null;
+    fallback = null;
+    guarantees = [];
+    interface = "aos.test.operator";
+    localKey = "operator-policy";
+    methods = [];
+    package = null;
+    strength = "required";
+  };
+  assert nonPackageProvenanceEvaluation.config.aos.abilities.requirementTemplates."runtime:runtime-policy"
+  == {
+    abi = 1;
+    description = "Requires a runtime-owned conformance interface.";
+    descriptor = null;
+    fallback = null;
+    guarantees = [];
+    interface = "aos.test.runtime";
+    localKey = "runtime-policy";
+    methods = [];
     package = null;
     strength = "required";
   };

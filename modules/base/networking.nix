@@ -13,6 +13,8 @@
 }: let
   cfg = config.aos.networking;
 in {
+  imports = [./_networking-abilities.nix];
+
   options.aos.networking = {
     ## System hostname.
     hostName = lib.mkOption {

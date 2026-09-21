@@ -10,6 +10,8 @@
   lib,
   ...
 }: {
+  imports = [./_kernel-abilities.nix];
+
   options.aos.kernel = {
     ## Enable TCP BBR congestion control.
     bbr = lib.mkOption {

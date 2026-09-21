@@ -1,12 +1,12 @@
-##! Package-owned kernel module and tunable policy requests.
+##! System-owned kernel module and tunable policy requests.
 {
   config,
   lib,
   ...
 }: let
-  bbr = lib.attrByPath ["aos" "kernel" "bbr"] false config;
-  configuredModules = lib.attrByPath ["aos" "kernel" "modules"] [] config;
-  configuredTunables = lib.attrByPath ["aos" "kernel" "sysctl"] {} config;
+  inherit (config.aos.kernel) bbr;
+  configuredModules = config.aos.kernel.modules;
+  configuredTunables = config.aos.kernel.sysctl;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "kernel-policy";

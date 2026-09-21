@@ -472,7 +472,7 @@ in rec {
 
   declarationKey = refined {
     name = "qualified declaration key";
-    description = "a package-qualified declaration key";
+    description = "a resolver-qualified declaration key";
     type = string {
       maxLength = 257;
       syntax = null;

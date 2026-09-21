@@ -94,44 +94,71 @@
     && builtins.stringLength value <= abilityTypes.limits.maxStringLength
     && builtins.match "[^[:cntrl:]]+" value != null);
 
-  packageForDefinition = definition:
-    if builtins.match "package:.+" (definition.provenance or "") == null
-    then null
-    else builtins.substring 8 (builtins.stringLength definition.provenance - 8) definition.provenance;
-  qualify = package: name:
-    if package == null
+  identityForDefinition = definition: let
+    provenance = definition.provenance or "@base";
+    packagePrefix = "package:";
+  in
+    if builtins.match "package:.+" provenance != null
+    then let
+      package = builtins.substring (builtins.stringLength packagePrefix) (builtins.stringLength provenance) provenance;
+    in {
+      namespace = package;
+      inherit package;
+    }
+    else if provenance == "@base"
+    then {
+      namespace = "aos";
+      package = null;
+    }
+    else if builtins.elem provenance ["@host" "@host-import"]
+    then {
+      namespace = "operator";
+      package = null;
+    }
+    else if builtins.elem provenance ["@runtime" "@runtime-import"]
+    then {
+      namespace = "runtime";
+      package = null;
+    }
+    else throw "Ability declaration has invalid module provenance '${provenance}'.";
+  qualify = namespace: name:
+    if declarationKeyType.check name
     then name
-    else "${package}:${name}";
-  qualifyReference = package: name:
-    if package == null || declarationKeyType.check name
+    else "${namespace}:${name}";
+  localKeyFor = name:
+    if declarationKeyType.check name
+    then builtins.head (builtins.match "[^:]+:(.+)" name)
+    else name;
+  qualifyReference = namespace: name:
+    if declarationKeyType.check name
     then name
-    else qualify package name;
-  qualifyGuarantees = package: guarantees:
+    else qualify namespace name;
+  qualifyGuarantees = namespace: guarantees:
     builtins.map (guarantee:
       if builtins.isString guarantee
       then
         if declarationKeyType.check guarantee
         then guarantee
-        else qualify package guarantee
+        else qualify namespace guarantee
       else guarantee)
     guarantees;
-  qualifyRequirementGuarantees = package: requirement:
-    requirement // {guarantees = qualifyGuarantees package (requirement.guarantees or []);};
-  qualifyInterfaceGuarantees = package: interface:
+  qualifyRequirementGuarantees = namespace: requirement:
+    requirement // {guarantees = qualifyGuarantees namespace (requirement.guarantees or []);};
+  qualifyInterfaceGuarantees = namespace: interface:
     interface
     // {
-      guarantees = qualifyGuarantees package (interface.guarantees or []);
+      guarantees = qualifyGuarantees namespace (interface.guarantees or []);
       methods = builtins.mapAttrs (_: method:
-        method // {guarantees = qualifyGuarantees package (method.guarantees or []);})
+        method // {guarantees = qualifyGuarantees namespace (method.guarantees or []);})
       (interface.methods or {});
     };
-  qualifyImplementationGuarantees = package: implementation:
+  qualifyImplementationGuarantees = namespace: implementation:
     implementation
     // {
-      guarantees = qualifyGuarantees package (implementation.guarantees or []);
-      requirements = builtins.mapAttrs (_: qualifyRequirementGuarantees package) (implementation.requirements or {});
+      guarantees = qualifyGuarantees namespace (implementation.guarantees or []);
+      requirements = builtins.mapAttrs (_: qualifyRequirementGuarantees namespace) (implementation.requirements or {});
     };
-  qualifyDeferredResults = package: value:
+  qualifyDeferredResults = namespace: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then
       value
@@ -139,38 +166,43 @@
         request =
           if declarationKeyType.check value.request
           then value.request
-          else qualify package value.request;
+          else qualify namespace value.request;
       }
     else if builtins.isAttrs value
-    then builtins.mapAttrs (_: qualifyDeferredResults package) value
+    then builtins.mapAttrs (_: qualifyDeferredResults namespace) value
     else if builtins.isList value
-    then builtins.map (qualifyDeferredResults package) value
+    then builtins.map (qualifyDeferredResults namespace) value
     else value;
-  qualifyAbilityValue = collection: package: localKey: value:
-    if package == null
+  qualifyAbilityValue = collection: identity: localKey: value:
+    if identity.package == null && builtins.elem collection ["interfaces" "guarantees"]
     then value
     else if collection == "interfaces"
     then
-      qualifyInterfaceGuarantees package value
+      qualifyInterfaceGuarantees identity.namespace value
       // {
-        package = package;
+        inherit (identity) package;
         inherit localKey;
       }
     else if collection == "guarantees"
     then
       value
       // {
-        package = package;
+        inherit (identity) package;
         inherit localKey;
       }
     else if collection == "implementations"
     then
-      (normalizePackageOutputSelectors {
-        owner = package;
-        value = qualifyImplementationGuarantees package value;
-      })
+      (
+        if identity.package == null
+        then qualifyImplementationGuarantees identity.namespace value
+        else
+          normalizePackageOutputSelectors {
+            owner = identity.package;
+            value = qualifyImplementationGuarantees identity.namespace value;
+          }
+      )
       // {
-        package = package;
+        inherit (identity) package;
         inherit localKey;
       }
       // (
@@ -181,19 +213,24 @@
             then
               if declarationKeyType.check value.interface || builtins.hasAttr value.interface config.aos.abilities.interfaces
               then value.interface
-              else qualify package value.interface
+              else qualify identity.namespace value.interface
             else value.interface;
         }
         else {}
       )
     else if collection == "instances"
     then
-      (normalizePackageOutputSelectors {
-        owner = package;
-        value = qualifyDeferredResults package value;
-      })
+      (
+        if identity.package == null
+        then qualifyDeferredResults identity.namespace value
+        else
+          normalizePackageOutputSelectors {
+            owner = identity.package;
+            value = qualifyDeferredResults identity.namespace value;
+          }
+      )
       // {
-        package = package;
+        inherit (identity) package;
         inherit localKey;
       }
       // (
@@ -203,51 +240,63 @@
           implementation =
             if value.implementation == null
             then null
-            else qualifyReference package value.implementation;
+            else qualifyReference identity.namespace value.implementation;
         }
       )
     else if collection == "requests"
     then
-      (normalizePackageOutputSelectors {
-        owner = package;
-        value = qualifyDeferredResults package value;
-      })
+      (
+        if identity.package == null
+        then qualifyDeferredResults identity.namespace value
+        else
+          normalizePackageOutputSelectors {
+            owner = identity.package;
+            value = qualifyDeferredResults identity.namespace value;
+          }
+      )
       // {
-        package = package;
+        inherit (identity) package;
         inherit localKey;
       }
       // (
         if value ? requirement
-        then {requirement = qualifyReference package value.requirement;}
+        then {requirement = qualifyReference identity.namespace value.requirement;}
         else {}
       )
       // (
         if value ? consumer
-        then {consumer = qualifyReference package value.consumer;}
+        then {consumer = qualifyReference identity.namespace value.consumer;}
         else {}
       )
     else if collection == "requirementTemplates"
     then
-      qualifyRequirementGuarantees package value
+      qualifyRequirementGuarantees identity.namespace value
       // {
-        package = package;
+        inherit (identity) package;
         inherit localKey;
       }
     else value;
   abilityMapType = collection: elementType: let
     base = moduleTypes.attrsOf elementType;
+    declarationName = identity: name:
+      if
+        identity.package
+        == null
+        && !(builtins.elem collection ["requirementTemplates" "instances" "requests"])
+      then name
+      else qualify identity.namespace name;
   in
     base
     // {
       merge = location: definitions:
         base.merge location (builtins.map (definition: let
-          package = packageForDefinition definition;
+          identity = identityForDefinition definition;
         in
           definition
           // {
             value = builtins.listToAttrs (builtins.map (name: {
-                name = qualify package name;
-                value = qualifyAbilityValue collection package name definition.value.${name};
+                name = declarationName identity name;
+                value = qualifyAbilityValue collection identity (localKeyFor name) definition.value.${name};
               })
               (builtins.attrNames definition.value));
           })
@@ -484,13 +533,13 @@
       type = moduleTypes.nullOr packageNameType;
       default = null;
       internal = true;
-      description = "Owning package injected by the package ability carrier.";
+      description = "Owning package when the declaration comes from an authenticated package module.";
     };
     localKey = mkOption {
       type = moduleTypes.nullOr localKeyType;
       default = null;
       internal = true;
-      description = "Package-local declaration key injected by the package ability carrier.";
+      description = "Declaration-local key injected by the module evaluator.";
     };
     description = mkOption {
       type = moduleTypes.nullOr descriptionType;
@@ -771,13 +820,13 @@
       type = moduleTypes.nullOr packageNameType;
       default = null;
       internal = true;
-      description = "Owning package injected by the package ability carrier.";
+      description = "Owning package when the declaration comes from an authenticated package module.";
     };
     localKey = mkOption {
       type = moduleTypes.nullOr localKeyType;
       default = null;
       internal = true;
-      description = "Package-local declaration key injected by the package ability carrier.";
+      description = "Declaration-local key injected by the module evaluator.";
     };
     interface = mkOption {
       type = implementationInterfaceType;
@@ -926,13 +975,13 @@
       type = moduleTypes.nullOr packageNameType;
       default = null;
       internal = true;
-      description = "Owning package injected by the package ability carrier.";
+      description = "Owning package when the declaration comes from an authenticated package module.";
     };
     localKey = mkOption {
       type = moduleTypes.nullOr localKeyType;
       default = null;
       internal = true;
-      description = "Package-local declaration key injected by the package ability carrier.";
+      description = "Declaration-local key injected by the module evaluator.";
     };
     name = mkOption {
       type = qualifiedNameType;
@@ -957,13 +1006,13 @@
       type = moduleTypes.nullOr packageNameType;
       default = null;
       internal = true;
-      description = "Owning package injected by the package ability carrier.";
+      description = "Owning package when the declaration comes from an authenticated package module.";
     };
     localKey = mkOption {
       type = moduleTypes.nullOr localKeyType;
       default = null;
       internal = true;
-      description = "Package-local declaration key injected by the package ability carrier.";
+      description = "Declaration-local key injected by the module evaluator.";
     };
     description = mkOption {
       type = descriptionType;
@@ -1055,13 +1104,13 @@
       type = moduleTypes.nullOr packageNameType;
       default = null;
       internal = true;
-      description = "Owning package injected by the package ability carrier.";
+      description = "Owning package when the declaration comes from an authenticated package module.";
     };
     localKey = mkOption {
       type = moduleTypes.nullOr localKeyType;
       default = null;
       internal = true;
-      description = "Package-local declaration key injected by the package ability carrier.";
+      description = "Declaration-local key injected by the module evaluator.";
     };
     implementation = mkOption {
       type = moduleTypes.nullOr declarationKeyType;
@@ -1158,13 +1207,13 @@
       type = moduleTypes.nullOr packageNameType;
       default = null;
       internal = true;
-      description = "Owning package injected by the package ability carrier.";
+      description = "Owning package when the declaration comes from an authenticated package module.";
     };
     localKey = mkOption {
       type = moduleTypes.nullOr localKeyType;
       default = null;
       internal = true;
-      description = "Package-local declaration key injected by the package ability carrier.";
+      description = "Declaration-local key injected by the module evaluator.";
     };
     requirement = mkOption {
       type = declarationKeyType;
@@ -1556,7 +1605,7 @@ in {
       type = abilityMapType "guarantees" guaranteeDeclarationType;
       default = {};
       contributable = true;
-      description = "Package-owned guarantee declarations keyed by their package-local alias.";
+      description = "Guarantee declarations keyed by their owning module's local alias.";
     };
     interfaces = mkOption {
       type = abilityMapType "interfaces" interfaceDeclarationType;
@@ -1578,7 +1627,7 @@ in {
       type = abilityMapType "implementations" implementationType;
       default = {};
       contributable = true;
-      description = "Package-owned ability implementations available to provider discovery.";
+      description = "Ability implementations available to provider discovery.";
     };
     requirementTemplates = mkOption {
       type = abilityMapType "requirementTemplates" requirementBaseType;
@@ -1593,7 +1642,7 @@ in {
         if rejected == []
         then requirements
         else throw "Ability requirements do not match their declared interface contracts: ${builtins.concatStringsSep ", " rejected}.";
-      description = "Package-owned ability requirements available to configured instances.";
+      description = "Ability requirements available to configured instances.";
     };
     instances = mkOption {
       type = abilityMapType "instances" instanceBaseType;

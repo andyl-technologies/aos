@@ -1,5 +1,7 @@
 ##! Provider-neutral event-log policy selection.
 {lib, ...}: {
+  imports = [./_journald-abilities.nix];
+
   options.aos.journald = {
     storage = lib.mkOption {
       type = lib.abilities.types.enum ["persistent" "volatile" "automatic"];

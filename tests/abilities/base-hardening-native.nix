@@ -8,13 +8,6 @@
     name = "base-hardening";
     module = ../../modules/security/hardening.nix;
     packages = [pkgs.aos-kernel-tunable-provider pkgs.systemd];
-    extraPackageModules = [
-      {
-        name = "aos";
-        version = pkgs.aos.version;
-        module = pkgs.aos.module + "/hardening-policy.nix";
-      }
-    ];
   };
   enabledCoreDump = evaluate {
     name = "base-hardening-coredump";
@@ -23,13 +16,6 @@
       aos.security.hardening.coreDump.enable = true;
     };
     packages = [pkgs.aos-kernel-tunable-provider pkgs.systemd];
-    extraPackageModules = [
-      {
-        name = "aos";
-        version = pkgs.aos.version;
-        module = pkgs.aos.module + "/hardening-policy.nix";
-      }
-    ];
   };
   config = evaluated.config;
   request = config.aos.abilities.requests."aos:security-tunables";

@@ -8,13 +8,6 @@
     name = "base-kernel";
     module = ../../modules/base/kernel.nix;
     packages = [pkgs.kmod pkgs.aos-kernel-tunable-provider];
-    extraPackageModules = [
-      {
-        name = "aos";
-        version = pkgs.aos.version;
-        module = pkgs.aos.module + "/kernel-policy.nix";
-      }
-    ];
     extraModules = [
       {aos.kernel.sysctl."vm.vfs_cache_pressure" = "50";}
     ];
