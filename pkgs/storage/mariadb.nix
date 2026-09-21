@@ -884,7 +884,10 @@ in
       mainStorage = enabledAbilityConfig.requests."mariadb:main-storage".parameters;
       servicePrincipal = enabledAbilityConfig.requests."mariadb:service-principal".parameters;
       expectedRequestOutput = localKey: output: {
-        package = self.pname;
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
         inherit localKey output;
       };
       configurationUsesPath = localKey: let

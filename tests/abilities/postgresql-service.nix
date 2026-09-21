@@ -85,11 +85,11 @@
   standbyRequests = builtins.attrNames standbyAbilities.requests;
   postgresqlRequests = evaluated:
     lib.filterAttrs
-    (_: request: request.package == "postgresql")
+    (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "postgresql")
     evaluated.config.aos.abilities.requests;
   postgresqlInstances = evaluated:
     lib.filterAttrs
-    (_: instance: instance.package == "postgresql")
+    (_: instance: lib.abilities.packageForDeclarationAuthority instance.authority == "postgresql")
     evaluated.config.aos.abilities.instances;
   mainStorage = standaloneAbilities.requests."postgresql:main-storage".parameters.mounts;
   serverSource = standbyAbilities.requests."postgresql:server-configuration".parameters.source;

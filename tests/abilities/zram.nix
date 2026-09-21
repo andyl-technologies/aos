@@ -68,11 +68,11 @@
   requests = baseline.config.aos.abilities.requests;
   zramRequests = evaluated:
     lib.filterAttrs
-    (_: request: request.package == "zram-generator")
+    (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "zram-generator")
     evaluated.config.aos.abilities.requests;
   zramInstances = evaluated:
     lib.filterAttrs
-    (_: instance: instance.package == "zram-generator")
+    (_: instance: lib.abilities.packageForDeclarationAuthority instance.authority == "zram-generator")
     evaluated.config.aos.abilities.instances;
   zramRequirements = evaluated:
     builtins.listToAttrs (builtins.map

@@ -72,7 +72,7 @@
     then builtins.head entries
     else throw "${context} requires exactly one contribution to the aggregate object set";
   validateContribution = entry: let
-    package = entry.request.package or null;
+    package = lib.abilities.packageForDeclarationAuthority entry.request.authority;
   in
     if package == null
     then throw "a Kubernetes object contribution must retain its authenticated package owner"

@@ -35,7 +35,7 @@
     };
   disabled = evaluate false;
   enabled = evaluate true;
-  disabledZfstoolsRequests = lib.filterAttrs (_: request: request.package == "zfstools") disabled.config.aos.abilities.requests;
+  disabledZfstoolsRequests = lib.filterAttrs (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "zfstools") disabled.config.aos.abilities.requests;
   requests = enabled.config.aos.abilities.requests;
   outputReference = request: output: {
     _type = "aos-request-output-reference";
@@ -48,14 +48,14 @@
   storageReadiness = enabled.config.aos.storage.readinessResources;
   poolRequests = builtins.attrNames (lib.filterAttrs
     (_: request:
-      request.package
+      (lib.abilities.packageForDeclarationAuthority request.authority)
       == "aos-zfs-provider"
       && request.localKey == "pool")
     requests);
   poolRequest = builtins.head poolRequests;
   datasetRequests = builtins.attrNames (lib.filterAttrs
     (_: request:
-      request.package
+      (lib.abilities.packageForDeclarationAuthority request.authority)
       == "aos-zfs-provider"
       && request.localKey
       == "dataset-${lib.abilities.identityKeyFor "aos.zfs.dataset-request/v1" {

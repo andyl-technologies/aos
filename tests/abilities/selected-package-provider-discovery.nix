@@ -59,4 +59,6 @@ in
   assert (builtins.head selectedBindings).implementation
   == "aos-network-ruleset-provider:network-ruleset";
   assert builtins.length selectedInstances == 1;
-  assert (builtins.head selectedInstances).package == "aos-network-ruleset-provider"; true
+  assert !(builtins.head selectedInstances ? package);
+  assert withProvider.config.aos.abilities.implementations.${providerName}.package
+  == "aos-network-ruleset-provider"; true

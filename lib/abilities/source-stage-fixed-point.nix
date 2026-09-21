@@ -27,7 +27,7 @@
   packageForInstance = instance:
     if instance.implementation != null
     then (implementationReference "instance implementation" instance.implementation).package
-    else instance.package;
+    else null;
   projectInstance = name: instance: {
     provenance = provenanceFor name instance;
     package = packageForInstance instance;
@@ -37,12 +37,11 @@
       then null
       else implementationReference "instance implementation" instance.implementation;
   };
-  projectRequest = name: request: requirement:
-    {
-      provenance = provenanceFor name request;
-      inherit (request) consumer scope lifetime parameters;
-      inherit requirement;
-    };
+  projectRequest = name: request: requirement: {
+    provenance = provenanceFor name request;
+    inherit (request) consumer scope lifetime parameters;
+    inherit requirement;
+  };
   projectRootRequest = name: request:
     if !(builtins.hasAttr request.requirement abilities.requirementTemplates)
     then throw "source-stage request '${name}' references absent fixed-point requirement '${request.requirement}'"

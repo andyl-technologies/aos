@@ -212,7 +212,6 @@
       };
     in {
       inherit implementation providerInstance requestName request requirement;
-      package = packageForImplementation implementation candidate.implementation;
       bindingName = binding.name;
       bindingValue = binding.value;
     }
@@ -230,10 +229,6 @@
     selections
     ++ builtins.map (binding: {
       inherit (binding) implementation providerInstance;
-      package =
-        packageForImplementation
-        binding.implementation
-        abilities.implementations.${binding.implementation};
     })
     (builtins.attrValues abilities.bindings);
   generatedInstances = builtins.listToAttrs (builtins.concatMap (provider:
@@ -243,7 +238,6 @@
       {
         name = provider.providerInstance;
         value = {
-          inherit (provider) package;
           # One logical provider instance may aggregate several interface
           # implementations from the same package. Bindings select each exact
           # implementation; the instance owns only shared configuration and

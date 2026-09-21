@@ -57,7 +57,7 @@
   requests = enabled.config.aos.abilities.requests;
   dockerRequests = evaluated:
     lib.filterAttrs
-    (_: request: request.package == "docker-engine")
+    (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "docker-engine")
     evaluated.config.aos.abilities.requests;
   dockerRequirements = evaluated:
     builtins.listToAttrs (builtins.map
@@ -70,7 +70,7 @@
       (builtins.attrNames packageProjection.requirementTemplates));
   dockerInstances = evaluated:
     lib.filterAttrs
-    (_: instance: instance.package == "docker-engine")
+    (_: instance: lib.abilities.packageForDeclarationAuthority instance.authority == "docker-engine")
     evaluated.config.aos.abilities.instances;
   lifecycle = requests."docker-engine:docker-lifecycle".parameters;
   start = (builtins.head lifecycle.start).executable;

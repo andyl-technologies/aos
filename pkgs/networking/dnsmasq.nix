@@ -166,7 +166,10 @@ in
       dependencies = requests."dnsmasq:dnsmasq-dependencies".parameters;
       ingress = requests."dnsmasq:network-ingress".parameters;
       expectedRequestOutput = localKey: output: {
-        package = self.pname;
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
         inherit localKey output;
       };
       contractHolds =

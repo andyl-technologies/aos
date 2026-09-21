@@ -80,7 +80,7 @@
   provideContribution = context: let
     entries = entriesFor context;
     checked = builtins.map (entry:
-      if entry.request.package == null
+      if lib.abilities.packageForDeclarationAuthority entry.request.authority == null
       then throw "a D-Bus registration contribution must retain its authenticated package owner"
       else entry)
     entries;

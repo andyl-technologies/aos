@@ -55,11 +55,11 @@
   requests = enabled.config.aos.abilities.requests;
   tailscaleRequests = evaluated:
     lib.filterAttrs
-    (_: request: request.package == "tailscale")
+    (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "tailscale")
     evaluated.config.aos.abilities.requests;
   tailscaleInstances = evaluated:
     lib.filterAttrs
-    (_: instance: instance.package == "tailscale")
+    (_: instance: lib.abilities.packageForDeclarationAuthority instance.authority == "tailscale")
     evaluated.config.aos.abilities.instances;
   lifecycle = requests."tailscale:tailscaled-lifecycle".parameters;
 in

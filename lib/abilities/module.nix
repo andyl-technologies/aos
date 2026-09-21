@@ -237,7 +237,7 @@
           }
       )
       // {
-        inherit (identity) authority package;
+        inherit (identity) authority;
         inherit localKey;
       }
       // (
@@ -262,7 +262,7 @@
           }
       )
       // {
-        inherit (identity) authority package;
+        inherit (identity) authority;
         inherit localKey;
       }
       // (
@@ -346,7 +346,8 @@
     && (
       (builtins.attrNames value == ["kind"] && builtins.elem value.kind ["system" "operator" "runtime"])
       || (
-        builtins.attrNames value == ["kind" "package"]
+        builtins.attrNames value
+        == ["kind" "package"]
         && value.kind == "package"
         && packageNameType.check value.package
       )
@@ -1153,12 +1154,6 @@
       internal = true;
       description = "Authenticated module authority injected by the evaluator.";
     };
-    package = mkOption {
-      type = moduleTypes.nullOr packageNameType;
-      default = null;
-      internal = true;
-      description = "Owning package when the declaration comes from an authenticated package module.";
-    };
     localKey = mkOption {
       type = moduleTypes.nullOr localKeyType;
       default = null;
@@ -1260,12 +1255,6 @@
       type = declarationAuthorityType;
       internal = true;
       description = "Authenticated module authority injected by the evaluator.";
-    };
-    package = mkOption {
-      type = moduleTypes.nullOr packageNameType;
-      default = null;
-      internal = true;
-      description = "Owning package when the declaration comes from an authenticated package module.";
     };
     localKey = mkOption {
       type = moduleTypes.nullOr localKeyType;

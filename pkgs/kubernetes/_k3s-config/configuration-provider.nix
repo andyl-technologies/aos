@@ -90,7 +90,7 @@
     checked =
       map
       (entry:
-        if entry.request.package == null
+        if lib.abilities.packageForDeclarationAuthority entry.request.authority == null
         then throw "a K3s integration request must retain its authenticated package owner"
         else entry)
       entries;

@@ -37,15 +37,15 @@
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
-  policyRequests = lib.filterAttrs (_: request: request.package == "aos") requests;
-  providerRequests = lib.filterAttrs (_: request: request.package == "aos-nix-store-provider") requests;
+  policyRequests = lib.filterAttrs (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "aos") requests;
+  providerRequests = lib.filterAttrs (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "aos-nix-store-provider") requests;
   configurationEntry = providerRequests."aos-nix-store-provider:nix-configuration-entry".parameters;
   configurationSource = configurationEntry.entry.source;
   gcRootMount = providerRequests."aos-nix-store-provider:gcroot-mount".parameters;
   runtimeChecks = config.aos.abilities.runtimeChecks."aos-nix-store-provider:nix-store".checks;
   checkScript = name: (builtins.head (builtins.filter (check: check.name == name) runtimeChecks)).script;
 in
-  assert lib.filterAttrs (_: request: request.package == "aos-nix-store-provider") unselected.config.aos.abilities.requests == {};
+  assert lib.filterAttrs (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "aos-nix-store-provider") unselected.config.aos.abilities.requests == {};
   assert unselected.config.aos.abilities.runtimeChecks == {};
   assert builtins.attrNames policyRequests == ["aos:nix-store-database"];
   assert policyRequests."aos:nix-store-database".parameters
