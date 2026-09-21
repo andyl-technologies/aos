@@ -1108,6 +1108,20 @@ fn package_documentation_identity(
     }
 }
 
+fn package_ability_reference_identity(
+    locator: &crate::db::PackageDocumentationLocator,
+    reference: &aos_doc_model::PackageAbilityReference,
+) -> pb::PackageAbilityReferenceIdentity {
+    pb::PackageAbilityReferenceIdentity {
+        registry_commit: locator.indexed_commit.clone(),
+        package: locator.package_name.clone(),
+        version: locator.package_version.clone(),
+        platform: locator.platform.clone(),
+        manifest_sha256: reference.manifest_sha256.to_string(),
+        package_digest: reference.package_digest.to_string(),
+    }
+}
+
 fn stored_ability_deployment_response(
     stored: crate::db::StoredAbilityDeploymentOverlay,
 ) -> pb::PackageAbilityDeploymentResponse {
@@ -11565,7 +11579,7 @@ impl RpcService {
         })
     }
 
-    /// Returns a compatibility ability view derived from the signed package reference.
+    /// Returns the ability view derived from the signed package reference.
     ///
     /// The response keeps the release contract's manifest and semantic package
     /// identities separate from package-authored documentation identity.
@@ -11616,14 +11630,10 @@ impl RpcService {
         let canonical_json = reference.canonical_json().map_err(RpcError::internal)?;
         let etag = hex::encode(Sha256::digest(&canonical_json));
         Ok(pb::GetPackageAbilityReferenceResponse {
-            identity: Some(pb::PackageAbilityReferenceIdentity {
-                registry_commit: documentation_locator.indexed_commit,
-                package: documentation_locator.package_name,
-                version: documentation_locator.package_version,
-                platform: documentation_locator.platform,
-                manifest_sha256: reference.manifest_sha256.to_string(),
-                package_digest: reference.package_digest.to_string(),
-            }),
+            identity: Some(package_ability_reference_identity(
+                &documentation_locator,
+                &reference,
+            )),
             canonical_json,
             etag,
         })
@@ -12467,7 +12477,10 @@ impl RpcService {
         let canonical_json = projection.canonical_json().map_err(RpcError::internal)?;
         Ok(pb::GetPackageDocumentationSchemaResponse {
             documentation_identity: Some(package_documentation_identity(&documentation_locator)),
-            ability_reference_identity: None,
+            ability_reference_identity: Some(package_ability_reference_identity(
+                &documentation_locator,
+                &projection.ability_reference,
+            )),
             etag: projection.response_sha256().map_err(RpcError::internal)?,
             canonical_json,
         })
