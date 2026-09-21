@@ -14,6 +14,8 @@
 }: let
   cfg = config.aos.security.hardening;
 in {
+  imports = [./_hardening-abilities.nix];
+
   options.aos.security.hardening = {
     ## Enable system hardening (sysctl, core dump restrictions).
     ##

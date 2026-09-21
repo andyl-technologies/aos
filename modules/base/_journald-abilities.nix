@@ -1,21 +1,10 @@
-##! Package-owned event-log policy requirement.
+##! System-owned event-log policy requirement.
 {
   config,
   lib,
   ...
 }: let
-  cfg =
-    lib.attrByPath ["aos" "journald"] {
-      storage = "persistent";
-      maxRetentionSeconds = 2592000;
-      maxUseBytes = 524288000;
-      maxFileSizeBytes = 52428800;
-      rateLimitIntervalMillis = 30000;
-      rateLimitBurst = 10000;
-      forwardToSyslog = false;
-      compress = true;
-    }
-    config;
+  cfg = config.aos.journald;
   interface = lib.abilities.interfaces.eventLogPolicy.interface;
   configured =
     config.aos.abilities.environment

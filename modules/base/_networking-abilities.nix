@@ -1,28 +1,11 @@
-##! Package-owned host networking and kernel-tuning requests.
+##! System-owned host networking and kernel-tuning requests.
 {
   config,
   lib,
-  options,
   provenance,
   ...
 }: let
-  cfg =
-    lib.attrByPath ["aos" "networking"] {
-      hostName = "aos";
-      useDHCP = true;
-      interfaces = {};
-      nameservers = [];
-      search = [];
-      mtu = 0;
-      vlans = {};
-      bonds = {};
-      tuning = {};
-      resolved = {
-        enable = true;
-        dnssec = "allow-downgrade";
-      };
-    }
-    config;
+  cfg = config.aos.networking;
   configured =
     config.aos.abilities.environment
     != null
@@ -43,9 +26,8 @@
     };
   };
   networkInterface = lib.abilities.interfaces.networkConfiguration.interface;
-  networkOptionsDeclared = lib.hasAttrByPath ["aos" "networking" "useDHCP"] options;
   optionOwners =
-    if configured && networkOptionsDeclared
+    if configured
     then
       builtins.map provenance.ownerOfOption [
         ["aos" "networking" "useDHCP"]

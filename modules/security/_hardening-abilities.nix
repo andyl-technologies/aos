@@ -1,12 +1,13 @@
-##! Package-owned kernel and crash-dump hardening requirements.
+##! System-owned kernel and crash-dump hardening requirements.
 {
   config,
   lib,
   ...
 }: let
-  enabled = lib.attrByPath ["aos" "security" "hardening" "enable"] false config;
-  configuredTunables = lib.attrByPath ["aos" "security" "hardening" "sysctl"] {} config;
-  coreDumpsEnabled = lib.attrByPath ["aos" "security" "hardening" "coreDump" "enable"] false config;
+  hardening = config.aos.security.hardening;
+  inherit (hardening) enable;
+  configuredTunables = hardening.sysctl;
+  coreDumpsEnabled = hardening.coreDump.enable;
   consumerInstance = "security-hardening";
   crashDumpPolicy = lib.abilities.interfaces.crashDumpPolicy.interface;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -25,7 +26,7 @@
   };
   tunables = serviceManagement.splitContribution kernelTunables;
   configured =
-    enabled
+    enable
     && config.aos.abilities.environment
     != null
     && config.aos.abilities.environment.stage == "host";
