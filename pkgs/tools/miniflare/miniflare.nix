@@ -402,6 +402,13 @@ in
             # Sanity-check the compiled addon is present.
             test -f $NM/better-sqlite3/build/Release/better_sqlite3.node
 
+            # Keep only the addon loaded by Node, not compiler intermediates or
+            # the upstream test extension emitted by the same node-gyp build.
+            cp "$NM/better-sqlite3/build/Release/better_sqlite3.node" "$TMPDIR/better_sqlite3.node"
+            rm -rf "$NM/better-sqlite3/build"
+            mkdir -p "$NM/better-sqlite3/build/Release"
+            cp "$TMPDIR/better_sqlite3.node" "$NM/better-sqlite3/build/Release/better_sqlite3.node"
+
             # CLI wrappers: AOS bash execs AOS node on the vendored JS entrypoint.
             # The npm-generated .bin shims carry host-style `/usr/bin/env` shebangs,
             # so we bypass them. The wrapper must run node with the entry as the
