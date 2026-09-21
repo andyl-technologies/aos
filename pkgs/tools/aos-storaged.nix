@@ -19,7 +19,7 @@
     inherit src;
     name = "aos-storaged-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-iZOR1ColHScbiytxIgTtoArWz8jdTb1GEgThT/FO2ag=";
+    hash = "sha256-1RgRja5AK1CyIq0j1cIRtDcDqtcHro7V5rzNalpWxjQ=";
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
