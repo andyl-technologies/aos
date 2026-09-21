@@ -79,11 +79,9 @@ impl From<handshake::DormantBrokerSessionHandshakeErrorV1>
     }
 }
 
-pub(crate) fn wait_for_handshake_readiness(
-    descriptor: BorrowedFd<'_>,
-    wants_write: bool,
+fn remaining_handshake_nanoseconds(
     deadline_boottime_nanoseconds: u64,
-) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+) -> Result<u64, DormantBrokerSessionHandshakeErrorV1> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     let seconds =
         u64::try_from(now.tv_sec).map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
@@ -93,10 +91,65 @@ pub(crate) fn wait_for_handshake_readiness(
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanoseconds))
         .ok_or(DormantBrokerSessionHandshakeErrorV1::Transport)?;
-    let remaining = deadline_boottime_nanoseconds
+    deadline_boottime_nanoseconds
         .checked_sub(now)
         .filter(|remaining| *remaining > 0)
-        .ok_or(DormantBrokerSessionHandshakeErrorV1::Deadline)?;
+        .ok_or(DormantBrokerSessionHandshakeErrorV1::Deadline)
+}
+
+/// Rejects expired production exchanges even when their sockets are already ready.
+pub(crate) fn check_production_deadline(
+    deadline_boottime_nanoseconds: u64,
+) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+    remaining_handshake_nanoseconds(deadline_boottime_nanoseconds).map(|_| ())
+}
+
+#[cfg(test)]
+mod production_deadline_tests {
+    use std::os::fd::AsFd as _;
+    use std::os::unix::net::UnixStream;
+
+    use super::{
+        DormantBrokerSessionHandshakeErrorV1, remaining_handshake_nanoseconds,
+        wait_for_handshake_readiness,
+    };
+
+    #[test]
+    fn expired_deadline_is_rejected_without_polling() {
+        assert!(matches!(
+            remaining_handshake_nanoseconds(0),
+            Err(DormantBrokerSessionHandshakeErrorV1::Deadline)
+        ));
+    }
+
+    #[test]
+    fn writable_socket_does_not_override_expired_deadline() {
+        let (socket, _peer) = UnixStream::pair().unwrap();
+
+        let result = wait_for_handshake_readiness(socket.as_fd(), true, 0);
+
+        assert!(matches!(
+            result,
+            Err(DormantBrokerSessionHandshakeErrorV1::Deadline)
+        ));
+    }
+
+    #[test]
+    fn writable_socket_is_accepted_before_deadline() {
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let deadline =
+            crate::production_deadline_after(std::time::Duration::from_secs(10)).unwrap();
+
+        wait_for_handshake_readiness(socket.as_fd(), true, deadline).unwrap();
+    }
+}
+
+pub(crate) fn wait_for_handshake_readiness(
+    descriptor: BorrowedFd<'_>,
+    wants_write: bool,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+    let remaining = remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
     let timeout = Timespec {
         tv_sec: i64::try_from(remaining / 1_000_000_000)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Deadline)?,
@@ -4969,6 +5022,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         self,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
         let socket = SeqpacketSocket::connect(Path::new(self.production_socket_path()))
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
         self.complete_production_client_handshake(socket, deadline_boottime_nanoseconds)
@@ -4992,11 +5046,15 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
         let mut handshake = self.begin_production_client_handshake(socket)?;
 
         loop {
+            // Ready sockets bypass polling, but never bypass the activation deadline.
+            remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
             match handshake.advance()? {
                 DormantControllerClientHandshakeProgressV1::Complete(session) => {
+                    remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
                     return Ok(session);
                 }
                 DormantControllerClientHandshakeProgressV1::Pending(pending) => {
@@ -5029,11 +5087,14 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
         let mut handshake = self.begin_production_broker_handshake(socket)?;
 
         loop {
+            remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
             match handshake.advance()? {
                 DormantBrokerEndpointHandshakeProgressV1::Complete(session) => {
+                    remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
                     return Ok(session);
                 }
                 DormantBrokerEndpointHandshakeProgressV1::Pending(pending) => {

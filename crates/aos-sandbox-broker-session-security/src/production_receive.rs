@@ -4,6 +4,9 @@
 //! receipt returns that session beside one normalized request or replay event;
 //! every error drops both transport and protected in-memory custody so the
 //! service must reconnect and reopen the fixed journal.
+//! Ready sockets and successful durable readbacks still require a live deadline
+//! before a request is handed to the effect dispatcher. Expiry never erases an
+//! admitted request; its protected record remains available for exact recovery.
 
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorInFlightReplayV1,
@@ -67,7 +70,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
         deadline_boottime_nanoseconds: u64,
     ) -> Result<(Self, ProductionBrokerRequestEventV1), ProductionBrokerReceiveErrorV1> {
         loop {
+            crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             let progress = self.receive_authenticated_request()?;
+            crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match progress {
                 DormantBrokerRequestReceiveProgressV1::Pending => {
                     crate::dormant_handshake::wait_for_handshake_readiness(
@@ -100,7 +105,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     ..
                 } => {
                     let recovered = self.recover_received_initialization(recovery, request);
-                    return normalize_ordinary_recovery(self, recovered);
+                    return normalize_ordinary_recovery(
+                        self,
+                        recovered,
+                        deadline_boottime_nanoseconds,
+                    );
                 }
                 DormantBrokerRequestReceiveProgressV1::SuccessorRecoveryRequired {
                     recovery,
@@ -108,7 +117,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     ..
                 } => {
                     let recovered = self.recover_received_successor(recovery, request);
-                    return normalize_ordinary_recovery(self, recovered);
+                    return normalize_ordinary_recovery(
+                        self,
+                        recovered,
+                        deadline_boottime_nanoseconds,
+                    );
                 }
             }
         }
@@ -130,7 +143,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
         deadline_boottime_nanoseconds: u64,
     ) -> Result<(Self, ProductionHostBrokerRequestEventV1), ProductionBrokerReceiveErrorV1> {
         loop {
+            crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             let progress = self.receive_authenticated_host_request()?;
+            crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match progress {
                 DormantBrokerDescriptorRequestReceiveProgressV1::Pending => {
                     crate::dormant_handshake::wait_for_handshake_readiness(
@@ -172,7 +187,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 } => {
                     let recovered =
                         self.recover_received_descriptor_initialization(recovery, request);
-                    return normalize_host_recovery(self, recovered);
+                    return normalize_host_recovery(self, recovered, deadline_boottime_nanoseconds);
                 }
                 DormantBrokerDescriptorRequestReceiveProgressV1::SuccessorRecoveryRequired {
                     recovery,
@@ -180,7 +195,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     ..
                 } => {
                     let recovered = self.recover_received_descriptor_successor(recovery, request);
-                    return normalize_host_recovery(self, recovered);
+                    return normalize_host_recovery(self, recovered, deadline_boottime_nanoseconds);
                 }
             }
         }
@@ -190,6 +205,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
 fn normalize_ordinary_recovery(
     session: DormantAuthenticatedBrokerSessionV1,
     recovered: DormantBrokerRequestReceiveProgressV1,
+    deadline_boottime_nanoseconds: u64,
 ) -> Result<
     (
         DormantAuthenticatedBrokerSessionV1,
@@ -197,6 +213,7 @@ fn normalize_ordinary_recovery(
     ),
     ProductionBrokerReceiveErrorV1,
 > {
+    crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
     match recovered {
         DormantBrokerRequestReceiveProgressV1::Received(request) => {
             Ok((session, ProductionBrokerRequestEventV1::Request(request)))
@@ -208,6 +225,7 @@ fn normalize_ordinary_recovery(
 fn normalize_host_recovery(
     session: DormantAuthenticatedBrokerSessionV1,
     recovered: DormantBrokerDescriptorRequestReceiveProgressV1,
+    deadline_boottime_nanoseconds: u64,
 ) -> Result<
     (
         DormantAuthenticatedBrokerSessionV1,
@@ -215,6 +233,7 @@ fn normalize_host_recovery(
     ),
     ProductionBrokerReceiveErrorV1,
 > {
+    crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
     match recovered {
         DormantBrokerDescriptorRequestReceiveProgressV1::Received(request) => Ok((
             session,

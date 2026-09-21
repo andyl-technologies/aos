@@ -4,6 +4,9 @@
 //! that same session for the next request. Failure drops the socket and all
 //! in-memory custody, forcing reconnect/replay against the protected journal
 //! instead of allowing a caller to continue after ambiguous transport.
+//! Deadline checks bracket sends even when the socket never blocks. A packet
+//! sent just before an expiry observation may have reached the client; closing
+//! that session does not undo the committed outcome or permit a new effect.
 
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 
@@ -112,8 +115,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
 
         let mut pending = committed;
         loop {
+            crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match self.send_authenticated_response(pending)? {
-                DormantBrokerResponseSendProgressV1::Sent(_) => return Ok(self),
+                DormantBrokerResponseSendProgressV1::Sent(_) => {
+                    crate::dormant_handshake::check_production_deadline(
+                        deadline_boottime_nanoseconds,
+                    )?;
+                    return Ok(self);
+                }
                 DormantBrokerResponseSendProgressV1::Pending(retained) => {
                     crate::dormant_handshake::wait_for_handshake_readiness(
                         self.as_fd()?,
@@ -180,8 +189,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
 
         let mut pending = committed;
         loop {
+            crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match self.send_authenticated_descriptor_response(pending)? {
-                DormantBrokerDescriptorSendProgressV1::Sent(_) => return Ok(self),
+                DormantBrokerDescriptorSendProgressV1::Sent(_) => {
+                    crate::dormant_handshake::check_production_deadline(
+                        deadline_boottime_nanoseconds,
+                    )?;
+                    return Ok(self);
+                }
                 DormantBrokerDescriptorSendProgressV1::Pending(retained) => {
                     crate::dormant_handshake::wait_for_handshake_readiness(
                         self.as_fd()?,
@@ -210,8 +225,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         let mut pending = replay;
         loop {
+            crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match self.send_authenticated_terminal_replay(pending)? {
-                DormantBrokerTerminalReplaySendProgressV1::Sent(_) => return Ok(self),
+                DormantBrokerTerminalReplaySendProgressV1::Sent(_) => {
+                    crate::dormant_handshake::check_production_deadline(
+                        deadline_boottime_nanoseconds,
+                    )?;
+                    return Ok(self);
+                }
                 DormantBrokerTerminalReplaySendProgressV1::Pending(retained) => {
                     crate::dormant_handshake::wait_for_handshake_readiness(
                         self.as_fd()?,
@@ -259,8 +280,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
 
         let mut pending = ready;
         loop {
+            crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match self.send_authenticated_descriptor_terminal_replay(pending) {
-                DormantBrokerDescriptorTerminalReplaySendProgressV1::Sent(_) => return Ok(self),
+                DormantBrokerDescriptorTerminalReplaySendProgressV1::Sent(_) => {
+                    crate::dormant_handshake::check_production_deadline(
+                        deadline_boottime_nanoseconds,
+                    )?;
+                    return Ok(self);
+                }
                 DormantBrokerDescriptorTerminalReplaySendProgressV1::Pending(retained) => {
                     crate::dormant_handshake::wait_for_handshake_readiness(
                         self.as_fd()?,
