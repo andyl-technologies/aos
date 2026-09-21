@@ -1,6 +1,7 @@
 # Builds the immutable Git object database shared by QEMU patch provenance and
-# regeneration. It proves that the carried patch creates the exact committed
-# tree and that the bundle names the same atomic commit.
+# regeneration. It independently reconstructs the committed tree from the
+# source archive and patch, then authenticates the exact signed commit object
+# carried by the pinned bundle and reproduces the patch from that object.
 {
   pkgs,
   qemuPackage ? pkgs.qemu-crucible,
@@ -85,13 +86,10 @@ in
             || fail "atomic patch hash $patch_hash does not match ${atomicPatch.sha256}"
           patch --batch --forward --fuzz=0 --no-backup-if-mismatch -p1 < ${patchPath}
           git add -A
-          GIT_AUTHOR_NAME="${atomicPatch.deterministicAuthorName}" \
-          GIT_AUTHOR_EMAIL="${atomicPatch.deterministicAuthorEmail}" \
-          GIT_AUTHOR_DATE="${atomicPatch.deterministicPatchDate}" \
-          GIT_COMMITTER_NAME="${atomicPatch.deterministicAuthorName}" \
-          GIT_COMMITTER_EMAIL="${atomicPatch.deterministicAuthorEmail}" \
-          GIT_COMMITTER_DATE="${atomicPatch.deterministicPatchDate}" \
-            git -c commit.gpgsign=false commit -q -F "$atomicMessagePath"
+          reconstructed_tree=$(git write-tree)
+          test "$reconstructed_tree" = "${atomicPatch.tree}" \
+            || fail "patch-created tree $reconstructed_tree does not match ${atomicPatch.tree}"
+          printf '%s\n' "$reconstructed_tree" > "$out/reconstructed-tree"
         '';
       }
       {
@@ -103,21 +101,25 @@ in
             echo "FAIL: $*" >&2
             exit 1
           }
+
+          signature_header_count() {
+            git --git-dir="$1" cat-file commit "$2" \
+              | gawk '/^$/ { exit } /^gpgsig / { count++ } END { print count + 0 }'
+          }
+
+          has_pinned_sole_parent() {
+            parents=$(git --git-dir="$1" rev-list --parents -n 1 "$2") \
+              || return 1
+            set -- $parents
+            test "$#" -eq 2 && test "$2" = "$base_commit"
+          }
+
           work_tree="$TMPDIR/qemu-source/qemu-${atomicPatch.qemuVersion}"
           cd "$work_tree"
           base_commit=$(git rev-parse base)
-          patch_commit=$(git rev-parse HEAD)
-          patch_tree=$(git rev-parse HEAD^{tree})
-          test "$patch_commit" = "${atomicPatch.commit}" \
-            || fail "reconstructed commit $patch_commit does not match ${atomicPatch.commit}"
-          test "$patch_tree" = "${atomicPatch.tree}" \
-            || fail "reconstructed tree $patch_tree does not match ${atomicPatch.tree}"
-          test "$(git rev-parse HEAD^)" = "$base_commit" \
-            || fail "atomic patch does not have the pinned base as its sole parent"
-          test "$(git log -1 --format=%s HEAD)" = "${atomicPatch.subject}" \
-            || fail "atomic patch subject drifted"
-          test "$(git log -1 --format=%B HEAD | grep -c '^Signed-off-by:')" -eq 1 \
-            || fail "atomic patch must contain exactly one DCO sign-off"
+          reconstructed_tree=$(cat "$out/reconstructed-tree")
+          test "$(git write-tree)" = "$reconstructed_tree" \
+            || fail "staged patch tree changed between construction and verification"
 
           bundle_hash=$(sha256sum ${atomicPatch.bundle} | gawk '{ print $1 }')
           test "$bundle_hash" = "${atomicPatch.bundleSha256}" \
@@ -134,12 +136,91 @@ in
             || fail "bundle must have exactly one prerequisite"
           git fetch -q ${atomicPatch.bundle} \
             "refs/heads/${atomicPatch.branchRef}:refs/heads/bundled-atomic-patch"
-          test "$(git rev-parse refs/heads/bundled-atomic-patch)" = "$patch_commit" \
-            || fail "bundle and patch file produce different commits"
-          git merge-base --is-ancestor \
-            "$base_commit" refs/heads/bundled-atomic-patch \
-            || fail "bundle history does not contain the pinned base"
-          git checkout -q base
+          bundle_commit=$(git rev-parse refs/heads/bundled-atomic-patch)
+          bundle_tree=$(git rev-parse "$bundle_commit^{tree}")
+          test "$bundle_commit" = "${atomicPatch.commit}" \
+            || fail "bundle commit $bundle_commit does not match ${atomicPatch.commit}"
+          test "$bundle_tree" = "${atomicPatch.tree}" \
+            || fail "bundle tree $bundle_tree does not match ${atomicPatch.tree}"
+          test "$bundle_tree" = "$reconstructed_tree" \
+            || fail "bundle commit and applied patch produce different trees"
+          has_pinned_sole_parent .git "$bundle_commit" \
+            || fail "bundle commit does not have the pinned base as its sole parent"
+
+          bundle_signature_headers=$(signature_header_count .git "$bundle_commit")
+          test "$bundle_signature_headers" -eq 1 \
+            || fail "bundle commit must contain exactly one embedded gpgsig header"
+          # The pinned bundle and commit hashes bind the exact signature bytes.
+          # Signer trust is outside this gate because it has no trusted keyring.
+
+          git cat-file commit "$bundle_commit" \
+            | gawk 'body { print } /^$/ { body = 1; next }' \
+            > "$TMPDIR/bundle-commit-message"
+          cmp "$atomicMessagePath" "$TMPDIR/bundle-commit-message" \
+            || fail "bundle commit subject, body, or DCO sign-off drifted"
+          dco_count=$(git log -1 --format=%B "$bundle_commit" \
+            | grep -Ec '^Signed-off-by: ' || true)
+          exact_dco_count=$(git log -1 --format=%B "$bundle_commit" \
+            | grep -Fxc 'Signed-off-by: ${atomicPatch.deterministicAuthorName} <${atomicPatch.deterministicAuthorEmail}>' || true)
+          test "$dco_count" -eq 1 && test "$exact_dco_count" -eq 1 \
+            || fail "bundle commit must contain exactly one matching DCO sign-off"
+          test "$(git show -s --format=%an "$bundle_commit")" = "${atomicPatch.deterministicAuthorName}" \
+            || fail "bundle commit author name drifted"
+          test "$(git show -s --format=%ae "$bundle_commit")" = "${atomicPatch.deterministicAuthorEmail}" \
+            || fail "bundle commit author email drifted"
+          test "$(git show -s --format=%cn "$bundle_commit")" = "${atomicPatch.deterministicAuthorName}" \
+            || fail "bundle commit committer name drifted"
+          test "$(git show -s --format=%ce "$bundle_commit")" = "${atomicPatch.deterministicAuthorEmail}" \
+            || fail "bundle commit committer email drifted"
+          expected_author_epoch=$(date --date='${atomicPatch.deterministicPatchDate}' +%s)
+          test "$(git show -s --format=%at "$bundle_commit")" = "$expected_author_epoch" \
+            || fail "bundle commit author date drifted"
+
+          git format-patch --stdout --no-signature --no-stat --full-index --binary \
+            "$base_commit..$bundle_commit" > "$out/regenerated.patch"
+          cmp ${patchPath} "$out/regenerated.patch" \
+            || fail "bundle commit does not regenerate the checked atomic patch"
+
+          # The signed commit cannot be reproduced by assigning deterministic
+          # commit dates. Prove that an otherwise identical unsigned object is
+          # rejected, without adding synthetic objects to the exported repo.
+          negative_repo="$TMPDIR/negative-commit-objects.git"
+          git clone -q --bare --shared . "$negative_repo"
+          unsigned_commit=$(
+            GIT_AUTHOR_NAME="${atomicPatch.deterministicAuthorName}" \
+            GIT_AUTHOR_EMAIL="${atomicPatch.deterministicAuthorEmail}" \
+            GIT_AUTHOR_DATE="${atomicPatch.deterministicPatchDate}" \
+            GIT_COMMITTER_NAME="${atomicPatch.deterministicAuthorName}" \
+            GIT_COMMITTER_EMAIL="${atomicPatch.deterministicAuthorEmail}" \
+            GIT_COMMITTER_DATE="${atomicPatch.deterministicPatchDate}" \
+              git --git-dir="$negative_repo" -c commit.gpgsign=false commit-tree \
+                "$reconstructed_tree" -p "$base_commit" < "$atomicMessagePath"
+          )
+          test "$unsigned_commit" != "$bundle_commit" \
+            || fail "unsigned reconstruction unexpectedly reproduced signed commit identity"
+          test "$(git --git-dir="$negative_repo" rev-parse "$unsigned_commit^{tree}")" = "$bundle_tree" \
+            || fail "unsigned negative control does not preserve the patched tree"
+          has_pinned_sole_parent "$negative_repo" "$unsigned_commit" \
+            || fail "unsigned negative control does not preserve the pinned parent"
+          test "$(signature_header_count "$negative_repo" "$unsigned_commit")" -eq 0 \
+            || fail "unsigned negative control unexpectedly contains a signature header"
+
+          multi_parent_commit=$(
+            GIT_AUTHOR_NAME="${atomicPatch.deterministicAuthorName}" \
+            GIT_AUTHOR_EMAIL="${atomicPatch.deterministicAuthorEmail}" \
+            GIT_AUTHOR_DATE="${atomicPatch.deterministicPatchDate}" \
+            GIT_COMMITTER_NAME="${atomicPatch.deterministicAuthorName}" \
+            GIT_COMMITTER_EMAIL="${atomicPatch.deterministicAuthorEmail}" \
+            GIT_COMMITTER_DATE="${atomicPatch.deterministicPatchDate}" \
+              git --git-dir="$negative_repo" -c commit.gpgsign=false commit-tree \
+                "$reconstructed_tree" -p "$base_commit" -p "$unsigned_commit" \
+                < "$atomicMessagePath"
+          )
+          if has_pinned_sole_parent "$negative_repo" "$multi_parent_commit"; then
+            fail "sole-parent verifier accepted a two-parent commit"
+          fi
+
+          git checkout -q -f base
 
           {
             git ls-files --others --exclude-standard -z
@@ -187,7 +268,14 @@ in
           bundle_hash=${atomicPatch.bundleSha256}
           apply_commit_tree_verified=true
           bundle_matches_patch_commit=true
+          pinned_bundle_identity_authenticated=true
+          bundle_commit_signature_embedded=true
+          bundle_commit_tree_matches_reconstruction=true
+          bundle_commit_sole_parent_verified=true
+          atomic_patch_regenerated_exactly=true
           dco_verified=true
+          unsigned_commit_negative_control=true
+          sole_parent_negative_control=true
           source_extractions=1
           full_tree_staging_passes=1
           source_supplement_files=$supplement_file_count

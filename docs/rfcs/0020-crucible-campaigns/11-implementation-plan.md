@@ -1906,8 +1906,10 @@ snapshot, and a strict registered v2 plan header now compose store-graph,
 root-manifest, candidate-manifest, blob, ref, and ledger hashes/generations into
 one immutable identity. Complete manifest/reachability planning,
 interruption-safe global-GC apply/recovery, composed store-graph administration,
-and production maintenance ownership remain open. Those gaps do not weaken the
-separately completed packed-leaf T-CAM-5.6 contract.
+and stopped-owner production maintenance are implemented. The remaining work is
+the representative backend, failure, and operator evidence tracked by
+T-CAM-5.8; it does not weaken the separately completed packed-leaf T-CAM-5.6
+contract.
 
 The production exact-closure checkpoint now holds every running QEMU node
 paused while it authenticates and streams the live generation's direct-plus-
@@ -1926,8 +1928,13 @@ input. Version-nine targets bind the actual immutable root-image byte identity
 and reject a different backing before QEMU launch. Every noncurrent production
 manifest is rejected during decode and cannot reach
 runtime launch. This completes the bounded
-changed-overlay storage portion of T-CAM-5.4; long RAM delta-chain compaction
-remains separate open work.
+changed-overlay storage portion of T-CAM-5.4. Production RAM capture also
+bounds retained chains at eight layers: the ninth capture becomes a complete
+direct capture with one layer and no parent-closure provenance. The old lease
+remains rollback authority through durable publication, and successful
+reconciliation retires its ancestor leases. Existing QEMU coverage proves an
+eight-layer reconstruction equals a direct probe; lifecycle coverage proves
+the production rebase identity and ownership transition.
 
 **Gates:** `gate:campaign-store-equivalence`, `gate:campaign-store-composition`,
 `gate:exact-closure-streaming`, `gate:campaign-cold-continuity`.

@@ -91,6 +91,19 @@ pub(super) fn retained_exact_ram_parent_for_committed(
     Ok((Some(parent.closure), Some(checkpoint)))
 }
 
+/// Selects direct capture for genesis or when the retained chain is full.
+pub(super) fn exact_ram_capture_kind_for_parent(
+    parent: Option<&ProductionExactRamCheckpoint>,
+) -> ProductionExactRamKind {
+    if parent.is_none()
+        || parent.is_some_and(ProductionExactRamCheckpoint::requires_direct_compaction)
+    {
+        ProductionExactRamKind::Direct
+    } else {
+        ProductionExactRamKind::Delta
+    }
+}
+
 /// Lifecycle-owned state of one exact-checkpoint publication attempt.
 #[derive(Debug)]
 pub(in crate::vm_lifecycle) enum ExactCheckpointPublicationState {
@@ -744,6 +757,39 @@ mod tests {
         }
     }
 
+    fn checkpoint_identity(label: &str) -> ProductionExactCheckpointIdentity {
+        ProductionExactCheckpointIdentity {
+            checkpoint: ContentHash::from_bytes(format!("{label} checkpoint").as_bytes()),
+            target: ContentHash::from_bytes(format!("{label} target").as_bytes()),
+            frontier: ContentHash::from_bytes(format!("{label} frontier").as_bytes()),
+        }
+    }
+
+    fn retained_test_artifact(
+        lease: &Arc<RetainedChunkStoreLease>,
+        label: &str,
+    ) -> ProductionCheckpointArtifact {
+        ProductionCheckpointArtifact {
+            source: ProductionCheckpointArtifactSource::RetainedChunkStore(Arc::clone(lease)),
+            identity: ContentHash::from_bytes(label.as_bytes()),
+            length: 1,
+            chunks: Vec::new(),
+            sparse: false,
+            extents: Vec::new(),
+        }
+    }
+
+    fn staged_test_artifact(label: &str) -> ProductionCheckpointArtifact {
+        ProductionCheckpointArtifact {
+            source: ProductionCheckpointArtifactSource::ChunkStore(PathBuf::from(label)),
+            identity: ContentHash::from_bytes(label.as_bytes()),
+            length: 1,
+            chunks: Vec::new(),
+            sparse: false,
+            extents: Vec::new(),
+        }
+    }
+
     #[test]
     fn cleanup_attempts_every_capture_in_reverse_order() {
         #[derive(Debug, PartialEq, Eq)]
@@ -975,6 +1021,144 @@ mod tests {
             publications.get(&configuration),
             Some(ExactCheckpointPublicationState::Published(observed)) if *observed == identity
         ));
+    }
+
+    #[test]
+    fn ninth_capture_rebases_and_reconciled_publication_retires_ancestors() {
+        let node = NodeId {
+            name: String::from("vm-a"),
+        };
+        let topology = ContentHash::from_bytes(b"RAMBlock topology");
+        let old_closure = ContentHash::from_bytes(b"eight-layer closure");
+        let old_lease = Arc::new(RetainedChunkStoreLease {
+            directory: PathBuf::from("old-retained-objects"),
+            objects: BTreeMap::new(),
+        });
+        let old_lease_observer = Arc::downgrade(&old_lease);
+        let mut old_layers = Vec::new();
+        let mut prior_identity = None;
+        for index in 0..crucible::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS {
+            let identity = checkpoint_identity(&format!("layer-{index}"));
+            old_layers.push(ProductionExactRamLayer {
+                kind: if index == 0 {
+                    ProductionExactRamKind::Direct
+                } else {
+                    ProductionExactRamKind::Delta
+                },
+                identity,
+                parent: prior_identity,
+                topology,
+                ram_regions: 1,
+                ram_records: 1,
+                content_sha256: ContentHash::from_bytes(format!("layer-{index} sha256").as_bytes()),
+                artifact: retained_test_artifact(&old_lease, &format!("layer-{index} artifact")),
+            });
+            prior_identity = Some(identity);
+        }
+        let old_identity = prior_identity.unwrap_or_else(|| panic!("test chain must be nonempty"));
+        let old_checkpoint = ProductionExactRamCheckpoint::new(
+            Some(old_closure),
+            ContentHash::from_bytes(b"old device sha256"),
+            retained_test_artifact(&old_lease, "old device artifact"),
+            old_layers,
+        )
+        .unwrap_or_else(|error| panic!("build eight-layer parent: {error}"));
+        drop(old_lease);
+
+        let old_configuration = old_identity.checkpoint;
+        let mut parents = BTreeMap::from([(
+            old_configuration,
+            ProductionExactRamPublishedParent {
+                closure: old_closure,
+                targets: BTreeMap::from([(node.clone(), old_checkpoint)]),
+            },
+        )]);
+        let (parent_closure, parent_checkpoint) =
+            retained_exact_ram_parent_for_committed(&parents, &node, Some(old_identity.into()))
+                .unwrap_or_else(|error| panic!("select eight-layer parent: {error}"));
+        let parent_checkpoint =
+            parent_checkpoint.unwrap_or_else(|| panic!("committed parent must be retained"));
+
+        assert_eq!(parent_closure, Some(old_closure));
+        assert!(parent_checkpoint.requires_direct_compaction());
+        assert_eq!(
+            exact_ram_capture_kind_for_parent(Some(&parent_checkpoint)),
+            ProductionExactRamKind::Direct
+        );
+
+        let new_identity = checkpoint_identity("ninth-capture");
+        let compacted = ProductionExactRamCheckpoint::from_captured_layer(
+            parent_closure,
+            Some(parent_checkpoint),
+            ProductionExactRamKind::Direct,
+            ContentHash::from_bytes(b"new device sha256"),
+            staged_test_artifact("new device artifact"),
+            ProductionExactRamLayer {
+                kind: ProductionExactRamKind::Direct,
+                identity: new_identity,
+                parent: None,
+                topology,
+                ram_regions: 1,
+                ram_records: 8,
+                content_sha256: ContentHash::from_bytes(b"new direct sha256"),
+                artifact: staged_test_artifact("new direct artifact"),
+            },
+        )
+        .unwrap_or_else(|error| panic!("assemble ninth direct capture: {error}"));
+
+        assert_eq!(compacted.parent_closure, None);
+        assert_eq!(compacted.identity, new_identity);
+        assert_eq!(compacted.layers.len(), 1);
+        assert_eq!(compacted.layers[0].kind, ProductionExactRamKind::Direct);
+        assert_eq!(compacted.layers[0].parent, None);
+        assert!(!compacted.requires_direct_compaction());
+        compacted
+            .validate()
+            .unwrap_or_else(|error| panic!("compacted RAM chain must validate: {error}"));
+
+        // The old CAS lease remains rollback authority until the replacement
+        // becomes the only published parent.
+        assert!(old_lease_observer.upgrade().is_some());
+        let new_configuration = new_identity.checkpoint;
+        let new_closure = ContentHash::from_bytes(b"ninth-capture closure");
+        parents.insert(
+            new_configuration,
+            ProductionExactRamPublishedParent {
+                closure: new_closure,
+                targets: BTreeMap::from([(node.clone(), compacted)]),
+            },
+        );
+        let mut publications = BTreeMap::from([(
+            new_configuration,
+            ExactCheckpointPublicationState::PublicationIndeterminate(new_closure),
+        )]);
+        let published = finish_reconciled_exact_ram_publication(
+            &mut publications,
+            &mut parents,
+            new_configuration,
+            new_closure,
+        )
+        .unwrap_or_else(|error| panic!("finish compacted publication: {error}"));
+
+        assert_eq!(published, new_closure);
+        assert!(matches!(
+            publications.get(&new_configuration),
+            Some(ExactCheckpointPublicationState::Published(observed))
+                if *observed == new_closure
+        ));
+        assert!(old_lease_observer.upgrade().is_none());
+
+        let (_, restored) =
+            retained_exact_ram_parent_for_committed(&parents, &node, Some(new_identity.into()))
+                .unwrap_or_else(|error| panic!("select compacted restore parent: {error}"));
+        let restored = restored.unwrap_or_else(|| panic!("compacted parent must be retained"));
+        assert_eq!(restored.identity, new_identity);
+        assert_eq!(restored.layers.len(), 1);
+        assert_eq!(restored.layers[0].kind, ProductionExactRamKind::Direct);
+        assert_eq!(
+            exact_ram_capture_kind_for_parent(Some(&restored)),
+            ProductionExactRamKind::Delta
+        );
     }
 
     #[cfg(feature = "test-support")]

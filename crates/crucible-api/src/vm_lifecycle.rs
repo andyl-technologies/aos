@@ -574,6 +574,50 @@ impl ProductionExactRamCheckpoint {
     pub(super) const fn requires_direct_compaction(&self) -> bool {
         self.layers.len() >= crucible::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
     }
+
+    /// Builds the retained chain for one admitted direct or delta capture.
+    ///
+    /// A direct capture rebases the chain and deliberately drops all parent
+    /// provenance. A delta capture appends to the authenticated parent chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a delta has no retained parent, allocation fails,
+    /// or the resulting direct-then-delta chain is invalid.
+    pub(super) fn from_captured_layer(
+        parent_closure: Option<ContentHash>,
+        parent: Option<Self>,
+        capture_kind: ProductionExactRamKind,
+        device_content_sha256: ContentHash,
+        device_artifact: ProductionCheckpointArtifact,
+        layer: ProductionExactRamLayer,
+    ) -> Result<Self, SchedulerError> {
+        if capture_kind == ProductionExactRamKind::Direct {
+            // A direct capture is a complete replacement. The published parent
+            // owner remains live until durable publication, but it must not be
+            // reachable from the replacement manifest.
+            return Self::new(None, device_content_sha256, device_artifact, vec![layer]);
+        }
+
+        let mut layers = parent
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("delta exact checkpoint lost its authenticated parent chain"),
+            })?
+            .layers;
+        layers
+            .try_reserve_exact(1)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("extend exact RAM checkpoint layers: {error}"),
+            })?;
+        layers.push(layer);
+
+        Self::new(
+            parent_closure,
+            device_content_sha256,
+            device_artifact,
+            layers,
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
