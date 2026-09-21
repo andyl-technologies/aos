@@ -117,7 +117,16 @@ in
       ];
       inherit scrubMap;
       populateBCR = false;
-      depsHash = lib.fakeHash;
+      captureModuleLock = true;
+      removeRepos = [
+        "bazel_tools"
+        "embedded_jdk"
+        "local_config_cc"
+        "local_jdk"
+        "+local_runtime_repo+aos_python"
+        "rules_java++toolchains+local_jdk"
+      ];
+      depsHash = "sha256-D7DtL0GQSjDSNh+35lLOu+LOadgnZYz/7oc8G5KIpxw=";
       bazelTarget = "//src/workerd/server:workerd";
       bazelFlags =
         [
@@ -135,7 +144,11 @@ in
       postFetch = ''
         ${python3}/bin/python3 ${./clean-bazel-tool-downloads.py} "$bazelOut/external"
       '';
-      preBazelBuild = prepareSource + configureEnvironment;
+      preBazelBuild =
+        configureEnvironment
+        + ''
+          sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' tools/unix/workspace-status.sh
+        '';
       bazelBuildFlags = [
         "-c opt"
         "--spawn_strategy=processwrapper-sandbox,standalone"
