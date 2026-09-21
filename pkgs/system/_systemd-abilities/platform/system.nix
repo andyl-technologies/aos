@@ -1,8 +1,8 @@
 ##! pkgs/system/_systemd-abilities/platform/system.nix — Stage 2 systemd module
 ##!
 ##! Declares the typed `systemd.*` option tree (services, timers, sockets,
-##! targets, paths, slices, mounts, automounts, units, plus the package /
-##! packages / globalEnvironment plumbing), wires `systemd.units` via the
+##! targets, paths, slices, mounts, automounts, and global environment),
+##! derives the internal `systemd.units` rendering through the
 ##! *-ToUnit rendering functions in `pkgs/system/_systemd-abilities/platform/render.nix`, and produces
 ##! `system.build.systemdSystemUnits` — a derivation whose output is a
 ##! directory matching `/etc/systemd/system/`.
@@ -15,7 +15,6 @@
   abilitySelection ? null,
   config,
   lib,
-  packageName ? null,
   packageArtifactFor,
   provenance,
   ...
@@ -76,15 +75,9 @@
     };
   servicesWithGlobalEnv = lib.mapAttrs (_: mergeGlobalEnv) cfg.services;
 
-  # --- union of *-ToUnit outputs -----------------------------------------
-  #
-  # Mirrors nixos/modules/system/boot/systemd.nix:702-713: run each
-  # category through its renderer, key the result by the rendered unit
-  # name (`chronyd.service`, not `chronyd`), and union the lot. Modules
-  # that write directly into `systemd.units.<name>` with raw text still
-  # work — mkMerge handles the union because `systemd.units` is declared
-  # below as `attrsOf (submodule [...])`, whose merge runs across all
-  # contributors.
+  # Run each typed category through its renderer, key the result by the
+  # rendered unit name (`chronyd.service`, not `chronyd`), and join the result
+  # into the manager's internal unit projection.
   withName = cfgToUnit: c: lib.nameValuePair c.name (cfgToUnit c);
   renderedUnits =
     lib.mapAttrs' (_: withName systemdLib.serviceToUnit) servicesWithGlobalEnv
@@ -95,10 +88,6 @@
     // lib.mapAttrs' (_: withName systemdLib.sliceToUnit) cfg.slices
     // lib.listToAttrs (builtins.map (withName systemdLib.mountToUnit) cfg.mounts)
     // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
-  renderedUnitOwner =
-    if packageName == null
-    then "@base"
-    else packageName;
 in {
   options.systemd = {
     providerUnitPlans = lib.mkOption {
@@ -210,14 +199,9 @@ in {
     units = lib.mkOption {
       type = systemdTypes.units;
       default = {};
-      contributable = true;
-      description = ''
-        Generic escape-hatch unit type. Modules that want to ship raw
-        unit text, such as a provider-owned drop-in, can declare entries
-        here directly. The `systemd.services` / `systemd.targets`
-        / etc. renderers feed into this attrset automatically in
-        `config.systemd.units` below.
-      '';
+      internal = true;
+      readOnly = true;
+      description = "Derived rendering of the typed systemd unit declarations.";
     };
   };
 
@@ -336,7 +320,7 @@ in {
 
     pureSystemUnits = systemdLib.generateUnits {
       type = "system";
-      units = config.systemd.units;
+      units = renderedUnits;
     };
 
     artifactOwner = path: name: let
@@ -384,39 +368,7 @@ in {
       if duplicateTypedNames != []
       then throw "typed systemd definitions collide at final unit name(s): ${lib.concatStringsSep ", " duplicateTypedNames}"
       else builtins.foldl' (acc: owners: acc // owners) {} typedOwnerSets;
-    rawUnitNames =
-      builtins.attrNames
-      (builtins.removeAttrs cfg.units (builtins.attrNames typedUnitOwners));
-    rawUnitOwners = builtins.listToAttrs (builtins.map (name:
-      lib.nameValuePair name
-      (provenance.ownerOfAttr ["systemd" "units"] name))
-    rawUnitNames);
-    typedRawCollisionCheck =
-      builtins.foldl' (checked: name: let
-        allDefs = provenance.definitionsOfAttr ["systemd" "units"] name;
-        # `config.systemd.units = renderedUnits` contributes exactly one
-        # definition from this renderer for every typed unit. Remove exactly
-        # one such record; every remaining definition is a genuine raw-unit
-        # source, including another definition from the same owner.
-        stripped =
-          builtins.foldl' (state: definition:
-            if !state.removed && definition.owner == renderedUnitOwner
-            then state // {removed = true;}
-            else state // {definitions = state.definitions ++ [definition];}) {
-            removed = false;
-            definitions = [];
-          }
-          allDefs;
-        rawDefs = stripped.definitions;
-        rawOwners = lib.unique (builtins.map (definition: definition.owner) rawDefs);
-        typedOwner = typedUnitOwners.${name};
-      in
-        if rawDefs == []
-        then checked
-        else throw "raw systemd unit ${name} collides with typed owner ${typedOwner}; raw owner(s): ${lib.concatStringsSep ", " rawOwners}")
-      true
-      (builtins.attrNames typedUnitOwners);
-    unitOwners = builtins.seq typedRawCollisionCheck (typedUnitOwners // rawUnitOwners);
+    unitOwners = typedUnitOwners;
 
     asList = value:
       if value == null
@@ -463,13 +415,6 @@ in {
       // attrActions "slice" cfg.slices
       // listActions "mount" cfg.mounts
       // listActions "automount" cfg.automounts;
-    rawUnitActions = builtins.listToAttrs (builtins.map (name:
-      lib.nameValuePair name {
-        action = "restart";
-        credentials = [];
-        enable = cfg.units.${name}.enable;
-      })
-    rawUnitNames);
 
     # `stopOnReconfiguration` is target-only (NixOS semantics). Flag it on
     # any non-target typed unit. attrset-keyed categories:
@@ -551,10 +496,8 @@ in {
 
     warnings = reloadWithoutExecReloadWarnings;
 
-    # Merge the rendered unit attrsets back into `systemd.units` so
-    # `generateUnits` can see everything (both raw unit text from
-    # modules that bypassed the typed options and compiled text from
-    # the *-ToUnit renderers) in a single place.
+    # Retain the rendered tree as an internal inspection projection. All
+    # authored units enter through the typed category options above.
     systemd.units = renderedUnits;
 
     # Provider-owned units are rendered by the same compiled implementation
@@ -599,7 +542,7 @@ in {
     in
       lib.mapAttrs (key: _: scriptOwner key) config.system.build.systemdJobScripts;
     system.build.systemdUnitOwners = unitOwners;
-    system.build.systemdUnitActions = typedUnitActions // rawUnitActions;
+    system.build.systemdUnitActions = typedUnitActions;
 
     # Route the rendered unit directory through environment.etc so
     # the EROFS image carries it as a real directory of symlinks (the

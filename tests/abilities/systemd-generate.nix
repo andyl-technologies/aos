@@ -82,31 +82,26 @@
         wants = ["hello-world.service"];
       };
 
-      # Raw-unit escape hatches exercise manifest layout cases that typed
-      # services do not: an unconditional drop-in and a masked unit.
-      units."upstream.service" = {
+      # Typed declarations cover drop-ins, masks, aliases, and install links.
+      services.upstream = {
         overrideStrategy = "asDropin";
-        text = ''
-          [Service]
-          Environment=AOS_OVERRIDE=1
-        '';
+        serviceConfig = {
+          ExecStart = "/bin/true";
+          Environment = "AOS_OVERRIDE=1";
+        };
       };
-      units."masked.service" = {
+      services.masked = {
         enable = false;
-        text = null;
+        serviceConfig.ExecStart = "/bin/true";
       };
-
-      # A default-strategy unit without a package peer remains top-level.
-      units."fresh.service".text = "[Service]\nExecStart=/bin/true\n";
-
-      # Alias and install metadata become exact dependency links.
-      units."primary.service" = {
-        text = "[Service]\nExecStart=/bin/true\n";
+      services.fresh.serviceConfig.ExecStart = "/bin/true";
+      services.primary = {
         aliases = ["alias.service"];
+        serviceConfig.ExecStart = "/bin/true";
       };
-      units."replacement.service" = {
-        text = "[Service]\nExecStart=/bin/true\n";
+      services.replacement = {
         wantedBy = ["multi-user.target"];
+        serviceConfig.ExecStart = "/bin/true";
       };
     };
   };
@@ -120,46 +115,21 @@
     inherit pkgs lib;
   };
 
-  rawTypedCrossOwnerRejected =
+  typedCrossCategoryRejected =
     !(builtins.tryEval (
       builtins.toJSON ((lib.evalModules {
           modules = [systemdModule];
           packageModules = [
             {
-              name = "typed-owner";
+              name = "service-owner";
               module.config.systemd.services.collision = {
-                description = "typed";
+                name = "collision.service";
                 serviceConfig.ExecStart = "/bin/true";
               };
             }
             {
-              name = "raw-owner";
-              module.config.systemd.units."collision.service".text = "[Service]\nExecStart=/bin/false\n";
-            }
-          ];
-          inherit pkgs lib;
-        })
-        .config
-        .system
-        .build
-        .systemdUnitOwners)
-    ))
-    .success;
-
-  baseRawTypedPackageRejected =
-    !(builtins.tryEval (
-      builtins.toJSON ((lib.evalModules {
-          modules = [
-            systemdModule
-            {config.systemd.units."base-collision.service".text = "[Service]\nExecStart=/bin/false\n";}
-          ];
-          packageModules = [
-            {
-              name = "typed-owner";
-              module.config.systemd.services.base-collision = {
-                description = "typed";
-                serviceConfig.ExecStart = "/bin/true";
-              };
+              name = "target-owner";
+              module.config.systemd.targets.collision.name = "collision.service";
             }
           ];
           inherit pkgs lib;
@@ -207,8 +177,8 @@
       msg = "systemd-generate: generateUnits output must be a pure attrset";
     }
     {
-      cond = rawTypedCrossOwnerRejected && baseRawTypedPackageRejected;
-      msg = "systemd-generate: raw/typed unit collisions must be rejected, including base raw definitions";
+      cond = typedCrossCategoryRejected;
+      msg = "systemd-generate: typed unit categories must reject final-name collisions";
     }
     {
       cond = builtins.all (unit: builtins.isString unit.text && builtins.isString unit.mode) (builtins.attrValues pureUnits);
