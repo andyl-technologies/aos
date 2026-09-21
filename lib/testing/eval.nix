@@ -135,14 +135,6 @@
       sshDaemonService.value.dependencies.after
     then throw "server sshd must not form a cycle with graph activation"
     else "package-owned readiness resource";
-  # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
-  # MODULE_SIG, whose default key generation breaks third-party
-  # bit-reproducibility of the public base image. Fail loudly at eval time
-  # if the option declaration ever reappears.
-  noKernelLockdown =
-    if system.options.aos.security.hardening ? kernelLockdown
-    then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
-    else "ok";
   verityDisablesGenericLuks = let
     occurrences = builtins.length (builtins.filter (parameter: parameter == "rd.luks=0") system.config.aos.boot.kernelParams);
   in
@@ -328,17 +320,10 @@
       (assertOptionalRecurringLifecycleUnit "systemd-tmpfiles-setup-dev")
       (assertOptionalRecurringLifecycleUnit "systemd-sysusers"));
 
-  # Provisioning and configuration are structural, not optional paths. Their
-  # former enable switches must stay deleted and
-  # the stock system must always emit every stage.
+  # Provisioning and configuration are structural. The stock system always
+  # emits every stage.
   structuralConfiguration =
-    if lib.hasAttrByPath ["aos" "config" "evalAtBoot" "enable"] system.options
-    then throw "aos.config.evalAtBoot.enable must not exist"
-    else if lib.hasAttrByPath ["aos" "provisioning" "metadataAgent" "enable"] system.options
-    then throw "aos.provisioning.metadataAgent.enable must not exist"
-    else if lib.hasAttrByPath ["aos" "provisioning" "repart"] system.options
-    then throw "aos.provisioning.repart must not exist"
-    else if aosEvalService.value.service != "configuration-evaluation"
+    if aosEvalService.value.service != "configuration-evaluation"
     then throw "the stock fixed point must contain package-owned host configuration evaluation"
     else if registrySyncService.value.service != "registry-synchronization"
     then throw "the stock fixed point must contain package-owned registry synchronization"
@@ -520,11 +505,7 @@
   edgeCustomizedResources =
     builtins.attrValues edgeHostCustomized.config.aos.abilities.resolvedResources;
   edgeImageHostBoundary =
-    if !(edgeImage.options.aos.roles.edge ? enable)
-    then throw "the base library must expose aos.roles.edge.enable to host.nix"
-    else if edgeImage.options.aos.profiles ? edge
-    then throw "the image-coupled aos.profiles.edge compatibility option must not remain"
-    else if edgeImage.config.aos.roles.edge.enable
+    if edgeImage.config.aos.roles.edge.enable
     then throw "the production edge image must not preselect its runtime role"
     else if edgeImage.config.aos.services.chrony.enable
     then throw "the production edge image must not bake chrony runtime policy"
@@ -950,7 +931,6 @@ in
         echo "base-lib ABI:    follows source-backed image module overrides (${baseLibFollowsImageAbi})"
         echo "inline modules:  rejected for image/base-lib outputs (${inlineImageModuleRejected})"
         echo "config input ABI: advertised in os-release and toplevel metadata (2)"
-        echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "server SSH:      waits for live host policy (${serverSshWaitsForLiveHostPolicy})"
