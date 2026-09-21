@@ -301,19 +301,28 @@ the outstanding work concrete:
   attempts inventory publication but rejects pending mutation work.
   Replace those unavailable dependencies with the authenticated request
   compiler and durable effect dispatcher, including restart recovery.
-- The controller's Host catalog publication still uses its legacy transport.
-  The packaged broker entry points accept sessions through
-  `ProductionBrokerSessionActivationV1::accept_authenticated`. Connect catalog
-  publication through that protected session protocol before claiming the
-  deployed controller can become ready.
+- The controller's Host catalog publication now uses the protected descriptor
+  request path. The packaged broker entry points accept sessions through
+  `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end
+  production qualification and restart recovery remain incomplete.
   The production runtime now lives in the session-security crate, above the
   controller core, so those protected owners can be connected without a crate
   cycle. Mount, destination-slot, Storage, and Network inventory now use retained
   fixed protected sessions, check
   the controller's node identity, and fence snapshot commits against intervening
   controller-journal changes. Network also rejects existing checkpoint history.
-  Host publication still needs replacement; the broker must
-  not accept legacy unauthenticated traffic as a compatibility shortcut.
+  Host publication binds signed requests and receipts to the exact durable
+  pending catalog, transfers a sealed descriptor, and retains the authenticated
+  session after successful requests. In-process backpressure and ambiguous
+  commits retain exact request/descriptor or recovery custody. A nonterminal
+  previous-process session rejects new admission as required by the version-2
+  journal contract in `09-protocols-and-formats.md`: qualify terminal process
+  rollover and provide the operator reconciliation workflow for nonterminal
+  history, without clearing protected history or accepting legacy traffic.
+  Host now retains one session per role and alternates ready controller and
+  RootMount roles across bounded request cycles while keeping effects serial.
+  Production qualification must exercise both roles concurrently; readiness
+  polling and round-robin unit checks alone do not qualify the deployed path.
 - That service registers `DiscoveryService` and `OperationService` only.
   Operation get, cancel, and watch return unavailable errors. Register and
   connect the remaining public services to their authorized controller

@@ -100,6 +100,19 @@ impl HostCatalogPublicationDraftV1 {
     pub const fn expected_digest(&self) -> ObjectDigest {
         self.expected_digest
     }
+
+    /// Creates an immutable transfer descriptor containing the exact catalog bytes.
+    ///
+    /// The descriptor is sealed against writes, resizing, and seal changes.
+    /// It carries no publication authority; the protected transport must bind
+    /// it to the signed request's catalog length and digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating, populating, or sealing the memfd fails.
+    pub fn sealed_transfer_descriptor(&self) -> Result<OwnedFd, HostCatalogPublicationError> {
+        Ok(SealedCatalogFile::create(self.canonical_catalog())?.fd)
+    }
 }
 
 /// Supplies the configured Host record-subject policy for socket replies.

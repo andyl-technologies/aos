@@ -115,6 +115,10 @@ in
   assert requires "complete_authenticated_destination_slot_inventory" runtimeSource;
   assert requiresAbsent "MountInventoryClient" runtimeSource;
   assert requiresAbsent "DestinationSlotInventoryClient" runtimeSource;
+  assert requires "ControllerHostClient" runtimeSource;
+  assert requires "complete_authenticated_host_catalog_publication" runtimeSource;
+  assert requiresAbsent "HostCatalogPublicationClient" runtimeSource;
+  assert requiresAbsent ".dispatch_host_catalog(" runtimeSource;
   assert requires "broker_retryability_is_preserved_across_inventory_classification" runtimeSource;
   assert requires "host_publication_retryability_is_preserved_through_reconciliation" runtimeSource;
   assert requires "hostile_publication_and_transport_failures_are_terminal" runtimeSource;

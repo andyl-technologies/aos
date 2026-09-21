@@ -18,6 +18,8 @@
 //! effect authority; Host still requires a separately signed, leased launch
 //! plan whose assignment and resource selectors match the published rows.
 
+pub(crate) mod authenticated;
+
 use aos_proto::aos::sandbox::local::v1::DestinationSlotLifecycle;
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest};
 use aos_sandbox_protocol::{
@@ -610,6 +612,17 @@ pub(crate) fn dispatch(
     }
 
     let _status = client.publish(&draft, deadline_boottime_nanoseconds)?;
+    commit_confirmation(journal, pending)
+}
+
+/// Commits only the exact still-pending catalog after its receipt is validated.
+fn commit_confirmation(
+    journal: &mut Journal,
+    pending: DurablePendingHostCatalogV1,
+) -> Result<DurableCurrentHostCatalogV1, HostCatalogReconciliationError> {
+    if CatalogHistory::load(journal)?.pending.as_ref() != Some(&pending.record) {
+        return Err(HostCatalogReconciliationError::InventoryConflict);
+    }
     journal.commit(&pending.record.completion_transaction()?)?;
 
     let committed = CatalogHistory::load(journal)?;

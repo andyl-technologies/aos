@@ -6,6 +6,10 @@
 //! audiences, journals, and key custody cannot be confused. Accepted sockets
 //! complete the fixed protected handshake before leaving this module.
 
+mod host;
+
+pub use host::{ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1};
+
 use std::collections::BTreeMap;
 use std::os::fd::OwnedFd;
 use std::path::Path;

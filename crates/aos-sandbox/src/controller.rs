@@ -4063,6 +4063,31 @@ where
         )
     }
 
+    /// Confirms the exact pending catalog using a signed Host publication result.
+    ///
+    /// The transport owner must durably receive the result and revalidate its
+    /// protected session currentness immediately before calling this method.
+    /// Rejected or mismatched results leave the pending catalog unchanged.
+    /// This method does not recover an outstanding transport request.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected journals, substituted pending state, wrong methods
+    /// or outcome directions, mismatched publication bindings, Host rejection,
+    /// and failed confirmation commits.
+    #[cfg(target_os = "linux")]
+    pub fn complete_authenticated_host_catalog_publication(
+        &mut self,
+        pending: crate::DurablePendingHostCatalogV1,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<crate::DurableCurrentHostCatalogV1, crate::HostCatalogReconciliationError> {
+        crate::host_catalog_reconciliation::authenticated::complete_publication(
+            self.reconciler.journal_mut(),
+            pending,
+            outcome,
+        )
+    }
+
     /// Reconciles one current logical slot with fresh complete broker state.
     ///
     /// Exact sandbox, incarnation, namespace, specification, and logical

@@ -42,6 +42,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod controller_publication;
 pub mod controller_service;
 mod dormant_handshake;
 mod endpoint;
@@ -130,6 +131,7 @@ pub use manifest::{
 };
 pub use production_activation::{
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
+    ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1,
 };
 pub use production_dispatch::{
     ProductionHostBrokerDispatchCommitV1, ProductionHostBrokerDispatchFailureV1,

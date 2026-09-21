@@ -1,10 +1,12 @@
 //! Production runtime for the unprivileged node controller.
 //!
 //! The service is the sole writer of its protected journal. On every restart it
-//! replays any durable pending Host catalog before acquiring new authenticated
+//! resolves any durable pending Host catalog before acquiring new authenticated
 //! Storage, Network, Mount, or destination-slot observations. Only a complete
 //! mutually current inventory projection and authenticated Host confirmation
 //! opens the systemd readiness gate.
+//! Unresolved prior-process session history remains fail-closed; a new request
+//! identity is not a substitute for exact transport recovery.
 //!
 //! The first production tranche deliberately exposes only the read-only
 //! public feature registry and `GetNodeCapabilities` diagnostic RPCs to root
@@ -34,7 +36,6 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_linux::Error as LinuxError;
-use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
@@ -46,12 +47,13 @@ use rustix::net::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
 use aos_sandbox::controller::DormantControllerCompositionV1;
 use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
 };
 use aos_sandbox::host_catalog_publication::{
-    HostCatalogPublicationClient, HostCatalogPublicationError, HostCatalogServiceIdentity,
+    HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::{
@@ -65,13 +67,8 @@ use aos_sandbox::{
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const JOURNAL_NAME: &str = "controller.journal";
 const DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
-const HOST_SOCKET: &str = "/run/aos/sandbox-host/control.sock";
-const CGROUP_ROOT: &str = "/sys/fs/cgroup";
-const HOST_SLICE: &str = "system.slice";
-const HOST_SERVICE: &str = "aos-sandbox-hostd.service";
 const NODE_ID_CREDENTIAL: &str = "node-id";
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
-const HOST_PUBLICATION_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
 const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
 
@@ -80,6 +77,7 @@ type ProductionController = NodeController<UnavailableCompiler, UnavailableExecu
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
 struct ControllerBrokerSessions {
+    host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
     network: Option<crate::DormantNetworkLifecycleInventoryOwnerV1>,
@@ -310,16 +308,19 @@ fn run_controller_cycle(
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<CatalogStatus, CycleFailure> {
+    let mut state = (controller, sessions);
     pending_first_read_only_cycle(
-        controller,
-        |controller| {
+        &mut state,
+        |(controller, _)| {
             controller
                 .pending_host_catalog()
                 .map_err(|error| CycleFailure::Fatal(error.to_string()))
         },
-        |controller, pending| publish_pending(controller, pending).map(|_| ()),
-        validate_read_only_ledger,
-        |controller| refresh_catalog(controller, node_id, sessions),
+        |(controller, sessions), pending| {
+            publish_pending(controller, pending, node_id, sessions).map(|_| ())
+        },
+        |(controller, _)| validate_read_only_ledger(controller),
+        |(controller, sessions)| refresh_catalog(controller, node_id, sessions),
     )
 }
 
@@ -370,20 +371,47 @@ fn refresh_catalog(
             generation: current.generation(),
             digest: current.catalog_digest(),
         }),
-        HostCatalogReconciliationV1::Publish(pending) => publish_pending(controller, pending),
+        HostCatalogReconciliationV1::Publish(pending) => {
+            publish_pending(controller, pending, node_id, sessions)
+        }
     }
 }
 
 fn publish_pending(
     controller: &mut ProductionController,
     pending: aos_sandbox::DurablePendingHostCatalogV1,
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
 ) -> Result<CatalogStatus, CycleFailure> {
-    let client = host_publication_client()?;
-    let deadline = boottime_nanoseconds()?
-        .checked_add(HOST_PUBLICATION_WINDOW_NANOSECONDS)
-        .ok_or_else(|| CycleFailure::Retryable("Host publication deadline overflow".to_owned()))?;
+    if sessions.host.is_none() {
+        let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+            crate::ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient,
+        )
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        let deadline = crate::production_deadline_after(Duration::from_secs(10))
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        let mut session = custody
+            .connect_production_client_session(deadline)
+            .map_err(classify_protected_handshake_error)?;
+        session
+            .require_current_node(node_id)
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        sessions.host = Some(ControllerHostPublication::new(session));
+    }
+    let publisher = sessions
+        .host
+        .as_mut()
+        .ok_or_else(|| CycleFailure::Fatal("protected Host session was not retained".to_owned()))?;
+    let draft = HostCatalogPublicationDraftV1::new(
+        pending.canonical_catalog().to_vec(),
+        pending.generation(),
+    )
+    .map_err(classify_publication_error)?;
+    let outcome = publisher
+        .publish(&draft)
+        .map_err(classify_protected_publication_error)?;
     let current = controller
-        .dispatch_host_catalog(pending, client, deadline)
+        .complete_authenticated_host_catalog_publication(pending, &outcome)
         .map_err(classify_catalog_error)?;
     Ok(CatalogStatus {
         generation: current.generation(),
@@ -516,34 +544,13 @@ fn authenticated_network_inventory(
         .map_err(classify_resource_error)
 }
 
-fn host_publication_client() -> Result<HostCatalogPublicationClient, CycleFailure> {
-    let identity = HostCatalogServiceIdentity {
-        uid: 0,
-        gid: 0,
-        cgroup: service_cgroup(HOST_SLICE, HOST_SERVICE)?,
-    };
-    HostCatalogPublicationClient::connect(Path::new(HOST_SOCKET), identity)
-        .map_err(classify_publication_error)
-}
-
-fn service_cgroup(slice: &str, unit: &str) -> Result<RetainedCgroupAnchor, CycleFailure> {
-    let descriptor = rustix::fs::open(
-        CGROUP_ROOT,
-        rustix::fs::OFlags::PATH
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
+fn classify_protected_publication_error(error: ControllerHostPublicationError) -> CycleFailure {
+    // Only explicit retained recovery permits another cycle. A deadline or
+    // protocol failure must not become permission to mint a new request.
+    classified_failure(
+        matches!(error, ControllerHostPublicationError::RecoveryPending),
+        error,
     )
-    .map_err(|error| CycleFailure::Retryable(error.to_string()))?;
-    let root = CgroupV2Root::from_owned(descriptor)
-        .map_err(|error| CycleFailure::Retryable(error.to_string()))?;
-    root.resolve(service_cgroup_path(slice, unit).as_path())
-        .map_err(|error| CycleFailure::Retryable(error.to_string()))
-}
-
-fn service_cgroup_path(slice: &str, unit: &str) -> PathBuf {
-    Path::new(slice).join(unit)
 }
 
 fn classify_mount_error(error: MountAttemptError) -> CycleFailure {
@@ -669,18 +676,6 @@ fn classified_failure(error_is_retryable: bool, error: impl ToString) -> CycleFa
     } else {
         CycleFailure::Fatal(error.to_string())
     }
-}
-
-fn boottime_nanoseconds() -> Result<u64, CycleFailure> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds = u64::try_from(now.tv_sec)
-        .map_err(|_| CycleFailure::Retryable("CLOCK_BOOTTIME is negative".to_owned()))?;
-    let nanoseconds = u64::try_from(now.tv_nsec)
-        .map_err(|_| CycleFailure::Retryable("CLOCK_BOOTTIME is invalid".to_owned()))?;
-    seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or_else(|| CycleFailure::Retryable("CLOCK_BOOTTIME overflow".to_owned()))
 }
 
 fn open_controller(
@@ -1433,15 +1428,21 @@ mod tests {
     }
 
     #[test]
-    fn broker_service_cgroup_paths_match_systemd_slice_placement() {
-        assert_eq!(
-            service_cgroup_path(HOST_SLICE, HOST_SERVICE),
-            Path::new("system.slice/aos-sandbox-hostd.service")
-        );
-        assert_eq!(
-            service_cgroup_path("aos.slice/aos-control.slice", "aos-sandbox-mountd.service"),
-            Path::new("aos.slice/aos-control.slice/aos-sandbox-mountd.service")
-        );
+    fn protected_publication_retries_only_retained_recovery() {
+        assert!(matches!(
+            classify_protected_publication_error(ControllerHostPublicationError::RecoveryPending),
+            CycleFailure::Retryable(_)
+        ));
+        assert!(matches!(
+            classify_protected_publication_error(ControllerHostPublicationError::Conflict),
+            CycleFailure::Fatal(_)
+        ));
+        assert!(matches!(
+            classify_protected_publication_error(ControllerHostPublicationError::Session(
+                crate::DormantBrokerSessionHandshakeErrorV1::Deadline
+            )),
+            CycleFailure::Fatal(_)
+        ));
     }
 
     #[test]

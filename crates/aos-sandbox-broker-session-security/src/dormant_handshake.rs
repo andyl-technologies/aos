@@ -383,6 +383,13 @@ pub struct DormantPreparedBrokerDescriptorRequestV1 {
     descriptors: Vec<OwnedFd>,
 }
 
+impl DormantPreparedBrokerDescriptorRequestV1 {
+    /// Borrows the original signed deadline without releasing descriptor custody.
+    pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.request.deadline_boottime_nanoseconds()
+    }
+}
+
 /// Retains one authenticated request received and committed by the broker owner.
 #[must_use = "produce its exact response or retain the committed request"]
 pub struct DormantReceivedBrokerRequestV1(AuthenticatedBrokerMethodRequestV1);

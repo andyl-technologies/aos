@@ -2,7 +2,9 @@
 //!
 //! The daemon adopts both fixed Host listeners before opening any other file
 //! descriptor. Each accepted connection completes the protected broker-session
-//! handshake and exactly one bounded request cycle before its socket is closed.
+//! handshake and retains its protected sequence owner across bounded request
+//! cycles. Ready controller and RootMount roles alternate without dropping idle
+//! sessions. A failed request drops only its session, preserving durable recovery.
 
 use std::env;
 use std::os::fd::OwnedFd;
@@ -11,7 +13,7 @@ use std::time::Duration;
 
 use aos_sandbox_broker_session_security::{
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
-    production_deadline_after,
+    ProductionHostBrokerServiceErrorV1, production_deadline_after,
 };
 use aos_sandbox_host::DormantHostBrokerCompositionV1;
 use aos_sandbox_host::authorization::HostAuthorityV1;
@@ -28,7 +30,6 @@ use aos_sandbox_linux::path::BeneathRoot;
 const CATALOG_ROOT: &str = "/run/aos/sandbox-host";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
-const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn main() -> ExitCode {
@@ -52,8 +53,9 @@ fn run() -> Result<()> {
     // SAFETY: this is the single-threaded entrypoint before any operation can
     // allocate or mutate a descriptor. PID 1 owns and transfers exactly FDs 3
     // and 4 under the fixed controller and RootMount descriptor names.
-    let mut activation =
+    let activation =
         unsafe { ProductionBrokerSessionActivationV1::adopt_host() }.map_err(production_error)?;
+    let mut service = activation.into_host_service().map_err(production_error)?;
 
     // This probe is diagnostic only. Protected backend readiness remains the
     // sole authority for enabling Host Launch.
@@ -90,23 +92,22 @@ fn run() -> Result<()> {
 
     runtime.block_on(async move {
         loop {
-            let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
-                .map_err(|error| HostError::State(error.to_string()))?;
-            let session = match activation.accept_authenticated(accept_deadline) {
-                Ok(session) => session,
-                Err(ProductionBrokerSessionActivationErrorV1::Deadline) => continue,
-                Err(error) => return Err(production_error(error)),
-            };
             let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
                 .map_err(|error| HostError::State(error.to_string()))?;
-            if let Err(error) = session
-                .serve_production_host_request(&mut host, &catalog_publisher, request_deadline)
+            match service
+                .serve_next(&mut host, &catalog_publisher, request_deadline)
                 .await
             {
-                // The consuming request API has already dropped all session
-                // custody. A new connection reopens and revalidates the fixed
-                // protected journal before any further request is admitted.
-                eprintln!("aos-sandbox-hostd: authenticated request failed: {error}");
+                Ok(()) => {}
+                Err(ProductionHostBrokerServiceErrorV1::Activation(
+                    ProductionBrokerSessionActivationErrorV1::Deadline,
+                )) => continue,
+                Err(ProductionHostBrokerServiceErrorV1::Activation(error)) => {
+                    return Err(production_error(error));
+                }
+                Err(ProductionHostBrokerServiceErrorV1::Request(error)) => {
+                    eprintln!("aos-sandbox-hostd: authenticated request failed: {error}");
+                }
             }
         }
     })
