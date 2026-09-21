@@ -27,11 +27,17 @@
   ];
 in {
   name = "apm-desired-sequencing";
-  timeout = 420;
+  timeout = 1800;
+  bootTimeout = 900;
+  systemReadyTimeout = 300;
 
   machines = {
     vm = {
       inherit system;
+      extraClosures = [pkgs.aos.apm pkgs.aos.apr pkgs.gawk];
+      # Publication rewrites the roughly 202 MiB exposure closure into /var,
+      # alongside registry metadata and the active configuration generation.
+      varSizeMiB = 1024;
       # Seed only the package that the desired file will prune. The config
       # package is present in the image and registry fixture, but is not in the
       # package profile until `apm install --system --from` installs it.
@@ -79,7 +85,7 @@ in {
           ${pkgs.aos.apr}/bin/apr keys generate release --registry desired-reg \
             > /tmp/desired-keygen.out 2>&1
           cat /tmp/desired-keygen.out
-          PUBKEY=$(awk '/Public key:/ {print $NF; exit}' /tmp/desired-keygen.out)
+          PUBKEY=$(${pkgs.gawk}/bin/awk '/Public key:/ {print $NF; exit}' /tmp/desired-keygen.out)
           KEY=$HOME/.config/apm/keys/desired-reg-release.key
           ${pkgs.aos.apr}/bin/apr create desired-reg \
             --trust-key "$PUBKEY" \

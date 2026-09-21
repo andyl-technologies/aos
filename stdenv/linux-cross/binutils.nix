@@ -14,6 +14,8 @@ buildStdenv.mkDerivation {
   targetPlatform = hostPlatform;
 
   buildDeps = [
+    # Libtool calls the build platform's ldconfig while installing libctf.
+    buildStdenv.glibc.bin
     buildPackages.gnumake
     buildPackages.perl
     buildPackages.texinfo
@@ -30,6 +32,9 @@ buildStdenv.mkDerivation {
         mkdir source
         (cd $src && tar cf - .) | (cd source && tar xf -)
         chmod -R u+w source
+
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../runtime-scripts.sh} source
       '';
     }
     {
@@ -37,7 +42,7 @@ buildStdenv.mkDerivation {
       script = ''
         mkdir build
         cd build
-        ../source/configure \
+        "$CONFIG_SHELL" ../source/configure \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${buildPlatform.config} \
@@ -51,23 +56,34 @@ buildStdenv.mkDerivation {
           --disable-shared \
           --disable-sim \
           --disable-werror \
+          --enable-gold \
           --with-sysroot=/
       '';
     }
     {
       name = "build";
       script = ''
-        make -j"$NIX_BUILD_CORES" MAKEINFO=true
+        make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" MAKEINFO=true
       '';
     }
     {
       name = "install";
       script = ''
-        make install MAKEINFO=true
+        make SHELL="$CONFIG_SHELL" install MAKEINFO=true
 
-        for tool in ar as ld nm objcopy objdump ranlib readelf size strings strip; do
-          test -x "$out/bin/${hostPlatform.config}-$tool"
-          ln -s "${hostPlatform.config}-$tool" "$out/bin/$tool"
+        # Native-target installs use unprefixed names, including gold; cross
+        # installs use target-prefixed names. Expose both spellings in either case.
+        for tool in ar as ld ld.gold nm objcopy objdump ranlib readelf size strings strip; do
+          prefixed="$out/bin/${hostPlatform.config}-$tool"
+          unprefixed="$out/bin/$tool"
+
+          if test -x "$prefixed"; then
+            test ! -e "$unprefixed"
+            ln -s "${hostPlatform.config}-$tool" "$unprefixed"
+          else
+            test -x "$unprefixed"
+            ln -s "$tool" "$prefixed"
+          fi
         done
       '';
     }

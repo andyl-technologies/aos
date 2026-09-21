@@ -140,6 +140,8 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
             memory_mib=entry["memory_mib"],
             vcpu_count=entry["vcpu_count"],
             tmpdir=str(tmpdir),
+            extra_disks=entry.get("extra_disks", []),
+            kernel_params=entry.get("kernel_params", []),
         )
     else:
         machine = QemuMachine(

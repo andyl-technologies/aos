@@ -1,12 +1,42 @@
 # `andyl/testing` registry runbook
 
 This runbook owns every routine operation for the experimental hosted registry.
-The registry is public but unsupported, follows only `edge`, and may be rebuilt
-from scratch. Its signing material remains separate from `andyl/main`.
+The registry is public but uses experimental build and release infrastructure
+and may be rebuilt from scratch. It supports `edge`, `candidate`, and `stable`;
+these classify software maturity, not pipeline provenance. The default is `edge`.
+Its signing material remains separate from `andyl/main`.
+
+`andyl/testing` does not use an HSM. Its release signer is the
+[file-backed adapter](canonical-releases.md#file-backed-signer-for-registries-without-an-hsm)
+reading operator-held key files. The intended key management for
+`andyl/main` is documented in [Registry key management](registry-key-management.md).
+
+The [public key inventory](registry-testing-public-keys.json) records separate
+testing and production Hub receipt authorities. A prepared key is not an
+activated release authority: signed trust metadata and the applicable release
+gates still establish where it is accepted. Custody and recovery records are
+maintained separately from the public inventory.
+
+`configured` means the production registry or Hub has loaded the public anchor
+or signing configuration. It does not claim that release metadata has been
+published or that a prepared release-signing authority has been activated.
 
 Use the shared [qualification contract](qualification.md) and
 [release checklist](release-checklist.md). This runbook owns registry-specific
 identity and lifecycle operations, not a separate testing qualification process.
+
+The package-manager delivery endpoint baked into testing disk images and OCI
+containers is `https://cdn.aos.andyl.org/andyl/testing/`, with alias
+`andyl-testing` and the epoch-one trust key below. The Hub management API stays
+at `https://aos.andyl.org`. A CDN attachment alone does not activate delivery:
+the explicit delivery workflow must verify the storage publication and route
+before advertising that URL.
+
+While a requested CDN destination is pending, browse pages withhold consumer
+setup commands instead of enrolling new clients on the outgoing Hub route.
+After activation, public OCI blob GETs may redirect to the CDN when the exact
+object has matching publication and placement evidence. Distribution control,
+manifests, private requests, and conditional requests continue through the Hub.
 
 ## Preconditions
 
@@ -15,7 +45,9 @@ identity and lifecycle operations, not a separate testing qualification process.
 2. Complete the contributor-authorization check in
    [`contributor-licensing.md`](contributor-licensing.md).
 3. Deploy and validate that exact Hub build in staging and production using
-   [`aos-hub-deployment.md`](aos-hub-deployment.md).
+   [`aos-hub-deployment.md`](aos-hub-deployment.md). An empty testing-only Hub
+   reset may use that runbook's direct-production setup procedure; it does not
+   substitute for the staging evidence required by release publication.
 4. Take and verify the backup set in
    [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md), unless this is an
    explicitly approved empty rebuild.
@@ -48,14 +80,16 @@ recovery inventory; follow the generic
 The epoch-one image is pinned to this prepared public anchor:
 
 ```text
-andyl-testing:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIPWdD0Q8y3CRgPouHV03ay7bY2MyQKsKYIyejGL9DVZA
+andyl-testing:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAID1J77zx10Z/VmgFa5qab2phnJEJ2JEp8mS2HnBAnzbH
 ```
 
-Before release, move its already-generated `testing-v1` private key from the
-preparation machine's restricted APM key store into the operator secret store,
+Before release, retrieve the `testing-v1` private key from operator custody,
 prove that its derived public key is exactly the line above, and test recovery
-from an encrypted independent backup. Do not regenerate a different key under
-the epoch-one identity after publishing images.
+from an encrypted independent backup. The previous prepared anchor was replaced
+before production use; the image definition and this runbook carry the same new
+epoch-one anchor. Do not regenerate a different key under the epoch-one identity
+after publishing images. A later abandoned root follows the destructive epoch
+reset procedure below.
 
 Verify the restored private key with the AOS-built OpenSSH tool before loading
 it into APR:
@@ -102,7 +136,7 @@ aos hub registry create \
   --name testing \
   --visibility public \
   --trust-key "$ANDYL_TESTING_TRUST_KEY" \
-  --if-version absent \
+  --if-version "" \
   --idempotency-key create-andyl-testing-v1 \
   --plan
 ```
@@ -127,19 +161,94 @@ production access profile, deployment identity, plan, and idempotency key. The
 topology row and `aos release bootstrap` publication are separate: create and
 inspect the row first, then install the independently approved empty base.
 
+## Prepare the image signing authorities
+
+The `aos-testing` variant is a canonical release image: `aos.image` emits only
+`system.build.unsignedImageAssembly` and every signature is applied later by
+`aos release finalize-image` through the registry's signer adapter. Four public
+trust inputs are therefore committed, and their private halves are prepared once
+and held in operator custody with the registry and TUF keys.
+
+| Custody file | Public half in the repository | Signer key id |
+| --- | --- | --- |
+| `image/db.key` + `image/db.crt` | `systems/andyl-testing-authorities/db.crt` | `andyl-testing-secure-boot-db-v1` |
+| `image/modsign.key` + `image/modsign.crt` | `systems/andyl-testing-authorities/modsign.crt` | `andyl-testing-kernel-module-v1` |
+| `image/pcr.key` | `systems/andyl-testing-authorities/pcr.pem` | `andyl-testing-pcr-policy-v1` |
+| `image/PK.key`, `image/KEK.key` | `systems/andyl-testing-authorities/enrollment/*.auth` | offline only |
+| `provenance/andyl-testing-provenance-v1` | registry roster trust line | `andyl-testing-provenance-v1` |
+
+Secure Boot db, kernel module signing, and PCR policy are three separate trust
+domains and must stay three separate keys; the profile asserts that their signer
+roles are distinct. The Platform and Key Exchange keys sign only the enrollment
+blobs and never participate in a release, so they stay offline after generation.
+
+Regenerating the `.auth` blobs from the same certificates reproduces identical
+bytes: both the owner GUID and the signing timestamp are fixed. Do not mint a
+different key under an already-published identity — that is a trust-root epoch
+reset, not a key rotation.
+
+The file-backed adapter reads all of these from one configuration; see the
+file-backed signer section of
+[`canonical-releases.md`](canonical-releases.md). Confirm the adapter resolves
+every role before planning a release:
+
+```sh
+aos-release-signer show
+```
+
 ## Publish the first or a later edge release
 
 The prepared first-release profile uses
-`2026.9.0-dev.20260904.1`. For every later edge release, update
+`2026.9.0-dev.20260917.1`. For every later edge release, update
 `aos.system.version` in the testing profile to the next calendar SemVer
 `YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
 building. That value is the disk version and the OCI signed release identity;
-the `aos` package version remains separate provenance. The plan request must
-use that exact version and contain:
+the `aos` package version remains separate provenance.
+
+Before freezing the epoch-one public `.1` plan, create and retain the
+[non-public qualification predecessor](canonical-releases.md#create-a-first-qualification-predecessor)
+at `2026.9.0-dev.20260917.0`. Its protected source revision carries the `.0`
+testing profile and uses the reserved snapshot release id and source tag. After
+offline verification, advance the profile to `.1` in a later reviewed protected
+source revision.
+
+A plan request freezes four policy digests. Only
+`public_evidence_policy_digest` is checked against anything: planning recomputes
+it from the Nix qualification contract and refuses a request that disagrees.
+The other three are operator inputs, digested from whatever bytes the file
+holds, so a document that lives outside the repository makes its digest
+unreproducible for anyone auditing the release.
+
+Both public documents are therefore committed, and a release names them by
+path:
+
+| Digest | Document |
+| --- | --- |
+| `source.contributor_authorization_digest` | [`release-contributor-authorization.json`](release-contributor-authorization.json) |
+| `retention.policy_digest` | [`release-retention-policy.md`](release-retention-policy.md) |
+
+`restricted_operator_policy_digest` is the deliberate exception. It commits to
+the content of a restricted document without publishing it, so that document
+stays in operator custody and its digest is an attestation rather than a
+reproducible derivation.
+
+Plan the snapshot while the `.0` revision is still the head of `master`.
+Planning derives its source identity from the checked-out commit and refuses
+one that is merely an ancestor: `aos release plan` requires `HEAD` to equal the
+protected branch head for every class except `emergency`, and accepts no
+protected branch other than `master`. Merging the `.0` and `.1` revisions
+together therefore leaves no revision from which the snapshot can be planned,
+and recovering means putting `.0` back at the head of `master` before trying
+again. Land `.0`, plan and build the snapshot, and only then land `.1`. Do not upload the `.0` snapshot or use its isolated registry
+commit as the public registry base. The `.1` request names the snapshot's
+verified release id and manifest digest while retaining the approved empty Hub
+base commit and generation.
+
+The public plan request must use the exact prepared version and contain:
 
 - `registry: "andyl/testing"` (or the active epoch identity);
-- `release_class: "edge"`;
-- only an `edge` intended channel;
+- a release class matching the software version (`edge` for this example);
+- intended channels matching the software class (`edge` for this example);
 - the exact current testing registry base commit and generation;
 - the staging and production deployment identities already verified above;
 - complete package and image decisions and all required signer roles.
@@ -148,7 +257,7 @@ Follow the [release checklist](release-checklist.md), using
 [`canonical-releases.md`](canonical-releases.md) for command arguments.
 
 For the testing OCI artifact, externally finalize the exact Nix publication
-inputs before `finalize-registry`. The signing key must be the active testing
+inputs before `prepare-registry`. The signing key must be the active testing
 registry key, never a main-registry key:
 
 ```sh
@@ -182,12 +291,13 @@ aos container publish aos "$TESTING_OCI_REFERENCE" \
 ```
 
 Include those exact `container-release.json` and `signature-input.json` paths in
-`aos release finalize-registry`; its reviewed catalog digest includes the
-sidecar. After the signed registry release is promoted and the Hub has indexed
-it, rerun the same `aos container publish` command without `--stage-only`, add
-the production Hub credentials, and use a new stable idempotency key. Record
-the returned verified root and tag resource version. Do not use a generic OCI
-push for the release tag.
+both `aos release prepare-registry` and `aos release finalize-registry`. The
+generated transaction's reviewed catalog digest includes the sidecar, and
+finalization verifies its exact bytes again. After the signed registry release
+is promoted and the Hub has indexed it, rerun the same `aos container publish`
+command without `--stage-only`, add the production Hub credentials, and use a
+new stable idempotency key. Record the returned verified root and tag resource
+version. Do not use a generic OCI push for the release tag.
 
 Do not omit staging qualification even though testing data is disposable. Each
 command consumes the prior phase's exact evidence, refuses replacement outputs,
@@ -213,11 +323,18 @@ rollout complete.
 Use `aos maintain` to prepare source updates, not to mutate the registry:
 
 ```sh
-aos maintain scan
+aos maintain scan --repology-fallback --repology-limit 400
 aos maintain report --outdated
+aos maintain report --advisory
+aos maintain report --vulnerable
+aos maintain report --license-change
 aos maintain plan <unit>
 # Or plan one atomic update cohort:
 aos maintain plan --campaign <cohort>
+
+# For a manually edited package without complete artifact contracts:
+aos maintain refresh-hashes <unit> --check
+aos maintain refresh-hashes <unit>
 
 aos maintain run --plan <plan> --confirm-plan <plan-digest>
 aos maintain diff <run> --patch
@@ -233,6 +350,20 @@ aos maintain observe-pr <run> \
   --authorization-check <required-check-name>
 aos maintain handoff <run> --confirm <protected-merge-commit>
 ```
+
+The fallback probes a same-named Repology project only when the package does
+not already declare a reviewed Repology mapping. It is a first-signal source:
+newer-version, vulnerable-version, and license-drift records enter the
+maintainer report, but they cannot select or materialize an update. A declared
+direct provider must still identify the exact release, and the source URL,
+hash, and any required signature checks must succeed before a candidate can be
+accepted. Review fallback mappings that do not corroborate the package's
+current version before promoting them into package metadata.
+
+Repology requests are cached for 24 hours, paced to at most one request per
+second, and bounded by `--repology-limit`. Use a smaller limit for a quick
+sample. Re-running the command reuses fresh cached observations and can extend
+an earlier bounded scan without repeating those requests.
 
 If the remote branch already exists, replace `absent` with its exact expected
 head. `prepare-pr` prints the publication request and confirmation digest;

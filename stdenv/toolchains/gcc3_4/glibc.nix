@@ -1,7 +1,8 @@
 # stdenv/toolchains/gcc3_4/glibc.nix — glibc 2.3.4 (RHEL 4)
 #
 # First tier glibc, built with GCC 3.4.6 + binutils 2.15 + linux 2.6.9 headers.
-# All i686-linux.
+# All i686-linux. The CC command pins binutils as well as --with-binutils:
+# configure restores cached CC after probing the latter option.
 #
 {
   prev,
@@ -32,12 +33,17 @@ in
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
         # Copy source to writable location and add linuxthreads
-        cp -r ${src} "$TMPDIR/glibc-2.3.4"
+        cp -r --preserve=timestamps ${src} "$TMPDIR/glibc-2.3.4"
         chmod -R u+w "$TMPDIR/glibc-2.3.4"
 
         # glibc 2.3.4 needs linuxthreads extracted into the source tree
         cp -r ${linuxpthreads}/linuxthreads "$TMPDIR/glibc-2.3.4/" 2>/dev/null || true
         cp -r ${linuxpthreads}/linuxthreads_db "$TMPDIR/glibc-2.3.4/" 2>/dev/null || true
+
+        # Include linuxthreads helpers in the source interpreter pass.
+        chmod -R u+w "$TMPDIR/glibc-2.3.4"
+        AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
+          "$CONFIG_SHELL" ${../../runtime-scripts.sh} "$TMPDIR/glibc-2.3.4"
 
         SRC="$TMPDIR/glibc-2.3.4"
 
@@ -55,12 +61,13 @@ in
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
-        CC="${this.gcc}/bin/gcc" \
+        CC="${this.gcc}/bin/gcc -B${this.binutils}/bin/" \
         AR="${this.binutils}/bin/ar" \
         RANLIB="${this.binutils}/bin/ranlib" \
         CFLAGS="-O2 -I${prev.glibc}/include" \
-        "$SRC/configure" \
+        "$CONFIG_SHELL" "$SRC/configure" \
           --prefix="$out" \
+          --with-binutils=${this.binutils}/bin \
           --build=${buildPlatform.config} \
           --host=${hostPlatform.config} \
           --with-headers="${this.linuxHeaders}/include" \
@@ -75,8 +82,8 @@ in
           libc_cv_forced_unwind=yes \
           libc_cv_c_cleanup=yes
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES"
+        make SHELL="${prev.bash}/bin/bash" install
 
         test -f "$out/lib/libnss_files.a" || {
           echo "FATAL: static NSS archive not installed" >&2

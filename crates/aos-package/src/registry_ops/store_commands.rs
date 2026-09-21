@@ -69,6 +69,18 @@ pub async fn run_store(
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
             let content_addressed = registry_content_addressed(&dir);
+
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would bless the closure of {store_path} into registry '{registry_name}'"
+                ));
+                printer.info(
+                    "  Every closure member would get a store/ record, committed as one change.",
+                );
+                printer.info("Dry run: the store graph is unchanged.");
+                return Ok(());
+            }
+
             let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             // Bless the whole closure of the path (records every member).
@@ -124,9 +136,19 @@ pub async fn run_store(
             ensure_writable_registry_clone(&registry_name, &dir)?;
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+            let ia_hash = extract_hash(store_path);
+
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would revoke {} for {ia_hash} in registry '{registry_name}'",
+                    realisation.as_deref().unwrap_or("all realisations"),
+                ));
+                printer.info("Dry run: the store graph is unchanged.");
+                return Ok(());
+            }
+
             let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
-            let ia_hash = extract_hash(store_path);
             if !store::remove_realisations(&dir, ia_hash, realisation.as_deref())? {
                 bail!("no matching store/ realisation for {ia_hash}; nothing to revoke");
             }
@@ -183,12 +205,25 @@ pub async fn run_store(
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
             let content_addressed = registry_content_addressed(&dir);
-            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             let roots = collect_package_store_paths(&dir)?;
             if roots.is_empty() {
                 bail!("registry has no published store paths to backfill");
             }
+
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would backfill the realisation graph of registry '{registry_name}'"
+                ));
+                printer.kv("Closures", &roots.len().to_string());
+                if *bless {
+                    printer.info("  --bless: every recorded member would also be blessed.");
+                }
+                printer.info("Dry run: the store graph is unchanged.");
+                return Ok(());
+            }
+
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             let mut report = StoreWriteReport::default();
             for root in &roots {

@@ -8,7 +8,7 @@
   ninja,
   buildPackages,
 }: let
-  version = "0.44.2";
+  version = "0.46.4";
 in
   mkDerivation {
     pname = "pixman";
@@ -19,7 +19,7 @@ in
         "https://cairographics.org/releases/pixman-${version}.tar.gz"
         "https://www.x.org/releases/individual/lib/pixman-${version}.tar.gz"
       ];
-      hash = "sha256-Y0kGHOGjOKtpUrkhlNGwN3RyJEII1H/yW++G/HGXNGY=";
+      hash = "sha256-0JxE68O9W+5wIcefki/o+y+1f3Mg9V6X/5kU0jRqWRw=";
     };
 
     buildDeps = [

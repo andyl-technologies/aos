@@ -39,6 +39,10 @@
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
         (_: {bundle = true;});
+      # The static server binds this directory before publication fills it.
+      environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
+        d /var/lib/sysreg-cache 0755 root root - -
+      '';
     }
   ];
 
@@ -57,10 +61,10 @@
   # that the positional `<SEMVER>` sets only the registry tag.
   releaseTag = "1.0.0";
   secondReleaseTag = "2.0.0";
-  # The aos-registry-server package exports AOS_ROOT here, so the fabricated path
-  # lives at $AOS_ROOT/store/<hash>-name-version and apr reads it via the same
-  # AOS_ROOT-aware nix environment.
-  serverStoreRoot = "/var/lib/aos-registry-server/store-root";
+  # The publisher and consumer share a store layout for the static-cache NAR.
+  # Keep it outside the daemon's DynamicUser state directory: its host-facing
+  # symlink is not a valid Nix store root.
+  serverStoreRoot = "/var/lib/apr-release-store";
   storePath = "${serverStoreRoot}/store/${pkg.storeHash}-${pkg.name}-${pkg.version}";
 in {
   name = "apr-release-e2e";
@@ -68,6 +72,9 @@ in {
   # static-cache zstd + upload + sign) + a second skip-only release + consumer
   # add/install. Generous budget for sandbox CPU/IO contention.
   timeout = 900;
+  # Guest initialization and metadata reconciliation precede the scenario.
+  bootTimeout = 600;
+  systemReadyTimeout = 300;
 
   machines = {
     # Lexicographic order → client=192.168.50.10, registry=192.168.50.11.
@@ -78,7 +85,16 @@ in {
 
     registry = {
       system = serverWithRegistry;
+      extraClosures = [pkgs.aos.apr];
       packages = ["aos-registry-server" "test-static-cache-server"];
+      metadata."host.nix" = ''
+        {
+          aos.networking.hostName = "registry";
+          aos.apm.desiredPackages = ["aos-registry-server" "test-static-cache-server"];
+          "aos-registry-server".enable = true;
+          "test-static-cache-server".enable = true;
+        }
+      '';
       # The static cache and origin land under /var/lib (served on :8000);
       # the default 256 MiB /var is tight once the NAR is compressed in.
       varSizeMiB = 1024;
@@ -169,7 +185,16 @@ in {
           PUBKEY=$(printf '%s\\n' "$KEYGEN" | awk '/Public key:/ {{print $NF; exit}}')
           test -n "$PUBKEY"
           KEY=$HOME/.config/apm/keys/relreg-release.key
-          ${pkgs.aos.apr}/bin/apr create relreg --trust-key "$PUBKEY" --key "$KEY"
+          ${pkgs.aos.apr}/bin/apr create relreg --trust-key "$PUBKEY" --trust-key-id release --key "$KEY"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/relreg.toml" <<EOF
+          [registry]
+          name = "relreg"
+          url = "file://$HOME/.local/share/apm/registries/relreg"
+
+          [registry.signing_keys]
+          release = "$KEY"
+          EOF
           REG_DIR=$HOME/.local/share/apm/registries/relreg
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/relreg
@@ -190,18 +215,24 @@ in {
             --description 'apr release fleet fixture' \\
             --license MIT \\
             --maintainer test \\
-            --key "$KEY" \\
+            --key-id release \\
             --cache-url http://registry:8000/sysreg-cache \\
             --upload-url file:///var/lib/sysreg-cache 2>&1
           chmod -R a+rX /var/lib/sysreg-cache
 
           # 2.4 Push the released registry (package, pointer, tag) to gitd.
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
-          chown -R aos-gitd:aos-gitd "$ORIGIN"
+          # Resolve ownership through the daemon's idmapped state directory.
+          git_pid=$(systemctl show -p MainPID --value aos-registry-server-gitd.service)
+          test "$git_pid" -gt 0
+          git_owner=$(id -u aos-gitd):$(id -g aos-gitd)
+          ${pkgs.util-linux}/bin/nsenter --target "$git_pid" --mount --root --wd=/ ${pkgs.coreutils}/bin/chown -R "$git_owner" "$ORIGIN"
       """), timeout=600)
       print("=== apr release output ===\n" + release)
       assert "Updated registry.toml [caches]" in release, release
-      assert "Generated static cache: 1 narinfos, 1 NARs" in release, release
+      # Publication retains both the package and its canonical documentation object.
+      assert "Generated static cache: 2 narinfos, 2 NARs" in release, release
+      assert "relpkg-1.2.3-aos-docs.json" in release, release
       assert "Released relreg ${releaseTag}" in release, release
 
       # Decoupling: the registry release is tagged ${releaseTag}, but the
@@ -263,7 +294,7 @@ in {
           KEY=$HOME/.config/apm/keys/relreg-release.key
           ${pkgs.aos.apr}/bin/apr release ${secondReleaseTag} \\
             --registry relreg \\
-            --key "$KEY" \\
+            --key-id release \\
             --cache-url http://registry:8000/sysreg-cache \\
             --upload-url file:///var/lib/sysreg-cache 2>&1
       """), timeout=300)

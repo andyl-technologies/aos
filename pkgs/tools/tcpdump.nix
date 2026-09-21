@@ -5,7 +5,7 @@
   gnumake,
   libpcap,
 }: let
-  version = "4.99.5";
+  version = "4.99.6";
 in
   mkDerivation {
     pname = "tcpdump";
@@ -15,7 +15,7 @@ in
       urls = [
         "https://www.tcpdump.org/release/tcpdump-${version}.tar.gz"
       ];
-      hash = "sha256-jHWFbgCt3urfcNrWfJ/z3TaFNrK4Vjq/aFTXx2TNOts=";
+      hash = "sha256-WDmSGg9n19j6PazZzUHkTInMuGfoptshbWJijH/RSwk=";
     };
 
     buildDeps = [

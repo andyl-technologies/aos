@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  patch,
   libpcap,
   openssl,
   lua,
@@ -24,7 +25,7 @@ in
       hash = "sha256-31Ekkv/RCOU6J6BvJthjW76J4OVpRV3I/+8FjANdUbI=";
     };
 
-    buildDeps = [gnumake pkg-config];
+    buildDeps = [gnumake pkg-config patch];
     runtimeDeps = [libpcap openssl lua pcre2 liblinear libssh2 zlib python3];
     propagatedDeps = [];
     # Ndiff is installed directly below because AOS does not yet package the
@@ -32,6 +33,15 @@ in
     # Zenmap is a separate graphical application and requires a GTK stack;
     # this package provides Nmap's complete command-line tool suite.
     configureFlags = "--with-liblua=${lua} --without-ndiff --without-zenmap";
+
+    postPatch = ''
+      patch -p1 < ${./nmap-openssl4.patch}
+    '';
+
+    postConfigure = ''
+      # Ncat otherwise uses bundled 5.4 headers with the selected system Lua.
+      sed -i 's|-I../liblua|-I${lua}/include|g' ncat/Makefile
+    '';
 
     postInstall = ''
       install -Dm444 nselib/data/passwords.lst "$out/share/wordlists/nmap.lst"

@@ -59,4 +59,9 @@ in
     srcHash = "sha256-Y1hwtR++gwC9zF6xrFEArtBnVvHSES0+g6KYuJ3OPtI=";
     prevJdk = openjdk-8;
     extraDarwinFrameworks = [java-native-foundation];
+    # GCC rejects the duplicated using declaration in the AArch64 interpreter.
+    extraPatches =
+      if stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64
+      then [./openjdk-patches/remove-duplicate-aarch64-using-jdk9.patch]
+      else [];
   }

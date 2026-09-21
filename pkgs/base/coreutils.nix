@@ -10,7 +10,7 @@
   gnumake,
   perl,
 }: let
-  version = "9.5";
+  version = "9.11";
 in
   mkDerivation {
     pname = "coreutils";
@@ -18,12 +18,14 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/coreutils/coreutils-${version}.tar.xz"];
-      hash = "12hv193nj10hyzrqh39fpic1ibqjny9kqclzvrjsdxljmkg8wcnd";
+      hash = "sha256-OUAk7aCllVIXztqc0SAeZdyPo6opwpURNaSVIdV8PMM=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake perl];
     runtimeDeps = [];
-    configureFlags = "--disable-nls --enable-single-binary=symlinks";
+    # Coreutils 9.10 made these commands opt-in; retain the AOS command set
+    # and the server PATH's coreutils precedence over util-linux's kill.
+    configureFlags = "--disable-nls --enable-single-binary=symlinks --enable-install-program=kill,uptime";
 
     meta = {
       description = "GNU core utilities";

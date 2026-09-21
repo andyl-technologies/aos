@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  go,
+  buildPackages,
   zlib,
   libqcow,
 }: let
@@ -19,7 +19,7 @@ in
       hash = "sha256-DA/MwHcPNtWrySn2ZaWbWmKc/MspHsZxrAAuUPqmYpA=";
     };
 
-    buildDeps = [go];
+    buildDeps = [buildPackages.go];
     runtimeDeps = [zlib libqcow];
 
     phases = [
@@ -37,6 +37,10 @@ in
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=1
           export GOPROXY=off
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           export GOFLAGS="-trimpath -mod=vendor"
           mkdir -p "$GOPATH" "$GOCACHE"
 

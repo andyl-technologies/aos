@@ -70,7 +70,6 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
     let (teardown_sender, teardown_receiver) = mpsc::channel();
     std::mem::forget(teardown_receiver);
     let state = LiveVcpuTimeCallbackState::new(
-        13,
         test_icount_raw,
         super::super::test_support::test_force_vcpu_exit,
         super::super::test_support::test_idle_wake_wait(),
@@ -153,7 +152,6 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
     let (teardown_sender, teardown_receiver) = mpsc::channel();
     std::mem::forget(teardown_receiver);
     let state = LiveVcpuTimeCallbackState::new(
-        13,
         test_icount_raw,
         super::super::test_support::test_force_vcpu_exit,
         super::super::test_support::test_idle_wake_wait(),

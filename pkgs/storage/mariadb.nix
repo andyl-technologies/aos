@@ -6,6 +6,7 @@
   gnumake,
   cmake,
   bison,
+  git,
   pkg-config,
   perl,
   python3,
@@ -18,6 +19,7 @@
   libaio,
   libevent,
   liburing,
+  libxcrypt,
   linux-pam,
   lz4,
   ncurses,
@@ -38,13 +40,16 @@
   sed,
   writeShellScriptBin,
 }: let
-  version = "11.4.12";
+  version = "12.3.3";
   isDarwin = stdenv.hostPlatform.isDarwin;
+  # MariaDB's CPU-specific sources recognize aarch64 rather than arm64.
+  # Keep the cross toolchain and execution wrapper while using that spelling.
+  linuxCrossCmakeFlags = lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) " $cmakeFlags -DCMAKE_SYSTEM_PROCESSOR=${stdenv.hostPlatform.parsed.cpu.name}";
   source = fetchurl {
     urls = [
       "https://archive.mariadb.org/mariadb-${version}/source/mariadb-${version}.tar.gz"
     ];
-    hash = "sha256-WreIPbUZv86/3SqsCbxVRKEs4yjznt1G0L8BaQYV72w=";
+    hash = "sha256-6Z1zn9SlX5oR3qe9IoeiYmc+KHVQrzBxyEad0r7AwWM=";
   };
   messagePackVersion = "2.1.1";
   messagePack = mkDerivation {
@@ -83,6 +88,7 @@
           cmake -S . -B build \
             $cmakeFlags \
             -DCMAKE_INSTALL_PREFIX=$out \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DMSGPACK_ENABLE_CXX=OFF \
             -DMSGPACK_BUILD_EXAMPLES=OFF \
             -DMSGPACK_BUILD_TESTS=OFF
@@ -269,6 +275,7 @@
           buildPackages.gnumake
           buildPackages.cmake
           buildPackages.bison
+          buildPackages.git
           buildPackages.pkg-config
           buildPackages.perl
           buildPackages.python3
@@ -390,6 +397,7 @@ in
         buildPackages.gnumake
         buildPackages.cmake
         buildPackages.bison
+        buildPackages.git
         buildPackages.pkg-config
         buildPackages.perl
         buildPackages.python3
@@ -399,6 +407,7 @@ in
         gnumake
         cmake
         bison
+        git
         pkg-config
         perl
         python3
@@ -443,6 +452,8 @@ in
           ncurses
           numactl
           linux-pam
+          # The server and backup tool link crypt directly on Linux.
+          libxcrypt
           openssl
           pcre2
           snappy
@@ -595,7 +606,7 @@ in
           else ''
             mkdir build
             cd build
-            cmake .. \
+            cmake ..${linuxCrossCmakeFlags} \
               -DCMAKE_INSTALL_PREFIX=$out \
               -DINSTALL_SYSCONFDIR=$out/etc \
               -DINSTALL_SYSCONF2DIR=$out/etc/my.cnf.d \
@@ -760,6 +771,13 @@ in
             ln -s ${control}/bin/mariadb-control "$out/bin/mariadb-control"
             test -x "$out/bin/mariadb-install-db"
             test -x "$out/bin/mariadb-control"
+          ''
+          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # These installed test helpers sit outside the usual binary
+            # directories. Drop compiler paths retained in their DWARF data.
+            for helper in my_safe_process wsrep_check_version; do
+              "${stdenv.cc}/bin/strip" --strip-debug "$out/mariadb-test/lib/My/SafeProcess/$helper"
+            done
           '';
       }
     ];

@@ -1,17 +1,15 @@
 ##! workerd (from source) — Cloudflare's Workers runtime, built hermetically.
 ##!
-##! This is the genuinely-from-source build of `workerd` (RFC-0004 follow-on),
-##! replacing the prebuilt binary seed in `workerd.nix`. It compiles workerd's
-##! full Bazel graph — V8, Cap'n Proto, BoringSSL, ICU, zlib, lolhtml (Rust) —
-##! against AOS-built tools only (AOS Bazel 7, AOS LLVM/clang+libc++, AOS Rust,
-##! AOS Python, AOS Node is *not* required for the server binary target).
+##! This derivation compiles workerd's full Bazel graph — V8, Cap'n Proto,
+##! BoringSSL, ICU, zlib, and lolhtml (Rust) — against AOS-built tools only.
+##! The public `workerd` package exposes this output under its stable package
+##! name while retaining the source build as a separately auditable artifact.
 ##!
-##! ## Why a separate attr from `workerd.nix`
+##! ## Why a separate attribute from `workerd.nix`
 ##!
-##! The green `checks.vm.worker` test depends on the binary seed. This package
-##! is staged as `pkgs.workerd-source` so the seed stays intact until the
-##! from-source build is verified and verified in that VM test. Once green, the
-##! seed can be replaced.
+##! The Bazel build remains reusable without changing the public package name.
+##! `workerd.nix` contributes only the stable package identity and its runtime
+##! check; it does not download or execute another binary.
 ##!
 ##! ## Toolchain (the hard part)
 ##!
@@ -71,83 +69,78 @@
   pkg-config,
   git,
   nodejs,
-  gcc-libs,
-  zlib,
   bootstrapTools,
 }: let
   version = "1.20240909.0";
+  isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
 
-  # Everything Bazel executes stays on the Linux build platform.  The Darwin
-  # package set is reserved for link inputs and the final workerd binary; using
-  # target Bazel/JDK/Python here would either execute Mach-O during analysis or
-  # recursively force the entire Darwin-hosted Java bootstrap ladder.
+  # Everything Bazel executes stays on the Linux build platform. Target package
+  # sets are reserved for link inputs and the final workerd binary; using a
+  # target Bazel, JDK, or Python would execute foreign code during analysis.
   buildBazel =
-    if isDarwinCross
+    if isCross
     then buildPackages.bazel-7
     else bazel-7;
   buildJdk =
-    if isDarwinCross
+    if isCross
     then buildPackages.openjdk
     else openjdk;
   buildBash =
-    if isDarwinCross
+    if isCross
     then buildPackages.bash
     else bash;
   buildCoreutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.coreutils
     else coreutils;
   buildPython =
-    if isDarwinCross
+    if isCross
     then buildPackages.python3
     else python3;
   buildLlvm =
-    if isDarwinCross
+    if isCross
     then buildPackages.llvm
     else llvm;
   buildRust =
-    if isDarwinCross
+    if isCross
     then rust.passthru.buildTool
     else rust;
   nativeRust =
-    if isDarwinCross
+    if isCross
     then buildPackages.rust
     else rust;
   buildGcc =
-    if isDarwinCross
+    if isCross
     then buildPackages.gcc
     else gcc;
-  buildGccLibs =
-    if isDarwinCross
-    then buildPackages.gcc-libs
-    else gcc-libs;
-  buildZlib =
-    if isDarwinCross
-    then buildPackages.zlib
-    else zlib;
   buildSed =
-    if isDarwinCross
+    if isCross
     then buildPackages.sed
     else sed;
   buildGawk =
-    if isDarwinCross
+    if isCross
     then buildPackages.gawk
     else gawk;
   buildGnumake =
-    if isDarwinCross
+    if isCross
     then buildPackages.gnumake
     else gnumake;
   buildNodejs =
-    if isDarwinCross
+    if isCross
     then buildPackages.nodejs
     else nodejs;
   buildCaCertificates =
-    if isDarwinCross
+    if isCross
     then buildPackages.ca-certificates
     else ca-certificates;
+  buildGlibc =
+    if isCross
+    then buildPackages.glibc
+    else glibc;
   buildBootstrapTools =
-    if isDarwinCross
+    if isCross
     then buildPackages.bootstrapTools
     else bootstrapTools;
   darwinBazelCpu =
@@ -158,7 +151,27 @@
     if stdenv.hostPlatform.isAarch64
     then "aarch64"
     else "x86_64";
-  darwinTargetTriple = stdenv.hostPlatform.config;
+  targetTriple = stdenv.hostPlatform.config;
+  # Cross clang discovers headers through the scheduler's cross GCC. The
+  # target-hosted GCC package has a different store prefix and cannot describe
+  # those built-in headers to Bazel or supply the matching link-time libraries.
+  targetGcc =
+    if isLinuxCross
+    then stdenv.cc.cc
+    else gcc;
+  darwinTargetTriple = targetTriple;
+  linuxBazelCpu =
+    if stdenv.hostPlatform.isAarch64
+    then "aarch64"
+    else "k8";
+  linuxBazelCpuConstraint =
+    if stdenv.hostPlatform.isAarch64
+    then "aarch64"
+    else "x86_64";
+  crossToolchainDirectory =
+    if isDarwinCross
+    then "aos-darwin-toolchain"
+    else "aos-linux-cross-toolchain";
   llvmMajor = builtins.head (lib.splitString "." buildLlvm.version);
 
   # Minimal native Tcl interpreter, built from source. workerd's vendored sqlite3
@@ -166,7 +179,7 @@
   # `tclsh mksqlite3h.tcl` (a 165-line Tcl script that adds SQLITE_API/EXTERN
   # prefixes and substitutes version/source-id). Keep the historical Tcl 8.6
   # tool for native builds; cross builds must use the native package-set Tcl so
-  # Bazel never attempts to execute a Darwin binary on the Linux builder.
+  # Bazel never attempts to execute a target binary on the Linux builder.
   tcl = mkDerivation {
     pname = "tcl";
     version = "8.6.14";
@@ -222,7 +235,7 @@
   # in an ordinary native build-tool output so Bazel's fixed action PATH sees
   # it without exposing the target package or a phase-local directory.
   tclBuildTool =
-    if isDarwinCross
+    if isCross
     then
       buildPackages.runCommand "workerd-tcl-build-tool" {} ''
         mkdir -p "$out/bin"
@@ -235,17 +248,17 @@
     buildBash
     buildCoreutils
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.which
       else which
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.zip
       else zip
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.unzip
       else unzip
     )
@@ -253,71 +266,71 @@
     buildPython
     buildGcc
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.binutils
       else binutils
     )
     buildLlvm
     buildRust
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.cmake
       else cmake
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.ninja
       else ninja
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.grep
       else grep
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.gzip
       else gzip
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.patch
       else patch
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.diffutils
       else diffutils
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.findutils
       else findutils
     )
     buildSed
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.tar
       else tar
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.xz
       else xz
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.file
       else file
     )
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.perl
       else perl
     )
     buildGnumake
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.pkg-config
       else pkg-config
     )
@@ -326,7 +339,7 @@
     # fetch needs a real git on PATH; the build phase prepends a fake git for the
     # workspace-status command, which shadows this one there.
     (
-      if isDarwinCross
+      if isCross
       then buildPackages.git
       else git
     )
@@ -432,16 +445,16 @@
     )
 
     ${
-      if isDarwinCross
+      if isCross
       then ''
         # rules_rust otherwise registers only same-platform compiler/stdlib
-        # pairs.  Register the Darwin stdlib for the Linux execution compiler;
+        # pairs. Register the target stdlib for the Linux execution compiler;
         # the build phase replaces that fetched compiler with AOS's
         # source-built native Rust build tool while preserving the generated
         # cross-toolchain metadata.
         src = src.replace(
             "extra_target_triples = [],",
-            'extra_target_triples = ["${darwinTargetTriple}"],',
+            'extra_target_triples = ["${targetTriple}"],',
             1,
         )
       ''
@@ -472,7 +485,7 @@
         "find . -type f \\( -name '*.bzl' -o -name '*.sh' -o -name '*.py' "
         "-o -name '*.tpl' \\) -exec sed -i "
         ${
-      if isDarwinCross
+      if isCross
       then ''"'s@^#!/usr/bin/env bash$@#!" + aos_bash + "/bin/bash@g' {} +"''
       else ''"'s@#!/usr/bin/env bash@#!" + aos_bash + "/bin/bash@g' {} +"''
     }
@@ -508,6 +521,9 @@
     }
     // lib.optionalAttrs (!isDarwinCross) {
       "${scrub glibc}" = "__AOS_GLIBC__";
+    }
+    // lib.optionalAttrs isCross {
+      "${scrub buildGlibc}" = "__AOS_BUILD_GLIBC__";
     };
 
   # Build a clang/clang++ wrapper directory. AOS clang needs the GCC install dir
@@ -521,7 +537,7 @@
     REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
     REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
     GCC_DIR=${
-      if isDarwinCross
+      if isCross
       then "$(dirname \"$(${buildGcc}/bin/gcc -print-libgcc-file-name)\")"
       else "$(echo \"$REAL_CC\"/lib/gcc/x86_64-unknown-linux-gnu/*)"
     }
@@ -558,7 +574,7 @@
     # dynamic glibc `.so`, exactly as the cc-wrapper gcc's `cc-ldflags` do. The
     # wrapper also pins the AOS glibc dynamic linker + rpath and the libc++ rpath
     # on every link. ${bootstrapTools} (stdenv.cc) is no longer on the link path.
-    LINK_COMMON="-L$REAL_LIBC/lib --gcc-install-dir=$GCC_DIR -B$REAL_LIBC/lib -B$GCC_DIR -fuse-ld=lld --rtlib=compiler-rt --unwindlib=libunwind -L${buildLlvm}/lib/x86_64-unknown-linux-gnu -Wl,-dynamic-linker=$DL -Wl,-rpath,$REAL_LIBC/lib -Wl,-rpath,${buildLlvm}/lib/x86_64-unknown-linux-gnu"
+    LINK_COMMON="-L$REAL_LIBC/lib --gcc-install-dir=$GCC_DIR -B$REAL_LIBC/lib -B$GCC_DIR -fuse-ld=lld --rtlib=compiler-rt --unwindlib=libunwind -L${buildLlvm}/lib/x86_64-unknown-linux-gnu -Wl,-dynamic-linker=$DL -Wl,-rpath,$REAL_LIBC/lib"
 
     {
       printf '%s\n' '#!${buildBash}/bin/bash'
@@ -872,6 +888,182 @@
       ''
       else ""
     }
+
+    ${
+      if isLinuxCross
+      then ''
+        # Keep Bazel's execution configuration on native Linux while routing
+        # target C, C++, archive, and link actions through a dedicated cross
+        # toolchain. The compiler is the native AOS clang, which has the
+        # AArch64 backend; the target GCC and glibc provide headers, crt files,
+        # libstdc++, and the target dynamic linker.
+        mkdir -p "$SRCDIR/aos-linux-cross-toolchain"
+        unzip -jo "${buildBazel.src}" \
+          tools/cpp/unix_cc_toolchain_config.bzl \
+          -d "$SRCDIR/aos-linux-cross-toolchain"
+
+        {
+          printf '%s\n' '#!${buildBash}/bin/bash'
+          printf '%s\n' 'set -eu'
+          printf '%s\n' 'target_gcc_dir=$(dirname "$(${stdenv.cc}/bin/cc -print-libgcc-file-name)")'
+          printf '%s\n' 'target_cxx_lib_dir="${targetGcc}/${targetTriple}/lib64"'
+          printf '%s\n' 'target_libc="${glibc}"'
+          printf '%s\n' 'target_libc_dev="${glibc.dev}"'
+          printf '%s\n' 'target_dynamic_linker="${glibc}/lib/${stdenv.hostPlatform.dynamicLinker}"'
+          printf '%s\n' 'compiling=false'
+          printf '%s\n' 'c_source=false'
+          printf '%s\n' 'cxx_source=false'
+          printf '%s\n' 'for arg in "$@"; do'
+          printf '%s\n' '  case "$arg" in'
+          printf '%s\n' '    -c|-S|-E|-M|-MM|-fsyntax-only) compiling=true ;;'
+          printf '%s\n' '    *.c|*.s|*.S) c_source=true ;;'
+          printf '%s\n' '    *.cc|*.cp|*.cpp|*.cxx|*.C) cxx_source=true ;;'
+          printf '%s\n' '  esac'
+          printf '%s\n' 'done'
+          printf '%s\n' 'driver="${buildLlvm}/bin/clang++"'
+          printf '%s\n' 'if [ "$compiling" = true ] && [ "$c_source" = true ] && [ "$cxx_source" = false ]; then'
+          printf '%s\n' '  driver="${buildLlvm}/bin/clang"'
+          printf '%s\n' 'fi'
+          printf '%s\n' 'common_flags=(' \
+            '  "--target=${targetTriple}"' \
+            '  "--gcc-install-dir=$target_gcc_dir"' \
+            '  "-idirafter" "$target_libc_dev/include"' \
+            '  "-B$target_libc/lib" "-B$target_gcc_dir"' \
+            ')'
+          printf '%s\n' 'if [ "$compiling" = true ]; then'
+          printf '%s\n' '  exec "$driver" "''${common_flags[@]}" "$@"'
+          printf '%s\n' 'fi'
+          printf '%s\n' 'exec "$driver" "''${common_flags[@]}" "$@" \'
+          # The native GNU linker supports x86 targets only. LLD is a native
+          # executable with the AArch64 backend needed for this target link.
+          printf '%s\n' '  -fuse-ld=lld \'
+          printf '%s\n' '  -L"$target_libc/lib" -L"$target_gcc_dir" -L"$target_cxx_lib_dir" \'
+          # glibc keeps compatibility archives for merged dl/pthread/rt symbols
+          # in its static output; libc itself still resolves dynamically first.
+          printf '%s\n' '  -L${glibc.static}/lib \'
+          # V8's wide atomic operations call the target GCC atomic runtime.
+          printf '%s\n' '  -latomic \'
+          printf '%s\n' '  -Wl,-dynamic-linker,"$target_dynamic_linker" \'
+          printf '%s\n' '  -Wl,-rpath,"$target_libc/lib" \'
+          printf '%s\n' '  -Wl,-rpath,\$ORIGIN/../lib'
+        } > "$SRCDIR/aos-linux-cross-toolchain/compiler"
+        chmod +x "$SRCDIR/aos-linux-cross-toolchain/compiler"
+
+        cat <<'LINUX_CROSS_TOOLCHAIN_EOF' > "$SRCDIR/aos-linux-cross-toolchain/BUILD.bazel"
+        load(":unix_cc_toolchain_config.bzl", "cc_toolchain_config")
+        load("@rules_cc//cc:defs.bzl", "cc_toolchain", "cc_toolchain_suite")
+
+        package(default_visibility = ["//visibility:public"])
+
+        platform(
+            name = "target-platform",
+            constraint_values = [
+                "@platforms//cpu:${linuxBazelCpuConstraint}",
+                "@platforms//os:linux",
+            ],
+        )
+
+        filegroup(name = "empty")
+        filegroup(
+            name = "compiler-files",
+            srcs = ["compiler", "unix_cc_toolchain_config.bzl"],
+        )
+
+        cc_toolchain_suite(
+            name = "toolchain",
+            toolchains = {
+                "${linuxBazelCpu}": ":cc-compiler",
+                "${linuxBazelCpu}|clang": ":cc-compiler",
+            },
+        )
+
+        cc_toolchain(
+            name = "cc-compiler",
+            toolchain_identifier = "aos-${targetTriple}",
+            toolchain_config = ":config",
+            all_files = ":compiler-files",
+            ar_files = ":compiler-files",
+            as_files = ":compiler-files",
+            compiler_files = ":compiler-files",
+            dwp_files = ":empty",
+            linker_files = ":compiler-files",
+            objcopy_files = ":compiler-files",
+            strip_files = ":compiler-files",
+            supports_header_parsing = 1,
+            supports_param_files = 1,
+        )
+
+        toolchain(
+            name = "registered-toolchain",
+            exec_compatible_with = [
+                "@platforms//cpu:x86_64",
+                "@platforms//os:linux",
+            ],
+            target_compatible_with = [
+                "@platforms//cpu:${linuxBazelCpuConstraint}",
+                "@platforms//os:linux",
+            ],
+            toolchain = ":cc-compiler",
+            toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+        )
+
+        cc_toolchain_config(
+            name = "config",
+            cpu = "${linuxBazelCpu}",
+            compiler = "clang",
+            toolchain_identifier = "aos-${targetTriple}",
+            host_system_name = "x86_64-unknown-linux-gnu",
+            target_system_name = "${targetTriple}",
+            target_libc = "glibc",
+            abi_version = "gnu",
+            abi_libc_version = "glibc",
+            builtin_sysroot = "",
+            cxx_builtin_include_directories = [
+                "${glibc.dev}/include",
+                "${targetGcc}/lib/gcc/${targetTriple}/${targetGcc.version}/include",
+                "${targetGcc}/lib/gcc/${targetTriple}/${targetGcc.version}/include-fixed",
+                "${targetGcc}/${targetTriple}/include/c++/${targetGcc.version}",
+                "${targetGcc}/${targetTriple}/include/c++/${targetGcc.version}/${targetTriple}",
+                "${buildLlvm}/lib/clang/${llvmMajor}/include",
+            ],
+            # AOS GNU binutils are native-x86 tools. LLVM's native utilities
+            # understand AArch64 objects without executing target code.
+            tool_paths = {
+                "ar": "${buildLlvm}/bin/llvm-ar",
+                "c++filt": "${buildLlvm}/bin/llvm-cxxfilt",
+                "cpp": "compiler",
+                "dwp": "${buildLlvm}/bin/llvm-dwp",
+                "gcc": "compiler",
+                "gcov": "${buildLlvm}/bin/llvm-cov",
+                "ld": "compiler",
+                "llvm-cov": "${buildLlvm}/bin/llvm-cov",
+                "llvm-profdata": "${buildLlvm}/bin/llvm-profdata",
+                "nm": "${buildLlvm}/bin/llvm-nm",
+                "objcopy": "${buildLlvm}/bin/llvm-objcopy",
+                "objdump": "${buildLlvm}/bin/llvm-objdump",
+                "strip": "${buildLlvm}/bin/llvm-strip",
+            },
+            compile_flags = [],
+            dbg_compile_flags = ["-g"],
+            opt_compile_flags = ["-O2", "-DNDEBUG"],
+            conly_flags = [],
+            cxx_flags = [],
+            link_flags = [],
+            # The Unix toolchain already supplies rcsD and the output path.
+            # Extra archive flags follow that path and become member names.
+            archive_flags = [],
+            link_libs = [],
+            opt_link_flags = [],
+            unfiltered_compile_flags = [],
+            coverage_compile_flags = [],
+            coverage_link_flags = [],
+            supports_start_end_lib = False,
+            extra_flags_per_feature = {},
+        )
+        LINUX_CROSS_TOOLCHAIN_EOF
+      ''
+      else ""
+    }
   '';
 
   # Source patching — shared between fetch and build phases.
@@ -918,13 +1110,24 @@
     sed -i "/linkopt='-stdlib=libc++'/d" .bazelrc
     sed -i "s/ --linkopt='-static-libgcc'//g; s/ --host_linkopt='-static-libgcc'//g" .bazelrc
 
+    ${lib.optionalString isLinuxCross ''
+      # Host actions continue to use the native libc++ toolchain. Target
+      # actions use the cross GCC's libstdc++ through the dedicated clang
+      # crosstool, so remove only the target libc++ and default-library edits.
+      sed -i "s/ --cxxopt='-stdlib=libc++'//g" .bazelrc
+      sed -i "s/ --linkopt='-l:libc++.a'//g" .bazelrc
+      sed -i \
+        's/build:linux --features=-default_link_libs --host_features=-default_link_libs/build:linux --host_features=-default_link_libs/' \
+        .bazelrc
+    ''}
+
     # Replace shebangs throughout the source tree.
     find . -type f \( -name '*.sh' -o -name '*.bzl' -o -name 'BUILD' \
          -o -name 'BUILD.*' -o -name 'WORKSPACE' -o -name '*.py' \
          -o -name '*.tpl' \) | \
       while read f; do
         ${
-      if isDarwinCross
+      if isCross
       then ''
         sed -i \
           -e "1s|^#!/usr/local/bin/bash$|#!${buildBash}/bin/bash|" \
@@ -937,14 +1140,24 @@
           "$f" 2>/dev/null || true
       ''
       else ''
+        # Preserve substitutions from an earlier invocation. mkBazelPackage
+        # runs this source hook while fetching and again before the offline
+        # build; without placeholders, the broad `/bin/bash` rule would append
+        # the AOS store path to itself on every pass.
         sed -i \
-          -e "s|/usr/local/bin/bash|${buildBash}/bin/bash|g" \
-          -e "s|/usr/bin/bash|${buildBash}/bin/bash|g" \
-          -e "s|/bin/bash|${buildBash}/bin/bash|g" \
+          -e "s|${buildBash}/bin/bash|__AOS_BUILD_BASH__|g" \
+          -e "s|${buildPython}/bin/python3|__AOS_BUILD_PYTHON__|g" \
+          -e "s|${buildCoreutils}/bin/env|__AOS_BUILD_ENV__|g" \
+          -e "s|/usr/local/bin/bash|__AOS_BUILD_BASH__|g" \
+          -e "s|/usr/bin/bash|__AOS_BUILD_BASH__|g" \
+          -e "s|/bin/bash|__AOS_BUILD_BASH__|g" \
           -e "s|/usr/bin/env python3|${buildPython}/bin/python3|g" \
           -e "s|/usr/bin/env python|${buildPython}/bin/python3|g" \
-          -e "s|/usr/bin/env bash|${buildBash}/bin/bash|g" \
+          -e "s|/usr/bin/env bash|__AOS_BUILD_BASH__|g" \
           -e "s|/usr/bin/env|${buildCoreutils}/bin/env|g" \
+          -e "s|__AOS_BUILD_BASH__|${buildBash}/bin/bash|g" \
+          -e "s|__AOS_BUILD_PYTHON__|${buildPython}/bin/python3|g" \
+          -e "s|__AOS_BUILD_ENV__|${buildCoreutils}/bin/env|g" \
           "$f" 2>/dev/null || true
       ''
     }
@@ -993,6 +1206,26 @@ in
         "--crosstool_top=//aos-darwin-toolchain:toolchain"
         "--host_crosstool_top=@local_config_cc//:toolchain"
         "--extra_toolchains=//aos-darwin-toolchain:registered-toolchain"
+      ]
+      ++ lib.optionals isLinuxCross [
+        "--noenable_platform_specific_config"
+        "--config=linux"
+        "--platforms=//aos-linux-cross-toolchain:target-platform"
+        "--cpu=${linuxBazelCpu}"
+        "--host_cpu=k8"
+        "--crosstool_top=//aos-linux-cross-toolchain:toolchain"
+        "--host_crosstool_top=@local_config_cc//:toolchain"
+        "--extra_toolchains=//aos-linux-cross-toolchain:registered-toolchain"
+      ]
+      # mksnapshot runs in the native execution configuration, but its
+      # embedded instructions must match the deployed runtime's architecture.
+      # V8's explicit target setting enables its ARM simulator in native tools.
+      ++ lib.optionals isCross [
+        "--@v8//bazel/config:v8_target_cpu=${
+          if stdenv.hostPlatform.isAarch64
+          then "arm64"
+          else "x64"
+        }"
       ];
     # Native Workerd uses WORKSPACE with Bzlmod disabled, so priming Bazel's
     # module repository only downloads unrelated toolchains. Preserve the
@@ -1007,6 +1240,8 @@ in
         if stdenv.hostPlatform.isAarch64
         then "sha256-6JSNdFJpprzg6Bp+h0wMKmOGiunpRke0KBcutgzUxTw="
         else "sha256-uy7rYaYP7Rz1sAadbHRG4xux2wooPXbX/pNcofL4yXE="
+      else if isLinuxCross
+      then "sha256-whDlldIofSE05LPf/6nmRLeN2KyK0VjKqRmXN02x/PM="
       else "sha256-GcXWNE6KoPQ+LzOuI+PnQqkRmivDgVM3pZJfuhmgTYo=";
     fetchPostPatch = lib.optionalString (!isDarwinCross) ''
       export PATH="$SRCDIR/aos-toolchain:$PATH"
@@ -1014,7 +1249,7 @@ in
       export CXX="$SRCDIR/aos-toolchain/clang++"
     '';
     fetchEnv =
-      if isDarwinCross
+      if isCross
       then {CARGO_BAZEL_REPIN = "true";}
       else {CIBUILDWHEEL = "1";};
     postFetch = ''
@@ -1063,334 +1298,360 @@ in
       "--copt=-Wno-error"
       "--host_copt=-Wno-error"
     ];
-    preBazelBuild = ''
-            # The build phase re-unpacks pristine src, so re-apply the source
-            # mutations (clang wrappers, .bazelversion removal, shebangs) here. The
-            # FOD already applied them at fetch time for dependency resolution.
-            ${postPatchScript}
+    preBazelBuild =
+      ''
+              # The build phase re-unpacks pristine src, so re-apply the source
+              # mutations (clang wrappers, .bazelversion removal, shebangs) here. The
+              # FOD already applied them at fetch time for dependency resolution.
+              ${postPatchScript}
 
-            # capnp's `kj/common.h` (included by all of kj/capnp) does
-            # `#include <stddef.h>` and then uses `std::nullptr_t`. AOS's strict
-            # libc++ `<stddef.h>` declares `nullptr_t` only in the *global*
-            # namespace (libstdc++ also leaks it into `std`, which is why this
-            # compiles upstream). Add `#include <cstddef>` — which puts
-            # `nullptr_t` into `namespace std` — right after the `<stddef.h>`
-            # include in the vendored capnp copy so kj's `std::nullptr_t` (and
-            # other `std::` C-library names) resolve under libc++.
-            find "$TMPDIR/repo-overrides" -type f -path '*capnp-cpp/src/kj/common.h' 2>/dev/null | \
-              while read f; do
-                if ! grep -q 'AOS_CSTDDEF' "$f" 2>/dev/null; then
-                  sed -i 's|#include <stddef.h>|#include <stddef.h>\n#include <cstddef>  // AOS_CSTDDEF: std::nullptr_t under libc++|' "$f" 2>/dev/null || true
-                fi
-              done
+              # capnp's `kj/common.h` (included by all of kj/capnp) does
+              # `#include <stddef.h>` and then uses `std::nullptr_t`. AOS's strict
+              # libc++ `<stddef.h>` declares `nullptr_t` only in the *global*
+              # namespace (libstdc++ also leaks it into `std`, which is why this
+              # compiles upstream). Add `#include <cstddef>` — which puts
+              # `nullptr_t` into `namespace std` — right after the `<stddef.h>`
+              # include in the vendored capnp copy so kj's `std::nullptr_t` (and
+              # other `std::` C-library names) resolve under libc++.
+              find "$TMPDIR/repo-overrides" -type f -path '*capnp-cpp/src/kj/common.h' 2>/dev/null | \
+                while read f; do
+                  if ! grep -q 'AOS_CSTDDEF' "$f" 2>/dev/null; then
+                    sed -i 's|#include <stddef.h>|#include <stddef.h>\n#include <cstddef>  // AOS_CSTDDEF: std::nullptr_t under libc++|' "$f" 2>/dev/null || true
+                  fi
+                done
 
-            # Put the AOS clang/clang++ wrappers first on PATH so Bazel's CC toolchain
-            # auto-detection (driven by CC=clang/CXX=clang++ in workerd's .bazelrc)
-            # resolves to the AOS toolchain wrappers.
-            export PATH="$PWD/aos-toolchain:$PATH"
-            echo "build --action_env=PATH=$PWD/aos-toolchain:${toolsBinPath}" >> .bazelrc
-            echo "build --host_action_env=PATH=$PWD/aos-toolchain:${toolsBinPath}" >> .bazelrc
+              # Put the AOS clang/clang++ wrappers first on PATH so Bazel's CC toolchain
+              # auto-detection (driven by CC=clang/CXX=clang++ in workerd's .bazelrc)
+              # resolves to the AOS toolchain wrappers.
+              export PATH="$PWD/aos-toolchain:$PATH"
+              echo "build --action_env=PATH=$PWD/aos-toolchain:${toolsBinPath}" >> .bazelrc
+              echo "build --host_action_env=PATH=$PWD/aos-toolchain:${toolsBinPath}" >> .bazelrc
 
-            # `local_config_cc` is a repository rule: it detects the toolchain's
-            # built-in include dirs by running `$CC -E -v` *at loading time*, using
-            # the repo-rule environment (NOT the build action_env). Point CC/CXX at
-            # the AOS wrapper absolute paths and force the C++-only auto toolchain so
-            # detection runs our wrapper (with its `-idirafter <glibc>/include`) and
-            # captures the AOS glibc/GCC dirs as `cxx_builtin_include_directories`.
-            # Otherwise Bazel rejects the build with "absolute path inclusion(s)
-            # found" when sources pull in <errno.h> from /nix/store/glibc-dev.
-            export CC="$PWD/aos-toolchain/clang"
-            export CXX="$PWD/aos-toolchain/clang++"
-            export BAZEL_USE_CPP_ONLY_TOOLCHAIN=1
-            echo "build --repo_env=CC=$PWD/aos-toolchain/clang" >> .bazelrc
-            echo "build --repo_env=CXX=$PWD/aos-toolchain/clang++" >> .bazelrc
-            echo "build --repo_env=BAZEL_USE_CPP_ONLY_TOOLCHAIN=1" >> .bazelrc
-            ${
-        if isDarwinCross
-        then ''
-          # The shared Bazel setup exposes Linux libpthread/libdl compatibility
-          # symlinks to host actions. They must not reach the Mach-O target
-          # link: ld64 rejects those ELF objects before resolving Darwin's
-          # libSystem implementations. Keep the corresponding host_linkopt and
-          # Cargo build flags for Linux-executed generators.
-          sed -i "\\|^build --linkopt=-L$TMPDIR/rust-link-libs$|d" .bazelrc
-          if grep -Fqx "build --linkopt=-L$TMPDIR/rust-link-libs" .bazelrc; then
-            echo "Linux Rust compatibility libraries leaked into the Darwin target link" >&2
-            exit 1
-          fi
-
-          echo "build --action_env=CC=$PWD/aos-darwin-toolchain/compiler" >> .bazelrc
-          echo "build --action_env=CXX=$PWD/aos-darwin-toolchain/compiler" >> .bazelrc
-          echo "build --host_action_env=CC=$PWD/aos-toolchain/clang" >> .bazelrc
-          echo "build --host_action_env=CXX=$PWD/aos-toolchain/clang++" >> .bazelrc
-        ''
-        else ''
-          echo "build --action_env=CC=$PWD/aos-toolchain/clang" >> .bazelrc
-          echo "build --action_env=CXX=$PWD/aos-toolchain/clang++" >> .bazelrc
-        ''
-      }
-
-            # Bazel's auto-configured CC toolchain resolves `clang` to the real
-            # `${buildLlvm}/bin/clang-NN` (it canonicalizes the wrapper symlink and adds
-            # `-no-canonical-prefixes`), so the AOS toolchain flags baked into the
-            # wrappers never reach the actual compile/link commands — capnp's
-            # `#include <unistd.h>` then fails because AOS clang has no built-in
-            # glibc/GCC search path. Inject those flags directly as Bazel copts /
-            # linkopts (target *and* host/exec config) so they apply no matter which
-            # clang binary Bazel invokes. Paths come from the bootstrap cc-wrapper.
-            BT="${buildBootstrapTools}"
-            REAL_CC=$(cat "$BT/nix-support/orig-cc")
-            REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
-            REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
-            GCC_DIR=${
-        if isDarwinCross
-        then "$(dirname \"$(${buildGcc}/bin/gcc -print-libgcc-file-name)\")"
-        else "$(echo \"$REAL_CC\"/lib/gcc/x86_64-unknown-linux-gnu/*)"
-      }
-            DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)
-            {
-              # Compile: GCC install dir + glibc headers (via -idirafter so libc++'s
-              # #include_next <stdlib.h> still finds glibc *after* the C++ headers).
-              for cfg in ${
-        if isDarwinCross
-        then "host_copt host_conlyopt host_cxxopt"
-        else "copt host_copt conlyopt host_conlyopt cxxopt host_cxxopt"
-      }; do
-                echo "build --$cfg=--gcc-install-dir=$GCC_DIR"
-                echo "build --$cfg=-idirafter"
-                echo "build --$cfg=$REAL_LIBC_DEV/include"
-                echo "build --$cfg=-B$GCC_DIR"
-                echo "build --$cfg=-B$REAL_LIBC/lib"
-              done
-              # Link: the link is routed to AOS clang++ + lld (see
-              # toolchainSetup), which already pins the crt (--gcc-install-dir),
-              # glibc, compiler-rt, dynamic linker, and glibc + libc++ rpaths.
-              # These linkopts only need to supply the static C++ ABI runtime
-              # that workerd's own .bazelrc leaves out (it relies on CI's *shared*
-              # libc++ to drag them in); the -L/rpath below are belt-and-braces
-              # duplicates of LINK_COMMON and harmless.
-              for cfg in ${
-        if isDarwinCross
-        then "host_linkopt"
-        else "linkopt host_linkopt"
-      }; do
-                # the LLVM dir holding the static libc++ runtime,
-                echo "build --$cfg=-L${buildLlvm}/lib/x86_64-unknown-linux-gnu"
-                echo "build --$cfg=-Wl,-rpath,${buildLlvm}/lib/x86_64-unknown-linux-gnu"
-                # `--config=macos` does not activate workerd's `build:linux`
-                # linkopts, even for Linux exec actions. Supply the complete
-                # static libc++ stack explicitly; ABI and unwind libraries must
-                # follow libc++.a so ld resolves them left-to-right.
-                echo "build --$cfg=-l:libc++.a"
-                echo "build --$cfg=-l:libc++abi.a"
-                echo "build --$cfg=-l:libunwind.a"
-              done
-            } >> .bazelrc
-
-            # Provide a fake git for the workspace status command / repo rules.
-            mkdir -p "$TMPDIR/fake-bin"
-            {
-              printf '%s\n' '#!${buildBash}/bin/bash'
-              printf '%s\n' 'case "$*" in'
-              printf '%s\n' '  *rev-parse*is-inside-work-tree*) echo "false" ;;'
-              printf '%s\n' '  *rev-parse*HEAD*) echo "0000000000000000000000000000000000000000" ;;'
-              printf '%s\n' '  *) echo "" ;;'
-              printf '%s\n' 'esac'
-              printf '%s\n' 'exit 0'
-            } > "$TMPDIR/fake-bin/git"
-            chmod +x "$TMPDIR/fake-bin/git"
-            export PATH="$TMPDIR/fake-bin:$PATH"
-
-            # V8 defaults build-time generators such as Torque to the target
-            # configuration and explicitly documents changing this selector
-            # for cross compilation. Keep every such executable in Bazel's
-            # native Linux exec configuration.
-            v8_defs="$TMPDIR/repo-overrides/v8/bazel/defs.bzl"
-            test -f "$v8_defs"
-            grep -q 'return "target"' "$v8_defs"
-            sed -i '/^def get_cfg()/,/^def /s/return "target"/return "exec"/' "$v8_defs"
-            grep -q 'return "exec"' "$v8_defs"
-            # V8 appends its own -Werror after Bazel's host copts. LLVM 22
-            # diagnoses deprecations in V8's native generators that upstream's
-            # older compiler accepts; keep the diagnostics without promoting
-            # them to build failures.
-            test "$(grep -c '^[[:space:]]*"-Werror",' "$v8_defs")" -eq 1
-            sed -i 's/^\([[:space:]]*\)"-Werror",/\1"-Wno-error",/' "$v8_defs"
-
-            # --- Wire AOS Node into the rules_js node toolchain -----------------
-            # rules_js downloads a prebuilt Node (`@nodejs_linux_amd64`, node 20.14)
-            # whose ELF interpreter is absent in the sandbox. The toolchain's node
-            # target is `bin/nodejs/bin/node` (the raw ELF); a `bin/node` launcher
-            # wraps it. Replace both with tiny wrappers that exec AOS node
-            # (${buildNodejs}, node 22 — fine for tsc/validation), so every js_binary /
-            # ts_project action runs the hermetic interpreter. The `repo-overrides`
-            # copy is what the offline build actually uses (via --override_repository
-            # from the configure phase), so patch there.
-            node_repo="$TMPDIR/repo-overrides/nodejs_linux_amd64"
-            if [ -d "$node_repo" ]; then
-              for nodepath in "$node_repo/bin/nodejs/bin/node" "$node_repo/bin/node"; do
-                if [ -e "$nodepath" ]; then
-                  rm -f "$nodepath"
-                  {
-                    printf '%s\n' '#!${buildBash}/bin/bash'
-                    printf '%s\n' 'exec ${buildNodejs}/bin/node "$@"'
-                  } > "$nodepath"
-                  chmod +x "$nodepath"
-                fi
-              done
+              # `local_config_cc` is a repository rule: it detects the toolchain's
+              # built-in include dirs by running `$CC -E -v` *at loading time*, using
+              # the repo-rule environment (NOT the build action_env). Point CC/CXX at
+              # the AOS wrapper absolute paths and force the C++-only auto toolchain so
+              # detection runs our wrapper (with its `-idirafter <glibc>/include`) and
+              # captures the AOS glibc/GCC dirs as `cxx_builtin_include_directories`.
+              # Otherwise Bazel rejects the build with "absolute path inclusion(s)
+              # found" when sources pull in <errno.h> from /nix/store/glibc-dev.
+              export CC="$PWD/aos-toolchain/clang"
+              export CXX="$PWD/aos-toolchain/clang++"
+              export BAZEL_USE_CPP_ONLY_TOOLCHAIN=1
+              echo "build --repo_env=CC=$PWD/aos-toolchain/clang" >> .bazelrc
+              echo "build --repo_env=CXX=$PWD/aos-toolchain/clang++" >> .bazelrc
+              echo "build --repo_env=BAZEL_USE_CPP_ONLY_TOOLCHAIN=1" >> .bazelrc
+              ${
+          if isCross
+          then ''
+            # The shared Bazel setup exposes x86_64 Linux libpthread/libdl
+            # compatibility symlinks to host actions. They must not reach any
+            # foreign target link. Keep the corresponding host_linkopt and Cargo
+            # build flags for Linux-executed generators.
+            sed -i "\\|^build --linkopt=-L$TMPDIR/rust-link-libs$|d" .bazelrc
+            if grep -Fqx "build --linkopt=-L$TMPDIR/rust-link-libs" .bazelrc; then
+              echo "Linux Rust compatibility libraries leaked into the target link" >&2
+              exit 1
             fi
 
-            # rules_js's js_binary launchers (e.g. the npm_typescript `validator`)
-            # and node_wrapper.sh are generated with `#!/usr/bin/env bash`, which the
-            # sandbox cannot exec (`/usr/bin/env` is absent). Rewrite those shebangs
-            # to AOS bash across the vendored repo-overrides. node_wrapper.sh also
-            # shells out to `node`; AOS node is on PATH (tools) so it resolves.
-            find "$TMPDIR/repo-overrides" -type f \
-                 \( -name '*.sh' -o -name '*.sh.tpl' -o -name '*.bash' \
-                 -o -name 'validator' -o -name 'node_wrapper*' \) 2>/dev/null | \
-              while read f; do
-                sed -i "1s|^#!/usr/bin/env bash|#!${buildBash}/bin/bash|" "$f" 2>/dev/null || true
-                sed -i "s|#!/usr/bin/env bash|#!${buildBash}/bin/bash|g" "$f" 2>/dev/null || true
-              done
+            echo "build --action_env=CC=$PWD/${crossToolchainDirectory}/compiler" >> .bazelrc
+            echo "build --action_env=CXX=$PWD/${crossToolchainDirectory}/compiler" >> .bazelrc
+            echo "build --host_action_env=CC=$PWD/aos-toolchain/clang" >> .bazelrc
+            echo "build --host_action_env=CXX=$PWD/aos-toolchain/clang++" >> .bazelrc
+          ''
+          else ''
+            echo "build --action_env=CC=$PWD/aos-toolchain/clang" >> .bazelrc
+            echo "build --action_env=CXX=$PWD/aos-toolchain/clang++" >> .bazelrc
+          ''
+        }
 
-            # rules_js runs the js_binary launcher action as `env - BAZEL_BINDIR=... \
-            # <launcher>`. `env -` empties the environment, so PATH is empty and the
-            # launcher's own `uname`/`dirname`/`mktemp` (coreutils) calls fail with
-            # "command not found" (Exit 127). Inject a base PATH *inside* the launcher
-            # template (right after its `set -o` line) — it must be set in-script,
-            # since `--action_env` is wiped by `env -`. The js_binary template
-            # (`js_binary.sh.tpl`) is expanded into every launcher, so patching it
-            # covers the generated `validator` and friends. node_wrapper.sh gets the
-            # same treatment.
-            aos_launcher_path="${buildCoreutils}/bin:${buildBash}/bin:${buildSed}/bin:${buildGawk}/bin:${buildGnumake}/bin:${buildNodejs}/bin"
-            find "$TMPDIR/repo-overrides" -type f \
-                 \( -name 'js_binary.sh.tpl' -o -name 'node_wrapper.sh' \) 2>/dev/null | \
-              while read f; do
-                if ! grep -q 'AOS_LAUNCHER_PATH' "$f" 2>/dev/null; then
-                  sed -i \
-                    "/^set -o pipefail -o errexit -o nounset/a\\
-      export PATH=\"$aos_launcher_path:\''${PATH:-}\"  # AOS_LAUNCHER_PATH" \
-                    "$f" 2>/dev/null || true
-                fi
-              done
-
-            # --- Supply the rules_rust execution toolchain -------------------
-            # workerd's lolhtml (HTML rewriter) is Rust, so rules_rust pulls a
-            # prebuilt rust toolchain (`@rust_linux_x86_64__...__stable_tools`)
-            # whose ELF interpreter (`/lib64/ld-linux-x86-64.so.2`) is absent in
-            # the sandbox -> `rustc: cannot execute: required file not found`.
-            # Native workerd keeps the fetched toolchain self-consistent and
-            # supplies only its missing ELF interpreter. Darwin cross builds
-            # instead replace rustc/rustdoc/cargo and both standard-library
-            # sysroots with AOS's source-built Rust 1.93 toolchains. The exec
-            # repository must use the same compiler release as the Darwin
-            # repository: proc-macro metadata is compiler-version-specific.
-            # The generated rules_rust repositories still supply Bazel's exact
-            # toolchain metadata and auxiliary rustfmt/clippy executables.
-            ${
-        if isDarwinCross
-        then ''
-          rust_cross_repo="$TMPDIR/repo-overrides/rust_linux_x86_64__${darwinTargetTriple}__stable_tools"
-          if [ ! -d "$rust_cross_repo" ]; then
-            echo "missing Linux-executed rules_rust repository for ${darwinTargetTriple}" >&2
-            exit 1
-          fi
-          for rust_tool in rustc rustdoc cargo; do
-            test -x "${nativeRust}/bin/$rust_tool"
-            rust_tool_path="${nativeRust}/bin/$rust_tool"
-            case "$rust_tool" in
-              rustc|rustdoc)
-                # rules_rust supplies the repository-local --sysroot after we
-                # install the Darwin stdlib below. The build-tool wrappers add
-                # their store sysroot themselves, which would pass the option
-                # twice, so Bazel must invoke the underlying compiler here.
-                rust_tool_path="${nativeRust}/bin/$rust_tool.unwrapped"
-                ;;
-            esac
-            test -x "$rust_tool_path"
-            {
-              printf '%s\n' '#!${buildBash}/bin/bash'
-              # The Linux host compiler loads rules_rust's native `.so` proc
-              # macros while the repository-local sysroot supplies Darwin
-              # target libraries. Using the same compiler as the execution
-              # repository keeps proc-macro metadata and suffix conventions
-              # identical across both roles.
-              printf 'exec %s "$@"\n' "$rust_tool_path"
-            } > "$rust_cross_repo/bin/$rust_tool"
-            chmod +x "$rust_cross_repo/bin/$rust_tool"
-          done
-          rm -rf "$rust_cross_repo/lib/rustlib/${darwinTargetTriple}"
-          mkdir -p "$rust_cross_repo/lib/rustlib/${darwinTargetTriple}"
-          cp -a "${buildRust}/lib/rustlib/${darwinTargetTriple}/." \
-            "$rust_cross_repo/lib/rustlib/${darwinTargetTriple}/"
-          chmod -R u+w "$rust_cross_repo/lib/rustlib/${darwinTargetTriple}"
-
-          rm -rf "$rust_cross_repo/lib/rustlib/x86_64-unknown-linux-gnu"
-          mkdir -p "$rust_cross_repo/lib/rustlib/x86_64-unknown-linux-gnu"
-          cp -a "${nativeRust}/lib/rustlib/x86_64-unknown-linux-gnu/." \
-            "$rust_cross_repo/lib/rustlib/x86_64-unknown-linux-gnu/"
-          chmod -R u+w "$rust_cross_repo/lib/rustlib/x86_64-unknown-linux-gnu"
-
-          rust_native_repo="$TMPDIR/repo-overrides/rust_linux_x86_64__x86_64-unknown-linux-gnu__stable_tools"
-          if [ ! -d "$rust_native_repo" ]; then
-            echo "missing Linux-executed native rules_rust repository" >&2
-            exit 1
-          fi
-          for rust_tool in rustc rustdoc cargo; do
-            rust_tool_path="${nativeRust}/bin/$rust_tool"
-            case "$rust_tool" in
-              rustc|rustdoc)
-                # Bazel provides the repository-local sysroot, so bypass the
-                # installed wrapper that would add the store sysroot again.
-                rust_tool_path="${nativeRust}/bin/$rust_tool.unwrapped"
-                ;;
-            esac
-            test -x "$rust_tool_path"
-            {
-              printf '%s\n' '#!${buildBash}/bin/bash'
-              printf 'exec %s "$@"\n' "$rust_tool_path"
-            } > "$rust_native_repo/bin/$rust_tool"
-            chmod +x "$rust_native_repo/bin/$rust_tool"
-          done
-          rm -rf "$rust_native_repo/lib/rustlib/x86_64-unknown-linux-gnu"
-          mkdir -p "$rust_native_repo/lib/rustlib/x86_64-unknown-linux-gnu"
-          cp -a "${nativeRust}/lib/rustlib/x86_64-unknown-linux-gnu/." \
-            "$rust_native_repo/lib/rustlib/x86_64-unknown-linux-gnu/"
-          chmod -R u+w "$rust_native_repo/lib/rustlib/x86_64-unknown-linux-gnu"
-        ''
-        else ""
-      }
-
-            GLIBC_RUST=$(cat "${buildBootstrapTools}/nix-support/orig-libc")
-            RUST_LOADER=$(echo "$GLIBC_RUST"/lib/ld-linux-x86-64.so.*)
-            for rust_repo in "$TMPDIR/repo-overrides"/rust_*__*_tools; do
-              [ -d "$rust_repo" ] || continue
-              # The toolchain's own shared libs live under <repo>/lib and
-              # <repo>/lib/rustlib/<triple>/lib (libstd, librustc_driver,
-              # libLLVM). Use absolute paths so the library-path is correct for
-              # binaries at any depth (bin/, lib/rustlib/<triple>/bin/, ...).
-              RUST_LIBPATH="$rust_repo/lib:$rust_repo/lib/rustlib/x86_64-unknown-linux-gnu/lib:${buildGccLibs}/lib:${buildZlib}/lib:$GLIBC_RUST/lib"
-              # Wrap every dynamically-linked ELF launcher whose interpreter is
-              # the (absent) /lib64 loader: rustc/cargo/rustdoc/rustfmt/clippy
-              # plus the rustlib llvm-*/rust-lld tools, proactively.
-              find "$rust_repo/bin" "$rust_repo/lib/rustlib" -type f 2>/dev/null | \
-                while read tool; do
-                  case "$tool" in *.aos-real) continue ;; esac
-                  head -c 4 "$tool" 2>/dev/null | grep -qa 'ELF' 2>/dev/null || continue
-                  real="$tool.aos-real"
-                  mv "$tool" "$real"
-                  {
-                    printf '%s\n' '#!${buildBash}/bin/bash'
-                    printf '%s\n' '# AOS: run prebuilt rust tool via the AOS glibc loader,'
-                    printf '%s\n' '# supplying the interpreter the sandbox lacks.'
-                    printf '%s\n' "exec ''${RUST_LOADER} \\"
-                    printf '%s\n' "  --library-path \"$RUST_LIBPATH\" \\"
-                    printf '%s\n' '  "'"$real"'" "$@"'
-                  } > "$tool"
-                  chmod +x "$tool"
+              # Bazel's auto-configured CC toolchain resolves `clang` to the real
+              # `${buildLlvm}/bin/clang-NN` (it canonicalizes the wrapper symlink and adds
+              # `-no-canonical-prefixes`), so the AOS toolchain flags baked into the
+              # wrappers never reach the actual compile/link commands — capnp's
+              # `#include <unistd.h>` then fails because AOS clang has no built-in
+              # glibc/GCC search path. Inject those flags directly as Bazel copts /
+              # linkopts (target *and* host/exec config) so they apply no matter which
+              # clang binary Bazel invokes. Paths come from the bootstrap cc-wrapper.
+              BT="${buildBootstrapTools}"
+              REAL_CC=$(cat "$BT/nix-support/orig-cc")
+              REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
+              REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
+              GCC_DIR=${
+          if isCross
+          then "$(dirname \"$(${buildGcc}/bin/gcc -print-libgcc-file-name)\")"
+          else "$(echo \"$REAL_CC\"/lib/gcc/x86_64-unknown-linux-gnu/*)"
+        }
+              DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)
+              {
+                # Compile: GCC install dir + glibc headers (via -idirafter so libc++'s
+                # #include_next <stdlib.h> still finds glibc *after* the C++ headers).
+                for cfg in ${
+          if isCross
+          then "host_copt host_conlyopt host_cxxopt"
+          else "copt host_copt conlyopt host_conlyopt cxxopt host_cxxopt"
+        }; do
+                  echo "build --$cfg=--gcc-install-dir=$GCC_DIR"
+                  echo "build --$cfg=-idirafter"
+                  echo "build --$cfg=$REAL_LIBC_DEV/include"
+                  echo "build --$cfg=-B$GCC_DIR"
+                  echo "build --$cfg=-B$REAL_LIBC/lib"
                 done
+                # Link: the link is routed to AOS clang++ + lld (see
+                # toolchainSetup), which already pins the crt (--gcc-install-dir),
+                # glibc, compiler-rt, dynamic linker, and glibc + libc++ rpaths.
+                # These linkopts only need to supply the static C++ ABI runtime
+                # that workerd's own .bazelrc leaves out (it relies on CI's *shared*
+                # libc++ to drag them in). The library search path below resolves
+                # those static archives without leaving an unused LLVM runpath in
+                # the target binary.
+                for cfg in ${
+          if isCross
+          then "host_linkopt"
+          else "linkopt host_linkopt"
+        }; do
+                  # the LLVM dir holding the static libc++ runtime,
+                  echo "build --$cfg=-L${buildLlvm}/lib/x86_64-unknown-linux-gnu"
+                  # `--config=macos` does not activate workerd's `build:linux`
+                  # linkopts, even for Linux exec actions. Supply the complete
+                  # static libc++ stack explicitly; ABI and unwind libraries must
+                  # follow libc++.a so ld resolves them left-to-right.
+                  echo "build --$cfg=-l:libc++.a"
+                  echo "build --$cfg=-l:libc++abi.a"
+                  echo "build --$cfg=-l:libunwind.a"
+                done
+              } >> .bazelrc
+
+              # Provide a fake git for the workspace status command / repo rules.
+              mkdir -p "$TMPDIR/fake-bin"
+              {
+                printf '%s\n' '#!${buildBash}/bin/bash'
+                printf '%s\n' 'case "$*" in'
+                printf '%s\n' '  *rev-parse*is-inside-work-tree*) echo "false" ;;'
+                printf '%s\n' '  *rev-parse*HEAD*) echo "0000000000000000000000000000000000000000" ;;'
+                printf '%s\n' '  *) echo "" ;;'
+                printf '%s\n' 'esac'
+                printf '%s\n' 'exit 0'
+              } > "$TMPDIR/fake-bin/git"
+              chmod +x "$TMPDIR/fake-bin/git"
+              export PATH="$TMPDIR/fake-bin:$PATH"
+
+              # V8 defaults build-time generators such as Torque to the target
+              # configuration and explicitly documents changing this selector
+              # for cross compilation. Keep every such executable in Bazel's
+              # native Linux exec configuration.
+              v8_defs="$TMPDIR/repo-overrides/v8/bazel/defs.bzl"
+              test -f "$v8_defs"
+              grep -q 'return "target"' "$v8_defs"
+              sed -i '/^def get_cfg()/,/^def /s/return "target"/return "exec"/' "$v8_defs"
+              grep -q 'return "exec"' "$v8_defs"
+              # V8 appends its own -Werror after Bazel's host copts. LLVM 22
+              # diagnoses deprecations in V8's native generators that upstream's
+              # older compiler accepts; keep the diagnostics without promoting
+              # them to build failures.
+              test "$(grep -c '^[[:space:]]*"-Werror",' "$v8_defs")" -eq 1
+              sed -i 's/^\([[:space:]]*\)"-Werror",/\1"-Wno-error",/' "$v8_defs"
+
+              # --- Wire AOS Node into the rules_js node toolchain -----------------
+              # rules_js downloads a prebuilt Node (`@nodejs_linux_amd64`, node 20.14)
+              # whose ELF interpreter is absent in the sandbox. The toolchain's node
+              # target is `bin/nodejs/bin/node` (the raw ELF); a `bin/node` launcher
+              # wraps it. Replace both with tiny wrappers that exec AOS node
+              # (${buildNodejs}, node 22 — fine for tsc/validation), so every js_binary /
+              # ts_project action runs the hermetic interpreter. The `repo-overrides`
+              # copy is what the offline build actually uses (via --override_repository
+              # from the configure phase), so patch there.
+              node_repo="$TMPDIR/repo-overrides/nodejs_linux_amd64"
+              if [ -d "$node_repo" ]; then
+                for nodepath in "$node_repo/bin/nodejs/bin/node" "$node_repo/bin/node"; do
+                  if [ -e "$nodepath" ]; then
+                    rm -f "$nodepath"
+                    {
+                      printf '%s\n' '#!${buildBash}/bin/bash'
+                      printf '%s\n' 'exec ${buildNodejs}/bin/node "$@"'
+                    } > "$nodepath"
+                    chmod +x "$nodepath"
+                  fi
+                done
+              fi
+
+              # rules_js's js_binary launchers (e.g. the npm_typescript `validator`)
+              # and node_wrapper.sh are generated with `#!/usr/bin/env bash`, which the
+              # sandbox cannot exec (`/usr/bin/env` is absent). Rewrite those shebangs
+              # to AOS bash across the vendored repo-overrides. node_wrapper.sh also
+              # shells out to `node`; AOS node is on PATH (tools) so it resolves.
+              find "$TMPDIR/repo-overrides" -type f \
+                   \( -name '*.sh' -o -name '*.sh.tpl' -o -name '*.bash' \
+                   -o -name 'validator' -o -name 'node_wrapper*' \) 2>/dev/null | \
+                while read f; do
+                  sed -i "1s|^#!/usr/bin/env bash|#!${buildBash}/bin/bash|" "$f" 2>/dev/null || true
+                  sed -i "s|#!/usr/bin/env bash|#!${buildBash}/bin/bash|g" "$f" 2>/dev/null || true
+                done
+
+              # rules_js runs the js_binary launcher action as `env - BAZEL_BINDIR=... \
+              # <launcher>`. `env -` empties the environment, so PATH is empty and the
+              # launcher's own `uname`/`dirname`/`mktemp` (coreutils) calls fail with
+              # "command not found" (Exit 127). Inject a base PATH *inside* the launcher
+              # template (right after its `set -o` line) — it must be set in-script,
+              # since `--action_env` is wiped by `env -`. The js_binary template
+              # (`js_binary.sh.tpl`) is expanded into every launcher, so patching it
+              # covers the generated `validator` and friends. node_wrapper.sh gets the
+              # same treatment.
+              aos_launcher_path="${buildCoreutils}/bin:${buildBash}/bin:${buildSed}/bin:${buildGawk}/bin:${buildGnumake}/bin:${buildNodejs}/bin"
+              find "$TMPDIR/repo-overrides" -type f \
+                   \( -name 'js_binary.sh.tpl' -o -name 'node_wrapper.sh' \) 2>/dev/null | \
+                while read f; do
+                  if ! grep -q 'AOS_LAUNCHER_PATH' "$f" 2>/dev/null; then
+                    sed -i \
+                      "/^set -o pipefail -o errexit -o nounset/a\\
+        export PATH=\"$aos_launcher_path:\''${PATH:-}\"  # AOS_LAUNCHER_PATH" \
+                      "$f" 2>/dev/null || true
+                  fi
+                done
+
+              # --- Supply the rules_rust execution toolchain -------------------
+              # workerd's lolhtml (HTML rewriter) is Rust, so rules_rust pulls a
+              # prebuilt rust toolchain (`@rust_linux_x86_64__...__stable_tools`)
+              # whose ELF interpreter (`/lib64/ld-linux-x86-64.so.2`) is absent in
+              # the sandbox -> `rustc: cannot execute: required file not found`.
+              # Replace rustc, rustdoc, cargo, and their standard-library sysroots
+              # with AOS's source-built Rust 1.93 toolchain. Cross builds also
+              # install the exact target stdlib. The execution and target
+              # repositories must use the same compiler release because proc-macro
+              # metadata is compiler-version-specific.
+              # The generated rules_rust repositories still supply Bazel's exact
+              # toolchain metadata and auxiliary rustfmt/clippy executables.
+              ${
+          if isCross
+          then ''
+            rust_cross_repo="$TMPDIR/repo-overrides/rust_linux_x86_64__${targetTriple}__stable_tools"
+            if [ ! -d "$rust_cross_repo" ]; then
+              echo "missing Linux-executed rules_rust repository for ${targetTriple}" >&2
+              exit 1
+            fi
+            for rust_tool in rustc rustdoc cargo; do
+              test -x "${nativeRust}/bin/$rust_tool"
+              rust_tool_path="${nativeRust}/bin/$rust_tool"
+              case "$rust_tool" in
+                rustc|rustdoc)
+                  # rules_rust supplies the repository-local --sysroot after we
+                  # install the target stdlib below. The build-tool wrappers add
+                  # their store sysroot themselves, which would pass the option
+                  # twice, so Bazel must invoke the underlying compiler here.
+                  rust_tool_path="${nativeRust}/bin/$rust_tool.unwrapped"
+                  ;;
+              esac
+              test -x "$rust_tool_path"
+              {
+                printf '%s\n' '#!${buildBash}/bin/bash'
+                # The Linux host compiler loads rules_rust's native `.so` proc
+                # macros while the repository-local sysroot supplies target
+                # libraries. Using the same compiler as the execution
+                # repository keeps proc-macro metadata and suffix conventions
+                # identical across both roles.
+                printf 'exec %s "$@"\n' "$rust_tool_path"
+              } > "$rust_cross_repo/bin/$rust_tool"
+              chmod +x "$rust_cross_repo/bin/$rust_tool"
             done
-    '';
+            # rules_rust's rustc_lib input includes both lib/*.so and the native
+            # rustlib tree. Replace the complete compiler library directory so
+            # none of the fetched compiler's version-specific libraries can be
+            # paired with AOS rustc, then overlay the requested target stdlib.
+            rm -rf "$rust_cross_repo/lib"
+            mkdir -p "$rust_cross_repo/lib"
+            cp -a "${nativeRust}/lib/." "$rust_cross_repo/lib/"
+            chmod -R u+w "$rust_cross_repo/lib"
+
+            rm -rf "$rust_cross_repo/lib/rustlib/${targetTriple}"
+            mkdir -p "$rust_cross_repo/lib/rustlib/${targetTriple}"
+            cp -a "${buildRust}/lib/rustlib/${targetTriple}/." \
+              "$rust_cross_repo/lib/rustlib/${targetTriple}/"
+            chmod -R u+w "$rust_cross_repo/lib"
+          ''
+          else ""
+        }
+
+              rust_native_repo="$TMPDIR/repo-overrides/rust_linux_x86_64__x86_64-unknown-linux-gnu__stable_tools"
+              if [ ! -d "$rust_native_repo" ]; then
+                echo "missing Linux-executed native rules_rust repository" >&2
+                exit 1
+              fi
+              for rust_tool in rustc rustdoc cargo; do
+                rust_tool_path="${nativeRust}/bin/$rust_tool"
+                case "$rust_tool" in
+                  rustc|rustdoc)
+                    # Bazel provides the repository-local sysroot, so bypass the
+                    # installed wrapper that would add the store sysroot again.
+                    rust_tool_path="${nativeRust}/bin/$rust_tool.unwrapped"
+                    ;;
+                esac
+                test -x "$rust_tool_path"
+                {
+                  printf '%s\n' '#!${buildBash}/bin/bash'
+                  printf 'exec %s "$@"\n' "$rust_tool_path"
+                } > "$rust_native_repo/bin/$rust_tool"
+                chmod +x "$rust_native_repo/bin/$rust_tool"
+              done
+              rm -rf "$rust_native_repo/lib"
+              mkdir -p "$rust_native_repo/lib"
+              cp -a "${nativeRust}/lib/." "$rust_native_repo/lib/"
+              chmod -R u+w "$rust_native_repo/lib"
+
+              # No executable from the fetched rules_rust archives may remain
+              # usable. Required compiler tools above are AOS shell launchers.
+              # Turn every other top-level tool into a failing sentinel and
+              # remove the unregistered rust-analyzer helper so an unexpected
+              # request cannot silently cross the source-build boundary.
+              for rust_repo in "$TMPDIR/repo-overrides"/rust_*__*_tools; do
+                [ -d "$rust_repo" ] || continue
+                # Current Rust ships standard-library metadata beside its rlibs.
+                # Include those files in Bazel's declared sandbox inputs.
+                test "$(grep -Fc 'lib/*.rlib"' "$rust_repo/BUILD.bazel")" -eq 1
+                sed -i '/lib\/\*.rlib"/p; s/lib\/\*.rlib"/lib\/*.rmeta"/' "$rust_repo/BUILD.bazel"
+
+                find "$rust_repo/bin" -type f 2>/dev/null | \
+                  while read tool; do
+                    case "''${tool##*/}" in
+                      rustc|rustdoc|cargo)
+                        if ! head -n 1 "$tool" | grep -Fqx '#!${buildBash}/bin/bash'; then
+                          echo "required rules_rust tool is not an AOS launcher: $tool" >&2
+                          exit 1
+                        fi
+                        continue
+                        ;;
+                    esac
+                    rm -f "$tool"
+                    {
+                      printf '%s\n' '#!${buildBash}/bin/bash'
+                      printf '%s\n' 'echo "rules_rust requested a disabled prebuilt tool" >&2'
+                      printf '%s\n' 'exit 1'
+                    } > "$tool"
+                    chmod +x "$tool"
+                  done
+                rm -rf "$rust_repo/libexec"
+              done
+      ''
+      + lib.optionalString isLinuxCross ''
+        # These older sources rely on transitive standard-library includes.
+        # Declare the headers they use so target libstdc++ need not provide
+        # the same incidental includes as the native libc++ build.
+        for header in \
+          "$TMPDIR/repo-overrides/perfetto/include/perfetto/tracing/tracing_backend.h" \
+          "$TMPDIR/repo-overrides/perfetto/include/perfetto/ext/tracing/core/slice.h" \
+          "$TMPDIR/repo-overrides/perfetto/include/perfetto/ext/tracing/core/trace_packet.h"
+        do
+          test "$(grep -Fc '#include <memory>' "$header")" -eq 1
+          sed -i '/^#include <memory>$/i#include <stdint.h>' "$header"
+        done
+
+        v8_type_hints="$TMPDIR/repo-overrides/v8/src/objects/type-hints.h"
+        test "$(grep -Fc '#include <iosfwd>' "$v8_type_hints")" -eq 1
+        sed -i '/^#include <iosfwd>$/i#include <stdint.h>' "$v8_type_hints"
+
+        r2_bucket=src/workerd/api/r2-bucket.c++
+        test "$(grep -Fc '#include <array>' "$r2_bucket")" -eq 1
+        sed -i '/^#include <array>$/i#include <algorithm>' "$r2_bucket"
+      '';
     installPhase = ''
       mkdir -p $out/bin
 
@@ -1403,10 +1664,24 @@ in
 
       cp "$WORKERD_BIN" $out/bin/workerd
       chmod +x $out/bin/workerd
+
+      ${lib.optionalString isLinuxCross ''
+        # Keep only the target runtime libraries beside the executable. The
+        # cross compiler needs the full GCC toolchain, but the published
+        # closure does not.
+        mkdir -p "$out/lib"
+        for library in libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
+          test -e "${targetGcc}/${targetTriple}/lib64/$library"
+          cp -L "${targetGcc}/${targetTriple}/lib64/$library" "$out/lib/$library"
+        done
+      ''}
     '';
 
     buildDeps = [];
-    runtimeDeps = [];
+    runtimeDeps =
+      if isDarwinCross
+      then [stdenv.darwinRuntimes]
+      else [glibc];
     propagatedDeps = [];
 
     meta = {

@@ -3,7 +3,9 @@
 use aos_release::{
     canonical,
     plan::ReleaseClass,
-    qualification::{QualificationContract, QualificationPhase, QualificationScope},
+    qualification::{
+        PackageExecution, QualificationContract, QualificationPhase, QualificationScope,
+    },
 };
 
 fn contract() -> QualificationContract {
@@ -18,8 +20,8 @@ fn contract() -> QualificationContract {
 fn one_contract_selects_class_obligations_without_renaming_requirements() {
     let contract = contract();
     contract.validate().unwrap();
-    let edge = contract.gates(ReleaseClass::Edge).unwrap();
-    let stable = contract.gates(ReleaseClass::Stable).unwrap();
+    let edge = contract.gates("andyl/testing", ReleaseClass::Edge).unwrap();
+    let stable = contract.gates("andyl/main", ReleaseClass::Stable).unwrap();
     assert!(
         edge.iter()
             .all(|gate| stable.iter().any(|other| other.policy_id == gate.policy_id))
@@ -87,6 +89,11 @@ fn contract_rejects_weakened_platform_and_production_obligations() {
     let mut policy = contract();
     policy.package_rules[0].inherit_dependency_obligations = false;
     assert!(policy.validate().is_err());
+    let mut policy = contract();
+    policy.package_rules[0].execution = Some(PackageExecution::RecoveryImage {
+        system_variant: String::new(),
+    });
+    assert!(policy.validate().is_err());
 }
 
 #[test]
@@ -119,7 +126,7 @@ fn archival_contracts_preserve_their_original_bytes_and_gate_domains() {
         aos_release::Sha256Digest::of_canonical(aos_release::qualification::CONTRACT_V1, &value)
             .unwrap()
     );
-    let gates = archived.gates(ReleaseClass::Stable).unwrap();
+    let gates = archived.gates("andyl/main", ReleaseClass::Stable).unwrap();
     for (gate, requirement) in gates.iter().zip(value["requirements"].as_array().unwrap()) {
         assert_eq!(
             gate.policy_digest,
@@ -134,4 +141,119 @@ fn archival_contracts_preserve_their_original_bytes_and_gate_domains() {
     smuggled["claims"] = serde_json::to_value(contract().claims).unwrap();
     let parsed: QualificationContract = serde_json::from_value(smuggled).unwrap();
     assert!(parsed.validate().is_err());
+}
+
+#[test]
+fn main_edge_requires_production_assurance_and_testing_stable_does_not() {
+    let contract = contract();
+    for class in [
+        ReleaseClass::Edge,
+        ReleaseClass::Candidate,
+        ReleaseClass::Stable,
+        ReleaseClass::Emergency,
+    ] {
+        let main = contract.gates("andyl/main", class).unwrap();
+        let testing = contract.gates("andyl/testing", class).unwrap();
+        assert!(
+            main.iter()
+                .any(|gate| gate.policy_id == "production-recovery")
+        );
+        assert!(
+            !testing
+                .iter()
+                .any(|gate| gate.policy_id == "production-recovery")
+        );
+        assert!(
+            contract
+                .thresholds_for("andyl/main", class)
+                .unwrap()
+                .require_independent_review
+        );
+        assert!(
+            !contract
+                .thresholds_for("andyl/testing", class)
+                .unwrap()
+                .require_independent_review
+        );
+        assert_eq!(
+            contract
+                .thresholds_for("andyl/main", class)
+                .unwrap()
+                .soak_seconds,
+            contract
+                .thresholds_for("andyl/testing", class)
+                .unwrap()
+                .soak_seconds
+        );
+        assert_ne!(main[0].policy_digest, testing[0].policy_digest);
+    }
+}
+
+#[test]
+fn arm64_container_evidence_requires_the_complete_tcg_topology() {
+    use aos_release::platform::Platform;
+    use aos_release::qualification::environment::{Accelerator, Backend, EnvironmentInventory};
+
+    let policy = contract();
+    let target = policy
+        .targets
+        .iter()
+        .find(|target| target.id == "container-aarch64-linux")
+        .unwrap();
+    let profile = target.environment.as_ref().unwrap();
+    profile.validate(Platform::Aarch64Linux).unwrap();
+
+    // Test-only observations exercise admission; they are never release evidence.
+    let mut value = serde_json::to_value(profile).unwrap();
+    value.as_object_mut().unwrap().remove("kernel_options");
+    value["schema_version"] = "aos.release.environment-inventory/v1".into();
+    value["firmware"] = serde_json::Value::Null;
+    value["image_capabilities_digest"] = serde_json::Value::Null;
+    value["resources"]["memory_mib"] = 8192.into();
+    for layer in value["layers"].as_array_mut().unwrap() {
+        layer["cpu"] = serde_json::json!({
+            "vendor": "test-vendor",
+            "model": "test-model",
+            "sku": null,
+            "revision": null,
+            "microcode": null,
+            "features": []
+        });
+        layer["kernel_release"] = "test-kernel".into();
+        for identity in layer["backend"].as_object_mut().unwrap().values_mut() {
+            if identity.is_null() {
+                *identity = "test-identity".into();
+            }
+        }
+    }
+    let observed: EnvironmentInventory = serde_json::from_value(value).unwrap();
+    profile.matches(&observed).unwrap();
+
+    let mut missing_host = observed.clone();
+    missing_host.layers.remove(0);
+    assert!(profile.matches(&missing_host).is_err());
+
+    let mut missing_guest = observed.clone();
+    missing_guest.layers.remove(1);
+    assert!(profile.matches(&missing_guest).is_err());
+
+    let mut native_arm64 = observed.clone();
+    native_arm64.layers.remove(1);
+    native_arm64.layers[0].platform = Platform::Aarch64Linux;
+    native_arm64.validate().unwrap();
+    assert!(profile.matches(&native_arm64).is_err());
+
+    let mut false_kvm = observed.clone();
+    if let Backend::Qemu { accelerator, .. } = &mut false_kvm.layers[1].backend {
+        *accelerator = Accelerator::Kvm;
+    } else {
+        panic!("ARM64 reference scope must contain a QEMU layer");
+    }
+    assert!(profile.matches(&false_kvm).is_err());
+
+    let mut missing_emulator_version = observed;
+    if let Backend::Qemu { version, .. } = &mut missing_emulator_version.layers[1].backend {
+        *version = None;
+    }
+    assert!(profile.matches(&missing_emulator_version).is_err());
 }

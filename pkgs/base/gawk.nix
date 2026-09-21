@@ -11,7 +11,7 @@
   sed,
   bash,
 }: let
-  version = "5.3.1";
+  version = "5.4.1";
 in
   mkDerivation {
     pname = "gawk";
@@ -19,12 +19,17 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/gawk/gawk-${version}.tar.xz"];
-      hash = "0y3gsl6f09swpc1daamp049l8k3cggmhrx2g7m13cqiah5jbfkb9";
+      hash = "sha256-B/b3NCt/6+QxP8LCVCrZPWT+IK2HFyABCfEFqCb1/Tc=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake sed];
     runtimeDeps = [bash];
     configureFlags = "--disable-nls";
+    postPatch = ''
+      # Preserve uninitialized array strings when scalar conversion clears
+      # metadata; GCC's option generator depends on this behavior.
+      patch -p1 < ${../../stdenv/toolchains/gcc16/patches/gawk-5.4.1-preserve-scalar-format.patch}
+    '';
     postInstall = ''
       [ -f "$out/bin/gawk" ] && [ ! -e "$out/bin/awk" ] && ln -s gawk "$out/bin/awk"
       if [ -f "$out/bin/gawkbug" ]; then

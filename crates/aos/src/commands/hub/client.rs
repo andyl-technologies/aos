@@ -33,10 +33,11 @@ impl HubArgument for str {
 /// # Errors
 ///
 /// Returns an error if credential resolution or client construction fails.
-pub(super) fn hub_client<H: HubArgument + ?Sized>(
+pub(super) async fn hub_client<H: HubArgument + ?Sized>(
     hub: &H,
     token: Option<&str>,
 ) -> Result<HubClient> {
+    crate::commands::hub_auth::prepare_hub_access(hub.as_optional_hub(), token).await?;
     let (hub, token) = crate::commands::hub_auth::resolve_access(hub.as_optional_hub(), token)?;
     match token {
         Some(token) => HubClient::connect_with_token(&hub, &token),
@@ -49,6 +50,6 @@ pub(super) fn hub_client<H: HubArgument + ?Sized>(
 /// # Errors
 ///
 /// Returns an error if request validation, credential resolution, or a hub API call fails.
-pub(in crate::commands) fn container_hub_client(access: &HubAccessArgs) -> Result<HubClient> {
-    hub_client(&access.hub, access.token.as_deref())
+pub(in crate::commands) async fn container_hub_client(access: &HubAccessArgs) -> Result<HubClient> {
+    hub_client(&access.hub, access.token.as_deref()).await
 }

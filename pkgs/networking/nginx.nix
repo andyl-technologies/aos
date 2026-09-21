@@ -13,7 +13,7 @@
   zlib,
   stdenv,
 }: let
-  version = "1.30.4";
+  version = "1.31.5";
   linkerOptions =
     if stdenv.hostPlatform.isDarwin
     then "-L${openssl}/lib -L${pcre2}/lib -L${zlib}/lib -Wl,-rpath,${openssl}/lib -Wl,-rpath,${pcre2}/lib -Wl,-rpath,${zlib}/lib"
@@ -71,7 +71,7 @@ in
       urls = [
         "https://nginx.org/download/nginx-${version}.tar.gz"
       ];
-      hash = "sha256-QmHckOnkfBxAQSdumqo9SOvi5mT3KOFPqVrmxn1XoIs=";
+      hash = "sha256-6VFgfVNINmJL02trRacdv7BVI33q43ONprvzJw2tonk=";
     };
 
     buildDeps = [gnumake];

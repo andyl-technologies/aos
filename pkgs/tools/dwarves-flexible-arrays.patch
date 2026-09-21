@@ -1,0 +1,31 @@
+--- a/pahole.c
++++ b/pahole.c
+@@ -2448,7 +2448,7 @@
+ 	struct type *type;
+ 	struct cu   *cu;
+ 	bool	    read_already;
+-	char	    instance[0];
++	char	    instance[];
+ };
+ 
+ static struct type_instance *type_instance__new(struct type *type, struct cu *cu)
+@@ -2564,7 +2564,7 @@
+ 	char	   *filter;
+ 	uint16_t   nr_args;
+ 	bool	   type_enum_resolved;
+-	char name[0];
++	char name[];
+ 
+ };
+ 
+--- a/dwarves.h
++++ b/dwarves.h
+@@ -313,7 +313,7 @@
+ 	size_t		 function_bytes_added;
+ 	size_t		 function_bytes_removed;
+ 	int		 build_id_len;
+-	unsigned char	 build_id[0];
++	unsigned char	 build_id[];
+ };
+ 
+ struct cu *cu__new(const char *name, uint8_t addr_size,

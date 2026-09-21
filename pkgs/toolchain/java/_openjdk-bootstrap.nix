@@ -34,11 +34,17 @@
   extraBuildDeps ? [],
   extraDarwinFrameworks ? [],
   extraPatches ? [],
-  # Override build parallelism (defaults to $NIX_BUILD_CORES).
-  # Useful when the boot JDK has javac concurrency bugs.
-  buildJobs ? null,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
+  buildTarget =
+    if isDarwinCross || isLinuxArmCross
+    then "images"
+    else "bootcycle-images";
+  jdkImage =
+    if isDarwinCross || isLinuxArmCross
+    then "build/*/images/jdk"
+    else "build/*/bootcycle-build/images/jdk";
   buildTools =
     if isDarwinCross
     then buildPackages
@@ -56,14 +62,37 @@
         file
         ;
     };
+
+  # Boot Java executes build-time generators; target compilers still build the JVM.
   bootJdk =
-    if isDarwinCross
+    if isDarwinCross || isLinuxArmCross
     then builtins.getAttr "openjdk-${toString (major - 1)}" buildPackages
     else prevJdk;
+
+  # A matching native JDK assembles images without an auxiliary host JVM build.
   buildJdk =
-    if isDarwinCross
+    if isDarwinCross || isLinuxArmCross
     then builtins.getAttr "openjdk-${toString major}" buildPackages
     else null;
+  linuxBuildJdkFlag =
+    if isLinuxArmCross
+    then " --with-build-jdk=${buildJdk}"
+    else "";
+
+  # jpackage embeds native launchers in the module image, beyond ELF scrubbing.
+  # Replace the full compiler prefix, including its hash, but retain assertions.
+  linuxJpackageCxxFlag =
+    if isLinuxArmCross && major >= 14
+    then " -ffile-prefix-map=${stdenv.gcc}=/aos-toolchain"
+    else "";
+  # JDK 16 and 17 omit the configured X include directory from several headless AWT
+  # compilation rules when cross compiling. Keep those rules on the target
+  # header set selected by configure.
+  linuxLegacyX11CFlag =
+    if isLinuxArmCross && major >= 16 && major <= 17
+    then " -I${xorg-stubs}/include"
+    else "";
+
   nativeMig =
     if isDarwinCross
     then
@@ -73,10 +102,6 @@
     else null;
   tag = "jdk-${version}+${build}";
   repo = "jdk${toString major}${repoSuffix}";
-  jobsExpr =
-    if buildJobs != null
-    then toString buildJobs
-    else "$NIX_BUILD_CORES";
   # JDK 9/10 interpret --with-freetype as a filesystem prefix; the bundled/system
   # selector was introduced in JDK 11. Use the target AOS library on older ports.
   darwinFreetypeFlags =
@@ -305,6 +330,31 @@ in
               sed -i 's/base() > 0/base() != (char*)0/' "$f"
             fi
           done
+
+          # These collectors call BlockOffsetTable::block_start(), whose body
+          # lives in the inline header. GCC 16 no longer happens to emit an
+          # external copy from blockOffsetTable.cpp for callers that omit it.
+          for f in \
+            hotspot/src/share/vm/gc/cms/parCardTableModRefBS.cpp \
+            hotspot/src/share/vm/gc/shared/cardTableRS.cpp \
+            src/hotspot/share/gc/cms/parCardTableModRefBS.cpp \
+            src/hotspot/share/gc/shared/cardTableRS.cpp; do
+            if [ -f "$f" ]; then
+              case "$f" in
+                hotspot/*) inlineHeader=hotspot/src/share/vm/gc/shared/blockOffsetTable.inline.hpp ;;
+                src/*) inlineHeader=src/hotspot/share/gc/shared/blockOffsetTable.inline.hpp ;;
+              esac
+              if [ -f "$inlineHeader" ] \
+                && ! grep -Fq '#include "gc/shared/blockOffsetTable.inline.hpp"' "$f"; then
+                test "$(grep -Fc '#include "precompiled.hpp"' "$f")" -eq 1
+                sed -i \
+                  '/#include "precompiled.hpp"/a #include "gc/shared/blockOffsetTable.inline.hpp"' \
+                  "$f"
+                test "$(grep -Fc '#include "gc/shared/blockOffsetTable.inline.hpp"' "$f")" -eq 1
+              fi
+            fi
+          done
+
           # Fix os_linux.cpp: "if (p < 0)" where p is char*
           for f in hotspot/src/os/linux/vm/os_linux.cpp src/hotspot/os/linux/os_linux.cpp; do
             if [ -f "$f" ]; then
@@ -1133,13 +1183,16 @@ in
                           --with-extra-cflags="-Wno-error -fcommon -fno-delete-null-pointer-checks ${darwinFrameworkFlags}" \
                           --with-extra-cxxflags="-Wno-error -fno-delete-null-pointer-checks ${darwinLegacyCxxFlag} ${darwinFrameworkFlags}" \
                           --with-extra-ldflags="$darwinLdflags ${darwinFrameworkFlags} ${darwinFrameworkRpathFlags}" \
-                          --with-jobs=${jobsExpr} \
+                          --with-jobs=$NIX_BUILD_CORES \
                           ${extraCfgStr}
                         grep -q '^ENABLE_HEADLESS_ONLY := true$' build/*/spec.gmk
           ''
           else ''
+            # GCC 16 defaults C sources to C23. The bootstrap ladder starts
+            # with pre-C23 native code whose empty parameter lists retain
+            # their historical unspecified-argument meaning under C17.
             $CONFIG_SHELL configure \
-              --with-boot-jdk=${prevJdk} \
+              --with-boot-jdk=${bootJdk}${linuxBuildJdkFlag} \
               --enable-headless-only \
               --with-native-debug-symbols=none \
               --disable-warnings-as-errors \
@@ -1157,27 +1210,34 @@ in
               --with-version-build=${build} \
               --with-version-opt=aos \
               --with-version-pre= \
-              --with-extra-cflags="-Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
-              --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
+              --with-extra-cflags="-std=gnu17 -Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks${linuxLegacyX11CFlag}" \
+              --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks${linuxJpackageCxxFlag}" \
               --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
-              --with-jobs=${jobsExpr} \
+              --with-jobs=$NIX_BUILD_CORES \
               ${extraCfgStr}
           '';
       }
       {
         name = "build";
         script = ''
-          # Disable AVX-512 in glibc to prevent SIGSEGV in memmove during JVM
-          # bootstrap (older JDK hotspot code has alignment issues with AVX-512)
-          export GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX512F
-
           # Remove -z defs from generated spec.gmk — our xorg-stubs don't
           # export all X11 symbols and some JDK libs use runtime-resolved deps
           find build -name 'spec.gmk' 2>/dev/null | while read f; do
+            # Older configure releases also copy extra C flags into HotSpot's
+            # C++ flags. Keep the C17 compatibility mode confined to C code.
+            sed -i \
+              '/^JVM_CFLAGS[[:space:]]*:=/s/-std=gnu17[[:space:]]*//g' \
+              "$f"
+            sed -i \
+              '/^EXTRA_CFLAGS[[:space:]]*=/s/-std=gnu17[[:space:]]*//g' \
+              "$f"
+            test "$(sed -n '/^JVM_CFLAGS[[:space:]]*:=/p' "$f" | grep -Fc -- '-std=gnu17')" -eq 0
+            test "$(sed -n '/^EXTRA_CFLAGS[[:space:]]*=/p' "$f" | grep -Fc -- '-std=gnu17')" -eq 0
+
             sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
           done
 
-          make images JOBS=${jobsExpr}
+          make ${buildTarget} JOBS=$NIX_BUILD_CORES
         '';
       }
       {
@@ -1186,7 +1246,7 @@ in
           if isDarwinCross
           then ''
             mkdir -p $out
-            cp -a build/*/images/jdk/* $out/
+            cp -a ${jdkImage}/* $out/
             test -x "$out/bin/java"
             test -x "$out/bin/javac"
             test -f "$out/lib/server/libjvm.dylib"
@@ -1195,7 +1255,7 @@ in
           ''
           else ''
             mkdir -p $out
-            cp -a build/*/images/jdk/* $out/
+            cp -a ${jdkImage}/* $out/
 
             # Patch ELF binaries with the correct dynamic linker and rpath
             INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")

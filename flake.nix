@@ -39,6 +39,30 @@
 
     aosFor = system: import ./. {inherit system;};
 
+    qualificationExecutorPackages = system: aos:
+      {
+        qualification-executor = aos.releaseQualificationExecutor;
+        "qualification-executor-${system}" = aos.releaseQualificationExecutor;
+      }
+      // (
+        if system == "x86_64-linux"
+        then
+          builtins.listToAttrs (map (target: {
+              name = "qualification-executor-${target}";
+              value =
+                (import ./. {
+                  inherit system;
+                  crossSystem = target;
+                })
+                .releaseQualificationExecutor;
+            }) [
+              "aarch64-linux"
+              "x86_64-darwin"
+              "aarch64-darwin"
+            ])
+        else {}
+      );
+
     coordinatedContainer = variant: _: let
       # The bootstrap ladder starts on x86_64 and performs its reviewed
       # x86_64→aarch64 transition at gcc4_8_cross. Post-cross target tools run
@@ -78,7 +102,16 @@
     # Auto-enumerates both system names and image formats.
     systemPackages = aos: let
       sysNames = builtins.attrNames aos.systems;
-      forSystem = name: let
+
+      # A variant that defers signing to the release finalizer has no final
+      # image in Nix at all: `build.image` and `imageArtifacts` stay undefined
+      # and the unsigned assembly is the only buildable output. Signed disks
+      # for those variants come from `aos release finalize-image`.
+      externallyFinalized = name: assembly: {
+        "${name}-unsigned-image-assembly" = assembly;
+      };
+
+      selfContained = name: let
         formats = builtins.attrNames aos.systems.${name}.build.image;
         artifacts = aos.systems.${name}.config.system.build.imageArtifacts;
         artifactFormats = builtins.attrNames artifacts;
@@ -100,6 +133,13 @@
           )
           artifactFormats
         );
+
+      forSystem = name: let
+        assembly = aos.systems.${name}.build.unsignedImageAssembly;
+      in
+        if assembly == null
+        then selfContained name
+        else externallyFinalized name assembly;
     in
       builtins.foldl' (acc: name: acc // forSystem name) {} sysNames;
 
@@ -211,6 +251,7 @@
             pkgs = aos.pkgs;
           };
         }
+        // qualificationExecutorPackages system aos
         // systemPackages aos
         // containers
         // individualPackages

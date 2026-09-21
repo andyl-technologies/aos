@@ -235,6 +235,55 @@ pub async fn propose_config_change_with_id(
             )
         })?;
     let base_commit = Oid::from_hex(&base_commit_hex)?;
+    propose_config_change_at_base(
+        db,
+        sealer,
+        fetch,
+        writer,
+        registry,
+        change_id,
+        base_commit,
+        file_path,
+        new_contents,
+        actor_kind,
+        actor_id,
+        actor_label,
+        when,
+        meta,
+    )
+    .await
+}
+
+/// Proposes a draft with an exact, reviewed parent commit and change id.
+///
+/// Pinning the parent prevents an index refresh during an apply from silently
+/// rebasing a reviewed file replacement onto unrelated configuration changes.
+/// Callers authorize and reserve the change id before writing the draft.
+///
+/// # Errors
+///
+/// Returns an error for an invalid file path, missing or corrupt base objects,
+/// unavailable signing material, or a storage or database failure.
+#[allow(clippy::too_many_arguments)]
+pub async fn propose_config_change_at_base(
+    db: &Database,
+    sealer: &dyn SecretSealer,
+    fetch: &dyn SurfaceFetch,
+    writer: &dyn SurfaceWrite,
+    registry: &RegistryRecord,
+    change_id: ChangeId,
+    base_commit: Oid,
+    file_path: &str,
+    new_contents: &str,
+    actor_kind: &str,
+    actor_id: Option<i64>,
+    actor_label: &str,
+    when: i64,
+    meta: ProposeMeta,
+) -> Result<ProposedChange> {
+    if file_path.contains('/') {
+        bail!("only top-level committed files may be edited as change requests, got '{file_path}'");
+    }
 
     let reader = ObjectReader::new(fetch);
     let commit = reader.read_commit(base_commit).await?;

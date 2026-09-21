@@ -17,6 +17,7 @@
   };
   system = mkSystem {
     modules = [../../systems/server.nix fixtureAuthorities];
+    systemName = "release-variant-fixture";
   };
   secureBoot = system.config.aos.boot.secureBoot;
   assembly = system.config.system.build.unsignedImageAssembly;
@@ -31,6 +32,9 @@ in
   assert system.config.aos.security.level == "hardened";
   assert !system.config.aos.security.selinux.enable;
   assert assembly != null;
+  # The release plan uses the discovered variant, not the shared OS name.
+  assert system.config.aos.system.name != "release-variant-fixture";
+  assert lib.hasInfix "--arg variant 'release-variant-fixture'" (builtins.head assembly.passthru.phases).script;
     pkgs.mkDerivation {
       pname = "external-image-assembly-evaluation-check";
       version = "0";

@@ -1,7 +1,8 @@
 {
   mkDerivation,
   bash,
-  gawk,
+  coreutils,
+  grep,
   sed,
 }:
 mkDerivation {
@@ -11,7 +12,7 @@ mkDerivation {
     path = ./.;
     name = "nuke-references-src";
   };
-  runtimeDeps = [bash gawk sed];
+  runtimeDeps = [bash coreutils grep];
   dontStrip = true;
   dontNukeRefs = true; # avoid self-application during fixup
   phases = [
@@ -21,8 +22,10 @@ mkDerivation {
         mkdir -p $out/bin
         ${sed}/bin/sed \
           -e "s|@shell@|${bash}/bin/bash|g" \
-          -e "s|@awk@|${gawk}/bin/awk|g" \
-          -e "s|@sed@|${sed}/bin/sed|g" \
+          -e "s|@chmod@|${coreutils}/bin/chmod|g" \
+          -e "s|@dd@|${coreutils}/bin/dd|g" \
+          -e "s|@grep@|${grep}/bin/grep|g" \
+          -e "s|@stat@|${coreutils}/bin/stat|g" \
           $src/nuke-refs > $out/bin/nuke-refs
         chmod 755 $out/bin/nuke-refs
       '';

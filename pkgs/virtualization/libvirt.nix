@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   meson,
   ninja,
   pkg-config,
@@ -58,6 +60,7 @@
   buildPackages,
 }: let
   version = "12.7.0";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   runtimeTools = [
     bash
     bridge-utils
@@ -80,7 +83,7 @@
   ];
   runtimePath = builtins.concatStringsSep ":" (map (package: "${package}/bin") runtimeTools);
 in
-  mkDerivation {
+  mkDerivation rec {
     pname = "libvirt";
     inherit version;
 
@@ -221,103 +224,110 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export PATH="${runtimePath}:$PATH"
-          export PKG_CONFIG_PATH="${bash-completion}/share/pkgconfig:$PKG_CONFIG_PATH"
-          export XML_CATALOG_FILES="${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml ${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml"
-          PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
-            meson setup build \
-              $mesonFlags \
-              --prefix="$out" \
-              --sysconfdir=/etc \
-              --localstatedir=/var \
-              --buildtype=release \
-              -Dinstall_prefix="$out" \
-              -Dsystem=true \
-              -Drunstatedir=/run \
-              -Dinit_script=systemd \
-              -Dunitdir="$out/lib/systemd/system" \
-              -Dsysusersdir="$out/lib/sysusers.d" \
-              -Dsshconfdir=/etc/ssh/ssh_config.d \
-              -Dqemu_datadir=${qemu}/share/qemu \
-              -Dqemu_user=libvirt-qemu \
-              -Dqemu_group=libvirt-qemu \
-              -Dch_user=libvirt-qemu \
-              -Dch_group=libvirt-qemu \
-              -Dapparmor=enabled \
-              -Dapparmor_profiles=enabled \
-              -Dattr=enabled \
-              -Daudit=enabled \
-              -Dbash_completion=enabled \
-              -Dblkid=enabled \
-              -Dcapng=enabled \
-              -Dcurl=enabled \
-              -Ddocs=enabled \
-              -Dexpensive_tests=enabled \
-              -Dfirewalld=enabled \
-              -Dfirewalld_zone=enabled \
-              -Dfuse=enabled \
-              -Dhost_validate=enabled \
-              -Djson_c=enabled \
-              -Dlibnl=enabled \
-              -Dlibpcap=enabled \
-              -Dlibssh2=enabled \
-              -Dnls=enabled \
-              -Dnumactl=enabled \
-              -Dnumad=enabled \
-              -Dpciaccess=enabled \
-              -Dpolkit=enabled \
-              -Dreadline=enabled \
-              -Dsasl=enabled \
-              -Dselinux=enabled \
-              -Dudev=enabled \
-              -Dlibvirtd=enabled \
-              -Dlogin_shell=enabled \
-              -Dnss=enabled \
-              -Dpm_utils=enabled \
-              -Dssh_proxy=enabled \
-              -Dsysctl_config=enabled \
-              -Dtls_priority=enabled \
-              -Dtests=enabled \
-              -Ddriver_ch=enabled \
-              -Ddriver_esx=enabled \
-              -Ddriver_interface=enabled \
-              -Ddriver_libvirtd=enabled \
-              -Ddriver_lxc=enabled \
-              -Ddriver_network=enabled \
-              -Ddriver_openvz=enabled \
-              -Ddriver_qemu=enabled \
-              -Ddriver_remote=enabled \
-              -Ddriver_secrets=enabled \
-              -Ddriver_test=enabled \
-              -Ddriver_vbox=enabled \
-              -Ddriver_vmware=enabled \
-              -Dstorage_dir=enabled \
-              -Dstorage_disk=enabled \
-              -Dstorage_fs=enabled \
-              -Dstorage_lvm=enabled \
-              -Dstorage_mpath=enabled \
-              -Dstorage_scsi=enabled \
-              -Dstorage_vstorage=enabled \
-              -Dstorage_zfs=enabled \
-              -Dsecdriver_apparmor=enabled \
-              -Dsecdriver_selinux=enabled \
-              -Dglusterfs=disabled \
-              -Dlibiscsi=disabled \
-              -Dlibssh=disabled \
-              -Dnetcf=disabled \
-              -Dopenwsman=disabled \
-              -Dsanlock=disabled \
-              -Dwireshark_dissector=disabled \
-              -Ddriver_bhyve=disabled \
-              -Ddriver_hyperv=disabled \
-              -Ddriver_libxl=disabled \
-              -Ddriver_vz=disabled \
-              -Dstorage_gluster=disabled \
-              -Dstorage_iscsi=disabled \
-              -Dstorage_iscsi_direct=disabled \
-              -Dstorage_rbd=disabled
-        '';
+        script =
+          lib.optionalString isLinuxCross ''
+            # XML and GLib build tools also expose native library metadata.
+            # Resolve target APIs and GLib's development linker symlinks first.
+            export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig:${libxml2}/lib/pkgconfig:${libxslt}/lib/pkgconfig:${util-linux}/lib/pkgconfig:${dbus}/lib/pkgconfig:${systemd}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            export LDFLAGS="-L${glib.dev}/lib''${LDFLAGS:+ $LDFLAGS}"
+          ''
+          + ''
+            export PATH="${runtimePath}:$PATH"
+            export PKG_CONFIG_PATH="${bash-completion}/share/pkgconfig:$PKG_CONFIG_PATH"
+            export XML_CATALOG_FILES="${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml ${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml"
+            PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+              meson setup build \
+                $mesonFlags \
+                --prefix="$out" \
+                --sysconfdir=/etc \
+                --localstatedir=/var \
+                --buildtype=release \
+                -Dinstall_prefix="$out" \
+                -Dsystem=true \
+                -Drunstatedir=/run \
+                -Dinit_script=systemd \
+                -Dunitdir="$out/lib/systemd/system" \
+                -Dsysusersdir="$out/lib/sysusers.d" \
+                -Dsshconfdir=/etc/ssh/ssh_config.d \
+                -Dqemu_datadir=${qemu}/share/qemu \
+                -Dqemu_user=libvirt-qemu \
+                -Dqemu_group=libvirt-qemu \
+                -Dch_user=libvirt-qemu \
+                -Dch_group=libvirt-qemu \
+                -Dapparmor=enabled \
+                -Dapparmor_profiles=enabled \
+                -Dattr=enabled \
+                -Daudit=enabled \
+                -Dbash_completion=enabled \
+                -Dblkid=enabled \
+                -Dcapng=enabled \
+                -Dcurl=enabled \
+                -Ddocs=enabled \
+                -Dexpensive_tests=enabled \
+                -Dfirewalld=enabled \
+                -Dfirewalld_zone=enabled \
+                -Dfuse=enabled \
+                -Dhost_validate=enabled \
+                -Djson_c=enabled \
+                -Dlibnl=enabled \
+                -Dlibpcap=enabled \
+                -Dlibssh2=enabled \
+                -Dnls=enabled \
+                -Dnumactl=enabled \
+                -Dnumad=enabled \
+                -Dpciaccess=enabled \
+                -Dpolkit=enabled \
+                -Dreadline=enabled \
+                -Dsasl=enabled \
+                -Dselinux=enabled \
+                -Dudev=enabled \
+                -Dlibvirtd=enabled \
+                -Dlogin_shell=enabled \
+                -Dnss=enabled \
+                -Dpm_utils=enabled \
+                -Dssh_proxy=enabled \
+                -Dsysctl_config=enabled \
+                -Dtls_priority=enabled \
+                -Dtests=enabled \
+                -Ddriver_ch=enabled \
+                -Ddriver_esx=enabled \
+                -Ddriver_interface=enabled \
+                -Ddriver_libvirtd=enabled \
+                -Ddriver_lxc=enabled \
+                -Ddriver_network=enabled \
+                -Ddriver_openvz=enabled \
+                -Ddriver_qemu=enabled \
+                -Ddriver_remote=enabled \
+                -Ddriver_secrets=enabled \
+                -Ddriver_test=enabled \
+                -Ddriver_vbox=enabled \
+                -Ddriver_vmware=enabled \
+                -Dstorage_dir=enabled \
+                -Dstorage_disk=enabled \
+                -Dstorage_fs=enabled \
+                -Dstorage_lvm=enabled \
+                -Dstorage_mpath=enabled \
+                -Dstorage_scsi=enabled \
+                -Dstorage_vstorage=enabled \
+                -Dstorage_zfs=enabled \
+                -Dsecdriver_apparmor=enabled \
+                -Dsecdriver_selinux=enabled \
+                -Dglusterfs=disabled \
+                -Dlibiscsi=disabled \
+                -Dlibssh=disabled \
+                -Dnetcf=disabled \
+                -Dopenwsman=disabled \
+                -Dsanlock=disabled \
+                -Dwireshark_dissector=disabled \
+                -Ddriver_bhyve=disabled \
+                -Ddriver_hyperv=disabled \
+                -Ddriver_libxl=disabled \
+                -Ddriver_vz=disabled \
+                -Dstorage_gluster=disabled \
+                -Dstorage_iscsi=disabled \
+                -Dstorage_iscsi_direct=disabled \
+                -Dstorage_rbd=disabled
+          '';
       }
       {
         name = "build";
@@ -376,7 +386,14 @@ in
               -e '1s|^#! */usr/bin/env bash|#!${bash}/bin/bash|' \
               {} +
 
-          chmod u-s,g-s "$out/bin/virt-login-shell" 2>/dev/null || true
+          ${lib.optionalString isLinuxCross ''
+            # Meson replaces cross-linker runtime paths during installation.
+            # Restore declared dependencies before the normal path shrink.
+            find "$out" -type f | while read -r binary; do
+              patchelf --print-needed "$binary" >/dev/null 2>&1 || continue
+              patchelf --add-rpath "$out/lib:${lib.concatMapStringsSep ":" (package: "${package}/lib") runtimeDeps}" "$binary"
+            done
+          ''}chmod u-s,g-s "$out/bin/virt-login-shell" 2>/dev/null || true
           "$out/bin/virsh" --version
           "$out/bin/virt-host-validate" --version
         '';

@@ -9,6 +9,8 @@
   crossGlibc,
   buildPlatform,
   hostPlatform,
+  cc ? "${crossGccStage2}/bin/${hostPlatform.config}-gcc",
+  cxx ? "${crossGccStage2}/bin/${hostPlatform.config}-g++",
   ...
 }: let
   src = builtins.fetchTarball {
@@ -24,12 +26,17 @@ in
       "-c"
       ''
         set -eu
-        export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+        export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+        export MAKEINFO="${prev.texinfo}/bin/makeinfo"
         export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
         cp -r ${src} "$TMPDIR/src"
         chmod -R u+w "$TMPDIR/src"
+
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/src"
 
         # Touch all files first, then touch generated .c/.h to prevent regeneration
         find "$TMPDIR/src" -type f -exec touch {} + 2>/dev/null || true
@@ -41,14 +48,16 @@ in
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
-        CC="${crossGccStage2}/bin/${hostPlatform.config}-gcc" \
-        CXX="${crossGccStage2}/bin/${hostPlatform.config}-g++" \
+        ${import ../lib/static-build-compiler.nix {tools = prev;}}
+
+        CC="${cc}" \
+        CXX="${cxx}" \
         AR="${crossBinutils}/bin/${hostPlatform.config}-ar" \
         RANLIB="${crossBinutils}/bin/${hostPlatform.config}-ranlib" \
         CFLAGS="-O2 -isystem ${crossGlibc}/include" \
         CXXFLAGS="-O2 -isystem ${crossGlibc}/include" \
         LDFLAGS="-L${crossGlibc}/lib -static" \
-        "$TMPDIR/src/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/src/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${hostPlatform.config} \
@@ -59,8 +68,8 @@ in
           --with-sysroot=/ \
           --program-transform-name=
 
-        make -j"$NIX_BUILD_CORES" MAKEINFO="${prev.texinfo}/bin/makeinfo"
-        make install MAKEINFO="${prev.texinfo}/bin/makeinfo"
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" MAKEINFO="${prev.texinfo}/bin/makeinfo"
+        make SHELL="${prev.bash}/bin/bash" install MAKEINFO="${prev.texinfo}/bin/makeinfo"
 
         echo "Native binutils 2.30 (${hostPlatform.config}) installed to $out"
       ''

@@ -43,6 +43,7 @@
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
   versionCheck ? builtins.substring 0 3 version,
 }: let
+  isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   needsDarwinMdns = builtins.compareVersions version "8.0.0" >= 0;
   needsRulesJavaRuntime = builtins.compareVersions version "9.0.0" >= 0;
@@ -87,99 +88,99 @@
       }
     else null;
   buildBash =
-    if isDarwinCross
+    if isCross
     then buildPackages.bash
     else bash;
   buildCoreutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.coreutils
     else coreutils;
   buildWhich =
-    if isDarwinCross
+    if isCross
     then buildPackages.which
     else which;
   buildZip =
-    if isDarwinCross
+    if isCross
     then buildPackages.zip
     else zip;
   buildUnzip =
-    if isDarwinCross
+    if isCross
     then buildPackages.unzip
     else unzip;
   buildGawk =
-    if isDarwinCross
+    if isCross
     then buildPackages.gawk
     else gawk;
   buildPython3 =
-    if isDarwinCross
+    if isCross
     then buildPackages.python3
     else python3;
   buildOpenjdk =
-    if isDarwinCross
+    if isCross
     then buildPackages.openjdk-21
     else openjdk-21;
   buildGcc =
-    if isDarwinCross
+    if isCross
     then buildPackages.gcc
     else gcc;
   buildBinutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.binutils
     else binutils;
   buildGrep =
-    if isDarwinCross
+    if isCross
     then buildPackages.grep
     else grep;
   buildGzip =
-    if isDarwinCross
+    if isCross
     then buildPackages.gzip
     else gzip;
   buildPatch =
-    if isDarwinCross
+    if isCross
     then buildPackages.patch
     else patch;
   buildDiffutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.diffutils
     else diffutils;
   buildFindutils =
-    if isDarwinCross
+    if isCross
     then buildPackages.findutils
     else findutils;
   buildSed =
-    if isDarwinCross
+    if isCross
     then buildPackages.sed
     else sed;
   buildTar =
-    if isDarwinCross
+    if isCross
     then buildPackages.tar
     else tar;
   buildXz =
-    if isDarwinCross
+    if isCross
     then buildPackages.xz
     else xz;
   buildFile =
-    if isDarwinCross
+    if isCross
     then buildPackages.file
     else file;
   buildPatchelf =
-    if isDarwinCross
+    if isCross
     then buildPackages.patchelf
     else patchelf;
   buildBazelBootstrap =
-    if isDarwinCross
+    if isCross
     then buildPackages.bazel-bootstrap
     else bazel-bootstrap;
   buildBootstrapTools =
-    if isDarwinCross
+    if isCross
     then buildPackages.bootstrapTools
     else bootstrapTools;
   buildGccLibs =
-    if isDarwinCross
+    if isCross
     then buildPackages.gcc-libs
     else gcc-libs;
   buildLlvm =
-    if isDarwinCross
+    if isCross
     then buildPackages.llvm
     else llvm;
   darwinBazelCpu =
@@ -433,7 +434,7 @@
     ++ lib.optional isDarwinCross llvm
   );
   buildToolsPath =
-    if isDarwinCross
+    if isCross
     then
       lib.makeBinPath [
         buildBash
@@ -1417,6 +1418,40 @@ in
                   "$f" 2>/dev/null || true
               done
 
+            ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
+              # compile.sh must retain its native platform for the bootstrap JDK
+              # toolchains. Select BLAKE3's ARM implementation explicitly while
+              # the output configuration uses the cross compiler.
+              BLAKE3_BUILD=$(find ../vendor_dir -maxdepth 2 \
+                -path '*/blake3*/BUILD.bazel' -print -quit)
+              test -n "$BLAKE3_BUILD"
+              if grep -q '@bazel_tools//src/conditions:linux_x86_64' "$BLAKE3_BUILD"; then
+                test "$(grep -Fc '@bazel_tools//src/conditions:linux_x86_64' "$BLAKE3_BUILD")" = 2
+                test "$(grep -Fc '@bazel_tools//src/conditions:linux_aarch64' "$BLAKE3_BUILD")" = 2
+                sed -i \
+                  -e 's|@bazel_tools//src/conditions:linux_x86_64|@bazel_tools//src/conditions:linux_ppc|g' \
+                  -e 's|@bazel_tools//src/conditions:linux_aarch64|@bazel_tools//src/conditions:linux_x86_64|g' \
+                  "$BLAKE3_BUILD"
+              else
+                BLAKE3_BUILD=$(dirname "$BLAKE3_BUILD")/c/BUILD.bazel
+                test "$(grep -Fc '@platforms//cpu:x86_64' "$BLAKE3_BUILD")" = 1
+                test "$(grep -Fc '@platforms//cpu:aarch64' "$BLAKE3_BUILD")" = 1
+                sed -i \
+                  -e 's|@platforms//cpu:x86_64|@platforms//cpu:ppc|g' \
+                  -e 's|@platforms//cpu:aarch64|@platforms//cpu:x86_64|g' \
+                  "$BLAKE3_BUILD"
+
+                ABSEIL_RANDOM_BUILD=$(find ../vendor_dir -path \
+                  '*/abseil-cpp*/absl/random/internal/BUILD.bazel' -print -quit)
+                test "$(grep -Fc '@platforms//cpu:x86_64' "$ABSEIL_RANDOM_BUILD")" = 1
+                test "$(grep -Fc '@platforms//cpu:aarch64' "$ABSEIL_RANDOM_BUILD")" = 1
+                sed -i \
+                  -e 's|@platforms//cpu:x86_64|@platforms//cpu:s390x|g' \
+                  -e 's|@platforms//cpu:aarch64|@platforms//cpu:x86_64|g' \
+                  "$ABSEIL_RANDOM_BUILD"
+              fi
+            ''}
+
             # Derive bootstrapTools lib path from CONFIG_SHELL (set by mkDerivation)
             BT_LIB=$(dirname "$(dirname "$CONFIG_SHELL")")/lib
 
@@ -1436,7 +1471,7 @@ in
             export HOME=$(mktemp -d)
             export JAVA_HOME="${buildOpenjdk}"
             export EMBED_LABEL="${version}- (@non-git)"
-            export PATH="${lib.optionalString isDarwinCross "${buildPackages.cc}/bin:"}${buildToolsPath}:$PATH"
+            export PATH="${lib.optionalString isCross "${buildPackages.cc}/bin:"}${buildToolsPath}:$PATH"
 
             # Unset C_INCLUDE_PATH so Bazel's CC toolchain auto-detection doesn't
             # pick up bootstrapTools/include as a -I flag, which breaks
@@ -1463,6 +1498,13 @@ in
             export EXTRA_BAZEL_ARGS="
               --verbose_failures
               --curses=no
+              ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
+              --cpu=aarch64
+              --host_cpu=aarch64
+              --noenable_platform_specific_config
+              --linkopt=-Wl,-rpath,${gcc-libs}/lib
+              --host_linkopt=-Wl,-rpath,${gcc-libs}/lib
+            ''}
               --tool_java_runtime_version=local_jdk_21
               --java_runtime_version=local_jdk_21
               --tool_java_language_version=21
@@ -1474,8 +1516,8 @@ in
               --incompatible_strict_action_env
               --action_env=PATH=${buildToolsPath}
               --host_action_env=PATH=${buildToolsPath}
-              --action_env=LD_LIBRARY_PATH=$BT_LIB
-              --host_action_env=LD_LIBRARY_PATH=$BT_LIB
+              --action_env=LD_LIBRARY_PATH=$BT_LIB${lib.optionalString (isCross && stdenv.hostPlatform.isLinux) ":${gcc-libs}/lib"}
+              --host_action_env=LD_LIBRARY_PATH=$BT_LIB${lib.optionalString (isCross && stdenv.hostPlatform.isLinux) ":${gcc-libs}/lib"}
               --shell_executable=$(cd ../tools && pwd)/bash-with-path
               --python_path=${buildPython3}/bin/python3
             "

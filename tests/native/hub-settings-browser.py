@@ -507,6 +507,21 @@ class HubSettingsSmoke:
         raise AssertionError(f"timed out waiting for {description}")
 
     def navigate(self, path):
+        # Finish the current page's reads before ordinary full navigation. The
+        # explicit cancellation test uses a held response and an SPA link.
+        deadline = time.monotonic() + self.timeout
+        while True:
+            self.chrome.drain_events(0.1)
+            pending = [
+                request for identifier, request in self.chrome.requests.items()
+                if "finishedAtSeconds" not in request
+                and identifier not in self.chrome.expected_cancellation_ids
+            ]
+            if not pending:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"page requests did not finish before navigating to {path}")
+
         url = urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
         self.chrome.call("Page.navigate", {"url": url})
         self.wait_for("document.readyState === 'complete'", f"{path} to load")
@@ -552,6 +567,71 @@ class HubSettingsSmoke:
         )
         self.chrome.drain_events(0.2)
         self.check(self.chrome.evaluate("location.pathname") == "/-/instance", "browser login completed")
+
+    def appearance(self):
+        """Checks shared font loading and saved appearance across both shells."""
+        self.chrome.evaluate("document.fonts.ready")
+        typography = self.chrome.evaluate("""
+            (() => ({
+                body: getComputedStyle(document.body).fontFamily,
+                identity: getComputedStyle(document.querySelector('.scope-identity strong')).fontFamily,
+                loaded: Array.from(document.fonts).filter(font => font.status === 'loaded').map(font => font.family),
+            }))()
+        """)
+        self.check("Geist Sans" in typography["body"], "interface text uses Geist Sans")
+        self.check("Geist Mono" in typography["identity"], "machine identity uses Geist Mono")
+        self.check(
+            {"Geist Sans", "Geist Mono"}.issubset(typography["loaded"]),
+            "both self-hosted font files loaded in the console",
+        )
+
+        self.chrome.call("Emulation.setEmulatedMedia", {
+            "features": [{"name": "prefers-color-scheme", "value": "light"}],
+        })
+        self.check(
+            self.chrome.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(255, 255, 255)",
+            "system light mode uses a white canvas",
+        )
+        self.chrome.evaluate("document.querySelector('[data-theme-toggle]').click()")
+        self.chrome.call("Emulation.setEmulatedMedia", {
+            "features": [{"name": "prefers-color-scheme", "value": "dark"}],
+        })
+        self.check(
+            self.chrome.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(255, 255, 255)",
+            "explicit light preference overrides the OS",
+        )
+
+        self.chrome.evaluate("document.querySelector('[data-theme-toggle]').click()")
+        self.check(
+            self.chrome.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(16, 17, 16)",
+            "dark mode uses the Stone & ocean canvas",
+        )
+        self.screenshot_pair("instance-dark")
+
+        self.chrome.call("Page.navigate", {"url": self.base_url + "/"})
+        self.wait_for(
+            "location.pathname === '/' && document.readyState === 'complete' && "
+            "document.querySelector('[data-theme-toggle]') !== null",
+            "browse appearance control",
+        )
+        self.check(
+            self.chrome.evaluate("document.documentElement.dataset.theme") == "dark",
+            "saved dark preference carries from the console to browse pages",
+        )
+        self.chrome.evaluate("document.querySelector('[data-theme-toggle]').click()")
+        self.chrome.call("Emulation.setEmulatedMedia", {
+            "features": [{"name": "prefers-color-scheme", "value": "light"}],
+        })
+        self.check(
+            self.chrome.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(255, 255, 255)",
+            "returning to system appearance resumes following OS changes",
+        )
+        self.navigate("/-/instance")
+        self.assert_settings_page("instance settings after appearance changes")
+        self.check(
+            self.chrome.evaluate("document.documentElement.dataset.themeMode") == "system",
+            "system appearance remains selected on a fresh console mount",
+        )
 
     def assert_settings_page(self, description):
         self.wait_for(
@@ -936,6 +1016,96 @@ class HubSettingsSmoke:
             "resumed workflow keeps unmet provider prerequisites explicit",
         )
 
+    def branding(self):
+        """Reviews, applies, and restores every branding field in the local fixture."""
+        self.navigate("/-/instance/branding")
+        self.wait_for("document.querySelector('.editor-form textarea') !== null", "branding editor")
+        read_fields = """
+            Object.fromEntries(Array.from(document.querySelectorAll('.editor-form label')).map(label => [
+                label.querySelector('span').firstChild.textContent.trim(),
+                label.querySelector('input, textarea').value
+            ]))
+        """
+        original = self.chrome.evaluate(read_fields)
+        trial = {
+            "Site title": "Branding test <Hub>",
+            "Tagline": "Packages & images",
+            "Announcement": "Maintenance <notice>",
+            "Terms URL": "https://example.test/terms",
+            "Privacy URL": "https://example.test/privacy",
+            "Support URL": "https://example.test/support",
+        }
+
+        def review(values):
+            self.navigate("/-/instance/branding")
+            self.wait_for("document.querySelector('.editor-form textarea') !== null", "branding editor")
+            self.chrome.evaluate(f"""
+                (() => {{
+                    const values = {json.dumps(values)};
+                    for (const label of document.querySelectorAll('.editor-form label')) {{
+                        const name = label.querySelector('span').firstChild.textContent.trim();
+                        const input = label.querySelector('input, textarea');
+                        input.value = values[name];
+                        input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    }}
+                }})()
+            """)
+            # Submit in the next browser task, after draft invalidation has run.
+            self.chrome.evaluate("document.querySelector('.editor-form').requestSubmit()")
+            self.wait_for("document.querySelector('.review-card') !== null", "branding review")
+            return self.chrome.evaluate("Array.from(document.querySelectorAll('.review-card li')).map(item => item.textContent)")
+
+        def apply(values):
+            self.chrome.evaluate("document.querySelector('.review-actions .button').click()")
+            brand = values["Site title"] or "AOS Hub"
+            self.wait_for(
+                "document.querySelector('.review-card') === null && "
+                "document.querySelector('.editor-form textarea') !== null && "
+                f"document.querySelector('.brand')?.textContent === {json.dumps(brand)}",
+                "saved branding and refreshed shell",
+            )
+            self.check(self.chrome.evaluate(read_fields) == values, "all branding fields persist after apply")
+            self.check(self.chrome.evaluate("document.title") == f"Branding — {brand}", "saved branding controls the tab title")
+
+        try:
+            effects = review(trial)
+            self.check(len(effects) == len(trial), "branding review lists all six changed fields")
+            for name, value in trial.items():
+                self.check(any(item.startswith(name + ": ") and " → " in item and value in item for item in effects), f"branding diff shows the new {name}")
+            self.check(
+                self.chrome.evaluate("document.querySelector('.brand').textContent") == (original["Site title"] or "AOS Hub"),
+                "review leaves the live branding unchanged",
+            )
+            self.screenshot_pair("branding-review")
+            apply(trial)
+            self.check(self.chrome.evaluate("document.querySelector('.tagline').textContent") == trial["Tagline"], "saved tagline is visible")
+            self.check(self.chrome.evaluate("document.querySelector('.announce').textContent") == trial["Announcement"], "saved announcement is rendered as text")
+            for field in ["Terms URL", "Privacy URL", "Support URL"]:
+                self.check(self.chrome.evaluate(f"document.querySelector('footer a[href=\"{trial[field]}\"]') !== null"), f"saved {field} appears in the footer")
+            self.screenshot_pair("branding-applied")
+
+            origin = self.chrome.evaluate("performance.timeOrigin")
+            self.chrome.evaluate("document.querySelector('.settings-nav a[href=\"/-/instance/resource-defaults\"]').click()")
+            self.wait_for("location.pathname === '/-/instance/resource-defaults' && document.title.startsWith('Resource defaults — ')", "branded SPA navigation")
+            self.check(self.chrome.evaluate("document.title") == f"Resource defaults — {trial['Site title']}", "SPA navigation preserves the configured title")
+            self.chrome.evaluate("history.back()")
+            self.wait_for("location.pathname === '/-/instance/branding' && document.title.startsWith('Branding — ')", "branded back navigation")
+            self.check(self.chrome.evaluate("performance.timeOrigin") == origin, "branding titles update without reloading SPA navigation")
+            self.check(self.chrome.evaluate("document.title") == f"Branding — {trial['Site title']}", "back navigation restores the branded page title")
+
+            self.chrome.call("Page.navigate", {"url": self.base_url + "/"})
+            self.wait_for("location.pathname === '/' && document.readyState === 'complete' && document.querySelector('.brand') !== null", "public browse page")
+            self.check(self.chrome.evaluate("document.title").endswith(" — " + trial["Site title"]), "public browse uses the configured tab title")
+            self.check(self.chrome.evaluate("document.querySelector('.brand').textContent") == trial["Site title"], "public browse uses the saved site title")
+            self.check(self.chrome.evaluate("document.querySelector('.announce').textContent") == trial["Announcement"], "public browse uses the saved announcement")
+        finally:
+            review(original)
+            apply(original)
+
+        effects = review(original)
+        self.check(effects == ["No instance settings changes"], "unchanged branding review omits artificial effects")
+        self.chrome.evaluate("document.querySelector('.review-actions .secondary-button').click()")
+
     def review_identity_and_invalidate(self):
         self.navigate("/-/instance/identity-and-signup")
         self.assert_settings_page("instance identity settings")
@@ -1045,6 +1215,8 @@ class HubSettingsSmoke:
             "persistent instance scope header rendered",
         )
         self.screenshot_pair("instance-overview")
+        self.appearance()
+        self.branding()
         self.exercise_inflight_plan_navigation()
         self.review_identity_and_invalidate()
 

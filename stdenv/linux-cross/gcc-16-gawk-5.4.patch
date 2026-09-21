@@ -1,0 +1,30 @@
+--- a/gcc/opt-gather.awk
++++ b/gcc/opt-gather.awk
+@@ -24,7 +24,7 @@
+ function sort(ARRAY, ELEMENTS)
+ {
+ 	for (i = 2; i <= ELEMENTS; ++i) {
+-		for (j = i; ARRAY[j-1] > ARRAY[j]; --j) {
++		for (j = i; j > 1 && ARRAY[j-1] > ARRAY[j]; --j) {
+ 			temp = ARRAY[j]
+ 			ARRAY[j] = ARRAY[j-1]
+ 			ARRAY[j-1] = temp
+--- a/gcc/optc-gen.awk
++++ b/gcc/optc-gen.awk
+@@ -89,6 +89,8 @@
+                 if (enables[enabledby_name] == "") {
+                     enabledby[n_enabledby] = enabledby_name;
+                     n_enabledby++;
++                    enables[enabledby_name] = "";
++                    enablesif[enabledby_name] = "";
+                 }
+                 enables[enabledby_name] = enables[enabledby_name] opts[i] ";";
+                 enablesif[enabledby_name] = enablesif[enabledby_name] condition ";";
+@@ -144,6 +146,7 @@
+ 		if (enables[lang_name,enabledby_array[k]] == "") {
+ 		    enabledby[lang_name,n_enabledby_lang[lang_index]] = enabledby_array[k];
+ 		    n_enabledby_lang[lang_index]++;
++		    enables[lang_name,enabledby_array[k]] = "";
+ 		}
+ 		enables[lang_name,enabledby_array[k]] \
+ 		    = enables[lang_name,enabledby_array[k]] opts[i] enabledby_posarg_negarg ";";

@@ -31,6 +31,7 @@
           isCross = false;
           hostPlatform = {
             isDarwin = false;
+            isLinux = true;
             constraints.cpu = "x86_64";
           };
         };
@@ -48,6 +49,7 @@
         libgcrypt = null;
         gnutls = null;
         fuse3 = null;
+        gcc-libs = "/aos-gcc-libs";
         samba-smbd = {
           outPath = "/aos-samba-smbd";
           version = "4.24.7";
@@ -122,6 +124,21 @@
     ++ lib.optionals (!(builtins.elem "--target-list=x86_64-softmmu,aarch64-softmmu" patchedQemu.qemuConfigureFlags)) [
       "pkgs.qemu-crucible: missing x86_64-softmmu,aarch64-softmmu target-list configure flag"
     ]
+    ++ lib.optionals (!(builtins.elem "--target-list=x86_64-softmmu,aarch64-softmmu,i386-linux-user,x86_64-linux-user,aarch64-linux-user,riscv64-linux-user" productionQemu.qemuConfigureFlags)) [
+      "pkgs.qemu: missing Linux-user target-list configure flag"
+    ]
+    ++ lib.optionals (!(builtins.elem "--enable-linux-user" productionQemu.qemuConfigureFlags)) [
+      "pkgs.qemu: Linux package does not enable Linux-user emulation"
+    ]
+    ++ lib.optionals (!(builtins.elem "--disable-linux-user" patchedQemu.qemuConfigureFlags)) [
+      "pkgs.qemu-crucible: patched package must remain softmmu-only"
+    ]
+    ++ lib.optionals (!(builtins.elem "--disable-linux-user" referenceQemu.qemuConfigureFlags)) [
+      "pkgs.qemu-crucible-reference: inertness reference must remain softmmu-only"
+    ]
+    ++ lib.optionals (!(builtins.elem "--extra-ldflags=-Wl,--push-state,--no-as-needed,-l:libgcc_s.so.1,--pop-state" patchedQemu.qemuConfigureFlags)) [
+      "pkgs.qemu-crucible: missing retained libgcc_s thread-exit dependency"
+    ]
     ++ lib.optionals (!(builtins.elem "--enable-plugins" patchedQemu.qemuConfigureFlags)) [
       "pkgs.qemu-crucible: missing plugin configure flag"
     ]
@@ -155,7 +172,7 @@
     ++ failuresFor "pkgs/default.nix" pkgsDefault [
       {
         label = "qemu-crucible explicit package override";
-        needle = "qemu-crucible = callPackage ./emulation/qemu.nix";
+        needle = "qemu-crucible = mkQemuPackage";
       }
       {
         label = "qemu-crucible package name";
@@ -171,7 +188,7 @@
       }
       {
         label = "qemu-crucible-reference package";
-        needle = "qemu-crucible-reference = callPackage ./emulation/qemu.nix";
+        needle = "qemu-crucible-reference = mkQemuPackage";
       }
       {
         label = "qemu-crucible-reference patch opt-out";

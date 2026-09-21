@@ -10,6 +10,7 @@
   python3,
   bash,
   which,
+  curl,
   openssl,
   zlib,
   stdenv,
@@ -31,17 +32,6 @@
     else "config.toml";
   pname = "rust-${builtins.replaceStrings ["."] ["_"] (builtins.substring 0 4 version)}";
   llvmMajor = builtins.elemAt (builtins.match "([0-9]+).*" llvm.version) 0;
-  # Rust 1.75-1.78 are stable at 64-way native bootstrap. Rust 1.79's
-  # stage-2 compiler corrupts its allocator at 64 codegen units while
-  # compiling Cargo (generic-array), and Rust 1.81 repeats that failure at
-  # 32 units (git2). Later tiers therefore use progressively proven bounds.
-  # Other packages still see NIX_BUILD_CORES=128.
-  rustParallelism =
-    if builtins.compareVersions version "1.81.0" >= 0
-    then 16
-    else if builtins.compareVersions version "1.79.0" >= 0
-    then 32
-    else 64;
   src = fetchurl {
     urls = [
       "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
@@ -77,7 +67,17 @@ in
       # builds its wrapper against the current default LLVM headers.
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
       targetLlvm = llvm;
-      description = "Rust ${version} — Darwin-hosted bootstrap chain intermediate";
+      description = "Rust ${version} — bootstrap chain intermediate";
+    }
+  else if stdenv.isCross && stdenv.hostPlatform.isLinux
+  then
+    import ./_rust-linux-hosted.nix {
+      inherit mkDerivation pname version src changeId configFileName;
+      inherit buildPackages stdenv curl openssl zlib needsDownloadRustc disableLld;
+      nativeRust = buildPackages.${prevRust.pname};
+      nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
+      targetLlvm = llvm;
+      description = "Rust ${version} — bootstrap chain intermediate";
     }
   else
     mkDerivation {
@@ -93,9 +93,10 @@ in
         which
         prevRust
         llvm
+        curl
         openssl
       ];
-      runtimeDeps = [zlib openssl llvm];
+      runtimeDeps = [zlib curl openssl llvm];
 
       phases = [
         {
@@ -103,6 +104,14 @@ in
           script = ''
             tar xf $src
             cd rustc-${version}-src
+            ${
+              if
+                builtins.compareVersions version "1.75.0"
+                >= 0
+                && builtins.compareVersions version "1.77.0" < 0
+              then "patch --fuzz=0 -p1 < ${./rust-bootstrap-vendored-remap.patch}"
+              else ""
+            }
           '';
         }
         {
@@ -119,9 +128,47 @@ in
             # Must return exit 1 for unknown commands (especially rev-parse),
             # otherwise bootstrap tries canonicalize("") and panics.
             mkdir -p .fake-bin
-            printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
+
+            # Older bootstrap Cargo releases vendor openssl-sys versions that
+            # reject OpenSSL 4 before compiling, despite using the OpenSSL
+            # 3-compatible API subset. Remove that obsolete upper-major check
+            # when the vendored source still contains its exact old shape.
+            patchedOpenSslSys=0
+            for opensslSysBuild in vendor/openssl-sys*/build/main.rs; do
+              test -f "$opensslSysBuild" || continue${
+              if version == "1.97.0"
+              then ''
+
+                # openssl-sys 0.9.114 already supports OpenSSL 4 and rejects
+                # only the unreleased next major. Leave that branch intact.
+                grep -q 'Version::Openssl4xx' "$opensslSysBuild" && continue
+              ''
+              else ""
+            }
+              grep -q 'if openssl_version >= 0x4_00_00_00_0 {' "$opensslSysBuild" || continue
+
+              test "$(grep -c 'if openssl_version >= 0x4_00_00_00_0 {' "$opensslSysBuild")" -eq 1
+              sed -i \
+                '/if openssl_version >= 0x4_00_00_00_0 {/,/} else if openssl_version >= 0x3_00_00_00_0 {/c\        if openssl_version >= 0x3_00_00_00_0 {' \
+                "$opensslSysBuild"
+              test "$(grep -c 'if openssl_version >= 0x4_00_00_00_0 {' "$opensslSysBuild")" -eq 0
+
+              opensslSysDir=''${opensslSysBuild%/build/main.rs}
+              opensslSysChecksum=$opensslSysDir/.cargo-checksum.json
+              test "$(grep -o '"build/main.rs":"[0-9a-f]*"' "$opensslSysChecksum" | wc -l)" -eq 1
+              updatedChecksum=$(sha256sum "$opensslSysBuild")
+              updatedChecksum=''${updatedChecksum%% *}
+              sed -i \
+                "s|\"build/main.rs\":\"[0-9a-f]*\"|\"build/main.rs\":\"$updatedChecksum\"|" \
+                "$opensslSysChecksum"
+              grep -q "\"build/main.rs\":\"$updatedChecksum\"" "$opensslSysChecksum"
+
+              patchedOpenSslSys=$((patchedOpenSslSys + 1))
+            done
+            test "$patchedOpenSslSys" -ge 1
 
             cat > ${configFileName} << TOML
             change-id = ${toString changeId}
@@ -132,9 +179,11 @@ in
 
             [target.x86_64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
 
             [target.aarch64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
 
             [build]
             docs = false
@@ -150,10 +199,12 @@ in
 
             [rust]
             channel = "stable"
-            # Auto-detection expands to all 512 host CPUs independently of
-            # x.py's job limit and has corrupted native bootstrap compilers.
-            codegen-units = ${toString rustParallelism}
+            # Zero auto-detects all physical host CPUs, bypassing x.py's job
+            # limit. Keep compiler-internal code generation within the same
+            # scheduler allocation as the surrounding bootstrap.
+            codegen-units = $NIX_BUILD_CORES
             rpath = true
+            remap-debuginfo = true
             omit-git-hash = true
             ${
               if needsDownloadRustc
@@ -162,7 +213,11 @@ in
             }
             ${
               if disableLld
-              then "lld = false\n        use-lld = false"
+              then "lld = false\n        ${
+                if builtins.compareVersions version "1.94.0" >= 0
+                then "bootstrap-override-lld"
+                else "use-lld"
+              } = false"
               else ""
             }
             TOML
@@ -171,10 +226,6 @@ in
         {
           name = "build";
           script = ''
-            # x.py creates nested compiler work beyond its nominal job count;
-            # cap Rust alone while other packages may consume all 128 cores.
-            rustJobs=$NIX_BUILD_CORES
-            test "$rustJobs" -le ${toString rustParallelism} || rustJobs=${toString rustParallelism}
             export PATH="$PWD/.fake-bin:$PATH"
             export RUST_BACKTRACE=1
 
@@ -185,24 +236,19 @@ in
             export OPENSSL_NO_VENDOR=1
             export OPENSSL_STATIC=0
 
-            python3 x.py build -j $rustJobs
+            python3 x.py build -j "$NIX_BUILD_CORES"
           '';
         }
         {
           name = "install";
           script = ''
-                    # `x.py install` rebuilds extended tools and otherwise
-                    # auto-detects the whole host (512 CPUs here), bypassing
-                    # the bounded build invocation above.
-                    rustJobs=$NIX_BUILD_CORES
-                    test "$rustJobs" -le ${toString rustParallelism} || rustJobs=${toString rustParallelism}
                     export PATH="$PWD/.fake-bin:$PATH"
                     export OPENSSL_DIR=${openssl}
                     export OPENSSL_LIB_DIR=${openssl}/lib
                     export OPENSSL_INCLUDE_DIR=${openssl}/include
                     export OPENSSL_NO_VENDOR=1
                     export OPENSSL_STATIC=0
-                    python3 x.py install -j $rustJobs
+                    python3 x.py install -j "$NIX_BUILD_CORES"
 
                     # No patchelf available — use wrapper scripts (same pattern as rust-1_74.nix)
                     LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${llvm}/lib:${zlib}/lib:${openssl}/lib"
@@ -212,7 +258,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!/bin/sh
+            #!${bash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
@@ -222,6 +268,18 @@ in
                         fi
                       fi
                     done
+
+                    install_log="$out/lib/rustlib/install.log"
+                    test -f "$install_log"
+                    sed -i \
+                      -e "s|/build/rustc-${version}-src/build/|/rustc/${version}/bootstrap/|g" \
+                      -e "s|/build/rustc-${version}-src|/rustc/${version}|g" \
+                      "$install_log"
+                    if find "$out" -type f -exec grep -a -l -m1 -F \
+                      "/build/rustc-${version}-src" {} + | grep -q .; then
+                      echo "Rust output retains its bootstrap source root" >&2
+                      exit 1
+                    fi
           '';
         }
       ];

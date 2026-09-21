@@ -13,7 +13,7 @@
   bash,
   grep,
 }: let
-  version = "1.13";
+  version = "1.14";
 in
   mkDerivation {
     pname = "gzip";
@@ -21,7 +21,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/gzip/gzip-${version}.tar.xz"];
-      hash = "0mx0j7765l4cyj3hyvlks2s3izdyzaqf3hknamjwc5yv6mlynm3l";
+      hash = "sha256-Aae4gb0iC/32Ffl7hxj4C9/T9q3ThbmT3Pbv0U6MCsY=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake coreutils sed];

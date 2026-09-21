@@ -11,7 +11,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "5.7";
+  version = "5.8";
 in
   mkDerivation {
     pname = "tpm2-tools";
@@ -21,7 +21,7 @@ in
       urls = [
         "https://github.com/tpm2-software/tpm2-tools/releases/download/${version}/tpm2-tools-${version}.tar.gz"
       ];
-      hash = "sha256-OBDTa1B5JW9PL3zlUuIiE9Q7EDHBMVON+KLbw8VwmDo=";
+      hash = "sha256-HLcxhcroFLThXHwtCyJkLWQPr0h3X0FWof2S7fhL73M=";
     };
 
     patches =

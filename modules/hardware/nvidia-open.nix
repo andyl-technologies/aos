@@ -32,7 +32,7 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = lib.platform.constraints.cpu == "x86_64";
+        assertion = pkgs.stdenv.hostPlatform.constraints.cpu == "x86_64";
         message = "the packaged NVIDIA open kernel modules currently support x86_64 systems";
       }
       {

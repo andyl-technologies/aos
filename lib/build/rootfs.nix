@@ -118,11 +118,20 @@
     rootPaths = allClosures;
   };
 
-  # Pair each closure with a numeric label for exportReferencesGraph.
+  # Identify the active system separately from additional stored closures.
+  # Upgrade candidates and test packages must not install their udev rules.
   # The populate phase greps `closure-*` and sorts -u for unique paths.
   closureGraph =
     lib.concatLists
-    (lib.imap (i: p: ["closure-${toString i}" p]) allClosures);
+    (lib.imap (i: p: [
+        (
+          if p == toString toplevel
+          then "closure-active-system"
+          else "closure-${toString i}"
+        )
+        p
+      ])
+      allClosures);
 
   # Symlink-farm script fragment — one block per package. Ordering
   # matters (earlier wins); callers list higher-priority packages first.
@@ -265,25 +274,26 @@ in
               done < store-paths
               echo ""
 
-              # Merge dependency-provided udev rules into the conventional
+              # Merge active-system udev rules into the conventional
               # vendor directory. The Nix store keeps each package isolated,
               # but udev does not discover rule directories through PATH.
               # In particular, device-mapper's rules publish /dev/mapper/*
               # nodes to systemd after dm-verity and dm-crypt activation.
               mkdir -p rootfs/usr/lib/udev/rules.d
-              for rules_dir in rootfs/nix.lower/store/*/lib/udev/rules.d; do
+              grep '^/nix/store/' closure-active-system | sort -u > active-system-paths
+              while IFS= read -r rule_root; do
+                rules_dir="$rule_root/lib/udev/rules.d"
                 [ -d "$rules_dir" ] || continue
                 for rule in "$rules_dir"/*.rules; do
                   [ -e "$rule" ] || continue
                   name=$(basename "$rule")
-                  target="/nix/store/''${rule#rootfs/nix.lower/store/}"
                   if [ -e "rootfs/usr/lib/udev/rules.d/$name" ]; then
                     echo "rootfs-builder: duplicate udev rule $name" >&2
                     exit 1
                   fi
-                  ln -s "$target" "rootfs/usr/lib/udev/rules.d/$name"
+                  ln -s "$rule" "rootfs/usr/lib/udev/rules.d/$name"
                 done
-              done
+              done < active-system-paths
 
               # ── 3. PID 1 and compat symlinks ────────────────────────────────
               # /sbin/init (via merged-usr: /sbin → usr/bin) → systemd.

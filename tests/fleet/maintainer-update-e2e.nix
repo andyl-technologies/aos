@@ -130,18 +130,36 @@
 
   hostFixture = import ../fixtures/maintainer-update-repo/default.nix {
     bash = builtins.unsafeDiscardStringContext "${pkgs.bash}";
+    crossSystem = pkgs.stdenv.hostPlatform.system;
   };
-  mountedPackageDerivation = builtins.storePath (builtins.unsafeDiscardStringContext hostFixture.pkgs.maintain-fixture.drvPath);
+
+  # Retain derivation files without realizing their intentionally unfetchable
+  # initial source, while preserving the context required for pure evaluation.
+  mountedPackageDerivation = builtins.unsafeDiscardOutputDependency hostFixture.pkgs.maintain-fixture.drvPath;
   mountedSourceDerivation =
-    builtins.storePath
-    (builtins.unsafeDiscardStringContext
-      (builtins.elemAt hostFixture.maintenanceInventory.units 0).components.main.sources.source.derivation);
-  packageDerivationRecord =
-    builtins.toFile "maintain-fixture-package-derivation-record"
-    (builtins.unsafeDiscardStringContext (builtins.readFile mountedPackageDerivation));
-  sourceDerivationRecord =
-    builtins.toFile "maintain-fixture-source-derivation-record"
-    (builtins.unsafeDiscardStringContext (builtins.readFile mountedSourceDerivation));
+    builtins.unsafeDiscardOutputDependency
+    (builtins.elemAt hostFixture.maintenanceInventory.units 0).components.main.sources.source.derivation;
+
+  derivationRecord = name: derivation:
+    pkgs.mkDerivation {
+      pname = name;
+      version = "1";
+      src = null;
+      buildDeps = [pkgs.coreutils];
+      dontStrip = true;
+      dontNukeRefs = true;
+      phases = [
+        {
+          name = "record";
+          script = ''
+            cp ${derivation} "$out/derivation"
+          '';
+        }
+      ];
+    };
+
+  packageDerivationRecord = derivationRecord "maintain-fixture-package-derivation-record" mountedPackageDerivation;
+  sourceDerivationRecord = derivationRecord "maintain-fixture-source-derivation-record" mountedSourceDerivation;
 
   mountedClosure = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
@@ -197,8 +215,8 @@ in {
       FIXTURE_REPOSITORY = "${fixtureRepository}"
       PACKAGE_DERIVATION = "${mountedPackageDerivation}"
       SOURCE_DERIVATION = "${mountedSourceDerivation}"
-      PACKAGE_DERIVATION_RECORD = "${packageDerivationRecord}"
-      SOURCE_DERIVATION_RECORD = "${sourceDerivationRecord}"
+      PACKAGE_DERIVATION_RECORD = "${packageDerivationRecord}/derivation"
+      SOURCE_DERIVATION_RECORD = "${sourceDerivationRecord}/derivation"
       REPOSITORY = "/var/lib/aos-maintainer/repository"
       STATE = "/var/lib/aos-maintainer/state"
       HOME = "/var/lib/aos-maintainer/home"

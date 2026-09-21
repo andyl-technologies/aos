@@ -8,7 +8,7 @@
   util-linux,
   device-mapper,
 }: let
-  version = "2.03.28";
+  version = "2.03.42";
 in
   mkDerivation {
     pname = "lvm2";
@@ -19,7 +19,7 @@ in
         "https://sourceware.org/ftp/lvm2/LVM2.${version}.tgz"
         "https://mirrors.kernel.org/sourceware/lvm2/LVM2.${version}.tgz"
       ];
-      hash = "sha256-uCK6/2ti3zY4LHF866mKJojrsxvyt2jz/6K21eJVckI=";
+      hash = "sha256-NScD71ty67ItTyUChKKbif5k1ASca/ZMaT+a9IbICB4=";
     };
 
     buildDeps = [

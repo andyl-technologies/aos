@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   fetchCargoDeps,
+  lib,
+  stdenv,
+  buildPackages,
   rust,
   cmake,
   ninja,
@@ -18,21 +21,38 @@
   procps-ng,
   getent,
 }: let
-  version = "4.7.1";
+  version = "4.9.2";
+
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
+  rustForBuild =
+    if isLinuxCross
+    then rust.passthru.buildTool
+    else rust;
+  crossRustCmakeFlags = lib.optionalString isLinuxCross (
+    lib.concatMapStrings (flag: " " + flag) [
+      "-DRust_COMPILER=${rustForBuild}/bin/rustc"
+      "-DRust_CARGO=${rustForBuild}/bin/cargo"
+      "-DRust_CARGO_TARGET=${stdenv.hostPlatform.config}"
+    ]
+  );
+
   src = fetchurl {
     urls = ["https://github.com/fish-shell/fish-shell/releases/download/${version}/fish-${version}.tar.xz"];
-    hash = "sha256-b01bQ4pjOOP13NoZooJh4uznqbf/l2hmhear3DHbt98=";
+    hash = "sha256-JrlXac4XqJYrIguj8gdxEX2/6cssO6b07ROeDL/fArE=";
   };
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-pCaaYkpolNTQIrc6q7QVbc16PiU9tuAlOLxb/ykLW2s=";
+    hash = "sha256-BHPHlOJ4y0YcwAJT7ZPp9KCFpS4ts6WlkHpUcnxZqEg=";
   };
 in
   mkDerivation {
     pname = "fish";
     inherit version src;
 
-    buildDeps = [rust cmake ninja gettext pkg-config python3];
+    buildDeps =
+      [rust cmake ninja gettext pkg-config python3]
+      ++ lib.optionals isLinuxCross [rustForBuild];
     runtimeDeps = [
       pcre2
       ncurses
@@ -90,6 +110,16 @@ in
           tag = "0.2.9-utf32"
           replace-with = "vendored-sources"
 
+          [source."git+https://github.com/danielrainer/fluent-rs?rev=cf712bced280b217b6307edabc2089b3e57204ab"]
+          git = "https://github.com/danielrainer/fluent-rs"
+          rev = "cf712bced280b217b6307edabc2089b3e57204ab"
+          replace-with = "vendored-sources"
+
+          [source."git+https://codeberg.org/danielrainer/fluent-ftl-tools?rev=5917664c8f2e4928ef1e480ff5c13bbe1e226066"]
+          git = "https://codeberg.org/danielrainer/fluent-ftl-tools"
+          rev = "5917664c8f2e4928ef1e480ff5c13bbe1e226066"
+          replace-with = "vendored-sources"
+
           [source.vendored-sources]
           directory = "${cargoDeps}"
 
@@ -97,11 +127,26 @@ in
           offline = true
           EOF
 
-          cmake -S . -B build -G Ninja \
+          ${lib.optionalString isLinuxCross ''
+            # Cargo runs build scripts on the builder. Their linker must not
+            # inherit the target compiler's headers, libraries, or hardening.
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset AOS_OBJECT_FORMAT AOS_RUST_TARGET AOS_GOARCH AOS_GOOS
+            unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+            unset LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+            exec ${buildPackages.cc}/bin/cc "$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export CARGO_TARGET_${nativeCargoTarget}_LINKER="$PWD/.aos-build-tools/cc-for-build"
+          ''}cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$out" \
             -DCMAKE_INSTALL_LIBDIR=lib \
-            -DCMAKE_INSTALL_DOCDIR="$out/share/doc/fish"
+            -DCMAKE_INSTALL_DOCDIR="$out/share/doc/fish"${crossRustCmakeFlags}
         '';
       }
       {

@@ -251,6 +251,18 @@ pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer
                 hub_url: hub_url.clone(),
                 spa_dist: spa_dist.clone(),
             };
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would generate the web surface for registry '{registry_name}'"
+                ));
+                printer.kv("Output", &output_dir.display().to_string());
+                if !upload_urls.is_empty() {
+                    printer.kv("Would upload to", &upload_urls.join(", "));
+                }
+                printer.info("Dry run: nothing was generated or uploaded.");
+                return Ok(());
+            }
+
             let written = webgen::generate_web_surface(&dir, &output_dir, web_config)?;
 
             printer.success(&format!(
@@ -306,6 +318,14 @@ pub async fn run_origin(
 ) -> Result<()> {
     match command {
         OriginCommand::PrepareIndexBundles { surface_dir } => {
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would prepare 256 bounded index bundles in {}",
+                    surface_dir.display()
+                ));
+                printer.info("Dry run: nothing was written.");
+                return Ok(());
+            }
             objectstore::write_index_bundles_for_surface(surface_dir)?;
             printer.success(&format!(
                 "Prepared 256 bounded index bundles in {}.",
@@ -336,6 +356,19 @@ pub async fn run_origin(
                 );
             }
             let dir = config.scope.registries_path().join(&registry_name);
+
+            if crate::dry_run::active() {
+                printer.info(&format!(
+                    "Would upload the static origin of registry '{registry_name}'"
+                ));
+                printer.kv("Destinations", &upload_urls.join(", "));
+                if let Some(cache_dir) = cache_dir.as_deref() {
+                    printer.kv("Cache bytes from", &cache_dir.display().to_string());
+                }
+                printer.info("Dry run: nothing was uploaded.");
+                return Ok(());
+            }
+
             // Ref metadata and loose-object canonicalization form one
             // publication snapshot. Keep registry writers out until every
             // destination has consumed that snapshot.
@@ -601,6 +634,19 @@ fn origin_config(
         unset_upload_config_field(&mut upload, *field);
     }
     updates.apply(&mut upload);
+
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would update upload defaults for registry '{registry_name}' in {}",
+            config_path.display()
+        ));
+        // Shows the merged result the real run would persist. This prints the
+        // same fields the non-dry-run path already prints, secrets included,
+        // so a preview reveals nothing a real run would not.
+        print_upload_config(&registry_name, &config_path, &upload, printer);
+        printer.info("Dry run: the configuration is unchanged.");
+        return Ok(());
+    }
 
     state::save_upload_auth(&config_path, &upload)?;
     printer.success(&format!(

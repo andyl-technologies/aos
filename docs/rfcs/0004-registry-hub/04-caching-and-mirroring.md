@@ -1,13 +1,13 @@
-> **Scope note.** This file covers caches the hub *observes* — the
-> advertised-endpoint stack a registry points consumers at, and the
-> always-on consistency validation over it. **Hosting and managing** caches
+> **Scope note.** This file covers the advertised-endpoint stack a registry
+> points consumers at and explicit coverage operations for managed caches.
+> **Hosting and managing** caches
 > (GC, size limits, search, GC roots, NAR explorer) is
 > [11-caches.md](11-caches.md): the "CacheStore" below is realized by a managed
 > `caches` row, and the advertised-endpoint table (`caches(registry_id, url,
 > priority)`) is renamed `advertised_caches` there to free the `caches` name
 > for the managed object.
 
-### Cache stores, stacks, and consistency validation
+### Cache stores, stacks, and managed-cache coverage
 
 **Shared NAR storage (no duplication).** Verified against the code:
 narinfo and NAR files contain nothing registry-specific — no registry
@@ -34,15 +34,15 @@ StackNode =
                              # (availability = UNION of members)
   | mirror [node, node, …]   # declared replicas: every member is
                              # expected to hold the full set
-                             # (validation invariant: INTERSECTION
+                             # (replication invariant: INTERSECTION
                              # must equal union; client may use any
                              # member — first, or latency-based)
 ```
 
 `try` is the user-visible "stack": top-to-bottom fall-through, union
 semantics. `mirror` is a replication contract: it doesn't change what
-a client may fetch, it changes what the validator *enforces* (every
-member individually complete) and what the hub's replication jobs
+a client may fetch, it requires every member to be individually complete,
+which explicit coverage operations inspect and the hub's replication jobs
 maintain. Nodes nest — e.g. `try [ mirror [r2-eu, r2-us],
 upstream-cdn, s3-backup ]` — internal fast replicas first, falling
 through to the upstream public cache, then cold backup.
@@ -63,46 +63,14 @@ to the next entry instead of failing. Phase one of the stack feature is
 exactly this (making the flattened list behave as a `try` stack);
 nested semantics ride on the `[cache_stack]` expression afterward.
 
-**Consistency validation.** The hub continuously proves that *every
-package the registry lists actually resolves in the caches it
-advertises* — the server-side, always-on generalization of
-`apr validate`:
-
-- **What is checked**: for each package version × platform in the
-  verified index, the full closure set (store path + transitive
-  references, walked via `closures/` and narinfo `References`) against
-  each advertised cache endpoint.
-- **Depths**: `presence` (HEAD each `.narinfo`), `integrity` (HEAD the
-  NAR; `FileSize`/`Compression` consistency), `deep` (sampled download
-  + `FileHash` verification). Presence runs on every index refresh and
-  after every managed publish; integrity on schedule; deep on a sampled
-  rotation.
-- **Coverage requirements derive from stack semantics**: for a `try`
-  node, the *union* of members must cover the closure set (and the hub
-  reports which member serves what fraction — a top member at 60%
-  coverage means 40% of fetches fall through); for a `mirror` node,
-  *each member individually* must cover it — any shortfall is a
-  replication failure, with a one-click repair job that copies the
-  missing objects from a member that has them (content-addressed, so
-  always safe).
-- **Surfacing**: a per-registry health page with a cache × coverage
-  matrix, missing-path drill-down, and history; failures are
-  first-class health states on the registry home (consumers deserve to
-  see "mirror X is missing 3 NARs" before pointing a fleet at it).
-- **Gating**: on hub-managed publishes, the pointer flip can optionally
-  be gated on `presence` validation of required caches — a release is
-  not announced until its closures are fetchable. Wire semantics, so
-  the unchanged-CLI contract holds: with the gate enabled, the facade
-  accepts the client's mutable-pointer PUTs into a **staging area** and
-  returns `202 Accepted` with a status URL; validation runs; on pass
-  the hub flips the pointers server-side (under the publish lease,
-  conditional-PUT), on fail the release stays staged and visible in the
-  publish pipeline view with the missing-path report. `apr` treats
-  `202` on mutable uploads as success-pending and can poll (`apr
-  release --wait`); a staged release that is never repaired is
-  garbage-collected after a configurable window (default 7 days) and
-  audited as abandoned. With the gate disabled (the default), pointer
-  PUTs apply immediately and validation runs after the fact.
+**Managed-cache coverage.** Coverage is an explicit topology operation over a
+managed cache's inventory and its registry relationships. Operators inspect,
+validate, and repair it through `aos hub cache coverage show`, `validate`, and
+`repair`. The operation uses retained placement and inventory evidence, so it
+does not depend on an index refresh probing arbitrary advertised URLs. The
+registry health page reports the index, committed client cache policy, and
+delivery routes; detailed managed-cache coverage remains in the cache
+management workflow.
 
 ### Mirroring other registries
 
@@ -145,4 +113,3 @@ Three named modes, to prevent concept confusion:
    persistent cache; the same logic runs over the local binding
    natively. (A pull-through frontend composes with cache stacks: it
    is an `endpoint` whose backing happens to be lazy.)
-

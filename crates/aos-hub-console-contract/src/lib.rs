@@ -37,6 +37,24 @@ pub const AUTHENTICATED_PRIMARY_NAVIGATION: &[PrimaryNavigationItem] = &[
     },
 ];
 
+/// Returns the decorative SVG path for a canonical masthead destination.
+///
+/// Unknown destinations have no icon. Both HTML and browser renderers use
+/// these paths inline so navigation respects the first-party asset policy.
+#[must_use]
+pub fn navigation_icon_path(href: &str) -> &'static str {
+    match href {
+        "/" => "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
+        "/-/caches" => "M4 5c0-4 16-4 16 0s-16 4-16 0v14c0 4 16 4 16 0V5 M4 12c0 4 16 4 16 0",
+        "/-/orgs" => "M3 21V7h10v14 M13 11h8v10 M7 11h2 M7 15h2 M17 15h1 M17 18h1 M1 21h22",
+        "/-/instance" => "M3 7h3 M12 7h9 M3 17h9 M18 17h3 M12 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0 M18 17a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+        "/-/account" => "M16 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M4 21v-2a8 8 0 0 1 16 0v2",
+        "/login" => "M14 3h6v18h-6 M3 12h12 M11 8l4 4-4 4",
+        "/logout" => "M10 3H4v18h6 M10 12h11 M17 8l4 4-4 4",
+        _ => "",
+    }
+}
+
 /// Maximum number of leading characters shown for a compact hash.
 pub const COMPACT_HASH_CHARACTERS: usize = 12;
 

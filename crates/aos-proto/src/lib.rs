@@ -18,7 +18,7 @@
 //!   partition maps, and signed releases. Implemented by
 //!   `aos-hub`.
 //!
-//! Message types are plain `prost` structs; each service additionally
+//! Message types are generated `buffa` structs; each service additionally
 //! gets a typed ConnectRPC client (e.g. `CacheServiceClient`) and a
 //! server trait. The `aos-remote` crate wraps the clients in a
 //! higher-level API (`AosClient`), and `aos-server` implements the

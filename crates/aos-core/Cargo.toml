@@ -22,7 +22,6 @@ console = { workspace = true }
 humantime = { workspace = true }
 alejandra = { workspace = true }
 tokio = { workspace = true }
-atty = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

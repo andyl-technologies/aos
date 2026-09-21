@@ -20,7 +20,15 @@ in
       inherit mkDerivation version src stdenv;
       pname = "go-1_24";
       nativeGo = buildPackages.go-1_24;
-      description = "Go 1.24 bootstrap — Darwin-hosted toolchain built with native Go 1.24";
+      description = "Go 1.24 bootstrap toolchain";
+    }
+  else if stdenv.isCross
+  then
+    import ./_go-linux-cross.nix {
+      inherit mkDerivation version src stdenv;
+      pname = "go-1_24";
+      nativeGo = buildPackages.go-1_24;
+      description = "Go 1.24 bootstrap toolchain";
     }
   else
     mkDerivation {
@@ -65,7 +73,7 @@ in
       ];
 
       meta = {
-        description = "Go 1.24 bootstrap — built with Go 1.22";
+        description = "Go 1.24 bootstrap toolchain";
         homepage = "https://go.dev";
         license = "BSD-3-Clause";
       };

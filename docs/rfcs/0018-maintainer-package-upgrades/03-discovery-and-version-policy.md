@@ -73,6 +73,12 @@ that boundary yields a truncated observation and `unknown`, never `no-change`.
 Fixtures interleave several maintained majors so a busy mainline cannot hide a
 newer release on an older supported stream.
 
+For SemVer and dotted-numeric policies, `series.major` constrains the first
+component and an optional `series.minor` also constrains the second. The latter
+supports upstreams such as Go whose `1.N` lines carry more compatibility risk
+than an ordinary SemVer minor release. Selection rejects candidates outside the
+package-declared line; changing the line remains a reviewed source edit.
+
 Initial direct adapters should be chosen from the evaluated package inventory,
 not a generic ecosystem wish list. Expected high-value classes are GitHub and
 GitLab releases/tags, GNU directory conventions, kernel.org release data,

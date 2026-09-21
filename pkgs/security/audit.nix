@@ -3,11 +3,14 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  autoconf,
+  automake,
+  libtool,
   stdenv,
   linux-headers,
   libcap,
 }: let
-  version = "4.0.2";
+  version = "4.2.1";
 in
   mkDerivation {
     pname = "audit";
@@ -15,12 +18,12 @@ in
 
     src = fetchurl {
       urls = [
-        "https://people.redhat.com/sgrubb/audit/audit-${version}.tar.gz"
+        "https://github.com/linux-audit/audit-userspace/archive/refs/tags/v${version}.tar.gz"
       ];
-      hash = "sha256-1dG11Q7kotDReHW8aua9an1bNNlVfqhHo5+uxTH6qgo=";
+      hash = "sha256-QodtGV7i3tGeX3LXZkCW7uMUkoqjatNGcZulslgY/IQ=";
     };
 
-    buildDeps = [gnumake linux-headers];
+    buildDeps = [gnumake autoconf automake libtool linux-headers];
     runtimeDeps = [libcap];
     propagatedDeps = [];
 
@@ -29,7 +32,7 @@ in
         name = "unpack";
         script = ''
           tar xf $src
-          cd audit-${version}
+          cd audit-userspace-${version}
         '';
       }
       {
@@ -43,6 +46,14 @@ in
           #include <stdint.h>\
           struct sockaddr_ipx { short sipx_family; uint16_t sipx_port; uint32_t sipx_network; };\
           #endif' auparse/interpret.c
+
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          libtoolize --force --copy
+          autoreconf -fiv
 
           # auparse/Makefile.in and lib/Makefile.in both compile
           # gen_tables.c into `<dir>/gen_flagtabs_h-gen_tables.o` with
@@ -65,11 +76,7 @@ in
             -e 's|../lib/gen_flagtabs_h-gen_tables\.o|gen_flagtabs_h-gen_tables.o|g' \
             -e 's|../lib/\$(DEPDIR)/gen_flagtabs_h-gen_tables|\$(DEPDIR)/gen_flagtabs_h-gen_tables|g' \
             auparse/Makefile.in
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
+
           ./configure \
             --prefix=$out \
             --sysconfdir=$out/etc \

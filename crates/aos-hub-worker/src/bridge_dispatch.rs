@@ -10,7 +10,7 @@ use std::future::Future;
 
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Method, Uri};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use tower::ServiceExt;
 
 use aos_hub_core::service::RpcService;
@@ -109,6 +109,39 @@ pub(crate) async fn dispatch_converted_request(
         Ok(request) => request,
         Err(response) => return ConvertedDispatch::Response(response),
     };
+
+    // Request shards outlive settings writes made in other isolates. Refresh
+    // presentation for browser routes, including identity form error pages.
+    let path = request.uri().path();
+    let browser_read = matches!(*request.method(), Method::GET | Method::HEAD)
+        && !path.starts_with("/_")
+        && !path.starts_with("/aos.hub.v1.");
+    let console_route =
+        aos_hub_core::web::console::manifest::route_methods_for_path(path).is_some();
+    let browser_page = browser_read
+        && (path == "/"
+            || console_route
+            || path
+                .split_once("/-/")
+                .is_some_and(|(_, rest)| !rest.starts_with("api/")));
+    if browser_read || console_route {
+        match console_deps.db.instance_settings().await {
+            Ok(settings) => aos_hub_core::web::console_render::apply_instance_settings(&settings),
+            Err(error) => {
+                tracing::warn!(error = %error, "loading site presentation");
+                if browser_page {
+                    return ConvertedDispatch::Response(
+                        aos_hub_core::web::status_pages::unavailable(
+                            "We could not load the settings for this page. Please try again later.",
+                        ),
+                    );
+                }
+                return ConvertedDispatch::Response(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                );
+            }
+        }
+    }
 
     let request = if is_streaming_upload_request(request.method(), request.uri()) {
         request
@@ -215,12 +248,13 @@ mod tests {
         db.grant_membership("user", user_id, &org.stable_id, "owner")
             .await
             .unwrap();
-        let state =
-            Arc::new(aos_hub::server::AppState::new(db, "http://worker.test".to_string()).await);
+        let mut state = aos_hub::server::AppState::new(db, "http://worker.test".to_string()).await;
         assert_eq!(
             state.container_rollout,
-            aos_hub_core::container_rollout::ContainerRollout::default()
+            aos_hub_core::container_rollout::ContainerRollout::all_enabled()
         );
+        state.container_rollout = aos_hub_core::container_rollout::ContainerRollout::all_disabled();
+        let state = Arc::new(state);
         let scope = state
             .db
             .registry_authorization_scope(registry_id)
@@ -459,6 +493,303 @@ mod tests {
             )
             .body(Body::empty())
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unreadable_settings_render_browser_pages_without_masking_api_failures() {
+        use aos_hub_core::backend::{Backend as _, SqlxBackend};
+
+        let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
+        let SqlxBackend::Sqlite(pool) = &backend else {
+            panic!("expected SQLite test backend");
+        };
+        let writer = SqlxBackend::Sqlite(pool.clone());
+        let db = Arc::new(
+            aos_hub_core::db::Database::with_backend(Box::new(backend))
+                .await
+                .unwrap(),
+        );
+        let state = Arc::new(
+            aos_hub::server::AppState::new(Arc::clone(&db), "http://worker.test".to_string()).await,
+        );
+        let svc = worker_rpc_service(&state);
+        let deps = aos_hub::server::console_deps_for_worker_test(&state);
+        let router = console_router(deps.clone());
+        writer
+            .execute("DROP TABLE instance_config", &[])
+            .await
+            .unwrap();
+
+        for path in ["/", "/demo/-/containers", "/login"] {
+            let response = worker_console_request(
+                router.clone(),
+                &svc,
+                deps.clone(),
+                converted_request(Method::GET, path),
+            )
+            .await;
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.headers()["cache-control"], "private, no-store");
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&body).contains("We could not load the settings"));
+        }
+
+        let response = worker_console_request(
+            router,
+            &svc,
+            deps,
+            converted_request(Method::GET, "/demo/-/api/registry"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn branding_apply_and_warm_worker_reads_use_current_settings() {
+        use aos_hub_core::db::TokenAuth;
+        use aos_hub_core::domain::{Permission, Principal, Scope};
+        use aos_proto_types as pb;
+
+        let db = Arc::new(aos_hub_core::db::Database::open_in_memory().await.unwrap());
+        let user_id = db.create_user("branding@example.test", None).await.unwrap();
+        db.grant_membership("user", user_id, "instance", "owner")
+            .await
+            .unwrap();
+        let state = Arc::new(
+            aos_hub::server::AppState::new(Arc::clone(&db), "http://worker.test".to_string()).await,
+        );
+        let svc = worker_rpc_service(&state);
+        let token = state
+            .auth
+            .jwt_keys
+            .mint(
+                &TokenAuth {
+                    token_id: "branding-test".into(),
+                    owner: Principal::user(user_id),
+                    scope: Scope::root(),
+                    permissions: vec![Permission::IamAdmin],
+                },
+                900,
+            )
+            .unwrap();
+        let bearer = format!("Bearer {token}");
+        let deps = aos_hub::server::console_deps_for_worker_test(&state);
+        let router = console_router(deps.clone());
+        let original = svc
+            .get_instance_settings(Some(&bearer), pb::GetInstanceSettingsRequest {})
+            .await
+            .unwrap();
+        for clear in [
+            vec!["site_title".into()],
+            vec!["tagline".into(), "tagline".into()],
+        ] {
+            let conflicting = svc
+                .plan_set_instance_settings(
+                    Some(&bearer),
+                    pb::PlanSetInstanceSettingsRequest {
+                        values: std::collections::HashMap::from([(
+                            "site_title".into(),
+                            "ambiguous".into(),
+                        )]),
+                        clear,
+                        expected_resource_version: original.resource_version.clone(),
+                        idempotency_key: "branding-conflict".into(),
+                    },
+                )
+                .await;
+            assert!(matches!(
+                conflicting,
+                Err(aos_hub_core::service::RpcError::InvalidArgument(_))
+            ));
+        }
+
+        let values = std::collections::HashMap::from([
+            ("site_title".into(), "  Example <Hub>  ".into()),
+            ("tagline".into(), "Packages & images".into()),
+            ("announcement".into(), "Maintenance <notice>".into()),
+            ("tos_url".into(), "https://example.test/terms".into()),
+            ("privacy_url".into(), "https://example.test/privacy".into()),
+            ("support_url".into(), "https://example.test/support".into()),
+        ]);
+        let plan = svc
+            .plan_set_instance_settings(
+                Some(&bearer),
+                pb::PlanSetInstanceSettingsRequest {
+                    values,
+                    expected_resource_version: original.resource_version.clone(),
+                    idempotency_key: "branding-plan".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(plan.effects.len(), 6);
+        assert!(plan
+            .effects
+            .contains(&"Site title: AOS Hub (default) → \"Example <Hub>\"".to_string()));
+        assert_eq!(
+            db.instance_settings().await.unwrap().site_title,
+            None,
+            "review does not apply settings"
+        );
+
+        let apply = pb::ApplyTopologyPlanRequest {
+            plan_id: plan.plan_id,
+            confirmation_hash: plan.confirmation_hash,
+            idempotency_key: "branding-plan".into(),
+        };
+        let saved = svc
+            .apply_set_instance_settings(Some(&bearer), apply.clone())
+            .await
+            .unwrap();
+        assert_eq!(saved.settings.as_ref().unwrap().site_title, "Example <Hub>");
+        assert_eq!(
+            svc.apply_set_instance_settings(Some(&bearer), apply)
+                .await
+                .unwrap(),
+            saved
+        );
+
+        // The native renderer must reflect the apply without a server restart.
+        let html = aos_hub_core::web::console_render::page_with_session(
+            "test",
+            &[],
+            "",
+            &Default::default(),
+            &Default::default(),
+        );
+        assert!(html.contains("<title>test — Example &lt;Hub&gt;</title>"));
+        assert!(html.contains("Packages &amp; images"));
+        assert!(html.contains("Maintenance &lt;notice&gt;"));
+        for suffix in ["terms", "privacy", "support"] {
+            assert!(html.contains(&format!("href=\"https://example.test/{suffix}\"")));
+        }
+
+        // Simulate another isolate's persisted write while this router stays warm.
+        // Deliberately do not update its process-local presentation cell.
+        db.instance_config_set("site_title", "Other isolate")
+            .await
+            .unwrap();
+        let response = worker_console_request(
+            router.clone(),
+            &svc,
+            deps.clone(),
+            converted_request(Method::GET, "/login"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = String::from_utf8(
+            axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("— Other isolate</title>"));
+
+        let session = db.create_session(user_id, 900, 1).await.unwrap();
+        let mut request = converted_request(Method::GET, "/-/instance/branding");
+        request.headers_mut().insert(
+            http::header::COOKIE,
+            format!("{}={session}", aos_hub_core::auth::session::COOKIE_NAME)
+                .parse()
+                .unwrap(),
+        );
+        let response = worker_console_request(router.clone(), &svc, deps.clone(), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = String::from_utf8(
+            axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("<title>Other isolate</title>"));
+        assert_eq!(html.matches("<title>").count(), 1);
+        for (name, value) in [
+            ("brand", "Other isolate"),
+            ("tagline", "Packages &amp; images"),
+            ("announcement", "Maintenance &lt;notice&gt;"),
+            ("tos-url", "https://example.test/terms"),
+            ("privacy-url", "https://example.test/privacy"),
+            ("support-url", "https://example.test/support"),
+        ] {
+            assert!(
+                html.contains(&format!("name=\"aos-site-{name}\" content=\"{value}\"")),
+                "missing {name}"
+            );
+        }
+
+        let stale = svc
+            .plan_set_instance_settings(
+                Some(&bearer),
+                pb::PlanSetInstanceSettingsRequest {
+                    expected_resource_version: original.resource_version,
+                    idempotency_key: "branding-stale".into(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(
+            stale,
+            Err(aos_hub_core::service::RpcError::FailedPrecondition(_))
+        ));
+
+        let current = svc
+            .get_instance_settings(Some(&bearer), pb::GetInstanceSettingsRequest {})
+            .await
+            .unwrap();
+        let plan = svc
+            .plan_set_instance_settings(
+                Some(&bearer),
+                pb::PlanSetInstanceSettingsRequest {
+                    clear: vec![
+                        "site_title".into(),
+                        "tagline".into(),
+                        "announcement".into(),
+                        "tos_url".into(),
+                        "privacy_url".into(),
+                        "support_url".into(),
+                    ],
+                    expected_resource_version: current.resource_version,
+                    idempotency_key: "branding-reset".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        assert_eq!(plan.effects.len(), 6);
+        svc.apply_set_instance_settings(
+            Some(&bearer),
+            pb::ApplyTopologyPlanRequest {
+                plan_id: plan.plan_id,
+                confirmation_hash: plan.confirmation_hash,
+                idempotency_key: "branding-reset".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let response =
+            worker_console_request(router, &svc, deps, converted_request(Method::GET, "/login"))
+                .await;
+        let html = String::from_utf8(
+            axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("— AOS Hub</title>"));
+        assert!(!html.contains("class=\"announce\""));
+        assert!(!html.contains("href=\"https://example.test/terms\""));
     }
 
     #[tokio::test]

@@ -2,8 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
-  go,
   bash,
   docker-engine,
   docker-buildx,
@@ -20,10 +20,10 @@ in
       hash = "sha256-Ea7zSEw4050pGlSnOk2d0rs8AA2aP8OGK9A/6JlZTyw=";
     };
 
-    buildDeps = [gnumake go];
+    buildDeps = [gnumake buildPackages.go];
     runtimeDeps = [bash docker-engine docker-buildx docker-compose];
     propagatedDeps = [];
-    disallowedReferences = [go];
+    disallowedReferences = [buildPackages.go];
 
     phases = [
       {
@@ -53,6 +53,10 @@ in
           export GOFLAGS="-trimpath -mod=vendor"
           export GOPROXY=off
           export CGO_ENABLED=1
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           export DISABLE_WARN_OUTSIDE_CONTAINER=1
           export GITCOMMIT="v${version}"
           export VERSION="${version}"

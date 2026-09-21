@@ -12,7 +12,7 @@
   perl-role-tiny,
   perl-sub-quote,
 }: let
-  version = "2.08";
+  version = "2.10";
   modules = [
     perl-algorithm-diff
     perl-class-method-modifiers
@@ -30,7 +30,7 @@ in
     inherit version;
     src = fetchurl {
       urls = ["https://github.com/AlDanial/cloc/archive/refs/tags/v${version}.tar.gz"];
-      hash = "sha256-gJm2J1wST2YmkPLbNYHNKtTprU4IMyKIcZg43tANHaU=";
+      hash = "sha256-qPrDX0z0Jyh2VYC6Ea/CVorSBVCaIiBGY/UmFpVIQ20=";
     };
     buildDeps = [];
     runtimeDeps = [perl] ++ modules;

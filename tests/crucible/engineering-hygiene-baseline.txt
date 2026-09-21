@@ -113,9 +113,9 @@ shape-review|crates/crucible-harness/src/phase_plan.rs|sha256:15971ad2214806630c
 shape-review|crates/crucible-harness/tests/engineering_hygiene.rs|sha256:b50d60eb83d04b47e8e6bf94499ce760cbebe5cfc8602f4d127ed02666436cfa|tests|1043|Checks source-role reviews, module headers, QEMU boundary confinement, and commit-hygiene policy wiring.|threshold-not-reached
 shape-review|crates/crucible-protocol/src/selectable_catalog_plan.rs|sha256:f5ea1e9350ceb6e5b4d48158df97ee65994cd9cb01b7e1b0d0bd1aa5ae8d523f|implementation|1439|Canonical guest-selectable catalog continuation encoding, current decoding, and invariant validation.|threshold-not-reached
 shape-review|crates/crucible-qemu-plugin/src/idle_loop.rs|sha256:daf7a145edd465be38ba767b9b1ce42c97f30d79fdeeb27172b78e6089b83364|implementation|1008|QEMU idle-loop wake authorization, vCPU aggregation, timer publication, and scheduler futex handoff.|threshold-not-reached
-shape-review|crates/crucible-qemu-plugin/src/runtime.rs|sha256:945ddab48374b0f13ef2665039b29dbcf38e20cc81e5371bb60b4453e8b579d2|implementation|2737|Live QEMU plugin installation and process-lifetime runtime ownership.|Capability preflight, callback registration, owner publication, control service, and teardown must execute in one atomic runtime order.
-shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|sha256:b7230196ece30b9384651b9ec7daa089d41719f57312bcfd558df54e3b92ca3d|implementation|2726|Live vCPU-boundary and sim-loop shared-memory callback adapters.|The vCPU, time, network, block, and 9p callbacks coordinate through one process-global runtime and quantum publication state.
-shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|sha256:0407fc2a7a9a1ead4ced773ab95929897a809469973d308a62df44b17eb95a23|tests|1532|Live QEMU callback integration tests.|vCPU boundary, timer, block, 9p, network, control, and fingerprint cases share one installed live-callback runtime fixture and shared-memory publication contract.
+shape-review|crates/crucible-qemu-plugin/src/runtime.rs|sha256:17c254cc49f3df405fb4e6129ba776c9dc73e5773cf1ad0618d6def2284ee9bf|implementation|2735|Live QEMU plugin installation and process-lifetime runtime ownership.|Capability preflight, callback registration, owner publication, control service, and teardown must execute in one atomic runtime order.
+shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|sha256:60b95da751b71d4550b19a2c9126a1452d68ad38868bb75a5c13ab813c072176|implementation|2722|Live vCPU-boundary and sim-loop shared-memory callback adapters.|The vCPU, time, network, block, and 9p callbacks coordinate through one process-global runtime and quantum publication state.
+shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|sha256:5e027f5d3169277689703de12ff096b45e7649dccc90d3578d0b56761520cd6f|tests|1531|Live QEMU callback integration tests.|vCPU boundary, timer, block, 9p, network, control, and fingerprint cases share one installed live-callback runtime fixture and shared-memory publication contract.
 shape-review|crates/crucible-qemu-plugin/src/runtime/tests.rs|sha256:1ff115988450b51cd41869254d77071ec10da7a68d79ed702836cf4ff2fce9be|tests|1810|Live runtime installation, control-worker, and teardown tests.|Installation, control-worker, callback teardown, and fatal-policy cases traverse one process-owner lifecycle.
 shape-review|crates/crucible-qemu-plugin/src/whitebox_doorbell/selectable/catalog.rs|sha256:ca9960fa9ae642fe57440f858086eb0d28ed6a337c1c3d3401d59936688199a2|implementation|1202|Guest-selectable declaration, pending-request, reply, and checkpoint catalog state.|threshold-not-reached
 shape-review|crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs|sha256:cd09921af946bce489c28ded1893def792701506aa84f92dd5f358df67e3ad25|implementation|1268|Production QEMU/plugin diskless comparator flight, boundary comparison, and real-device recovery subflight orchestration.|threshold-not-reached
@@ -226,7 +226,6 @@ shape-line|crates/aos-hub/src/main.rs|1504
 shape-line|crates/aos-hub/src/mirror.rs|1295
 shape-line|crates/aos-hub/src/seed.rs|1187
 shape-line|crates/aos-hub/src/server.rs|673
-shape-line|crates/aos-hub/src/validation.rs|2573
 shape-line|crates/aos-hub/tests/common/mod.rs|1062
 shape-line|crates/aos-hub/tests/dialect.rs|961
 shape-line|crates/aos-hub/tests/e2e.rs|1085
@@ -498,7 +497,6 @@ shape-line|crates/crucible-qemu-plugin/src/abi.rs|2700
 shape-line|crates/crucible-qemu-plugin/src/block_io.rs|2365
 shape-line|crates/crucible-qemu-plugin/src/block_io_tests.rs|783
 shape-line|crates/crucible-qemu-plugin/src/coverage.rs|1269
-shape-line|crates/crucible-qemu-plugin/src/coverage/tests.rs|681
 shape-line|crates/crucible-qemu-plugin/src/fault_command.rs|2432
 shape-line|crates/crucible-qemu-plugin/src/fault_command/bridge.rs|1299
 shape-line|crates/crucible-qemu-plugin/src/fault_command_test.rs|1179

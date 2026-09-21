@@ -10,8 +10,16 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
+  perl ? null,
   ...
 }: let
+  # The construction sysroot precedes the target interpreter. Complete the
+  # public libc utilities once the cross tier has built its static Perl.
+  perlCommand =
+    if perl == null
+    then "true"
+    else "${perl}/bin/perl";
+
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.17.tar.bz2";
     sha256 = "10dmn1l45hcpsm5m063ajdmmwrc4wfm6sn8f7wqxlyhywf60yqcd";
@@ -52,6 +60,10 @@ in
         (cd ${src} && tar cf - .) | (cd "$TMPDIR/glibc-2.17" && tar xf -)
         chmod -R u+w "$TMPDIR/glibc-2.17"
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/glibc-2.17"
+
         SRC="$TMPDIR/glibc-2.17"
 
         # Fix hardcoded /bin/pwd
@@ -69,7 +81,8 @@ in
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
-        BUILD_CC="${prev.gcc}/bin/gcc" \
+        ${import ../lib/static-build-compiler.nix {tools = prev;}}
+
         CC="${crossGccStage1}/bin/${hostPlatform.config}-gcc" \
         CXX="${crossGccStage1}/bin/${hostPlatform.config}-g++" \
         AR="${crossBinutils}/bin/${hostPlatform.config}-ar" \
@@ -93,10 +106,10 @@ in
           libc_cv_c_cleanup=yes
 
         # nscd may cause multiple-definition errors — tolerate
-        make -j"$NIX_BUILD_CORES" || true
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" PERL=${perlCommand} || true
         test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
-        make install-bootstrap-headers=yes install-headers || true
-        make -k install PERL=true || true
+        make SHELL="${prev.bash}/bin/bash" install-bootstrap-headers=yes install-headers || true
+        make SHELL="${prev.bash}/bin/bash" -k install PERL=${perlCommand} || true
         mkdir -p "$out/lib"
         cp -f libc.a "$out/lib/"
         for obj in csu/crt1.o csu/gcrt1.o csu/Mcrt1.o csu/Scrt1.o csu/crti.o csu/crtn.o; do

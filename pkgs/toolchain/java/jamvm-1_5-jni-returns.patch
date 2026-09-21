@@ -1,0 +1,44 @@
+--- a/src/os/linux/x86_64/callNative.S
++++ b/src/os/linux/x86_64/callNative.S
+@@ -213,6 +213,18 @@
+     cmpq    $70, %rbx                /* 'F' */
+     je      float_ret
+ 
++    /* JNI narrow integers leave the unused return-register bits undefined.
++       Extend only their declared width before storing a Java int slot. */
++    cmpq    $90, %rbx                /* 'Z' */
++    je      boolean_ret
++    cmpq    $66, %rbx                /* 'B' */
++    je      byte_ret
++    cmpq    $67, %rbx                /* 'C' */
++    je      char_ret
++    cmpq    $83, %rbx                /* 'S' */
++    je      short_ret
++
++integer_ret:
+     movq    %rax, (%rcx)
+ 
+     cmpq    $74, %rbx                /* 'J' */
+@@ -232,6 +244,22 @@
+     movq    %rcx, %rax
+     retq
+ 
++boolean_ret:
++    movzbl  %al, %eax
++    jmp     integer_ret
++
++byte_ret:
++    movsbl  %al, %eax
++    jmp     integer_ret
++
++char_ret:
++    movzwl  %ax, %eax
++    jmp     integer_ret
++
++short_ret:
++    movswl  %ax, %eax
++    jmp     integer_ret
++
+ double_ret:
+     movsd   %xmm0, (%rcx)
+ double_inc:

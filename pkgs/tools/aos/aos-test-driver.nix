@@ -76,6 +76,11 @@ mkDerivation {
     }
   ];
 
+  passthru.evidenceSources = [
+    ./aos-test-driver.nix
+    ./aos-test-driver
+  ];
+
   meta = {
     description = "Python test driver for AOS VM and fleet tests";
     license = "Apache-2.0";

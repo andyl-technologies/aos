@@ -103,6 +103,7 @@ in
     passthru = {
       inherit llvm sdk runtimes target;
       libc = sdk;
+      evidenceSources = [./_darwin-cc.nix];
     };
     meta = {
       description = "AOS Clang/LLVM wrapper hosted on Darwin";

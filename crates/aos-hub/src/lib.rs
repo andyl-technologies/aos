@@ -52,8 +52,8 @@
 //! - [`ratelimit`] — in-memory per-endpoint fixed-window rate limiting for the
 //!   pre-auth surfaces (device-authorization, magic-link issuance, token
 //!   exchange, anonymous browse/search).
-//! - [`validation`] — presence- and integrity-depth cache consistency
-//!   validation, stack-aware coverage, and repair planning.
+//! - [`nar_verification`] — narinfo signature and NAR content verification for
+//!   mirror and pull-through cache trust paths.
 //! - [`aos_hub_core::surface_write`] — typed publication writes, leases, and
 //!   index-after-commit coordination.
 //! - [`signing`] — pure release-tag and channel-partition signing primitives;
@@ -101,9 +101,9 @@ pub mod gitwrite;
 pub mod indexer;
 mod local_fs_delete;
 pub mod mirror;
+pub mod nar_verification;
 pub mod narlist;
 pub mod native_tls;
-pub mod probe;
 pub mod ratelimit;
 pub mod seed;
 pub mod server;
@@ -113,5 +113,4 @@ pub mod signing;
 pub use aos_hub_core::stack;
 pub mod surface;
 pub mod ui;
-pub mod validation;
 pub mod webhook;

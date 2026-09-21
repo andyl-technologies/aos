@@ -100,16 +100,20 @@ du -x -h -d 2 /var | sort -h
 journalctl --disk-usage
 ```
 
-For a ZFS-backed bare-metal installation, also inspect pool and encryption
-state and schedule scrubs through deployment policy:
+For a ZFS-backed installation, inspect pool and encryption state:
 
 ```sh
 zpool status
-zpool get autotrim
+zpool get autotrim,compatibility
 zfs get encryption,keystatus,mountpoint rpool
 zfs list -t filesystem,volume
-zpool scrub rpool
+systemctl status aos-zfs-health.service
 ```
+
+Scrubs, trims, the event daemon, health checks, and memory telemetry run from
+`aos.services.zfsMaintenance`; there is no need to schedule them by hand. See
+[ZFS storage](storage-zfs.md) for the memory budget, dataset declarations, the
+metrics to alert on, and device replacement.
 
 The immutable EROFS and dm-verity payloads live in fixed-size A/B zvols; they
 are replaced only by authenticated image staging. Mutable state lives in

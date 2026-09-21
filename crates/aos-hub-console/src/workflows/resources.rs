@@ -16,6 +16,7 @@ use crate::transport::ApiClient;
 use crate::workflows::infrastructure::InfrastructureWorkflow;
 
 use super::organization_scope::organization_authorization_scope;
+use super::registry_metadata::RegistryMetadata;
 
 /// Renders the typed resource adapter owned by the current canonical page.
 #[component]
@@ -845,14 +846,27 @@ fn RegistryInventory(
     let project_path = RwSignal::new(String::new());
     let name = RwSignal::new(String::new());
     let visibility = RwSignal::new("private".to_string());
+    let trust_keys = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
 
+    let draft_epoch = watch_draft(
+        move || {
+            let _ = project_path.get();
+            let _ = name.get();
+            let _ = visibility.get();
+            let _ = trust_keys.get();
+        },
+        pending,
+        error,
+    );
     let plan_client = client.clone();
     let plan_org = organization.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        pending.set(None);
+        let planned_epoch = draft_epoch.get_untracked();
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("registry-create");
         let request = aos_proto_types::PlanCreateRegistryRequest {
@@ -860,7 +874,13 @@ fn RegistryInventory(
             project_path: project_path.get_untracked().trim().to_string(),
             name: name.get_untracked().trim().to_string(),
             visibility: visibility.get_untracked(),
-            trust_keys: Vec::new(),
+            trust_keys: trust_keys
+                .get_untracked()
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect(),
             idempotency_key: idempotency_key.clone(),
             expected_resource_version: String::new(),
         };
@@ -876,7 +896,10 @@ fn RegistryInventory(
                 .map_err(|failure| failure.to_string())
                 .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
+                Ok(reviewed) if draft_epoch.get_untracked() == planned_epoch => {
+                    pending.set(Some(reviewed));
+                }
+                Ok(_) => {}
                 Err(detail) => error.set(Some(detail)),
             }
             busy.set(false);
@@ -922,6 +945,11 @@ fn RegistryInventory(
                 <label><span>"Project path"</span><input placeholder="Optional; for example platform/runtime" prop:value=move || project_path.get() on:input=move |event| project_path.set(event_target_value(&event))/></label>
                 <label><span>"Registry name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label>
                 <label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label>
+                <label class="full-field"><span>"Pinned trust anchors (optional)"</span>
+                    <textarea rows="3" spellcheck="false" placeholder="key-name:Ed25519:base64-public-key"
+                        prop:value=move || trust_keys.get() on:input=move |event| trust_keys.set(event_target_value(&event))/>
+                    <small class="field-note">"One public key per line in name:Ed25519:base64 format."</small>
+                </label>
                 <div class="form-actions"><a class="secondary-button" href=cancel_path>"Cancel"</a><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
             </form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> })}
         </div>
@@ -1109,6 +1137,7 @@ fn RegistryEditor(
 ) -> impl IntoView {
     let can_manage = client.allows("registry.configure");
     let visibility = RwSignal::new(registry.visibility.clone());
+    let trust_keys = RwSignal::new(registry.trust_keys.join("\n"));
     let crawl_policy = RwSignal::new(registry.crawl_policy.clone());
     let llms = RwSignal::new(registry.llms_txt_body.clone());
     let llms_mode = RwSignal::new(if registry.llms_txt_body.trim().is_empty() {
@@ -1122,6 +1151,7 @@ fn RegistryEditor(
     let draft_epoch = watch_draft(
         move || {
             let _ = visibility.get();
+            let _ = trust_keys.get();
             let _ = crawl_policy.get();
             let _ = llms.get();
             let _ = llms_mode.get();
@@ -1131,7 +1161,7 @@ fn RegistryEditor(
     );
     let slug = registry.slug.clone();
     let version = registry.resource_version.clone();
-    let trust_keys = registry.trust_keys.clone();
+    let original_trust_keys = registry.trust_keys.clone();
     let plan_client = client.clone();
     let plan_slug = slug.clone();
     let on_plan = move |event: SubmitEvent| {
@@ -1147,17 +1177,29 @@ fn RegistryEditor(
         let client = plan_client.clone();
         let planned_epoch = draft_epoch.get_untracked();
         let idempotency_key = idempotency_key("registry-update");
+        let desired_trust_keys = trust_keys
+            .get_untracked()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut update_mask = vec![
+            "visibility".into(),
+            "crawl_policy".into(),
+            "llms_txt_body".into(),
+        ];
+        if desired_trust_keys != original_trust_keys {
+            update_mask.push("trust_keys".into());
+        }
+
         let request = aos_proto_types::PlanUpdateRegistryRequest {
             slug: plan_slug.clone(),
             visibility: visibility.get_untracked(),
             crawl_policy: crawl_policy.get_untracked(),
             llms_txt_body,
-            trust_keys: trust_keys.clone(),
-            update_mask: vec![
-                "visibility".into(),
-                "crawl_policy".into(),
-                "llms_txt_body".into(),
-            ],
+            trust_keys: desired_trust_keys,
+            update_mask,
             expected_resource_version: version.clone(),
             idempotency_key: idempotency_key.clone(),
         };
@@ -1186,6 +1228,8 @@ fn RegistryEditor(
     let containers_href = format!("/{slug}/-/settings/containers");
     let can_view_containers = ConsoleRoute::resolve(&containers_href)
         .is_some_and(|route| client.allows(route.page.navigation_permission()));
+    let metadata_client = client.clone();
+    let metadata_slug = slug.clone();
     let apply_client = client;
     let destination = format!("/{slug}/-/settings");
     let on_apply = Callback::new(move |()| {
@@ -1209,7 +1253,12 @@ fn RegistryEditor(
             busy.set(false);
         });
     });
-    view! { <div class="workflow-stack"><section class="panel effective-overview"><div class="section-heading"><div><p class="section-kicker">"Effective registry"</p><h2>{if registry.name.is_empty() { registry.slug.clone() } else { registry.name.clone() }}</h2><p>{if registry.description.is_empty() { "Registry publication and delivery status".to_string() } else { registry.description.clone() }}</p></div><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div class="resource-identity"><div><span>"Registry"</span><code>{slug.clone()}</code></div><div><span>"Visibility"</span><strong>{registry.visibility.clone()}</strong></div><div><span>"Infrastructure owner"</span><code>{registry.owner_scope_key.clone()}</code></div><div><span>"Consumer caches"</span><strong>{registry.consumer_cache_stack.len()}</strong></div><div><span>"Trust keys"</span><strong>{registry.trust_keys.len()}</strong></div><div><span>"Version"</span><code>{registry.resource_version.clone()}</code></div></div><EffectiveDelivery routes=topology.routes advertisements=topology.route_advertisements/>{(!registry.index_error.is_empty()).then(|| view! { <InlineError detail=registry.index_error.clone()/> })}<div class="overview-actions"><a class="secondary-button" href=format!("/{slug}/-/packages")>"Browse packages"</a><a class="secondary-button" href=format!("/{slug}/-/docs")>"Browse documentation"</a><a class="secondary-button" href=format!("/{slug}/-/images")>"Browse images"</a><a class="secondary-button" href=format!("/{slug}/-/channels")>"Browse channels"</a></div><div class="overview-actions"><a class="button" href=format!("/{slug}/-/settings/delivery")>"View delivery"</a><a class="secondary-button" href=format!("/{slug}/-/settings/placements")>"View storage & replicas"</a><a class="secondary-button" href=format!("/{slug}/-/settings/caches")>"View binary caches"</a>{can_view_containers.then(|| view! { <a class="secondary-button" href=containers_href>"View containers"</a> })}</div></section><details class="panel advanced-controls"><summary>"Edit registry policy"</summary>{if can_manage { view! { <form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><fieldset class="full-field choice-field"><legend>"llms.txt"</legend><label class="choice-row"><input type="radio" name="llms-mode" value="automatic" prop:checked=move || llms_mode.get() == LlmsMode::Automatic on:change=move |_| llms_mode.set(LlmsMode::Automatic)/><span><strong>"Automatic"</strong>" — generated from the signed package and channel index."</span></label><label class="choice-row"><input type="radio" name="llms-mode" value="custom" prop:checked=move || llms_mode.get() == LlmsMode::Custom on:change=move |_| llms_mode.set(LlmsMode::Custom)/><span><strong>"Custom override"</strong>" — serve operator-authored Markdown verbatim."</span></label>{move || (llms_mode.get() == LlmsMode::Custom).then(|| view! { <label class="llms-custom"><span>"Custom Markdown"</span><textarea rows="8" required prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label> })}{move || (visibility.get() == "public").then(|| view! { <p class="field-note">"Public document: "<a href=llms_url.clone() target="_blank">{llms_url.clone()}</a></p> })}</fieldset><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form> }.into_any() } else { view! { <p class="muted">"You have read-only access to this registry."</p> }.into_any() }}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</details></div> }
+    view! { <div class="workflow-stack"><section class="panel effective-overview"><div class="section-heading"><div><p class="section-kicker">"Effective registry"</p><h2>{if registry.name.is_empty() { registry.slug.clone() } else { registry.name.clone() }}</h2><p>{if registry.description.is_empty() { "Registry publication and delivery status".to_string() } else { registry.description.clone() }}</p></div><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div class="resource-identity"><div><span>"Registry"</span><code>{slug.clone()}</code></div><div><span>"Visibility"</span><strong>{registry.visibility.clone()}</strong></div><div><span>"Infrastructure owner"</span><code>{registry.owner_scope_key.clone()}</code></div><div><span>"Consumer caches"</span><strong>{registry.consumer_cache_stack.len()}</strong></div><div><span>"Trust keys"</span><strong>{registry.trust_keys.len()}</strong></div><div><span>"Version"</span><code>{registry.resource_version.clone()}</code></div></div><EffectiveDelivery routes=topology.routes advertisements=topology.route_advertisements/>{(!registry.index_error.is_empty()).then(|| view! { <InlineError detail=registry.index_error.clone()/> })}<div class="overview-actions"><a class="secondary-button" href=format!("/{slug}/-/packages")>"Browse packages"</a><a class="secondary-button" href=format!("/{slug}/-/docs")>"Browse documentation"</a><a class="secondary-button" href=format!("/{slug}/-/images")>"Browse images"</a><a class="secondary-button" href=format!("/{slug}/-/channels")>"Browse channels"</a></div><div class="overview-actions"><a class="button" href=format!("/{slug}/-/settings/delivery")>"View delivery"</a><a class="secondary-button" href=format!("/{slug}/-/settings/placements")>"View storage & replicas"</a><a class="secondary-button" href=format!("/{slug}/-/settings/caches")>"View binary caches"</a>{can_view_containers.then(|| view! { <a class="secondary-button" href=containers_href>"View containers"</a> })}</div></section><RegistryMetadata client=metadata_client slug=metadata_slug/><details class="panel advanced-controls"><summary>"Edit registry policy"</summary>{if can_manage { view! { <form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><fieldset class="full-field choice-field"><legend>"llms.txt"</legend><label class="choice-row"><input type="radio" name="llms-mode" value="automatic" prop:checked=move || llms_mode.get() == LlmsMode::Automatic on:change=move |_| llms_mode.set(LlmsMode::Automatic)/><span><strong>"Automatic"</strong>" — generated from the signed package and channel index."</span></label><label class="choice-row"><input type="radio" name="llms-mode" value="custom" prop:checked=move || llms_mode.get() == LlmsMode::Custom on:change=move |_| llms_mode.set(LlmsMode::Custom)/><span><strong>"Custom override"</strong>" — serve operator-authored Markdown verbatim."</span></label>{move || (llms_mode.get() == LlmsMode::Custom).then(|| view! { <label class="llms-custom"><span>"Custom Markdown"</span><textarea rows="8" required prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label> })}{move || (visibility.get() == "public").then(|| view! { <p class="field-note">"Public document: "<a href=llms_url.clone() target="_blank">{llms_url.clone()}</a></p> })}</fieldset><label class="full-field"><span>"Pinned trust anchors"</span>
+                <textarea rows="4" spellcheck="false" placeholder="key-name:Ed25519:base64-public-key"
+                    prop:value=move || trust_keys.get()
+                    on:input=move |event| trust_keys.set(event_target_value(&event))/>
+                <small class="field-note">"One public key per line in name:Ed25519:base64 format. Removing a key changes which registry signatures are trusted."</small>
+            </label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form> }.into_any() } else { view! { <p class="muted">"You have read-only access to this registry."</p> }.into_any() }}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</details></div> }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

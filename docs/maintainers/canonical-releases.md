@@ -1,5 +1,22 @@
 # Canonical release coordinator
 
+Registry identity and software channel are independent. Both `andyl/main` and
+`andyl/testing` can carry edge, candidate, and stable releases. Main requires
+strict build and publication provenance even for edge; testing isolates the
+experimental pipeline and its keys. Testing releases never become main releases
+by changing a channel or copying signed artifacts.
+
+Disk images and OCI containers must configure APM for their exact publishing
+registry. The shared `aos.release` profile supplies the CDN URL (`https://cdn.aos.andyl.org/<registry>/`), trust alias, root
+epoch, channel, and testing notice. Planning, building, and image finalization
+check this profile from the clean source commit frozen in the plan, on every
+selected platform. A testing profile fails a main plan and vice versa. Package
+transactions, manifests, evidence, and channel receipts bind the same registry;
+packages inherit their client's configured registry when installed. Inspect the
+appropriate obligations with `aos release contract --registry andyl/testing`
+or `--registry andyl/main` before preparing a request.
+
+
 Start with the [release checklist](release-checklist.md) for the order of
 operations and the conditions for proceeding. This page is the command reference;
 the [qualification specification](qualification.md) defines the evidence. New plans
@@ -29,10 +46,12 @@ The current implementation provides these fail-closed operations:
   plan, performs the complete external signing sequence, and emits one
   verified logical disk, four equivalent download formats, signed UKIs,
   metadata, and recovery bundle;
-- `aos release finalize-registry` binds a reviewed atomic registry transaction
-  to the validated build report, authors every package-platform entry in an
-  isolated clone, obtains externally backed provenance and Git SSHSIGs, and
-  creates the release's sole registry commit and annotated tag;
+- `aos release prepare-registry` derives and authors every package-platform
+  entry once, obtains externally backed provenance, retains the uncommitted
+  isolated clone, and emits its exact surface transaction for review;
+- `aos release finalize-registry` binds that reviewed transaction and retained
+  tree to the validated build report, obtains the Git SSHSIGs, and creates the
+  release's sole registry commit and annotated tag;
 - `aos release finalize-cache` generates the registry closure's static Nix
   cache and obtains a verified external raw Ed25519 signature over every exact
   narinfo fingerprint;
@@ -117,7 +136,7 @@ request supplies:
 
 - release id, calendar version, and release class;
 - one registry authorized by [`registries.md`](registries.md), its exact base
-  commit and generation, and a release class/channel allowed by that registry;
+  commit and generation, and a software release class/channel;
 - protected source branch, unused immutable source tag, and SHA-256 digest of
   the public contributor-authorization summary;
 - explicit decisions for both Linux system-image targets;
@@ -163,17 +182,68 @@ and never replaces an existing output. The resulting file is canonical JSON;
 its SHA-256 digest becomes the identity bound by every later operation. Preserve
 both the reviewed request and generated plan as release evidence.
 
+## Create a first qualification predecessor
+
+When a registry has no prior signed release, create one retained, non-public
+qualification snapshot from an earlier protected source revision and an older,
+distinct calendar version. Its plan request uses the complete current contract
+and normal package and image matrices, with exactly these reserved fields:
+
+```json
+{
+  "release_id": "qualification-snapshot-2026.9.0-dev.20260904.0",
+  "version": "2026.9.0-dev.20260904.0",
+  "source": {
+    "source_tag": "qualification-snapshot/2026.9.0-dev.20260904.0"
+  },
+  "intended_channels": []
+}
+```
+
+The `qualification_predecessor` field is absent. The fragment shows the
+relationship among the reserved values; retain all other required request
+fields. Any other missing-predecessor shape fails planning, and the reserved
+release id and source tag cannot be used by a plan that has a predecessor.
+
+Run the ordinary plan, build, image-finalization, isolated-registry,
+cache, manifest, TUF, timestamp-refresh, and surface-composition steps. Use the
+same release-evidence and image authorities required by the contract. Do not
+run `bootstrap`, `stage`, `qualify`, `qualify-run`, `record`, `promote`,
+`timestamp publish`, or `channel`: those commands reject qualification
+snapshots before a Hub effect. The snapshot does not claim that it passed an
+update from an earlier installation; its purpose is to provide the first exact
+installed source for the candidate's update and rollback cases.
+
+Verify the final bundle offline with independently supplied manifest keys and
+retain the JSON result:
+
+```sh
+aos --json release verify \
+  --bundle qualification-snapshot/bundle \
+  --journal qualification-snapshot/release-journal.jsonl \
+  --trusted-key release-1=/media/trust/release-1.pub \
+  --trusted-key release-2=/media/trust/release-2.pub \
+  > qualification-snapshot-verification.json
+```
+
+The first public plan copies `verification.release_id` and
+`verification.manifest_digest` into `qualification_predecessor` together with
+the same registry identity. Preserve the closed snapshot bundle, journal,
+verification output, public keys, and source tag. The Linux image executor must
+verify that bundle again and exercise the exact snapshot-to-candidate transition;
+a descriptor without the retained signed bytes is insufficient.
+
 ## Build the frozen package matrix
 
-Record operator-supplied UTC start and completion times and select a new output
-directory:
+Record the UTC start time and select a new output directory. The command
+captures the completion time after realization, repeat-building, and build
+evidence collection finish:
 
 ```sh
 nix run . -- release build \
   --plan release-plan.json \
   --output release-build \
-  --started-at 2026-09-03T10:00:00Z \
-  --completed-at 2026-09-03T12:00:00Z
+  --started-at 2026-09-03T10:00:00Z
 ```
 
 The command realizes the exact named outputs from their frozen derivations and
@@ -217,6 +287,37 @@ aos release signer invoke \
 The coordinator checks the request digest, role, operation, key id, provider
 revision, public verification-material digest, and Ed25519 signature. It never
 passes a private-key path to the provider.
+
+### File-backed signer for registries without an HSM
+
+`aos-release-signer` (`nix build .#pkg-aos-release-signer`) implements the
+exchange above for deployments whose private keys are operator-owned files,
+which is the approved custody model for `andyl/testing`. It reads a JSON
+configuration named by `AOS_RELEASE_SIGNER_CONFIG` or `--config` that maps
+each public key id to a private-key file, the roles it may serve, and the
+verification identity the coordinator pins. The configuration, private keys,
+and the wrapper that exports the environment variable live in restricted
+deployment storage, never in the repository or the Nix store.
+
+The adapter refuses any request whose provider revision or registry is not in
+its configuration, whose key is not authorized for the requested role, or whose
+payload does not reproduce the request digest. It signs Ed25519 request
+digests and raw payloads in process, produces OpenSSH SSHSIG signatures for the
+`registry` and `provenance` roles from an OpenSSH key whose roster trust line is
+part of the configuration, signs measured-boot PCR policies and recovery
+manifests with RSA, and delegates Authenticode and kernel-module signatures to
+the `sbsign` and `openssl` executables named in its `tools` table. Its
+`verification_material_digest` is always the SHA-256 of the configured public
+file or trust line, so those bytes must be identical to the public copies the
+image assembly and coordinator pin independently.
+
+`aos-release-signer show` prints every configured key's public identity for
+comparison with the public key inventory. `aos-release-signer sign-evidence
+--key-id KEY --payload intent.json --output approval.json` wraps a canonical
+approval payload, such as an `aos.release.registry-bootstrap-intent/v1`
+document, in the `aos.hub.signed-release-evidence/v1` envelope that
+`aos release bootstrap`, `qualify-run --review-receipt`, and
+`channel complete` consume.
 
 ## Finalize each Linux image
 
@@ -285,32 +386,53 @@ Consumers verify the record through the TUF chain and, independently, through
 its embedded signed envelope; the Hub renders it only after verifying that
 envelope against its trusted qualification keys.
 
-## Finalize the isolated registry
+## Prepare and finalize the isolated registry
 
-Prepare canonical `aos.registry-release-transaction/v1` JSON whose entries are
-strictly ordered by build artifact id and whose catalog, store-graph, and policy
-digests describe the complete intended result. The catalog surface includes
-`containers/`; when publishing OCI, calculate the expected digest with the
-exact externally finalized `containers/v1/index.json` sidecar installed. The
-command independently checks every package entry against `build-report.json`
-and binds the sidecar to its Nix signature input and planned system variant. A
-missing, extra, or changed package, version, target, store path, or sidecar
-aborts before the output directory is installed.
+Author the isolated registry once, before review. `prepare-registry` derives
+every entry from the validated build report, obtains the planned provenance
+signatures, installs the exact finalized OCI sidecar, calculates all registry
+surface digests, and writes the canonical
+`aos.registry-release-transaction/v1` review file. It leaves the retained
+registry clone uncommitted at the planned base ref.
+
+```sh
+aos release prepare-registry \
+  --plan release-plan.json \
+  --build-report release-build/evidence/build-report.json \
+  --container-release final-container/container-release.json \
+  --container-signature-input final-container/signature-input.json \
+  --source-registry /srv/aos-registry/authoring \
+  --output /var/lib/aos-release/2026.9.0/registry \
+  --transaction registry-transaction.json \
+  --signer-executable /opt/aos-signers/bin/provider-adapter \
+  --provenance-key provenance-2026=/media/trust/provenance-2026.pub \
+  --provenance-verification-identity provider-provenance-slot
+```
+
+Review the generated transaction and the retained registry diff together. Its
+entries are strictly ordered by build artifact id, and its catalog,
+store-graph, and policy digests bind the complete authored tree. Do not edit or
+regenerate either input after review. Finalization revalidates the plan, build
+report, OCI input, every entry, the store graph, base ref, and all three surface
+digests before it requests either Git signature.
+
+Each package/platform coordinate must contain exactly one `out` output. That
+output remains the installable `store_path`; every additional named output is
+retained in the platform entry's `named_outputs` table and receives its own
+store-graph and static-cache root. Preparation fails closed on a missing,
+duplicate, or mismatched output binding.
 
 ```sh
 aos release finalize-registry \
   --plan release-plan.json \
   --build-report release-build/evidence/build-report.json \
   --transaction registry-transaction.json \
+  --prepared-registry /var/lib/aos-release/2026.9.0/registry \
   --container-release final-container/container-release.json \
   --container-signature-input final-container/signature-input.json \
-  --source-registry /srv/aos-registry/authoring \
-  --output /var/lib/aos-release/2026.9.0/registry \
   --result /var/lib/aos-release/2026.9.0/registry-result.json \
   --signer-executable /opt/aos-signers/bin/provider-adapter \
-  --provenance-key provenance-2026=/media/trust/provenance-2026.pub \
   --registry-key registry-2026=/media/trust/registry-2026.pub \
-  --provenance-verification-identity provider-provenance-slot \
   --registry-verification-identity provider-registry-slot \
   --git-name "AOS Release" \
   --git-email release@aos.andyl.org \
@@ -318,18 +440,17 @@ aos release finalize-registry \
   --git-offset-minutes 0
 ```
 
-The transaction's optional `support` object states the `[support]` tables this
-release writes into `registry.toml`: its own train's entry and, only from the
-newest train, the rolling `default`. Finalization derives the same object from
-the plan's frozen contract and refuses a transaction that differs, and the
-policy digest describes `registry.toml` after those tables are applied. A
-contract that names another train's entry is rejected, so a backport release
-can only extend its own train.
+The generated transaction's optional `support` object states the `[support]`
+tables this release writes into `registry.toml`: its own train's entry and,
+only from the newest train, the rolling `default`. Both commands derive the
+same object from the plan's frozen contract, and the policy digest describes
+`registry.toml` after those tables are applied. A contract that names another
+train's entry is rejected, so a backport release can only extend its own train.
 
-Omit both container arguments for a release with no OCI artifact; finalization
-removes any prior release's fixed-path sidecar from the new signed tree.
-Supplying only one is invalid. The sidecar definition must be either the
-compatibility alias `containerImages.aos` with exactly one planned image
+Omit both container arguments from both commands for a release with no OCI
+artifact; preparation removes any prior release's fixed-path sidecar from the
+new tree. Supplying only one is invalid. The sidecar definition must be either
+the compatibility alias `containerImages.aos` with exactly one planned image
 variant, or the preferred
 `systems.<planned-variant>.build.containers.aos` identity.
 
@@ -342,7 +463,7 @@ single-signature DSSE and Git formats cannot honestly represent a larger
 threshold, so the command rejects one rather than counting repeated signatures
 outside the signed object.
 
-For provenance, the provider signs the exact DSSE PAE bytes in the
+During preparation, the provider signs the exact provenance DSSE PAE bytes in the
 `aos-package-provenance-dsse-v1` SSHSIG namespace. For the commit and tag it
 signs Git's exact unsigned object payload in the `git` namespace. The
 coordinator verifies request binding, public-material identity, provider
@@ -351,13 +472,13 @@ also checks the provenance trust line against the active, non-revoked
 `keys.toml` entry before authoring.
 
 The source registry must be clean at the exact plan base and must not already
-contain the release tag. The output and result must not exist. Entries may
-write catalog, documentation, provenance, transparency, and store-graph files,
-but may not move a ref. Only after the full catalog, store graph, and expected
-surface digests pass does the transaction atomically install the isolated
-directory, create one signed commit and annotated tag, and generate its static
-origin surface. No authoring ref, Hub object, channel, or private key path is
-modified by this command.
+contain the release tag. The output, transaction, and result paths must not
+exist. Entry authoring may write catalog, documentation, provenance,
+transparency, and store-graph files, but may not move a ref. Preparation
+atomically installs the complete uncommitted directory. Finalization operates
+on those reviewed bytes, creates one signed commit and annotated tag, and
+generates its static origin surface. Neither command modifies the authoring
+ref, a Hub object, a channel, or a private key path.
 
 ## Generate and sign the static cache
 
@@ -393,19 +514,63 @@ signed, and existing output paths are never replaced.
 
 ## Close and sign the bundle
 
-Assemble a payload directory containing every regular file named by the
-unsigned `aos.release.manifest/v1` payload except `release-plan.json`; the
-coordinator installs the exact plan itself. The payload includes package NARs,
-signed narinfos, registry objects and catalog data, documentation, provenance,
-source and license material, SBOM and gate evidence, and both finalized Linux
-image sets. It must not contain `release-plan.json`, `release-manifest.json`, a
-link, alias, or special file.
+Before closing the bundle, prepare a reviewed canonical advisory disposition.
+It binds the exact plan and SBOM, identifies each public advisory snapshot used
+for review, and must contain no unresolved release blockers:
+
+```json
+{"authority_id":"release-security-review","plan_digest":"sha256:...","reviewed_at":"2026-09-03T13:30:00Z","sbom_digest":"sha256:...","schema_version":"aos.release.advisory-disposition/v1","sources":[{"name":"osv","snapshot":"sha256:..."}],"unresolved_advisories":[]}
+```
+
+Run the assembler against the exact build, signed cache, finalized registry,
+image, and container outputs:
+
+```sh
+aos release assemble \
+  --plan release-plan.json \
+  --build-report release-build/evidence/build-report.json \
+  --sbom release-build/evidence/sbom.spdx.json \
+  --contributor-authorization contributor-authorization.json \
+  --advisory-disposition advisory-disposition.json \
+  --cache /var/lib/aos-release/2026.9.0/cache \
+  --cache-key cache-2026=/media/trust/cache-2026.pub \
+  --registry /var/lib/aos-release/2026.9.0/registry \
+  --registry-result /var/lib/aos-release/2026.9.0/registry-result.json \
+  --image-set /var/lib/aos-release/2026.9.0/x86_64-linux/finalized \
+  --image-set /var/lib/aos-release/2026.9.0/aarch64-linux/finalized \
+  --container final-container \
+  --completed-at 2026-09-03T14:00:00Z \
+  --output release-assembled
+```
+
+Omit `--container` only when the qualification contract has no applicable
+container target. The command verifies every narinfo signature, compressed-file
+identity, decompressed NAR hash, and complete reference closure. It copies a
+distinct NAR for every planned logical artifact id, verifies registry
+finalization identities, checks finalized image sets and the complete OCI graph
+against the exact sidecar committed into that registry, and derives the exact
+build-phase qualification observation. It emits
+`release-assembled/payload/` and
+`release-assembled/release-manifest-payload.json` atomically without replacing
+an existing path.
+
+The payload includes package NARs, signed narinfos, registry objects,
+provenance, source and license material, the SBOM, build evidence, and finalized
+Linux image and OCI artifacts. It does not contain `release-plan.json` or
+`release-manifest.json`; the finalizer installs the exact plan itself. Links,
+aliases, special files, incomplete closures, unresolved advisories, and bytes
+that differ from a finalized input stop assembly.
+
+Every `package-nar` record must point to its exact signed `narinfo` record with
+an `authenticated-by` relationship. Its outbound relationship graph also names
+the dependency NARs and their narinfos needed for public closure verification;
+qualification downloads that complete transitive graph from the public Hub.
 
 ```sh
 aos release finalize \
   --plan release-plan.json \
-  --payload release-payload \
-  --manifest-payload release-manifest-payload.json \
+  --payload release-assembled/payload \
+  --manifest-payload release-assembled/release-manifest-payload.json \
   --journal release-build/release-journal.jsonl \
   --signing-key release-1=/media/trust/release-1.pub \
   --signing-key release-2=/media/trust/release-2.pub \
@@ -639,12 +804,27 @@ Each adapter reads one canonical request from standard input and writes one
 canonical `aos.release.qualification-executor-response/v1` object to standard
 output. Successful adapters must not write diagnostics. They download every
 object they exercise from the anonymous URLs in the request and verify the
-declared length and SHA-256 before testing it.
+declared length and SHA-256 before testing it. Version 3 update requests also
+carry a separate inventory of exact objects from the locally retained,
+offline-verified predecessor bundle. The executor recaptures those files into
+its private attempt directory and checks their lengths and hashes before the
+image scenario can use them.
+
+Run `aos release qualification cases` first and retain its
+`environment_profile_digests`. Review the compatibility scope and sources for
+each required target, then install the canonical assessment object as
+`/etc/aos-release/qualification-assessments/<target-id>.json` on the applicable
+Linux executor host. The built-in container lifecycle program refuses a
+missing, symlinked, or scope-mismatched assessment and records its own concrete
+execution inventory. Install the matching `qualification-executor-<platform>`
+flake output rather than copying an individual scenario script without its
+closure.
 
 ```sh
 aos release qualify-run \
   --bundle release-bundle \
   --staging-receipt release-staging/staging-receipt.json \
+  --predecessor-bundle /srv/aos-release/qualification-snapshot/bundle \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --hub-receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
   --executor x86_64-linux=/run/aos-release/executors/x86_64-linux \
@@ -667,8 +847,13 @@ aos release qualify-run \
 
 Both nonce values are single-use operator inputs. The plan must name a distinct
 `qualification` signer role with exactly the public key supplied above. The
-collection command retains each machine-readable executor report and the canonical
-aggregate report. Review those exact bytes, then repeat the command with
+predecessor bundle path must be absolute. `qualify-run` verifies its complete
+signed closure against `--trusted-key` and the plan's exact predecessor
+registry, release ID, and manifest digest before starting any executor. Supply
+it while collecting observations; omit it when admitting a reviewed report
+with `--report-input`. The collection command retains each machine-readable
+executor report and the canonical aggregate report. Review those exact bytes,
+then repeat the command with
 `--report-input qualification-prepared/qualification-report.json`,
 `--review-receipt approvals/review.json`, and `--output qualification`, omitting
 `--prepare-only`. Repeat review receipts to satisfy the planned threshold.

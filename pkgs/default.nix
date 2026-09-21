@@ -1,11 +1,12 @@
 ##! ANDYL OS — Package set composition.
 ##! Imports all package definitions and wires dependencies together.
-##! The stdenv argument provides the production toolchain (GCC 14.3.0) and all
+##! The stdenv argument provides the production toolchain (GCC 16.2.0) and all
 ##! build infrastructure. All packages are built hermetically from source — no nixpkgs.
 {
   lib,
   stdenv,
   buildPackages ? null,
+  firmwarePackages ? null,
   targetPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
@@ -127,6 +128,20 @@
         // extra;
     };
   withDefaultMaintainers = withDistributionMeta {};
+
+  # Bootstrap tools retain their audited derivations, but need the same public
+  # metadata as their target builds. Never attach a different source version.
+  withBootstrapPublication = name: let
+    # Read only the declaration: realizing the target derivation here would
+    # recurse through the very bootstrap tools whose metadata we are filling.
+    package = callPackage (./base + "/${name}.nix") {
+      mkDerivation = attrs: attrs;
+    };
+    bootstrap = stdenv.${name};
+    version = (builtins.parseDrvName bootstrap.name).version;
+  in
+    assert version == package.version;
+      (withDistributionMeta package.meta bootstrap) // {inherit version;};
 
   exposeRenderer = import ./build-support/_expose-renderer.nix {
     inherit lib;
@@ -374,10 +389,17 @@
         configModuleDependencies = preparedConfigModule.dependencyOutputs;
       }
       else {};
-    darwinCrossPhases = builtins.map (
+    crossFixupPhase =
+      if stdenv.hostPlatform.objectFormat == "macho"
+      then phases.darwinCrossFixupPhase
+      else phases.crossElfFixupPhase;
+    crossPhases = builtins.map (
       phase:
-        if builtins.isAttrs phase && (phase.name or null) == "fixup"
-        then phases.darwinCrossFixupPhase
+        if
+          builtins.isAttrs phase
+          && (phase.name or null) == "fixup"
+          && (phase.script or null) == phases.fixupPhase.script
+        then crossFixupPhase
         else phase
     ) (args.phases or []);
     lowerArgs =
@@ -399,9 +421,11 @@
         args
         ? phases
         && stdenv.buildPlatform.system != stdenv.hostPlatform.system
-        && stdenv.hostPlatform.objectFormat == "macho"
       ) {
-        phases = darwinCrossPhases;
+        # Phase-generating language builders embed the shared fixup record.
+        # Replace only that exact implementation so package-authored phases
+        # that happen to use the same name retain their behavior.
+        phases = crossPhases;
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;
@@ -468,14 +492,13 @@
           stdenv.coreutils
           stdenv.tar
           stdenv.gzip
+          resolvedBuildPackages.xz
+          stdenv.patch
           stdenv.bash
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -494,12 +517,9 @@
           stdenv.gzip
           stdenv.bash
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -538,12 +558,9 @@
           stdenv.findutils
           resolvedBuildPackages.git
         ];
-        extraLibPaths =
-          [
-            resolvedBuildPackages.openssl
-            resolvedBuildPackages.zlib
-          ]
-          ++ (args.extraLibPaths or []);
+        # Packaged fetch tools resolve their own runtime libraries. Retain an
+        # explicit caller override without imposing one on every subprocess.
+        extraLibPaths = args.extraLibPaths or [];
       }
     );
 
@@ -651,6 +668,15 @@
             else f
           )
         );
+    };
+
+  # Language builders consume dependency source bundles in addition to the
+  # package's primary source. Keep both in the release evidence contract even
+  # though these evaluation-only attributes do not enter the runtime closure.
+  appendEvidenceSources = passthru: sources:
+    passthru
+    // {
+      evidenceSources = (passthru.evidenceSources or []) ++ sources;
     };
 
   mkCargoPackage = args: let
@@ -801,7 +827,12 @@
               )
               ++ (args.buildDeps or []);
             phases = phases.cargoPhases cargoArgs;
-            passthru = (args.passthru or {}) // {inherit cargoArtifactContract;};
+            passthru =
+              appendEvidenceSources (args.passthru or {}) [
+                args.src
+                args.cargoDeps
+              ]
+              // {inherit cargoArtifactContract;};
             # Cargo's JSON messages and restored target metadata contain
             # source paths by design. None of those build-only roots may
             # survive in an ordinary package output. Keep artifact-producing
@@ -825,6 +856,7 @@
         installBins = false;
         installLibs = false;
         installCargoArtifacts = true;
+        passthru = (args.passthru or {}) // {isCargoArtifacts = true;};
         doCheck = false;
         dontStrip = true;
         dontPatchELF = true;
@@ -869,6 +901,10 @@
         // {
           buildDeps = [resolvedBuildPackages.go] ++ (args.buildDeps or []);
           phases = phases.goPhases goArgsWithDefaults;
+          passthru = appendEvidenceSources (args.passthru or {}) (
+            [args.src]
+            ++ lib.optional ((args.goModules or null) != null) args.goModules
+          );
           # Guard: the Go toolchain must not leak into the runtime closure.
           # -trimpath (in goPhases) prevents source-path embedding; this
           # disallowedReferences catches any residual leak at build time.
@@ -951,6 +987,10 @@
             ]
             ++ tools
             ++ (args.buildDeps or []);
+          passthru = appendEvidenceSources (args.passthru or {}) [
+            args.src
+            deps
+          ];
           phases = phases.bazelPhases {
             bazelDeps = deps;
             inherit bazel jdk tools;
@@ -983,6 +1023,7 @@
     "tar"
     "gzip"
     "patch"
+    "cmake"
   ];
   targetPackageArgumentProxy = name: {
     type = "derivation";
@@ -997,7 +1038,8 @@
   };
   packageArgumentScope =
     self
-    // lib.optionalAttrs stdenv.hostPlatform.isDarwin (
+    // {inherit firmwarePackages;}
+    // lib.optionalAttrs stdenv.isCross (
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
@@ -1129,6 +1171,58 @@
     bash = self.bash;
     zlib = self.zlib;
   };
+  linuxHostedBinutils = import ./toolchain/_linux-hosted-binutils.nix {
+    inherit mkDerivation fetchurl stdenv buildPackages;
+    bash = self.bash;
+    zlib = self.zlib;
+  };
+  linuxHostedGlibc = import ./toolchain/_linux-hosted-glibc.nix {
+    inherit mkDerivation stdenv buildPackages;
+    inherit (self) bash perl;
+  };
+  linuxHostedGcc = import ./toolchain/_linux-hosted-gcc.nix {
+    inherit mkDerivation stdenv buildPackages;
+    bash = self.bash;
+    binutils = linuxHostedBinutils;
+  };
+  linuxHostedCc = import ./toolchain/_linux-hosted-cc.nix {
+    inherit lib stdenv buildPackages;
+    bash = self.bash;
+    gcc = linuxHostedGcc;
+    binutils = linuxHostedBinutils;
+  };
+  linuxTargetGccLibs = mkDerivation {
+    pname = "gcc-libs";
+    inherit (stdenv.gccRuntime) version;
+    src = null;
+    runtimeDeps = [stdenv.gccRuntime];
+    propagatedDeps = [];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          ln -s ${stdenv.gccRuntime}/lib "$out/lib"
+        '';
+      }
+    ];
+    passthru = {
+      evidenceSources = stdenv.gccRuntime.passthru.evidenceSources;
+      # The public package forwards these separately realized runtime libraries.
+      evidenceRuntimePackages = [
+        (stdenv.gccRuntime
+          // {
+            pname = "gcc-runtime";
+            meta.license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          })
+      ];
+    };
+    meta = {
+      description = "GCC runtime shared libraries (libstdc++.so, libgcc_s.so)";
+      homepage = "https://gcc.gnu.org/";
+      license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+    };
+  };
   darwinDtraceCompiler = import ./darwin/_darwin-dtrace-compiler.nix {
     inherit mkDerivation fetchurl;
     llvm = resolvedBuildPackages.llvm;
@@ -1213,6 +1307,7 @@
     "aos-landlock"
     "aos-recovery"
     "aos-registry-server"
+    "aos-release-signer"
     "aos-secret-reference-test"
     "aos-selinux-run"
     "aos-service-root"
@@ -1369,6 +1464,15 @@
     units = builtins.sort (left: right: left.unitId < right.unitId) maintenanceUnits;
   };
 
+  # All Linux QEMU variants enable compressed disk-image support when bzip2
+  # is found. Retain that target library through runtime-reference scrubbing.
+  mkQemuPackage = args: let
+    package = callPackage ./emulation/qemu.nix args;
+  in
+    if stdenv.isCross && stdenv.hostPlatform.isLinux
+    then package.overrideAttrs (previous: {runtimeDeps = previous.runtimeDeps ++ [self.bzip2];})
+    else package;
+
   self =
     {
       # --- Plumbing ---
@@ -1394,7 +1498,7 @@
       nuke-references = import ../lib/build-support/nuke-references {
         mkDerivation = args:
           withDefaultMaintainers (rawMkDerivation args);
-        inherit (self) bash gawk sed;
+        inherit (self) bash coreutils grep sed;
       };
     }
     // discoveredPackages
@@ -1428,7 +1532,33 @@
       nvidiaOpenForKernel = kernel:
         callPackage ./kernel/nvidia-open.nix {inherit kernel;};
 
-      qemu-crucible = callPackage ./emulation/qemu.nix {
+      qemu = let
+        package = mkQemuPackage {};
+      in
+        if stdenv.isCross && stdenv.hostPlatform.isLinux
+        then
+          package.overrideAttrs (previous: {
+            # Linux-user emulation needs UAPI families such as sound/, beyond
+            # the linux/ and asm/ headers exported by the target glibc output.
+            # An explicit include preserves the target header identity instead
+            # of treating these non-executable inputs as native build tools.
+            phases = map (phase:
+              if phase.name == "configure"
+              then
+                phase
+                // {
+                  script =
+                    ''
+                      export C_INCLUDE_PATH="${stdenv.linuxHeaders}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+                    ''
+                    + phase.script;
+                }
+              else phase)
+            previous.phases;
+          })
+        else package;
+
+      qemu-crucible = mkQemuPackage {
         pname = "qemu-crucible";
         enablePlugins = true;
         applyCruciblePatch = true;
@@ -1442,7 +1572,7 @@
         testOnlyNonDistributable = true;
         fullUpstreamTestSuiteOnly = true;
       };
-      qemu-crucible-reference = callPackage ./emulation/qemu.nix {
+      qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
         enablePlugins = true;
         applyCruciblePatch = false;
@@ -1485,21 +1615,31 @@
       gcc =
         (withDistributionMeta {
             description = "GNU Compiler Collection with AOS target and runtime defaults";
+            homepage = "https://gcc.gnu.org/";
             license = "GPL-3.0-or-later WITH GCC-exception-3.1";
           }
           (
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            # Preserve the public package identity so build dependencies
+            # resolve to native GCC rather than the target-hosted wrapper.
+            then linuxHostedCc // {pname = "gcc";}
             else stdenv.gcc
           ))
-        // {version = "14.3.0";};
+        // {version = "16.2.0";};
       glibc =
         (withDistributionMeta {
             description = "GNU C Library for the AOS target runtime";
+            homepage = "https://www.gnu.org/software/libc/";
             license = "LGPL-2.1-or-later";
           }
           (
-            stdenv.glibc
+            (
+              if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedGlibc
+              else stdenv.glibc
+            )
             // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
               dev = stdenv.glibc;
               static = stdenv.glibc;
@@ -1514,6 +1654,8 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinBinutils
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedBinutils
             else stdenv.binutils
           ))
         // {version = "2.41.0";};
@@ -1528,11 +1670,13 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinCc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedCc
             else stdenv.cc
           ))
         // {version = "0.1.0";};
-      # The unwrapped gcc-14.3.0-stage2. `pkgs.gcc` is the wrapped
-      # gcc-14.3.0-wrapped; the perl Config scrub needs to substitute
+      # The unwrapped gcc-16.2.0-stage2. `pkgs.gcc` is the wrapped
+      # gcc-16.2.0-wrapped; the perl Config scrub needs to substitute
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
       gccUnwrapped =
@@ -1543,79 +1687,87 @@
           (
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
+            else if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then linuxHostedGcc
             else if stdenv ? gccStage2
             then stdenv.gccStage2
             else stdenv.gcc
           ))
-        // {version = "14.3.0";};
+        // {version = "16.2.0";};
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
+        else if stdenv.isCross && stdenv.hostPlatform.isLinux
+        then withDefaultMaintainers linuxTargetGccLibs
         else discoveredPackages.gcc-libs;
       getent =
         (withDistributionMeta {
             description = "Name service database lookup utility from GNU C Library";
+            homepage = "https://www.gnu.org/software/libc/";
             license = "LGPL-2.1-or-later";
           }
           (lib.getOutput "getent" stdenv.glibc))
-        // {version = "2.39.0";};
-      # Native package sets retain the final stdenv tools. Darwin package roots
-      # must be actual target builds; Linux build tools remain available only
-      # through buildPackages and build-dependency splicing.
+        // {
+          version = "2.39.0";
+          passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
+        };
+      # Native package sets retain the final stdenv tools. Cross package roots
+      # must be actual target builds; scheduler-native tools remain available
+      # only through buildPackages and build-dependency splicing.
       bash = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.bash
-        else stdenv.bash
+        else withBootstrapPublication "bash"
       );
       coreutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.coreutils
-        else stdenv.coreutils
+        else withBootstrapPublication "coreutils"
       );
       gnumake = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gnumake
-        else stdenv.gnumake
+        else withBootstrapPublication "gnumake"
       );
       sed = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.sed
-        else stdenv.sed
+        else withBootstrapPublication "sed"
       );
       grep = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.grep
-        else stdenv.grep
+        else withBootstrapPublication "grep"
       );
       findutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.findutils
-        else stdenv.findutils
+        else withBootstrapPublication "findutils"
       );
       gawk = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gawk
-        else stdenv.gawk
+        else withBootstrapPublication "gawk"
       );
       diffutils = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.diffutils
-        else stdenv.diffutils
+        else withBootstrapPublication "diffutils"
       );
       tar = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.tar
-        else stdenv.tar
+        else withBootstrapPublication "tar"
       );
       gzip = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.gzip
-        else stdenv.gzip
+        else withBootstrapPublication "gzip"
       );
       patch = withDefaultMaintainers (
-        if stdenv.hostPlatform.isDarwin
+        if stdenv.isCross
         then discoveredPackages.patch
-        else stdenv.patch
+        else withBootstrapPublication "patch"
       );
     }
     # --- Trivial builders, exposed flat on the package set ---

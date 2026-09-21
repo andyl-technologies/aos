@@ -22,7 +22,7 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
             kind,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::SearchPackageDocumentationResponse>(
                 printer,
                 &client,
@@ -66,7 +66,7 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
             contributable,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListPackageOptionsResponse>(
                 printer,
                 &client,
@@ -94,7 +94,7 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
             to,
             platform,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let response: hub_types::ComparePackageDocumentationResponse = client
                 .call_topology(
                     HubTopologyMethod::ComparePackageDocumentation,
@@ -218,7 +218,8 @@ async fn fetch_documentation(
     version: Option<&str>,
     platform: Option<&str>,
 ) -> Result<hub_types::GetPackageDocumentationResponse> {
-    hub_client(&access.hub, access.token.as_deref())?
+    hub_client(&access.hub, access.token.as_deref())
+        .await?
         .call_topology(
             HubTopologyMethod::GetPackageDocumentation,
             &hub_types::GetPackageDocumentationRequest {

@@ -51,6 +51,15 @@
       '';
     };
 
+    # Root permissions belong to the immutable image. The stock rule chmods
+    # / to 0555, which fails on the read-only mount and prevents activation
+    # from reconciling services after applying their new configuration.
+    environment.etc."tmpfiles.d/root.conf" = {
+      text = ''
+        # Masked by modules/base/tmpfiles.nix; AOS mounts the image root read-only.
+      '';
+    };
+
     # Route cryptsetup's shipped tmpfiles drop-in into /etc/tmpfiles.d/
     # via symlink so upstream rule changes flow through automatically
     # on the next cryptsetup bump.

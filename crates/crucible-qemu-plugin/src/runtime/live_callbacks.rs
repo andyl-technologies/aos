@@ -307,7 +307,6 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         let callback_state = state
             .as_mut()
             .prepare_live_vcpu_time_state(
-                self.plugin_id,
                 self.execution_model.smp_vcpus(),
                 args.slot(),
                 args.fault_node_hash(),
@@ -680,7 +679,6 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     quiescence: Arc<LiveCallbackQuiescence>,
     teardown_router: Arc<LiveRuntimeTeardownRouter>,
     shared_shutdown_signaled: AtomicBool,
-    _plugin_id: QemuPluginId,
     icount_raw: QemuIcountRawFn,
     force_vcpu_exit: QemuForceVcpuExitFn,
     idle_wake_wait: QemuIdleWakeWait,
@@ -960,13 +958,12 @@ impl LiveVcpuTimeCallbackState {
         Ok(ceiling_icount)
     }
 
-    // crucible-lint: allow rust-allow -- construction binds the fixed QEMU identity, clock, mapping, and slot capabilities.
+    // crucible-lint: allow rust-allow -- construction binds the fixed QEMU clock, mapping, and slot capabilities.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the constructor binds one fixed QEMU identity, clock, mapping header, and node slot"
+        reason = "the constructor binds one fixed QEMU clock, mapping header, and node slot"
     )]
     pub(super) fn new(
-        plugin_id: QemuPluginId,
         icount_raw: QemuIcountRawFn,
         force_vcpu_exit: QemuForceVcpuExitFn,
         idle_wake_wait: QemuIdleWakeWait,
@@ -1016,7 +1013,6 @@ impl LiveVcpuTimeCallbackState {
             quiescence,
             teardown_router,
             shared_shutdown_signaled: AtomicBool::new(false),
-            _plugin_id: plugin_id,
             icount_raw,
             force_vcpu_exit,
             idle_wake_wait,

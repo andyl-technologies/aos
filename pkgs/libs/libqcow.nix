@@ -42,11 +42,11 @@ in
       {
         name = "configure";
         script =
-          if stdenv.isCross && stdenv.hostPlatform.isDarwin
+          if stdenv.isCross
           then ''
             # This capability is true for the same AOS OpenSSL in the
             # native build, but Autoconf otherwise tries to execute the
-            # Darwin probe binary while cross compiling.
+            # target probe binary while cross compiling.
             export ac_cv_openssl_xts_duplicate_keys=yes
             ./configure \
               $configureFlags \

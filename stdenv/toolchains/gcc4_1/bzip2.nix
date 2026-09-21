@@ -31,10 +31,14 @@ in
         cd bzip2-1.0.6
         chmod -R u+w .
 
-        make \
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} .
+
+        make SHELL="${prev.bash}/bin/bash" \
           CC="${gcc}/bin/gcc -static" \
           CFLAGS="-O2 -I${glibc}/include -D_FILE_OFFSET_BITS=64" \
-          LDFLAGS="-L${glibc}/lib -static -Wl,--whole-archive ${glibc}/lib/libnss_files.a ${glibc}/lib/libnss_dns.a ${glibc}/lib/libresolv.a -Wl,--no-whole-archive -Wl,--defsym=__res_iclose=0 -Wl,-u,dl_iterate_phdr" \
+          LDFLAGS="-L${glibc}/lib -static -Wl,--whole-archive ${glibc}/lib/libnss_files.a ${glibc}/lib/libnss_dns.a ${glibc}/lib/libresolv.a -Wl,--no-whole-archive -Wl,-u,dl_iterate_phdr" \
           PREFIX="$out" \
           -j"$NIX_BUILD_CORES" \
           bzip2 bzip2recover

@@ -7,6 +7,8 @@
   pkg-config,
   hwdata,
   zlib,
+  lib,
+  stdenv,
 }: let
   version = "0.19";
 in
@@ -55,7 +57,12 @@ in
         name = "install";
         script = ''
           PYTHONPATH="${meson}/lib/python3/site-packages" \
-            ninja -C build install
+            ninja -C build install${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+
+            # Meson's cross installation drops the compiler's library RPATH.
+            # Retain zlib so copied consumers can resolve this dependency.
+            patchelf --add-rpath "${zlib}/lib" "$out/lib/libpciaccess.so"
+          ''}
         '';
       }
     ];

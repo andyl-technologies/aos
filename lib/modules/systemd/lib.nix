@@ -689,12 +689,17 @@ in rec {
         requiredBy = [];
         upheldBy = [];
         jobScriptKeys = [];
-        externalEntry = {
-          kind = "symlink";
+        externalEntry = let
           target =
             if entry.root == upstreamRoot
             then entry.upstreamTarget
             else entry.source;
+        in {
+          kind =
+            if hasPrefix "/nix/store/" target
+            then "store-symlink"
+            else "symlink";
+          inherit target;
         };
         inherit (entry) owner;
       })
@@ -855,8 +860,8 @@ in rec {
     placeholders = builtins.map (key: "#aos-jobscript:${key}#") jobScriptKeys;
 
     textEntries = filterAttrs (_path: entry: entry.kind == "text") entries;
-    linkEntries = filterAttrs (_path: entry: entry.kind == "symlink") entries;
-    unsupportedEntries = filterAttrs (_path: entry: !elem entry.kind ["text" "symlink"]) entries;
+    linkEntries = filterAttrs (_path: entry: elem entry.kind ["symlink" "store-symlink"]) entries;
+    unsupportedEntries = filterAttrs (_path: entry: !elem entry.kind ["text" "symlink" "store-symlink"]) entries;
     unitDrvs = mapAttrs (path: entry:
       makeUnit path {
         enable = true;
