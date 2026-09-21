@@ -670,6 +670,7 @@ in
         ROLLOUT_BOOT
           chmod +x "$packageRuntime/libexec/aos-image-rollout-boot"
           mv "$out/bin/aos-registry-snapshot-provider" "$packageRuntime/libexec/"
+          mv "$out/bin/aos-package-attestation-provider" "$packageRuntime/libexec/"
           mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
           mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"
           ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
@@ -693,6 +694,7 @@ in
         test -x "$packageRuntime/libexec/aos-provisioning-configuration-evaluator"
         test -x "$packageRuntime/libexec/aos-image-rollout-boot"
         test -x "$packageRuntime/libexec/aos-registry-snapshot-provider"
+        test -x "$packageRuntime/libexec/aos-package-attestation-provider"
         test -x "$packageRuntime/libexec/aos-image-rollout-observer"
         test -x "$packageRuntime/libexec/aos-image-rollout-provider"
       ''}

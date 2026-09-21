@@ -1150,7 +1150,6 @@ dependencies = [
  "aos-ability-model",
  "aos-contract",
  "aos-net",
- "aos-package",
  "aos-provider-protocol",
  "aos-systemd",
  "hex",

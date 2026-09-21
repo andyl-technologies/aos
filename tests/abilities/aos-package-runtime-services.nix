@@ -54,7 +54,7 @@
     inherit request output;
   };
   profileLifecycle = requests."aos:package-profile-convergence-lifecycle".parameters;
-  quoteLifecycle = requests."systemd:aos-attest-lifecycle".parameters;
+  quoteLifecycle = requests."aos:aos-attest-lifecycle".parameters;
   snapshotImplementation = enabled.config.aos.abilities.implementations."aos:synchronized-registry-snapshot";
   providedReadinessImplementation =
     providerEnabled.config.aos.abilities.implementations."aos:package-profile-readiness";
@@ -62,8 +62,8 @@ in
   assert !(disabledRequests ? "aos:package-profile-specification");
   assert !(disabledRequests ? "aos:package-profile-readiness");
   assert disabledRequests ? "aos:package-profile-convergence-lifecycle";
-  assert disabledRequests ? "systemd:aos-attest-lifecycle";
-  assert !(initrd.config.aos.abilities.requests ? "systemd:aos-attest-lifecycle");
+  assert disabledRequests ? "aos:aos-attest-lifecycle";
+  assert !(initrd.config.aos.abilities.requests ? "aos:aos-attest-lifecycle");
   assert !(initrd.config.aos.abilities.requests ? "aos:package-profile-readiness");
   assert requests."aos:package-profile-readiness".parameters == "system-profile";
   assert enabled.config.aos.abilities.implementations."aos:package-profile-readiness".providerModule.path
@@ -110,13 +110,16 @@ in
   == [
     {
       executable = {
-        artifact = lib.abilities.packageOutput {package = "systemd";};
-        entry_point = "libexec/aos-systemd-attestation-provider";
+        artifact = lib.abilities.packageOutput {
+          package = "aos";
+          output = "packageRuntime";
+        };
+        entry_point = "libexec/aos-package-attestation-provider";
         arguments = [];
       };
       ignore_failure = false;
     }
   ];
-  assert requests."systemd:aos-attest-dependencies".parameters.prerequisites
+  assert requests."aos:aos-attest-dependencies".parameters.prerequisites
   == [(resultOf "aos:package-profile-readiness" "resource")];
   assert !(enabled.config ? systemd); true
