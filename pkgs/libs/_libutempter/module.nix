@@ -9,26 +9,18 @@
   wrapper = serviceManagement.forProducer {
     consumerInstance = "runtime";
     key = "wrapper-utempter";
-    interface = serviceManagement.interfaces.filesystemEntry;
-    methods = ["materialize" "observe" "release"];
+    interface = serviceManagement.interfaces.privilegedExecutable;
+    methods = ["observe"];
     parameters = {
       name = "utempter";
-      entry = {
-        kind = "copied-file";
-        source = {
-          kind = "artifact-file";
-          reference = {
-            artifact = lib.abilities.packageOutput {};
-            path = "lib/utempter/utempter";
-          };
-        };
-        maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
+      source = {
+        artifact = lib.abilities.packageOutput {};
+        path = "lib/utempter/utempter";
       };
-      destination = "/run/wrappers/bin/utempter";
       owner = "root";
       group = "utmp";
       mode = "2711";
-      prerequisites = [(lib.abilities.resultOf "aos:wrapper-bin" "resource")];
+      maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
     };
   };
   contribution = serviceManagement.splitContribution wrapper;

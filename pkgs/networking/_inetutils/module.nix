@@ -13,26 +13,18 @@
     serviceManagement.forProducer {
       consumerInstance = "runtime";
       key = "wrapper-${name}";
-      interface = serviceManagement.interfaces.filesystemEntry;
-      methods = ["materialize" "observe" "release"];
+      interface = serviceManagement.interfaces.privilegedExecutable;
+      methods = ["observe"];
       parameters = {
         inherit name;
-        entry = {
-          kind = "copied-file";
-          source = {
-            kind = "artifact-file";
-            reference = {
-              artifact = lib.abilities.packageOutput {};
-              path = "bin/${name}";
-            };
-          };
-          maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
+        source = {
+          artifact = lib.abilities.packageOutput {};
+          path = "bin/${name}";
         };
-        destination = "/run/wrappers/bin/${name}";
         owner = "root";
         group = "root";
         mode = "4755";
-        prerequisites = [(lib.abilities.resultOf "aos:wrapper-bin" "resource")];
+        maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
       };
     };
   contributions = builtins.map serviceManagement.splitContribution [
