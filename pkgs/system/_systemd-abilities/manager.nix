@@ -71,7 +71,7 @@
       inherit (config.system.build.systemdMaterializationData) etc jobScripts;
     };
     renderPlan = plan:
-      runCommand plan.name {
+      runCommand (builtins.unsafeDiscardStringContext plan.name) {
         realization = plan.input;
         passAsFile = ["realization"];
       } ''
