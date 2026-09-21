@@ -153,7 +153,7 @@ impl AosClient {
 
         // First, get a JWT token via the auth service (unauthenticated call).
         let initial_config =
-            ClientConfig::new(base_uri.clone()).default_timeout(Duration::from_secs(30));
+            ClientConfig::new(base_uri.clone()).with_default_timeout(Duration::from_secs(30));
         let auth_client = AuthServiceClient::new(http.clone(), initial_config);
 
         let token_resp = auth_client
@@ -168,8 +168,8 @@ impl AosClient {
 
         // Build authenticated config, reusing the already-parsed URI.
         let config = ClientConfig::new(base_uri)
-            .default_timeout(Duration::from_secs(300))
-            .default_header("authorization", format!("Bearer {access_token}"));
+            .with_default_timeout(Duration::from_secs(300))
+            .with_default_header("authorization", format!("Bearer {access_token}"));
 
         Ok(Self {
             cache: CacheServiceClient::new(http.clone(), config.clone()),
@@ -197,8 +197,8 @@ impl AosClient {
         let http = make_http_client(base_url);
 
         let config = ClientConfig::new(base_uri)
-            .default_timeout(Duration::from_secs(300))
-            .default_header("authorization", format!("Bearer {jwt_token}"));
+            .with_default_timeout(Duration::from_secs(300))
+            .with_default_header("authorization", format!("Bearer {jwt_token}"));
 
         Ok(Self {
             cache: CacheServiceClient::new(http.clone(), config.clone()),
@@ -290,7 +290,8 @@ impl AosClient {
     pub async fn upload(&self, store_hash: &str, nar_data: &[u8]) -> Result<String> {
         validate_store_hash(store_hash)?;
 
-        const CHUNK_SIZE: usize = 5 * 1024 * 1024; // 5 MB
+        // Leave room for protobuf metadata below the RPC message-size limit.
+        const CHUNK_SIZE: usize = 1024 * 1024;
 
         let view = &self.view;
         let total_len = nar_data.len();
@@ -307,11 +308,19 @@ impl AosClient {
             }
         });
 
-        let resp = self
-            .cache
-            .upload(chunks)
-            .await
-            .map_err(|e| anyhow::anyhow!("upload failed: {e}"))?;
+        // The RPC stream owns its channel while the producer borrows the input.
+        // Backpressure limits queued data without copying the entire payload.
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let produce = async move {
+            for chunk in chunks {
+                if sender.send(chunk).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let stream = tokio_stream::wrappers::ReceiverStream::new(receiver);
+        let (_, response) = tokio::join!(produce, self.cache.upload(stream));
+        let resp = response.map_err(|e| anyhow::anyhow!("upload failed: {e}"))?;
 
         Ok(resp.into_owned().store_path)
     }
@@ -346,7 +355,7 @@ impl AosClient {
             .await
             .map_err(|e| anyhow::anyhow!("download stream error: {e}"))?
         {
-            let data: &[u8] = chunk.data;
+            let data: &[u8] = chunk.data();
             all_data.extend_from_slice(data);
         }
 
@@ -365,7 +374,8 @@ impl AosClient {
     /// Returns an error if the streaming `CacheService.UploadPack` RPC
     /// fails.
     pub async fn upload_pack(&self, pack_data: &[u8]) -> Result<Vec<String>> {
-        const CHUNK_SIZE: usize = 5 * 1024 * 1024;
+        // Leave room for protobuf metadata below the RPC message-size limit.
+        const CHUNK_SIZE: usize = 1024 * 1024;
 
         let view = &self.view;
         let total_len = pack_data.len();
@@ -380,11 +390,19 @@ impl AosClient {
             }
         });
 
-        let resp = self
-            .cache
-            .upload_pack(chunks)
-            .await
-            .map_err(|e| anyhow::anyhow!("upload_pack failed: {e}"))?;
+        // The RPC stream owns its channel while the producer borrows the input.
+        // Backpressure limits queued data without copying the entire payload.
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let produce = async move {
+            for chunk in chunks {
+                if sender.send(chunk).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let stream = tokio_stream::wrappers::ReceiverStream::new(receiver);
+        let (_, response) = tokio::join!(produce, self.cache.upload_pack(stream));
+        let resp = response.map_err(|e| anyhow::anyhow!("upload_pack failed: {e}"))?;
 
         Ok(resp.into_owned().paths)
     }
