@@ -105,6 +105,10 @@
         needle = "cargoNextestOpenFilesLimit = 4096;";
       }
       {
+        label = "bounded controller Nextest failure diagnostics";
+        needle = ''nextestFlags = "--show-progress=none --color=never --status-level=fail --final-status-level=fail --failure-output=final";'';
+      }
+      {
         label = "bounded Nextest ceiling recorded in build metadata";
         needle = "cargo_nextest_open_files_limit=4096";
       }

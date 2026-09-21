@@ -192,6 +192,9 @@
     # inventory, so raise only the soft descriptor ceiling. This does not
     # change Cargo, Nix, or Ninja parallelism.
     cargoNextestOpenFilesLimit = 4096;
+    # Nix builders expose a pseudo-terminal. Disable interactive redraws and
+    # leave the failed test and its captured output at the end of the log.
+    nextestFlags = "--show-progress=none --color=never --status-level=fail --final-status-level=fail --failure-output=final";
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
