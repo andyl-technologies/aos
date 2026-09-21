@@ -5,13 +5,13 @@
 //! This dual-licensed L1 crate implements independently implementable framing,
 //! versioned codecs, and golden vectors over owned buffers, without QEMU headers,
 //! callbacks, native pointers, or private types. Its Unix descriptor handover
-//! attaches the shared-memory, wake, and immutable version-negotiated plugin
+//! attaches the shared-memory, wake, and immutable version-matched plugin
 //! plan descriptors to the setup frame.
 //!
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
-//! `app_random_branch_plan` owns the legacy sealed branch-plan body;
+//! `app_random_branch_plan` owns the sealed branch-sequence body;
 //! `app_random_transport` owns the app-random observation transport;
 //! `choice` owns the portable typed choice values carried by selectable
 //! registration and reply bodies;
@@ -141,9 +141,7 @@ pub const MAX_PAYLOAD_SIZE: u32 = MAX_FRAME_SIZE - FRAME_TAG_SIZE as u32;
 pub const FRAME_LENGTH_INCLUDES_TAG: bool = true;
 /// Whether all multi-byte integers in frame payloads use big-endian order.
 pub const FRAME_INTEGERS_ARE_BIG_ENDIAN: bool = true;
-/// Lowest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 2;
-/// Highest control-protocol version this crate can negotiate.
+/// Exact control-protocol version this crate accepts.
 pub const CONTROL_PROTOCOL_VERSION: u32 = include!("control_protocol_version.in");
 /// Byte length of plugin-to-host per-vCPU register digests.
 pub const PLUGIN_NVCPU_REGISTER_DIGEST_BYTES: usize = 32;
@@ -601,7 +599,7 @@ impl ControlTag {
 pub enum PluginMsg {
     /// Handshake offer sent before the plugin touches shared memory.
     Hello {
-        /// Highest control-protocol version the plugin can speak.
+        /// Exact control-protocol version the plugin requires.
         proto_version: u32,
         /// Shared-memory ABI version the plugin was built against.
         abi_version: u32,
@@ -616,9 +614,9 @@ pub enum PluginMsg {
 /// Host-to-plugin control messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostMsg {
-    /// Handshake acknowledgement carrying the negotiated versions and slot.
+    /// Handshake acknowledgement carrying the exact accepted versions and slot.
     HelloAck {
-        /// Negotiated control-protocol version.
+        /// Exact accepted control-protocol version.
         proto_version: u32,
         /// Host shared-memory ABI version.
         abi_version: u32,
@@ -652,7 +650,7 @@ pub struct SetupDescriptorFds {
     pub shmem_fd: RawFd,
     /// Wake descriptor, sent second in the `SCM_RIGHTS` list.
     pub wake_fd: RawFd,
-    /// Sealed v2 app-random or v3 composite plugin-plan descriptor, sent third.
+    /// Sealed v3 composite plugin-plan descriptor, sent third.
     pub plugin_setup_plan_fd: RawFd,
 }
 
@@ -664,7 +662,7 @@ pub struct ReceivedSetupDescriptors {
     pub shmem_fd: OwnedFd,
     /// Wake descriptor received second in the `SCM_RIGHTS` list.
     pub wake_fd: OwnedFd,
-    /// Sealed v2 app-random or v3 composite plugin-plan descriptor received third.
+    /// Sealed v3 composite plugin-plan descriptor received third.
     pub plugin_setup_plan_fd: OwnedFd,
 }
 
@@ -701,7 +699,7 @@ impl SchedulableNodeSetup {
 /// Host-side inputs used to accept the initial `Hello` handshake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostHandshakeConfig {
-    /// Highest control-protocol version supported by the host.
+    /// Exact control-protocol version required by the host.
     pub proto_version: u32,
     /// Shared-memory ABI version used to build the region.
     pub abi_version: u32,
@@ -714,16 +712,16 @@ pub struct HostHandshakeConfig {
 /// Plugin-side inputs used to start the initial `Hello` handshake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PluginHandshakeConfig {
-    /// Highest control-protocol version supported by the plugin.
+    /// Exact control-protocol version required by the plugin.
     pub proto_version: u32,
     /// Shared-memory ABI version compiled into the plugin.
     pub abi_version: u32,
 }
 
-/// A successful `Hello`/`HelloAck` negotiation.
+/// A successful exact-version `Hello`/`HelloAck` agreement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NegotiatedHandshake {
-    /// Single negotiated control-protocol version both peers must speak.
+    /// Exact control-protocol version both peers must speak.
     pub proto_version: u32,
     /// Shared-memory ABI version both peers agreed on exactly.
     pub abi_version: u32,
@@ -871,29 +869,13 @@ pub enum HandshakeError {
         /// Decoded host-to-plugin message.
         message: HostMsg,
     },
-    /// Host and plugin protocol-version ranges do not overlap.
-    #[error(
-        "no control-protocol version overlap: plugin max {plugin_max}, host range {host_min}..={host_max}"
-    )]
-    ProtocolVersionNoOverlap {
-        /// Highest control-protocol version offered by the plugin.
-        plugin_max: u32,
-        /// Lowest control-protocol version supported by the host.
-        host_min: u32,
-        /// Highest control-protocol version supported by the host.
-        host_max: u32,
-    },
-    /// The host replied with a protocol version the plugin cannot speak.
-    #[error(
-        "negotiated control-protocol version {negotiated} is outside plugin range {plugin_min}..={plugin_max}"
-    )]
-    NegotiatedProtocolOutOfRange {
-        /// Protocol version sent in `HelloAck`.
-        negotiated: u32,
-        /// Lowest control-protocol version supported by the plugin.
-        plugin_min: u32,
-        /// Highest control-protocol version offered by the plugin.
-        plugin_max: u32,
+    /// A peer or local configuration named a noncurrent protocol version.
+    #[error("control-protocol version {actual} does not match required version {required}")]
+    ProtocolVersionMismatch {
+        /// Rejected protocol version.
+        actual: u32,
+        /// Exact protocol version required by this build.
+        required: u32,
     },
     /// Host and plugin shmem ABI versions differ.
     #[error("shared-memory ABI mismatch: plugin {plugin_abi}, host {host_abi}")]
@@ -1821,16 +1803,15 @@ where
 
 /// Runs the host side of the blocking `Hello`/`HelloAck` handshake.
 ///
-/// This reads one plugin `Hello`, negotiates
-/// `min(plugin.proto_version, config.proto_version)`, checks the shmem ABI
-/// version exactly, validates the assigned slot, writes `HelloAck`, and returns
-/// the negotiated values.
+/// This reads one plugin `Hello`, checks the protocol and shmem ABI versions
+/// exactly, validates the assigned slot, writes `HelloAck`, and returns the
+/// matched values.
 ///
 /// # Errors
 ///
 /// Returns [`HandshakeError`] when the frame cannot be read, decoded, or
 /// written; when the first plugin message is not `Hello`; when protocol
-/// versions do not overlap; when the shmem ABI version differs; or when
+/// the protocol version differs; when the shmem ABI version differs; or when
 /// `slot_index >= node_count`.
 pub fn host_accept_handshake<S>(
     stream: &mut S,
@@ -1857,15 +1838,14 @@ where
 /// Runs the plugin side of the blocking `Hello`/`HelloAck` handshake.
 ///
 /// This writes `Hello`, blocks for one host `HelloAck`, checks that the
-/// negotiated protocol version remains within the plugin-supported range,
-/// checks the shmem ABI version exactly, validates `slot_index < node_count`,
-/// and returns the negotiated values.
+/// protocol version matches exactly, checks the shmem ABI version exactly,
+/// validates `slot_index < node_count`, and returns the matched values.
 ///
 /// # Errors
 ///
 /// Returns [`HandshakeError`] when the frame cannot be written, read, or
-/// decoded; when the host reply is not `HelloAck`; when the negotiated protocol
-/// version is outside the plugin's range; when the shmem ABI version differs;
+/// decoded; when the host reply is not `HelloAck`; when the exact protocol
+/// version differs; when the shmem ABI version differs;
 /// or when `slot_index >= node_count`.
 pub fn plugin_start_handshake<S>(
     stream: &mut S,
@@ -1887,12 +1867,12 @@ where
     plugin_validate_handshake_ack(message, config)
 }
 
-/// Negotiates a host-side `Hello` message without performing I/O.
+/// Validates a host-side exact-version `Hello` message without performing I/O.
 ///
 /// # Errors
 ///
 /// Returns [`HandshakeError`] when `message` is not `Hello`, when the protocol
-/// versions do not overlap, when the shmem ABI version differs, or when the
+/// version differs, when the shmem ABI version differs, or when the
 /// host slot assignment is outside the declared node range.
 pub fn host_negotiate_handshake(
     message: PluginMsg,
@@ -1906,15 +1886,8 @@ pub fn host_negotiate_handshake(
         return Err(HandshakeError::UnexpectedPluginMessage { message });
     };
 
-    if plugin_proto_version < CONTROL_PROTOCOL_MIN_VERSION
-        || config.proto_version < CONTROL_PROTOCOL_MIN_VERSION
-    {
-        return Err(HandshakeError::ProtocolVersionNoOverlap {
-            plugin_max: plugin_proto_version,
-            host_min: CONTROL_PROTOCOL_MIN_VERSION,
-            host_max: config.proto_version,
-        });
-    }
+    require_current_control_protocol(config.proto_version)?;
+    require_current_control_protocol(plugin_proto_version)?;
 
     if plugin_abi_version != config.abi_version {
         return Err(HandshakeError::AbiMismatch {
@@ -1926,7 +1899,7 @@ pub fn host_negotiate_handshake(
     validate_slot_assignment(config.slot_index, config.node_count)?;
 
     Ok(NegotiatedHandshake {
-        proto_version: plugin_proto_version.min(config.proto_version),
+        proto_version: CONTROL_PROTOCOL_VERSION,
         abi_version: config.abi_version,
         slot_index: config.slot_index,
         node_count: config.node_count,
@@ -1938,7 +1911,7 @@ pub fn host_negotiate_handshake(
 /// # Errors
 ///
 /// Returns [`HandshakeError`] when `message` is not `HelloAck`, when the
-/// negotiated protocol version is outside the plugin-supported range, when the
+/// protocol version differs, when the
 /// shmem ABI version differs, or when `slot_index >= node_count`.
 pub fn plugin_validate_handshake_ack(
     message: HostMsg,
@@ -1954,13 +1927,8 @@ pub fn plugin_validate_handshake_ack(
         return Err(HandshakeError::UnexpectedHostMessage { message });
     };
 
-    if proto_version < CONTROL_PROTOCOL_MIN_VERSION || proto_version > config.proto_version {
-        return Err(HandshakeError::NegotiatedProtocolOutOfRange {
-            negotiated: proto_version,
-            plugin_min: CONTROL_PROTOCOL_MIN_VERSION,
-            plugin_max: config.proto_version,
-        });
-    }
+    require_current_control_protocol(config.proto_version)?;
+    require_current_control_protocol(proto_version)?;
 
     if abi_version != config.abi_version {
         return Err(HandshakeError::AbiMismatch {
@@ -1977,6 +1945,17 @@ pub fn plugin_validate_handshake_ack(
         slot_index,
         node_count,
     })
+}
+
+fn require_current_control_protocol(actual: u32) -> Result<(), HandshakeError> {
+    if actual == CONTROL_PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(HandshakeError::ProtocolVersionMismatch {
+            actual,
+            required: CONTROL_PROTOCOL_VERSION,
+        })
+    }
 }
 
 /// Sends a plugin setup-completion acknowledgement.
@@ -2146,7 +2125,7 @@ pub fn send_setup_with_descriptors(
 ///
 /// The frame must carry exactly three `SCM_RIGHTS` descriptors. The returned
 /// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
-/// order: shmem first, wake second, immutable version-negotiated plugin plan third.
+/// order: shmem first, wake second, immutable current-version plugin plan third.
 ///
 /// # Errors
 ///
@@ -2729,9 +2708,7 @@ fn send_flags() -> libc::c_int {
 
 #[cfg(unix)]
 fn last_errno_value() -> i32 {
-    std::io::Error::last_os_error()
-        .raw_os_error()
-        .map_or(0, |errno| errno)
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn validate_slot_assignment(slot_index: u32, node_count: u32) -> Result<(), HandshakeError> {

@@ -1,5 +1,5 @@
-//! Forks one retained VMState-only template into a real child that adopts a
-//! child-private VMState copy.
+//! Forks one retained VMState-only template into real children, then restores
+//! the source through another retained transaction.
 //!
 //! The flight runs the complete production staging chain against a live QEMU:
 //! guarded source launch inside a dedicated cgroup-v2 and project-quota
@@ -8,21 +8,26 @@
 //! file plan bound to the target attempt's empty VMState container, the target
 //! process contract, and `crucible-hot-fork`. It then proves that the child
 //! holds only the private inode, that the child can write new VMState through
-//! it, and that the source container never changes. Invoke only with dedicated
-//! empty cgroup-v2 and ext4 project-quota roots.
+//! it, and that the child never changes the source container. It then proves
+//! two retained-source transactions restore write access by saving fresh
+//! VMState after each restoration. Invoke only with dedicated empty cgroup-v2
+//! and ext4 project-quota roots.
 
 use std::fs;
-use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::child_measure::{ProcessFootprint, elapsed_milliseconds, monotonic_nanoseconds};
-use super::{exact_gate_checkpoint, source_set::require_vmstate_source, *};
+use super::{
+    exact_gate_checkpoint,
+    source_set::{abort_vmstate_source_transaction, require_vmstate_source},
+    *,
+};
 use crate::{
     DEFAULT_VMSTATE_FILE_NAME, DEFAULT_VMSTATE_NODE_NAME, LinuxQemuAttemptHostConfig,
-    LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner, QemuGuardedFreshNodeLaunch,
-    QemuHotForkChildFileDestination, QemuHotForkLaunchError, QemuPreparedRunDirectory,
-    QmpHotForkChildFileRoot, QmpHotForkOutcome, launch_qemu_live_node_guarded,
+    LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner, QemuHotForkChildFileDestination,
+    QemuHotForkLaunchError, QemuPreparedRunDirectory, QemuProductionFreshLaunchAdmission,
+    QmpHotForkChildFileRoot, QmpHotForkOutcome, launch_qemu_production_fresh_node,
 };
 
 pub(super) const FLIGHT_NAMESPACE: &str = "hot-fork-child-flight";
@@ -41,6 +46,8 @@ pub(super) const ATTEMPT_MEMORY_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const ATTEMPT_DISK_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
 pub(super) const MAXIMUM_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const SOURCE_BUSY_CEILING: u64 = 3_000_001;
+pub(super) const RESTORED_SOURCE_BUSY_CEILING: u64 = 6_000_001;
+pub(super) const RESTORED_SOURCE_SUFFIX_CEILING: u64 = 9_000_001;
 pub(super) const CHILD_REAP_POLLS: u32 = 400;
 pub(super) const CHILD_REAP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -85,6 +92,12 @@ pub struct QemuLiveHotForkChildReport {
     /// Children forked in sequence from the one retained template; the
     /// fields above describe the last of them.
     pub children_forked: u32,
+    /// Distinct retained-source transactions completed by the source.
+    pub retained_transactions: u32,
+    /// VMState saves completed after restoring source write access.
+    pub restored_vmstate_saves: u32,
+    /// Exact guest coordinate reached after the final restoration.
+    pub source_suffix_icount: u64,
     /// Source threads before the first child was staged.
     pub source_threads: u64,
     /// Source descriptors before the first child was staged.
@@ -119,8 +132,10 @@ pub struct QemuLiveHotForkChildReport {
 /// and not the source container, reports no inherited plan through its private
 /// QMP channel, and can save additional VMState that grows only the private
 /// copy; it then terminates the child, releases every child stage in the
-/// reconciliation's order, and restages the template for the next child. The
-/// source is terminated and every owner finishes before return.
+/// reconciliation's order, and restages the template for the next child.
+/// After the children finish, the source completes two bounded retained-source
+/// transactions and saves VMState after each restoration. The source is then
+/// terminated and every owner finishes before return.
 ///
 /// # Errors
 ///
@@ -132,6 +147,11 @@ pub fn run_qemu_live_hot_fork_child_gate(
     cgroup_root: &Path,
     run_root: &Path,
 ) -> Result<QemuLiveHotForkChildReport, QemuLiveNodeStepGateError> {
+    if config.rr_control_boundary_trace || config.runtime_determinism_trace {
+        return Err(invariant(
+            "diagnostic trace is not reinitialized for hot-fork children",
+        ));
+    }
     if config.root_image.is_some() || config.shmem_block.is_some() {
         return Err(invariant(
             "hot-fork child flight requires only the native VMState graph",
@@ -147,7 +167,7 @@ pub fn run_qemu_live_hot_fork_child_gate(
     let identity = node_id(GATE_NODE);
 
     let quantum = advance_to_busy_ceiling(&mut node, SOURCE_BUSY_CEILING)?;
-    node.capture_exact_snapshot_paused(
+    node.capture_native_hot_fork_vmstate_paused(
         &identity,
         exact_gate_checkpoint(&identity, quantum.completion_icount, false),
     )
@@ -162,6 +182,15 @@ pub fn run_qemu_live_hot_fork_child_gate(
         .map_err(|source| qmp_operation("prepare retained template", source))?;
     require_vmstate_source(&held)?;
     let template_generation = held.generation();
+    let observed = node
+        .query_hot_fork_template()
+        .map_err(|source| qmp_operation("query retained template", source))?;
+    require_vmstate_source(&observed)?;
+    if observed.generation() != template_generation {
+        return Err(invariant(
+            "retained template query changed transaction generation",
+        ));
+    }
 
     // The baseline is the retained template with no child staged; every
     // child must return the source to it.
@@ -205,6 +234,9 @@ pub fn run_qemu_live_hot_fork_child_gate(
         .unwrap_or(i64::MAX)
         .saturating_sub(i64::try_from(source_baseline.private_dirty_kib).unwrap_or(0));
 
+    let restored_source =
+        exercise_restored_source_lifecycle(&mut node, &identity, template_generation)?;
+
     node.force_crash_and_reap_for_gate().map_err(|source| {
         QemuLiveNodeStepGateError::node_op("reap hot-fork child flight source", source)
     })?;
@@ -222,6 +254,9 @@ pub fn run_qemu_live_hot_fork_child_gate(
         private_vmstate_bytes: last.private_vmstate_bytes,
         child_saved_vmstate_bytes: last.child_saved_vmstate_bytes,
         children_forked: CHILD_FORK_COUNT,
+        retained_transactions: restored_source.retained_transactions,
+        restored_vmstate_saves: restored_source.vmstate_saves,
+        source_suffix_icount: restored_source.suffix_icount,
         source_threads: source_baseline.threads,
         source_descriptors: source_baseline.descriptors,
         source_threads_leaked: source_after.threads.saturating_sub(source_baseline.threads),
@@ -234,6 +269,87 @@ pub fn run_qemu_live_hot_fork_child_gate(
         child_threads: last.child_footprint.threads,
         child_descriptors: last.child_footprint.descriptors,
         child_private_dirty_kib: last.child_footprint.private_dirty_kib,
+    })
+}
+
+/// Evidence observed while restoring retained source transactions.
+struct RestoredSourceLifecycleEvidence {
+    retained_transactions: u32,
+    vmstate_saves: u32,
+    suffix_icount: u64,
+}
+
+/// Restores two retained generations and saves VMState after each restoration.
+fn exercise_restored_source_lifecycle(
+    node: &mut QemuNode,
+    identity: &NodeId,
+    first_generation: u64,
+) -> Result<RestoredSourceLifecycleEvidence, QemuLiveNodeStepGateError> {
+    let mut retained_transactions = 0_u32;
+    let mut vmstate_saves = 0_u32;
+
+    abort_vmstate_source_transaction(node, first_generation)?;
+    node.resume_after_exact_snapshot().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("resume first restored native source", source)
+    })?;
+    retained_transactions = retained_transactions
+        .checked_add(1)
+        .ok_or_else(|| invariant("retained source transaction count overflowed"))?;
+
+    let restored = advance_to_busy_ceiling(node, RESTORED_SOURCE_BUSY_CEILING)?;
+    node.capture_native_hot_fork_vmstate_paused(
+        identity,
+        exact_gate_checkpoint(identity, restored.completion_icount, false),
+    )
+    .map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("save first restored native VMState", source)
+    })?;
+    vmstate_saves = vmstate_saves
+        .checked_add(1)
+        .ok_or_else(|| invariant("restored VMState save count overflowed"))?;
+
+    let held = node
+        .prepare_hot_fork_template_barriers(&[])
+        .map_err(|source| qmp_operation("prepare second retained native source", source))?;
+    require_vmstate_source(&held)?;
+    if held.generation() <= first_generation {
+        return Err(invariant(
+            "retained source transaction generation did not advance",
+        ));
+    }
+    let observed = node
+        .query_hot_fork_template()
+        .map_err(|source| qmp_operation("query second retained native source", source))?;
+    require_vmstate_source(&observed)?;
+    if observed.generation() != held.generation() {
+        return Err(invariant(
+            "retained source query changed transaction generation",
+        ));
+    }
+
+    abort_vmstate_source_transaction(node, held.generation())?;
+    node.resume_after_exact_snapshot().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("resume second restored native source", source)
+    })?;
+    retained_transactions = retained_transactions
+        .checked_add(1)
+        .ok_or_else(|| invariant("retained source transaction count overflowed"))?;
+    let suffix = advance_to_busy_ceiling(node, RESTORED_SOURCE_SUFFIX_CEILING)?;
+    node.capture_native_hot_fork_vmstate_paused(
+        identity,
+        exact_gate_checkpoint(identity, suffix.completion_icount, false),
+    )
+    .map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("save second restored native VMState", source)
+    })?;
+    vmstate_saves = vmstate_saves
+        .checked_add(1)
+        .ok_or_else(|| invariant("restored VMState save count overflowed"))?;
+
+    Ok(RestoredSourceLifecycleEvidence {
+        retained_transactions,
+        vmstate_saves,
+        suffix_icount: suffix.completion_icount,
     })
 }
 
@@ -349,8 +465,10 @@ fn fork_one_child(
             source,
         }) => {
             let child = describe_forked_child(parent_state.child_pid());
-            let reaped =
-                describe_reaped_child(node, parent_state.request().child_process_generation());
+            let reaped = describe_reaped_child(
+                node,
+                parent_state.request().child_process_contract_generation(),
+            );
             let diagnostics = describe_retained_child_diagnostics(node);
             return Err(invariant(&format!(
                 "hot fork left the source quarantined: child retention failed: {source}; \
@@ -407,7 +525,10 @@ fn fork_one_child(
             private_after_fork.length, source_before.length
         )));
     }
-    let child_process_generation = launch.parent_state().request().child_process_generation();
+    let child_process_generation = launch
+        .parent_state()
+        .request()
+        .child_process_contract_generation();
     let (_parent, authority, child_qmp, mut diagnostics, continuation) = launch.into_parts();
     let mut child_channel = match child_qmp.connect() {
         Ok(channel) => channel,
@@ -485,7 +606,7 @@ fn fork_one_child(
     authority
         .kill()
         .map_err(|source| realization("kill hot-fork child", source))?;
-    let child_generation = parent_state.request().child_process_generation();
+    let child_generation = parent_state.request().child_process_contract_generation();
     wait_for_child_exit(node, child_generation)?;
     node.release_hot_fork_plugin_endpoints()
         .map_err(|source| qmp_operation("release plugin endpoints", source))?;
@@ -609,9 +730,10 @@ pub(super) fn launch_guarded_source_placed(
         )));
     }
     let launch_config = config.clone().with_run_directory(source_directory.path());
-    let node = match launch_qemu_live_node_guarded(
+    let node = match launch_qemu_production_fresh_node(
         &launch_config,
-        QemuGuardedFreshNodeLaunch::new(
+        QemuProductionFreshLaunchAdmission::admit(
+            &launch_config,
             &source_directory,
             source_contract,
             QemuLiveNodeIdentity {
@@ -619,7 +741,7 @@ pub(super) fn launch_guarded_source_placed(
                 router: GATE_ROUTER,
                 crash_detector: "live-hot-fork-child",
             },
-        ),
+        )?,
     ) {
         Ok(node) => node,
         Err(mut error) => {

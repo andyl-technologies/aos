@@ -1,354 +1,664 @@
 //! Exact VMState and host-continuation capture at completed boundaries.
 
 use super::*;
+use crate::ProductionFaultRuntimeCheckpoint;
+use crucible::{
+    Checkpoint, Configuration, ContentHash, NodeId, SingleSchedulerCheckpoint, VirtualTime,
+};
+#[cfg(target_os = "linux")]
+use rustix::fs::{FileType, OFlags, SeekFrom, fcntl_getfl, fstat, seek};
+#[cfg(target_os = "linux")]
+use std::fs::{File, OpenOptions};
+#[cfg(target_os = "linux")]
+use std::io::Read as _;
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
+use std::path::Path;
 use std::sync::Arc;
 
-impl QemuNode {
-    /// Captures QEMU VMState and the Apache host-I/O continuation as one pair.
-    ///
-    /// The caller supplies the already materialized scheduler checkpoint whose
-    /// content identity names the VMState artifact. Host-I/O state is captured
-    /// first at the completed quantum boundary; QMP then saves guest state under
-    /// the same identity. A failed save leaves any pre-existing artifact intact;
-    /// the typed QMP client dismisses every concluded snapshot job.
+mod capture;
+
+const EXACT_RAM_TARGET_IDENTITY_DOMAIN: &str = "crucible.production-vm-exact-ram-target.v1";
+const EXACT_RAM_FRONTIER_IDENTITY_DOMAIN: &str = "crucible.production-vm-exact-ram-frontier.v1";
+
+/// Typed immutable provenance for one production exact-checkpoint capture.
+struct QemuExactCheckpointCaptureBasis<'a> {
+    configuration: &'a Configuration,
+    immutable_backing: ContentHash,
+    node: &'a NodeId,
+    counter: u64,
+    scheduler_time: VirtualTime,
+    checkpoint: &'a Checkpoint,
+    fault_identity: ContentHash,
+    scheduler: &'a SingleSchedulerCheckpoint,
+}
+
+/// Modeled boundary authenticated for one exact checkpoint capture.
+pub struct QemuExactCheckpointCaptureBoundary<'a> {
+    /// Configuration whose node is being captured.
+    pub configuration: &'a Configuration,
+    /// Immutable guest root image used by the captured process.
+    pub immutable_root_image: &'a Path,
+    /// Node whose execution boundary is being captured.
+    pub node: &'a NodeId,
+    /// Node-local retired-instruction counter at the boundary.
+    pub counter: u64,
+    /// Scheduler frontier at the boundary.
+    pub scheduler_time: VirtualTime,
+    /// Modeled checkpoint that owns the capture.
+    pub checkpoint: &'a Checkpoint,
+    /// Fault-runtime continuation bound to the checkpoint.
+    pub fault: &'a ProductionFaultRuntimeCheckpoint,
+    /// Scheduler continuation bound to the checkpoint.
+    pub scheduler: &'a SingleSchedulerCheckpoint,
+}
+
+/// Output limits and paths for one exact checkpoint capture.
+pub struct QemuExactCheckpointCaptureOutputs<'a> {
+    /// Maximum admitted RAM output length.
+    pub maximum_ram_bytes: u64,
+    /// Maximum admitted device-state output length.
+    pub maximum_device_bytes: u64,
+    /// Path whose already-opened file receives RAM bytes.
+    pub ram: &'a Path,
+    /// Path whose already-opened file receives device-state bytes.
+    pub device: &'a Path,
+}
+
+impl<'a> QemuExactCheckpointCaptureBasis<'a> {
+    /// Authenticates all immutable inputs used to derive the QMP identity.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the node is not at the checkpoint's
-    /// virtual-time boundary, host-I/O capture fails, or QMP save fails.
-    pub fn capture_exact_snapshot(
-        &mut self,
-        node: &NodeId,
-        checkpoint: Checkpoint,
-    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, Arc::new(checkpoint), true, true, false)
-    }
-
-    /// Captures an exact snapshot while preserving an intentional QEMU pause.
-    ///
-    /// This is the savepoint operation for a lifecycle node whose service state
-    /// is powered off. It records the same VMState and host-I/O continuation as
-    /// [`Self::capture_exact_snapshot`], but does not issue `cont` after capture.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] under the same conditions as
-    /// [`Self::capture_exact_snapshot`].
-    pub fn capture_exact_snapshot_paused(
-        &mut self,
-        node: &NodeId,
-        checkpoint: Checkpoint,
-    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, Arc::new(checkpoint), false, false, false)
-    }
-
-    /// Captures a running node while keeping successful artifacts immutable.
-    ///
-    /// A successful capture leaves QEMU paused so the owner can stream its
-    /// overlay and VMState directly into durable content storage. A failure
-    /// before an indeterminate save resumes the running node; an indeterminate
-    /// save still terminates and reaps it through the existing fail-closed path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] under the same conditions as
-    /// [`Self::capture_exact_snapshot`].
-    pub fn capture_exact_snapshot_for_publication(
-        &mut self,
-        node: &NodeId,
-        checkpoint: Checkpoint,
-    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, Arc::new(checkpoint), false, true, false)
-    }
-
-    /// Resumes a running node after its paused exact artifacts are durable.
-    ///
-    /// The lifecycle owner calls this only after it has streamed every
-    /// checkpoint artifact from the stopped process generation into durable
-    /// content storage. Powered-off nodes deliberately remain paused and must
-    /// not use this operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] when QMP cannot confirm the running-state
-    /// transition.
-    pub fn resume_after_exact_snapshot(&mut self) -> Result<(), QemuNodeError> {
-        self.resume_after_restore()
-    }
-
-    /// Captures the post-mutation restart state for a terminal lifecycle fault.
-    ///
-    /// QEMU remains paused after a successful capture. The caller must next
-    /// authorize terminal completion and supervise the exact child exit; it
-    /// must never issue an ordinary resume to this process generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] under the same conditions as
-    /// [`Self::capture_exact_snapshot`]. A failed terminal capture deliberately
-    /// leaves QEMU paused because `cont` is already bound to process exit.
-    pub fn capture_terminal_lifecycle_snapshot(
-        &mut self,
-        node: &NodeId,
-        checkpoint: Checkpoint,
-    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_terminal_lifecycle_snapshot_shared(node, Arc::new(checkpoint))
-    }
-
-    pub(crate) fn capture_terminal_lifecycle_snapshot_shared(
-        &mut self,
-        node: &NodeId,
-        checkpoint: Arc<Checkpoint>,
-    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, false, false, true)
-    }
-
-    /// Prevalidates terminal snapshot identity and boundary prerequisites.
-    ///
-    /// This read-only check lets a multi-node lifecycle transaction reject all
-    /// known configuration and boundary failures before pausing its first VM.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] when the node is not running at the exact
-    /// checkpoint boundary or cannot safely enter checkpoint capture.
-    pub fn prevalidate_terminal_lifecycle_snapshot(
-        &mut self,
-        node: &NodeId,
-        checkpoint: &Checkpoint,
-    ) -> Result<(), QemuNodeError> {
-        self.validate_exact_snapshot_boundary(node, checkpoint)
-    }
-
-    fn validate_exact_snapshot_boundary(
-        &mut self,
-        node: &NodeId,
-        checkpoint: &Checkpoint,
-    ) -> Result<(), QemuNodeError> {
-        if self.lifecycle_state != QemuNodeLifecycleState::Running {
-            return Err(QemuNodeError::checkpoint(
-                "exact snapshot capture requires a running QEMU node",
-            ));
-        }
-        if self.active_gdbstub.is_some() {
-            return Err(QemuNodeError::checkpoint(
-                "exact snapshot capture is forbidden while a debugger proxy is active",
-            ));
-        }
-        if let Some(message) = &self.fault_event_terminal_failure {
-            return Err(QemuNodeError::checkpoint(format!(
-                "fault-event transport is terminally invalid: {message}"
-            )));
-        }
-        if self.fault_event_pending()? {
-            return Err(QemuNodeError::checkpoint(
-                "exact snapshot capture requires an empty fault-event continuation",
-            ));
-        }
-        let expected_icount = checkpoint.node_icounts.get(node).ok_or_else(|| {
+    /// Returns [`QemuNodeError`] when the checkpoint does not belong to the
+    /// supplied configuration, node counter, virtual time, or scenario.
+    fn admit(boundary: QemuExactCheckpointCaptureBoundary<'a>) -> Result<Self, QemuNodeError> {
+        let QemuExactCheckpointCaptureBoundary {
+            configuration,
+            immutable_root_image,
+            node,
+            counter,
+            scheduler_time,
+            checkpoint,
+            fault,
+            scheduler,
+        } = boundary;
+        let immutable_backing = hash_capture_input(immutable_root_image).map_err(|error| {
             QemuNodeError::checkpoint(format!(
-                "checkpoint has no instruction counter for QEMU node `{}`",
-                node.name
+                "hash exact checkpoint immutable root {}: {error}",
+                immutable_root_image.display()
             ))
         })?;
-        if expected_icount.retired != self.last_observed_time.ticks {
-            return Err(QemuNodeError::checkpoint(format!(
-                "checkpoint icount {} for `{}` does not match QEMU boundary {}",
-                expected_icount.retired, node.name, self.last_observed_time.ticks
-            )));
+        let fault_identity = fault.id();
+        let node_counter = checkpoint
+            .node_icounts
+            .get(node)
+            .map(|icount| icount.retired);
+        if checkpoint.configuration != configuration.id()
+            || checkpoint.scenario_ref != configuration.def.id()
+            || checkpoint.virtual_time != scheduler_time
+            || node_counter != Some(counter)
+        {
+            return Err(QemuNodeError::checkpoint(
+                "exact checkpoint capture provenance does not match the modeled boundary",
+            ));
         }
-        let observed_icount = self.current_icount()?;
-        if observed_icount.retired != self.last_observed_time.ticks {
-            return Err(QemuNodeError::checkpoint(format!(
-                "shared-memory icount {} does not match completed QEMU boundary {}",
-                observed_icount.retired, self.last_observed_time.ticks
-            )));
+        let scheduler_configuration =
+            scheduler
+                .configuration_for(&configuration.def)
+                .map_err(|error| {
+                    QemuNodeError::checkpoint(format!(
+                        "exact checkpoint scheduler continuation is invalid: {error}"
+                    ))
+                })?;
+        if scheduler_configuration.id() != configuration.id()
+            || scheduler.frontier() != scheduler_time
+        {
+            return Err(QemuNodeError::checkpoint(
+                "exact checkpoint scheduler continuation does not match the modeled boundary",
+            ));
         }
+        Ok(Self {
+            configuration,
+            immutable_backing,
+            node,
+            counter,
+            scheduler_time,
+            checkpoint,
+            fault_identity,
+            scheduler,
+        })
+    }
+
+    /// Derives the exact target and scheduler-frontier identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the scheduler continuation cannot be
+    /// encoded canonically.
+    fn derive_identity(&self) -> Result<crate::QmpCheckpointIdentity, QemuNodeError> {
+        let target = ContentHash::from_canonical_material(
+            EXACT_RAM_TARGET_IDENTITY_DOMAIN,
+            &format!(
+                "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nfault={}",
+                self.configuration.id().to_hex(),
+                self.immutable_backing.to_hex(),
+                self.node.name,
+                self.counter,
+                self.scheduler_time.ticks,
+                self.fault_identity.to_hex(),
+            ),
+        );
+        let scheduler_bytes = self.scheduler.canonical_bytes().map_err(|error| {
+            QemuNodeError::checkpoint(format!("encode exact RAM scheduler frontier: {error}"))
+        })?;
+        let mut scheduler_hex = String::with_capacity(scheduler_bytes.len().saturating_mul(2));
+        use std::fmt::Write as _;
+        for byte in scheduler_bytes {
+            let _ = write!(scheduler_hex, "{byte:02x}");
+        }
+        let frontier = ContentHash::from_canonical_material(
+            EXACT_RAM_FRONTIER_IDENTITY_DOMAIN,
+            &scheduler_hex,
+        );
+        Ok(crate::QmpCheckpointIdentity::new(
+            self.checkpoint.id,
+            target,
+            frontier,
+        ))
+    }
+}
+
+/// Borrowed descriptor set consumed by one exact checkpoint capture command.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QemuExactCheckpointCaptureDescriptors<'a> {
+    ram: BorrowedFd<'a>,
+    device: BorrowedFd<'a>,
+    cancellation: BorrowedFd<'a>,
+}
+
+/// Validated capture request and output ownership for one exact checkpoint.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct QemuExactCheckpointCaptureAdmission {
+    checkpoint: ContentHash,
+    node: NodeId,
+    request: crate::QmpCheckpointCaptureRequest,
+    ram: File,
+    device: File,
+}
+
+#[cfg(target_os = "linux")]
+impl QemuExactCheckpointCaptureAdmission {
+    /// Admits one checkpoint-bound direct capture and its owned output handles.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the identity belongs to another checkpoint,
+    /// the request bounds are invalid, either descriptor is not a writable
+    /// regular file, or the descriptors alias.
+    pub fn admit_direct(
+        boundary: QemuExactCheckpointCaptureBoundary<'_>,
+        outputs: QemuExactCheckpointCaptureOutputs<'_>,
+    ) -> Result<Self, QemuNodeError> {
+        let basis = QemuExactCheckpointCaptureBasis::admit(boundary)?;
+        let QemuExactCheckpointCaptureOutputs {
+            maximum_ram_bytes,
+            maximum_device_bytes,
+            ram: ram_output,
+            device: device_output,
+        } = outputs;
+        let identity = basis.derive_identity()?;
+        let request = crate::QmpCheckpointCaptureRequest::direct(
+            identity,
+            capture_descriptor("crucible-checkpoint-ram")?,
+            capture_descriptor("crucible-checkpoint-device")?,
+            capture_descriptor("crucible-checkpoint-cancel")?,
+            maximum_ram_bytes,
+            maximum_device_bytes,
+        )
+        .map_err(|error| {
+            QemuNodeError::checkpoint(format!("build exact capture request: {error}"))
+        })?;
+        Self::admit(
+            basis.checkpoint,
+            basis.node.clone(),
+            request,
+            ram_output,
+            device_output,
+        )
+    }
+
+    /// Admits one checkpoint-bound delta capture and its owned output handles.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the child or parent identity is invalid,
+    /// the request bounds are invalid, either descriptor is not a writable
+    /// regular file, or the descriptors alias.
+    pub fn admit_delta(
+        boundary: QemuExactCheckpointCaptureBoundary<'_>,
+        parent: crate::QmpCheckpointIdentity,
+        outputs: QemuExactCheckpointCaptureOutputs<'_>,
+    ) -> Result<Self, QemuNodeError> {
+        let basis = QemuExactCheckpointCaptureBasis::admit(boundary)?;
+        let QemuExactCheckpointCaptureOutputs {
+            maximum_ram_bytes,
+            maximum_device_bytes,
+            ram: ram_output,
+            device: device_output,
+        } = outputs;
+        let identity = basis.derive_identity()?;
+        if basis.checkpoint.parent != Some(parent.checkpoint()) {
+            return Err(QemuNodeError::checkpoint(
+                "exact checkpoint delta parent does not match the modeled checkpoint parent",
+            ));
+        }
+        let request = crate::QmpCheckpointCaptureRequest::delta(
+            identity,
+            parent,
+            capture_descriptor("crucible-checkpoint-ram")?,
+            capture_descriptor("crucible-checkpoint-device")?,
+            capture_descriptor("crucible-checkpoint-cancel")?,
+            maximum_ram_bytes,
+            maximum_device_bytes,
+        )
+        .map_err(|error| {
+            QemuNodeError::checkpoint(format!("build exact capture request: {error}"))
+        })?;
+        Self::admit(
+            basis.checkpoint,
+            basis.node.clone(),
+            request,
+            ram_output,
+            device_output,
+        )
+    }
+
+    fn admit(
+        checkpoint: &Checkpoint,
+        node: NodeId,
+        request: crate::QmpCheckpointCaptureRequest,
+        ram_output: &Path,
+        device_output: &Path,
+    ) -> Result<Self, QemuNodeError> {
+        validate_exact_checkpoint_request_binding(checkpoint, &request)?;
+        let ram = create_capture_output(ram_output, "RAM")?;
+        let device = match create_capture_output(device_output, "device-state") {
+            Ok(device) => device,
+            Err(error) => {
+                drop(ram);
+                let _ = std::fs::remove_file(ram_output);
+                return Err(error);
+            }
+        };
+        validate_exact_checkpoint_capture_outputs(ram.as_fd(), device.as_fd())?;
+        Ok(Self {
+            checkpoint: checkpoint.id,
+            node,
+            request,
+            ram,
+            device,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn create_capture_output(path: &Path, role: &str) -> Result<File, QemuNodeError> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            QemuNodeError::checkpoint(format!(
+                "create exact checkpoint {role} output {}: {error}",
+                path.display()
+            ))
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn hash_capture_input(path: &Path) -> Result<ContentHash, std::io::Error> {
+    let mut file = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn capture_descriptor(name: &'static str) -> Result<crate::QmpDescriptorName, QemuNodeError> {
+    crate::QmpDescriptorName::new(name)
+        .map_err(|error| QemuNodeError::checkpoint(format!("name capture descriptor: {error}")))
+}
+
+#[cfg(target_os = "linux")]
+fn validate_exact_checkpoint_capture_outputs(
+    ram: BorrowedFd<'_>,
+    device: BorrowedFd<'_>,
+) -> Result<(), QemuNodeError> {
+    let ram_metadata = fstat(ram)
+        .map_err(|error| QemuNodeError::checkpoint(format!("inspect exact RAM output: {error}")))?;
+    let device_metadata = fstat(device).map_err(|error| {
+        QemuNodeError::checkpoint(format!("inspect exact device-state output: {error}"))
+    })?;
+    if FileType::from_raw_mode(ram_metadata.st_mode) != FileType::RegularFile
+        || FileType::from_raw_mode(device_metadata.st_mode) != FileType::RegularFile
+    {
+        return Err(QemuNodeError::checkpoint(
+            "exact checkpoint outputs must be regular files",
+        ));
+    }
+    if ram_metadata.st_size != 0 || device_metadata.st_size != 0 {
+        return Err(QemuNodeError::checkpoint(
+            "exact checkpoint outputs must be newly created empty files",
+        ));
+    }
+    let ram_offset = seek(ram, SeekFrom::Current(0)).map_err(|error| {
+        QemuNodeError::checkpoint(format!("inspect exact RAM output offset: {error}"))
+    })?;
+    let device_offset = seek(device, SeekFrom::Current(0)).map_err(|error| {
+        QemuNodeError::checkpoint(format!("inspect exact device-state output offset: {error}"))
+    })?;
+    if ram_offset != 0 || device_offset != 0 {
+        return Err(QemuNodeError::checkpoint(
+            "exact checkpoint outputs must begin at offset zero",
+        ));
+    }
+    let writable = |descriptor| {
+        fcntl_getfl(descriptor)
+            .map(|flags| flags.contains(OFlags::WRONLY) || flags.contains(OFlags::RDWR))
+    };
+    if !writable(ram).map_err(|error| {
+        QemuNodeError::checkpoint(format!("inspect exact RAM output access mode: {error}"))
+    })? || !writable(device).map_err(|error| {
+        QemuNodeError::checkpoint(format!(
+            "inspect exact device-state output access mode: {error}"
+        ))
+    })? {
+        return Err(QemuNodeError::checkpoint(
+            "exact checkpoint outputs must be writable",
+        ));
+    }
+    if ram_metadata.st_dev == device_metadata.st_dev
+        && ram_metadata.st_ino == device_metadata.st_ino
+    {
+        return Err(QemuNodeError::checkpoint(
+            "exact RAM and device-state outputs must be distinct files",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+impl<'a> QemuExactCheckpointCaptureDescriptors<'a> {
+    /// Binds the RAM, device-state, and cancellation descriptors for capture.
+    #[must_use]
+    pub(crate) const fn new(
+        ram: BorrowedFd<'a>,
+        device: BorrowedFd<'a>,
+        cancellation: BorrowedFd<'a>,
+    ) -> Self {
+        Self {
+            ram,
+            device,
+            cancellation,
+        }
+    }
+}
+
+/// Host continuation and QEMU report produced by one exact RAM capture.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct QemuExactCheckpointCaptureResult {
+    snapshot: crate::QemuVmSnapshot,
+    qemu: crate::QmpCheckpointCapture,
+    parent: Option<crate::QmpCheckpointIdentity>,
+    ram: File,
+    device: File,
+}
+
+#[cfg(target_os = "linux")]
+impl QemuExactCheckpointCaptureResult {
+    /// Returns the captured Apache host continuation.
+    #[must_use]
+    pub const fn snapshot(&self) -> &crate::QemuVmSnapshot {
+        &self.snapshot
+    }
+
+    /// Returns whether QEMU emitted complete or parent-relative RAM.
+    #[must_use]
+    pub const fn ram_kind(&self) -> crate::QmpCheckpointRamKind {
+        self.qemu.kind()
+    }
+
+    /// Returns the checkpoint, target, and scheduler-frontier identity.
+    #[must_use]
+    pub const fn identity(&self) -> crate::QmpCheckpointIdentity {
+        self.qemu.identity()
+    }
+
+    /// Returns the exact committed parent used for a delta capture.
+    #[must_use]
+    pub const fn parent(&self) -> Option<crate::QmpCheckpointIdentity> {
+        self.parent
+    }
+
+    /// Returns the canonical RAMBlock topology identity.
+    #[must_use]
+    pub const fn topology(&self) -> crucible::ContentHash {
+        self.qemu.topology()
+    }
+
+    /// Returns the number of canonical RAM regions in the artifact.
+    #[must_use]
+    pub const fn ram_regions(&self) -> u64 {
+        self.qemu.ram_regions()
+    }
+
+    /// Returns the number of RAM records emitted by QEMU.
+    #[must_use]
+    pub const fn ram_records(&self) -> u64 {
+        self.qemu.ram_records()
+    }
+
+    /// Returns the exact encoded RAM artifact length.
+    #[must_use]
+    pub const fn ram_bytes(&self) -> u64 {
+        self.qemu.ram_bytes()
+    }
+
+    /// Returns the exact encoded device-state artifact length.
+    #[must_use]
+    pub const fn device_bytes(&self) -> u64 {
+        self.qemu.device_bytes()
+    }
+
+    /// Returns the pinned RAM and device-state outputs written by QEMU.
+    ///
+    /// The files continue to name the admitted inodes even if an attacker
+    /// replaces either staging pathname after capture. Callers must read these
+    /// handles, rather than reopen the paths, through durable publication.
+    #[must_use]
+    pub fn output_files_mut(&mut self) -> (&mut File, &mut File) {
+        (&mut self.ram, &mut self.device)
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct ExactRamCapture<'a> {
+    request: &'a crate::QmpCheckpointCaptureRequest,
+    descriptors: QemuExactCheckpointCaptureDescriptors<'a>,
+}
+
+enum SnapshotCapture<'a> {
+    NativeVmState(std::marker::PhantomData<&'a ()>),
+    #[cfg(target_os = "linux")]
+    ExactRam(ExactRamCapture<'a>),
+}
+
+impl SnapshotCapture<'_> {
+    const fn native_vmstate() -> Self {
+        Self::NativeVmState(std::marker::PhantomData)
+    }
+}
+
+fn validate_exact_checkpoint_request_binding(
+    checkpoint: &Checkpoint,
+    request: &crate::QmpCheckpointCaptureRequest,
+) -> Result<(), QemuNodeError> {
+    if request.identity().checkpoint() != checkpoint.id {
+        return Err(QemuNodeError::checkpoint(
+            "exact RAM request identity does not name the captured host checkpoint",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_capture_admission_binding(
+    admitted_checkpoint: ContentHash,
+    admitted_node: &NodeId,
+    checkpoint: ContentHash,
+    node: &NodeId,
+) -> Result<(), QemuNodeError> {
+    if admitted_checkpoint != checkpoint {
+        return Err(QemuNodeError::checkpoint(
+            "exact checkpoint capture admission belongs to another checkpoint",
+        ));
+    }
+    if admitted_node != node {
+        return Err(QemuNodeError::checkpoint(
+            "exact checkpoint capture admission belongs to another modeled node",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod capture_admission_tests {
+    use super::{validate_capture_admission_binding, validate_exact_checkpoint_capture_outputs};
+    use crucible::{ContentHash, NodeId};
+    use std::error::Error;
+    use std::fs::{File, OpenOptions};
+    use std::io::{self, Seek as _, SeekFrom, Write as _};
+    use std::os::fd::AsFd as _;
+
+    #[test]
+    fn capture_outputs_reject_the_same_file_for_ram_and_device_state() -> Result<(), Box<dyn Error>>
+    {
+        let output = tempfile::NamedTempFile::new()?;
+
+        let error = validate_exact_checkpoint_capture_outputs(
+            output.as_file().as_fd(),
+            output.as_file().as_fd(),
+        )
+        .err()
+        .ok_or_else(|| io::Error::other("aliased capture outputs were accepted"))?;
+
+        assert!(error.to_string().contains("must be distinct files"));
         Ok(())
     }
 
-    fn capture_exact_snapshot_inner(
-        &mut self,
-        node: &NodeId,
-        checkpoint: Arc<Checkpoint>,
-        resume_after_capture: bool,
-        resume_after_pre_save_failure: bool,
-        terminal_lifecycle_stop: bool,
-    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.validate_exact_snapshot_boundary(node, &checkpoint)?;
-        if !self.pending_priming_observations.is_empty() {
-            return Err(QemuNodeError::checkpoint(
-                "checkpoint requested before setup-time observations reached the scheduler event log",
-            ));
-        }
-        if terminal_lifecycle_stop {
-            // A terminal QEMU mutation installs its RR stop fence before its
-            // typed result becomes visible to the host. Requesting a second
-            // plugin pause can therefore strand behind the already-stopped
-            // main loop. Confirm that native stopped state first, then require
-            // the exact boundary's device marker to be quiescent.
-            if let Err(source) = self.channels.qmp_machine_control.stop_for_checkpoint() {
-                return self.handle_qmp_channel_error(source);
-            }
-            if !self
-                .host_io_runtime
-                .checkpoint_device_io_is_quiescent()
-                .map_err(|source| {
-                    QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
-                })?
-            {
-                return Err(QemuNodeError::checkpoint(
-                    "terminal lifecycle stopped with active QEMU device I/O",
-                ));
-            }
-        } else {
-            self.host_io_runtime
-                .quiesce_for_checkpoint(self.async_policy.qmp_command_timeout)
-                .map_err(|source| {
-                    QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
-                })?;
-            let pending_fault_event = match self.fault_event_pending() {
-                Ok(pending) => pending,
-                Err(source) => {
-                    self.host_io_runtime
-                        .abort_checkpoint_pause()
-                        .map_err(|cleanup| {
-                            QemuNodeError::checkpoint(format!(
-                                "fault-event inspection failed while quiescing exact snapshot ({source}); aborting the plugin pause also failed ({cleanup})"
-                            ))
-                        })?;
-                    return Err(source);
-                }
-            };
-            if pending_fault_event {
-                self.host_io_runtime
-                    .abort_checkpoint_pause()
-                    .map_err(|cleanup| {
-                        QemuNodeError::checkpoint(format!(
-                            "fault events appeared while quiescing exact snapshot; aborting the plugin pause failed ({cleanup})"
-                        ))
-                    })?;
-                return Err(QemuNodeError::checkpoint(
-                    "fault events appeared while quiescing exact snapshot",
-                ));
-            }
-            if let Err(source) = self.channels.qmp_machine_control.stop_for_checkpoint() {
-                self.host_io_runtime
-                    .abort_checkpoint_pause()
-                    .map_err(|cleanup| {
-                        QemuNodeError::checkpoint(format!(
-                            "QMP stop failed ({source}); aborting the plugin pause also failed ({cleanup})"
-                        ))
-                    })?;
-                return self.handle_qmp_channel_error(source);
-            }
-            if let Err(source) = self.host_io_runtime.clear_checkpoint_pause_while_stopped() {
-                let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
-                return match resume {
-                    Ok(()) => Err(QemuNodeError::from_async_driver(
-                        crate::QemuAsyncDriverError::Runtime(source),
-                    )),
-                    Err(qmp) => Err(QemuNodeError::checkpoint(format!(
-                        "clearing the stopped plugin checkpoint pause failed ({source}); resuming QEMU also failed ({qmp})"
-                    ))),
-                };
-            }
-        }
-        let capture_result = (|| {
-            let paused_icount = self.current_icount()?;
-            if paused_icount.retired != self.last_observed_time.ticks {
-                return Err(QemuNodeError::checkpoint(format!(
-                    "checkpoint pause moved shared-memory icount from {} to {}",
-                    self.last_observed_time.ticks, paused_icount.retired
-                )));
-            }
-            let host_io = self
-                .host_io_runtime
-                .checkpoint_host_io(checkpoint.id)
-                .map_err(|source| {
-                    QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
-                })?;
-            let logical_time_calibration = self
-                .channels
-                .shmem_hot_path
-                .logical_time_calibration()
-                .map_err(|source| {
-                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-                })?;
-            if logical_time_calibration.logical_icount != self.last_observed_time.ticks {
-                return Err(QemuNodeError::checkpoint(format!(
-                    "checkpoint logical-time calibration {} differs from scheduler boundary {}",
-                    logical_time_calibration.logical_icount, self.last_observed_time.ticks
-                )));
-            }
-            let _logical_time_offset = logical_time_calibration.offset().map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })?;
-            let mut network_transport = self
-                .channels
-                .shmem_hot_path
-                .checkpoint_network_transport()
-                .map_err(|source| {
-                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-                })?;
-            network_transport
-                .bind_outbound_sequence(self.next_network_output_sequence)
-                .map_err(|error| QemuNodeError::checkpoint(error.to_string()))?;
-            let node = crate::QemuNodeContinuationCheckpoint {
-                execution_binding: checkpoint.id,
-                last_observed_time: self.last_observed_time,
-                logical_time_calibration,
-                console_observation_boundary: self.console_observation_boundary,
-                pending_preemption: self.pending_preemption.clone(),
-                pending_network_outputs: self.pending_network_outputs.clone(),
-                network_transport,
-                next_fault_command_sequence: self.next_fault_command_sequence,
-                next_fault_event_sequence: self.next_fault_event_sequence,
-            };
-            crate::QemuVmSnapshot::from_live_capture(
-                Arc::clone(&checkpoint),
-                host_io,
-                node,
-                crate::QemuReplayOracleValidation::NotRun,
-            )
-            .map_err(|error| QemuNodeError::checkpoint(error.to_string()))
-        })();
-        let snapshot = match capture_result {
-            Ok(snapshot) => snapshot,
-            Err(error) if !resume_after_pre_save_failure => return Err(error),
-            Err(error) => {
-                let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
-                return match resume {
-                    Ok(()) => Err(error),
-                    Err(resume_error) => Err(QemuNodeError::checkpoint(format!(
-                        "checkpoint capture failed ({error}); resuming QEMU also failed ({resume_error})"
-                    ))),
-                };
-            }
+    #[test]
+    fn capture_outputs_reject_read_only_files() -> Result<(), Box<dyn Error>> {
+        let ram = tempfile::NamedTempFile::new()?;
+        let device = tempfile::NamedTempFile::new()?;
+        let read_only_ram = File::open(ram.path())?;
+        let writable_device = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(device.path())?;
+
+        let error = validate_exact_checkpoint_capture_outputs(
+            read_only_ram.as_fd(),
+            writable_device.as_fd(),
+        )
+        .err()
+        .ok_or_else(|| io::Error::other("read-only capture output was accepted"))?;
+
+        assert!(error.to_string().contains("must be writable"));
+        Ok(())
+    }
+
+    #[test]
+    fn capture_outputs_reject_non_regular_descriptors() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let directory_file = File::open(directory.path())?;
+        let device = tempfile::NamedTempFile::new()?;
+
+        let error = validate_exact_checkpoint_capture_outputs(
+            directory_file.as_fd(),
+            device.as_file().as_fd(),
+        )
+        .err()
+        .ok_or_else(|| io::Error::other("directory capture output was accepted"))?;
+
+        assert!(error.to_string().contains("must be regular files"));
+        Ok(())
+    }
+
+    #[test]
+    fn capture_outputs_reject_nonempty_files() -> Result<(), Box<dyn Error>> {
+        let mut ram = tempfile::NamedTempFile::new()?;
+        let device = tempfile::NamedTempFile::new()?;
+        ram.write_all(b"already populated")?;
+
+        let error = validate_exact_checkpoint_capture_outputs(
+            ram.as_file().as_fd(),
+            device.as_file().as_fd(),
+        )
+        .err()
+        .ok_or_else(|| io::Error::other("nonempty capture output was accepted"))?;
+
+        assert!(error.to_string().contains("newly created empty files"));
+        Ok(())
+    }
+
+    #[test]
+    fn capture_outputs_reject_nonzero_offsets() -> Result<(), Box<dyn Error>> {
+        let mut ram = tempfile::NamedTempFile::new()?;
+        let device = tempfile::NamedTempFile::new()?;
+        ram.as_file_mut().seek(SeekFrom::Start(1))?;
+
+        let error = validate_exact_checkpoint_capture_outputs(
+            ram.as_file().as_fd(),
+            device.as_file().as_fd(),
+        )
+        .err()
+        .ok_or_else(|| io::Error::other("nonzero output offset was accepted"))?;
+
+        assert!(error.to_string().contains("offset zero"));
+        Ok(())
+    }
+
+    #[test]
+    fn capture_admission_rejects_another_modeled_node() -> Result<(), Box<dyn Error>> {
+        let checkpoint = ContentHash::from_bytes(b"capture checkpoint");
+        let admitted = NodeId {
+            name: String::from("admitted"),
         };
-        if let Err(save_error) = self
-            .channels
-            .qmp_machine_control
-            .save_checkpoint_vmstate(&checkpoint)
-        {
-            // Once snapshot-save has been written, a transport, decode, poll,
-            // dismiss, or timeout failure can leave an asynchronous job active.
-            // Never issue `cont` into that indeterminate state. Terminate and
-            // reap the owned process through the full shutdown ladder instead.
-            return match self.shutdown_child_after_coverage_drain() {
-                Ok(shutdown) => Err(QemuNodeError::checkpoint(format!(
-                    "saving QEMU VMState failed ({save_error}); the indeterminate checkpoint process was terminated and reaped: {shutdown:?}"
-                ))),
-                Err(shutdown) => Err(QemuNodeError::checkpoint(format!(
-                    "saving QEMU VMState failed ({save_error}); terminating the indeterminate checkpoint process also failed ({shutdown})"
-                ))),
-            };
-        }
-        if resume_after_capture
-            && let Err(source) = self.channels.qmp_machine_control.resume_after_checkpoint()
-        {
-            return self.handle_qmp_channel_error(source);
-        }
-        Ok(snapshot)
+        let supplied = NodeId {
+            name: String::from("supplied"),
+        };
+
+        let error =
+            validate_capture_admission_binding(checkpoint, &admitted, checkpoint, &supplied)
+                .err()
+                .ok_or_else(|| {
+                    io::Error::other("capture admission moved to another modeled node")
+                })?;
+
+        assert!(error.to_string().contains("another modeled node"));
+        Ok(())
     }
 }

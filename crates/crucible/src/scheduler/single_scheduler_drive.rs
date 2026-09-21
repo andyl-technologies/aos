@@ -6,18 +6,6 @@ impl SingleScheduler {
         self.accept_control_at_boundary(operation);
     }
 
-    pub(super) fn validate_max_host_workers(
-        &self,
-        max_host_workers: usize,
-    ) -> Result<(), SchedulerError> {
-        if max_host_workers == 0 {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("concurrent scheduler max_host_workers must be positive"),
-            });
-        }
-        Ok(())
-    }
-
     pub(super) fn vm_node_index(&self, node: &NodeId) -> Result<usize, SchedulerError> {
         self.nodes
             .iter()
@@ -558,67 +546,6 @@ impl SingleScheduler {
         };
 
         Ok(target_counter > node.counter)
-    }
-
-    pub(super) fn concurrent_run_set_from_candidates(
-        &self,
-        max_host_workers: usize,
-        candidates: &[AdvanceCandidate],
-    ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
-        self.validate_max_host_workers(max_host_workers)?;
-        let mut selected = Vec::new();
-        let frontier = SimInstant {
-            nanos: self.frontier.ticks,
-        };
-        let target_time = candidates.first().map(|candidate| candidate.target_time);
-        // A parked peer can hold the global frontier behind the canonical
-        // global-minimum candidate. Batching frontier peers in that state would
-        // reorder PICK relative to the authoritative serial path. Advance only
-        // that canonical first candidate; normal independent batches resume
-        // once the common frontier is restored.
-        if let Some(candidate) = candidates.first() {
-            let draft = self.advance_plan_draft(candidate)?;
-            let current_time =
-                self.node_time_for_counter(&self.nodes[draft.index], draft.before)?;
-            if current_time != frontier {
-                selected.push(SchedulerConcurrentRunCandidate {
-                    node: draft.node,
-                    current_time,
-                    target_time: candidate.target_time,
-                    max_advance_icount: draft.target_counter,
-                });
-                return Ok(SchedulerConcurrentRunSet {
-                    max_host_workers,
-                    candidates: selected,
-                });
-            }
-        }
-
-        for candidate in candidates.iter() {
-            if selected.len() >= max_host_workers {
-                break;
-            }
-            if Some(candidate.target_time) != target_time {
-                break;
-            }
-            let draft = self.advance_plan_draft(candidate)?;
-            let current_time =
-                self.node_time_for_counter(&self.nodes[draft.index], draft.before)?;
-            if current_time != frontier {
-                continue;
-            }
-            selected.push(SchedulerConcurrentRunCandidate {
-                node: draft.node,
-                current_time,
-                target_time: candidate.target_time,
-                max_advance_icount: draft.target_counter,
-            });
-        }
-
-        Ok(SchedulerConcurrentRunSet {
-            max_host_workers,
-            candidates: selected,
-        })
     }
 
     pub(super) fn advance_plan_draft(
@@ -1339,9 +1266,7 @@ impl SingleScheduler {
     pub(super) fn drive_concurrent_authoritative_quantum(
         &mut self,
         request: QuantumRequest,
-        max_host_workers: usize,
     ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
-        self.validate_max_host_workers(max_host_workers)?;
         if request.configuration != self.configuration {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -1367,7 +1292,7 @@ impl SingleScheduler {
         self.last_topology_recompute = topology_recomputed;
 
         let candidates = self.advance_candidates()?;
-        let run_set = self.concurrent_run_set_from_candidates(max_host_workers, &candidates)?;
+        let run_set = self.concurrent_run_set_from_candidates(&candidates)?;
         let selected_candidates = candidates
             .into_iter()
             .filter(|candidate| {
@@ -1786,16 +1711,15 @@ impl SingleScheduler {
         &self,
         decisions: &[Decision],
     ) -> Result<Configuration, SchedulerError> {
-        decisions
-            .iter()
-            .cloned()
-            .try_fold(self.configuration.clone(), |configuration, decision| {
-                try_step(&configuration, decision).map_err(|error| {
-                    SchedulerError::BoundaryViolation {
-                        message: format!("scheduler configuration step rejected: {error}"),
-                    }
-                })
-            })
+        let mut configuration = self.configuration.clone();
+        for decision in decisions {
+            configuration = try_step(&configuration, decision.clone()).map_err(|source| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("scheduler decision violated the scenario model: {source}"),
+                }
+            })?;
+        }
+        Ok(configuration)
     }
 
     pub(super) fn admit_control_at_boundary(&mut self, control: Vec<ControlOperation>) {

@@ -11,6 +11,7 @@
   guestLib = builtins.readFile ../../crates/crucible-guest/src/lib.rs;
   guestMain = builtins.readFile ../../crates/crucible-guest/src/main.rs;
   guestGate = builtins.readFile ../../crates/crucible-guest/tests/gate_abi_conformance.rs;
+  protocolDoorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
   guestPackage = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
@@ -182,12 +183,26 @@
         needle = "instruction_abi_architectures=x86_64,aarch64";
       }
       {
-        label = "instruction ABI version";
-        needle = "doorbell_instruction_abi_version=4";
+        label = "instruction ABI version extraction";
+        needle = "doorbell_instruction_abi_version=" + "$" + "(sed -n";
+      }
+      {
+        label = "instruction ABI version source";
+        needle = "WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION";
+      }
+      {
+        label = "instruction ABI version build information";
+        needle = "doorbell_instruction_abi_version=" + "$" + "doorbell_instruction_abi_version";
       }
       {
         label = "single-source ABI source";
         needle = "abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS";
+      }
+    ]
+    ++ failuresFor "crates/crucible-protocol/src/doorbell_abi.rs" protocolDoorbellAbi [
+      {
+        label = "instruction ABI version 4";
+        needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 4;";
       }
     ]
     ++ failuresFor "tests/crucible/phase4-guest-host-emitter.nix" phaseGate [

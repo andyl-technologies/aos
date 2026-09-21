@@ -3,6 +3,35 @@
 use super::*;
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
+    fn query_hot_fork_child_runtime(
+        &mut self,
+    ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError> {
+        reject_out_of_scope_scripted_qmp("query hot-fork child runtime")
+    }
+
+    fn prepare_hot_fork_template(
+        &mut self,
+        _block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
+    ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        reject_out_of_scope_scripted_qmp("prepare hot-fork template")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn query_hot_fork_child_process(
+        &mut self,
+        _generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        reject_out_of_scope_scripted_qmp("query hot-fork child process")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn release_hot_fork_child_process(
+        &mut self,
+        _generation: u64,
+    ) -> Result<crate::QmpHotForkChildProcessState, QemuNodeChannelError> {
+        reject_out_of_scope_scripted_qmp("release hot-fork child process")
+    }
+
     fn prepare_hot_fork_template_barriers(
         &mut self,
         _block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
@@ -36,73 +65,74 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         Ok(())
     }
 
-    fn query_hot_fork_readiness(
+    #[cfg(unix)]
+    fn install_exact_checkpoint_descriptor(
         &mut self,
-    ) -> Result<crate::QmpHotForkReadiness, QemuNodeChannelError> {
+        name: &crate::QmpDescriptorName,
+        _descriptor: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<(), QemuNodeChannelError> {
         self.log
             .lock()
             .unwrap()
-            .push(ChannelCall::QmpHotForkReadiness);
-        crate::QmpHotForkReadiness::from_acknowledged_proofs(7).ok_or_else(|| {
-            QemuNodeChannelError::new(
-                "query_hot_fork_readiness",
-                "scripted readiness bitmap is invalid",
-            )
-        })
+            .push(ChannelCall::QmpExactInstallDescriptor(
+                name.as_str().to_owned(),
+            ));
+        Ok(())
     }
 
-    fn query_hot_fork_thread_inventory(
+    fn capture_exact_checkpoint(
         &mut self,
-    ) -> Result<crate::QmpHotForkThreadInventory, QemuNodeChannelError> {
+        request: &crate::QmpCheckpointCaptureRequest,
+    ) -> Result<crate::QmpCheckpointCapture, QemuNodeChannelError> {
         self.log
             .lock()
             .unwrap()
-            .push(ChannelCall::QmpHotForkThreadInventory);
-        Ok(crate::QmpHotForkThreadInventory::one_coordinator(
-            self.process_id,
+            .push(ChannelCall::QmpExactCapture(request.identity()));
+        Ok(crate::QmpCheckpointCapture::for_test(
+            request,
+            ContentHash::from_bytes(b"scripted exact RAM topology"),
         ))
     }
 
-    fn query_hot_fork_rcu_inventory(
+    fn commit_exact_checkpoint(
         &mut self,
-    ) -> Result<crate::QmpHotForkRcuInventory, QemuNodeChannelError> {
+        identity: crate::QmpCheckpointIdentity,
+    ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         self.log
             .lock()
             .unwrap()
-            .push(ChannelCall::QmpHotForkRcuInventory);
-        Ok(crate::QmpHotForkRcuInventory::from_reader_ids(&[
-            self.process_id
-        ]))
+            .push(ChannelCall::QmpExactCommit(identity));
+        Ok(crate::QmpCheckpointEpochState::for_test(
+            1,
+            Some(identity),
+            None,
+        ))
     }
 
-    fn query_hot_fork_aio_inventory(
+    fn abort_exact_checkpoint(
         &mut self,
-    ) -> Result<crate::QmpHotForkAioInventory, QemuNodeChannelError> {
+        identity: crate::QmpCheckpointIdentity,
+        expected_committed: Option<crate::QmpCheckpointIdentity>,
+    ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         self.log
             .lock()
             .unwrap()
-            .push(ChannelCall::QmpHotForkAioInventory);
-        Ok(crate::QmpHotForkAioInventory::one_idle(1, self.process_id))
+            .push(ChannelCall::QmpExactAbort(identity));
+        Ok(crate::QmpCheckpointEpochState::for_test(
+            0,
+            expected_committed,
+            None,
+        ))
     }
 
-    fn query_hot_fork_aio_handler_inventory(
+    fn query_exact_checkpoint_epoch(
         &mut self,
-    ) -> Result<crate::QmpHotForkAioHandlerInventory, QemuNodeChannelError> {
+    ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         self.log
             .lock()
             .unwrap()
-            .push(ChannelCall::QmpHotForkAioHandlerInventory);
-        Ok(crate::QmpHotForkAioHandlerInventory::one_read(1, 1, 0))
-    }
-
-    fn query_hot_fork_block_backend_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkBlockBackendInventory, QemuNodeChannelError> {
-        self.log
-            .lock()
-            .unwrap()
-            .push(ChannelCall::QmpHotForkBlockBackendInventory);
-        Ok(crate::QmpHotForkBlockBackendInventory::one_hidden(1, 1))
+            .push(ChannelCall::QmpExactQueryEpoch);
+        Ok(crate::QmpCheckpointEpochState::for_test(0, None, None))
     }
 
     fn query_hot_fork_plugin_resource_inventory(
@@ -809,49 +839,6 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         }
     }
 
-    fn query_hot_fork_bottom_half_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkBottomHalfInventory, QemuNodeChannelError> {
-        self.log
-            .lock()
-            .unwrap()
-            .push(ChannelCall::QmpHotForkBottomHalfInventory);
-        Ok(crate::QmpHotForkBottomHalfInventory::one_idle(1, 1))
-    }
-
-    fn query_hot_fork_mutex_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkMutexInventory, QemuNodeChannelError> {
-        self.log
-            .lock()
-            .unwrap()
-            .push(ChannelCall::QmpHotForkMutexInventory);
-        Ok(crate::QmpHotForkMutexInventory::one_owned(
-            1,
-            self.process_id,
-        ))
-    }
-
-    fn query_hot_fork_timer_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkTimerInventory, QemuNodeChannelError> {
-        self.log
-            .lock()
-            .unwrap()
-            .push(ChannelCall::QmpHotForkTimerInventory);
-        Ok(crate::QmpHotForkTimerInventory::empty())
-    }
-
-    fn query_hot_fork_monitor_inventory(
-        &mut self,
-    ) -> Result<crate::QmpHotForkMonitorInventory, QemuNodeChannelError> {
-        self.log
-            .lock()
-            .unwrap()
-            .push(ChannelCall::QmpHotForkMonitorInventory);
-        Ok(crate::QmpHotForkMonitorInventory::one_supported())
-    }
-
     fn complete_terminal_lifecycle_exit(
         &mut self,
         action: ContentHash,
@@ -925,4 +912,11 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             .push(ChannelCall::QmpActivateDebugGuest);
         Ok(())
     }
+}
+
+fn reject_out_of_scope_scripted_qmp<T>(operation: &'static str) -> Result<T, QemuNodeChannelError> {
+    Err(QemuNodeChannelError::new(
+        operation,
+        "operation is outside this scripted test channel",
+    ))
 }

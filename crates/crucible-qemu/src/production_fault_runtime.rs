@@ -206,24 +206,12 @@ impl ProductionFaultRuntimeCheckpoint {
         self.qemu_fingerprints.get(node).copied()
     }
 
-    /// Returns the next fault-command sequence captured for one QEMU node.
-    #[must_use]
-    pub fn qemu_fault_sequence(&self, node: &NodeId) -> Option<u64> {
-        self.qemu_fault_sequences.get(node).copied()
-    }
-
-    /// Returns the next required QEMU fault-event sequence for one node.
-    #[must_use]
-    pub fn qemu_fault_event_sequence(&self, node: &NodeId) -> Option<u64> {
-        self.qemu_fault_event_sequences.get(node).copied()
-    }
-
     /// Adds one synthetic live-node continuation for cross-crate tests.
     ///
     /// This constructor is unavailable in production builds. It accepts only
-    /// an otherwise node-empty checkpoint, installs the same node key in all
-    /// three exact QEMU continuation maps, and rebuilds the aggregate identity
-    /// under `plan`. Production code must obtain these values from a live
+    /// an otherwise node-empty checkpoint, installs the same
+    /// node key in all three exact QEMU continuation maps, and rebuilds the
+    /// aggregate identity under `plan`. Production code must obtain these values from a live
     /// [`QemuNodeSet`] through [`ProductionFaultRuntime::checkpoint`].
     ///
     /// # Errors
@@ -261,7 +249,6 @@ impl ProductionFaultRuntimeCheckpoint {
                 hard: FaultResourceLimits::compiled_maximum().nodes,
             })
         };
-
         let mut qemu_fingerprints = QemuNodeMap::new();
         qemu_fingerprints
             .try_insert(node.clone(), fingerprint)
@@ -483,7 +470,6 @@ mod checkpoint;
 mod checkpoint_identity;
 #[path = "production_fault_runtime/construction.rs"]
 mod construction;
-pub(crate) use construction::validate_qemu_fingerprints;
 #[path = "production_fault_runtime/evaluation.rs"]
 mod evaluation;
 #[cfg(test)]

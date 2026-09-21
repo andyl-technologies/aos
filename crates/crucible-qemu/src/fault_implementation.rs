@@ -109,7 +109,7 @@ fn executor(effect: EffectKind) -> &'static str {
 
 fn conformance_test(effect: EffectKind) -> &'static str {
     match effect {
-        EffectKind::NodeLifecycle => "tests/crucible/phase2-qemu-live-node-lifecycle-fault.nix",
+        EffectKind::NodeLifecycle => "tests/crucible/phase7-signal-fault-system.nix",
         EffectKind::NodeHang => {
             "tests/crucible/phase2-qemu-node-lifecycle.nix via gate:patch-microtests"
         }
@@ -137,13 +137,13 @@ fn conformance_test(effect: EffectKind) -> &'static str {
             "tests/crucible/phase2-qemu-memory-access.nix via gate:patch-microtests"
         }
         EffectKind::ClockTransform | EffectKind::ClockSourceState => {
-            "tests/crucible/phase2-qemu-live-fault-hardware.nix plus gate:patch-microtests/0068"
+            "tests/crucible/phase7-signal-fault-system.nix plus gate:patch-microtests"
         }
         EffectKind::AcceleratorLifecycle
         | EffectKind::AcceleratorResultTransform
         | EffectKind::AcceleratorMemoryEvent
         | EffectKind::AcceleratorService => {
-            "tests/crucible/phase2-qemu-live-fault-hardware.nix plus gate:patch-microtests/0069,0074"
+            "tests/crucible/phase7-signal-fault-system.nix plus gate:patch-microtests"
         }
         _ => "checks.crucible.phase2.gates.patchMicrotests",
     }
@@ -151,14 +151,14 @@ fn conformance_test(effect: EffectKind) -> &'static str {
 
 fn production_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
     let live_gate = match effect {
-        EffectKind::NodeLifecycle => "gate:live-node-lifecycle-fault",
+        EffectKind::NodeLifecycle => "gate:signal-fault-system",
         EffectKind::NodeHang => "gate:live-node-lifecycle-matrix",
         EffectKind::ClockTransform
         | EffectKind::ClockSourceState
         | EffectKind::AcceleratorLifecycle
         | EffectKind::AcceleratorResultTransform
         | EffectKind::AcceleratorMemoryEvent
-        | EffectKind::AcceleratorService => "gate:live-fault-hardware",
+        | EffectKind::AcceleratorService => "gate:signal-fault-system",
         _ => "gate:patch-microtests",
     };
     ProductionConformanceEvidence {

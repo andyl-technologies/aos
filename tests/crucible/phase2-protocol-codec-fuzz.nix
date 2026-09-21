@@ -12,7 +12,10 @@
   codecFuzzTest = builtins.readFile ../../crates/crucible-protocol/tests/codec_fuzz.rs;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   ioWireFuzzLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
-  pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  pluginBlockIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  };
   pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;

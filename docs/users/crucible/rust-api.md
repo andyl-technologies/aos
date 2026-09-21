@@ -60,9 +60,11 @@ accepts world and signal artifact stores. Direct integrations use it for inputs
 that ordinary `run`/`verify` do not obtain from `--store`, including normalized
 recordings and spatial/sampler objects.
 
-`build_production_vm_lifecycle_loop` constructs a fresh live session.
-`build_production_vm_lifecycle_loop_from_checkpoint` realizes an exact retained
-session after validating dependencies and backend identity.
+`build_production_vm_lifecycle_loop_with_launcher` constructs a fresh live
+session through a caller-supplied production node launcher.
+`build_production_vm_exact_resume_lifecycle` consumes an authenticated exact
+checkpoint admission and realizes its retained session after validating
+dependencies and backend identity.
 `collect_signal_artifact_objects` resolves the authenticated transitive signal
 closure. `production_vm_search_frontier` exposes the production search frontier
 used by bounded exploration.
@@ -146,11 +148,6 @@ uses bounded chunks and typed stream identity.
 Guest introspection messages also use the shared control protocol version and
 typed failure codes/output streams. Availability depends on guest agent and
 backend capability. See [Debugging](debugging.md) before exposing a gateway.
-
-## Production QEMU API
-
-Production plugin install types are re-exported under backend-neutral names so
-control-plane clients do not depend directly on the implementation crate.
 
 ## Import APIs
 

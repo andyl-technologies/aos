@@ -634,7 +634,7 @@ fn finite_binding_search_choices_replay_once_and_reject_unused_overrides() {
             candidate: choice
                 .candidate_semantics
                 .candidate(0)
-                .expect("fixture candidate must exist"),
+                .unwrap_or_else(|| panic!("fixture candidate must exist")),
             parent_branch: Some(ContentHash::from_bytes(b"search-parent")),
         },
     )]
@@ -1486,47 +1486,5 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
     assert_eq!(restored.active(), uninterrupted.active());
 }
 
-#[test]
-fn service_profile_identity_includes_named_physical_input_contracts() {
-    let value = SignalValue::U64(42);
-    let distance = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("distance"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Millimetres, 0)
-                .unwrap_or_else(|error| panic!("distance shape: {error}")),
-        }],
-        inputs: vec![value.clone()],
-    };
-    let count = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("count"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
-                .unwrap_or_else(|error| panic!("count shape: {error}")),
-        }],
-        inputs: vec![value],
-    };
-    let range = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("range"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Millimetres, 0)
-                .unwrap_or_else(|error| panic!("range shape: {error}")),
-        }],
-        inputs: vec![SignalValue::U64(42)],
-    };
-
-    let distance_digest = resolved_mapping_output_digest(&distance, FaultResourceLimits::default())
-        .unwrap_or_else(|error| panic!("distance digest: {error}"));
-    assert_ne!(
-        distance_digest,
-        resolved_mapping_output_digest(&count, FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("count digest: {error}")),
-    );
-    assert_ne!(
-        distance_digest,
-        resolved_mapping_output_digest(&range, FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("range digest: {error}")),
-    );
-}
+#[path = "binding_runtime/service_profile.rs"]
+mod service_profile;

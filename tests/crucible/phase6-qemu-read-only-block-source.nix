@@ -31,7 +31,7 @@ pkgs.mkDerivation {
         PASS
         check=${attrPath}
         tasks=${builtins.concatStringsSep "," taskIds}
-        patch=0197-crucible-retain-read-only-block-sources.patch
+        patch=crucible-qemu-11.1.1.patch
         native_source_freeze_restore=true
         writable_descendant_rejected_and_restored=true
         inherited_parent_token_rejected=true

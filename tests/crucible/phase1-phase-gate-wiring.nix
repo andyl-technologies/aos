@@ -189,6 +189,12 @@
     }
     {
       phase = "phase7";
+      attr = "productionRustPluginFlight";
+      attrPath = "checks.crucible.phase7.productionRustPluginFlight";
+      gate = "gate:production-rust-plugin-flight";
+    }
+    {
+      phase = "phase7";
       attr = "signalFaultSystem";
       gate = "gate:signal-fault-system";
     }

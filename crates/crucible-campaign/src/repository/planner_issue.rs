@@ -13,59 +13,11 @@ pub(super) struct PlannerIssueProjection {
     pub deduplicated: u64,
 }
 
-#[derive(Clone, Copy)]
-enum IssueProjectionMode {
-    Preflight,
-    Publish,
-    Validate {
-        target_exploration: ContentId,
-        target_accounting: ContentId,
-    },
-}
-
-impl IssueProjectionMode {
-    const fn publishes(self) -> bool {
-        matches!(self, Self::Publish)
-    }
-
-    const fn validates_import(self) -> bool {
-        matches!(self, Self::Validate { .. })
-    }
-}
-
-struct IssueGeneratorValidation {
-    validated: BTreeSet<(
-        CandidateGeneratorSpecId,
-        ChoiceDomainId,
-        Option<ProbabilityModelId>,
-    )>,
-    remaining: usize,
-}
-
-struct PlannerIssueAttemptBasis<'a> {
-    snapshot: &'a LoadedSnapshot,
-    lineage: &'a CampaignLineage,
-    request: &'a BranchRequest,
-    opportunity: &'a ChoiceOpportunity,
-    domain: &'a ChoiceDomain,
-    parent_path: &'a BranchPath,
-}
-
-#[derive(Clone, Copy)]
-struct PlannerIssueProposalBasis<'a> {
-    request: &'a BranchRequest,
-    domain: &'a ChoiceDomain,
-    feedback_projection: Option<&'a crate::BranchPuctProjection>,
-}
-
-impl IssueGeneratorValidation {
-    fn new() -> Self {
-        Self {
-            validated: BTreeSet::new(),
-            remaining: MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS,
-        }
-    }
-}
+mod validation;
+use validation::{
+    IssueGeneratorValidation, IssueProjectionMode, PlannerIssueAttemptBasis,
+    PlannerIssueProposalBasis,
+};
 
 impl CampaignRepository {
     pub(super) fn planner_search_candidate(
@@ -605,98 +557,96 @@ impl CampaignRepository {
             }
         }
 
-        {
-            let mut frontier_states = BTreeMap::new();
-            for (request, request_id) in branch_requests.iter().zip(branch_request_ids.iter()) {
-                frontier_states.insert(
-                    *request_id,
-                    (
-                        request.branch_point(),
-                        self.initial_continuation_state_at(
-                            request,
-                            super::projection::CandidateViewRoots::from_roots(
-                                snapshot.snapshot.roots(),
-                            ),
-                        )?,
+        let mut frontier_states = BTreeMap::new();
+        for (request, request_id) in branch_requests.iter().zip(branch_request_ids.iter()) {
+            frontier_states.insert(
+                *request_id,
+                (
+                    request.branch_point(),
+                    self.initial_continuation_state_at(
+                        request,
+                        super::projection::CandidateViewRoots::from_roots(
+                            snapshot.snapshot.roots(),
+                        ),
+                    )?,
+                ),
+            );
+        }
+        if let Some(last_proposal) = proposals.last() {
+            if !frontier_states.contains_key(&selected.source()) {
+                let prior_state = self.continuation_state(
+                    super::projection::CandidateViewRoots::new(
+                        prior_exploration,
+                        snapshot.snapshot.roots().observations,
+                        snapshot.snapshot.roots().corpus,
+                        prior_accounting,
                     ),
-                );
+                    selected.source(),
+                    &selected_request,
+                )?;
+                self.validate_frontier_projection(
+                    frontier_index,
+                    selected.source(),
+                    selected.branch_point(),
+                    prior_state,
+                )?;
             }
-            if let Some(last_proposal) = proposals.last() {
-                if !frontier_states.contains_key(&selected.source()) {
-                    let prior_state = self.continuation_state(
+            let proposed = last_proposal.ordinal();
+            let profile = self
+                .candidate_source_profile(&selected_request, &selected_domain)?
+                .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
+            let completed_visits = self.branch_completed_visits(
+                snapshot.snapshot.roots().observations,
+                selected_request.branch_point(),
+            )?;
+            let has_next_candidate = if profile
+                == super::projection::CandidateSourceProfile::CorpusMutation
+                && proposed < selected_request.budget().maximum_proposals()
+            {
+                self.expected_candidate_at_view(
+                    &selected_request,
+                    &selected_domain,
+                    proposed
+                        .checked_add(1)
+                        .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
+                    super::projection::CandidateEnumerationBasis::new(
                         super::projection::CandidateViewRoots::new(
                             prior_exploration,
                             snapshot.snapshot.roots().observations,
                             snapshot.snapshot.roots().corpus,
                             prior_accounting,
                         ),
-                        selected.source(),
-                        &selected_request,
-                    )?;
-                    self.validate_frontier_projection(
-                        frontier_index,
-                        selected.source(),
-                        selected.branch_point(),
-                        prior_state,
-                    )?;
-                }
-                let proposed = last_proposal.ordinal();
-                let profile = self
-                    .candidate_source_profile(&selected_request, &selected_domain)?
-                    .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
-                let completed_visits = self.branch_completed_visits(
-                    snapshot.snapshot.roots().observations,
-                    selected_request.branch_point(),
-                )?;
-                let has_next_candidate = if profile
-                    == super::projection::CandidateSourceProfile::CorpusMutation
-                    && proposed < selected_request.budget().maximum_proposals()
-                {
-                    self.expected_candidate_at_view(
-                        &selected_request,
-                        &selected_domain,
-                        proposed
-                            .checked_add(1)
-                            .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
-                        super::projection::CandidateEnumerationBasis::new(
-                            super::projection::CandidateViewRoots::new(
-                                prior_exploration,
-                                snapshot.snapshot.roots().observations,
-                                snapshot.snapshot.roots().corpus,
-                                prior_accounting,
-                            ),
-                            completed_visits,
+                        completed_visits,
+                    )
+                    .with_additional_previous(proposals)
+                    .with_feedback(feedback_projection.as_ref().map(|projection| {
+                        super::projection::CandidateFeedbackProjection::new(
+                            snapshot.snapshot.active_policy(),
+                            projection,
                         )
-                        .with_additional_previous(proposals)
-                        .with_feedback(feedback_projection.as_ref().map(|projection| {
-                            super::projection::CandidateFeedbackProjection::new(
-                                snapshot.snapshot.active_policy(),
-                                projection,
-                            )
-                        })),
-                    )?
-                    .is_some()
-                } else {
-                    false
-                };
-                let state = super::projection::continuation_state_after_progress(
-                    profile,
-                    proposed,
-                    false,
-                    has_next_candidate,
-                    selected_request.budget().maximum_proposals(),
-                    completed_visits,
-                )?;
-                frontier_states.insert(selected.source(), (selected.branch_point(), state));
-            }
-            let projections = frontier_states
-                .into_iter()
-                .map(|(request, (branch_point, state))| (request, branch_point, state))
-                .collect::<Vec<_>>();
-            let next_frontier =
-                self.frontier_index_after(prior_exploration, &projections, mode.publishes())?;
-            exploration_upserts.insert(frontier_index_anchor_key(), next_frontier);
+                    })),
+                )?
+                .is_some()
+            } else {
+                false
+            };
+            let state = super::projection::continuation_state_after_progress(
+                profile,
+                proposed,
+                false,
+                has_next_candidate,
+                selected_request.budget().maximum_proposals(),
+                completed_visits,
+            )?;
+            frontier_states.insert(selected.source(), (selected.branch_point(), state));
         }
+        let projections = frontier_states
+            .into_iter()
+            .map(|(request, (branch_point, state))| (request, branch_point, state))
+            .collect::<Vec<_>>();
+        let next_frontier =
+            self.frontier_index_after(prior_exploration, &projections, mode.publishes())?;
+        exploration_upserts.insert(frontier_index_anchor_key(), next_frontier);
 
         let exploration =
             self.finish_issue_root(prior_exploration, &exploration_upserts, mode, true)?;
@@ -773,10 +723,12 @@ impl CampaignRepository {
                 .get(&stage.selector().model())
                 .ok_or_else(|| integrity("SMC request model is not planned"))?;
             let expected = BranchRequest::new(
-                basis.opportunity().branch_point_id(basis.configuration()),
-                basis.parent(),
-                basis.opportunity().id()?,
-                basis.domain().id()?,
+                BranchRequest::identity(
+                    basis.opportunity().branch_point_id(basis.configuration()),
+                    basis.parent(),
+                    basis.opportunity().id()?,
+                    basis.domain().id()?,
+                ),
                 CandidateSource::statistical_smc(
                     basis.generation(),
                     basis.particle().id(),

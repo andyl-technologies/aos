@@ -7,7 +7,8 @@ scheduling node. The *in-VM* half — the cdylib that holds time control and run
 the device/channel callbacks — is [`12-qemu-plugin.md`](12-qemu-plugin.md); the
 source changes to QEMU itself are [`11-qemu-patches.md`](11-qemu-patches.md).
 This file is about what the host process does: how it launches QEMU, how it
-realizes a VM from a `Configuration` (boot / loadvm / replay, file 05), how it
+realizes a VM from a `Configuration` (descriptor restore / replay / baked
+genesis, file 05), how it
 talks to QMP, how it shuts a child down without ever leaking it, and how it
 bridges the synchronous node-step interface the scheduler wants to the
 asynchronous socket and QMP I/O QEMU needs.
@@ -20,7 +21,7 @@ Requirement IDs in this file use the prefix `QEMU`. Gate names referenced here
 launch configuration realizes the determinism contract of
 [`04-determinism-contract.md`](04-determinism-contract.md) §4.6 and the time
 model of [`09-virtual-time-icount.md`](09-virtual-time-icount.md); the
-realization branches (boot/loadvm/replay) are the execution model of
+realization branches (descriptor restore / replay / baked genesis) are the execution model of
 [`05-execution-model.md`](05-execution-model.md) §5–§7; the three logical planes are
 the protocol of [`14-protocol.md`](14-protocol.md), the shared-memory ABI of
 [`13-shmem-abi.md`](13-shmem-abi.md), and QMP defined here.
@@ -98,10 +99,10 @@ The enumerated, REQUIRED launch elements (illustrative command sketch follows
 the requirements):
 
 - **[QEMU-4]** **Execution backend.** `-accel sim,thread=single` and `-icount
-  shift=N` with the fixed scenario shift; `sim` is the patch series'
+  shift=N` with the fixed scenario shift; `sim` is the atomic patch'
   TCG-derived accelerator and the icount mode MUST be the precise (fixed-shift) mode,
   never `auto` ([QEMU-2]). Idle warp MUST be suppressed when the plugin holds
-  time control (the patch-series mechanism E2/[TIME-21]); the host requests the
+  time control (the atomic-patch mechanism E2/[TIME-21]); the host requests the
   no-warp behavior via the icount/plugin configuration so the virtual clock
   advances only by retired instructions and scheduler-authorized jumps. *Gate:*
   `gate:layer0-determinism`. *Spec:* §10.2; satisfies [DET-8], [DET-10],
@@ -129,7 +130,7 @@ the requirements):
   stock `tcg` and `thread=multi` (MTTCG) loudly and MUST accept `-smp N` only in
   conjunction with `-accel sim,thread=single`. The host MUST set the round-robin switch boundary
   to the scenario's content-addressed `rr_switch_quantum` (in node-icount) via
-  the patch-series flag (`crucible-rr-quantum-icount`, 11/[PATCH-44]), MUST
+  the atomic-patch flag (`rr_switch_quantum`, 11/[PATCH-44]), MUST
   reject a configuration that leaves the quantum at QEMU's adaptive/realtime
   default, and MUST fold N and the pinned `rr_switch_quantum` into the scenario
   content hash so two builds launch byte-identical vCPU/round-robin
@@ -138,7 +139,7 @@ the requirements):
   [DET-35], [TIME-6], references [NG-1], [PATCH-44].
 
 - **[QEMU-6]** **Fixed CPU model.** `-cpu <model>` naming a concrete model that
-  does **not** advertise `RDRAND`/`RDSEED` (or, equivalently, the patch series
+  does **not** advertise `RDRAND`/`RDSEED` (or, equivalently, the atomic patch
   emulates those from the seeded stream, E1). `-cpu host` MUST NOT be used. The
   model is part of the scenario hash and makes floating point (E15) deterministic
   under TCG soft-float. *Gate:* `gate:single-vm-fingerprint`,
@@ -168,7 +169,7 @@ the requirements):
 
 - **[QEMU-10]** **Internal-PRNG seed.** QEMU's own entropy (device MACs/IDs, glib
   PRNG, `qemu_guest_getrandom`) MUST be seeded deterministically from the run
-  seed (the `-seed` launch value plus the patch-series getrandom/glib hooks,
+  seed (the `-seed` launch value plus the atomic-patch getrandom/glib hooks,
   E9/[DET-21]), so device state in `T` is reproducible, not just guest memory.
   *Gate:* `gate:layer0-determinism`. *Spec:* §10.2; satisfies [DET-21].
 
@@ -215,8 +216,8 @@ qemu-system-x86_64 \
   -accel sim,thread=single -icount shift=N  # QEMU-4/5 fixed shift, precise mode, no warp,
                                             #          single-threaded RR-TCG (NOT thread=multi)
   -smp N                               # QEMU-5  N vCPUs under single-threaded RR
-  # rr_switch_quantum pinned to node-icount via the patch-series flag (QEMU-43,
-  # crucible-rr-quantum-icount, 11), NEVER QEMU's adaptive/realtime rr_quantum
+  # rr_switch_quantum pinned to node-icount via the atomic-patch flag (QEMU-43,
+  # rr_switch_quantum, 11), NEVER QEMU's adaptive/realtime rr_quantum
   -cpu <model-no-rdrand>               # QEMU-6  fixed model, no host entropy
   -machine <fixed>  -m <fixed>         # QEMU-7  fixed machine/reset/memory
   -rtc base=<fixed-epoch>,clock=vm     # QEMU-8  icount-derived RTC, no host time
@@ -276,8 +277,8 @@ misdescribe this as only three kernel objects.
    only to rouse QEMU to re-read this state; retry and serviced-I/O paths may add
    counter writes.
 3. **The QMP socket** (§10.4) — out-of-band machine control: capability
-   negotiation, `savevm`/`loadvm` for the VM-state half of a checkpoint, and
-   `quit` as a shutdown rung. The separate fixed debugger activation stream is
+   negotiation, checkpoint capture, version-nine descriptor restore, VMState
+   capture for offline migration, and `quit` as a shutdown rung. The separate fixed debugger activation stream is
    established at launch but remains inert until an explicit non-canonical fork
    boundary (36 [DBG-45A]).
 
@@ -311,7 +312,7 @@ pub struct QemuNode {
     child: Option<Child>,            // the one QEMU process this node owns
     control: PluginIpcChannel,       // AF_UNIX control: handshake + Quit only (14)
     shmem: NodeSlotView,             // hot-path: ceiling/clock/futex/rings (13)
-    qmp: QmpConnection,              // machine control: savevm/loadvm/quit (§10.4)
+    qmp: QmpConnection,              // checkpoint and shutdown control (§10.4)
     config: LaunchConfig,            // the content-addressed launch config (§10.2)
     status: NodeRunStatus,           // running / idle / done / crashed
 }
@@ -321,8 +322,8 @@ pub struct QemuNode {
 
 QMP is QEMU's JSON-line machine-control protocol. Crucible uses a **minimal,
 typed** client — not a general QMP binding — covering exactly the commands the
-execution model needs: capability negotiation, `savevm`/`loadvm` (the VM-state
-half of a `Checkpoint`, 07), and `quit` (a shutdown rung, §10.6). Debugger
+execution model needs: capability negotiation, version-nine checkpoint capture
+and descriptor restore, VMState capture for offline migration, and `quit` (a shutdown rung, §10.6). Debugger
 activation does not use QMP commands: QEMU connects its fixed activation-only
 chardev to a Crucible-owned Unix stream during launch, and Crucible writes the
 fixed token only after an explicit non-canonical fork (36 [DBG-45A]). It is an
@@ -343,61 +344,56 @@ mis-parse.
   and its response as a Rust type, and (c) skips asynchronous QMP events while
   awaiting a command's `return`/`error`, surfacing an `error` response as a typed
   `Result::Err`. The client MUST cover, at minimum: capability negotiation,
-  `savevm`, `loadvm`, and `quit`. The fixed activation-only debugger stream
+  version-nine checkpoint capture/restore, VMState capture, and `quit`. The fixed activation-only debugger stream
   MUST NOT accept caller-selected devices or bytes and MUST
   carry no guest-introspection payload. It MUST NOT expose a stringly-typed
   execute-arbitrary-JSON path on the determinism-critical control flow. *Gate:*
   `gate:control-responsive`. *Spec:* §10.4; references 07.
 
-- **[QEMU-20]** `savevm` MUST capture, and `loadvm` MUST restore, the VM-state
-  half of a `Checkpoint` (07): the complete machine state QEMU owns (guest RAM,
-  device/timer state, and — critically — the icount, the icount bias, and the
-  TCG/plugin time-control state). The host pairs the QMP VM snapshot with the
-  Crucible-owned state (CoW device overlays (15), the SPSC ring contents
-  ([SHM-21]/[SHM-22]), and the scheduler/RNG state, all of which are functions of
-  the `Configuration`, 05) to form a complete, content-addressed checkpoint. The
-  QMP snapshot tag MUST be derived from the checkpoint's content address so a
-  `loadvm` targets exactly the right VM state. *Gate:* `gate:replay-oracle`,
+- **[QEMU-20]** Production checkpoints MUST capture and restore complete
+  version-nine state: ordered direct-plus-delta guest RAM descriptors, serialized
+  non-RAM device/timer/icount state, host-I/O continuations, CoW overlays, ring
+  contents, and scheduler/RNG state. Every descriptor and host continuation MUST
+  bind the checkpoint content identity. No QMP `loadvm` path may authorize or
+  construct a runtime; replay probes and baked genesis use separately prepared
+  version-nine descriptor sets. *Gate:* `gate:replay-oracle`,
   `gate:content-address`. *Spec:* §10.4; satisfies [EXEC-23], references 07, 13,
   15.
 
-### The savevm-completeness spike, and the thin-checkpoint fallback
+### The descriptor-restore completeness probe
 
-The execution model's fast-resume and fork (05 §5) and the replay oracle (05 §8,
-[INV-2]) rely on `loadvm` reproducing a state **bit-identical** to a fresh
-replay to the same icount. Whether QEMU's `savevm`/`loadvm` actually preserves
-*all* of the icount, icount bias, TCG state, timer state, and the plugin's
-time-control state — completely enough that the restored fat checkpoint hashes
-equal to its thin (replay) derivation — is a known open question ([DET-32],
-E20). It MUST be verified, not assumed.
+The replay oracle (05 §8, [INV-2]) restores the fat side only from its
+authenticated version-nine direct-plus-delta RAM and device descriptors, then
+compares it with a fresh replay to the same icount. Monolithic VMState capture
+does not participate in runtime construction. Descriptor completeness ([DET-32],
+E20) MUST be verified, not assumed.
 
-- **[QEMU-21]** The completeness of QMP `savevm`/`loadvm` for the determinism
-  contract — that a restored fat checkpoint is bit-identical to a fresh replay to
-  the same icount (icount, bias, TCG/device/timer state, and plugin time-control
-  state all preserved) — MUST be treated as a SPIKE ([DET-32], forward-ref 30)
-  and verified by the replay oracle before snapshot-based resume is relied upon.
-  Until the spike is green, the host MUST default to the **thin-checkpoint
-  fallback**: realize a configuration by replaying from genesis (or a verified
-  ancestor) rather than by `loadvm` of an unverified fat snapshot (07). *Gate:*
+- **[QEMU-21]** The completeness of the version-nine descriptor restore for the
+  determinism contract — that a restored fat checkpoint is bit-identical to a
+  fresh replay to the same icount (icount, bias, TCG/device/timer state, and
+  plugin time-control state all preserved) — MUST be verified by the replay
+  oracle. The historical `savevm`/`loadvm` spike is evidence only and grants no
+  runtime authority. *Gate:*
   `gate:replay-oracle`. *Spec:* §10.4; satisfies [DET-32], [EXEC-15],
   forward-ref 30, 07.
 
-- **[QEMU-22]** When `loadvm` is used as the realization branch, the host MUST
-  validate the restored runtime against the replay oracle (re-reduce from an
+- **[QEMU-22]** Before a version-nine exact-checkpoint runtime is admitted, the
+  host MUST validate it against the replay oracle (re-reduce from an
   ancestor and compare execution fingerprints, [INV-2]) at least on the gated
   paths; a fat checkpoint that fails to hash-equal its thin derivation MUST be
   treated as a determinism defect (divergence-bisected, never silently
   re-snapshotted). *Gate:* `gate:replay-oracle`, `gate:divergence-bisect`.
   *Spec:* §10.4; satisfies [EXEC-17], [EXEC-23], [EXEC-24].
 
-## 10.5 instantiate realization for a VM (boot / loadvm / replay)
+## 10.5 instantiate realization for a VM (boot / descriptor restore / replay)
 
 `instantiate(config)` (05 §5) is the single function that turns a configuration
 into a live runtime, with three branches resolved in priority order: an exact
-cached snapshot → `loadvm`; the nearest cached ancestor → recurse + replay the
+version-nine checkpoint → descriptor restore; the nearest cached ancestor → recurse + replay the
 suffix; else recurse to genesis, whose base case is the **baked** genesis
-snapshot (05 §6), itself a `loadvm`. The single true *cold boot* in the entire
-system lives inside `bake`. This section is the QEMU-level realization of those
+snapshot (05 §6), itself restored from version-nine descriptors. The single true
+*cold boot* in the entire system lives inside `bake`. This section is the
+QEMU-level realization of those
 three branches and of `bake`.
 
 ### Cold boot (only inside `bake`)
@@ -406,40 +402,39 @@ A cold boot launches a fresh QEMU child with the §10.2 launch configuration,
 performs the plugin-IPC handshake (14) to hand over the shmem region and unblock
 plugin initialization, connects QMP (§10.4), and runs the guest to the node's
 deterministic *ready point* (05 §6: fixed icount / network-idle / console marker
-/ agent signal). `bake` then `savevm`s the result and content-addresses it as the
-genesis checkpoint.
+/ agent signal). `bake` then captures the version-nine direct descriptor set and
+content-addresses the complete genesis checkpoint.
 
 - **[QEMU-23]** A VM cold boot MUST occur **only** inside `bake` (05 §6,
   [EXEC-16]): launch a fresh child with the §10.2 launch config, complete the
   plugin-IPC handshake (14), connect and negotiate QMP (§10.4), run to the node's
-  deterministic ready point ([EXEC-20]), and `savevm` the genesis VM state. The
+  deterministic ready point ([EXEC-20]), and capture the direct descriptor-backed
+  genesis VM state. The
   hot loop (start/resume/fork/replay) MUST NOT cold-boot a VM. *Gate:*
   `gate:replay-oracle`, `gate:content-address`. *Spec:* §10.5; satisfies
   [EXEC-16], [EXEC-18], references [EXEC-23].
 
-- **[QEMU-24]** The genesis `savevm` produced by `bake` MUST be content-addressed
+- **[QEMU-24]** The genesis descriptor capture produced by `bake` MUST be content-addressed
   by the node's `World` entry plus the determinism pins, cached, and shared across
   every scenario and fork with the same `World` ([EXEC-18], [INV-6]); `bake` MUST
   reach a content-identical genesis snapshot across runs for a fixed `World`
   ([EXEC-20]). *Gate:* `gate:content-address`. *Spec:* §10.5; satisfies
   [EXEC-18], [EXEC-20].
 
-### loadvm-from-snapshot (warm resume / fork target)
+### descriptor restore (resume / fork target)
 
-The warm branch maps the genesis (or a descendant) snapshot back into a live
-runtime: launch a child in the launch configuration with the plugin loaded,
-hand over the shmem region (14), connect QMP, and `loadvm` the content-addressed
-VM snapshot. The host then restores the Crucible-owned half (CoW overlays (15),
-ring contents ([SHM-22]), scheduler/RNG state) so the runtime denotes exactly the
+The exact branch maps a version-nine checkpoint into a live runtime: authenticate
+the writable-root binding plus device and ordered RAM descriptors, launch a child
+in the launch configuration with the plugin loaded, hand over the shmem region
+(14), and issue the descriptor restore. The host restores the paired host-I/O,
+ring, scheduler, and RNG continuation so the runtime denotes exactly the
 configuration ([EXEC-22]).
 
-- **[QEMU-25]** The `loadvm` realization branch MUST launch a plugin-loaded child
-  in the launch configuration, hand over the shmem region via the control
-  handshake (14), connect QMP, `loadvm` the content-addressed VM snapshot, and
-  restore the Crucible-owned state half (CoW overlays, ring contents,
-  scheduler/RNG state) so the resulting runtime is content-equal to the
-  configuration ([EXEC-22]). This branch is gated on the savevm-completeness
-  spike ([QEMU-21]); until green, the host prefers replay ([QEMU-26]). *Gate:*
+- **[QEMU-25]** The exact realization branch MUST require version-nine device and
+  ordered direct-plus-delta RAM descriptors, authenticate them with the root
+  overlay before spawn, perform the plugin handshake (14), and restore the paired
+  host-I/O, ring, scheduler, and RNG continuation. Missing or retired monolithic
+  state MUST fail closed rather than select another runtime mechanism. *Gate:*
   `gate:replay-oracle`. *Spec:* §10.5; satisfies [EXEC-15], [EXEC-22], references
   [QEMU-21].
 
@@ -462,7 +457,7 @@ meaningful.
   `gate:replay-oracle`. *Spec:* §10.5; satisfies [EXEC-15], [EXEC-16],
   [EXEC-17].
 
-- **[QEMU-27]** All three realization branches (loadvm of an exact snapshot,
+- **[QEMU-27]** All three realization branches (descriptor restore of an exact checkpoint,
   ancestor-replay, baked-genesis load) MUST yield a runtime whose state is
   content-equal for the same configuration ([INV-2], [EXEC-17]); the branch
   chosen is a performance decision and MUST NOT be observable in the resulting
@@ -475,16 +470,17 @@ meaningful.
 ```text
 # Illustrative — the QEMU-level realization of instantiate(config) (05 §5).
 instantiate_vm(config):
-    if fat_snapshot(config.id) and spike_verified:        # QEMU-25 warm branch
+    if exact_v9_checkpoint(config.id):                     # QEMU-25 exact branch
+        authenticate(root, device, direct_plus_delta_ram)
         launch(plugin, launch_config); handshake(14); qmp_connect()
-        qmp.loadvm(content_tag(config.id))
+        qmp.restore_v9(device, direct_plus_delta_ram)
         restore_crucible_state(overlays, rings, sched/rng) # 13, 15, 05
     elif anc := nearest_cached_ancestor(config):           # QEMU-26 replay branch
         rt = instantiate_vm(anc)
         for decision in schedule[anc.len .. config.len]:
             rt.advance_one_quantum(decision)               # same machinery, §10.8
     else:                                                   # QEMU-23 genesis base
-        rt = loadvm(bake(world).genesis_for(node))         # baked once; not a boot
+        rt = restore_v9(bake(world).genesis_for(node))      # baked once; not a boot
     return rt
 ```
 
@@ -570,18 +566,20 @@ paths is a defect to localize ([INV-10]), not a transient to retry.
 The host is where the per-VM hermetic boundary (§4.6) is *configured* and
 *verified*. Configuration is §10.2: every entropy source the host controls is
 pinned by a launch flag or activated as a patch mechanism via sim mode.
-Verification is the execution fingerprint ([DET-29]): the host computes, at a
-fixed periodic icount cadence and at every cross-node interaction point, a
-deterministic digest combining the node's icount with a hash of its
-architectural registers, guest memory, and device state — **black-box**, with no
-guest cooperation ([DET-17]).
+Verification is the execution fingerprint ([DET-29]): the host issues an
+authenticated on-demand request naming an exact aggregate icount, then the
+worker computes and publishes a deterministic digest combining that icount with
+a hash of the node's architectural registers, guest memory, and device state —
+**black-box**, with no guest cooperation ([DET-17]).
 
 - **[QEMU-33]** The host MUST configure the per-VM hermetic boundary entirely
   through the §10.2 launch configuration and sim-mode activation ([DET-15]: no
   guest modification), and MUST verify it via the execution fingerprint
-  ([DET-29]): a periodic-icount + register/memory/device digest computed
-  black-box from the host through the plugin's introspection hooks (12), with no
-  guest cooperation. *Gate:* `gate:single-vm-fingerprint`, `gate:any-guest`.
+  ([DET-29]): an authenticated on-demand
+  icount + register/memory/device digest computed black-box from the host through
+  the plugin's introspection hooks (12), with no guest cooperation. The worker
+  acknowledges the matching request generation only after publishing the
+  sample. *Gate:* `gate:single-vm-fingerprint`, `gate:any-guest`.
   *Spec:* §10.7; satisfies [DET-15], [DET-17], [DET-29].
 
 - **[QEMU-34]** The host MUST expose the single-VM fingerprint hook that
@@ -589,7 +587,7 @@ guest cooperation ([DET-17]).
   `(image, cmdline, seed, I)` under adversarial host conditions ([DET-38]) and
   assert identical fingerprint sequences; a mismatch MUST localize to the first
   differing icount window for bisection ([DET-30], [INV-10]), never be tolerated.
-  The fingerprint cadence and the included state set MUST be fixed and
+  The authenticated request contract and included state set MUST be fixed and
   content-addressed with the scenario ([DET-31]). For an `-smp N` node the
   black-box fingerprint MUST read **all N vCPUs' register files** plus the
   round-robin cursor (which vCPU is current and the position within the pinned
@@ -724,7 +722,8 @@ because nothing determinism-relevant depends on its timing.
   publish its reached icount. Unchanged-icount retries and serviced host I/O may
   add eventfd writes, with no
   per-quantum socket message or QMP round-trip. Async socket/QMP traffic MUST be
-  confined to instantiate (handshake, loadvm), save (savevm), and teardown
+  confined to instantiate (handshake and descriptor restore), checkpoint
+  capture or probe/baked descriptor restore, and teardown
   (Quit/quit) boundaries. *Gate:* `gate:control-responsive`,
   `gate:layer1-injection`. *Spec:* §10.9; satisfies [SHM-1], [QEMU-18].
 
@@ -746,7 +745,7 @@ impl SimNode for QemuNode {
         }
     }
     // deliver()/emit() enqueue/dequeue shmem rings at delivery_icount (SHM-33);
-    // snapshot()/restore() bridge to async QMP savevm/loadvm (§10.4) at
+    // Exact checkpoint capture/descriptor restore uses async QMP (§10.4) at
     // checkpoint boundaries only, never per quantum.
 }
 ```
@@ -767,7 +766,8 @@ enumerated determinism configuration (§10.2); own it as a single scheduling nod
 with exactly three logical planes — plugin-IPC control, shmem plus futex/eventfd
 wakes on the hot path, and QMP machine
 control (§10.3, §10.4); realize any `Configuration` through the one `instantiate`
-function whose branches are loadvm / replay / baked-genesis-load, the only true
+function whose branches are version-nine descriptor restore / replay /
+baked-genesis-load, the only true
 boot living in `bake` (§10.5); never leak a child, on any termination path
 (§10.6); configure and fingerprint-verify the hermetic boundary black-box
 (§10.7); flow every per-quantum timing and frame through shmem in virtual time
@@ -830,18 +830,20 @@ determinism contract (04).
   concrete per-quantum shmem implementation remains tracked by [T-QEMU-12] and
   [T-QEMU-13]; async socket/QMP/process bridging remains tracked by [T-QEMU-14].
 - [x] **T-QEMU-4** Implement the typed minimal QMP client (greeting +
-  `qmp_capabilities`, typed `savevm`/`loadvm`/`quit`, event-skipping,
+  `qmp_capabilities`, typed checkpoint capture/descriptor restore, VMState
+  capture for offline migration, `quit`, event-skipping,
   error-as-typed-Result), with snapshot tags derived from checkpoint content
   addresses. — satisfies [QEMU-19], [QEMU-20]; spec §10.4.
 - [x] **T-QEMU-5** Implement exact snapshot capture and restore with icount,
   bias, TCG, timer, plugin time-control, QEMU device state, and Apache-side
   host-I/O continuations preserved under one content identity; oracle-validate
-  every `loadvm`-realized runtime. — satisfies [QEMU-21], [QEMU-22], [SHM-49];
+  every descriptor-restored runtime. — satisfies [QEMU-21], [QEMU-22], [SHM-49];
   spec §10.4, 13 §13.3.2, forward-ref §30.
-  Completed by `QemuNode::capture_exact_snapshot`, `QemuVmSnapshot`,
-  `QemuHostIoCheckpoint`, `QemuExactSnapshotPolicy`, and
+  Completed by `QemuNode::capture_exact_checkpoint_for_publication_guarded`,
+  `QemuExactCheckpointCaptureAdmission`, `QemuExactCheckpointCaptureResult`,
+  `QemuHostIoCheckpoint`, and
   `checks.crucible.phase2.qemuExactSnapshotRestore`. Capture writes the host
-  continuation before QEMU VMState while a shared-memory coordinated pause is
+  continuation before QEMU device and RAM capture while a shared-memory coordinated pause is
   active. The plugin acknowledges that specific pause with a new slot publish
   generation at the unchanged icount; busy guests clamp at their current raw
   icount without blocking QMP, halted guests park on the non-private futex, and
@@ -852,23 +854,20 @@ determinism contract (04).
   diskless and pending-block snapshots, force-kills the captured QEMU, restores
   in a fresh process, continues execution, and compares the complete pair and
   suffix against independent replay. There is no incomplete-snapshot fallback.
-- [x] **T-QEMU-6** Implement the VM `instantiate` realization with three branches
-  (loadvm / ancestor-replay / baked-genesis load) plus `bake`'s single cold boot
-  to the ready point; wire `start`/`resume`/`fork` as the same call differing
-  only in the configuration. — satisfies [QEMU-23], [QEMU-24], [QEMU-25],
+- [x] **T-QEMU-6** Implement authenticated production realization with distinct
+  operation-specific routes for version-nine exact resume and baked-genesis
+  replay, while keeping fresh boot confined to baked-genesis capture. — satisfies
+  [QEMU-23], [QEMU-24], [QEMU-25],
   [QEMU-26], [QEMU-27]; spec §10.5.
-  Completed as the `crucible-qemu` QEMU VM realization coordinator: it exposes
-  only `instantiate_qemu_vm` for normal realization. Lifecycle owners pass the
-  selected genesis, tip, or schedule-prefix configuration to that entry point,
-  which selects exact-snapshot `loadvm`, nearest-ancestor replay, or
-  baked-genesis load in priority order and keeps runtime
-  `loadvm` gated by replay-oracle admission through the exact-snapshot
-  policy. It validates checkpoint/configuration and baked-World identity,
-  rejects invalid ancestors, dispatches replay one recorded
-  decision at a time to the quantum executor, and exposes `bake_qemu_genesis_vm`
-  as the only cold-boot-to-ready-point entry. The concrete shmem/QEMU quantum
-  machinery remains tracked by [T-QEMU-12] and frame/device replay details remain
-  tracked by [T-QEMU-13].
+  Completed by `build_production_vm_exact_resume_lifecycle`, the sole daemon
+  `launch_restored` implementation, and `ProductionVmExactNodeRestoreAdmission::into_atomic_restore`.
+  The exact route authenticates and opens the complete repository checkpoint before
+  constructing one `QemuProductionExactRestoreRequest`. Baked replay separately
+  consumes `ProductionVmReplayExactNodeRestoreAdmission` through the scenario-routed
+  `ProductionBakedGenesisReplayCatalogFactory`. The deleted generic realization,
+  ancestor fallback, and public start/resume/fork wrappers are absent. The concrete
+  shmem/QEMU quantum machinery remains tracked by [T-QEMU-12] and frame/device replay
+  details remain tracked by [T-QEMU-13].
 - [x] **T-QEMU-7** Implement spawn with fd passing (control socket pair + shmem
   memfd + wake eventfd at fixed fd numbers, dup'd for the child) and die-with-host
   on every exit path (`kill_on_drop` + `PR_SET_PDEATHSIG=SIGKILL`). — satisfies
@@ -880,7 +879,7 @@ determinism contract (04).
   `PR_SET_PDEATHSIG=SIGKILL`, verifies the parent did not change before `exec`,
   and wraps the child in `QemuNodeChild`, whose drop path kills and reaps any
   unreaped process. The protocol setup handshake remains tracked by [T-PROTO-3]
-  and setup-completion tasks; realization-level `start`/`resume`/`fork` assembly
+  and setup-completion tasks; authenticated exact and baked-replay realization
   remains tracked by [T-QEMU-6].
 - [x] **T-QEMU-8** Implement the graceful-shutdown escalation (Quit → QMP quit →
   SIGTERM → SIGKILL → reap) with bounded per-rung timeouts and an unconditional
@@ -892,13 +891,14 @@ determinism contract (04).
   satisfies [QEMU-32]; spec §10.6.
 - [x] **T-QEMU-10** Wire the determinism boundary: configure hermeticity entirely
   via launch config + sim mode, expose the black-box execution-fingerprint hook
-  (periodic icount + register/memory/device digest via the plugin), and add the
+  (authenticated on-demand icount + register/memory/device digest via the
+  plugin), and add the
   per-elimination micro-tests + inertness checks. — satisfies [QEMU-33],
   [QEMU-35]; spec §10.7.
   Completed as the `crucible-qemu` determinism-boundary validator: it accepts
   only a deterministic launch profile plus sim-mode inertness evidence, defines
-  a content-addressed black-box plugin fingerprint definition with periodic
-  icount, architectural-register, guest-memory, and device-state components,
+  a content-addressed black-box plugin fingerprint definition with authenticated
+  on-demand icount, architectural-register, guest-memory, and device-state components,
   builds the digest consumed by the single-VM fingerprint hook, and requires a
   per-elimination executable negative microtest matrix for the sim accelerator,
   stock-TCG/MTTCG rejection, icount, CPU
@@ -906,21 +906,21 @@ determinism contract (04).
   backing, idle-warp, and sim-mode inertness. The full real-QEMU
   `gate:qemu-inert` corpus is implemented by
   `checks.crucible.phase2.gates.qemuInert`; the N-vCPU fingerprint expansion is
-  covered by `checks.crucible.phase2.qemuNvcpuFingerprint`.
+  covered by `checks.crucible.phase2.qemuRrQuantumIcount`.
 - [x] **T-QEMU-11** Implement the single-VM fingerprint hook for
   `gate:single-vm-fingerprint`: run-twice-and-diff under adversarial host
   conditions with first-mismatch icount-window localization and a fixed,
   content-addressed fingerprint definition. — satisfies [QEMU-34]; spec §10.7,
   §24.
-  Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`. The
-  production Rust runner performs fresh exact-input launches, applies bounded
-  scheduler preemption to QEMU in the second run, and compares a content-addressed
-  five-boundary stream containing periodic, real frame-delivery, and real
-  signal-effect-boundary samples. Its negative control proves the complete diagnostic
-  path: ordinal-aware fresh-run probes localize a real launch divergence to one
-  instruction, and the plugin's terminal paused callback exports complete
-  per-vCPU registers, writable RAM, and serialized non-RAM VMState from both
-  QEMU processes for a validated, content-addressed dump.
+  The production flight authenticates the exact
+  `VOLATILE | DEVICE | CONTROL` projection, supplies the canonical comparator,
+  and runs a fixed four-vCPU real-QEMU configuration in reference and
+  host-preempted variants with matching exact fingerprint streams. Its
+  pre-preemption adjacent samples at aggregate icounts 2,000,000 and 2,000,001
+  authenticate RR ownership and cursor progression, distinguish the owning
+  vCPU register projection, and bind first-mismatch localization to one retired
+  instruction.
+
 - [x] **T-QEMU-12** Implement the per-quantum data flow at the QEMU level (run to
   ceiling-or-idle → report icount/idle-deadline → scheduler ceiling store →
   unconditional futex wake + plugin eventfd write → advance → frame inject/emit
@@ -984,8 +984,8 @@ determinism contract (04).
 - [x] **T-QEMU-15** Extend the launch-config builder and validator for
   multi-vCPU single-threaded round-robin: emit `-accel sim,thread=single` with
   `-smp N`, set the round-robin switch boundary to the scenario's
-  content-addressed `rr_switch_quantum` (node-icount) via the patch-series flag
-  (`crucible-rr-quantum-icount`, 11), reject `thread=multi` and an unpinned
+  content-addressed `rr_switch_quantum` (node-icount) via the atomic-patch flag
+  (`rr_switch_quantum`, 11), reject `thread=multi` and an unpinned
   quantum loudly, and fold N + the pinned `rr_switch_quantum` into the scenario
   content hash. — satisfies [QEMU-5], [QEMU-43]; spec §10.2.
   **Completed:** `DeterministicLaunchProfile` now accepts `smp_vcpus >= 1`,
@@ -993,55 +993,14 @@ determinism contract (04).
   `rr_switch_quantum` node-icount boundary in `-icount`, and folds both
   `smp_vcpus=N` and `rr_switch_quantum` plus the ascending vCPU rotation into
   scenario material. The pre-spawn validator rejects MTTCG and unpinned or zero
-  RR quantum before QEMU is spawned, while accepting the RFC alias
-  `crucible-rr-quantum-icount` for patched QEMU command lines.
-- [x] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
+  RR quantum before QEMU is spawned, while requiring the canonical
+  `rr_switch_quantum` field on patched QEMU command lines.
+- [ ] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
   all N vCPUs' register files plus the round-robin cursor (current vCPU +
   position within `rr_switch_quantum`) via the plugin's per-vCPU introspection
   capability (12) and QMP, include them in the digest, and localize a mismatch
   to the first differing icount window. — satisfies [QEMU-34]; spec §10.7.
-  **Implemented but not closed:** the `crucible-qemu` single-VM fingerprint stream now carries
-  canonical N-vCPU sample material: sorted register-file digests for exactly
-  vCPUs `0..N`, the RR cursor (`current_vcpu`, position inside the pinned
-  `rr_switch_quantum`, and the quantum), guest-memory digest, and device-state
-  digest. The scenario carries the launch-derived `-smp N` and pinned
-  `rr_switch_quantum`, and gate admission rejects streams that omit launched
-  vCPUs or report cursor state from a different quantum. Stream validation
-  recomputes each rolling fingerprint from that material, the definition digest,
-  and the previous rolling fingerprint, so all-vCPU registers and the RR cursor
-  are part of the compared digest rather than advisory metadata. Sample mismatch
-  diagnostics localize the first differing icount window and name the first
-  differing component, including per-vCPU register digests and RR cursor
-  position. The task check realizes the plugin per-vCPU introspection check and
-  the typed QMP control-boundary check, runs the same bounded real-QEMU `-smp 4`
-  sim/RR-TCG workload twice with second-run bounded scheduler preemption after
-  the first positive guest trace coordinate, checks exact sorted QMP
-  CPU indexes on both runs, binds register schemas/bytes and retired-count sums,
-  uses a definition-only QEMU preflight to pin the observation shape before
-  importing both plugin traces through the Rust path, and executes
-  register/RR/retired post-processing mismatch-localization plus structural red controls. It
-  binds current serialized non-RAM VMState in addition to keeping MMIO history
-  as a diagnostic.
-  **Closed live by `checks.crucible.phase2.qemuLivePluginFingerprintSmp`** at the
-  frozen `-smp 4` pin (corroborated at `-smp 2`). Two paths satisfy disjoint
-  clauses: the C-trace path (`checks.crucible.phase2.qemuNvcpuFingerprint`) stays
-  the independent differential oracle over the same real `-smp 4` S11 workload;
-  the Rust control plugin is now the live fingerprint AUTHORITY. Reading all N
-  register files plus the RR cursor via the plugin's per-vCPU introspection
-  capability (12) is live: `PluginFingerprintSampling::sample` reads exactly the
-  `0..N` register files and the authoritative RR cursor (`current_vcpu`, position
-  inside the pinned `rr_switch_quantum`) at every boundary — the gate emits
-  `vcpu_register_count=N` and the deterministic `rr_current_vcpu` /
-  `rr_position_in_quantum` per sample. Those components are in the compared digest
-  (`per_vcpu_registers_match_run_twice`, `rr_cursor_matches_run_twice`, plus
-  guest-RAM and device-state digests, all byte-identical over two runs, the second
-  under bounded scheduler preemption, plus a restart probe). The definition mints under the new
-  `crucible.qemu.rust-plugin-fingerprint.v2` domain. Mismatch localization to the
-  first differing icount window is realized by the run-twice stream comparison and
-  its bisection report (`SingleVmFingerprintGateError::Mismatch` names the first
-  differing component and icount window). The per-vCPU retired-count clause is a
-  deterministic constant stamp: under single-threaded RR icount QEMU keeps one
-  global counter (patch 0029 sets the per-vCPU stamp to zero by construction), so
-  the per-vCPU accounting exercised live is the RR cursor, not a per-vCPU retired
-  sum. Frame/fault boundary sampling triggers remain M4/M5 scope (this gate uses
-  the periodic aggregate-icount cadence in busy windows).
+  Current evidence pins the RR coordinate, exact sorted vCPU set, register
+  schema, and `VOLATILE | DEVICE | CONTROL` projection. Completion remains
+  open until the production `FingerprintSample` runner localizes an injected
+  divergence to its first differing icount window.

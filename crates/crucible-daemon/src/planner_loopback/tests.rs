@@ -107,12 +107,15 @@ fn planner_loopback_rejects_partial_frames_with_a_finite_deadline() {
             FixedExecutionSupervisor(1),
             authority,
         );
-        assert!(matches!(
-            serve_loopback_planner_once_with_timeouts(&mut server, &mut service, timeouts),
-            Err(LoopbackPlannerServerError::Protocol(
-                LoopbackPlannerProtocolError::Io(_)
-            ))
-        ));
+        let error = serve_loopback_planner_once_with_timeouts(&mut server, &mut service, timeouts)
+            .expect_err("partial frame must expire at the finite transport deadline");
+        assert!(
+            matches!(
+                &error,
+                LoopbackPlannerServerError::Protocol(LoopbackPlannerProtocolError::Io(_))
+            ),
+            "unexpected partial-frame failure: {error:?}"
+        );
     });
     client.write_all(b"CRUC").expect("partial frame");
     server_thread.join().expect("server thread");
@@ -197,32 +200,36 @@ fn no_work_output(request: &PlannerRequest) -> PlannerEngineOutput {
 
 fn policy(byte: u8) -> CampaignPolicy {
     CampaignPolicy::new(
-        ScenarioDefId::from_hash(CampaignHash::derive(
-            "crucible.test.planner-loopback-scenario.v1",
-            &[byte],
-        )),
-        CampaignSeed::from_bytes([byte; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            puct: PuctPolicy::new(1_000_000, 0, 0),
-            widening: Some(
-                ProgressiveWideningPolicy::new(
-                    crucible_campaign::ExactRational::new(1, 1).expect("k"),
-                    crucible_campaign::ExactRational::new(1, 2).expect("alpha"),
-                    1,
-                    4,
-                    1,
-                )
-                .expect("widening"),
-            ),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(1, 1).expect("fairness"),
-        RetentionPolicy::new(false, 1, false, false),
-        false,
+        CampaignPolicy::identity(
+            ScenarioDefId::from_hash(CampaignHash::derive(
+                "crucible.test.planner-loopback-scenario.v1",
+                &[byte],
+            )),
+            CampaignSeed::from_bytes([byte; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                puct: PuctPolicy::new(1_000_000, 0, 0),
+                widening: Some(
+                    ProgressiveWideningPolicy::new(
+                        crucible_campaign::ExactRational::new(1, 1).expect("k"),
+                        crucible_campaign::ExactRational::new(1, 2).expect("alpha"),
+                        1,
+                        4,
+                        1,
+                    )
+                    .expect("widening"),
+                ),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(1, 1).expect("fairness"),
+            RetentionPolicy::new(false, 1, false, false),
+            false,
+        ),
     )
     .expect("policy")
 }

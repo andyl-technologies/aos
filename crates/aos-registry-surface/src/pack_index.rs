@@ -152,7 +152,7 @@ fn parse_index(path: &str, bytes: &[u8]) -> Result<Vec<IndexEntry>> {
     let crc_end = checked_table_end(object_ids_end, object_count, 4)?;
     let offsets_end = checked_table_end(crc_end, object_count, 4)?;
     let trailer_start = bytes.len() - TRAILER_BYTES;
-    if offsets_end > trailer_start || (trailer_start - offsets_end) % 8 != 0 {
+    if offsets_end > trailer_start || !(trailer_start - offsets_end).is_multiple_of(8) {
         bail!("pack index tables are truncated or misaligned");
     }
 

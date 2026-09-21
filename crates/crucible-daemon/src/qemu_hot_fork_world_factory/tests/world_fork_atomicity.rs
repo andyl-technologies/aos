@@ -1,5 +1,6 @@
 //! Focused model-tier proof of production whole-world hot-fork atomicity.
 
+use super::reconciliation::{factory, reconcile_canceled_world};
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -33,7 +34,7 @@ impl HotForkRollbackChild for ScriptedRollbackChild {
             RollbackFailureMode::ReapForever => Ok(QemuHotForkReconciliationStep::ChildRunning),
             RollbackFailureMode::ResourceProgressForever => {
                 Ok(QemuHotForkReconciliationStep::Advanced(
-                    crate::QemuHotForkReconciliationPhase::ParentReaped,
+                    crate::qemu_hot_fork_reconciliation::QemuHotForkReconciliationPhase::ParentReaped,
                 ))
             }
             RollbackFailureMode::PrivateRelease => {
@@ -184,7 +185,7 @@ fn three_source_world(
         sources.push(source);
     }
     let (_nodes, source_world) =
-        prepared_multi_node_hot_fork_source_world_for_test(sources).expect("prepared source world");
+        prepared_test_source_world(sources).expect("prepared source world");
     let roster = source_world.continuation().nodes().to_vec();
     (source_processes, roster, source_world)
 }
@@ -226,7 +227,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
             panic!("unexpected clean-rejection disposition at index {failure_index}")
         };
         assert!(
-            factory.sources().available(),
+            factory.sources.available(),
             "clean rejection at index {failure_index} did not restore the source: {message}"
         );
         assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
@@ -253,7 +254,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
         drop(directories);
         assert_eq!(
             factory
-                .sources()
+                .sources
                 .source
                 .as_ref()
                 .expect("restored source")
@@ -275,7 +276,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
         QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown retry world");
         reconcile_canceled_world(&mut lifecycle);
         assert!(factory.recover(lifecycle).is_ok());
-        assert!(factory.sources().available());
+        assert!(factory.sources.available());
     }
 }
 
@@ -303,7 +304,7 @@ fn production_three_node_ambiguous_launch_is_fail_closed_at_every_index() {
                 QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
             ))
         ));
-        assert!(!factory.sources().available());
+        assert!(!factory.sources.available());
         assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
         assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
         for process in source_processes {
@@ -365,7 +366,7 @@ fn production_three_node_adoption_failure_retains_the_complete_world() {
                 QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(_)
             ))
         ));
-        assert!(!factory.sources().available());
+        assert!(!factory.sources.available());
         for process in source_processes {
             assert_process_alive(process);
         }
@@ -420,7 +421,7 @@ fn production_aggregate_release_failure_blocks_source_restore() {
         panic!("unexpected aggregate release disposition")
     };
     assert!(message.contains("aggregate target release failed after rollback"));
-    assert!(!factory.sources().available());
+    assert!(!factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
     assert!(
         observations
@@ -458,7 +459,7 @@ fn production_source_identity_drift_blocks_restore_after_complete_rollback() {
         panic!("unexpected source identity disposition")
     };
     assert!(message.contains("exact source-world reauthentication failed after rollback"));
-    assert!(!factory.sources().available());
+    assert!(!factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
     assert_process_alive(source_processes[0]);
     assert_process_alive(source_processes[2]);

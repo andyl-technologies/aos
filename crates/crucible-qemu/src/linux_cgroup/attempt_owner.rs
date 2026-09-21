@@ -69,8 +69,8 @@ pub(crate) struct LinuxQemuAttemptProcessOwnerStartError {
 
 #[derive(Debug)]
 struct LinuxQemuAttemptProcessOwnerStartAuthority {
-    group: LinuxQemuCgroup,
-    watcher: Option<LinuxQemuCgroupWatcher>,
+    _group: LinuxQemuCgroup,
+    _watcher: Option<LinuxQemuCgroupWatcher>,
 }
 
 impl LinuxQemuAttemptProcessOwnerStartError {
@@ -78,15 +78,6 @@ impl LinuxQemuAttemptProcessOwnerStartError {
     #[must_use]
     pub(crate) const fn source_error(&self) -> &LinuxQemuAttemptProcessOwnerError {
         &self.source
-    }
-
-    /// Recovers the configured cgroup and optional started watcher.
-    #[must_use]
-    pub(crate) fn into_parts(
-        mut self,
-    ) -> Option<(LinuxQemuCgroup, Option<LinuxQemuCgroupWatcher>)> {
-        let authority = *self.authority.take()?;
-        Some((authority.group, authority.watcher))
     }
 }
 
@@ -125,6 +116,7 @@ impl LinuxQemuAttemptProcessOwner {
         maximum_writable_bytes: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
+        exact_checkpoint_root: Option<crucible::ContentHash>,
     ) -> Result<Self, LinuxQemuAttemptProcessOwnerStartError> {
         let watcher = match group.start_watcher() {
             Ok(watcher) => watcher,
@@ -132,8 +124,8 @@ impl LinuxQemuAttemptProcessOwner {
                 return Err(LinuxQemuAttemptProcessOwnerStartError {
                     source: source.into(),
                     authority: Some(Box::new(LinuxQemuAttemptProcessOwnerStartAuthority {
-                        group,
-                        watcher: None,
+                        _group: group,
+                        _watcher: None,
                     })),
                 });
             }
@@ -142,14 +134,15 @@ impl LinuxQemuAttemptProcessOwner {
             maximum_writable_bytes,
             child_user_id,
             child_group_id,
+            exact_checkpoint_root,
         ) {
             Ok(contract) => contract,
             Err(source) => {
                 return Err(LinuxQemuAttemptProcessOwnerStartError {
                     source: source.into(),
                     authority: Some(Box::new(LinuxQemuAttemptProcessOwnerStartAuthority {
-                        group,
-                        watcher: Some(watcher),
+                        _group: group,
+                        _watcher: Some(watcher),
                     })),
                 });
             }
@@ -354,14 +347,6 @@ impl LinuxQemuAttemptProcessOwner {
             }
         }
     }
-
-    /// Returns the latest detached-quarantine state, when transfer occurred.
-    #[must_use]
-    pub(crate) fn status(&self) -> Option<LinuxQemuAttemptProcessOwnerStatus> {
-        self.quarantine
-            .as_ref()
-            .map(|quarantine| owner_quarantine_status(quarantine.status()))
-    }
 }
 
 impl Drop for LinuxQemuAttemptProcessOwner {
@@ -517,15 +502,20 @@ mod tests {
     #[test]
     fn start_failure_returns_group_and_started_watcher() -> Result<(), Box<dyn std::error::Error>> {
         let (_root, group) = group_fixture()?;
-        let error = LinuxQemuAttemptProcessOwner::start(group, 4096, 65_533, 65_532)
+        let mut error = LinuxQemuAttemptProcessOwner::start(group, 4096, 65_533, 65_532, None)
             .expect_err("ordinary filesystem must fail cgroup provenance validation");
         assert!(matches!(
             error.source_error(),
             LinuxQemuAttemptProcessOwnerError::Cgroup(LinuxQemuCgroupError::Io { .. })
         ));
-        let (_group, watcher) = error
-            .into_parts()
+        let authority = error
+            .authority
+            .take()
             .ok_or_else(|| std::io::Error::other("owner startup lost cgroup authority"))?;
+        let LinuxQemuAttemptProcessOwnerStartAuthority {
+            _group,
+            _watcher: watcher,
+        } = *authority;
         let watcher = watcher
             .ok_or_else(|| std::io::Error::other("owner startup lost its started watcher"))?;
         watcher.finish_and_wait(Duration::from_secs(1))?;
@@ -587,13 +577,20 @@ mod tests {
             LinuxQemuAttemptProcessOwnerStatus::QuarantineParked
         );
         let deadline = Instant::now() + Duration::from_secs(1);
-        while owner.status() != Some(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased)
+        while owner
+            .quarantine
+            .as_ref()
+            .map(|quarantine| owner_quarantine_status(quarantine.status()))
+            != Some(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased)
             && Instant::now() < deadline
         {
             thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            owner.status(),
+            owner
+                .quarantine
+                .as_ref()
+                .map(|quarantine| owner_quarantine_status(quarantine.status())),
             Some(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased)
         );
         assert!(linux_process_identity(process_id)?.is_none());

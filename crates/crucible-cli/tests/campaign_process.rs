@@ -8,9 +8,10 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use crucible_session::engine::{
     Action, ContentAddressedBlobRef, ContentHash, EventGraph, EventId, Icount, NodeId, Plan,
@@ -26,6 +27,30 @@ const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
     "application/vnd.crucible.campaign-replay-closure.v1+binary";
+const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-replay-contract.v4+text";
+
+#[test]
+fn public_campaign_debug_help_exposes_only_read_only_exact_session_inputs()
+-> Result<(), Box<dyn Error>> {
+    let output = command().args(["campaign", "debug", "--help"]).output()?;
+    require_success(&output, "campaign debug help")?;
+    let stdout = String::from_utf8(output.stdout)?;
+
+    for required in ["--snapshot", "--finding", "--node", "--gdb-listen"] {
+        assert!(
+            stdout.contains(required),
+            "missing campaign debug input {required}"
+        );
+    }
+    for forbidden in ["--allow-mutate", "--write", "--fork"] {
+        assert!(
+            !stdout.contains(forbidden),
+            "campaign debug exposed mutable input {forbidden}"
+        );
+    }
+    Ok(())
+}
 
 #[test]
 #[ignore = "requires the packaged patched-QEMU, plugin, kernel, and root image VM fixture"]
@@ -190,15 +215,13 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
 
 #[test]
 #[ignore = "requires the packaged patched-QEMU, plugin, kernel, and root image VM fixture"]
-fn campaign_virtual_time_save_feeds_native_resume_and_fork() -> Result<(), Box<dyn Error>> {
+fn campaign_virtual_time_save_feeds_native_resume() -> Result<(), Box<dyn Error>> {
     let temporary = TempDir::new()?;
     let root = temporary.path();
     let save_state = secure_state_root(root, "save-state")?;
     let resume_state = secure_state_root(root, "resume-state")?;
-    let fork_state = secure_state_root(root, "fork-state")?;
     let save_artifacts = root.join("save-artifacts");
     let resume_artifacts = root.join("resume-artifacts");
-    let fork_artifacts = root.join("fork-artifacts");
     let store = root.join("store");
     let handle = root.join("campaign-save.crucible-savepoint");
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
@@ -255,30 +278,7 @@ fn campaign_virtual_time_save_feeds_native_resume_and_fork() -> Result<(), Box<d
         "native resume did not reach four milliseconds; stdout:\n{resume_stdout}"
     );
 
-    let fork = native_state_command(&fork_artifacts, &store, &fork_state, &deployment)?
-        .arg("fork")
-        .arg(&handle)
-        .args(["--label", "native-campaign-fork"])
-        .output()?;
-    require_success(&fork, "native fork from campaign save DAG checkpoint")?;
-    let fork_stdout = String::from_utf8(fork.stdout)?;
-    assert!(
-        fork_stdout.contains("operation=fork-campaign-default-path"),
-        "campaign fork omitted its ownership proof; stdout:\n{fork_stdout}"
-    );
-    let fork_final = session_summary(&fork_stdout, "fork-session")?;
-    assert_eq!(
-        summary_field(fork_final, "outcome"),
-        Some("passed"),
-        "native fork did not pass; stdout:\n{fork_stdout}"
-    );
-    assert_eq!(
-        summary_field(fork_final, "frontier_ticks"),
-        Some("4000000"),
-        "native fork did not reach four milliseconds; stdout:\n{fork_stdout}"
-    );
-
-    println!("\ncampaign_save_resume_fork=true");
+    println!("\ncampaign_save_resume=true");
     Ok(())
 }
 
@@ -297,7 +297,8 @@ fn session_summary<'a>(stdout: &'a str, prefix: &str) -> Result<&'a str, Box<dyn
 
 #[test]
 #[ignore = "requires the packaged patched-QEMU, plugin, kernel, and root image VM fixture"]
-fn guarded_campaign_failure_artifact_replays_live_evidence() -> Result<(), Box<dyn Error>> {
+fn campaign_run_production_qemu_exact_checkpoint_then_replay_matches() -> Result<(), Box<dyn Error>>
+{
     let temporary = TempDir::new()?;
     let root = temporary.path();
     let run_state = root.join("run-state");
@@ -360,7 +361,75 @@ fn guarded_campaign_failure_artifact_replays_live_evidence() -> Result<(), Box<d
     assert!(replay_stdout.contains("owner=campaign"));
     assert!(replay_stdout.contains("reproduced_status=failed"));
 
-    println!("\ncampaign_guarded_failure_replay=true");
+    println!("\ncampaign_production_qemu_exact_checkpoint_replay=true");
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the packaged patched-QEMU, plugin, kernel, and root image VM fixture"]
+fn interactive_session_captures_and_replays_exact_live_artifact() -> Result<(), Box<dyn Error>> {
+    let temporary = TempDir::new()?;
+    let root = temporary.path();
+    let run_state = secure_state_root(root, "interactive-run-state")?;
+    let replay_state = secure_state_root(root, "interactive-replay-state")?;
+    let artifact_dir = root.join("interactive-artifacts");
+    fs::create_dir(&artifact_dir)?;
+    let scenario_path = write_scenario(root, Action::Pass)?;
+    let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
+
+    let mut capture_command =
+        guarded_run_command(&scenario_path, &artifact_dir, &run_state, &deployment)?;
+    let mut capture = capture_command
+        .arg("--interactive")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    capture
+        .stdin
+        .take()
+        .ok_or("interactive capture has no stdin")?
+        .write_all(b"continue\npause\nstop\n")?;
+    let capture = capture.wait_with_output()?;
+    require_success(&capture, "interactive packaged-QEMU capture")?;
+    let capture_stdout = String::from_utf8(capture.stdout)?;
+    assert!(capture_stdout.contains("interactive-ack\tcommand=continue\tstatus=accepted"));
+    assert!(capture_stdout.contains("interactive-ack\tcommand=pause\tstatus=accepted"));
+    assert!(capture_stdout.contains("interactive-ack\tcommand=stop\tstatus=accepted"));
+
+    let artifact_path = single_reproduction_artifact_with_status(&artifact_dir, "passed")?;
+    let artifact_text = fs::read_to_string(&artifact_path)?;
+    require_embedded_component(
+        &artifact_text,
+        "live_qemu_replay_contract",
+        LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE,
+    )?;
+    let contract = embedded_component_payload(&artifact_text, "live_qemu_replay_contract")?;
+    let contract = String::from_utf8(contract)?;
+    assert!(contract.contains("schema\tcrucible.live-qemu-replay-contract.v4"));
+    assert!(contract.contains("execution\tsession\tinteractive"));
+    assert!(contract.lines().any(|line| line.starts_with("record\t")));
+    assert!(!artifact_text.contains(CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE));
+
+    let replay = command()
+        .args(["--backend", "qemu", "--qemu"])
+        .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
+        .arg("--plugin")
+        .arg(required_path("CRUCIBLE_FLIGHT_PLUGIN")?)
+        .arg("--campaign-deployment")
+        .arg(&deployment)
+        .args(["--format", "jsonl", "replay"])
+        .arg(&artifact_path)
+        .env("CRUCIBLE_RUN_STATE_ROOT", &replay_state)
+        .output()?;
+    require_success(&replay, "interactive packaged-QEMU artifact replay")?;
+    let replay_stdout = String::from_utf8(replay.stdout)?;
+    assert!(replay_stdout.contains("replay_live_qemu"));
+    assert!(replay_stdout.contains("validation=passed"));
+    assert!(replay_stdout.contains("owner=session"));
+    assert!(replay_stdout.contains("reproduced_status=passed"));
+
+    println!("\ninteractive_packaged_capture_replay=true");
     Ok(())
 }
 
@@ -521,17 +590,56 @@ fn guarded_run_command(
 }
 
 fn single_reproduction_artifact(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
+    single_reproduction_artifact_with_status(root, "failed")
+}
+
+fn single_reproduction_artifact_with_status(
+    root: &std::path::Path,
+    status: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let prefix = format!("repro-{status}-");
     let paths = fs::read_dir(root)?
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             let name = path.file_name()?.to_str()?;
-            (name.starts_with("repro-failed-") && name.ends_with(".crucible")).then_some(path)
+            (name.starts_with(&prefix) && name.ends_with(".crucible")).then_some(path)
         })
         .collect::<Vec<_>>();
     match paths.as_slice() {
         [path] => Ok(path.clone()),
-        _ => Err(format!("expected one failure artifact, found {}", paths.len()).into()),
+        _ => Err(format!("expected one {status} artifact, found {}", paths.len()).into()),
     }
+}
+
+fn embedded_component_payload(artifact: &str, kind: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let component = artifact
+        .lines()
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .find(|fields| fields.len() == 7 && fields[0] == "component" && fields[1] == kind)
+        .ok_or_else(|| format!("reproduction artifact has no `{kind}` component"))?;
+    let digest = component[3];
+    let payload = artifact
+        .lines()
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .find(|fields| fields.len() == 3 && fields[0] == "payload" && fields[1] == digest)
+        .ok_or_else(|| format!("reproduction artifact has no payload for `{kind}`"))?;
+    decode_hex(payload[2])
+}
+
+fn decode_hex(encoded: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    if !encoded.len().is_multiple_of(2) {
+        return Err("component payload has odd-length hex".into());
+    }
+    encoded
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| -> Result<u8, Box<dyn Error>> {
+            let digits = std::str::from_utf8(pair)?;
+            Ok(u8::from_str_radix(digits, 16)?)
+        })
+        .collect()
 }
 
 fn require_embedded_component(

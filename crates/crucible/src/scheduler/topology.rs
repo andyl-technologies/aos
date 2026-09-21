@@ -564,26 +564,6 @@ impl ScheduledEventKey {
         Self { timeline, producer }
     }
 
-    /// Builds a scheduled-event key from legacy event-ordering parts.
-    #[must_use]
-    pub fn from_parts(
-        virtual_time: VirtualTime,
-        consumer: SchedulerNodeId,
-        producer: SchedulerNodeId,
-        sequence: u64,
-    ) -> Self {
-        Self {
-            timeline: SharedTimelineKey {
-                virtual_time: SimInstant {
-                    nanos: virtual_time.ticks,
-                },
-                node: consumer,
-                sequence,
-            },
-            producer,
-        }
-    }
-
     /// Returns the shared virtual time at which the event is due.
     #[must_use]
     pub fn virtual_time(&self) -> VirtualTime {
@@ -650,11 +630,15 @@ pub fn next_scheduled_event_key(
             ),
         })?;
     sequences.set_next_sequence(producer.clone(), consumer.clone(), next);
-    Ok(ScheduledEventKey::from_parts(
-        virtual_time,
-        consumer,
+    Ok(ScheduledEventKey::new(
+        SharedTimelineKey {
+            virtual_time: SimInstant {
+                nanos: virtual_time.ticks,
+            },
+            node: consumer,
+            sequence,
+        },
         producer,
-        sequence,
     ))
 }
 

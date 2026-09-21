@@ -3,6 +3,11 @@
 use super::*;
 
 use std::cell::Cell;
+use std::ffi::CString;
+use std::fs::File;
+use std::io::Write as _;
+use std::os::fd::{FromRawFd as _, IntoRawFd as _};
+use std::sync::atomic::AtomicU8;
 
 use crucible_shmem::{
     KIND_VM, RegionConfig, RegionHeader, RegionLayout, STATUS_IDLE, STATUS_RUNNING,
@@ -14,7 +19,7 @@ mod fault_event_control;
 mod preemption;
 mod preflight_cases;
 
-extern "C" fn test_icount_raw() -> u64 {
+pub(super) extern "C" fn test_icount_raw() -> u64 {
     TEST_ICOUNT_RAW.get()
 }
 
@@ -25,57 +30,37 @@ thread_local! {
     static TEST_REQUEST_VMSTOP_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
     static TEST_ICOUNT_RAW: Cell<u64> = const { Cell::new(0) };
+    static TEST_IDLE_WAKE_WAIT_CALLS: Cell<u64> = const { Cell::new(0) };
+    static TEST_IDLE_WAKE_WAIT_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(1) };
+    static TEST_FINGERPRINT_CAPTURE_COUNT: Cell<u64> = const { Cell::new(0) };
+    pub(crate) static TEST_FINGERPRINT_CAPTURE_SEED: Cell<u64> = const { Cell::new(0x10) };
 }
 static TEST_RX_INJECT_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_LAST_LEN: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_INJECT_STATUS: AtomicU64 = AtomicU64::new(0);
-static TEST_FINGERPRINT_CAPTURE_COUNT: AtomicU64 = AtomicU64::new(0);
-static TEST_FINGERPRINT_CAPTURE_SEED: AtomicU64 = AtomicU64::new(0x10);
 static TEST_REENTRANT_RX_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
+static TEST_SYNCHRONOUS_COMPLETION_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
+    AtomicPtr::new(std::ptr::null_mut());
+static TEST_SYNCHRONOUS_COMPLETION_SUCCEEDED: AtomicBool = AtomicBool::new(false);
+static TEST_NESTED_PRODUCER_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
+    AtomicPtr::new(std::ptr::null_mut());
+static TEST_NESTED_PRODUCER_DEFERRED: AtomicBool = AtomicBool::new(false);
 
-#[test]
-fn on_demand_mode_skips_only_automatic_exact_ceiling_samples() {
-    assert!(exact_ceiling_fingerprint_is_due(
-        Some(crate::PluginFingerprintSamplingMode::EveryQuantum),
-        true,
-        7,
-        7,
-    ));
-    assert!(!exact_ceiling_fingerprint_is_due(
-        Some(crate::PluginFingerprintSamplingMode::OnDemand),
-        true,
-        7,
-        7,
-    ));
-    assert!(!exact_ceiling_fingerprint_is_due(
-        Some(crate::PluginFingerprintSamplingMode::EveryQuantum),
-        false,
-        7,
-        7,
-    ));
-    assert!(!control_boundary_fingerprint_is_due(
-        crate::PluginFingerprintSamplingMode::OnDemand,
-        false,
-    ));
-    assert!(control_boundary_fingerprint_is_due(
-        crate::PluginFingerprintSamplingMode::OnDemand,
-        true,
-    ));
-    assert!(control_boundary_fingerprint_is_due(
-        crate::PluginFingerprintSamplingMode::EveryQuantum,
-        false,
-    ));
-    assert!(paused_boundary_fingerprint_is_due(
-        crate::PluginFingerprintSamplingMode::OnDemand,
-        false,
-        true,
-    ));
-    assert!(!paused_boundary_fingerprint_is_due(
-        crate::PluginFingerprintSamplingMode::OnDemand,
-        true,
-        false,
-    ));
+fn wait_for_fingerprint_sample(
+    slot: &FingerprintSampleSlot,
+    capture_request: u32,
+) -> crucible_shmem::FingerprintSample {
+    let acknowledged = capture_request.wrapping_add(1);
+    for _attempt in 0..100_000 {
+        if slot.capture_request_generation() == acknowledged {
+            return slot
+                .snapshot()
+                .unwrap_or_else(|| panic!("acknowledged fingerprint sample must be visible"));
+        }
+        std::thread::yield_now();
+    }
+    panic!("fingerprint digest worker did not publish the requested sample");
 }
 
 extern "C" fn test_fingerprint_read_vcpu_regs(
@@ -120,220 +105,71 @@ extern "C" fn test_fingerprint_read_rr_cursor(
     0
 }
 
-extern "C" fn test_fingerprint_digest(out: *mut u8, count: *mut u64) -> std::os::raw::c_int {
-    if out.is_null() || count.is_null() {
-        return 1;
-    }
-
-    // SAFETY: the digest ABI supplies a writable 32-byte output and one count.
-    unsafe {
-        for index in 0..crucible_shmem::FINGERPRINT_DIGEST_BYTES {
-            out.add(index).write(0xC0_u8.wrapping_add(index as u8));
-        }
-        count.write(1);
-    }
-    0
-}
-
 extern "C" fn test_fingerprint_capture(
-    ram_data: *mut *mut u8,
-    ram_material_len: *mut u64,
-    ram_bytes: *mut u64,
-    device_data: *mut *mut u8,
-    device_material_len: *mut u64,
-    device_bytes: *mut u64,
+    out: *mut crate::fingerprint_sampler::QemuFingerprintMaterialFds,
 ) -> std::os::raw::c_int {
-    if ram_data.is_null()
-        || ram_material_len.is_null()
-        || ram_bytes.is_null()
-        || device_data.is_null()
-        || device_material_len.is_null()
-        || device_bytes.is_null()
-    {
+    if out.is_null() {
         return 1;
     }
 
-    // SAFETY: these allocations are transferred to the paired free callback.
-    let ram = unsafe { libc::malloc(1) }.cast::<u8>();
-    // SAFETY: these allocations are transferred to the paired free callback.
-    let device = unsafe { libc::malloc(1) }.cast::<u8>();
-    if ram.is_null() || device.is_null() {
-        // SAFETY: libc accepts null and owns any non-null allocations above.
-        unsafe {
-            libc::free(ram.cast());
-            libc::free(device.cast());
-        }
+    let seed = TEST_FINGERPRINT_CAPTURE_SEED.get() as u8;
+    TEST_FINGERPRINT_CAPTURE_COUNT.set(TEST_FINGERPRINT_CAPTURE_COUNT.get() + 1);
+    let ram = test_sealed_fingerprint_memfd(seed);
+    let device = test_sealed_fingerprint_memfd(seed.wrapping_add(1));
+    let (Ok(ram), Ok(device)) = (ram, device) else {
         return 1;
+    };
+    let mut schema = [0_u8; crucible_shmem::FINGERPRINT_DIGEST_BYTES];
+    for (index, byte) in schema.iter_mut().enumerate() {
+        *byte = 0xC0_u8.wrapping_add(index as u8);
     }
-
-    let seed = TEST_FINGERPRINT_CAPTURE_SEED.load(Ordering::Acquire) as u8;
-    TEST_FINGERPRINT_CAPTURE_COUNT.fetch_add(1, Ordering::AcqRel);
-    // SAFETY: all outputs were checked and both one-byte allocations succeeded.
+    // SAFETY: `out` names the live aggregate output checked above.
     unsafe {
-        ram.write(seed);
-        device.write(seed.wrapping_add(1));
-        ram_data.write(ram);
-        ram_material_len.write(1);
-        ram_bytes.write(1);
-        device_data.write(device);
-        device_material_len.write(1);
-        device_bytes.write(1);
+        out.write(crate::fingerprint_sampler::QemuFingerprintMaterialFds {
+            ram_fd: ram.into_raw_fd(),
+            ram_material_length: 1,
+            ram_bytes: 1,
+            device_fd: device.into_raw_fd(),
+            device_material_length: 1,
+            device_bytes: 1,
+            device_schema_digest: schema,
+            device_schema_sections: 1,
+        });
     }
     0
 }
 
-extern "C" fn test_fingerprint_sha256_bytes(
-    data: *const u8,
-    length: u64,
-    out: *mut u8,
-) -> std::os::raw::c_int {
-    if data.is_null() || length != 1 || out.is_null() {
-        return 1;
+fn test_sealed_fingerprint_memfd(seed: u8) -> std::io::Result<File> {
+    let name = CString::new("crucible-live-callback-test")
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    // SAFETY: `name` is NUL-terminated and the flags request a sealable memfd.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_memfd_create,
+            name.as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        ) as std::os::raw::c_int
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
     }
-
-    // SAFETY: the capture callback returns one readable byte and the digest ABI
-    // supplies a writable 32-byte output.
-    unsafe {
-        let seed = data.read();
-        for index in 0..crucible_shmem::FINGERPRINT_DIGEST_BYTES {
-            out.add(index).write(seed.wrapping_add(index as u8));
-        }
+    // SAFETY: the successful syscall transfers one owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    file.write_all(&[seed])?;
+    // SAFETY: `file` owns `fd`, and `lseek` does not retain it.
+    if unsafe { libc::lseek(fd, 0, libc::SEEK_SET) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
-    0
+    let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+    // SAFETY: `file` owns `fd`, and `fcntl` does not retain it.
+    if unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
 }
 
-extern "C" fn test_fingerprint_capture_free(data: *mut std::os::raw::c_void) {
-    // SAFETY: the capture callback allocated this pointer with libc::malloc.
-    unsafe { libc::free(data) };
-}
-
-#[test]
-fn on_demand_control_callback_captures_and_acknowledges_each_exact_request() {
-    let node_slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 7, None)
-        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    node_slot
-        .publish_scheduler_ceiling(ceiling)
-        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    let fingerprint_slot = FingerprintSampleSlot::new();
-    let introspector = crate::PluginVcpuIntrospector::require(
-        Some(test_fingerprint_read_vcpu_regs),
-        Some(test_fingerprint_read_rr_cursor),
-    )
-    .unwrap_or_else(|error| panic!("test introspector should bind: {error}"));
-    let sampling = crate::PluginFingerprintSampling::from_test_exports(
-        introspector,
-        crate::PluginFingerprintDigester::new(
-            test_fingerprint_digest,
-            test_fingerprint_digest,
-            test_fingerprint_digest,
-        ),
-        test_fingerprint_capture,
-        test_fingerprint_sha256_bytes,
-        test_fingerprint_capture_free,
-    );
-    let state = test_live_state(80, 1, 0, 0, &node_slot)
-        .and_then(|state| {
-            state.attach_fingerprint(
-                sampling,
-                &fingerprint_slot,
-                crate::PluginFingerprintSamplingMode::OnDemand,
-                false,
-                LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
-            )
-        })
-        .unwrap_or_else(|error| panic!("live fingerprint state should build: {error}"));
-
-    TEST_FINGERPRINT_CAPTURE_COUNT.store(0, Ordering::Release);
-    TEST_FINGERPRINT_CAPTURE_SEED.store(0x10, Ordering::Release);
-    state
-        .publish_current_icount(7)
-        .unwrap_or_else(|error| panic!("exact quantum should publish: {error}"));
-    assert_eq!(fingerprint_slot.snapshot(), None);
-
-    let ordinary_control_request = node_slot
-        .request_control_boundary()
-        .unwrap_or_else(|error| panic!("ordinary control request should publish: {error}"));
-    state
-        .on_control_boundary(7)
-        .unwrap_or_else(|error| panic!("ordinary control request should complete: {error}"));
-    assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.load(Ordering::Acquire), 0);
-    assert_eq!(fingerprint_slot.snapshot(), None);
-    assert_eq!(
-        node_slot.snapshot().control_boundary_ack,
-        ordinary_control_request.wrapping_add(1)
-    );
-
-    TEST_REQUEST_VMSTOP_CALLS.set(0);
-    TEST_REQUEST_VMSTOP_STATUS.set(0);
-    state
-        .header
-        .get()
-        .request_pause([&node_slot])
-        .unwrap_or_else(|error| panic!("pause should publish: {error}"));
-    let pause_control_request = node_slot
-        .request_control_boundary()
-        .unwrap_or_else(|error| panic!("pause control request should publish: {error}"));
-    state
-        .on_control_boundary(7)
-        .unwrap_or_else(|error| panic!("pause control request should complete: {error}"));
-    assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.load(Ordering::Acquire), 0);
-    assert_eq!(fingerprint_slot.snapshot(), None);
-    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
-    assert_eq!(
-        node_slot.snapshot().control_boundary_ack,
-        pause_control_request.wrapping_add(1)
-    );
-    state.header.get().clear_pause();
-
-    let first_capture_request = fingerprint_slot.request_capture_v1();
-    let first_control_request = node_slot
-        .request_control_boundary()
-        .unwrap_or_else(|error| panic!("first control request should publish: {error}"));
-    state
-        .on_control_boundary(7)
-        .unwrap_or_else(|error| panic!("first capture request should complete: {error}"));
-    let first_sample = fingerprint_slot
-        .snapshot()
-        .unwrap_or_else(|| panic!("first exact sample should publish"));
-    assert_eq!(first_sample.sample_icount, 7);
-    assert_eq!(
-        fingerprint_slot.capture_request_generation(),
-        first_capture_request.wrapping_add(1)
-    );
-    assert_eq!(
-        node_slot.snapshot().control_boundary_ack,
-        first_control_request.wrapping_add(1)
-    );
-
-    TEST_FINGERPRINT_CAPTURE_SEED.store(0x40, Ordering::Release);
-    let second_capture_request = fingerprint_slot.request_capture_v1();
-    let second_control_request = node_slot
-        .request_control_boundary()
-        .unwrap_or_else(|error| panic!("second control request should publish: {error}"));
-    state
-        .on_control_boundary(7)
-        .unwrap_or_else(|error| panic!("same-icount recapture should complete: {error}"));
-    let second_sample = fingerprint_slot
-        .snapshot()
-        .unwrap_or_else(|| panic!("second exact sample should publish"));
-
-    assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.load(Ordering::Acquire), 2);
-    assert_eq!(second_sample.sample_icount, first_sample.sample_icount);
-    assert_ne!(second_sample.ram_digest, first_sample.ram_digest);
-    assert_eq!(
-        fingerprint_slot.capture_request_generation(),
-        second_capture_request.wrapping_add(1)
-    );
-    assert_eq!(
-        node_slot.snapshot().control_boundary_ack,
-        second_control_request.wrapping_add(1)
-    );
-}
-
-extern "C" fn test_clock_deadline_ns() -> i64 {
-    TEST_CLOCK_DEADLINE_NS.get()
-}
+mod fingerprint_capture;
+use fingerprint_capture::test_clock_deadline_ns;
 
 fn test_live_state(
     plugin_id: QemuPluginId,
@@ -342,12 +178,30 @@ fn test_live_state(
     initial_raw_icount: u64,
     slot: &NodeSlot,
 ) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
+    test_live_state_with_fault_commands(
+        plugin_id,
+        vcpu_count,
+        icount_shift,
+        initial_raw_icount,
+        slot,
+        Box::new(TestFaultCommandBridge::empty()),
+    )
+}
+
+fn test_live_state_with_fault_commands(
+    plugin_id: QemuPluginId,
+    vcpu_count: u32,
+    icount_shift: u8,
+    initial_raw_icount: u64,
+    slot: &NodeSlot,
+    fault_commands: Box<dyn LiveFaultCommandControl>,
+) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
     let layout = RegionLayout::for_config(RegionConfig::new(1, 2, u32::from(icount_shift)))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = Box::leak(Box::new(RegionHeader::new(layout)));
     let (teardown_sender, teardown_receiver) = mpsc::channel();
     std::mem::forget(teardown_receiver);
-    test_live_state_with_teardown(
+    test_live_state_with_teardown_and_fault_commands(
         plugin_id,
         vcpu_count,
         icount_shift,
@@ -355,6 +209,7 @@ fn test_live_state(
         header,
         slot,
         teardown_sender,
+        fault_commands,
     )
 }
 
@@ -369,6 +224,30 @@ fn test_live_state_with_teardown(
     slot: &NodeSlot,
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
 ) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
+    test_live_state_with_teardown_and_fault_commands(
+        plugin_id,
+        vcpu_count,
+        icount_shift,
+        initial_raw_icount,
+        header,
+        slot,
+        teardown_sender,
+        Box::new(TestFaultCommandBridge::empty()),
+    )
+}
+
+// crucible-lint: allow rust-allow -- test factory carries the complete live callback state boundary.
+#[allow(clippy::too_many_arguments)]
+fn test_live_state_with_teardown_and_fault_commands(
+    plugin_id: QemuPluginId,
+    vcpu_count: u32,
+    icount_shift: u8,
+    initial_raw_icount: u64,
+    header: &RegionHeader,
+    slot: &NodeSlot,
+    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    fault_commands: Box<dyn LiveFaultCommandControl>,
+) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
     let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ns))
         .unwrap_or_else(|error| panic!("test deadline capability should validate: {error}"));
     let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
@@ -377,6 +256,7 @@ fn test_live_state_with_teardown(
         plugin_id,
         test_icount_raw,
         test_force_vcpu_exit,
+        QemuIdleWakeWait::test_stub(test_wait_idle_wake),
         test_request_vmstop,
         test_support::test_preemption_injector(),
         vcpu_count,
@@ -384,7 +264,8 @@ fn test_live_state_with_teardown(
         initial_raw_icount,
         exact_deadline,
         queued_idle_advance,
-        None,
+        test_support::test_virtual_timer_witness(),
+        fault_commands,
         header,
         slot,
         Arc::new(LiveCallbackQuiescence::new()),
@@ -393,6 +274,15 @@ fn test_live_state_with_teardown(
 }
 
 extern "C" fn test_force_vcpu_exit() {}
+
+extern "C" fn test_wait_idle_wake(
+    _vcpu_index: u32,
+    _wake_signal: *mut u32,
+    _expected: u32,
+) -> std::os::raw::c_int {
+    TEST_IDLE_WAKE_WAIT_CALLS.set(TEST_IDLE_WAKE_WAIT_CALLS.get() + 1);
+    TEST_IDLE_WAKE_WAIT_STATUS.get()
+}
 
 extern "C" fn test_force_vcpu_tb_exit() -> i32 {
     0
@@ -411,13 +301,13 @@ fn shared_shutdown_resume_signal_is_one_shot_and_defers_done_to_worker() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 1, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let (sender, receiver) = mpsc::channel();
     let state = test_live_state_with_teardown(70, 1, 0, 0, &header, &slot, sender)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(70, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     state
         .halted_vcpus
@@ -455,7 +345,7 @@ fn busy_at_ceiling_publish_callback_signals_shared_shutdown_without_publication(
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 1, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let (sender, receiver) = mpsc::channel();
     let state = Box::new(
@@ -485,13 +375,13 @@ fn shared_shutdown_idle_signal_is_one_shot_and_defers_done_to_worker() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 1, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let (sender, receiver) = mpsc::channel();
     let state = test_live_state_with_teardown(71, 1, 0, 0, &header, &slot, sender)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(71, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     header
         .request_shutdown([&slot])
@@ -519,7 +409,7 @@ fn shared_shutdown_signal_is_fail_loud_when_teardown_worker_disconnected() {
     let state = test_live_state_with_teardown(72, 1, 0, 0, &header, &slot, sender)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(72, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     state
         .halted_vcpus
@@ -543,16 +433,16 @@ fn live_state_dispatches_vcpu_init_publish_and_ceiling() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 12, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(41, 2, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
 
     state
-        .on_vcpu_init(41, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU 0 should initialize: {error}"));
     state
-        .on_vcpu_init(41, 1)
+        .on_vcpu_init(1)
         .unwrap_or_else(|error| panic!("vCPU 1 should initialize: {error}"));
     state
         .publish_current_icount(5)
@@ -573,7 +463,7 @@ fn busy_max_advance_acknowledges_pause_without_advancing_or_pumping_work() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 12, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let (sender, receiver) = mpsc::channel();
     std::mem::forget(receiver);
@@ -605,14 +495,24 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 12, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let (sender, receiver) = mpsc::channel();
     std::mem::forget(receiver);
-    let state = test_live_state_with_teardown(78, 1, 0, 0, &header, &slot, sender)
-        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    let (fault_commands, fault_command_observation) = TestFaultCommandBridge::observed();
+    let state = test_live_state_with_teardown_and_fault_commands(
+        78,
+        1,
+        0,
+        0,
+        &header,
+        &slot,
+        sender,
+        Box::new(fault_commands),
+    )
+    .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(78, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("test vCPU should initialize: {error}"));
     state
         .halted_vcpus
@@ -622,7 +522,7 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
         .unwrap_or_else(|error| panic!("test vCPU should halt: {error}"));
     state.all_halted_idle_handled.store(true, Ordering::Release);
 
-    slot.request_control_boundary()
+    slot.request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("ordinary control request should publish: {error}"));
     state
         .on_vcpu_resume(0, 0)
@@ -645,7 +545,7 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
         .request_pause([&slot])
         .unwrap_or_else(|error| panic!("pause request should publish: {error}"));
     state.all_halted_idle_handled.store(true, Ordering::Release);
-    slot.request_control_boundary()
+    slot.request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("pause control request should publish: {error}"));
     state
         .on_vcpu_resume(0, 0)
@@ -668,6 +568,16 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
     assert_eq!(slot.snapshot().control_boundary_ack, 5);
     assert!(state.all_halted_idle_handled.load(Ordering::Acquire));
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+    assert_eq!(
+        *fault_command_observation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        TestFaultCommandObservation {
+            pumped_frontier: Some(0),
+            boundary_dispatched: true,
+            publications_drained: true,
+        }
+    );
 }
 
 #[test]
@@ -675,7 +585,7 @@ fn drained_control_boundary_pumps_fault_commands_before_fingerprint_and_ack() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 7, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(79, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
@@ -684,7 +594,7 @@ fn drained_control_boundary_pumps_fault_commands_before_fingerprint_and_ack() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let request = slot
-        .request_control_boundary()
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("control request should publish: {error}"));
 
     assert_eq!(
@@ -706,7 +616,7 @@ fn busy_pause_publishes_exact_boundary_before_vmstop_rejection_is_reported() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 12, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let (sender, receiver) = mpsc::channel();
     std::mem::forget(receiver);
@@ -753,7 +663,7 @@ fn selectable_stop_is_admitted_after_exact_sim_publication() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 12, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = Box::new(
         test_live_state(79, 1, 0, 0, &slot)
@@ -809,7 +719,7 @@ fn final_device_completion_publishes_pause_before_vmstop_handoff() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 12, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let (sender, receiver) = mpsc::channel();
     std::mem::forget(receiver);
@@ -843,7 +753,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 12, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = Box::new(
         test_live_state(71, 1, 0, 0, &slot)
@@ -855,7 +765,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
     let userdata = state_pointer.cast::<c_void>();
     let before = slot.snapshot();
 
-    crucible_qemu_plugin_live_vcpu_init_cb(71, 0);
+    crucible_qemu_plugin_live_vcpu_init_cb(0, userdata);
     crucible_qemu_plugin_live_vcpu_idle_cb(0, 0, userdata);
     crucible_qemu_plugin_live_vcpu_resume_cb(0, 0, userdata);
     crucible_qemu_plugin_live_publish_icount_cb(9, userdata);
@@ -904,7 +814,7 @@ fn block_transport_restore_callback_returns_failure_for_invalid_input() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 12, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = Box::new(
         test_live_state(72, 1, 0, 0, &slot)
@@ -937,11 +847,12 @@ fn block_transport_restore_callback_returns_failure_for_invalid_input() {
 }
 
 #[test]
-fn live_time_completion_commits_logical_idle_offset_before_future_raw_progress() {
+fn live_time_completion_clamps_dispatch_then_commits_logical_idle_offset() {
+    TEST_ICOUNT_RAW.set(4);
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(43, 1, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
@@ -955,8 +866,21 @@ fn live_time_completion_commits_logical_idle_offset_before_future_raw_progress()
         .enqueue(20)
         .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
     state
-        .arm_idle_advance(4, 10, pending)
+        .arm_idle_advance(4, 10, pending, None)
         .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
+    assert_eq!(state.max_advance_icount(), Ok(4));
+
+    TEST_ICOUNT_RAW.set(5);
+    assert!(matches!(
+        state.max_advance_icount(),
+        Err(
+            LiveVcpuTimeCallbackError::GuestProgressWhileIdleAdvancePending {
+                expected_raw_icount: 4,
+                observed_raw_icount: 5,
+            }
+        )
+    ));
+    TEST_ICOUNT_RAW.set(4);
     state
         .publish_current_icount(4)
         .unwrap_or_else(|error| panic!("repeated raw boundary should be a no-op: {error}"));
@@ -995,7 +919,7 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 100, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(51, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
@@ -1012,7 +936,7 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
         .enqueue(80)
         .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
     state
-        .arm_idle_advance(30, 80, pending)
+        .arm_idle_advance(30, 80, pending, None)
         .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
     state
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 80))
@@ -1031,7 +955,7 @@ fn device_io_without_a_pinned_deadline_freezes_at_the_current_icount() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 100, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(52, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
@@ -1049,7 +973,7 @@ fn device_io_advances_to_the_deadline_only_after_it_is_pinned() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 100, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(53, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
@@ -1068,12 +992,12 @@ fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 10, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(46, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(46, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
 
     state
@@ -1100,12 +1024,12 @@ fn live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 10, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(54, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(54, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
     TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
@@ -1132,12 +1056,12 @@ fn live_idle_callback_queues_the_exact_timer_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(47, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(47, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(7);
     LAST_QUEUED_ADVANCE_NS.set(-1);
@@ -1155,17 +1079,151 @@ fn live_idle_callback_queues_the_exact_timer_deadline() {
 }
 
 #[test]
+fn live_idle_callback_publishes_next_idle_without_authorizing_its_deadline() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::NextAuthenticatedIdle)
+        .unwrap_or_else(|error| panic!("next-idle advance should publish: {error}"));
+    let state = test_live_state(147, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(7);
+    TEST_IDLE_WAKE_WAIT_CALLS.set(0);
+    TEST_IDLE_WAKE_WAIT_STATUS.set(1);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+
+    state
+        .on_vcpu_idle(0, 0)
+        .unwrap_or_else(|error| panic!("next-idle callback should wait: {error}"));
+
+    let snapshot = slot.snapshot();
+    assert_eq!(TEST_IDLE_WAKE_WAIT_CALLS.get(), 1);
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+    assert_eq!(snapshot.current_icount, 0);
+    assert_eq!(snapshot.status, STATUS_IDLE);
+    assert_eq!(snapshot.idle_wake_icount, 7);
+    assert!(!state.idle_advance_is_pending());
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+}
+
+#[test]
+fn live_max_advance_rejects_an_unknown_stop_condition() {
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(148, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+
+    // SAFETY: `NodeSlot` has a public fixed wire layout, and this test stores
+    // through the aligned AtomicU8 field at its published current-ABI offset.
+    let stop_condition = unsafe {
+        &*(std::ptr::from_ref(&slot)
+            .cast::<u8>()
+            .add(crucible_shmem::NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET)
+            .cast::<AtomicU8>())
+    };
+    stop_condition.store(0xff, Ordering::Release);
+
+    assert!(matches!(
+        state.max_advance_icount(),
+        Err(LiveVcpuTimeCallbackError::IdleHotLoop {
+            source: IdleHotLoopError::AdvanceStopCondition {
+                source: NodeSlotError::InvalidAdvanceStopCondition { encoded: 0xff }
+            }
+        })
+    ));
+    assert!(matches!(
+        test_live_state(149, 1, 0, 0, &slot),
+        Err(LiveVcpuTimeCallbackError::IdleHotLoop {
+            source: IdleHotLoopError::AdvanceStopCondition {
+                source: NodeSlotError::InvalidAdvanceStopCondition { encoded: 0xff }
+            }
+        })
+    ));
+}
+
+#[test]
+fn live_idle_wait_always_returns_for_a_fresh_qemu_rescan() {
+    TEST_CLOCK_DEADLINE_NS.set(7);
+
+    for status in [0, 1, 2, 3, 9] {
+        let slot = NodeSlot::new(KIND_VM);
+        let ceiling = authorize_advance_ceiling(0, 0, None)
+            .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+            .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+        let state = test_live_state(80 + status as u64, 1, 0, 0, &slot)
+            .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+        state
+            .on_vcpu_init(0)
+            .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+
+        TEST_IDLE_WAKE_WAIT_CALLS.set(0);
+        TEST_IDLE_WAKE_WAIT_STATUS.set(status);
+        LAST_QUEUED_ADVANCE_NS.set(-1);
+        state
+            .on_vcpu_idle(0, 0)
+            .unwrap_or_else(|error| panic!("idle wait status {status} should rescan: {error}"));
+
+        assert_eq!(TEST_IDLE_WAKE_WAIT_CALLS.get(), 1);
+        assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+        assert!(!state.idle_advance_is_pending());
+        assert!(!state.all_halted_idle_handled.load(Ordering::Acquire));
+        assert_eq!(slot.snapshot().current_icount, 0);
+    }
+
+    TEST_IDLE_WAKE_WAIT_STATUS.set(1);
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+}
+
+#[test]
+fn live_idle_wait_rejects_contract_failures_without_postwait_work() {
+    TEST_CLOCK_DEADLINE_NS.set(7);
+
+    for status in [4, 5, 6, 7, 8, 99] {
+        let slot = NodeSlot::new(KIND_VM);
+        let ceiling = authorize_advance_ceiling(0, 0, None)
+            .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+            .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+        let state = test_live_state(90 + status as u64, 1, 0, 0, &slot)
+            .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+        state
+            .on_vcpu_init(0)
+            .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+
+        TEST_IDLE_WAKE_WAIT_CALLS.set(0);
+        TEST_IDLE_WAKE_WAIT_STATUS.set(status);
+        LAST_QUEUED_ADVANCE_NS.set(-1);
+        assert_eq!(
+            state.on_vcpu_idle(0, 0),
+            Err(LiveVcpuTimeCallbackError::IdleWakeWaitRejected { status })
+        );
+
+        assert_eq!(TEST_IDLE_WAKE_WAIT_CALLS.get(), 1);
+        assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+        assert!(!state.idle_advance_is_pending());
+        assert!(!state.all_halted_idle_handled.load(Ordering::Acquire));
+        assert_eq!(slot.snapshot().current_icount, 0);
+    }
+
+    TEST_IDLE_WAKE_WAIT_STATUS.set(1);
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+}
+
+#[test]
 fn live_idle_callback_waits_for_every_vcpu_to_halt() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(73, 4, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     for vcpu_index in 0..4 {
         state
-            .on_vcpu_init(73, vcpu_index)
+            .on_vcpu_init(vcpu_index)
             .unwrap_or_else(|error| panic!("vCPU {vcpu_index} should initialize: {error}"));
     }
     TEST_CLOCK_DEADLINE_NS.set(7);
@@ -1195,7 +1253,7 @@ fn live_time_completion_rejects_missing_or_mismatched_pending_state() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(44, 1, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
@@ -1210,7 +1268,7 @@ fn live_time_completion_rejects_missing_or_mismatched_pending_state() {
         .enqueue(20)
         .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
     assert!(matches!(
-        state.arm_idle_advance(0, 9, pending),
+        state.arm_idle_advance(0, 9, pending, None),
         Err(LiveVcpuTimeCallbackError::IdleAdvancePendingTargetMismatch { .. })
     ));
     assert_eq!(slot.snapshot().current_icount, 0);
@@ -1219,7 +1277,7 @@ fn live_time_completion_rejects_missing_or_mismatched_pending_state() {
         .enqueue(16)
         .unwrap_or_else(|error| panic!("matching idle advance should queue: {error}"));
     state
-        .arm_idle_advance(0, 8, pending)
+        .arm_idle_advance(0, 8, pending, None)
         .unwrap_or_else(|error| panic!("matching idle advance should arm: {error}"));
     assert!(matches!(
         state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 14)),
@@ -1233,16 +1291,101 @@ fn live_time_completion_rejects_missing_or_mismatched_pending_state() {
 }
 
 #[test]
+fn live_idle_advance_publishes_pending_state_before_enqueue_completion() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let mut state = test_live_state(45, 1, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state.queued_idle_advance =
+        QueuedIdleAdvance::require(Some(test_queue_idle_advance_with_synchronous_completion))
+            .unwrap_or_else(|error| panic!("test queued advance should validate: {error}"));
+    let state = Box::new(state);
+
+    TEST_SYNCHRONOUS_COMPLETION_SUCCEEDED.store(false, Ordering::Release);
+    TEST_SYNCHRONOUS_COMPLETION_STATE.store(
+        std::ptr::from_ref(state.as_ref()).cast_mut(),
+        Ordering::Release,
+    );
+    let enqueue_result = state.arm_and_enqueue_idle_advance_or_defer(0, 8, 16, None);
+    TEST_SYNCHRONOUS_COMPLETION_STATE.store(std::ptr::null_mut(), Ordering::Release);
+
+    assert_eq!(enqueue_result, Ok(true));
+    assert!(TEST_SYNCHRONOUS_COMPLETION_SUCCEEDED.load(Ordering::Acquire));
+    assert!(!state.idle_advance_is_pending());
+    assert_eq!(slot.snapshot().current_icount, 8);
+}
+
+#[test]
+fn live_idle_advance_rolls_back_exact_prepublication_after_busy_enqueue() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(46, 1, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+
+    TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
+    let enqueue_result = state.arm_and_enqueue_idle_advance_or_defer(0, 8, 16, None);
+    TEST_QUEUED_ADVANCE_STATUS.set(0);
+
+    assert_eq!(enqueue_result, Ok(false));
+    assert!(!state.idle_advance_is_pending());
+    assert!(
+        state
+            .pending_idle_advance
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none()
+    );
+    assert_eq!(slot.snapshot().current_icount, 0);
+}
+
+#[test]
+fn live_idle_advance_defers_a_second_producer_during_enqueue() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let mut state = test_live_state(47, 1, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state.queued_idle_advance =
+        QueuedIdleAdvance::require(Some(test_queue_idle_advance_with_nested_producer))
+            .unwrap_or_else(|error| panic!("test queued advance should validate: {error}"));
+    let state = Box::new(state);
+
+    TEST_NESTED_PRODUCER_DEFERRED.store(false, Ordering::Release);
+    TEST_NESTED_PRODUCER_STATE.store(
+        std::ptr::from_ref(state.as_ref()).cast_mut(),
+        Ordering::Release,
+    );
+    let enqueue_result = state.arm_and_enqueue_idle_advance_or_defer(0, 8, 16, None);
+    TEST_NESTED_PRODUCER_STATE.store(std::ptr::null_mut(), Ordering::Release);
+
+    assert_eq!(enqueue_result, Ok(true));
+    assert!(TEST_NESTED_PRODUCER_DEFERRED.load(Ordering::Acquire));
+    assert!(state.idle_advance_is_pending());
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 16))
+        .unwrap_or_else(|error| panic!("outer advance should still complete: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 8);
+}
+
+#[test]
 fn live_pending_advance_rejects_idle_resume_and_allows_read_only_reentrant_publication() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(48, 1, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
-        .on_vcpu_init(48, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     state
         .halted_vcpus
@@ -1256,7 +1399,7 @@ fn live_pending_advance_rejects_idle_resume_and_allows_read_only_reentrant_publi
         .enqueue(16)
         .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
     state
-        .arm_idle_advance(0, 8, pending)
+        .arm_idle_advance(0, 8, pending, None)
         .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
     let pending_snapshot = slot.snapshot();
 
@@ -1264,10 +1407,11 @@ fn live_pending_advance_rejects_idle_resume_and_allows_read_only_reentrant_publi
         state.on_vcpu_resume(0, 0),
         Err(LiveVcpuTimeCallbackError::ResumeWhileIdleAdvancePending)
     );
-    assert_eq!(
-        state.on_vcpu_idle(0, 0),
-        Err(LiveVcpuTimeCallbackError::IdleAdvanceAlreadyPending)
-    );
+    state
+        .on_vcpu_idle(0, 0)
+        .unwrap_or_else(|error| panic!("competing idle producer should defer: {error}"));
+    assert!(!state.all_halted_idle_handled.load(Ordering::Acquire));
+    assert!(state.idle_advance_is_pending());
     let pending_guard = match state.pending_idle_advance.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -1324,7 +1468,7 @@ fn live_state_calibrates_raw_progress_against_restored_logical_time() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.publish_reached_icount(10, 0)
         .unwrap_or_else(|error| panic!("restored logical time should publish: {error}"));
@@ -1350,24 +1494,20 @@ fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 8, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(42, 2, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
 
     assert!(matches!(
-        state.on_vcpu_init(99, 0),
-        Err(LiveVcpuTimeCallbackError::PluginIdMismatch { .. })
-    ));
-    assert!(matches!(
-        state.on_vcpu_init(42, 2),
+        state.on_vcpu_init(2),
         Err(LiveVcpuTimeCallbackError::VcpuOutOfRange {
             vcpu_index: 2,
             vcpu_count: 2,
         })
     ));
     state
-        .on_vcpu_init(42, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     state
         .publish_current_icount(4)
@@ -1388,125 +1528,5 @@ fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
     ));
 }
 
-extern "C" fn test_register_vcpu_init(
-    _plugin_id: QemuPluginId,
-    _callback: crate::QemuVcpuSimpleCbFn,
-) {
-}
-
-extern "C" fn test_register_vcpu_idle_resume(
-    _idle_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
-    _resume_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
-    _userdata: *mut c_void,
-) {
-}
-
-extern "C" fn test_register_control_boundary(
-    _callback: Option<crate::QemuVcpuIdleResumeCbFn>,
-    _userdata: *mut std::ffi::c_void,
-) {
-}
-
-extern "C" fn test_register_sim_dispatch(
-    _publish: Option<crate::QemuSimShmemPublishIcountCbFn>,
-    _ceiling: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
-    _userdata: *mut c_void,
-) {
-}
-
-extern "C" fn test_register_time_advance_cb(
-    _callback: Option<crate::QemuTimeAdvanceCompletionCbFn>,
-    _userdata: *mut c_void,
-) -> std::os::raw::c_int {
-    0
-}
-
-extern "C" fn test_register_net_tx(
-    _callback: Option<crate::QemuNetTxCbFn>,
-    _userdata: *mut c_void,
-) {
-}
-
-extern "C" fn test_register_block(
-    _submit: Option<crate::QemuBlkSubmitCbFn>,
-    _poll: Option<crate::QemuBlkPollCbFn>,
-    _userdata: *mut c_void,
-) {
-}
-
-extern "C" fn test_register_block_event(
-    _poll: Option<crate::QemuBlkEventPollCbFn>,
-    _commit: Option<crate::QemuBlkEventCommitCbFn>,
-    _save: Option<crate::QemuBlkTransportSaveCbFn>,
-    _restore: Option<crate::QemuBlkTransportRestoreCbFn>,
-    _userdata: *mut c_void,
-) {
-}
-
-extern "C" fn test_register_block_wait(
-    _wait: Option<crate::QemuBlkWaitCbFn>,
-    _userdata: *mut c_void,
-) {
-}
-
-extern "C" fn test_register_ninep(
-    _burst_start: Option<crate::QemuNinePBurstCbFn>,
-    _submit: Option<crate::QemuNinePSubmitCbFn>,
-    _poll: Option<crate::QemuNinePPollCbFn>,
-    _burst_done: Option<crate::QemuNinePBurstCbFn>,
-    _userdata: *mut c_void,
-) {
-}
-
-extern "C" fn test_register_accelerator(
-    _submit: Option<crate::QemuAcceleratorSubmitCbFn>,
-    _poll: Option<crate::QemuAcceleratorPollCbFn>,
-    _wait: Option<crate::QemuAcceleratorWaitCbFn>,
-    _restore_begin: Option<crate::QemuAcceleratorRestoreBeginCbFn>,
-    _restore: Option<crate::QemuAcceleratorRestoreCbFn>,
-    _restore_commit: Option<crate::QemuAcceleratorRestoreCommitCbFn>,
-    _restore_abort: Option<crate::QemuAcceleratorRestoreAbortCbFn>,
-    _cancel: Option<crate::QemuAcceleratorCancelCbFn>,
-    _userdata: *mut std::ffi::c_void,
-) {
-}
-
-extern "C" fn test_net_inject(payload: *const u8, payload_len: usize) -> std::os::raw::c_int {
-    if payload.is_null() && payload_len != 0 {
-        return 1;
-    }
-    TEST_RX_INJECT_COUNT.fetch_add(1, Ordering::SeqCst);
-    TEST_RX_LAST_LEN.store(payload_len as u64, Ordering::SeqCst);
-    TEST_RX_INJECT_STATUS.load(Ordering::SeqCst) as std::os::raw::c_int
-}
-
-extern "C" fn test_reentrant_net_inject(
-    payload: *const u8,
-    payload_len: usize,
-) -> std::os::raw::c_int {
-    let injection_status = test_net_inject(payload, payload_len);
-    if injection_status != 0 {
-        return injection_status;
-    }
-    let state = TEST_REENTRANT_RX_STATE.load(Ordering::Acquire);
-    if state.is_null() {
-        return 1;
-    }
-    crucible_qemu_plugin_live_publish_icount_cb(TEST_ICOUNT_RAW.get(), state.cast());
-    let tx_payload = b"flush-tx";
-    let status = crucible_qemu_plugin_live_network_tx_cb(
-        tx_payload.as_ptr(),
-        tx_payload.len(),
-        TEST_ICOUNT_RAW.get(),
-        state.cast(),
-    );
-    if status != 0 {
-        return status;
-    }
-    0
-}
-
-extern "C" fn test_queue_idle_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
-    LAST_QUEUED_ADVANCE_NS.set(target_virtual_ns);
-    TEST_QUEUED_ADVANCE_STATUS.get()
-}
+mod registration_stubs;
+use registration_stubs::*;

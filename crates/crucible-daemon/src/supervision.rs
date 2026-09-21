@@ -30,9 +30,19 @@ pub(super) struct ProcessDeadline {
 }
 
 impl ProcessDeadline {
+    /// Wraps an existing host deadline without exposing clock reads to callers.
+    pub(super) const fn at(deadline: Instant) -> Self {
+        Self { deadline }
+    }
+
     /// Returns no deadline if the requested host duration cannot be represented.
     pub(super) fn after(timeout: Duration) -> Option<Self> {
         now().checked_add(timeout).map(|deadline| Self { deadline })
+    }
+
+    /// Returns the remaining operational wait allowance.
+    pub(super) fn remaining(self) -> Duration {
+        self.deadline.saturating_duration_since(now())
     }
 
     pub(super) fn expired(self) -> bool {
@@ -41,7 +51,7 @@ impl ProcessDeadline {
 
     /// Caps a process-poll pause at the remaining operational wait allowance.
     pub(super) fn pause(self, maximum: Duration) {
-        std::thread::sleep(maximum.min(self.deadline.saturating_duration_since(now())));
+        std::thread::sleep(maximum.min(self.remaining()));
     }
 }
 

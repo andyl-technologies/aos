@@ -9,10 +9,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::{
-    Arc, Condvar, Mutex,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
 
 use crucible_campaign::{
     AttemptExecutionScope, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignCodecError,
@@ -29,15 +28,68 @@ use crucible_campaign::{
 
 use crate::{
     AssignmentLedger, AssignmentPublish, AssignmentRecord, AttemptExecutionKey,
-    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, CapturedAttemptCheckpoint,
+    AttemptExecutionOrigin, AttemptResultStageOutcome, AttemptResultStagingError,
+    AttemptRuntimeState, AttemptStateCas, AttemptWorkerReconcileOutcome, CapturedAttemptCheckpoint,
     CompletedFindingCandidate, ExactCheckpointResumeBasis, PreparedAttemptCheckpoint,
+    PreparedAttemptResult, StagedAttemptResult,
 };
+use crucible::ContentHash;
+
+/// Process-local authority for the exact root selected by durable admission.
+///
+/// Only post-CAS supervisor paths can construct this non-cloneable value. It
+/// is consumed when the attempt process contract is born with the selected
+/// exact root.
+#[derive(Debug)]
+pub(crate) struct SelectedExactCheckpointRoot {
+    checkpoint: ExactCheckpointId,
+}
+
+impl SelectedExactCheckpointRoot {
+    fn after_durable_admission(origin: AttemptExecutionOrigin) -> Option<Self> {
+        origin.checkpoint().map(Self::after_durable_checkpoint)
+    }
+
+    fn after_durable_checkpoint(checkpoint: ExactCheckpointId) -> Self {
+        Self { checkpoint }
+    }
+
+    /// Creates process-launch authority after a snapshot-bound finding proof.
+    pub(crate) const fn after_authenticated_campaign_finding(
+        checkpoint: ExactCheckpointId,
+    ) -> Self {
+        Self { checkpoint }
+    }
+
+    pub(crate) fn authorizes(&self, checkpoint: ExactCheckpointId) -> bool {
+        self.checkpoint == checkpoint
+    }
+
+    pub(crate) fn process_contract_root(&self) -> ContentHash {
+        ContentHash {
+            bytes: self.checkpoint.content_id().digest(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_test_checkpoint(checkpoint: ExactCheckpointId) -> Self {
+        Self { checkpoint }
+    }
+}
 
 mod admission;
 mod checkpoint;
 mod checkpoint_promotion;
 mod execution;
+mod execution_control;
 mod publication;
+pub use publication::stage_prepared_attempt_result;
+
+pub(crate) use execution_control::{
+    AttemptCheckpointHandoff, ExecutionCancellationHook, ExecutionCancellationHookRegistration,
+    ExecutionCheckpointHandoff,
+};
+pub use execution_control::{CheckpointHandoffFailure, ExecutionCancellation};
 mod state;
 mod submission;
 
@@ -46,8 +98,6 @@ pub use checkpoint_promotion::{
     CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome,
     PausedCheckpointPromotionRecovery,
 };
-
-const MAX_CANCELLATION_WAIT_SLICE: Duration = Duration::from_secs(60 * 60);
 
 /// Read-only semantic and capability validation performed before guest work.
 pub trait AttemptAdmissionValidator {
@@ -191,10 +241,12 @@ where
     }
 }
 
-/// Admission validator used only by already-authenticated compositions/tests.
+/// Admission validator for supervisor tests that isolate execution behavior.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AllowAllAttemptAdmission;
+pub(crate) struct AllowAllAttemptAdmission;
 
+#[cfg(test)]
 impl AttemptAdmissionValidator for AllowAllAttemptAdmission {
     fn validate(&self, _request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
         Ok(())
@@ -374,6 +426,7 @@ pub struct QueuedAttempt {
     cancellation: ExecutionCancellation,
     checkpoint_request: ExecutionCheckpointRequest,
     checkpoint_handoff: Option<ExecutionCheckpointHandoff>,
+    selected_checkpoint: Mutex<Option<SelectedExactCheckpointRoot>>,
 }
 
 impl QueuedAttempt {
@@ -386,6 +439,7 @@ impl QueuedAttempt {
             cancellation: ExecutionCancellation::default(),
             checkpoint_request: ExecutionCheckpointRequest::default(),
             checkpoint_handoff: None,
+            selected_checkpoint: Mutex::new(None),
         }
     }
 
@@ -423,6 +477,16 @@ impl QueuedAttempt {
         self.checkpoint_handoff = Some(handoff);
     }
 
+    pub(crate) fn take_selected_checkpoint(&self) -> Option<SelectedExactCheckpointRoot> {
+        self.selected_checkpoint.lock().ok()?.take()
+    }
+
+    pub(crate) fn restore_selected_checkpoint(&self, selected: SelectedExactCheckpointRoot) {
+        if let Ok(mut slot) = self.selected_checkpoint.lock() {
+            *slot = Some(selected);
+        }
+    }
+
     pub(crate) const fn checkpoint_handoff(&self) -> Option<&ExecutionCheckpointHandoff> {
         self.checkpoint_handoff.as_ref()
     }
@@ -435,238 +499,8 @@ impl QueuedAttempt {
             cancellation: self.cancellation.clone(),
             checkpoint_request: self.checkpoint_request.clone(),
             checkpoint_handoff: None,
+            selected_checkpoint: Mutex::new(None),
         }
-    }
-}
-
-/// Stable failure while preparing and durably staging an in-flight checkpoint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum CheckpointHandoffFailure {
-    /// A temporary store or ledger failure permits exact retry while capture is retained.
-    #[error("checkpoint handoff is temporarily unavailable")]
-    Retryable,
-    /// Cancellation won before the exact root became staged.
-    #[error("checkpoint handoff was canceled")]
-    Canceled,
-    /// The capture or current operational state cannot accept this root.
-    #[error("checkpoint handoff failed its exact execution contract")]
-    Terminal,
-}
-
-pub(crate) trait AttemptCheckpointHandoff: fmt::Debug + Send + Sync {
-    fn prepare_and_stage(
-        &self,
-        capture: &CapturedAttemptCheckpoint,
-    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure>;
-}
-
-/// Pool-owned capability for staging one exact root before QEMU teardown.
-#[derive(Clone)]
-pub(crate) struct ExecutionCheckpointHandoff(Arc<dyn AttemptCheckpointHandoff>);
-
-impl ExecutionCheckpointHandoff {
-    pub(crate) fn new(handoff: Arc<dyn AttemptCheckpointHandoff>) -> Self {
-        Self(handoff)
-    }
-
-    pub(crate) fn prepare_and_stage(
-        &self,
-        capture: &CapturedAttemptCheckpoint,
-    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure> {
-        self.0.prepare_and_stage(capture)
-    }
-
-    pub(crate) fn same_incarnation(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl fmt::Debug for ExecutionCheckpointHandoff {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ExecutionCheckpointHandoff")
-            .finish_non_exhaustive()
-    }
-}
-
-/// One attempt-resource callback installed on an execution cancellation signal.
-pub(crate) trait ExecutionCancellationHook: fmt::Debug + Send + Sync {
-    /// Makes cancellation sticky at the process/resource boundary.
-    fn signal(&self);
-}
-
-#[derive(Default)]
-struct ExecutionCancellationState {
-    canceled: AtomicBool,
-    wait_lock: Mutex<()>,
-    changed: Condvar,
-    hook: Mutex<Option<Arc<dyn ExecutionCancellationHook>>>,
-}
-
-impl fmt::Debug for ExecutionCancellationState {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ExecutionCancellationState")
-            .field("canceled", &self.canceled.load(Ordering::Acquire))
-            .finish_non_exhaustive()
-    }
-}
-
-/// Linear registration removing one exact cancellation callback on drop.
-#[derive(Debug)]
-pub(crate) struct ExecutionCancellationHookRegistration {
-    state: Arc<ExecutionCancellationState>,
-    hook: Arc<dyn ExecutionCancellationHook>,
-}
-
-impl Drop for ExecutionCancellationHookRegistration {
-    fn drop(&mut self) {
-        let mut installed = match self.state.hook.lock() {
-            Ok(installed) => installed,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if installed
-            .as_ref()
-            .is_some_and(|hook| Arc::ptr_eq(hook, &self.hook))
-        {
-            *installed = None;
-        }
-    }
-}
-
-/// Cloneable process-local cancellation signal for one execution incarnation.
-///
-/// Besides the inexpensive polling path, this signal provides a bounded wait
-/// for attempt resource guards. A concrete QEMU guard uses that wait to make
-/// cancellation visible to its sticky process event while a launch, replay,
-/// or shutdown operation is blocked.
-#[derive(Clone, Debug, Default)]
-pub struct ExecutionCancellation {
-    state: Arc<ExecutionCancellationState>,
-}
-
-impl ExecutionCancellation {
-    /// Returns whether cancellation has been requested for this execution.
-    #[must_use]
-    pub fn is_canceled(&self) -> bool {
-        self.state.canceled.load(Ordering::Acquire)
-    }
-
-    /// Returns whether two handles name the same execution incarnation.
-    #[must_use]
-    pub fn same_incarnation(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.state, &other.state)
-    }
-
-    /// Requests sticky cancellation for this execution incarnation.
-    ///
-    /// Registered process-resource hooks are signaled before this method
-    /// returns. Repeated requests are idempotent.
-    pub fn cancel(&self) {
-        // The predicate publication and notification share the wait mutex.
-        // Without this ordering a waiter can observe `false`, lose a notify
-        // immediately before entering the kernel wait, and remain blocked even
-        // though the atomic predicate is already true.
-        let wait = match self.state.wait_lock.lock() {
-            Ok(wait) => wait,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        self.state.canceled.store(true, Ordering::Release);
-        self.state.changed.notify_all();
-        drop(wait);
-        let hook = match self.state.hook.lock() {
-            Ok(installed) => installed.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
-        };
-        if let Some(hook) = hook {
-            hook.signal();
-        }
-    }
-
-    /// Installs the one resource callback for this execution incarnation.
-    ///
-    /// A cancellation that won before registration invokes `hook` before this
-    /// method returns. The callback must be idempotent because cancellation can
-    /// race registration and invoke it from both paths.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when another resource callback is already installed or
-    /// synchronization state is poisoned.
-    pub(crate) fn register_hook(
-        &self,
-        hook: Arc<dyn ExecutionCancellationHook>,
-    ) -> Result<ExecutionCancellationHookRegistration, &'static str> {
-        let canceled = {
-            let mut installed = self
-                .state
-                .hook
-                .lock()
-                .map_err(|_| "execution cancellation hook state is poisoned")?;
-            if installed.is_some() {
-                return Err("execution cancellation already has a resource hook");
-            }
-            *installed = Some(Arc::clone(&hook));
-            self.is_canceled()
-        };
-        if canceled {
-            hook.signal();
-        }
-        Ok(ExecutionCancellationHookRegistration {
-            state: Arc::clone(&self.state),
-            hook,
-        })
-    }
-
-    /// Waits up to `timeout` for cancellation to become visible.
-    ///
-    /// Synchronization poisoning is treated as cancellation so a resource
-    /// guard fails closed instead of leaving a child process unmonitored. Long
-    /// waits are internally divided into bounded one-hour slices, avoiding an
-    /// oversized platform timeout while preserving the caller's full bound.
-    #[must_use]
-    pub fn wait_for_cancellation(&self, timeout: Duration) -> bool {
-        if self.is_canceled() {
-            return true;
-        }
-        let mut wait = match self.state.wait_lock.lock() {
-            Ok(wait) => wait,
-            Err(_) => return true,
-        };
-        if self.is_canceled() {
-            return true;
-        }
-        let mut remaining = timeout;
-        loop {
-            let slice = remaining.min(MAX_CANCELLATION_WAIT_SLICE);
-            let result = self.state.changed.wait_timeout_while(wait, slice, |_| {
-                !self.state.canceled.load(Ordering::Acquire)
-            });
-            let (next_wait, elapsed) = match result {
-                Ok(result) => result,
-                Err(_) => return true,
-            };
-            wait = next_wait;
-            if self.is_canceled() {
-                return true;
-            }
-            if !elapsed.timed_out() {
-                continue;
-            }
-            let Some(next_remaining) = remaining.checked_sub(slice) else {
-                return false;
-            };
-            if next_remaining.is_zero() {
-                return false;
-            }
-            remaining = next_remaining;
-        }
-    }
-
-    /// Requests cancellation from a crate-internal regression fixture.
-    #[cfg(test)]
-    pub(crate) fn cancel_for_test(&self) {
-        self.cancel();
     }
 }
 
@@ -767,7 +601,7 @@ pub enum CompletionOutcome {
 
 /// Durable outcome of reserving an observation publication root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ObservationPublicationOutcome {
+pub(crate) enum ObservationPublicationOutcome {
     /// Running state advanced to a durable publication root.
     Staged,
     /// The exact observation was already staged for this execution.
@@ -839,13 +673,14 @@ pub enum LocalExecutorError<E> {
     ExecutionIdentityExhausted,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ActiveExecution {
     request: SubmitAttemptRequest,
     origin: AttemptExecutionOrigin,
     cancellation: ExecutionCancellation,
     checkpoint_request: ExecutionCheckpointRequest,
     worker_in_flight: bool,
+    selected_checkpoint: Option<SelectedExactCheckpointRoot>,
 }
 
 /// One current process-owned execution observed under the supervisor actor.
@@ -1017,30 +852,6 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
         self.queued.len()
     }
 
-    /// Returns the number of published observations awaiting ledger reconciliation.
-    #[must_use]
-    pub fn pending_completion_count(&self) -> usize {
-        self.pending_completions.len()
-    }
-
-    /// Returns the number of terminal worker stops awaiting ledger reconciliation.
-    #[must_use]
-    pub fn pending_cancellation_count(&self) -> usize {
-        self.pending_cancellations.len()
-    }
-
-    /// Returns one staged completion execution for bounded actor retry.
-    #[must_use]
-    pub fn next_pending_completion(&self) -> Option<ExecutionId> {
-        self.pending_completions.keys().next().copied()
-    }
-
-    /// Returns one staged cancellation execution for bounded actor retry.
-    #[must_use]
-    pub fn next_pending_cancellation(&self) -> Option<ExecutionId> {
-        self.pending_cancellations.keys().next().copied()
-    }
-
     /// Returns the ledger for read-only diagnostics and tests.
     #[must_use]
     pub const fn ledger(&self) -> &L {
@@ -1071,6 +882,7 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
                     cancellation: active.cancellation.clone(),
                     checkpoint_request: active.checkpoint_request.clone(),
                     checkpoint_handoff: None,
+                    selected_checkpoint: Mutex::new(active.selected_checkpoint.take()),
                 });
             }
         }
@@ -1088,6 +900,7 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
         }) && !self.queued.contains(&execution)
         {
             if let Some(active) = self.active.get_mut(&execution) {
+                active.selected_checkpoint = queued.selected_checkpoint.into_inner().ok().flatten();
                 active.worker_in_flight = false;
             }
             self.queued.push_back(execution);

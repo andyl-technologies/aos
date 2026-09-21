@@ -7,6 +7,7 @@ pub(super) struct QemuNodeAsyncStepTarget<'a> {
     pub(super) channels: &'a mut QemuNodeChannels,
     pub(super) lifecycle_state: &'a mut QemuNodeLifecycleState,
     pub(super) shutdown_policy: QemuShutdownPolicy,
+    pub(super) stop_condition: crate::QemuQuantumStopCondition,
 }
 
 impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
@@ -28,7 +29,9 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
         &mut self,
         horizon: ExecutionHorizon,
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.start_quantum(horizon)
+        self.channels
+            .shmem_hot_path
+            .start_quantum(horizon, self.stop_condition)
     }
 
     fn advance_completion_fence(

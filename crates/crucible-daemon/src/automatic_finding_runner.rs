@@ -7,33 +7,78 @@
 //! Candidate execution shares cancellation and the physical quantum budget
 //! with the admitted attempt, but it cannot recursively invoke this wrapper.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crucible::{
-    ContentHash, EngineError, FailureClusterReportFailure, FailureKind,
-    FailureTriageReplayEvidence, FindingDiscoveryPath, FindingReproductionArtifact,
+    ContentHash, EngineError, FailureClusterReportFailure, FindingReproductionArtifact,
 };
 use crucible_campaign::{
-    CampaignCodecError, CampaignExecutorStore, CampaignHash, ConfigurationArtifact,
-    FindingExactPins, FindingKind, FindingSignature, FindingTarget, ObservationCandidate,
-    ObservationStopSatisfaction, PropertyVerdict, PropertyVerdictSet, ScenarioDefId, StopOutcome,
+    CampaignCodecError, CampaignExecutorStore, CampaignHash, ConfigurationArtifact, FindingKind,
+    FindingSignature, FindingTarget, ObservationCandidate,
 };
 use thiserror::Error;
 
-use crate::crucible_artifact::decode_crucible_configuration_artifact_with_owned_candidate;
+use crate::crucible_artifact::{
+    AutomaticFindingPreparation, decode_crucible_configuration_artifact_with_owned_candidate,
+    prepare_automatic_signature_preserving_finding_with_outcomes,
+};
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionProduct,
     AttemptExecutionReconciliationStep, AttemptWorkerFailure, AutomaticFindingPreparationError,
-    AutomaticFindingReplayOutcome, CapturedAttemptCheckpoint, CrucibleArtifactError,
-    CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
-    FindingReplayIncompatibility, PreparedFindingExactRetention, QemuFreshExecutionRunner,
-    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
-    prepare_automatic_signature_preserving_finding_with_outcomes,
+    AutomaticFindingReplayOutcome, CrucibleArtifactError, CrucibleAttemptExecution,
+    CrucibleExecutionOutcome, CrucibleExecutionRunner, FindingReplayIncompatibility,
+    QemuFreshExecutionRunner, encode_crucible_configuration_artifact,
+    encode_crucible_scenario_artifact,
 };
 
 const ASSERTION_FAILURE_CLASS: &str = "qemu.assertion-violation";
 const EXECUTION_QUANTA_TIMEOUT_CLASS: &str = "qemu.execution-quanta-timeout";
 const DIVERGENCE_FAILURE_CLASS: &str = "qemu.causal-log-divergence";
+mod exact_retention;
+use exact_retention::prepare_finding_exact_retention;
+pub(crate) use exact_retention::{
+    CampaignRunFindingExactRetentionSource, FindingExactCandidateInventoryError,
+    FindingExactRetentionSource,
+};
+
+#[cfg(test)]
+pub(crate) fn test_finding_exact_retention_source() -> Arc<dyn FindingExactRetentionSource> {
+    let repository = Arc::new(crucible_campaign::CampaignRepository::new(
+        Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+            "automatic-finding-exact-retention-test",
+            u64::MAX,
+        )),
+        Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+    ));
+    let checkpoint_directory = match tempfile::tempdir() {
+        Ok(directory) => directory.keep(),
+        Err(error) => panic!("create test exact checkpoint directory: {error}"),
+    };
+    let checkpoints = match crate::ExactCheckpointStore::new(
+        Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
+            "automatic-finding-exact-checkpoint-test",
+            checkpoint_directory,
+        )),
+        u64::MAX,
+    ) {
+        Ok(checkpoints) => checkpoints,
+        Err(error) => panic!("test exact checkpoint store: {error}"),
+    };
+    Arc::new(CampaignRunFindingExactRetentionSource::new(
+        CampaignExecutorStore::new(repository),
+        Arc::new(checkpoints),
+    ))
+}
+
+mod divergence_signature;
+pub(crate) use divergence_signature::divergence_fingerprint_for_scenario;
+
+mod finding_signature;
+pub(crate) use finding_signature::automatic_finding_signature;
+use finding_signature::{
+    bind_qemu_triage_evidence, minimization_seed, original_finding, replay_finding_signature,
+};
 
 mod private {
     pub trait Sealed {}
@@ -170,10 +215,9 @@ impl QemuFindingReplayCaptureProducer {
 ///
 /// Implementations return only after all attempt-scoped process and resource
 /// authority has been shut down or quarantined. The production implementation
-/// is deliberately limited to [`QemuFreshExecutionRunner`] with
-/// [`crate::QemuFreshModeledDriver`]. Hot-fork, exact-resume, and routing
-/// runners can retain authority after success and therefore cannot satisfy
-/// this contract.
+/// is deliberately limited to `QemuFreshExecutionRunner` with
+/// [`crate::QemuFreshModeledDriver`]; hot-fork, exact-resume, and routing runners can
+/// retain authority after success and therefore cannot satisfy this contract.
 pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed {
     /// Executes one explicitly requested paired determinism probe.
     ///
@@ -183,8 +227,8 @@ pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed 
     ///
     /// # Errors
     ///
-    /// Returns a worker failure when either probe execution or its required
-    /// cleanup cannot complete within the admitted work budget.
+    /// Returns a worker failure when either private probe execution cannot
+    /// produce a valid lifecycle result.
     fn probe_finding_candidate_determinism(
         &mut self,
         _input: &CrucibleAttemptExecution,
@@ -222,87 +266,6 @@ pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed 
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>>;
-
-    /// Reconstructs one candidate and captures its canonical safe-stop checkpoint.
-    ///
-    /// Implementations without exact capture support return the semantic replay
-    /// with no checkpoint. Automatic retention then records a localized
-    /// incomplete disposition while preserving thin finding publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same operational failures as
-    /// [`Self::replay_finding_candidate_boundary`].
-    fn replay_and_capture_finding_candidate_boundary(
-        &mut self,
-        input: &CrucibleAttemptExecution,
-        candidate: &ConfigurationArtifact,
-        finding: &FindingReproductionArtifact,
-        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
-        target_signature: &FindingSignature,
-        context: &AttemptExecutionContext,
-    ) -> Result<AutomaticFindingExactCheckpointReplay, AttemptWorkerFailure<Self::Error>> {
-        self.replay_finding_candidate_boundary(
-            input,
-            candidate,
-            finding,
-            replay_closure,
-            target_signature,
-            context,
-        )
-        .map(|outcome| AutomaticFindingExactCheckpointReplay::new(outcome, None))
-    }
-
-    /// Transfers an unusable checkpoint to the runner's outer cleanup owner.
-    ///
-    /// The default accepts compatibility captures that own no native catalog.
-    /// Production runners must override this method and preserve the native
-    /// retirement authority for their worker pool.
-    fn retain_abandoned_exact_checkpoint(&mut self, checkpoint: CapturedAttemptCheckpoint) {
-        let _quarantine = crate::executor_worker::NativeCheckpointUnwindGuard::new(&checkpoint);
-    }
-}
-
-/// One authenticated semantic replay paired with its unpublished exact capture.
-#[derive(Debug)]
-pub struct AutomaticFindingExactCheckpointReplay {
-    outcome: AutomaticFindingReplayOutcome,
-    checkpoint: Option<crate::CapturedAttemptCheckpoint>,
-    native_guard: crate::executor_worker::NativeCheckpointUnwindGuard,
-}
-
-impl AutomaticFindingExactCheckpointReplay {
-    fn new(
-        outcome: AutomaticFindingReplayOutcome,
-        checkpoint: Option<crate::CapturedAttemptCheckpoint>,
-    ) -> Self {
-        let native_guard = checkpoint.as_ref().map_or_else(
-            crate::executor_worker::NativeCheckpointUnwindGuard::new_empty,
-            crate::executor_worker::NativeCheckpointUnwindGuard::new,
-        );
-        Self {
-            outcome,
-            checkpoint,
-            native_guard,
-        }
-    }
-
-    /// Consumes the replay into semantic evidence and linear capture ownership.
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        AutomaticFindingReplayOutcome,
-        Option<crate::CapturedAttemptCheckpoint>,
-    ) {
-        let Self {
-            outcome,
-            checkpoint,
-            mut native_guard,
-        } = self;
-        native_guard.disarm();
-        (outcome, checkpoint)
-    }
 }
 
 /// Result of one explicitly enabled paired determinism verification.
@@ -366,7 +329,7 @@ where
             Err(failure) if probe_exhausted_physical_work(&failure) => {
                 return Ok(AutomaticFindingDeterminismProbe::Incomplete);
             }
-            Err(failure) => return Err(failure),
+            Err(failure) => return Err(*failure),
         };
         let crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(first) =
             first
@@ -391,7 +354,7 @@ where
             Err(failure) if probe_exhausted_physical_work(&failure) => {
                 return Ok(AutomaticFindingDeterminismProbe::Incomplete);
             }
-            Err(failure) => return Err(failure),
+            Err(failure) => return Err(*failure),
         };
         let crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(second) =
             second
@@ -444,11 +407,12 @@ where
             .map_err(AttemptWorkerFailure::Terminal)?;
         let first = QemuFreshExecutionRunner::replay_finding_candidate_boundary(
             self, input, candidate, None, context,
-        )?;
+        )
+        .map_err(|failure| *failure)?;
         let first_snapshot = qemu_finding_replay_snapshot(self)
             .map_err(crate::QemuFreshExecutionRunnerError::FindingReplayEvidence)
             .map_err(AttemptWorkerFailure::Terminal)?;
-        let outcome = if target_signature.kind() == FindingKind::Divergence {
+        let (outcome, snapshots) = if target_signature.kind() == FindingKind::Divergence {
             match first {
                 crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
                     evidence,
@@ -476,7 +440,8 @@ where
                         candidate,
                         Some(&evidence),
                         context,
-                    )?;
+                    )
+                    .map_err(|failure| *failure)?;
                     let second_snapshot = qemu_finding_replay_snapshot(self)
                         .map_err(crate::QemuFreshExecutionRunnerError::FindingReplayEvidence)
                         .map_err(AttemptWorkerFailure::Terminal)?;
@@ -487,7 +452,6 @@ where
         } else {
             (first, Some((first_snapshot, None)))
         };
-        let (outcome, snapshots) = outcome;
         match outcome {
             crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
                 evidence,
@@ -522,105 +486,6 @@ where
                 },
             }),
         }
-    }
-
-    fn replay_and_capture_finding_candidate_boundary(
-        &mut self,
-        input: &CrucibleAttemptExecution,
-        candidate: &ConfigurationArtifact,
-        finding: &FindingReproductionArtifact,
-        _replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
-        target_signature: &FindingSignature,
-        context: &AttemptExecutionContext,
-    ) -> Result<AutomaticFindingExactCheckpointReplay, AttemptWorkerFailure<Self::Error>> {
-        let (raw, mut checkpoint) = if target_signature.kind() == FindingKind::Divergence {
-            let first = QemuFreshExecutionRunner::replay_finding_candidate_boundary(
-                self, input, candidate, None, context,
-            )?;
-            let first = match first {
-                crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
-                    first,
-                ) => first,
-                crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(reason) => {
-                    let reason = match reason {
-                        crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::PrefixDiverged => FindingReplayIncompatibility::PrefixDiverged,
-                        crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::PrefixTerminated => FindingReplayIncompatibility::PrefixTerminated,
-                        crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::SelectionMismatch => FindingReplayIncompatibility::SelectionMismatch,
-                    };
-                    return Ok(AutomaticFindingExactCheckpointReplay::new(
-                        AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
-                            configuration: candidate.clone(),
-                            reason,
-                        },
-                        None,
-                    ));
-                }
-            };
-            if first.has_higher_priority_failure_source()
-                || !context.has_remaining_execution_quanta()
-            {
-                let outcome =
-                    finish_qemu_finding_replay(*first, candidate, finding, target_signature, None)
-                        .map_err(|failure| *failure)?;
-                return Ok(AutomaticFindingExactCheckpointReplay::new(outcome, None));
-            }
-
-            QemuFreshExecutionRunner::replay_and_capture_finding_candidate_boundary(
-                self,
-                input,
-                candidate,
-                Some(&first),
-                context,
-            )?
-            .into_parts()
-        } else {
-            QemuFreshExecutionRunner::replay_and_capture_finding_candidate_boundary(
-                self, input, candidate, None, context,
-            )?
-            .into_parts()
-        };
-        let mut native_guard = checkpoint.as_ref().map_or_else(
-            crate::executor_worker::NativeCheckpointUnwindGuard::new_empty,
-            crate::executor_worker::NativeCheckpointUnwindGuard::new,
-        );
-
-        let outcome = match raw {
-            crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::Observed(
-                evidence,
-            ) => match finish_qemu_finding_replay(
-                *evidence,
-                candidate,
-                finding,
-                target_signature,
-                None,
-            ) {
-                Ok(outcome) => outcome,
-                Err(failure) => {
-                    if let Some(checkpoint) = checkpoint.take() {
-                        self.retain_abandoned_checkpoint(checkpoint, false);
-                        native_guard.disarm();
-                    }
-                    return Err(*failure);
-                }
-            },
-            crate::qemu_campaign_lifecycle::QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
-                reason,
-            ) => AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
-                configuration: candidate.clone(),
-                reason: match reason {
-                    crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::PrefixDiverged => FindingReplayIncompatibility::PrefixDiverged,
-                    crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::PrefixTerminated => FindingReplayIncompatibility::PrefixTerminated,
-                    crate::qemu_campaign_lifecycle::QemuFindingCandidateIncompatibility::SelectionMismatch => FindingReplayIncompatibility::SelectionMismatch,
-                },
-            },
-        };
-        let replay = AutomaticFindingExactCheckpointReplay::new(outcome, checkpoint);
-        native_guard.disarm();
-        Ok(replay)
-    }
-
-    fn retain_abandoned_exact_checkpoint(&mut self, checkpoint: CapturedAttemptCheckpoint) {
-        self.retain_abandoned_checkpoint(checkpoint, false);
     }
 }
 
@@ -827,39 +692,13 @@ fn divergence_fingerprint(
     divergence_fingerprint_for_scenario(input.lineage().scenario(), divergence)
 }
 
-/// Derives the normalized campaign fingerprint for one native divergence source.
-pub(crate) fn divergence_fingerprint_for_scenario(
-    scenario: ScenarioDefId,
-    divergence: &crucible::FailureClusterReportDivergence,
-) -> CampaignHash {
-    let node = divergence
-        .node
-        .as_ref()
-        .map_or("", |node| node.name.as_str());
-    let kind = CampaignHash::derive(
-        "crucible.daemon.qemu-causal-divergence-kind.v1",
-        divergence.kind.as_bytes(),
-    );
-    let node = CampaignHash::derive(
-        "crucible.daemon.qemu-causal-divergence-node.v1",
-        node.as_bytes(),
-    );
-    let mut material = Vec::with_capacity(96);
-    material.extend_from_slice(&scenario.as_hash().as_bytes());
-    material.extend_from_slice(&kind.as_bytes());
-    material.extend_from_slice(&node.as_bytes());
-    CampaignHash::derive(
-        "crucible.daemon.qemu-causal-divergence-fingerprint.v1",
-        &material,
-    )
-}
-
 /// Adds automatic finding reduction to one complete production execution runner.
 ///
 /// `main` owns admitted fresh, resume, and hot-fork execution. `replay` is an
 /// independent raw fresh runner used only for private reduction candidates.
 pub struct AutomaticFindingExecutionRunner<M, R> {
     store: CampaignExecutorStore,
+    exact_retention: Arc<dyn FindingExactRetentionSource>,
     main: M,
     replay: R,
     verify_determinism_findings: bool,
@@ -869,9 +708,15 @@ pub struct AutomaticFindingExecutionRunner<M, R> {
 impl<M, R> AutomaticFindingExecutionRunner<M, R> {
     /// Wraps one main runner and a separate fresh candidate runner.
     #[must_use]
-    pub const fn new(store: CampaignExecutorStore, main: M, replay: R) -> Self {
+    pub(crate) fn new(
+        store: CampaignExecutorStore,
+        exact_retention: Arc<dyn FindingExactRetentionSource>,
+        main: M,
+        replay: R,
+    ) -> Self {
         Self {
             store,
+            exact_retention,
             main,
             replay,
             verify_determinism_findings: false,
@@ -947,17 +792,6 @@ where
 {
     type Error = AutomaticFindingExecutionRunnerError<M::Error, R::Error>;
 
-    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
-        let mut cleanup = None;
-        if let Some(replay) = self.replay.take_abandoned_native_checkpoint() {
-            crate::NativeCheckpointCleanup::retain(&mut cleanup, replay);
-        }
-        if let Some(main) = self.main.take_abandoned_native_checkpoint() {
-            crate::NativeCheckpointCleanup::retain(&mut cleanup, main);
-        }
-        cleanup
-    }
-
     fn execute(
         &mut self,
         input: &CrucibleAttemptExecution,
@@ -969,31 +803,17 @@ where
             .execute(input, context)
             .map_err(map_main_failure)?;
         let (product, materialization) = main.into_parts();
-        let result = match product {
-            AttemptExecutionProduct::PreparedSemantic(result) => result,
-            product => return Ok(CrucibleExecutionOutcome::new(product, materialization)),
-        };
-        if let Some(finding) = result.finding() {
-            if finding.bundle().exact_retention().is_some() {
-                self.main.quarantine_pending_execution();
-                return Err(AttemptWorkerFailure::Terminal(
-                    AutomaticFindingExecutionRunnerError::Inconsistent {
-                        reason: "producer finding already carries automatic exact-retention evidence",
-                    },
-                ));
-            }
-            let retention = prepare_existing_finding_exact_retention(context);
-            let product = match retention {
-                Some(retention) => AttemptExecutionProduct::prepared_semantic_with_exact_retention(
-                    *result, retention,
-                ),
-                None => AttemptExecutionProduct::PreparedSemantic(result),
-            };
+        let AttemptExecutionProduct::PreparedSemantic(result) = product else {
             return Ok(CrucibleExecutionOutcome::new(product, materialization));
+        };
+        if result.finding().is_some() {
+            return Ok(CrucibleExecutionOutcome::new(
+                AttemptExecutionProduct::PreparedSemantic(result),
+                materialization,
+            ));
         }
 
         let result = *result;
-        let mut finding_exact_retention = None;
         let preparation = (|| {
             let mut probe_originated_divergence = false;
             let signature = automatic_finding_signature(input, result.observation())
@@ -1072,15 +892,26 @@ where
                 .map_err(terminal_artifact_error)?;
             let seed = minimization_seed(input, &signature).map_err(terminal_campaign_error)?;
             let owned_choices = result.observation().clone();
+            let (exact_pins, exact_retention) = prepare_finding_exact_retention(
+                &self.store,
+                self.exact_retention.as_ref(),
+                input,
+                context,
+                result.observation(),
+            )
+            .map_err(terminal_campaign_error)?;
 
             let mut candidate_failure = None;
             let target_signature = signature.clone();
             let prepared = prepare_automatic_signature_preserving_finding_with_outcomes(
                 result,
-                signature,
-                &finding,
-                FindingExactPins::default(),
-                seed,
+                AutomaticFindingPreparation {
+                    signature,
+                    finding: &finding,
+                    exact_pins,
+                    exact_retention,
+                    seed,
+                },
                 |candidate| match replay_candidate(
                     &self.store,
                     &mut self.replay,
@@ -1108,7 +939,7 @@ where
                 }
                 return Err(map_candidate_failure(failure));
             }
-            let prepared = match (prepared, preserved_result) {
+            match (prepared, preserved_result) {
                 (Ok(prepared), _) => Ok(prepared),
                 (
                     Err(AutomaticFindingPreparationError::Artifact(
@@ -1123,19 +954,7 @@ where
                 (Err(error), _) => Err(error),
             }
             .map_err(AutomaticFindingExecutionRunnerError::Preparation)
-            .map_err(AttemptWorkerFailure::Terminal)?;
-            if prepared.finding().is_some() {
-                finding_exact_retention = prepare_finding_exact_retention(
-                    &self.store,
-                    &mut self.replay,
-                    input,
-                    &finding,
-                    &owned_choices,
-                    &target_signature,
-                    context,
-                );
-            }
-            Ok(prepared)
+            .map_err(AttemptWorkerFailure::Terminal)
         })();
         let prepared = match preparation {
             Ok(prepared) => prepared,
@@ -1145,13 +964,10 @@ where
             }
         };
 
-        let product = match finding_exact_retention {
-            Some(retention) => {
-                AttemptExecutionProduct::prepared_semantic_with_exact_retention(prepared, retention)
-            }
-            None => AttemptExecutionProduct::prepared_semantic(prepared),
-        };
-        Ok(CrucibleExecutionOutcome::new(product, materialization))
+        Ok(CrucibleExecutionOutcome::new(
+            AttemptExecutionProduct::prepared_semantic(prepared),
+            materialization,
+        ))
     }
 
     fn reconcile_execution(
@@ -1169,458 +985,6 @@ where
     }
 }
 
-fn prepare_existing_finding_exact_retention(
-    context: &AttemptExecutionContext,
-) -> Option<PreparedFindingExactRetention> {
-    let policy = context.finding_retention_policy()?;
-    let basis = policy.basis();
-    match policy.retention() {
-        retention if retention.exact_findings() => {
-            Some(PreparedFindingExactRetention::Incomplete {
-                basis,
-                reason:
-                    crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
-                discarded_checkpoint: None,
-            })
-        }
-        _ => Some(PreparedFindingExactRetention::Disabled { basis }),
-    }
-}
-
-/// Selects the highest-priority authenticated failure represented by an observation.
-///
-/// Property failures take precedence over an execution-quanta timeout reached
-/// at the same boundary.
-///
-/// # Errors
-///
-/// Returns [`CampaignCodecError`] when the selected signature or one of its
-/// content-addressed dependencies is invalid.
-pub(crate) fn automatic_finding_signature(
-    input: &CrucibleAttemptExecution,
-    candidate: &ObservationCandidate,
-) -> Result<Option<FindingSignature>, CampaignCodecError> {
-    if let Some(signature) = property_violation_signature(input, candidate)? {
-        return Ok(Some(signature));
-    }
-    if !observation_exhausted_execution_quanta(candidate.observation().stop()) {
-        return Ok(None);
-    }
-
-    let fingerprint = execution_quanta_timeout_fingerprint(input)?;
-    let coverage = candidate.coverage().id()?.content_id();
-    FindingSignature::new(
-        FindingKind::Timeout,
-        fingerprint,
-        None,
-        String::from(EXECUTION_QUANTA_TIMEOUT_CLASS),
-        Some(FindingTarget::Configuration(candidate.child().id()?)),
-        BTreeSet::from([coverage]),
-    )
-    .map(Some)
-}
-
-fn observation_exhausted_execution_quanta(stop: &StopOutcome) -> bool {
-    match stop {
-        StopOutcome::Reached(crucible_campaign::StopCondition::ExecutionQuanta(_)) => true,
-        StopOutcome::ObservationReached(proof) => {
-            proof.satisfaction() == ObservationStopSatisfaction::ExecutionQuanta
-        }
-        StopOutcome::Reached(_)
-        | StopOutcome::TerminalSuccess
-        | StopOutcome::ModeledTimeout(_)
-        | StopOutcome::GuestCrash(_)
-        | StopOutcome::AssertionFailure(_)
-        | StopOutcome::ScenarioFailure(_) => false,
-    }
-}
-
-fn execution_quanta_timeout_fingerprint(
-    input: &CrucibleAttemptExecution,
-) -> Result<CampaignHash, CampaignCodecError> {
-    let failure_class_bytes = u64::try_from(EXECUTION_QUANTA_TIMEOUT_CLASS.len())
-        .map_err(|_| CampaignCodecError::LimitExceeded {
-            limit: "automatic-finding-failure-class-bytes",
-        })?
-        .to_be_bytes();
-    let mut material = Vec::with_capacity(
-        input.lineage().scenario().as_hash().as_bytes().len()
-            + failure_class_bytes.len()
-            + EXECUTION_QUANTA_TIMEOUT_CLASS.len(),
-    );
-    material.extend_from_slice(&input.lineage().scenario().as_hash().as_bytes());
-    material.extend_from_slice(&failure_class_bytes);
-    material.extend_from_slice(EXECUTION_QUANTA_TIMEOUT_CLASS.as_bytes());
-    Ok(CampaignHash::derive(
-        "crucible.daemon.qemu-execution-quanta-timeout-fingerprint.v1",
-        &material,
-    ))
-}
-
-fn property_violation_signature(
-    input: &CrucibleAttemptExecution,
-    candidate: &ObservationCandidate,
-) -> Result<Option<FindingSignature>, CampaignCodecError> {
-    let property = match candidate.observation().stop() {
-        StopOutcome::AssertionFailure(property) => property.as_str(),
-        StopOutcome::ObservationReached(proof)
-            if proof.satisfaction()
-                == ObservationStopSatisfaction::AssertionViolationTransition =>
-        {
-            proof
-                .assertion_witness()
-                .ok_or(CampaignCodecError::InvalidValue {
-                    reason: "assertion observation stop has no violation witness",
-                })?
-                .assertion()
-        }
-        _ => return Ok(None),
-    };
-    signature_for_failed_property(input, candidate.child(), candidate.properties(), property)
-        .map(Some)
-}
-
-fn replay_finding_signature(
-    input: &CrucibleAttemptExecution,
-    configuration: &ConfigurationArtifact,
-    properties: &PropertyVerdictSet,
-    coverage: &crucible_campaign::CoverageProjection,
-    target_signature: &FindingSignature,
-    triage: Option<&FailureTriageReplayEvidence>,
-) -> Result<Option<FindingSignature>, CampaignCodecError> {
-    if target_signature.kind() == FindingKind::PropertyViolation {
-        let Some(preferred_property) = target_signature.property() else {
-            return Ok(None);
-        };
-        let property = replayed_failed_property(input, properties, preferred_property);
-        return property
-            .as_deref()
-            .map(|property| {
-                signature_for_failed_property(input, configuration, properties, property)
-            })
-            .transpose();
-    }
-
-    let expected_native_kind = match target_signature.kind() {
-        FindingKind::PropertyViolation => unreachable!("property finding returned above"),
-        FindingKind::Divergence => FailureKind::Divergence,
-        FindingKind::Timeout => FailureKind::Timeout,
-    };
-    let Some(triage) = triage else {
-        return Ok(None);
-    };
-    if triage.signature().failure_kind != expected_native_kind {
-        return Ok(None);
-    }
-    let fingerprint = match (target_signature.kind(), triage.failure()) {
-        (FindingKind::Divergence, FailureClusterReportFailure::Divergence(divergence)) => {
-            divergence_fingerprint(input, divergence)
-        }
-        (FindingKind::Timeout, FailureClusterReportFailure::Timeout(_)) => {
-            execution_quanta_timeout_fingerprint(input)?
-        }
-        _ => return Ok(None),
-    };
-    FindingSignature::new(
-        target_signature.kind(),
-        fingerprint,
-        None,
-        target_signature.failure_class().to_owned(),
-        Some(FindingTarget::Configuration(configuration.id()?)),
-        BTreeSet::from([coverage.id()?.content_id()]),
-    )
-    .map(Some)
-}
-
-fn replayed_failed_property(
-    input: &CrucibleAttemptExecution,
-    properties: &PropertyVerdictSet,
-    preferred_property: &str,
-) -> Option<String> {
-    let preferred_failed = properties
-        .properties()
-        .get(preferred_property)
-        .is_some_and(|evidence| evidence.verdict() == PropertyVerdict::Failed);
-    if preferred_failed {
-        return Some(preferred_property.to_owned());
-    }
-
-    input
-        .scenario()
-        .properties()
-        .assertions()
-        .iter()
-        .map(|assertion| assertion.id.name.as_str())
-        .find(|property| {
-            properties
-                .properties()
-                .get(*property)
-                .is_some_and(|evidence| evidence.verdict() == PropertyVerdict::Failed)
-        })
-        .map(ToOwned::to_owned)
-}
-
-/// Binds one selected actual QEMU failure source to its exact reproduction.
-///
-/// # Errors
-///
-/// Returns [`EngineError`] when multiple sources match the selected kind or
-/// native replay evidence cannot be reconstructed from the retained inputs.
-pub(crate) fn bind_qemu_triage_evidence(
-    finding: &FindingReproductionArtifact,
-    kind: FindingKind,
-    property: Option<&str>,
-    triage: crate::qemu_campaign_driver::QemuFindingCandidateTriageInputs,
-) -> Result<Option<FailureTriageReplayEvidence>, EngineError> {
-    let (
-        failures,
-        causal_entries,
-        coverage_fingerprint,
-        recorded_event_frames,
-        paired_divergence_logs,
-    ) = triage.into_parts();
-    let mut matching = failures
-        .into_iter()
-        .filter(|failure| failure_matches_finding(failure, kind, property));
-    let Some(mut failure) = matching.next() else {
-        return Ok(None);
-    };
-    if matching.next().is_some() {
-        return Err(EngineError::UnifiedOperationEvidenceMismatch {
-            operation: "automatic-finding-triage-evidence",
-            reason: "multiple replay failure sources match the selected finding",
-        });
-    }
-    match &mut failure {
-        FailureClusterReportFailure::Property(record) => {
-            record.violation.reproduction_artifact = finding.artifact.id();
-        }
-        FailureClusterReportFailure::Timeout(record) => {
-            record.reproduction_artifact = finding.artifact.id();
-        }
-        FailureClusterReportFailure::Divergence(_) => {}
-    }
-
-    if let Some((expected, reproduced)) = paired_divergence_logs {
-        return FailureTriageReplayEvidence::new_paired_divergence(
-            finding.clone(),
-            expected,
-            reproduced,
-            coverage_fingerprint,
-            recorded_event_frames,
-        )
-        .map(Some);
-    }
-
-    FailureTriageReplayEvidence::new(
-        finding.clone(),
-        failure,
-        causal_entries,
-        coverage_fingerprint,
-        recorded_event_frames,
-    )
-    .map(Some)
-}
-
-fn failure_matches_finding(
-    failure: &FailureClusterReportFailure,
-    kind: FindingKind,
-    property: Option<&str>,
-) -> bool {
-    match (kind, failure) {
-        (FindingKind::PropertyViolation, FailureClusterReportFailure::Property(record)) => {
-            property.is_some_and(|property| record.violation.assertion.name == property)
-        }
-        (FindingKind::Divergence, FailureClusterReportFailure::Divergence(_))
-        | (FindingKind::Timeout, FailureClusterReportFailure::Timeout(_)) => true,
-        _ => false,
-    }
-}
-
-fn signature_for_failed_property(
-    input: &CrucibleAttemptExecution,
-    configuration: &ConfigurationArtifact,
-    properties: &PropertyVerdictSet,
-    property: &str,
-) -> Result<FindingSignature, CampaignCodecError> {
-    if !input
-        .scenario()
-        .properties()
-        .assertions()
-        .iter()
-        .any(|assertion| assertion.id.name == property)
-    {
-        return Err(CampaignCodecError::InvalidValue {
-            reason: "assertion finding does not name a declared scenario property",
-        });
-    }
-    if properties
-        .properties()
-        .get(property)
-        .is_none_or(|evidence| evidence.verdict() != PropertyVerdict::Failed)
-    {
-        return Err(CampaignCodecError::InvalidValue {
-            reason: "assertion finding does not name an actual failed property verdict",
-        });
-    }
-
-    let fingerprint = assertion_failure_fingerprint(input, property)?;
-    let properties = properties.id()?.content_id();
-    FindingSignature::new(
-        FindingKind::PropertyViolation,
-        fingerprint,
-        Some(property.to_owned()),
-        String::from(ASSERTION_FAILURE_CLASS),
-        Some(FindingTarget::Configuration(configuration.id()?)),
-        BTreeSet::from([properties]),
-    )
-}
-
-fn assertion_failure_fingerprint(
-    input: &CrucibleAttemptExecution,
-    property: &str,
-) -> Result<CampaignHash, CampaignCodecError> {
-    let property_bytes = u64::try_from(property.len())
-        .map_err(|_| CampaignCodecError::LimitExceeded {
-            limit: "automatic-finding-property-bytes",
-        })?
-        .to_be_bytes();
-    let failure_class_bytes = u64::try_from(ASSERTION_FAILURE_CLASS.len())
-        .map_err(|_| CampaignCodecError::LimitExceeded {
-            limit: "automatic-finding-failure-class-bytes",
-        })?
-        .to_be_bytes();
-    let mut material = Vec::with_capacity(
-        32 + property_bytes.len()
-            + property.len()
-            + failure_class_bytes.len()
-            + ASSERTION_FAILURE_CLASS.len(),
-    );
-    material.extend_from_slice(&input.lineage().scenario().as_hash().as_bytes());
-    material.extend_from_slice(&property_bytes);
-    material.extend_from_slice(property.as_bytes());
-    material.extend_from_slice(&failure_class_bytes);
-    material.extend_from_slice(ASSERTION_FAILURE_CLASS.as_bytes());
-    Ok(CampaignHash::derive(
-        "crucible.daemon.qemu-assertion-finding-fingerprint.v1",
-        &material,
-    ))
-}
-
-fn minimization_seed(
-    input: &CrucibleAttemptExecution,
-    signature: &FindingSignature,
-) -> Result<crucible::Seed, CampaignCodecError> {
-    let mut material = Vec::with_capacity(64);
-    material.extend_from_slice(&input.attempt().id()?.content_id().digest());
-    material.extend_from_slice(&signature.cluster_key().as_bytes());
-    Ok(crucible::Seed::from_bytes(
-        CampaignHash::derive(
-            "crucible.daemon.automatic-finding-minimization-seed.v1",
-            &material,
-        )
-        .as_bytes(),
-    ))
-}
-
-fn original_finding(
-    input: &CrucibleAttemptExecution,
-    store: &CampaignExecutorStore,
-    candidate: &ObservationCandidate,
-    signature: &FindingSignature,
-) -> Result<crucible::FindingReproductionArtifact, CrucibleArtifactError> {
-    let scenario = encode_crucible_scenario_artifact(input.scenario())?;
-    if scenario.id()? != input.lineage().scenario_content() {
-        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "automatic finding scenario",
-        });
-    }
-    let (configuration, _, _) = decode_crucible_configuration_artifact_with_owned_candidate(
-        input.scenario(),
-        &scenario,
-        candidate.child(),
-        store,
-        candidate,
-    )?;
-    crucible::FindingReproductionArtifact::capture(
-        FindingDiscoveryPath::StateSpaceSearch,
-        ContentHash {
-            bytes: signature.fingerprint().as_bytes(),
-        },
-        input.scenario(),
-        &configuration,
-    )
-    .map_err(|source| CrucibleArtifactError::InvalidPayload {
-        artifact: "automatic finding reproduction",
-        source: Box::new(source),
-    })
-}
-
-fn prepare_finding_exact_retention<R>(
-    store: &CampaignExecutorStore,
-    replay: &mut R,
-    input: &CrucibleAttemptExecution,
-    finding: &crucible::FindingReproductionArtifact,
-    owned_choices: &ObservationCandidate,
-    target_signature: &FindingSignature,
-    context: &AttemptExecutionContext,
-) -> Option<PreparedFindingExactRetention>
-where
-    R: PrivateFindingReplayRunner,
-    R::Error: std::error::Error + 'static,
-{
-    let policy = context.finding_retention_policy()?;
-    let basis = policy.basis();
-    let retention = policy.retention();
-    if !retention.exact_findings() {
-        return Some(PreparedFindingExactRetention::Disabled { basis });
-    }
-
-    let replayed = match replay_candidate_with_exact_capture(
-        store,
-        replay,
-        input,
-        finding,
-        owned_choices,
-        target_signature,
-        context,
-    ) {
-        Ok(replayed) => replayed,
-        Err(_) => {
-            return Some(PreparedFindingExactRetention::Incomplete {
-                basis,
-                reason:
-                    crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
-                discarded_checkpoint: None,
-            });
-        }
-    };
-    let (outcome, checkpoint) = replayed.into_parts();
-    let Some(checkpoint) = checkpoint else {
-        return Some(PreparedFindingExactRetention::Incomplete {
-            basis,
-            reason: crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
-            discarded_checkpoint: None,
-        });
-    };
-    let mut native_guard = crate::executor_worker::NativeCheckpointUnwindGuard::new(&checkpoint);
-
-    let capture_matches = outcome.signature() == Some(target_signature)
-        && checkpoint.scenario() == finding.artifact.scenario_def().id()
-        && checkpoint.configuration() == finding.configuration;
-    if !capture_matches {
-        native_guard.disarm();
-        return Some(PreparedFindingExactRetention::Incomplete {
-            basis,
-            reason:
-                crucible_campaign::FindingExactRetentionIncomplete::CandidateAuthenticationFailed,
-            discarded_checkpoint: Some(checkpoint),
-        });
-    }
-    native_guard.disarm();
-    Some(PreparedFindingExactRetention::Captured { basis, checkpoint })
-}
-
 pub(crate) fn replay_candidate<R>(
     store: &CampaignExecutorStore,
     replay: &mut R,
@@ -1630,60 +994,6 @@ pub(crate) fn replay_candidate<R>(
     target_signature: &FindingSignature,
     context: &AttemptExecutionContext,
 ) -> Result<AutomaticFindingReplayOutcome, CandidateReplayFailure<R::Error>>
-where
-    R: PrivateFindingReplayRunner,
-    R::Error: std::error::Error + 'static,
-{
-    replay_candidate_inner(
-        store,
-        replay,
-        original_input,
-        candidate,
-        owned_choices,
-        target_signature,
-        context,
-        false,
-    )
-    .map(|replay| replay.into_parts().0)
-}
-
-fn replay_candidate_with_exact_capture<R>(
-    store: &CampaignExecutorStore,
-    replay: &mut R,
-    original_input: &CrucibleAttemptExecution,
-    candidate: &crucible::FindingReproductionArtifact,
-    owned_choices: &ObservationCandidate,
-    target_signature: &FindingSignature,
-    context: &AttemptExecutionContext,
-) -> Result<AutomaticFindingExactCheckpointReplay, CandidateReplayFailure<R::Error>>
-where
-    R: PrivateFindingReplayRunner,
-    R::Error: std::error::Error + 'static,
-{
-    replay_candidate_inner(
-        store,
-        replay,
-        original_input,
-        candidate,
-        owned_choices,
-        target_signature,
-        context,
-        true,
-    )
-}
-
-// crucible-lint: allow rust-allow -- the shared replay path keeps capture and ordinary authentication identical.
-#[allow(clippy::too_many_arguments)]
-fn replay_candidate_inner<R>(
-    store: &CampaignExecutorStore,
-    replay: &mut R,
-    original_input: &CrucibleAttemptExecution,
-    candidate: &crucible::FindingReproductionArtifact,
-    owned_choices: &ObservationCandidate,
-    target_signature: &FindingSignature,
-    context: &AttemptExecutionContext,
-    capture_exact_checkpoint: bool,
-) -> Result<AutomaticFindingExactCheckpointReplay, CandidateReplayFailure<R::Error>>
 where
     R: PrivateFindingReplayRunner,
     R::Error: std::error::Error + 'static,
@@ -1730,6 +1040,7 @@ where
             signal_fault_replay,
         )
         .map_err(CandidateReplayFailure::Campaign)?;
+    let replay_context = context.for_origin_replay();
     let replay_closure =
         crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_resolved_selections(
             candidate.artifact.scenario_form(),
@@ -1737,9 +1048,8 @@ where
             &starting_selections,
         )
         .map_err(CandidateReplayFailure::ReplayClosure)?;
-    let replay_context = context.for_origin_replay();
-    let replayed = if capture_exact_checkpoint {
-        replay.replay_and_capture_finding_candidate_boundary(
+    let outcome = replay
+        .replay_finding_candidate_boundary(
             &replay_input,
             &configuration,
             candidate,
@@ -1747,25 +1057,8 @@ where
             target_signature,
             &replay_context,
         )
-    } else {
-        replay
-            .replay_finding_candidate_boundary(
-                &replay_input,
-                &configuration,
-                candidate,
-                &replay_closure,
-                target_signature,
-                &replay_context,
-            )
-            .map(|outcome| AutomaticFindingExactCheckpointReplay::new(outcome, None))
-    }
-    .map_err(CandidateReplayFailure::Operational)?;
-    let (outcome, mut checkpoint) = replayed.into_parts();
-    let mut native_guard = checkpoint.as_ref().map_or_else(
-        crate::executor_worker::NativeCheckpointUnwindGuard::new_empty,
-        crate::executor_worker::NativeCheckpointUnwindGuard::new,
-    );
-    let transformed = (|| match outcome {
+        .map_err(CandidateReplayFailure::Operational)?;
+    match outcome {
         AutomaticFindingReplayOutcome::Observed {
             evidence,
             measurement_replay_evidence,
@@ -1790,39 +1083,23 @@ where
                     .map_err(CandidateReplayFailure::Artifact)?,
                 None => evidence,
             };
-            let outcome = match triage_evidence {
-                Some(triage_evidence) => Ok(AutomaticFindingReplayOutcome::observed_with_triage(
+            let retained = match triage_evidence {
+                Some(triage_evidence) => AutomaticFindingReplayOutcome::observed_with_triage(
                     evidence,
                     measurement_replay_evidence,
                     *triage_evidence,
-                )),
-                None => Ok(AutomaticFindingReplayOutcome::observed(
-                    evidence,
-                    measurement_replay_evidence,
-                )),
-            }?;
-            let outcome = match production_replay {
-                Some(production_replay) => outcome.with_production_replay(production_replay),
-                None => outcome,
+                ),
+                None => {
+                    AutomaticFindingReplayOutcome::observed(evidence, measurement_replay_evidence)
+                }
             };
-            Ok(outcome)
+            Ok(match production_replay {
+                Some(capture) => retained.with_production_replay(capture),
+                None => retained,
+            })
         }
         incompatible @ AutomaticFindingReplayOutcome::DeterministicallyIncompatible { .. } => {
             Ok(incompatible)
-        }
-    })();
-    match transformed {
-        Ok(outcome) => {
-            let replay = AutomaticFindingExactCheckpointReplay::new(outcome, checkpoint);
-            native_guard.disarm();
-            Ok(replay)
-        }
-        Err(failure) => {
-            if let Some(checkpoint) = checkpoint.take() {
-                replay.retain_abandoned_exact_checkpoint(checkpoint);
-                native_guard.disarm();
-            }
-            Err(failure)
         }
     }
 }
@@ -1934,4 +1211,5 @@ where
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- fixture construction failures stop the focused runner test.
 #[allow(clippy::expect_used)]
+#[path = "automatic_finding_runner/tests.rs"]
 mod tests;

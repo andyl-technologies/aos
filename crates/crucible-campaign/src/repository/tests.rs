@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use crucible_cas::content_store::{
     BlobHandle, BlobStoreAdmin, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
 };
-use ed25519_dalek::{Signer as _, SigningKey};
 
 use crate::{
     AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BranchBudget, BudgetGrant,
@@ -20,13 +19,16 @@ use crate::{
     ChoiceClassContext, ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
     ContinuationState, DebugSessionId, DiscreteAlternative, DiscreteDomain, ExecutionId,
     ExecutionRetentionIntent, ExplainCampaignAttemptRequest, ExplorerPolicy, FairnessPolicy,
-    GetCampaignFindingObjectRequest, GetCampaignFrontierObjectRequest, GuidanceEvidence,
-    GuidanceWeight, InterventionLearningPolicy, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    PlannerEngine, PlannerProposalDisposition, PlannerRequest, PlannerResponse, PlannerState,
-    PlannerStepProposal, PlannerSubmission, PlanningBudget, PlanningUsage, PolicyArtifact,
-    ProbabilityModelId, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy, PurePlannerEngine,
+    FindingCandidateBundle, FindingCandidateCore, FindingExactPins, FindingExactRetention,
+    FindingExactRetentionDisposition, FindingExactRetentionIncomplete, FindingMinimizationEvidence,
+    FindingSignature, FindingSignatureMinimizationEvidence, GetCampaignFindingObjectRequest,
+    GetCampaignFrontierObjectRequest, GuidanceEvidence, GuidanceWeight, InterventionLearningPolicy,
+    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, ObservationId, PlannerEngine,
+    PlannerProposalDisposition, PlannerRequest, PlannerResponse, PlannerState, PlannerStepProposal,
+    PlannerSubmission, PlanningBudget, PlanningUsage, PolicyArtifact, ProbabilityModelId,
+    ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy, PurePlannerEngine,
     QueryCampaignFindingsRequest, QueryCampaignFrontierRequest, RepositoryCampaignService,
-    RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
+    ReproductionArtifactId, RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
 };
 
 struct AllowCampaignQueries;
@@ -111,6 +113,90 @@ impl CampaignRepository {
             ),
         )?;
         self.head(name)
+    }
+
+    fn publish_incomplete_test_finding(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        signature: FindingSignature,
+        observation: ObservationId,
+        reproduction: ReproductionArtifactId,
+    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
+        let head = self.read_snapshot(expected_snapshot.content_id())?;
+        if let Some(existing) = self.merkle.get(
+            head.snapshot.roots().findings,
+            finding_signature_key(signature.cluster_key()),
+        )? {
+            let finding = self.read_finding(existing)?;
+            if finding.signature() == &signature
+                && finding.observation() == observation
+                && finding.reproduction() == reproduction
+            {
+                return self.incorporate_finding_candidate_bundle(
+                    name,
+                    expected_snapshot,
+                    finding
+                        .latest_candidate_bundle()
+                        .ok_or_else(|| integrity("test-finding-candidate-bundle"))?,
+                );
+            }
+        }
+
+        let original = self.load_reproduction_artifact(reproduction)?;
+        let replayed_state = CampaignHash::derive(
+            "crucible.campaign.test-finding-replayed-state.v1",
+            original.payload(),
+        );
+        let minimization = FindingMinimizationEvidence::new(
+            reproduction,
+            3,
+            b"campaign test minimization policy".to_vec(),
+            Vec::new(),
+            replayed_state,
+        )?;
+        let minimized = self.publish_minimized_reproduction_artifact(
+            original.scenario(),
+            original.scenario_artifact(),
+            original.configuration(),
+            original.configuration_artifact(),
+            original.finding_fingerprint(),
+            original.payload_schema(),
+            original.payload().to_vec(),
+            minimization.clone(),
+        )?;
+        let signature_minimization = FindingSignatureMinimizationEvidence::new(
+            &signature,
+            &minimization,
+            vec![Some(signature.clone())],
+            vec![Some(signature.clone())],
+        )?;
+        let observation_value = self.read_observation(observation.content_id())?;
+        let retention_basis =
+            self.attempt_retention_policy_basis_at(expected_snapshot, observation_value.attempt())?;
+        let exact_retention = FindingExactRetention::new(
+            retention_basis.snapshot(),
+            retention_basis.policy(),
+            retention_basis.admission(),
+            0,
+            FindingExactRetentionDisposition::Incomplete(
+                FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+            ),
+        )?;
+        let bundle = FindingCandidateBundle::new_with_exact_retention(
+            FindingCandidateCore::new(
+                observation,
+                signature,
+                reproduction,
+                minimized,
+                signature_minimization,
+                FindingExactPins::default(),
+            ),
+            None,
+            exact_retention,
+        )?;
+        let bundle = self.publish_finding_candidate_bundle(&bundle)?;
+        self.incorporate_finding_candidate_bundle(name, expected_snapshot, bundle)
     }
 }
 
@@ -265,286 +351,6 @@ fn authorized_fixture() -> (
     (repository, lineage, policy, blobs, planner, debugger)
 }
 
-fn finding_recovery_context(marker: u8) -> FindingCandidateRecoveryContext {
-    let object_id = |kind, schema, label: &[u8]| {
-        let mut bytes = label.to_vec();
-        bytes.push(marker);
-        ContentId::for_bytes(kind, schema, &bytes)
-    };
-    let lineage = CampaignLineageId::from_content_id(object_id(
-        ObjectKind::CampaignFact,
-        1,
-        b"recovery lineage",
-    ))
-    .expect("recovery lineage");
-    let attempt =
-        AttemptId::from_content_id(object_id(ObjectKind::CampaignFact, 8, b"recovery attempt"))
-            .expect("recovery attempt");
-    let observation = ObservationId::from_content_id(object_id(
-        ObjectKind::Observation,
-        12,
-        b"recovery observation",
-    ))
-    .expect("recovery observation");
-    let bundle = FindingCandidateBundleId::from_content_id(object_id(
-        ObjectKind::Finding,
-        5,
-        b"recovery candidate",
-    ))
-    .expect("recovery candidate");
-    let expected_snapshot = CampaignSnapshotId::from_content_id(object_id(
-        ObjectKind::CampaignSnapshot,
-        3,
-        b"recovery expected snapshot",
-    ))
-    .expect("recovery expected snapshot");
-
-    FindingCandidateRecoveryContext::new(
-        CampaignName::new(format!("recovery-{marker:02x}")).expect("recovery campaign"),
-        expected_snapshot,
-        lineage,
-        attempt,
-        CampaignHash::derive("test.recovery.execution-basis", &[marker]),
-        ExecutionId::from_bytes([marker; 16]).expect("recovery execution"),
-        observation,
-        bundle,
-        CampaignHash::derive("test.recovery.prepared-result", &[marker]),
-    )
-}
-
-fn recovery_seal(
-    signing_key: &SigningKey,
-    context: &FindingCandidateRecoveryContext,
-) -> FindingCandidateRecoverySeal {
-    FindingCandidateRecoverySeal::from_bytes(signing_key.sign(&context.seal_message()).to_bytes())
-}
-
-fn recovery_executor_store(
-    signing_key: &SigningKey,
-) -> Result<CampaignExecutorStore, CampaignRepositoryError> {
-    let (repository, _, _) = fixture();
-    CampaignExecutorStore::new(Arc::new(repository))
-        .with_finding_candidate_recovery_verifying_key(signing_key.verifying_key().to_bytes())
-}
-
-#[test]
-fn recovery_incorporation_requires_an_installed_process_verifier() {
-    let signing_key = SigningKey::from_bytes(&[0x31; 32]);
-    let context = finding_recovery_context(0x41);
-    let seal = recovery_seal(&signing_key, &context);
-    let (repository, _, _) = fixture();
-    let store = CampaignExecutorStore::new(Arc::new(repository));
-
-    assert!(
-        store
-            .authenticate_recovered_finding_candidate_incorporation(context, seal)
-            .is_err()
-    );
-}
-
-#[test]
-fn recovery_incorporation_rejects_a_forged_seal() {
-    let signing_key = SigningKey::from_bytes(&[0x32; 32]);
-    let context = finding_recovery_context(0x42);
-    let store = recovery_executor_store(&signing_key).expect("recovery store");
-    let forged = FindingCandidateRecoverySeal::from_bytes([0x7f; 64]);
-
-    assert!(
-        store
-            .authenticate_recovered_finding_candidate_incorporation(context, forged)
-            .is_err()
-    );
-}
-
-#[test]
-fn recovery_incorporation_rejects_a_seal_from_a_rotated_key() {
-    let prior_key = SigningKey::from_bytes(&[0x33; 32]);
-    let current_key = SigningKey::from_bytes(&[0x34; 32]);
-    let context = finding_recovery_context(0x43);
-    let stale_seal = recovery_seal(&prior_key, &context);
-    let store = recovery_executor_store(&current_key).expect("recovery store");
-
-    assert!(
-        store
-            .authenticate_recovered_finding_candidate_incorporation(context, stale_seal)
-            .is_err()
-    );
-}
-
-#[test]
-fn recovery_incorporation_rejects_rebound_full_context() {
-    let signing_key = SigningKey::from_bytes(&[0x35; 32]);
-    let signed_context = finding_recovery_context(0x44);
-    let alternate = finding_recovery_context(0x45);
-    let seal = recovery_seal(&signing_key, &signed_context);
-    let store = recovery_executor_store(&signing_key).expect("recovery store");
-
-    let rebound_contexts = [
-        FindingCandidateRecoveryContext::new(
-            alternate.campaign().clone(),
-            signed_context.expected_snapshot(),
-            signed_context.lineage(),
-            signed_context.attempt(),
-            signed_context.execution_basis(),
-            signed_context.execution(),
-            signed_context.observation(),
-            signed_context.bundle(),
-            signed_context.prepared_result_digest(),
-        ),
-        FindingCandidateRecoveryContext::new(
-            signed_context.campaign().clone(),
-            alternate.expected_snapshot(),
-            signed_context.lineage(),
-            signed_context.attempt(),
-            signed_context.execution_basis(),
-            signed_context.execution(),
-            signed_context.observation(),
-            signed_context.bundle(),
-            signed_context.prepared_result_digest(),
-        ),
-        FindingCandidateRecoveryContext::new(
-            signed_context.campaign().clone(),
-            signed_context.expected_snapshot(),
-            alternate.lineage(),
-            signed_context.attempt(),
-            signed_context.execution_basis(),
-            signed_context.execution(),
-            signed_context.observation(),
-            signed_context.bundle(),
-            signed_context.prepared_result_digest(),
-        ),
-        FindingCandidateRecoveryContext::new(
-            signed_context.campaign().clone(),
-            signed_context.expected_snapshot(),
-            signed_context.lineage(),
-            alternate.attempt(),
-            signed_context.execution_basis(),
-            signed_context.execution(),
-            signed_context.observation(),
-            signed_context.bundle(),
-            signed_context.prepared_result_digest(),
-        ),
-        FindingCandidateRecoveryContext::new(
-            signed_context.campaign().clone(),
-            signed_context.expected_snapshot(),
-            signed_context.lineage(),
-            signed_context.attempt(),
-            alternate.execution_basis(),
-            signed_context.execution(),
-            signed_context.observation(),
-            signed_context.bundle(),
-            signed_context.prepared_result_digest(),
-        ),
-        FindingCandidateRecoveryContext::new(
-            signed_context.campaign().clone(),
-            signed_context.expected_snapshot(),
-            signed_context.lineage(),
-            signed_context.attempt(),
-            signed_context.execution_basis(),
-            alternate.execution(),
-            signed_context.observation(),
-            signed_context.bundle(),
-            signed_context.prepared_result_digest(),
-        ),
-        FindingCandidateRecoveryContext::new(
-            signed_context.campaign().clone(),
-            signed_context.expected_snapshot(),
-            signed_context.lineage(),
-            signed_context.attempt(),
-            signed_context.execution_basis(),
-            signed_context.execution(),
-            alternate.observation(),
-            signed_context.bundle(),
-            signed_context.prepared_result_digest(),
-        ),
-        FindingCandidateRecoveryContext::new(
-            signed_context.campaign().clone(),
-            signed_context.expected_snapshot(),
-            signed_context.lineage(),
-            signed_context.attempt(),
-            signed_context.execution_basis(),
-            signed_context.execution(),
-            signed_context.observation(),
-            alternate.bundle(),
-            signed_context.prepared_result_digest(),
-        ),
-        FindingCandidateRecoveryContext::new(
-            signed_context.campaign().clone(),
-            signed_context.expected_snapshot(),
-            signed_context.lineage(),
-            signed_context.attempt(),
-            signed_context.execution_basis(),
-            signed_context.execution(),
-            signed_context.observation(),
-            signed_context.bundle(),
-            alternate.prepared_result_digest(),
-        ),
-    ];
-    for rebound_context in rebound_contexts {
-        assert!(
-            store
-                .authenticate_recovered_finding_candidate_incorporation(rebound_context, seal)
-                .is_err()
-        );
-    }
-}
-
-#[test]
-fn recovery_authorization_rejects_campaign_and_head_substitution() {
-    let signing_key = SigningKey::from_bytes(&[0x37; 32]);
-    let context = finding_recovery_context(0x47);
-    let alternate = finding_recovery_context(0x48);
-    let store = recovery_executor_store(&signing_key).expect("recovery store");
-
-    let campaign_authorization = store
-        .authenticate_recovered_finding_candidate_incorporation(
-            context.clone(),
-            recovery_seal(&signing_key, &context),
-        )
-        .expect("exact recovery seal");
-    assert!(
-        campaign_authorization
-            .bind(
-                alternate.campaign().as_str(),
-                context.expected_snapshot(),
-                context.bundle(),
-                context.observation(),
-            )
-            .is_none()
-    );
-
-    let head_authorization = store
-        .authenticate_recovered_finding_candidate_incorporation(
-            context.clone(),
-            recovery_seal(&signing_key, &context),
-        )
-        .expect("exact recovery seal");
-    assert!(
-        head_authorization
-            .bind(
-                context.campaign().as_str(),
-                alternate.expected_snapshot(),
-                context.bundle(),
-                context.observation(),
-            )
-            .is_none()
-    );
-}
-
-#[test]
-fn recovery_incorporation_accepts_the_current_key_and_exact_context() {
-    let signing_key = SigningKey::from_bytes(&[0x36; 32]);
-    let context = finding_recovery_context(0x46);
-    let seal = recovery_seal(&signing_key, &context);
-    let store = recovery_executor_store(&signing_key).expect("recovery store");
-
-    let authorization = store
-        .authenticate_recovered_finding_candidate_incorporation(context.clone(), seal)
-        .expect("valid restart seal");
-    assert_eq!(authorization.bundle(), context.bundle());
-    assert_eq!(authorization.observation(), context.observation());
-}
-
 fn fixture_with_quota_and_authorities(
     max_logical_bytes: u64,
     authorities: Option<(PlannerAuthorityKey, DebuggerAuthorityKey)>,
@@ -603,17 +409,21 @@ fn initialize_fixture(
         puct: PuctPolicy::new(1_000_000, 1, 0),
     };
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        explorer,
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            explorer,
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy");
     (repository, lineage, policy)
@@ -645,22 +455,26 @@ fn exhaustive_policy_with_generator(
     maximum_cardinality: u64,
 ) -> CampaignPolicy {
     CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([9; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality,
-        },
-        BTreeMap::from([(
-            selectable.to_owned(),
-            ChoicePolicy::new(selectable, generator, true).expect("choice policy"),
-        )]),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([9; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::from([(
+                selectable.to_owned(),
+                ChoicePolicy::new(selectable, generator, true).expect("choice policy"),
+            )]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("generator policy")
 }
@@ -709,10 +523,12 @@ fn branch_request(
         .expect("publish opportunity");
 
     BranchRequest::new(
-        opportunity.branch_point_id(parent_configuration),
-        parent,
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(parent_configuration),
+            parent,
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),
@@ -774,10 +590,12 @@ fn modeled_branch_request(
         .expect("publish modeled opportunity");
 
     BranchRequest::new(
-        opportunity.branch_point_id(parent_configuration),
-        parent,
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(parent_configuration),
+            parent,
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::modeled_finite(model, prior_weights).expect("modeled finite source"),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -977,6 +795,7 @@ fn admitted_observation_fixture(
         ChoiceValue::Boolean(false),
         1,
     );
+    proposal.id().expect("observation proposal identity");
     let proposed = repository
         .issue_proposal(name, requested.new_snapshot, &proposal)
         .expect("issue observation proposal");
@@ -1031,13 +850,15 @@ fn admitted_observation_fixture(
         .expect("publish coverage");
     let observation = Observation::new(
         admitted.attempt,
-        child,
-        child_content,
-        path.id().expect("path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurement_id,
-        property_id,
-        coverage_id,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurement_id,
+            property_id,
+            coverage_id,
+        ),
         BTreeSet::from([request.opportunity()]),
     )
     .expect("observation");

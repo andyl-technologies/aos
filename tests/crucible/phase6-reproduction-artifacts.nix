@@ -42,7 +42,7 @@
       }
       {
         label = "ADV-29 discovery paths";
-        needle = "regardless of how\n  the finding was reached (campaign forking, state-space search, or\n  coverage-guided fuzzing)";
+        needle = "regardless of how\n  the finding was reached (campaign branching, state-space search, or\n  coverage-guided fuzzing)";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
@@ -63,7 +63,7 @@
         needle = "pub fn load_from_store";
       }
       {
-        label = "campaign fork hook";
+        label = "campaign branch hook";
         needle = "FindingDiscoveryPath::CampaignFork";
       }
       {

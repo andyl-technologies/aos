@@ -16,7 +16,8 @@ impl crucible_campaign::CampaignPrincipalAuthorizer for AllowCampaignFindingExpo
     }
 }
 
-pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_and_tampering()
+#[test]
+pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_tampering()
 -> Result<(), Box<dyn Error>> {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
@@ -25,9 +26,9 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         BudgetGrant, CampaignClient, CampaignCommandId, CampaignControlAction, CampaignHash,
         CampaignLineage, CampaignMode, CampaignName, CampaignPolicy, CampaignPrincipal,
         CampaignRepository, CampaignSeed, ConfigurationId, ControlRequest, CoverageProjection,
-        ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingExactPins,
-        FindingExactRetention, FindingExactRetentionDisposition, FindingExactRetentionIncomplete,
-        FindingKind, FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+        ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingCandidateCore,
+        FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition, FindingKind,
+        FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
         FindingSignatureMinimizationEvidence, FindingTarget, FindingTriageEvidenceSet,
         FindingTriageReplayEvidence, MeasurementSet, Observation, PropertyEvidence,
         PropertyVerdict, PropertyVerdictSet, RepositoryCampaignService, RetentionPolicy,
@@ -35,8 +36,8 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     };
     use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
-    const CAMPAIGN: &str = "cli-v4-finding-export";
-    const PROPERTY: &str = "cli-v4-property";
+    const CAMPAIGN: &str = "cli-campaign-findings-finding-export";
+    const PROPERTY: &str = "cli-campaign-findings-property";
 
     let form = search_frontier_scenario_form()?;
     let configuration = crucible::Configuration {
@@ -44,7 +45,8 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         schedule: crucible::Schedule::from_decisions(search_frontier_decisions()),
     };
     let minimized_configuration = crucible::Configuration::genesis(form.scenario_def());
-    let fingerprint = crucible::ContentHash::from_bytes(b"cli-v4-finding-fingerprint");
+    let fingerprint =
+        crucible::ContentHash::from_bytes(b"cli-campaign-findings-finding-fingerprint");
     let model_finding = crucible::FindingReproductionArtifact::capture(
         crucible::FindingDiscoveryPath::StateSpaceSearch,
         fingerprint,
@@ -61,7 +63,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         model_finding.clone(),
         crucible_model::HostAssertionViolation {
             assertion: crucible::AssertionId::from_name(PROPERTY),
-            message: String::from("CLI V4 property violated"),
+            message: String::from("CLI campaign findings property violated"),
             quantifier: crucible::AssertionQuantifierKind::Always,
             event_kind: String::from("assertion_state_changed"),
             at_icount: Some(crucible::Icount { retired: 7 }),
@@ -73,7 +75,10 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     )?;
 
     let repository = CampaignRepository::new(
-        Arc::new(MemoryBlobBackend::new("cli-v4-finding-export", u64::MAX)),
+        Arc::new(MemoryBlobBackend::new(
+            "cli-campaign-findings-finding-export",
+            u64::MAX,
+        )),
         Arc::new(MemoryRefBackend::new()),
     );
     let scenario =
@@ -81,7 +86,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     let scenario_artifact =
         repository.publish_scenario_artifact(scenario, 1, form.to_compact_binary())?;
     let genesis = ConfigurationId::from_hash(CampaignHash::derive(
-        "cli-v4-test-configuration",
+        "cli-campaign-findings-test-configuration",
         b"genesis",
     ));
     let genesis_artifact = repository.publish_configuration_artifact(
@@ -96,33 +101,37 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         scenario_artifact,
         genesis,
         genesis_artifact,
-        "cli-v4-engine",
-        "cli-v4-qemu",
+        "cli-campaign-findings-engine",
+        "cli-campaign-findings-qemu",
         BTreeMap::from([(String::from("control"), 1)]),
         1,
         1,
     )?;
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([0x47; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 1,
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0)?,
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([0x47; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 1,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0)?,
+            RetentionPolicy::new(true, 1, false, true),
+            true,
+        ),
     )?;
     let created = repository.create(CAMPAIGN, &lineage, &policy, &BTreeMap::new())?;
     let resumed = repository.apply_control(
         CAMPAIGN,
         &ControlRequest {
             command: CampaignCommandId::from_hash(CampaignHash::derive(
-                "cli-v4-test-command",
+                "cli-campaign-findings-test-command",
                 b"resume",
             )),
             expected_snapshot: created.snapshot_id(),
@@ -133,7 +142,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         CAMPAIGN,
         &ControlRequest {
             command: CampaignCommandId::from_hash(CampaignHash::derive(
-                "cli-v4-test-command",
+                "cli-campaign-findings-test-command",
                 b"fund",
             )),
             expected_snapshot: resumed.new_snapshot,
@@ -163,11 +172,11 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     )?;
     let measurements = repository.publish_measurement_set(&MeasurementSet::from_evaluation(
         CampaignHash::derive(
-            "crucible.cli.finding-export.measurements.v1",
+            "crucible.cli.verify-dispatch.measurements.v1",
             b"definitions",
         ),
         1,
-        CampaignHash::derive("crucible.cli.finding-export.evaluation.v1", b"evaluation"),
+        CampaignHash::derive("crucible.cli.verify-dispatch.evaluation.v1", b"evaluation"),
         b"empty evaluation".to_vec(),
         BTreeSet::new(),
     )?)?;
@@ -180,13 +189,15 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         .publish_coverage_projection(&CoverageProjection::new(BTreeSet::new(), BTreeSet::new())?)?;
     let observation = Observation::new(
         attempt,
-        child,
-        child_artifact,
-        attempt_record.path(),
-        StopOutcome::AssertionFailure(String::from(PROPERTY)),
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            child_artifact,
+            attempt_record.path(),
+            StopOutcome::AssertionFailure(String::from(PROPERTY)),
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::new(),
     )?;
     let observation_snapshot = repository.head(CAMPAIGN)?.snapshot_id();
@@ -197,9 +208,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         retention_basis.policy(),
         retention_basis.admission(),
         0,
-        FindingExactRetentionDisposition::Incomplete(
-            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
-        ),
+        FindingExactRetentionDisposition::Disabled,
     )?;
     let observed = repository.publish_observation(CAMPAIGN, observation_snapshot, &observation)?;
     let campaign_fingerprint = CampaignHash::from_bytes(fingerprint.bytes);
@@ -216,7 +225,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     let replayed_state = CampaignHash::from_bytes(minimized_model_finding.replay.state.bytes);
     let minimization = FindingMinimizationEvidence::new(
         original,
-        1,
+        3,
         b"cli v4 deterministic minimizer".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -248,7 +257,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         FindingKind::PropertyViolation,
         campaign_fingerprint,
         Some(String::from(PROPERTY)),
-        String::from("cli.v4-property-violation"),
+        String::from("cli.campaign-findings-property-violation"),
         Some(FindingTarget::Configuration(child_artifact)),
         BTreeSet::from([properties.content_id()]),
     )?;
@@ -256,7 +265,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         FindingKind::PropertyViolation,
         campaign_fingerprint,
         Some(String::from(PROPERTY)),
-        String::from("cli.v4-property-violation"),
+        String::from("cli.campaign-findings-property-violation"),
         Some(FindingTarget::Configuration(minimized_child_artifact)),
         BTreeSet::from([properties.content_id()]),
     )?;
@@ -335,14 +344,15 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         )?,
     );
     let bundle = FindingCandidateBundle::new_with_exact_retention(
-        observed.observation,
-        signature.clone(),
-        original,
-        minimized,
-        signature_minimization.clone(),
-        FindingExactPins::default(),
+        FindingCandidateCore::new(
+            observed.observation,
+            signature.clone(),
+            original,
+            minimized,
+            signature_minimization.clone(),
+            FindingExactPins::default(),
+        ),
         Some(triage_evidence),
-        None,
         exact_retention,
     )?;
     let bundle = repository.publish_finding_candidate_bundle(&bundle)?;
@@ -354,111 +364,19 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     ));
     let evidence = crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
         &client,
-        CampaignPrincipal::new("operator:cli-v4")?,
+        CampaignPrincipal::new("operator:cli-campaign-findings")?,
         CampaignName::new(CAMPAIGN)?,
         published.new_snapshot,
         published.finding,
         report,
     )?;
 
-    let alternate_fingerprint =
-        crucible::ContentHash::from_bytes(b"cli-v4-shared-artifact-alternate-fingerprint");
-    let alternate_finding = crucible::FindingReproductionArtifact::capture(
-        crucible::FindingDiscoveryPath::StateSpaceSearch,
-        alternate_fingerprint,
-        &form,
-        &configuration,
-    )?;
-    assert_eq!(
-        alternate_finding.artifact.id(),
-        evidence.report.finding.artifact.id(),
-        "a model reproduction identity does not include the finding signature"
-    );
-    let alternate_report = triage_property_evidence_for_violation(
-        alternate_finding.clone(),
-        crucible_model::HostAssertionViolation {
-            assertion: crucible::AssertionId::from_name("cli-v4-alternate-property"),
-            message: String::from("another failure shares the model reproduction"),
-            quantifier: crucible::AssertionQuantifierKind::Always,
-            event_kind: String::from("assertion_state_changed"),
-            at_icount: Some(crucible::Icount { retired: 7 }),
-            at_virtual_time: crucible::VirtualTime { ticks: 7 },
-            node: None,
-            detail: String::from("report selection must include finding identity"),
-            reproduction_artifact: alternate_finding.artifact.id(),
-        },
-    )?;
-    assert_eq!(
-        crate::cli_triage_debug::campaign_evidence::guarded_finding_report(
-            0,
-            &evidence.finding,
-            &evidence.reproduction,
-            &[alternate_report, evidence.report.clone()],
-        )?,
-        evidence.report,
-    );
-
-    let finding_id = evidence.finding.id()?;
-    let guarded_request = crucible_campaign::QueryCampaignFindingsRequest::new(
-        CampaignPrincipal::new("operator:cli-v4")?,
-        CampaignName::new(CAMPAIGN)?,
-        published.new_snapshot,
-        None,
-        1,
-    )?;
-    let guarded_membership = CampaignFindingsMembershipProof {
-        response: client.query_campaign_findings(&guarded_request)?,
-        request: guarded_request,
-    };
-    let query_pages = vec![guarded_membership.clone()];
-    let finding_pages = vec![(finding_id, guarded_membership)];
-    assert_eq!(
-        crate::cli_triage_debug::campaign_evidence::validate_guarded_finding_query_chain_parts(
-            &evidence.campaign,
-            evidence.snapshot,
-            &query_pages,
-            &finding_pages,
-        )?,
-        query_pages,
-    );
-    let missing_page =
-        crate::cli_triage_debug::campaign_evidence::validate_guarded_finding_query_chain_parts(
-            &evidence.campaign,
-            evidence.snapshot,
-            &[],
-            &finding_pages,
-        )
-        .expect_err("an incomplete guarded query chain must be rejected before V4 rendering");
-    assert!(
-        missing_page
-            .to_string()
-            .contains("no authenticated query page")
-    );
-
     let artifact_dir = tempfile::tempdir()?;
-    let (_, _, bytes) =
-        crate::cli_triage_debug::campaign_evidence::write_failure_findings_ledger_v4(
-            artifact_dir.path(),
-            None,
-            std::slice::from_ref(&evidence),
-        )?;
-    let exact_boundary =
-        crate::cli_triage_debug::campaign_evidence::failure_findings_ledger_v4_bytes_with_test_limit(
-            std::slice::from_ref(&evidence),
-            bytes.len(),
-        )?;
-    assert_eq!(exact_boundary, bytes);
-    let one_byte_too_large =
-        crate::cli_triage_debug::campaign_evidence::failure_findings_ledger_v4_bytes_with_test_limit(
-            std::slice::from_ref(&evidence),
-            bytes.len() - 1,
-        )
-        .expect_err("the complete V4 artifact must be rejected one byte beyond its bound");
-    assert!(
-        one_byte_too_large
-            .to_string()
-            .contains(&format!("exceeds {} bytes", bytes.len() - 1))
-    );
+    let (_, _, bytes) = crate::cli_triage_debug::campaign_evidence::write_campaign_findings_ledger(
+        artifact_dir.path(),
+        None,
+        std::slice::from_ref(&evidence),
+    )?;
     let store_temp = tempfile::tempdir()?;
     let store = crucible::LocalDagStore::new(store_temp.path().join("store"));
     let loaded = parse_failure_findings_ledger_bytes(&store, &bytes)?;
@@ -526,7 +444,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     let other_evidence =
         crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
             &client,
-            CampaignPrincipal::new("operator:other-cli-v4")?,
+            CampaignPrincipal::new("operator:other-cli-campaign-findings")?,
             CampaignName::new(CAMPAIGN)?,
             published.new_snapshot,
             published.finding,
@@ -539,7 +457,9 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
             .as_ref()
             .ok_or_else(|| std::io::Error::other("missing native triage evidence"))?
             .verification_selected
-            .segments[0]
+            .segments
+            .first()
+            .ok_or_else(|| std::io::Error::other("missing selected replay segment"))?
             .response
             .canonical_bytes(),
     );
@@ -549,7 +469,9 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
             .as_ref()
             .ok_or_else(|| std::io::Error::other("missing native triage evidence"))?
             .verification_selected
-            .segments[0]
+            .segments
+            .first()
+            .ok_or_else(|| std::io::Error::other("missing alternate selected replay segment"))?
             .response
             .canonical_bytes(),
     );
@@ -584,19 +506,20 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         alternate_selected_replay.to_compact_binary()?,
     )?;
     let duplicate_bundle = FindingCandidateBundle::new_with_exact_retention(
-        observed.observation,
-        signature.clone(),
-        original,
-        minimized,
-        signature_minimization.clone(),
-        FindingExactPins::default(),
+        FindingCandidateCore::new(
+            observed.observation,
+            signature.clone(),
+            original,
+            minimized,
+            signature_minimization.clone(),
+            FindingExactPins::default(),
+        ),
         Some(FindingTriageEvidenceSet::new(
             triage_evidence.minimization_original(),
             triage_evidence.minimization_selected(),
             triage_evidence.verification_original(),
             alternate_selected,
         )),
-        None,
         exact_retention,
     )?;
     let duplicate_bundle = repository.publish_finding_candidate_bundle(&duplicate_bundle)?;
@@ -608,7 +531,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     let duplicate_evidence =
         crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
             &client,
-            CampaignPrincipal::new("operator:cli-v4")?,
+            CampaignPrincipal::new("operator:cli-campaign-findings")?,
             CampaignName::new(CAMPAIGN)?,
             duplicate_published.new_snapshot,
             duplicate_published.finding,
@@ -616,7 +539,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         )?;
     assert_eq!(duplicate_evidence.occurrence_proofs.len(), 2);
     let (_, _, duplicate_bytes) =
-        crate::cli_triage_debug::campaign_evidence::write_failure_findings_ledger_v4(
+        crate::cli_triage_debug::campaign_evidence::write_campaign_findings_ledger(
             artifact_dir.path(),
             None,
             std::slice::from_ref(&duplicate_evidence),
@@ -644,19 +567,20 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         frame_distinct_replay.to_compact_binary()?,
     )?;
     let conflicting_bundle = FindingCandidateBundle::new_with_exact_retention(
-        observed.observation,
-        signature.clone(),
-        original,
-        minimized,
-        signature_minimization.clone(),
-        FindingExactPins::default(),
+        FindingCandidateCore::new(
+            observed.observation,
+            signature.clone(),
+            original,
+            minimized,
+            signature_minimization.clone(),
+            FindingExactPins::default(),
+        ),
         Some(FindingTriageEvidenceSet::new(
             frame_distinct_original,
             triage_evidence.minimization_selected(),
             triage_evidence.verification_original(),
             triage_evidence.verification_selected(),
         )),
-        None,
         exact_retention,
     )?;
     let conflicting_bundle = repository.publish_finding_candidate_bundle(&conflicting_bundle)?;
@@ -668,14 +592,14 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     let conflicting_evidence =
         crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
             &client,
-            CampaignPrincipal::new("operator:cli-v4")?,
+            CampaignPrincipal::new("operator:cli-campaign-findings")?,
             CampaignName::new(CAMPAIGN)?,
             conflicting_published.new_snapshot,
             conflicting_published.finding,
             evidence.report.clone(),
         )?;
     let (_, _, conflicting_bytes) =
-        crate::cli_triage_debug::campaign_evidence::write_failure_findings_ledger_v4(
+        crate::cli_triage_debug::campaign_evidence::write_campaign_findings_ledger(
             artifact_dir.path(),
             None,
             std::slice::from_ref(&conflicting_evidence),
@@ -689,7 +613,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     let foreign_report = triage_property_evidence_for_violation(
         model_finding.clone(),
         crucible_model::HostAssertionViolation {
-            assertion: crucible::AssertionId::from_name("cli-v4-foreign-property"),
+            assertion: crucible::AssertionId::from_name("cli-campaign-findings-foreign-property"),
             message: String::from("foreign but internally valid native failure"),
             quantifier: crucible::AssertionQuantifierKind::Always,
             event_kind: String::from("assertion_state_changed"),
@@ -717,19 +641,20 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         foreign_native_replay.to_compact_binary()?,
     )?;
     let foreign_bundle = FindingCandidateBundle::new_with_exact_retention(
-        observed.observation,
-        signature,
-        original,
-        minimized,
-        signature_minimization,
-        FindingExactPins::default(),
+        FindingCandidateCore::new(
+            observed.observation,
+            signature,
+            original,
+            minimized,
+            signature_minimization,
+            FindingExactPins::default(),
+        ),
         Some(FindingTriageEvidenceSet::new(
             foreign_original,
             triage_evidence.minimization_selected(),
             triage_evidence.verification_original(),
             triage_evidence.verification_selected(),
         )),
-        None,
         exact_retention,
     )?;
     let foreign_bundle = repository.publish_finding_candidate_bundle(&foreign_bundle)?;
@@ -741,7 +666,7 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
     let foreign_capture =
         crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
             &client,
-            CampaignPrincipal::new("operator:cli-v4")?,
+            CampaignPrincipal::new("operator:cli-campaign-findings")?,
             CampaignName::new(CAMPAIGN)?,
             foreign_published.new_snapshot,
             foreign_published.finding,

@@ -172,7 +172,9 @@ pub(super) fn ceiling(current_icount: u64, max_advance_icount: u64) -> AdvanceCe
 }
 
 pub(super) fn publish_ceiling(slot: &NodeSlot, ceiling: AdvanceCeiling) {
-    if let Err(error) = slot.publish_scheduler_ceiling(ceiling) {
+    if let Err(error) =
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+    {
         panic!("test ceiling should publish: {error}");
     }
 }

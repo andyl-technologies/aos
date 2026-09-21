@@ -67,6 +67,24 @@ pub fn drive_engine_quantum<L: QuantumLoop>(
     quantum_loop.drive_quantum(request)
 }
 
+/// Drives one bounded host-concurrent engine round through the L4 boundary.
+///
+/// The underlying loop must keep scheduler state speculative until all
+/// scheduler-fixed backend RUNs complete, then publish their outcomes in
+/// canonical order.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when planning, backend execution, or canonical
+/// completion fails.
+pub fn drive_engine_concurrent_quantum<L: crucible::ConcurrentQuantumLoop>(
+    quantum_loop: &mut L,
+    request: QuantumRequest,
+    max_host_workers: usize,
+) -> Result<crucible::SchedulerConcurrentQuantumOutcome, SchedulerError> {
+    quantum_loop.drive_concurrent_quantum(request, max_host_workers)
+}
+
 /// Explicit run state for the Crucible engine.
 ///
 /// The closed state set is the control-plane contract from RFC-0010 §10:
@@ -362,7 +380,7 @@ pub(super) fn outcome_kind_from_engine_state(state: &EngineState) -> Option<Outc
 
 pub(super) fn content_hash_to_words(hash: ContentHash) -> [u64; 4] {
     let mut words = [0_u64; 4];
-    for (index, chunk) in hash.bytes.chunks_exact(8).enumerate() {
+    for (index, chunk) in hash.bytes.as_chunks::<8>().0.iter().enumerate() {
         let mut word = [0_u8; 8];
         word.copy_from_slice(chunk);
         words[index] = u64::from_be_bytes(word);

@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::BTreeMap;
 use std::error::Error;
 
@@ -31,9 +38,9 @@ fn gate_search_reductions_partial_order_records_canonical_representative_on_dema
     } else {
         (left, right)
     };
-    let noncanonical_frontier = valid_step(&genesis, first.clone());
-    let canonical_frontier = valid_step(&genesis, second.clone());
-    let covered = valid_step(&noncanonical_frontier, second.clone());
+    let noncanonical_frontier = accepted_step!(&genesis, first.clone());
+    let canonical_frontier = accepted_step!(&genesis, second.clone());
+    let covered = accepted_step!(&noncanonical_frontier, second.clone());
     let representative = Configuration {
         def: scenario,
         schedule: Schedule::empty()
@@ -94,8 +101,8 @@ fn gate_search_reductions_symmetry_uses_graph_level_representative() -> Result<(
     );
     let representative_decision = preemption_decision("replica-a", 11);
     let covered_decision = preemption_decision("replica-b", 11);
-    let representative = valid_step(&genesis, representative_decision);
-    let covered = valid_step(&genesis, covered_decision.clone());
+    let representative = accepted_step!(&genesis, representative_decision);
+    let covered = accepted_step!(&genesis, covered_decision.clone());
     let representative_checkpoint = fat_checkpoint_with_coverage(
         &representative,
         &genesis,
@@ -151,8 +158,8 @@ fn gate_search_reductions_reduced_strategy_schedules_covered_representative()
         "crucible.test.search-reductions.coverage",
         "strategy-symmetry-class",
     );
-    let representative = valid_step(&genesis, representative_decision);
-    let covered = valid_step(&genesis, covered_decision);
+    let representative = accepted_step!(&genesis, representative_decision);
+    let covered = accepted_step!(&genesis, covered_decision);
     let representative_checkpoint = fat_checkpoint_with_coverage(
         &representative,
         &genesis,
@@ -309,11 +316,4 @@ fn materialized_snapshots_for_blobs(
             )
         })
         .collect()
-}
-
-fn valid_step(
-    configuration: &crucible::Configuration,
-    decision: crucible::Decision,
-) -> crucible::Configuration {
-    crucible::try_step(configuration, decision).expect("test configuration step")
 }

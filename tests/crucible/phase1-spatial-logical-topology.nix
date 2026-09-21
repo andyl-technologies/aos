@@ -54,7 +54,7 @@
         needle = "fn canonical_world_identity(world: &World) -> ContentHash";
       }
       {
-        label = "opaque world compatibility path is explicit";
+        label = "empty-world identity rule is explicit";
         needle = "return world.id;";
       }
       {

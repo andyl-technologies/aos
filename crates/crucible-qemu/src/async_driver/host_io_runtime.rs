@@ -262,6 +262,12 @@ pub trait QemuHostIoRuntime: Send {
         None
     }
 
+    /// Returns accumulated live block-service diagnostics, when configured.
+    #[cfg(target_os = "linux")]
+    fn block_io_diagnostics(&self) -> Option<crate::BlockIoDiagnosticsSnapshot> {
+        None
+    }
+
     /// Restores block state captured before an uncommitted scheduler boundary.
     ///
     /// # Errors

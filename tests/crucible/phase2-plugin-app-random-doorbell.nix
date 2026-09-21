@@ -90,8 +90,8 @@
         needle = "request_id:u32, width:u8 (<=8), lp_str stream_tag";
       }
       {
-        label = "Decision::AppRandom requirement";
-        needle = "Decision::AppRandom";
+        label = "BackendRngEvidence requirement";
+        needle = "BackendRngEvidence";
       }
       {
         label = "decode diagnostic and drop";
@@ -101,7 +101,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" execSpec [
       {
         label = "app-random decision payload";
-        needle = "Decision::AppRandom { node, stream, request_id, width, value }";
+        needle = "BackendRngEvidence { node, stream, request_id, width, value }";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
@@ -111,7 +111,7 @@
       }
       {
         label = "app-random decision source exported";
-        needle = "AppRandomDecisionSource";
+        needle = "BackendRngEvidenceSource";
       }
       {
         label = "app-random request exported";
@@ -119,7 +119,7 @@
       }
       {
         label = "app-random decision record exported";
-        needle = "AppRandomDecisionRecord";
+        needle = "BackendRngEvidenceRecord";
       }
       {
         label = "app-random decode diagnostic exported";
@@ -157,11 +157,11 @@
       }
       {
         label = "decision source trait";
-        needle = "pub trait AppRandomDecisionSource";
+        needle = "pub(crate) trait BackendRngEvidenceSource";
       }
       {
-        label = "records Decision::AppRandom wording";
-        needle = "records `Decision::AppRandom`";
+        label = "decision source records app-controlled randomness";
+        needle = "Source that records and serves app-controlled randomness decisions.";
       }
       {
         label = "reads through guest memory API";
@@ -372,7 +372,7 @@ in
             status=complete
             doorbell_kind=random_request
             whitebox_opt_in=required
-            decision=Decision::AppRandom
+            decision=BackendRngEvidence
             source=seeded-decision-source-trait
             reply=trap-icount-host-to-guest-injection
             malformed=decode-diagnostic-and-drop

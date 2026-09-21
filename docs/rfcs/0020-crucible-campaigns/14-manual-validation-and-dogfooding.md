@@ -19,7 +19,7 @@ Manual validation answers questions that component and integration tests do not:
 
 - Can an application developer expose useful choices and measurements without
   understanding Crucible internals?
-- Can an operator create, observe, steer, pause, hibernate, resume, and stop a
+- Can an operator create, observe, steer, pause, archive, resume, and stop a
   large campaign using only supported interfaces?
 - Can another person understand why a branch ran and why it survived?
 - Can an investigator move from a finding to a useful paused midpoint and
@@ -131,7 +131,7 @@ manual-flight-manifest
   operational telemetry and resource-pressure timeline
   expected and observed finding/replay identities
   destructive-action injection records
-  component mode, hibernate/export/import/transfer/GC plans and results
+  component mode, pause/archive-transfer/GC plans and results
   defects, surprises, documentation gaps, and workarounds
   final claim checklist and sign-offs
 ```
@@ -261,7 +261,7 @@ fault and guest response from the bundle.
 - **[CMAN-12]** An independent investigator MUST reproduce and explain at least
   one finding solely from its exported bundle and published documentation.
 
-## 14.7 Component-boundary, hibernation, and maintenance flight
+## 14.7 Component-boundary, exact-pause, and maintenance flight
 
 The operator first runs the same bounded campaign once through the direct
 coordinator/executor client and once with those components separated over the
@@ -270,10 +270,11 @@ findings, and explanations must match. The operator then independently restarts
 the coordinator and executor, confirms resubmission of incomplete attempts, and
 uses only `CampaignService` for ordinary campaign control.
 
-The operator next hibernates a running campaign with hot templates and active
-lazy continuations:
+The operator next pauses a running campaign at exact checkpoints, then
+transfers an authenticated archive while hot templates and active lazy
+continuations exist:
 
-1. request hibernation under a configured logical durability policy;
+1. request an exact pause and wait for all active worlds to quiesce;
 2. observe required hot templates become exact closures;
 3. verify all required objects before the campaign ref advances;
 4. terminate all QEMU and daemon processes;
@@ -292,9 +293,10 @@ Transfer volume is compared with logical closure size and known destination
 objects. A sibling transfer should reuse its shared base. Resume latency is
 operational, but missing data must not advance virtual time or alter the result.
 
-- **[CMAN-13]** Manual persistence acceptance MUST include complete process
-  termination and loss of ephemeral caches between hibernate and resume. A
-  pause that leaves the original processes alive is insufficient.
+- **[CMAN-13]** Manual persistence acceptance MUST include an authenticated
+  executable archive transfer, complete process termination, and loss of
+  ephemeral caches between pause and resume. A pause that leaves the original
+  processes alive is insufficient.
 - **[CMAN-14]** Maintenance transfer MUST prove missing-object reuse,
   authentication, compatible restore, incompatible-provenance rejection, and
   preservation of a recoverable source until destination validation succeeds.
@@ -314,7 +316,7 @@ Required injections include:
 | Kill the coordinator before observation commit | Restart projects from facts, discards stale reservations, and safely resubmits the attempt |
 | Kill the local executor while the coordinator remains live | Coordinator reports operational failure and idempotently resubmits without creating a modeled result |
 | Kill the daemon during snapshot publication | Named ref resolves to the complete old or complete new snapshot |
-| Reboot with a paused or hibernating campaign | Supported recovery path identifies exactly what is resumable |
+| Reboot with an exactly paused, durably archived campaign | Supported recovery path identifies exactly what is resumable |
 | Exhaust campaign-store space during exact capture | Prior ref and finding remain valid; partial staging is reclaimable |
 | Remove an archival leaf during multipart upload | Upload resumes or aborts idempotently without publishing an incomplete closure or satisfying durability |
 | Expire store credentials during read/write | Status distinguishes authorization from absence/corruption and preserves state |
@@ -329,33 +331,6 @@ Fault builds may expose a narrow test hook to inject a particular publication
 or fork-stage failure. The hook is not a private repair path and must be absent
 or disabled in production artifacts. Operators still observe and recover using
 public surfaces.
-
-The stopped-daemon operational-state drill uses only the public repair command:
-
-```text
-crucible --format jsonl store repair operational-state \
-  --state STATE --policy POLICY --ledger LEDGER \
-  --prepared-results PREPARED_RESULTS --receipt RECEIPT
-```
-
-Stop the service before invoking it. The command refuses a live campaign owner,
-a live assignment writer, malformed or over-budget inventory, an unrelated
-receipt, and any unauthenticated source. It writes authenticated source-to-
-output provenance before replacing records, migrates assignment attempt-state
-records before prepared results while retaining the writer lock, and appends an
-authenticated completion record to its startup fence only after both phases are
-durable. Migration file cleanup renames each source to a bounded
-identity-bearing name and truncates the retained file descriptor; the
-authenticated zero-length file remains as terminal state. Normal journal
-orphan cleanup retains a terminal directory containing its authenticated
-receipt and zero-length child tombstones. Receipts bind the original directory
-and child identities, and the namespace admits at most one terminal staged or
-retired directory per execution key. If power or the process is lost at any
-point, normal daemon startup refuses the active migration. Run the identical
-command with the same receipt path. It reconciles bounded staging and removal
-state before resuming. That retry is idempotent;
-changing paths or bounds requires operator review of the retained receipt
-rather than deletion of markers or staging by hand.
 
 - **[CMAN-15]** Destructive acceptance MUST exercise every failure class in the
   table on both the constrained host and each backend whose failure semantics it
@@ -383,7 +358,7 @@ The reference flight:
 - crosses at least one planned daemon restart and one operator handoff;
 - deliberately enters CPU, RAM/dirty-page, descriptor, and store-throughput
   pressure without exhausting the host outside configured limits;
-- hibernates and resumes at least once;
+- exactly pauses, transfers an executable archive, and resumes at least once;
 - produces both an expected finding and useful non-failing Pareto candidates;
   and
 - finishes with a reviewable retention and GC plan.
@@ -454,8 +429,8 @@ The acceptance review records whether the operator can:
 - distinguish scenario, policy, snapshot, configuration, proposal, attempt,
   finding, and materialization identities;
 - understand why work is or is not progressing;
-- estimate the consequence of a budget, retention, hibernate, export, or GC
-  command before executing it;
+- estimate the consequence of a budget, retention, pause, archive transfer, or
+  GC command before executing it;
 - recognize canonical versus operational and canonical versus debugger-derived
   state;
 - locate the exact evidence behind a finding or planner explanation; and
@@ -503,6 +478,10 @@ legal domain is much larger than the active worker pool:
     while a later duplicate operator cause does not reclassify an earlier valid
     policy sample.
 
+The flight uses `branch`, `derive`, and supported debug-selection surfaces.
+Evidence names semantic branches, campaign derivations, and QEMU hot-fork
+realization explicitly so each operation remains distinguishable.
+
 - **[CMAN-21]** Operator acceptance MUST prove additive finite and generated
   sources, lazy admission, duplicate-edge/credit deduplication, huge-domain
   `--all` rejection, and statistical intervention labeling through supported
@@ -519,10 +498,10 @@ Manual validation begins before the final CLI phase:
 | --- | --- |
 | Phase 0 | Tabletop of the lifecycle, destructive drill, claims, and evidence manifest |
 | Phase 1 | Offline create/inspect/derive/stale-command/pause snapshot flight using canonical objects and linear ancestry |
-| Phase 2 | Real guest registers choices, blocks for selections, rejects mismatch, and replays replies. The automated `checks.crucible.phase2.gates.typedChoiceProductCheckpoint` exact-restore flight is a prerequisite, not a substitute for the signed operator record. |
+| Phase 2 | Real guest registers choices, blocks for selections, rejects mismatch, and replays replies. The automated `checks.crucible.phase4.packagedCampaignChoiceVm` public campaign exact-restore flight is a prerequisite, not a substitute for the signed operator record. |
 | Phase 3 | Human cross-check of guest markers, modeled network evidence, metric windows, objectives, and finding evidence |
 | Phase 4 | Direct/RPC component equivalence plus local operator flight through lazy widening, additive finite branching, edge deduplication, backpressure, independent coordinator/executor restart, steering, and explanation |
-| Phase 5 | Hibernate/resume, composed-backend outage, tier promotion/eviction, packing/repacking, archival transfer, import, corruption, pin, and store-wide GC flights |
+| Phase 5 | Exact-pause/resume, composed-backend outage, tier promotion/eviction, packing/repacking, archival transfer, import, corruption, pin, and store-wide GC flights |
 | Phase 6 | Lab audit of QEMU quiescence, mappings, descriptors, rings, disks, COW dirties, fallback, and repeated children |
 | Phase 7 | Atomic multi-machine hot fork, massive-parallelism pressure, deep templates, and 24-hour dogfood flight |
 | Phase 8 | Independent public-porcelain branch/derive terminology, statistical-intervention, usability, and finding-handoff flight |

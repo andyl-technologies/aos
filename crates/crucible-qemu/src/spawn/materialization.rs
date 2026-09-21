@@ -1,82 +1,75 @@
-//! Linear exact-VMState materialization for pinned QEMU run directories.
+//! Linear exact device-state and root-overlay materialization for guarded QEMU.
+
+mod exact_restore;
+mod exact_writers;
 
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, Seek, SeekFrom, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
+use std::sync::Arc;
 
 use crucible::ContentHash;
 use rustix::fs::{Mode, OFlags, fchown, fstat, fsync, openat};
-use rustix::ioctl::{IntegerSetter, ioctl, opcode};
 use rustix::process::{Gid, Uid};
+use sha2::{Digest as _, Sha256};
 
-use super::{QemuPreparedRunDirectory, QemuSpawnError};
-use crate::QemuLaunchCommand;
+use super::{
+    AttemptResourceBinding, QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError,
+};
+use crate::QemuExactCheckpointInputMaterialization;
 
-const EXACT_VMSTATE_BINDING_DOMAIN: &str = "crucible.executor.exact-vmstate-restore-binding.v1";
-const REPLACEMENT_VMSTATE_BINDING_DOMAIN: &str =
-    "crucible.executor.replacement-vmstate-restore-binding.v1";
-const THIN_VMSTATE_BINDING_DOMAIN: &str = "crucible.executor.thin-vmstate-restore-binding.v1";
-const FICLONE: rustix::ioctl::Opcode = opcode::write::<libc::c_int>(0x94, 9);
+const EXACT_DEVICE_STATE_BINDING_DOMAIN: &str =
+    "crucible.executor.exact-device-state-restore-binding.v1";
 
-/// Operational binding from one exact-checkpoint root to materialized VMState.
+/// Operational binding from one exact-checkpoint root to sealed device state.
 ///
 /// The constructor accepts only the digest of the complete typed checkpoint
 /// root. It deliberately does not accept a [`crate::QemuVmSnapshot`] metadata
-/// identity, because metadata alone does not authenticate the opaque VMState
+/// identity, because metadata alone does not authenticate the device-state
 /// child selected for restore.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct QemuVmStateBinding(ContentHash);
+pub(crate) struct QemuExactDeviceStateBinding {
+    identity: ContentHash,
+    snapshot: Option<ContentHash>,
+}
 
-impl QemuVmStateBinding {
+impl QemuExactDeviceStateBinding {
     /// Derives the binding from one authenticated exact-checkpoint root digest.
     #[must_use]
-    pub fn from_exact_checkpoint_root_digest(digest: [u8; 32]) -> Self {
-        Self(ContentHash::from_canonical_hex_bytes(
-            EXACT_VMSTATE_BINDING_DOMAIN,
-            &digest,
-        ))
+    pub(crate) fn from_exact_checkpoint_root(
+        root: ContentHash,
+        target_manifest: ContentHash,
+        snapshot: ContentHash,
+    ) -> Self {
+        let identity = ContentHash::from_canonical_material(
+            EXACT_DEVICE_STATE_BINDING_DOMAIN,
+            &format!(
+                "root={}\ntarget_manifest={}\nsnapshot={}",
+                root.to_hex(),
+                target_manifest.to_hex(),
+                snapshot.to_hex()
+            ),
+        );
+        Self {
+            identity,
+            snapshot: Some(snapshot),
+        }
     }
 
-    /// Derives a binding for one locally captured replacement snapshot.
-    ///
-    /// Unlike an externally retained exact checkpoint, replacement artifacts
-    /// are cloned from descriptor-pinned files in the same attempt while the
-    /// lifecycle holds the source node at its authenticated capture boundary.
-    /// The snapshot digest therefore binds the two reflinked destination
-    /// inodes to that local capture transaction without pretending that it is
-    /// a complete repository checkpoint root.
-    #[must_use]
-    pub fn from_replacement_snapshot_digest(digest: [u8; 32]) -> Self {
-        Self(ContentHash::from_canonical_hex_bytes(
-            REPLACEMENT_VMSTATE_BINDING_DOMAIN,
-            &digest,
-        ))
-    }
-
-    /// Derives the binding for one authenticated thin-path artifact pair.
-    ///
-    /// The digest identifies a catalog entry that binds the prepared VMState,
-    /// root overlay when present, and checkpoint metadata. Domain separation
-    /// prevents a thin artifact from being mistaken for an exact campaign root
-    /// or an in-attempt replacement.
-    #[must_use]
-    pub fn from_thin_checkpoint_artifact_digest(digest: [u8; 32]) -> Self {
-        Self(ContentHash::from_canonical_hex_bytes(
-            THIN_VMSTATE_BINDING_DOMAIN,
-            &digest,
-        ))
+    pub(crate) const fn snapshot(self) -> Option<ContentHash> {
+        self.snapshot
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PreparedVmStateMaterialization {
+pub(super) enum PreparedDeviceStateMaterialization {
     Provisioned,
     Updating,
     HotForkChild,
     Exact {
-        binding: QemuVmStateBinding,
+        binding: QemuExactDeviceStateBinding,
         bytes: u64,
     },
 }
@@ -88,23 +81,42 @@ pub(super) enum PreparedRootOverlayMaterialization {
     Updating,
     HotForkChild,
     Exact {
-        binding: QemuVmStateBinding,
+        binding: QemuExactDeviceStateBinding,
         bytes: u64,
     },
 }
 
-/// Linear writer for one authenticated exact-VMState materialization.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum PreparedExactCheckpointMaterialization {
+    Absent,
+    Updating {
+        binding: QemuExactDeviceStateBinding,
+        device_state_bytes: u64,
+        root_overlay_bytes: u64,
+        ram_layer_bytes: Vec<u64>,
+        next_ram_layer: usize,
+    },
+    Complete {
+        binding: QemuExactDeviceStateBinding,
+    },
+    Claimed {
+        binding: QemuExactDeviceStateBinding,
+    },
+}
+
+/// Linear writer for one authenticated exact device-state materialization.
 ///
 /// The writer borrows its pinned run-directory authority for the complete
 /// transaction. Dropping it before [`Self::finish`] leaves the destination in
 /// a fail-closed updating state, so a partially copied checkpoint cannot be
-/// launched as either a provisioned or exact VMState image.
+/// launched using this device-state input.
 #[derive(Debug)]
-#[must_use = "exact VMState materialization must be finished before guarded launch"]
-pub struct QemuVmStateMaterialization<'a> {
+#[must_use = "exact device-state materialization must be finished before guarded launch"]
+struct AtomicExactDeviceStateWriter<'a> {
     prepared: &'a mut QemuPreparedRunDirectory,
-    destination: File,
-    binding: QemuVmStateBinding,
+    destination: QemuExactCheckpointInputMaterialization,
+    verifier: StreamSha256Verifier,
+    binding: QemuExactDeviceStateBinding,
     expected_bytes: u64,
     written_bytes: u64,
 }
@@ -116,37 +128,217 @@ pub struct QemuVmStateMaterialization<'a> {
 /// leaves the directory unlaunchable.
 #[derive(Debug)]
 #[must_use = "exact root-overlay materialization must be finished before guarded launch"]
-pub struct QemuRootOverlayMaterialization<'a> {
+struct AtomicExactRootOverlayWriter<'a> {
     prepared: &'a mut QemuPreparedRunDirectory,
     destination: File,
-    binding: QemuVmStateBinding,
+    verifier: crucible::exact_checkpoint::ExactCheckpointRootOverlayVerifier,
+    binding: QemuExactDeviceStateBinding,
     expected_bytes: u64,
     written_bytes: u64,
 }
 
+/// Opaque sealed RAM input admitted by one guarded exact-checkpoint transaction.
+#[derive(Debug)]
+pub(crate) struct QemuGuardedExactRamInput {
+    file: File,
+    binding: QemuExactDeviceStateBinding,
+    attempt_binding: Arc<AttemptResourceBinding>,
+    layer_index: usize,
+    expected_bytes: u64,
+}
+
+#[derive(Debug)]
+struct QemuGuardedRamInputs {
+    inputs: Vec<QemuGuardedExactRamInput>,
+    binding: QemuExactDeviceStateBinding,
+    attempt_binding: Arc<AttemptResourceBinding>,
+    request: crate::QmpCheckpointRestoreRequest,
+    topology: ContentHash,
+}
+
+/// Linear ordered RAM authority for one rooted production checkpoint.
+#[derive(Debug)]
+pub(crate) struct SealedAtomicExactRestoreInputs {
+    inner: QemuGuardedRamInputs,
+    target: crucible::exact_checkpoint::ExactCheckpointVerifiedNode,
+}
+
+/// Owned byte streams for one repository-rooted exact restore.
+///
+/// The streams carry no launch authority. QEMU consumes them only together
+/// with an authenticated execution binding and verifies every byte before it
+/// can spawn or issue a restore command.
+pub(crate) struct QemuProductionExactRestoreSource {
+    root_overlay: Box<dyn Read + Send>,
+    device_state: Box<dyn Read + Send>,
+    ram_layers: Vec<Box<dyn Read + Send>>,
+}
+
+impl std::fmt::Debug for QemuProductionExactRestoreSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuProductionExactRestoreSource")
+            .field("ram_layers", &self.ram_layers.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl QemuProductionExactRestoreSource {
+    pub(crate) fn new(
+        root_overlay: Box<dyn Read + Send>,
+        device_state: Box<dyn Read + Send>,
+        ram_layers: Vec<Box<dyn Read + Send>>,
+    ) -> Self {
+        Self {
+            root_overlay,
+            device_state,
+            ram_layers,
+        }
+    }
+}
+
+impl QemuGuardedRamInputs {
+    pub(crate) fn descriptors(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
+        self.inputs.iter().map(QemuGuardedExactRamInput::as_fd)
+    }
+
+    pub(crate) fn binding(&self) -> QemuExactDeviceStateBinding {
+        self.binding
+    }
+
+    pub(crate) const fn request(&self) -> &crate::QmpCheckpointRestoreRequest {
+        &self.request
+    }
+
+    pub(crate) const fn topology(&self) -> ContentHash {
+        self.topology
+    }
+}
+
+macro_rules! guarded_ram_input_accessors {
+    ($type:ty) => {
+        impl $type {
+            pub(crate) fn descriptors(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
+                self.inner.descriptors()
+            }
+
+            pub(crate) fn binding(&self) -> QemuExactDeviceStateBinding {
+                self.inner.binding()
+            }
+
+            pub(crate) const fn request(&self) -> &crate::QmpCheckpointRestoreRequest {
+                self.inner.request()
+            }
+
+            pub(crate) const fn topology(&self) -> ContentHash {
+                self.inner.topology()
+            }
+        }
+    };
+}
+
+guarded_ram_input_accessors!(SealedAtomicExactRestoreInputs);
+
+impl SealedAtomicExactRestoreInputs {
+    pub(crate) const fn target(&self) -> &crucible::exact_checkpoint::ExactCheckpointVerifiedNode {
+        &self.target
+    }
+
+    pub(crate) fn into_target(self) -> crucible::exact_checkpoint::ExactCheckpointVerifiedNode {
+        self.target
+    }
+}
+
+impl QemuGuardedExactRamInput {
+    pub(crate) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        self.file.as_fd()
+    }
+
+    fn matches(
+        &self,
+        attempt_binding: &Arc<AttemptResourceBinding>,
+        binding: QemuExactDeviceStateBinding,
+        layer_index: usize,
+        expected_bytes: u64,
+    ) -> bool {
+        Arc::ptr_eq(&self.attempt_binding, attempt_binding)
+            && self.binding == binding
+            && self.layer_index == layer_index
+            && self.expected_bytes == expected_bytes
+    }
+}
+
+/// Linear writer for one descriptor-backed exact RAM restore input.
+///
+/// The input is created as an anonymous sealable memfd and never reopened by
+/// path. Successful completion returns the same sealed file at offset zero so
+/// QMP can import it directly.
+#[derive(Debug)]
+#[must_use = "exact RAM input materialization must be finished before restore"]
+struct AtomicExactRamLayerWriter<'a> {
+    prepared: &'a mut QemuPreparedRunDirectory,
+    destination: QemuExactCheckpointInputMaterialization,
+    verifier: StreamSha256Verifier,
+    layer_index: usize,
+    expected_bytes: u64,
+    written_bytes: u64,
+}
+
+#[derive(Debug)]
+struct StreamSha256Verifier {
+    expected: ContentHash,
+    observed: Sha256,
+}
+
+impl StreamSha256Verifier {
+    fn update(&mut self, bytes: &[u8]) {
+        self.observed.update(bytes);
+    }
+
+    fn finish(self) -> Result<(), QemuSpawnError> {
+        let mut bytes = [0_u8; 32];
+        bytes.copy_from_slice(&self.observed.finalize());
+        if (ContentHash { bytes }) != self.expected {
+            return Err(super::invalid_input(
+                "authenticate exact checkpoint input",
+                "materialized bytes differ from the repository-bound content digest",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl QemuPreparedRunDirectory {
-    /// Admits a run directory for exact-checkpoint materialization only.
-    ///
-    /// This operation does not grant process-launch authority. It accepts the
-    /// execution ceiling already reserved by the daemon, validates the command
-    /// baseline before path access, and pins the destination to the exact
-    /// attempt lifecycle carried by `contract`. A retained checkpoint can then
-    /// be streamed before the same contract is lent to spawn. Guarded spawn
-    /// rejects a contract from another attempt even when every numeric ceiling
-    /// is identical.
+    /// Duplicates the bound sealed device-state input at offset zero for QMP restore.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSpawnError`] before path access when the command exceeds
-    /// the supplied contract. Otherwise returns an error when the path or
-    /// required VMState file cannot be pinned without following symlinks.
-    pub fn open_for_materialization(
-        command: &QemuLaunchCommand,
-        path: impl AsRef<Path>,
-        contract: &super::QemuChildProcessContract,
-    ) -> Result<Self, QemuSpawnError> {
-        super::validate_guarded_launch_resources(command, contract)?;
-        Self::open_for_requirements(command.resource_requirements(), path.as_ref(), contract)
+    /// Returns [`QemuSpawnError`] when the complete artifact set or device-state
+    /// materialization is incomplete, belongs to another closure root, or the
+    /// sealed input cannot be duplicated and positioned.
+    pub(crate) fn exact_device_state_input(
+        &self,
+        expected: QemuExactDeviceStateBinding,
+    ) -> Result<File, QemuSpawnError> {
+        self.require_exact_device_state(expected)?;
+        self.revalidate_identity()?;
+        let sealed = self.exact_device_state.as_ref().ok_or_else(|| {
+            QemuSpawnError::PreparedExactCheckpointNotReady {
+                path: self.path.clone(),
+            }
+        })?;
+        let mut input = sealed.try_clone().map_err(|source| QemuSpawnError::Io {
+            operation: "duplicate sealed exact device-state input",
+            source,
+        })?;
+        input
+            .seek(SeekFrom::Start(0))
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "position exact device-state input",
+                source,
+            })?;
+        Ok(input)
     }
 
     /// Creates fresh QCOW2 VMState and root-overlay artifacts under containment.
@@ -211,18 +403,18 @@ impl QemuPreparedRunDirectory {
                 child: None,
             });
         }
-        let vmstate_bytes = self.launch_resources.minimum_writable_bytes();
-        let vmstate_args = [
+        let device_state_bytes = self.launch_resources.minimum_writable_bytes();
+        let device_state_args = [
             OsString::from("create"),
             OsString::from("-q"),
             OsString::from("-f"),
             OsString::from("qcow2"),
             OsString::from(crate::DEFAULT_VMSTATE_FILE_NAME),
-            OsString::from(format!("{vmstate_bytes}B")),
+            OsString::from(format!("{device_state_bytes}B")),
         ];
         super::run_guarded_image_tool(
             &image_tool,
-            &vmstate_args,
+            &device_state_args,
             "create fresh VMState container",
             self,
             contract,
@@ -253,57 +445,101 @@ impl QemuPreparedRunDirectory {
             })
     }
 
-    /// Begins replacing the pinned VMState file with one exact snapshot image.
+    /// Begins one sealed exact device-state input for descriptor restore.
     ///
-    /// The authority becomes unlaunchable before any truncate or write. The
-    /// returned writer accepts at most `expected_bytes`; successful completion
-    /// durably binds the file to `binding`. The owner must derive that binding
+    /// The authority becomes unlaunchable before any write. The returned writer
+    /// accepts at most `expected_bytes`; successful completion seals the bytes
+    /// and binds them to `binding`. The owner must derive that binding
     /// from the complete exact-checkpoint root, not metadata alone.
     ///
     /// # Errors
     ///
     /// Returns [`QemuSpawnError`] if the declared length is zero, exceeds the
-    /// admitted aggregate writable-byte ceiling, or the pinned file cannot be
-    /// duplicated, truncated, or positioned for replacement. Once a valid
-    /// transaction begins, every error leaves the authority unready.
-    pub fn begin_exact_vmstate_materialization(
+    /// admitted aggregate writable-byte ceiling, or the sealed memfd cannot be
+    /// created. Once a valid
+    /// transaction begins, every error leaves the authority unready. The
+    /// run-directory VMState file remains the writable container for future
+    /// native captures and is never used as this restore input.
+    fn begin_atomic_exact_device_state(
         &mut self,
-        binding: QemuVmStateBinding,
         expected_bytes: u64,
-    ) -> Result<QemuVmStateMaterialization<'_>, QemuSpawnError> {
+    ) -> Result<AtomicExactDeviceStateWriter<'_>, QemuSpawnError> {
+        let (_, expected_sha256, target_bytes) = self
+            .exact_checkpoint_target
+            .as_ref()
+            .ok_or_else(|| {
+                super::invalid_input(
+                    "begin exact device-state materialization",
+                    "production device-state materialization has no authenticated target",
+                )
+            })?
+            .device_state();
+        if target_bytes != expected_bytes {
+            return Err(super::invalid_input(
+                "begin exact device-state materialization",
+                "device-state length differs from the repository target",
+            ));
+        }
+        self.begin_device_state_materialization(
+            expected_bytes,
+            StreamSha256Verifier {
+                expected: expected_sha256,
+                observed: Sha256::new(),
+            },
+        )
+    }
+
+    fn begin_device_state_materialization(
+        &mut self,
+        expected_bytes: u64,
+        verifier: StreamSha256Verifier,
+    ) -> Result<AtomicExactDeviceStateWriter<'_>, QemuSpawnError> {
         if expected_bytes == 0 || expected_bytes > self.admitted_ceiling.2 {
-            return Err(QemuSpawnError::PreparedVmStateLength {
+            return Err(QemuSpawnError::PreparedDeviceStateLength {
                 length: expected_bytes,
                 maximum: self.admitted_ceiling.2,
             });
         }
+        let binding = match &self.exact_checkpoint_materialization {
+            PreparedExactCheckpointMaterialization::Updating {
+                binding: admitted_binding,
+                device_state_bytes,
+                root_overlay_bytes,
+                ..
+            } if *device_state_bytes == expected_bytes
+                && self.root_overlay_materialization
+                    == (PreparedRootOverlayMaterialization::Exact {
+                        binding: *admitted_binding,
+                        bytes: *root_overlay_bytes,
+                    }) =>
+            {
+                *admitted_binding
+            }
+            PreparedExactCheckpointMaterialization::Updating { .. }
+            | PreparedExactCheckpointMaterialization::Complete { .. }
+            | PreparedExactCheckpointMaterialization::Claimed { .. }
+            | PreparedExactCheckpointMaterialization::Absent => {
+                return Err(super::invalid_input(
+                    "begin exact device-state materialization",
+                    "device state differs from the admitted exact checkpoint or is out of order",
+                ));
+            }
+        };
 
-        self.vmstate_materialization = PreparedVmStateMaterialization::Updating;
-        let mut destination =
-            File::from(
-                self.vmstate
-                    .try_clone()
-                    .map_err(|source| QemuSpawnError::Io {
-                        operation: "duplicate prepared exact-VMState container",
-                        source,
-                    })?,
-            );
-        destination
-            .set_len(0)
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "truncate prepared exact-VMState container",
-                source,
-            })?;
-        destination
-            .seek(SeekFrom::Start(0))
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "position prepared exact-VMState container",
-                source,
+        self.exact_device_state_materialization = PreparedDeviceStateMaterialization::Updating;
+        self.exact_device_state = None;
+        let destination =
+            QemuExactCheckpointInputMaterialization::new(expected_bytes).map_err(|source| {
+                QemuSpawnError::Io {
+                    operation: "create sealed exact device-state input",
+                    source,
+                }
             })?;
 
-        Ok(QemuVmStateMaterialization {
+        Ok(AtomicExactDeviceStateWriter {
             prepared: self,
             destination,
+            verifier,
             binding,
             expected_bytes,
             written_bytes: 0,
@@ -322,11 +558,34 @@ impl QemuPreparedRunDirectory {
     /// Returns [`QemuSpawnError`] when the launch has no root overlay, the
     /// declared length is zero or exceeds its conservative aggregate share, a
     /// destination already exists, or descriptor-relative creation fails.
-    pub fn begin_exact_root_overlay_materialization(
+    fn begin_atomic_exact_root_overlay(
         &mut self,
-        binding: QemuVmStateBinding,
         expected_bytes: u64,
-    ) -> Result<QemuRootOverlayMaterialization<'_>, QemuSpawnError> {
+    ) -> Result<AtomicExactRootOverlayWriter<'_>, QemuSpawnError> {
+        let verifier = self
+            .exact_checkpoint_target
+            .as_ref()
+            .ok_or_else(|| {
+                super::invalid_input(
+                    "begin exact root-overlay materialization",
+                    "production root-overlay materialization has no authenticated target",
+                )
+            })?
+            .root_overlay_verifier()
+            .map_err(|_| {
+                super::invalid_input(
+                    "allocate exact root-overlay verifier",
+                    "exact root-overlay verifier allocation failed",
+                )
+            })?;
+        self.begin_root_overlay_materialization(expected_bytes, verifier)
+    }
+
+    fn begin_root_overlay_materialization(
+        &mut self,
+        expected_bytes: u64,
+        verifier: crucible::exact_checkpoint::ExactCheckpointRootOverlayVerifier,
+    ) -> Result<AtomicExactRootOverlayWriter<'_>, QemuSpawnError> {
         let maximum = self
             .admitted_ceiling
             .2
@@ -345,153 +604,33 @@ impl QemuPreparedRunDirectory {
                 path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
             });
         }
-
+        let binding = match &self.exact_checkpoint_materialization {
+            PreparedExactCheckpointMaterialization::Updating {
+                binding: admitted_binding,
+                root_overlay_bytes,
+                ..
+            } if *root_overlay_bytes == expected_bytes => *admitted_binding,
+            PreparedExactCheckpointMaterialization::Updating { .. }
+            | PreparedExactCheckpointMaterialization::Complete { .. }
+            | PreparedExactCheckpointMaterialization::Claimed { .. }
+            | PreparedExactCheckpointMaterialization::Absent => {
+                return Err(super::invalid_input(
+                    "begin exact root-overlay materialization",
+                    "root overlay differs from the admitted exact checkpoint",
+                ));
+            }
+        };
         self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
         let destination = File::from(self.create_root_overlay_destination()?);
 
-        Ok(QemuRootOverlayMaterialization {
+        Ok(AtomicExactRootOverlayWriter {
             prepared: self,
             destination,
+            verifier,
             binding,
             expected_bytes,
             written_bytes: 0,
         })
-    }
-
-    /// Reflinks one paused generation's writable artifacts into this generation.
-    ///
-    /// Both authorities must belong to the same attempt and exact launch
-    /// admission. The source and destination are addressed only through their
-    /// retained descriptors, and the kernel clone is followed by identity,
-    /// length, and durability checks before either destination is marked exact.
-    /// The caller supplies a binding derived from the authenticated local
-    /// replacement snapshot captured while the source node is paused.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSpawnError`] when either authority changed, belongs to a
-    /// different attempt or launch profile, lacks a complete artifact, exceeds
-    /// the aggregate writable ceiling, the filesystem cannot reflink within the
-    /// attempt quota, or synchronization and post-clone authentication fail.
-    pub fn clone_replacement_artifacts_from(
-        &mut self,
-        source: &Self,
-        binding: QemuVmStateBinding,
-    ) -> Result<(), QemuSpawnError> {
-        if !std::sync::Arc::ptr_eq(&self.attempt_binding, &source.attempt_binding)
-            || self.launch_resources != source.launch_resources
-            || self.admitted_ceiling != source.admitted_ceiling
-        {
-            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
-        }
-        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
-            || self.root_overlay_materialization != PreparedRootOverlayMaterialization::Absent
-        {
-            return Err(QemuSpawnError::ReplacementDestinationNotEmpty {
-                path: self.path.clone(),
-            });
-        }
-        if source.vmstate_materialization == PreparedVmStateMaterialization::Updating
-            || source.root_overlay_materialization == PreparedRootOverlayMaterialization::Updating
-        {
-            return Err(QemuSpawnError::ReplacementSourceNotReady {
-                path: source.path.clone(),
-            });
-        }
-
-        let source_vmstate = source.revalidate_identity()?;
-        let vmstate_bytes = checked_artifact_length(
-            source_vmstate.st_size,
-            source.admitted_ceiling.2,
-            &source.path,
-        )?;
-        let (source_root, root_bytes) = if source.launch_resources.has_root_overlay() {
-            let metadata = source.revalidate_root_overlay_identity()?;
-            let bytes =
-                checked_artifact_length(metadata.st_size, source.admitted_ceiling.2, &source.path)?;
-            (source.root_overlay.as_ref(), bytes)
-        } else {
-            (None, 0)
-        };
-        if vmstate_bytes
-            .checked_add(root_bytes)
-            .is_none_or(|bytes| bytes > self.admitted_ceiling.2)
-        {
-            return Err(QemuSpawnError::ReplacementArtifactsTooLarge {
-                vmstate_bytes,
-                root_overlay_bytes: root_bytes,
-                maximum: self.admitted_ceiling.2,
-            });
-        }
-
-        self.vmstate_materialization = PreparedVmStateMaterialization::Updating;
-        clone_file(
-            &source.vmstate,
-            &self.vmstate,
-            "reflink replacement VMState",
-        )?;
-        let destination_root = if let Some(source_root) = source_root {
-            self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
-            let destination = self.create_root_overlay_destination()?;
-            clone_file(
-                source_root,
-                &destination,
-                "reflink replacement root overlay",
-            )?;
-            Some(destination)
-        } else {
-            None
-        };
-
-        fsync(&self.vmstate).map_err(|source| QemuSpawnError::Io {
-            operation: "synchronize replacement VMState",
-            source: source.into(),
-        })?;
-        if let Some(destination) = &destination_root {
-            fsync(destination).map_err(|source| QemuSpawnError::Io {
-                operation: "synchronize replacement root overlay",
-                source: source.into(),
-            })?;
-        }
-        fsync(&self.directory).map_err(|source| QemuSpawnError::Io {
-            operation: "synchronize replacement generation directory",
-            source: source.into(),
-        })?;
-
-        require_length(
-            self.revalidate_identity()?.st_size,
-            vmstate_bytes,
-            &self.path,
-        )?;
-        require_length(
-            source.revalidate_identity()?.st_size,
-            vmstate_bytes,
-            &source.path,
-        )?;
-        if root_bytes != 0 {
-            require_length(
-                self.revalidate_root_overlay_identity()?.st_size,
-                root_bytes,
-                &self.path,
-            )?;
-            require_length(
-                source.revalidate_root_overlay_identity()?.st_size,
-                root_bytes,
-                &source.path,
-            )?;
-        }
-
-        self.vmstate_materialization = PreparedVmStateMaterialization::Exact {
-            binding,
-            bytes: vmstate_bytes,
-        };
-        if root_bytes != 0 {
-            self.root_overlay_materialization = PreparedRootOverlayMaterialization::Exact {
-                binding,
-                bytes: root_bytes,
-            };
-        }
-        Ok(())
     }
 
     fn create_root_overlay_destination(&mut self) -> Result<OwnedFd, QemuSpawnError> {
@@ -539,7 +678,8 @@ impl QemuPreparedRunDirectory {
     /// Returns [`QemuSpawnError`] when preparation was incomplete, exact bytes
     /// were substituted, or either retained inode changed.
     pub fn require_fresh_artifacts(&self) -> Result<(), QemuSpawnError> {
-        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+        if self.exact_device_state_materialization
+            != PreparedDeviceStateMaterialization::Provisioned
             || (self.launch_resources.has_root_overlay()
                 && self.root_overlay_materialization
                     != PreparedRootOverlayMaterialization::Provisioned)
@@ -553,7 +693,7 @@ impl QemuPreparedRunDirectory {
 
     fn seal_fresh_artifacts(&mut self) -> Result<(), QemuSpawnError> {
         let vmstate = self.revalidate_identity()?;
-        let vmstate_bytes =
+        let device_state_bytes =
             checked_artifact_length(vmstate.st_size, self.admitted_ceiling.2, &self.path)?;
         let root_bytes = if self.launch_resources.has_root_overlay() {
             let root = super::open_prepared_root_overlay(&self.directory, &self.path)?;
@@ -569,12 +709,12 @@ impl QemuPreparedRunDirectory {
         } else {
             0
         };
-        if vmstate_bytes
+        if device_state_bytes
             .checked_add(root_bytes)
             .is_none_or(|bytes| bytes > self.admitted_ceiling.2)
         {
-            return Err(QemuSpawnError::ReplacementArtifactsTooLarge {
-                vmstate_bytes,
+            return Err(QemuSpawnError::PreparedArtifactsTooLarge {
+                device_state_bytes,
                 root_overlay_bytes: root_bytes,
                 maximum: self.admitted_ceiling.2,
             });
@@ -601,7 +741,7 @@ impl QemuPreparedRunDirectory {
         Ok(())
     }
 
-    /// Requires the pinned VMState file to contain one exact root binding.
+    /// Requires the sealed device-state memfd to contain one exact root binding.
     ///
     /// Exact-restore launchers call this after materialization and immediately
     /// before guarded spawn. A merely provisioned image is deliberately not an
@@ -610,24 +750,28 @@ impl QemuPreparedRunDirectory {
     /// # Errors
     ///
     /// Returns [`QemuSpawnError`] if materialization is incomplete or the
-    /// committed file is bound to another exact-checkpoint root.
-    pub fn require_exact_vmstate(&self, binding: QemuVmStateBinding) -> Result<(), QemuSpawnError> {
-        match self.vmstate_materialization {
-            PreparedVmStateMaterialization::Exact {
-                binding: actual, ..
-            } if actual == binding => Ok(()),
-            PreparedVmStateMaterialization::Exact {
-                binding: actual, ..
-            } => Err(QemuSpawnError::PreparedVmStateBindingMismatch {
-                expected: binding,
-                actual,
-            }),
-            PreparedVmStateMaterialization::Provisioned
-            | PreparedVmStateMaterialization::Updating
-            | PreparedVmStateMaterialization::HotForkChild => {
-                Err(QemuSpawnError::PreparedVmStateNotReady {
-                    path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
-                })
+    /// sealed input is bound to another exact-checkpoint root.
+    pub(crate) fn require_exact_device_state(
+        &self,
+        expected: QemuExactDeviceStateBinding,
+    ) -> Result<(), QemuSpawnError> {
+        match (
+            &self.exact_checkpoint_materialization,
+            self.exact_device_state_materialization,
+        ) {
+            (
+                PreparedExactCheckpointMaterialization::Complete { binding }
+                | PreparedExactCheckpointMaterialization::Claimed { binding },
+                PreparedDeviceStateMaterialization::Exact {
+                    binding: device_binding,
+                    ..
+                },
+            ) if *binding == expected && device_binding == expected => Ok(()),
+            (PreparedExactCheckpointMaterialization::Absent, _)
+            | (PreparedExactCheckpointMaterialization::Updating { .. }, _)
+            | (PreparedExactCheckpointMaterialization::Complete { .. }, _)
+            | (PreparedExactCheckpointMaterialization::Claimed { .. }, _) => {
+                Err(QemuSpawnError::PreparedDeviceStateNotReady)
             }
         }
     }
@@ -638,278 +782,167 @@ impl QemuPreparedRunDirectory {
     ///
     /// Returns [`QemuSpawnError`] when the launch has no completed exact root
     /// overlay or its bytes were materialized for another checkpoint root.
-    pub fn require_exact_root_overlay(
+    pub(crate) fn require_exact_root_overlay(
         &self,
-        binding: QemuVmStateBinding,
+        expected: QemuExactDeviceStateBinding,
     ) -> Result<(), QemuSpawnError> {
-        match self.root_overlay_materialization {
-            PreparedRootOverlayMaterialization::Exact {
-                binding: actual, ..
-            } if actual == binding => Ok(()),
-            PreparedRootOverlayMaterialization::Exact {
-                binding: actual, ..
-            } => Err(QemuSpawnError::PreparedRootOverlayBindingMismatch {
-                expected: binding,
-                actual,
+        match (
+            &self.exact_checkpoint_materialization,
+            self.root_overlay_materialization,
+        ) {
+            (
+                PreparedExactCheckpointMaterialization::Complete { binding }
+                | PreparedExactCheckpointMaterialization::Claimed { binding },
+                PreparedRootOverlayMaterialization::Exact {
+                    binding: overlay_binding,
+                    ..
+                },
+            ) if *binding == expected && overlay_binding == expected => Ok(()),
+            _ => Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
             }),
-            PreparedRootOverlayMaterialization::Absent
-            | PreparedRootOverlayMaterialization::Provisioned
-            | PreparedRootOverlayMaterialization::Updating
-            | PreparedRootOverlayMaterialization::HotForkChild => {
-                Err(QemuSpawnError::PreparedRootOverlayNotReady {
-                    path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
-                })
-            }
         }
     }
 
-    /// Requires every checkpoint artifact named by one launch command.
-    ///
-    /// VMState is always required. The root overlay is required only when the
-    /// validated command names one, but it must then carry the same binding.
-    pub(crate) fn require_exact_launch_artifacts(
-        &self,
-        command: &QemuLaunchCommand,
-        binding: QemuVmStateBinding,
+    pub(crate) fn claim_exact_checkpoint_materialization(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+        expected: QemuExactDeviceStateBinding,
     ) -> Result<(), QemuSpawnError> {
-        self.require_exact_vmstate(binding)?;
-        if command.resource_requirements().has_root_overlay() {
-            self.require_exact_root_overlay(binding)?;
+        self.require_same_attempt(process_contract)?;
+        match self.exact_checkpoint_materialization {
+            PreparedExactCheckpointMaterialization::Complete { binding } if binding == expected => {
+                self.exact_checkpoint_materialization =
+                    PreparedExactCheckpointMaterialization::Claimed { binding };
+                Ok(())
+            }
+            _ => Err(super::invalid_input(
+                "claim exact checkpoint materialization",
+                "the exact checkpoint set is incomplete, belongs to another root, or was already claimed",
+            )),
+        }
+    }
+
+    pub(crate) fn validate_exact_ram_inputs(
+        &self,
+        expected: QemuExactDeviceStateBinding,
+        inputs: &SealedAtomicExactRestoreInputs,
+        expected_bytes: impl IntoIterator<Item = u64>,
+    ) -> Result<(), QemuSpawnError> {
+        self.validate_guarded_ram_inputs(expected, &inputs.inner, expected_bytes)
+    }
+
+    fn validate_guarded_ram_inputs(
+        &self,
+        expected: QemuExactDeviceStateBinding,
+        inputs: &QemuGuardedRamInputs,
+        expected_bytes: impl IntoIterator<Item = u64>,
+    ) -> Result<(), QemuSpawnError> {
+        let expected_bytes = expected_bytes.into_iter().collect::<Vec<_>>();
+        if inputs.binding != expected
+            || !Arc::ptr_eq(&inputs.attempt_binding, &self.attempt_binding)
+            || inputs.inputs.len() != expected_bytes.len()
+            || inputs.inputs.iter().enumerate().any(|(index, input)| {
+                !input.matches(
+                    &self.attempt_binding,
+                    expected,
+                    index,
+                    expected_bytes[index],
+                )
+            })
+        {
+            return Err(super::invalid_input(
+                "validate exact RAM materialization",
+                "RAM inputs do not belong to this exact root, attempt, order, or geometry",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_same_attempt(
+        &self,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<(), QemuSpawnError> {
+        if self.admitted_ceiling != process_contract.admitted_resource_ceiling()
+            || !std::sync::Arc::ptr_eq(&self.attempt_binding, &process_contract.attempt_binding)
+        {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
         }
         Ok(())
     }
 }
 
-fn clone_file(
-    source: &OwnedFd,
-    destination: &OwnedFd,
+fn copy_exact_checkpoint_stream(
+    source: &mut dyn Read,
+    destination: &mut dyn Write,
+    cancellation: BorrowedFd<'_>,
     operation: &'static str,
 ) -> Result<(), QemuSpawnError> {
-    let source_fd = usize::try_from(source.as_raw_fd()).map_err(|error| QemuSpawnError::Io {
-        operation,
-        source: io::Error::new(io::ErrorKind::InvalidInput, error),
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(1024 * 1024).map_err(|_| {
+        super::invalid_input(
+            "allocate exact restore copy buffer",
+            "exact restore copy buffer allocation failed",
+        )
     })?;
-    let request = unsafe {
-        // SAFETY: Linux FICLONE takes the source descriptor as an integer and
-        // clones its data into the ioctl destination. Both descriptors remain
-        // pinned and owned for the complete call.
-        IntegerSetter::<FICLONE>::new_usize(source_fd)
-    };
-    unsafe {
-        // SAFETY: `destination` is a live writable regular-file descriptor and
-        // `request` contains the live source regular-file descriptor.
-        ioctl(destination, request)
+    buffer.resize(1024 * 1024, 0);
+    loop {
+        require_exact_restore_not_canceled(cancellation)?;
+        let count = source
+            .read(&mut buffer)
+            .map_err(|source| QemuSpawnError::Io { operation, source })?;
+        if count == 0 {
+            break;
+        }
+        destination
+            .write_all(&buffer[..count])
+            .map_err(|source| QemuSpawnError::Io { operation, source })?;
     }
-    .map_err(|source| QemuSpawnError::Io {
-        operation,
-        source: source.into(),
-    })
+    require_exact_restore_not_canceled(cancellation)
+}
+
+pub(crate) fn require_exact_restore_not_canceled(
+    cancellation: BorrowedFd<'_>,
+) -> Result<(), QemuSpawnError> {
+    let mut descriptor = libc::pollfd {
+        fd: cancellation.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let observed = unsafe {
+        // SAFETY: `descriptor` points to one initialized pollfd. The zero
+        // timeout observes readiness without consuming the sticky eventfd.
+        libc::poll(&mut descriptor, 1, 0)
+    };
+    if observed < 0 {
+        return Err(QemuSpawnError::Io {
+            operation: "poll exact restore cancellation",
+            source: io::Error::last_os_error(),
+        });
+    }
+    if descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        return Err(QemuSpawnError::Io {
+            operation: "poll exact restore cancellation",
+            source: io::Error::from_raw_os_error(libc::EBADF),
+        });
+    }
+    if observed > 0 && descriptor.revents & libc::POLLIN != 0 {
+        return Err(QemuSpawnError::Io {
+            operation: "authenticate exact restore cancellation",
+            source: io::Error::from_raw_os_error(libc::ECANCELED),
+        });
+    }
+    Ok(())
 }
 
 fn checked_artifact_length(raw: i64, maximum: u64, path: &Path) -> Result<u64, QemuSpawnError> {
-    let bytes = u64::try_from(raw).map_err(|_| QemuSpawnError::ReplacementSourceNotReady {
+    let bytes = u64::try_from(raw).map_err(|_| QemuSpawnError::PreparedArtifactNotReady {
         path: path.to_owned(),
     })?;
     if bytes == 0 || bytes > maximum {
-        return Err(QemuSpawnError::ReplacementSourceNotReady {
+        return Err(QemuSpawnError::PreparedArtifactNotReady {
             path: path.to_owned(),
         });
     }
     Ok(bytes)
-}
-
-fn require_length(raw: i64, expected: u64, path: &Path) -> Result<(), QemuSpawnError> {
-    if u64::try_from(raw).ok() == Some(expected) {
-        Ok(())
-    } else {
-        Err(QemuSpawnError::ReplacementArtifactChanged {
-            path: path.to_owned(),
-        })
-    }
-}
-
-impl Write for QemuVmStateMaterialization<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let remaining = self.expected_bytes.saturating_sub(self.written_bytes);
-        let requested = u64::try_from(bytes.len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "exact VMState write length cannot be represented",
-            )
-        })?;
-        if requested > remaining {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "exact VMState write exceeds the declared checkpoint length",
-            ));
-        }
-        let written = self.destination.write(bytes)?;
-        self.written_bytes = self
-            .written_bytes
-            .checked_add(u64::try_from(written).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "exact VMState write count cannot be represented",
-                )
-            })?)
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "exact VMState write overflow")
-            })?;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.destination.flush()
-    }
-}
-
-impl Write for QemuRootOverlayMaterialization<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let remaining = self.expected_bytes.saturating_sub(self.written_bytes);
-        let requested = u64::try_from(bytes.len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "exact root-overlay write length cannot be represented",
-            )
-        })?;
-        if requested > remaining {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "exact root-overlay write exceeds the declared checkpoint length",
-            ));
-        }
-        let written = self.destination.write(bytes)?;
-        self.written_bytes = self
-            .written_bytes
-            .checked_add(u64::try_from(written).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "exact root-overlay write count cannot be represented",
-                )
-            })?)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "exact root-overlay write overflow",
-                )
-            })?;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.destination.flush()
-    }
-}
-
-impl QemuVmStateMaterialization<'_> {
-    /// Authenticates and durably commits the complete materialized VMState.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSpawnError`] if the caller wrote fewer than the declared
-    /// bytes, file flush or synchronization fails, or the pinned inode or final
-    /// file length changed. Failure leaves the run-directory authority
-    /// unlaunchable until a new materialization succeeds.
-    pub fn finish(mut self) -> Result<(), QemuSpawnError> {
-        if self.written_bytes != self.expected_bytes {
-            return Err(QemuSpawnError::PreparedVmStateIncomplete {
-                expected: self.expected_bytes,
-                actual: self.written_bytes,
-            });
-        }
-        self.destination
-            .flush()
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "flush materialized exact-VMState container",
-                source,
-            })?;
-        self.destination
-            .sync_all()
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "synchronize materialized exact-VMState container",
-                source,
-            })?;
-        fsync(&self.prepared.directory).map_err(|source| QemuSpawnError::Io {
-            operation: "synchronize materialized exact-VMState directory",
-            source: source.into(),
-        })?;
-        let metadata = fstat(&self.prepared.vmstate).map_err(|source| QemuSpawnError::Io {
-            operation: "inspect materialized exact-VMState container",
-            source: source.into(),
-        })?;
-        if !self.prepared.vmstate_identity.matches(&metadata) {
-            return Err(QemuSpawnError::PreparedVmStateChanged {
-                path: self.prepared.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
-            });
-        }
-        let actual = u64::try_from(metadata.st_size).map_err(|_| {
-            QemuSpawnError::PreparedVmStateIncomplete {
-                expected: self.expected_bytes,
-                actual: u64::MAX,
-            }
-        })?;
-        if actual != self.expected_bytes {
-            return Err(QemuSpawnError::PreparedVmStateIncomplete {
-                expected: self.expected_bytes,
-                actual,
-            });
-        }
-        self.prepared.vmstate_materialization = PreparedVmStateMaterialization::Exact {
-            binding: self.binding,
-            bytes: self.expected_bytes,
-        };
-        Ok(())
-    }
-}
-
-impl QemuRootOverlayMaterialization<'_> {
-    /// Authenticates and durably commits the complete root overlay.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSpawnError`] if the caller wrote a different length,
-    /// synchronization fails, or the retained inode changes. Failure leaves the
-    /// prepared directory unlaunchable.
-    pub fn finish(mut self) -> Result<(), QemuSpawnError> {
-        if self.written_bytes != self.expected_bytes {
-            return Err(QemuSpawnError::PreparedRootOverlayIncomplete {
-                expected: self.expected_bytes,
-                actual: self.written_bytes,
-            });
-        }
-        self.destination
-            .flush()
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "flush materialized exact root overlay",
-                source,
-            })?;
-        self.destination
-            .sync_all()
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "synchronize materialized exact root overlay",
-                source,
-            })?;
-        fsync(&self.prepared.directory).map_err(|source| QemuSpawnError::Io {
-            operation: "synchronize materialized exact root-overlay directory",
-            source: source.into(),
-        })?;
-        let metadata = self.prepared.revalidate_root_overlay_identity()?;
-        let actual = u64::try_from(metadata.st_size).map_err(|_| {
-            QemuSpawnError::PreparedRootOverlayIncomplete {
-                expected: self.expected_bytes,
-                actual: u64::MAX,
-            }
-        })?;
-        if actual != self.expected_bytes {
-            return Err(QemuSpawnError::PreparedRootOverlayIncomplete {
-                expected: self.expected_bytes,
-                actual,
-            });
-        }
-        self.prepared.root_overlay_materialization = PreparedRootOverlayMaterialization::Exact {
-            binding: self.binding,
-            bytes: self.expected_bytes,
-        };
-        Ok(())
-    }
 }

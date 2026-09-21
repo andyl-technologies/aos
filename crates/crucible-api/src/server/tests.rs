@@ -93,7 +93,7 @@ async fn resume_body_rejects_declared_oversize_before_collection() {
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert!(
-        response_text(response)
+        response_text(*response)
             .await
             .expect("oversize response should be text")
             .contains("resume-session-request-too-large")
@@ -117,7 +117,7 @@ async fn resume_body_rejects_oversize_chunked_stream_during_collection() {
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert!(
-        response_text(response)
+        response_text(*response)
             .await
             .expect("oversize response should be text")
             .contains("resume-session-request-too-large")
@@ -184,11 +184,21 @@ fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
         b"production-parser-replay-closure".to_vec(),
     )
     .expect("bounded replay closure should build");
+    let observation_source = ResumeObservationSource::new(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        1,
+        b"production-parser-observation-proof".to_vec(),
+        b"production-parser-observation-evidence".to_vec(),
+    )
+    .expect("bounded observation source should build");
     let request = ResumeSessionRequest::new(
         scenario.clone(),
         schedule.clone(),
         checkpoint.clone(),
         scenario.seed(),
+        observation_source.clone(),
     )
     .with_replay_closure(replay_closure.clone());
     let mut wire = String::from("crucible.rpc/resume-session-request\n");
@@ -234,6 +244,36 @@ fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
         &mut wire,
         "campaign-replay-closure-payload",
         &hex_encode(replay_closure.payload()),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-observation-source-version",
+        &observation_source.schema_version().to_string(),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-observation-source-identity",
+        &observation_source.identity().to_hex(),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-observation-source-proof-size",
+        &observation_source.proof().len().to_string(),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-observation-source-proof",
+        &hex_encode(observation_source.proof()),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-observation-source-evidence-size",
+        &observation_source.evidence().len().to_string(),
+    );
+    push_wire_line(
+        &mut wire,
+        "campaign-observation-source-evidence",
+        &hex_encode(observation_source.evidence()),
     );
     (request, wire)
 }
@@ -340,6 +380,23 @@ async fn debugger_session_rejection_is_a_typed_conflict_not_internal_error() {
         .expect("typed conflict response must decode");
     assert!(body.contains("status=invalid-state"));
     assert!(body.contains("reason=session-command-rejected"));
+}
+
+#[tokio::test]
+async fn owner_read_only_session_rejection_is_a_typed_forbidden_response() {
+    let response = lifecycle_error_response(LifecycleApiError::ReadOnlySession {
+        session: SessionRef::new(
+            SessionId::new(7),
+            12,
+            crucible::Seed::from_bytes([0x11; 32]),
+        ),
+    });
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = response_text(response)
+        .await
+        .expect("typed forbidden response must decode");
+    assert!(body.contains("status=invalid-state"));
+    assert!(body.contains("reason=debug-access-denied"));
 }
 
 fn send_request(command: &str, query: Option<&str>) -> String {
@@ -493,11 +550,13 @@ async fn controller_release_cannot_bypass_a_live_relay_holder() -> Result<(), Bo
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let stream = DebugRelayRegistry::connect(&listener.local_addr()?.to_string()).await?;
-    state
-        .debug_relays
-        .lock()
-        .await
-        .register(stream, session, lease.clone(), holder)?;
+    state.debug_relays.lock().await.register(
+        stream,
+        session,
+        lease.clone(),
+        holder,
+        crate::debug_relay::DebugRelayAccess::ReadWrite,
+    )?;
     let request = format!(
         "crucible.rpc/debug-controller-release-request\nsession-id={}\nepoch={}\nseed={}\ngeneration={}\nholder={}\n",
         session.id.value,

@@ -21,13 +21,13 @@ use crucible_campaign::{
     CampaignOperationalStatusProvider, CampaignPrincipalAuthorizer, CampaignRepository,
 };
 
-use crate::CampaignRuntimeControlService;
 use crate::campaign_endpoint::{LocalEndpointGuard, ManagedCampaignLoopbackListener};
 use crate::campaign_loopback::{
     DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION, LoopbackCampaignServerError,
     LoopbackCampaignTimeouts, MAX_CAMPAIGN_REQUESTS_PER_CONNECTION,
     UnixPeerCampaignPrincipalResolver,
 };
+use crate::{CampaignDebugControlService, CampaignRuntimeControlService};
 
 const DEFAULT_CONNECTION_WORKERS: usize = 8;
 const DEFAULT_PENDING_CONNECTIONS: usize = 32;
@@ -223,6 +223,7 @@ pub struct CampaignLoopbackServer<R: ?Sized, A: ?Sized> {
     principal_resolver: Arc<R>,
     authorizer: Arc<A>,
     runtime_control: Option<Arc<dyn CampaignRuntimeControlService>>,
+    debug_control: Option<Arc<dyn CampaignDebugControlService>>,
     operational_status: Option<Arc<dyn CampaignOperationalStatusProvider>>,
     config: CampaignLoopbackServerConfig,
     state: Arc<CampaignLoopbackServerState>,
@@ -306,6 +307,7 @@ where
             principal_resolver,
             authorizer,
             runtime_control: None,
+            debug_control: None,
             operational_status: None,
             config,
             state: Arc::new(CampaignLoopbackServerState::default()),
@@ -330,6 +332,16 @@ where
         runtime_control: Arc<dyn CampaignRuntimeControlService>,
     ) -> Self {
         self.runtime_control = Some(runtime_control);
+        self
+    }
+
+    /// Installs one owner-bound campaign debug-session capability.
+    #[must_use]
+    pub fn with_debug_control(
+        mut self,
+        debug_control: Arc<dyn CampaignDebugControlService>,
+    ) -> Self {
+        self.debug_control = Some(debug_control);
         self
     }
 
@@ -372,6 +384,7 @@ where
             principal_resolver: Arc::clone(&self.principal_resolver),
             authorizer: Arc::clone(&self.authorizer),
             runtime_control: self.runtime_control.as_ref().map(Arc::clone),
+            debug_control: self.debug_control.as_ref().map(Arc::clone),
             operational_status: self.operational_status.as_ref().map(Arc::clone),
             config: self.config,
             state: Arc::clone(&self.state),
@@ -540,6 +553,7 @@ struct ConnectionWorkerContext<R: ?Sized, A: ?Sized> {
     principal_resolver: Arc<R>,
     authorizer: Arc<A>,
     runtime_control: Option<Arc<dyn CampaignRuntimeControlService>>,
+    debug_control: Option<Arc<dyn CampaignDebugControlService>>,
     operational_status: Option<Arc<dyn CampaignOperationalStatusProvider>>,
     config: CampaignLoopbackServerConfig,
     state: Arc<CampaignLoopbackServerState>,
@@ -596,10 +610,13 @@ fn connection_worker_loop<R, A>(
             &context.repository,
             context.principal_resolver.as_ref(),
             context.authorizer.as_ref(),
-            context.runtime_control.as_deref(),
-            context.operational_status.as_deref(),
-            context.config.exchange_timeouts,
-            context.config.maximum_requests_per_connection,
+            crate::campaign_loopback::CampaignConnectionControls {
+                runtime: context.runtime_control.as_deref(),
+                debug: context.debug_control.as_deref(),
+                status: context.operational_status.as_deref(),
+                timeouts: context.config.exchange_timeouts,
+                maximum_requests: context.config.maximum_requests_per_connection,
+            },
         );
         match result {
             Ok(()) if state.stopped.load(Ordering::Acquire) => {}

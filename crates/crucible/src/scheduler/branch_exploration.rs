@@ -332,9 +332,9 @@ impl SingleScheduler {
         }
 
         let configuration =
-            try_step(parent, Decision::Selection(decision.clone())).map_err(|error| {
+            try_step(parent, Decision::Selection(decision.clone())).map_err(|source| {
                 SchedulerError::BoundaryViolation {
-                    message: format!("external selection child is invalid: {error}"),
+                    message: format!("external selection violated the scenario model: {source}"),
                 }
             })?;
         if configuration != *selected {

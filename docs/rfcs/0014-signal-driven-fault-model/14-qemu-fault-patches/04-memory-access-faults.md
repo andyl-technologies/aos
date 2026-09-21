@@ -1,4 +1,4 @@
-# Patch 0050 — `crucible-memory-access-faults`
+# Capability task 0050 — `crucible-memory-access-faults`
 
 ## Purpose
 
@@ -11,7 +11,8 @@ and modeled memory latency/bandwidth.
 
 - Provides `qemu.memory.access-transform.v1`, `qemu.memory.region-state.v1`, and
   `qemu.memory.service.v1` on x86-64 and AArch64.
-- Depends on 0047–0049, safe translation evidence, and sim time control.
+- Requires the capabilities specified by capability tasks 0047–0049, safe
+  translation evidence, and sim time control.
 
 ## Rule payload and index
 
@@ -72,8 +73,10 @@ capability-probe, command-admission, and other inspection translations are not
 opportunities and never consume occurrence state. Each live descriptor read is
 one transaction; an architecture retry of the same descriptor at the same
 instruction coordinate increments the retry ordinal. That retry key includes
-the instruction PC and ordinal, initiating virtual address and access class,
-descriptor GPA and width, translation stage, and architecture walk level.
+the instruction PC, initiating virtual address and access class, descriptor GPA
+and width, translation stage, and architecture walk level. The live transaction
+and evidence retain the TB-local instruction ordinal as an observed coordinate;
+it does not enter the retry key or its checkpoint encoding.
 Under nested translation, the descriptor GPA is the final ordinary-RAM address
 after the outer descriptor address has crossed the second-stage translation;
 stage identifies the table being walked rather than the MMU index used to read
@@ -108,7 +111,8 @@ resolve address -> check poison/failed state -> read source or prepare write
 -> commit or return outcome -> update retention/rowhammer counters -> evidence
 ```
 
-Instruction result faults occur later under patch 0052. Boundary impulses from
+Instruction result faults use the capability specified by capability task
+0052. Boundary impulses from
 0049 occur between accesses and update real RAM, so subsequent accesses see them.
 
 ## Transform semantics
@@ -127,7 +131,8 @@ Instruction result faults occur later under patch 0052. Boundary impulses from
 Atomic/locked instructions, page-table walks, instruction fetch, DMA, and MMIO
 declare separate capability fields. Page-table-walk support covers normal-RAM
 descriptor reads on x86-64 and AArch64. MMIO transforms are rejected in v1 of this
-patch; MMIO instruction replay belongs to 0052 and typed device faults belong to
+capability; MMIO instruction replay belongs to capability task 0052 and typed
+device faults belong to
 their adapter. CPU atomic operations can be torn only when the effect explicitly
 sets `violate_atomicity = true`, the target architecture capability advertises
 the exact operation width, and the live gate covers it. The v1 capability
@@ -177,7 +182,8 @@ an error. Refresh events are exact modeled events and are checkpointed.
 Evidence contains rule generation, access ID, matched rules, original/final
 bytes or digests, suppressed/applied byte mask, outcome, service ledger,
 counter/state transitions, physical mutations, and fingerprints. QEMU dirty
-tracking/TB invalidation applies to persistent changes. Patch 0067 serializes
+tracking/TB invalidation applies to persistent changes. The VMState capability
+specified by capability task 0067 serializes
 rule generations, sparse region state, counters, service state, and pending
 access delay. Mapped DMA evidence records both the admitted mapping-grant length
 and the exact used length, so a partial writeback is distinguishable from an
@@ -202,7 +208,8 @@ exact mapping and a zero-length writeback is provably event-free.
 7. Prove latency/service blocks architectural completion at the exact virtual
    coordinate and resumes identically after checkpoint.
 8. Benchmark disabled, enabled-empty-index, sparse non-match, and active match.
-9. Revert patch and prove live gates fail; prove non-sim inertness.
+9. Run the live gates against pristine QEMU and prove capability absence; prove
+   non-sim inertness with the atomic patch installed.
 
 ## Licensing checklist
 

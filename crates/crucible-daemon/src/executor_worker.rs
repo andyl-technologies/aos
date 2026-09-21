@@ -9,18 +9,15 @@
 
 use crucible::ContentHash;
 use crucible_campaign::{
-    Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptRetentionPolicyBasis,
-    AttemptStart, AttemptStartMode, BranchPath, CampaignExecutorStore, CampaignHash,
-    CampaignLineage, CampaignRepositoryError, ConfigurationArtifact, ExactCheckpointId,
-    ExecutionId, ExecutionRetentionIntent, ExecutorRejection, FindingExactPins,
-    FindingExactRetention, FindingExactRetentionDisposition, FindingExactRetentionIncomplete,
-    ObservationCandidate, ObservationId, ResolvedSelection, RetentionPolicy, ScenarioArtifact,
-    StopOutcome, SubmitAttemptRequest,
+    Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptRetentionPolicyDisposition,
+    AttemptStart, AttemptStartMode, BranchPath, CampaignExecutorStore, CampaignLineage,
+    CampaignRepositoryError, ConfigurationArtifact, ExactCheckpointId, ExecutionId,
+    ExecutionRetentionIntent, ExecutorRejection, FindingExactCheckpointAuthenticator,
+    ObservationCandidate, ObservationId, ResolvedSelection, ScenarioArtifact, StopOutcome,
+    SubmitAttemptRequest,
 };
-use crucible_cas::content_store::ObjectKind;
-use std::collections::BTreeSet;
 use std::sync::{
-    Arc, Mutex, OnceLock,
+    Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -34,17 +31,21 @@ use crate::guest_selectable::{
     GuestSelectableBoundaryDiagnosticEvent, GuestSelectableBoundaryDiagnosticRecorder,
 };
 use crate::{
-    AssignmentLedger, AttemptAdmissionValidator, AttemptCheckpointPublication,
-    AttemptCheckpointResult, AttemptExecutionOrigin, CancellationOutcome,
-    CapturedAttemptCheckpoint, CheckpointCompletionOutcome, CheckpointHandoffFailure,
-    CheckpointPublicationOutcome, CompletionOutcome, DirectoryPreparedResultJournal,
-    ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
-    ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
-    ObservationPublicationOutcome, PreparedAttemptCheckpoint, PreparedCrucibleFindingCandidate,
+    AssignmentLedger, AttemptAdmissionValidator, AttemptCheckpointResult, AttemptExecutionOrigin,
+    CancellationOutcome, CapturedAttemptCheckpoint, CheckpointCompletionOutcome,
+    CheckpointHandoffFailure, CheckpointPublicationOutcome, CompletionOutcome,
+    DirectoryPreparedResultJournal, ExactCheckpointStore, ExactCheckpointStoreError,
+    ExecutionCancellation, ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
+    PreparedAttemptCheckpoint, PreparedCrucibleFindingCandidate,
     PreparedResultJournalCreateDisposition, PreparedResultJournalError,
-    PreparedSemanticAttemptResult, PreparedSemanticResultCodecError, QueuedAttempt,
+    PreparedResultJournalNamespace, PreparedSemanticAttemptResult,
+    PreparedSemanticResultCodecError, ProductionExactCheckpointPublication, QueuedAttempt,
     TerminalFailureOutcome,
 };
+
+mod result;
+
+pub use result::*;
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,90 +176,6 @@ pub struct AttemptExecutionInput {
 pub struct AttemptExecutionRuntimeBasis {
     key: crate::AttemptExecutionKey,
     execution: ExecutionId,
-}
-
-/// Authenticated admission policy available to automatic finding retention.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AttemptFindingRetentionPolicy {
-    basis: AttemptRetentionPolicyBasis,
-    retention: RetentionPolicy,
-}
-
-impl AttemptFindingRetentionPolicy {
-    pub(crate) const fn new(
-        basis: AttemptRetentionPolicyBasis,
-        retention: RetentionPolicy,
-    ) -> Self {
-        Self { basis, retention }
-    }
-
-    /// Returns the exact execution-basis admission and policy identity.
-    #[must_use]
-    pub const fn basis(self) -> AttemptRetentionPolicyBasis {
-        self.basis
-    }
-
-    /// Returns the policy's semantic retention settings.
-    #[must_use]
-    pub const fn retention(self) -> RetentionPolicy {
-        self.retention
-    }
-}
-
-/// Linear automatic exact-retention handoff produced with one finding.
-///
-/// A captured checkpoint remains attempt-local until the executor pool prepares
-/// and publishes it under the same guard used for replay captures and candidate
-/// staging. Incomplete captures remain owned here so the pool can retire their
-/// native production catalogs rather than silently leaking operational state.
-#[derive(Debug)]
-pub enum PreparedFindingExactRetention {
-    /// The authenticated policy does not request exact finding retention.
-    Disabled {
-        /// Admission and policy identity authenticated for this execution.
-        basis: AttemptRetentionPolicyBasis,
-    },
-    /// Exact retention could not complete, while thin evidence remains valid.
-    Incomplete {
-        /// Admission and policy identity authenticated for this execution.
-        basis: AttemptRetentionPolicyBasis,
-        /// Stable localized reason retained in the finding candidate.
-        reason: FindingExactRetentionIncomplete,
-        /// Unusable capture retained solely for explicit native-source retirement.
-        discarded_checkpoint: Option<CapturedAttemptCheckpoint>,
-    },
-    /// One canonical safe-stop capture awaits guarded publication and selection.
-    Captured {
-        /// Admission and policy identity authenticated for this execution.
-        basis: AttemptRetentionPolicyBasis,
-        /// Linear unpublished exact checkpoint.
-        checkpoint: CapturedAttemptCheckpoint,
-    },
-}
-
-impl PreparedFindingExactRetention {
-    /// Returns the authenticated admission and policy identity.
-    #[must_use]
-    pub const fn basis(&self) -> AttemptRetentionPolicyBasis {
-        match self {
-            Self::Disabled { basis }
-            | Self::Incomplete { basis, .. }
-            | Self::Captured { basis, .. } => *basis,
-        }
-    }
-
-    /// Returns whether this handoff owns a checkpoint requiring retirement.
-    #[must_use]
-    pub const fn checkpoint(&self) -> Option<&CapturedAttemptCheckpoint> {
-        match self {
-            Self::Incomplete {
-                discarded_checkpoint,
-                ..
-            } => discarded_checkpoint.as_ref(),
-            Self::Captured { checkpoint, .. } => Some(checkpoint),
-            Self::Disabled { .. } => None,
-        }
-    }
 }
 
 impl AttemptExecutionRuntimeBasis {
@@ -623,13 +540,13 @@ fn account_origin_bytes(
 /// [`Self::resume_checkpoint`] exactly or fail before beginning guest work; it
 /// must never silently restart a resumed attempt from its original
 /// configuration.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct AttemptExecutionContext {
     runtime_basis: Option<AttemptExecutionRuntimeBasis>,
     start_mode: AttemptStartMode,
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
-    finding_retention: Option<AttemptFindingRetentionPolicy>,
+    retention_policy: AttemptRetentionPolicyDisposition,
     cancellation: ExecutionCancellation,
     checkpoint_request: ExecutionCheckpointRequest,
     resume_checkpoint: Option<ExactCheckpointId>,
@@ -638,6 +555,28 @@ pub struct AttemptExecutionContext {
     execution_quanta: ExecutionQuantumBudget,
     origin: AttemptExecutionOrigin,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
+    selected_checkpoint: Mutex<Option<crate::executor_supervisor::SelectedExactCheckpointRoot>>,
+}
+
+impl Clone for AttemptExecutionContext {
+    fn clone(&self) -> Self {
+        Self {
+            runtime_basis: self.runtime_basis,
+            start_mode: self.start_mode,
+            resources: self.resources,
+            retention: self.retention,
+            retention_policy: self.retention_policy,
+            cancellation: self.cancellation.clone(),
+            checkpoint_request: self.checkpoint_request.clone(),
+            resume_checkpoint: self.resume_checkpoint,
+            checkpoint_scenario: self.checkpoint_scenario,
+            checkpoint_handoff: self.checkpoint_handoff.clone(),
+            execution_quanta: self.execution_quanta.clone(),
+            origin: self.origin,
+            guest_selectable_diagnostics: self.guest_selectable_diagnostics.clone(),
+            selected_checkpoint: Mutex::new(None),
+        }
+    }
 }
 
 /// Clone-shared physical-work budget for one execution incarnation.
@@ -682,13 +621,14 @@ impl AttemptExecutionContext {
         retention: ExecutionRetentionIntent,
         cancellation: ExecutionCancellation,
         checkpoint_request: ExecutionCheckpointRequest,
+        retention_policy: AttemptRetentionPolicyDisposition,
     ) -> Self {
         Self {
             runtime_basis: None,
             start_mode: AttemptStartMode::Execute,
             resources,
             retention,
-            finding_retention: None,
+            retention_policy,
             cancellation,
             checkpoint_request,
             resume_checkpoint: None,
@@ -697,6 +637,45 @@ impl AttemptExecutionContext {
             execution_quanta: ExecutionQuantumBudget::new(),
             origin: AttemptExecutionOrigin::Initial,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
+            selected_checkpoint: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn install_selected_checkpoint(
+        mut self,
+        selected: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+    ) -> Self {
+        self.selected_checkpoint = Mutex::new(selected);
+        self
+    }
+
+    pub(crate) const fn retention_policy(&self) -> AttemptRetentionPolicyDisposition {
+        self.retention_policy
+    }
+
+    pub(crate) fn take_selected_checkpoint(
+        &self,
+    ) -> Option<crate::executor_supervisor::SelectedExactCheckpointRoot> {
+        self.selected_checkpoint.lock().ok()?.take()
+    }
+
+    pub(crate) fn selected_checkpoint_authorizes(&self, checkpoint: ExactCheckpointId) -> bool {
+        self.selected_checkpoint
+            .lock()
+            .map(|selected| {
+                selected
+                    .as_ref()
+                    .is_some_and(|selected| selected.authorizes(checkpoint))
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn restore_selected_checkpoint(
+        &self,
+        selected: crate::executor_supervisor::SelectedExactCheckpointRoot,
+    ) {
+        if let Ok(mut slot) = self.selected_checkpoint.lock() {
+            *slot = Some(selected);
         }
     }
 
@@ -802,21 +781,6 @@ impl AttemptExecutionContext {
         self
     }
 
-    #[must_use]
-    pub(crate) fn with_finding_retention_policy(
-        mut self,
-        finding_retention: Option<AttemptFindingRetentionPolicy>,
-    ) -> Self {
-        self.finding_retention = finding_retention;
-        self
-    }
-
-    /// Returns the authenticated policy basis for automatic finding retention.
-    #[must_use]
-    pub const fn finding_retention_policy(&self) -> Option<AttemptFindingRetentionPolicy> {
-        self.finding_retention
-    }
-
     /// Attaches the authenticated behavior requested at start materialization.
     #[must_use]
     pub(crate) const fn with_start_mode(mut self, start_mode: AttemptStartMode) -> Self {
@@ -905,7 +869,7 @@ impl AttemptExecutionContext {
 
     pub(crate) fn prepare_and_stage_checkpoint(
         &self,
-        capture: &CapturedAttemptCheckpoint,
+        capture: CapturedAttemptCheckpoint,
     ) -> Result<AttemptCheckpointResult, AttemptWorkerFailure<CheckpointHandoffFailure>> {
         if self.cancellation.is_canceled() {
             return Err(AttemptWorkerFailure::Canceled(
@@ -921,9 +885,9 @@ impl AttemptExecutionContext {
             ));
         }
         let Some(handoff) = &self.checkpoint_handoff else {
-            return Ok(capture.reopenable_copy().into());
+            return Ok(capture.into());
         };
-        match handoff.prepare_and_stage(capture) {
+        match handoff.prepare_and_stage(&capture) {
             Ok(prepared) => Ok(AttemptCheckpointResult::from_prepared(prepared)),
             Err(CheckpointHandoffFailure::Retryable) => Err(AttemptWorkerFailure::Retryable(
                 CheckpointHandoffFailure::Retryable,
@@ -982,13 +946,6 @@ pub trait AttemptExecutionModel {
         context: &AttemptExecutionContext,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
 
-    /// Takes native checkpoint cleanup authority retained by the last failed execution.
-    ///
-    /// The default is valid for models that never capture a production checkpoint.
-    fn take_abandoned_native_checkpoint(&mut self) -> Option<NativeCheckpointCleanup> {
-        None
-    }
-
     /// Reconciles model-owned operational authority after semantic completion.
     ///
     /// The worker calls this only after a successful [`Self::execute`] result
@@ -1012,116 +969,11 @@ pub trait AttemptExecutionModel {
     }
 }
 
-/// Pool-owned disposition for a native checkpoint catalog abandoned by execution.
-#[derive(Debug)]
-pub enum NativeCheckpointCleanup {
-    /// The producing lifecycle stopped, so catalog retirement may run now.
-    Retire(crucible_api::ProductionExactCheckpointRetirement),
-    /// Shutdown did not attest process exit, so the authority must remain quarantined.
-    Quarantine(crucible_api::ProductionExactCheckpointRetirement),
-    /// Multiple independently owned catalogs require the same pool-owned cleanup pass.
-    Batch(Vec<NativeCheckpointCleanup>),
-}
-
-impl NativeCheckpointCleanup {
-    pub(crate) fn retain(slot: &mut Option<Self>, cleanup: Self) {
-        let Some(existing) = slot.take() else {
-            *slot = Some(cleanup);
-            return;
-        };
-
-        let mut retained = match existing {
-            Self::Batch(retained) => retained,
-            cleanup => vec![cleanup],
-        };
-        match cleanup {
-            Self::Batch(mut cleanup) => retained.append(&mut cleanup),
-            cleanup => retained.push(cleanup),
-        }
-        *slot = Some(Self::Batch(retained));
-    }
-
-    pub(crate) fn retain_for_process_lifetime(self) {
-        let quarantine = UNWIND_NATIVE_CHECKPOINT_QUARANTINE.get_or_init(Default::default);
-        let mut quarantine = quarantine
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.push_quarantined(&mut quarantine);
-    }
-
-    fn push_quarantined(self, quarantine: &mut Vec<Self>) {
-        match self {
-            Self::Retire(retirement) | Self::Quarantine(retirement) => {
-                quarantine.push(Self::Quarantine(retirement));
-            }
-            Self::Batch(cleanups) => {
-                for cleanup in cleanups {
-                    cleanup.push_quarantined(quarantine);
-                }
-            }
-        }
-    }
-}
-
-static UNWIND_NATIVE_CHECKPOINT_QUARANTINE: OnceLock<Mutex<Vec<NativeCheckpointCleanup>>> =
-    OnceLock::new();
-
-#[cfg(test)]
-pub(crate) fn native_checkpoint_process_quarantine_len_for_test() -> usize {
-    let quarantine = UNWIND_NATIVE_CHECKPOINT_QUARANTINE.get_or_init(Default::default);
-    quarantine
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .len()
-}
-
-/// Keeps a newly captured native catalog quarantined until ownership transfers.
-#[derive(Debug)]
-pub(crate) struct NativeCheckpointUnwindGuard {
-    retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
-}
-
-impl NativeCheckpointUnwindGuard {
-    pub(crate) const fn new_empty() -> Self {
-        Self { retirement: None }
-    }
-
-    pub(crate) fn new(checkpoint: &CapturedAttemptCheckpoint) -> Self {
-        Self {
-            retirement: checkpoint.native_retirement(),
-        }
-    }
-
-    pub(crate) fn take(&mut self) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
-        self.retirement.take()
-    }
-
-    pub(crate) fn disarm(&mut self) {
-        self.retirement = None;
-    }
-}
-
-impl Drop for NativeCheckpointUnwindGuard {
-    fn drop(&mut self) {
-        let Some(retirement) = self.retirement.take() else {
-            return;
-        };
-        NativeCheckpointCleanup::Quarantine(retirement).retain_for_process_lifetime();
-    }
-}
-
 /// Canonical completion or exact paused capture returned by an execution model.
 #[derive(Debug)]
 pub enum AttemptExecutionProduct {
     /// The complete observation/finding closure with raw measurement evidence.
     PreparedSemantic(Box<PreparedSemanticAttemptResult>),
-    /// A semantic finding plus its linear automatic exact-retention handoff.
-    PreparedSemanticWithExactRetention {
-        /// Complete observation and private-replay evidence.
-        result: Box<PreparedSemanticAttemptResult>,
-        /// Policy-bound exact-retention decision and optional raw capture.
-        retention: Box<PreparedFindingExactRetention>,
-    },
     /// A durable checkpoint request won at an exact scheduler boundary.
     ExactCheckpoint(Box<AttemptCheckpointResult>),
 }
@@ -1133,41 +985,10 @@ impl AttemptExecutionProduct {
         Self::PreparedSemantic(Box::new(result))
     }
 
-    /// Wraps a semantic finding with its automatic exact-retention handoff.
-    #[must_use]
-    pub fn prepared_semantic_with_exact_retention(
-        result: PreparedSemanticAttemptResult,
-        retention: PreparedFindingExactRetention,
-    ) -> Self {
-        Self::PreparedSemanticWithExactRetention {
-            result: Box::new(result),
-            retention: Box::new(retention),
-        }
-    }
-
     /// Wraps one complete attempt checkpoint capture.
     #[must_use]
     pub fn exact_checkpoint(capture: impl Into<AttemptCheckpointResult>) -> Self {
         Self::ExactCheckpoint(Box::new(capture.into()))
-    }
-
-    pub(crate) fn into_abandoned_retirement(
-        self,
-    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
-        match self {
-            Self::PreparedSemanticWithExactRetention { retention, .. } => retention
-                .checkpoint()
-                .and_then(CapturedAttemptCheckpoint::native_retirement),
-            Self::ExactCheckpoint(checkpoint) => match checkpoint.into_state() {
-                AttemptCheckpointResultState::Captured(checkpoint) => {
-                    checkpoint.native_retirement()
-                }
-                AttemptCheckpointResultState::Prepared(checkpoint) => {
-                    checkpoint.native_retirement()
-                }
-            },
-            Self::PreparedSemantic(_) => None,
-        }
     }
 }
 
@@ -1238,11 +1059,6 @@ pub trait LocalAttemptWorker {
     /// Returns a worker-specific error before durable completion reconciliation.
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error>;
 
-    /// Takes native checkpoint cleanup retained by the most recent worker callback.
-    fn take_abandoned_native_checkpoint(&mut self) -> Option<NativeCheckpointCleanup> {
-        None
-    }
-
     /// Reconciles operational authority retained by one successful execution.
     ///
     /// The pool invokes this for exactly one disposition, repeatedly until
@@ -1274,7 +1090,6 @@ pub trait LocalAttemptWorker {
 pub struct AttemptWorkResult<E> {
     queued: QueuedAttempt,
     result: Result<AttemptExecutionProduct, AttemptWorkerFailure<E>>,
-    abandoned_checkpoint: Option<NativeCheckpointCleanup>,
 }
 
 impl<E> AttemptWorkResult<E> {
@@ -1284,11 +1099,7 @@ impl<E> AttemptWorkResult<E> {
         queued: QueuedAttempt,
         result: Result<AttemptExecutionProduct, AttemptWorkerFailure<E>>,
     ) -> Self {
-        Self {
-            queued,
-            result,
-            abandoned_checkpoint: None,
-        }
+        Self { queued, result }
     }
 
     /// Consumes the worker return into its linear token and classified result.
@@ -1297,17 +1108,8 @@ impl<E> AttemptWorkResult<E> {
     ) -> (
         QueuedAttempt,
         Result<AttemptExecutionProduct, AttemptWorkerFailure<E>>,
-        Option<NativeCheckpointCleanup>,
     ) {
-        (self.queued, self.result, self.abandoned_checkpoint)
-    }
-
-    pub(crate) fn with_abandoned_checkpoint(
-        mut self,
-        checkpoint: Option<NativeCheckpointCleanup>,
-    ) -> Self {
-        self.abandoned_checkpoint = checkpoint;
-        self
+        (self.queued, self.result)
     }
 }
 
@@ -1325,20 +1127,12 @@ pub enum RepositoryAttemptWorkerError<E> {
     },
     /// The execution-model adapter failed before publishing a completion.
     #[error("attempt execution model failed")]
-    Model {
-        /// Model-specific execution failure.
-        #[source]
-        source: E,
-        /// Native checkpoint cleanup authority retained by the failed execution.
-        checkpoint: Option<NativeCheckpointCleanup>,
-    },
+    Model(#[source] E),
     /// The model returned a result for a different immutable execution basis.
     #[error("attempt execution model returned an incompatible result: {reason}")]
     IncompatibleResult {
         /// Stable fail-closed mismatch category.
         reason: &'static str,
-        /// Native capture authority retained until pool-owned retirement.
-        retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
     },
 }
 
@@ -1380,12 +1174,6 @@ impl<M> RepositoryAttemptWorker<M> {
     pub fn model_mut(&mut self) -> &mut M {
         &mut self.model
     }
-
-    /// Returns the owned model after worker shutdown.
-    #[must_use]
-    pub fn into_model(self) -> M {
-        self.model
-    }
 }
 
 impl<M> RepositoryAttemptWorker<M>
@@ -1403,33 +1191,8 @@ where
         &mut self,
         queued: QueuedAttempt,
     ) -> AttemptWorkResult<RepositoryAttemptWorkerError<M::Error>> {
-        let mut result = self.execute_borrowed(&queued);
-        let mut abandoned_checkpoint = self.model.take_abandoned_native_checkpoint();
-        let result_checkpoint = match &mut result {
-            Err(AttemptWorkerFailure::Retryable(RepositoryAttemptWorkerError::Model {
-                checkpoint,
-                ..
-            }))
-            | Err(AttemptWorkerFailure::Canceled(RepositoryAttemptWorkerError::Model {
-                checkpoint,
-                ..
-            }))
-            | Err(AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::Model {
-                checkpoint,
-                ..
-            })) => checkpoint.take(),
-            Err(AttemptWorkerFailure::Terminal(
-                RepositoryAttemptWorkerError::IncompatibleResult { retirement, .. },
-            )) => retirement.take().map(NativeCheckpointCleanup::Retire),
-            _ => None,
-        };
-        abandoned_checkpoint =
-            merge_native_checkpoint_cleanup(abandoned_checkpoint, result_checkpoint);
-        AttemptWorkResult {
-            queued,
-            result,
-            abandoned_checkpoint,
-        }
+        let result = self.execute_borrowed(&queued);
+        AttemptWorkResult { queued, result }
     }
 
     fn execute_borrowed(
@@ -1446,26 +1209,9 @@ where
                 .map_err(repository_worker_failure)?;
         if let Some(reason) = capture_validation {
             return Err(AttemptWorkerFailure::Terminal(
-                RepositoryAttemptWorkerError::IncompatibleResult {
-                    reason,
-                    retirement: None,
-                },
+                RepositoryAttemptWorkerError::IncompatibleResult { reason },
             ));
         }
-        let finding_retention = queued
-            .request()
-            .retention_policy_basis()
-            .map(|basis| {
-                self.store
-                    .validate_attempt_retention_policy_basis(
-                        queued.request().lineage(),
-                        queued.request().attempt(),
-                        basis,
-                    )
-                    .map(|retention| AttemptFindingRetentionPolicy::new(basis, retention))
-            })
-            .transpose()
-            .map_err(repository_worker_failure)?;
         let expected_scenario = ContentHash {
             bytes: input.lineage().scenario().as_hash().as_bytes(),
         };
@@ -1474,8 +1220,8 @@ where
             queued.request().retention(),
             queued.cancellation().clone(),
             queued.checkpoint_request().clone(),
+            queued.request().retention_policy(),
         )
-        .with_finding_retention_policy(finding_retention)
         .with_start_mode(queued.request().start_mode())
         .with_runtime_basis(AttemptExecutionRuntimeBasis::new(
             crate::AttemptExecutionKey::for_request(queued.request()),
@@ -1483,25 +1229,61 @@ where
         ))
         .with_execution_origin(queued.origin())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned())
-        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone());
-        let product = match self.model.execute(&input, &context) {
-            Ok(product) => product,
-            Err(failure) => {
-                return Err(map_worker_failure(failure, |source| {
-                    RepositoryAttemptWorkerError::Model {
-                        source,
-                        checkpoint: None,
-                    }
-                }));
+        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone())
+        .install_selected_checkpoint(queued.take_selected_checkpoint());
+        let product = self
+            .model
+            .execute(&input, &context)
+            .map_err(|failure| map_worker_failure(failure, RepositoryAttemptWorkerError::Model));
+        if let Some(selected) = context.take_selected_checkpoint() {
+            queued.restore_selected_checkpoint(selected);
+        }
+        let product = product?;
+        match &product {
+            AttemptExecutionProduct::PreparedSemantic(result) => {
+                let candidate = result.observation();
+                if queued.request().execution_scope()
+                    != crucible_campaign::AttemptExecutionScope::Semantic
+                {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "savepoint capture returned a semantic observation",
+                        },
+                    ));
+                }
+                if candidate.observation().attempt() != queued.request().attempt() {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "observation attempt differs from assignment",
+                        },
+                    ));
+                }
+                if candidate.child().scenario() != input.lineage().scenario()
+                    || candidate.child().scenario_artifact() != input.lineage().scenario_content()
+                {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "child configuration differs from assignment lineage",
+                        },
+                    ));
+                }
             }
-        };
-        if let Err(reason) =
-            validate_execution_product(&product, &context, queued, &input, expected_scenario)
-        {
-            let retirement = product.into_abandoned_retirement();
-            return Err(AttemptWorkerFailure::Terminal(
-                RepositoryAttemptWorkerError::IncompatibleResult { reason, retirement },
-            ));
+            AttemptExecutionProduct::ExactCheckpoint(checkpoint) => {
+                if !queued.checkpoint_request().is_requested() {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "execution returned an unsolicited exact checkpoint",
+                        },
+                    ));
+                }
+                if checkpoint.scenario() != expected_scenario {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "exact checkpoint differs from assignment scenario",
+                        },
+                    ));
+                }
+            }
         }
 
         Ok(product)
@@ -1517,84 +1299,6 @@ where
             request.resources(),
         )
     }
-}
-
-fn validate_execution_product(
-    product: &AttemptExecutionProduct,
-    context: &AttemptExecutionContext,
-    queued: &QueuedAttempt,
-    input: &AttemptExecutionInput,
-    expected_scenario: ContentHash,
-) -> Result<(), &'static str> {
-    let policy_basis = context
-        .finding_retention_policy()
-        .map(AttemptFindingRetentionPolicy::basis);
-    match product {
-        AttemptExecutionProduct::PreparedSemanticWithExactRetention { result, retention } => {
-            if policy_basis != Some(retention.basis()) {
-                return Err("finding exact retention differs from authenticated execution policy");
-            }
-            let Some(finding) = result.finding() else {
-                return Err("finding exact retention has no finding");
-            };
-            if finding.bundle().exact_retention().is_some() {
-                return Err("finding exact retention was already bound before worker handoff");
-            }
-            if let PreparedFindingExactRetention::Captured { checkpoint, .. } = &**retention {
-                if checkpoint.scenario() != expected_scenario {
-                    return Err("finding exact retention checkpoint differs from finding scenario");
-                }
-                let configuration = finding.original_configuration().configuration();
-                if checkpoint.configuration().bytes != configuration.as_hash().as_bytes() {
-                    return Err(
-                        "finding exact retention checkpoint differs from finding configuration",
-                    );
-                }
-            }
-        }
-        AttemptExecutionProduct::PreparedSemantic(result)
-            if policy_basis.is_some() && result.finding().is_some() =>
-        {
-            return Err("policy-bound finding omitted exact-retention handoff");
-        }
-        AttemptExecutionProduct::PreparedSemantic(_)
-        | AttemptExecutionProduct::ExactCheckpoint(_) => {}
-    }
-
-    match product {
-        AttemptExecutionProduct::PreparedSemantic(result)
-        | AttemptExecutionProduct::PreparedSemanticWithExactRetention { result, .. } => {
-            validate_semantic_observation(result.observation(), queued, input)
-        }
-        AttemptExecutionProduct::ExactCheckpoint(checkpoint) => {
-            if !queued.checkpoint_request().is_requested() {
-                return Err("execution returned an unsolicited exact checkpoint");
-            }
-            if checkpoint.scenario() != expected_scenario {
-                return Err("exact checkpoint differs from assignment scenario");
-            }
-            Ok(())
-        }
-    }
-}
-
-fn validate_semantic_observation(
-    candidate: &ObservationCandidate,
-    queued: &QueuedAttempt,
-    input: &AttemptExecutionInput,
-) -> Result<(), &'static str> {
-    if queued.request().execution_scope() != crucible_campaign::AttemptExecutionScope::Semantic {
-        return Err("savepoint capture returned a semantic observation");
-    }
-    if candidate.observation().attempt() != queued.request().attempt() {
-        return Err("observation attempt differs from assignment");
-    }
-    if candidate.child().scenario() != input.lineage().scenario()
-        || candidate.child().scenario_artifact() != input.lineage().scenario_content()
-    {
-        return Err("child configuration differs from assignment lineage");
-    }
-    Ok(())
 }
 
 fn capture_start_validation_reason(
@@ -1650,45 +1354,24 @@ where
         RepositoryAttemptWorker::execute(self, queued)
     }
 
-    fn take_abandoned_native_checkpoint(&mut self) -> Option<NativeCheckpointCleanup> {
-        self.model.take_abandoned_native_checkpoint()
-    }
-
     fn reconcile_execution(
         &mut self,
         disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
-        match self.model.reconcile_execution(disposition) {
-            Ok(step) => Ok(step),
-            Err(failure) => Err(map_worker_failure(failure, |source| {
-                RepositoryAttemptWorkerError::Model {
-                    source,
-                    checkpoint: None,
-                }
-            })),
-        }
+        self.model
+            .reconcile_execution(disposition)
+            .map_err(|failure| map_worker_failure(failure, RepositoryAttemptWorkerError::Model))
     }
 }
 
 fn map_worker_failure<E, F, M>(failure: AttemptWorkerFailure<E>, map: M) -> AttemptWorkerFailure<F>
 where
-    M: FnOnce(E) -> F,
+    M: Fn(E) -> F,
 {
     match failure {
         AttemptWorkerFailure::Retryable(error) => AttemptWorkerFailure::Retryable(map(error)),
         AttemptWorkerFailure::Canceled(error) => AttemptWorkerFailure::Canceled(map(error)),
         AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(map(error)),
-    }
-}
-
-fn merge_native_checkpoint_cleanup(
-    first: Option<NativeCheckpointCleanup>,
-    second: Option<NativeCheckpointCleanup>,
-) -> Option<NativeCheckpointCleanup> {
-    match (first, second) {
-        (Some(first), Some(second)) => Some(NativeCheckpointCleanup::Batch(vec![first, second])),
-        (Some(cleanup), None) | (None, Some(cleanup)) => Some(cleanup),
-        (None, None) => None,
     }
 }
 
@@ -1714,18 +1397,13 @@ fn repository_worker_failure<E>(
             AttemptWorkerFailure::Retryable(error)
         }
         RepositoryAttemptWorkerError::Repository(_)
-        | RepositoryAttemptWorkerError::Model { .. }
+        | RepositoryAttemptWorkerError::Model(_)
         | RepositoryAttemptWorkerError::ResourceRefusal { .. }
         | RepositoryAttemptWorkerError::IncompatibleResult { .. } => {
             AttemptWorkerFailure::Terminal(error)
         }
     }
 }
-
-mod result;
-
-pub use result::*;
-pub(crate) use result::{journal_prepared_attempt_result, recover_prepared_attempt_result};
 
 #[cfg(test)]
 mod tests;

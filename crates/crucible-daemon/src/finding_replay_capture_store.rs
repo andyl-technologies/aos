@@ -106,16 +106,15 @@ impl FindingReplayCaptureStore {
         let mut references = Vec::with_capacity(4);
 
         for input in inputs {
-            let FindingReplayCaptureInput::Complete {
-                bytes,
-                content_hash,
-            } = input
-            else {
-                let FindingReplayCaptureInput::Incomplete(reason) = input else {
-                    unreachable!();
-                };
-                references.push(FindingReplayCaptureReference::Incomplete(reason));
-                continue;
+            let (bytes, content_hash) = match input {
+                FindingReplayCaptureInput::Complete {
+                    bytes,
+                    content_hash,
+                } => (bytes, content_hash),
+                FindingReplayCaptureInput::Incomplete(reason) => {
+                    references.push(FindingReplayCaptureReference::Incomplete(reason));
+                    continue;
+                }
             };
 
             let prepared = match prepare_capture(bytes, content_hash) {

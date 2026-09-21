@@ -1,4 +1,4 @@
-# Patch 0068 — `crucible-guest-clock-faults`
+# Capability task 0068 — `crucible-guest-clock-faults`
 
 ## Purpose
 
@@ -10,7 +10,8 @@ global scheduler virtual time.
 
 - Provides `qemu.clock.transform.x86_64.v1`,
   `qemu.clock.transform.aarch64.v1`, and `qemu.clock.source-state.v1`.
-- Depends on 0047–0048, existing deterministic RTC/icount clock patches, timer
+- Requires the capabilities specified by capability tasks 0047–0048, the
+  existing deterministic RTC/icount clock integration, timer
   deadline export, and safe VMState integration.
 
 ## Clock manifest
@@ -23,14 +24,14 @@ For the realized machine QEMU reports each guest-visible clock/timer source:
 - ACPI/paravirtual clocks realized by the machine;
 - device clocks explicitly registered for the fault API.
 
-For the supported `sim` accelerator, QEMU 10.0 realizes no KVM-backed
+For the supported `sim` accelerator, QEMU 11.1.1 realizes no KVM-backed
 paravirtual clock: x86 `kvmclock` rejects realization without KVM, Hyper-V
 reference time is implemented by the KVM backend, and AArch64 pvtime is
 initialized only by KVM. Those sources are therefore absent from the realized
 manifest rather than silently modeled as TSC or the architectural counter. The
-patch does implement the closed device-clock registration surface; a device is
+capability implements the closed device-clock registration surface; a device is
 listed only after its production read/domain/timer callbacks register. The
-built-in realized sources in this patch are TSC, CMOS RTC, PIT, HPET, local
+built-in realized sources in this capability are TSC, CMOS RTC, PIT, HPET, local
 APIC timer, ACPI PM timer, ARM generic counter/timers, and PL031. Adding a
 fault-capable paravirtual or other device clock requires a real source
 registration and VMState implementation in that device; a manifest-only row is
@@ -149,7 +150,8 @@ fallback cycles, catch-down slew rate, counter exhaustion, and representable
 wander steps. Every source-transition evidence slot is reserved before commit;
 commit does not discover a new allocation or arithmetic failure after the rule
 table changes.
-Patch 0070 validates VMState closure for transforms, anchors, wander, clamp last value, source state,
+The aggregate capability specified by capability task 0070 validates VMState
+closure for transforms, anchors, wander, clamp last value, source state,
 timer transform generation, and pending synchronization.
 
 ## Live microtests
@@ -164,7 +166,8 @@ timer transform generation, and pending synchronization.
 5. Save/restore mid-drift, frozen, jitter/wander, and synchronization states.
 6. Verify global scheduler virtual time/fingerprints outside guest-clock state do
    not change from the declared clock effect.
-7. Revert patch and fail live gate; prove non-sim clocks equal unpatched QEMU.
+7. Run the live gate against pristine QEMU and require capability absence;
+   prove non-sim clocks equal pristine QEMU.
 
 ## Licensing checklist
 

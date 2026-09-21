@@ -391,7 +391,9 @@ mod tests {
     #[test]
     fn budgeted_dependency_walk_enforces_lifecycle_ceiling_independently() {
         let (plan, store, identity, encoded_len) = regular_grid_plan();
-        let encoded_len = u64::try_from(encoded_len).expect("test artifact length fits in u64");
+        let Ok(encoded_len) = u64::try_from(encoded_len) else {
+            panic!("test artifact length must fit in u64");
+        };
         let lifecycle_limit = encoded_len - 1;
         let precharged_identities = BTreeSet::from([identity]);
 

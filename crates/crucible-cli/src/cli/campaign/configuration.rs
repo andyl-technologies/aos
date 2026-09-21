@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_legacy_schedules_create_no_bundle() {
+    fn empty_schedule_creates_no_bundle() {
         let temporary = tempdir().expect("temporary directory");
         let scenario_input = temporary.path().join("scenario.toml");
         let schedule_input = temporary.path().join("schedule.bin");
@@ -259,10 +259,6 @@ mod tests {
             .expect("write empty schedule");
         assert!(compile_campaign_configuration(&scenario_input, &schedule_input, &output).is_err());
 
-        let mut legacy = nonempty_schedule().to_compact_binary();
-        legacy[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
-        std::fs::write(&schedule_input, legacy).expect("write legacy schedule");
-        assert!(compile_campaign_configuration(&scenario_input, &schedule_input, &output).is_err());
         assert!(!output.exists());
     }
 

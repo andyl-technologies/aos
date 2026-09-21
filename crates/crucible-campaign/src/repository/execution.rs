@@ -384,17 +384,19 @@ impl CampaignRepository {
         profile: &ExecutorCompatibilityProfile,
     ) -> Result<(), CampaignRepositoryError> {
         self.validate_executor_completion_with_profile(request, observation, profile)?;
-        if let (Some(candidate), Some(basis)) =
-            (finding_candidate, request.retention_policy_basis())
-        {
+        if let Some(candidate) = finding_candidate {
+            let crate::AttemptRetentionPolicyDisposition::Required(basis) =
+                request.retention_policy()
+            else {
+                return Err(integrity(
+                    "executor-completion-finding-retention-policy-disabled",
+                ));
+            };
             // Reject an obsolete or foreign retention basis after decoding only
             // the bounded candidate envelope, before walking its referenced closure.
             let bundle = self.decode_finding_candidate_bundle(candidate.content_id())?;
-            let retention = bundle
-                .exact_retention()
-                .ok_or_else(|| integrity("executor-completion-finding-retention-missing"))?;
-            if bundle.schema_version() < 4
-                || retention.snapshot() != basis.snapshot()
+            let retention = bundle.exact_retention();
+            if retention.snapshot() != basis.snapshot()
                 || retention.admission() != basis.admission()
                 || retention.policy() != basis.policy()
             {

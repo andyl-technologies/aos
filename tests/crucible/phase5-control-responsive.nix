@@ -20,7 +20,6 @@
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   gateTargetNix = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  protocolSetupFailure = builtins.readFile ./phase2-protocol-setup-failure.nix;
   protocolShutdownEscalation = builtins.readFile ./phase2-protocol-shutdown-escalation.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
@@ -281,25 +280,21 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "API control-responsive target implemented";
-        needle = "package: \"crucible-api\",\n        test_target: \"gate_control_responsive\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "package: \"crucible-api\",\n        test_target: \"gate_control_responsive\",\n        required_features: &[],";
       }
       {
         label = "daemon control-responsive target implemented";
-        needle = "package: \"crucible-daemon\",\n        test_target: \"gate_control_responsive\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "package: \"crucible-daemon\",\n        test_target: \"gate_control_responsive\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetNix [
       {
         label = "API control-responsive Nix target implemented";
-        needle = "package = \"crucible-api\";\n      testTarget = \"gate_control_responsive\";\n      requiredFeatures = [];\n      placeholder = false;";
+        needle = "package = \"crucible-api\";\n      testTarget = \"gate_control_responsive\";\n      requiredFeatures = [];";
       }
       {
         label = "daemon control-responsive Nix target implemented";
-        needle = "package = \"crucible-daemon\";\n      testTarget = \"gate_control_responsive\";\n      requiredFeatures = [];\n      placeholder = false;";
-      }
-      {
-        label = "placeholder count updated";
-        needle = "placeholder_targets=0";
+        needle = "package = \"crucible-daemon\";\n      testTarget = \"gate_control_responsive\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -316,20 +311,6 @@
       {
         label = "phase5 red control-responsive placeholder";
         needle = "controlResponsive = redGate {\n        attrPath = \"checks.crucible.phase5.gates.controlResponsive\"";
-      }
-    ]
-    ++ failuresFor "tests/crucible/phase2-protocol-setup-failure.nix" protocolSetupFailure [
-      {
-        label = "protocol setup-failure depends on control-responsive gate";
-        needle = "controlResponsiveGate = import ./phase5-control-responsive.nix";
-      }
-      {
-        label = "protocol setup-failure builds control-responsive gate";
-        needle = "controlResponsiveGate\n        pkgs.coreutils";
-      }
-      {
-        label = "protocol setup-failure checks control-responsive result";
-        needle = "grep -q 'gate=gate:control-responsive' \"\${controlResponsiveGate}/result\"";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-protocol-shutdown-escalation.nix" protocolShutdownEscalation [

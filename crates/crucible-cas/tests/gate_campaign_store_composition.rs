@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crucible_cas::content_store::{
     BlobHandle, ByteRange, DurabilityRequirement, ImmutableBlobBackend, ObjectKind,
     PackedBlobBackend, StoreError, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+    StoreTierPolicy,
 };
 use tempfile::TempDir;
 
@@ -180,9 +181,20 @@ fn graph_config(root: &std::path::Path, order: [TransparentLayer; 3]) -> StoreGr
         (
             tiers.clone(),
             StoreNodeSpec::Tiered {
-                tiers: vec![memory, directory],
-                write_tier: 1,
-                promote_reads: true,
+                tiers: vec![
+                    StoreTierPolicy {
+                        child: memory,
+                        readable: true,
+                        writable: true,
+                        promote_reads: true,
+                    },
+                    StoreTierPolicy {
+                        child: directory,
+                        readable: true,
+                        writable: true,
+                        promote_reads: false,
+                    },
+                ],
             },
         ),
         (

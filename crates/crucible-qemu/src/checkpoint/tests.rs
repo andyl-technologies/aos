@@ -35,11 +35,11 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
             ..
         })
     ));
-    let mut old_version = bytes;
-    old_version[..b"crucible.qemu-host-io-checkpoint.v4\0".len()]
-        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v3\0");
+    let mut unsupported_version = bytes;
+    unsupported_version[..b"crucible.qemu-host-io-checkpoint.v4\0".len()]
+        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v?\0");
     assert_eq!(
-        QemuHostIoCheckpoint::from_canonical_bytes(&old_version, binding),
+        QemuHostIoCheckpoint::from_canonical_bytes(&unsupported_version, binding),
         Err(QemuHostIoCheckpointCodecError::Version)
     );
 }
@@ -450,11 +450,11 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
         ),
         Err(QemuNodeCheckpointCodecError::ExecutionBinding)
     );
-    let mut old_version = bytes.clone();
-    old_version[..b"crucible.qemu-node-continuation.v7\0".len()]
-        .copy_from_slice(b"crucible.qemu-node-continuation.v6\0");
+    let mut unsupported_version = bytes.clone();
+    unsupported_version[..b"crucible.qemu-node-continuation.v7\0".len()]
+        .copy_from_slice(b"crucible.qemu-node-continuation.v?\0");
     assert_eq!(
-        QemuNodeContinuationCheckpoint::from_compact_binary(&old_version, binding),
+        QemuNodeContinuationCheckpoint::from_compact_binary(&unsupported_version, binding),
         Err(QemuNodeCheckpointCodecError::Unsupported)
     );
     bytes.push(0);
@@ -466,19 +466,18 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
 
 #[test]
 fn node_continuation_round_trips_large_and_full_capacity_compact_rings() {
-    const FRAMES_ABOVE_OLD_LIMIT: usize = 16_384;
-    const PAYLOAD_ABOVE_OLD_LIMIT: usize = 4_066;
+    const LARGE_RING_FRAMES: usize = 16_384;
+    const LARGE_FRAME_PAYLOAD: usize = 4_066;
     const MAX_QUEUE_FRAMES: usize = 1_048_576;
 
     {
-        let checkpoint =
-            node_checkpoint_with_inbound_ring(FRAMES_ABOVE_OLD_LIMIT, PAYLOAD_ABOVE_OLD_LIMIT);
+        let checkpoint = node_checkpoint_with_inbound_ring(LARGE_RING_FRAMES, LARGE_FRAME_PAYLOAD);
         let bytes = checkpoint
             .to_compact_binary()
             .unwrap_or_else(|error| panic!("large ring should encode: {error}"));
         assert!(
             bytes.len() > 64 * 1024 * 1024,
-            "test must cross the obsolete 64 MiB decoder ceiling"
+            "test must exercise a checkpoint larger than 64 MiB"
         );
         let restored = QemuNodeContinuationCheckpoint::from_compact_binary(
             &bytes,

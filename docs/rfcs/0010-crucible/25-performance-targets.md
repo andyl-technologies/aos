@@ -393,8 +393,8 @@ the same `instantiate` call whose base case is *loading* genesis, not booting it
   `World`, modulo cache eviction). *Gate:* `gate:perf-bench`. *Spec:* §25.4; routes
   [G-9], [G-4], references [QEMU-23], [QEMU-24].
 
-- **[PERF-12]** Snapshot **restore** (`loadvm` of a content-addressed genesis or
-  descendant, [QEMU-25]) MUST be substantially cheaper than the cold boot it
+- **[PERF-12]** Snapshot **restore** (baked-genesis load or version-nine
+  descriptor-backed exact descendant restore, [QEMU-25]) MUST be substantially cheaper than the cold boot it
   replaces — the target is **sub-second** restore-to-runnable for the AOS
   reference guest, versus seconds for a cold boot — so that resuming a scenario is
   interactive. The perf-bench gate MUST measure restore-to-runnable latency and
@@ -546,8 +546,8 @@ state size.
   restore latency over the checkpoint corpus. *Gate:* `gate:perf-bench`,
   `gate:replay-oracle`. *Spec:* §25.6; routes [G-9], references [SHM-22].
 
-- **[PERF-18]** Where realization uses **replay** rather than `loadvm` (the
-  default until the savevm spike is green, [QEMU-21]/[QEMU-26]), the cost MUST be
+- **[PERF-18]** Where realization uses an explicitly selected **replay** rather
+  than version-nine exact restore ([QEMU-21]/[QEMU-26]), the cost MUST be
   bounded by *advancing from the nearest cached ancestor over the missing schedule
   suffix*, not by re-running from genesis: the temporal graph's cached fat/thin
   ancestors ([07]) MUST keep the replay suffix short. The perf-bench gate MUST
@@ -582,7 +582,7 @@ terms (§25.1.3):
   sync_overhead_pct   non-execution wall-clock / busy wall-clock  (PERF-7, fact 5)
   per_tb_ns           plugin per-TB overhead, ns                  (PERF-9)
   boot_amortization   cold boots per M-scenario campaign          (PERF-11)
-  restore_latency     loadvm/replay to-runnable latency           (PERF-12)
+  restore_latency     v9 exact/replay to-runnable latency          (PERF-12)
   fuzz_throughput     scenarios / core / hour                     (PERF-13)
   coverage_on_off     guest IPS coverage-on / coverage-off ratio  (PERF-14)
   fork_cost           time + bytes as a function of delta size    (PERF-16)
@@ -824,20 +824,18 @@ identity `gate:adversarial-determinism` already asserts ([HARN-11]).
 
 ### 25.12.3 Axis 2 — fingerprint digestion off the vCPU thread
 
-The single-VM execution fingerprint samples at a fixed icount cadence, and each
-sample digests writable guest RAM together with serialized non-RAM device state
-([DET-3], 24 §4). At the specified cadence that is a full pass over writable
-guest RAM every few thousand retired instructions, taken synchronously on the
-vCPU thread: the guest does not advance while it runs. For any realistic guest
-RAM size this is one of the largest non-TCG costs in the system, and it is pure
-Class A work — the digest is a function of bytes, and the bytes at the sample
-coordinate are fixed by definition.
+The single-VM execution fingerprint samples at requested quiesced boundaries,
+and each sample digests writable guest RAM together with the admitted read-only
+device/volatile projection ([DET-3], 24 §4). Each request makes a full pass over
+writable guest RAM while guest and device progress remain stopped at the exact
+control boundary. For any realistic guest RAM size this remains one of the
+largest non-TCG costs in the system.
 
-[PERF-30] moves it off the vCPU thread: capture the sample under
-write-protection or dirty-page tracking so the guest resumes immediately, and
-digest the captured image on a worker. The result MUST be byte-identical to the
-synchronous digest. That identity is not a hoped-for outcome but the reason the
-offload is admissible at all — it is the same pure function, evaluated
+[PERF-30] copies RAM and the canonical read-only projection into bounded sealed
+descriptors while the exact boundary is held, then hashes those immutable
+descriptors on a worker after execution resumes. The result MUST be byte-identical
+to hashing the admitted bytes at the boundary. That identity is the reason the
+offload is admissible — it is the same pure function, evaluated
 elsewhere — and `gate:single-vm-fingerprint` is its proof.
 
 ### 25.12.4 Axis 3 — overlapping host device work behind a pinned completion
@@ -860,16 +858,6 @@ same as a fully synchronous run.
 
 Two smaller levers, one of them subtle.
 
-**Ahead-of-time translation.** A translation block is a pure function of the
-guest bytes and the translation flags, so generating one on a helper thread is
-Class A *in its output*. It is not automatically Class A in its *effect*: block
-partitioning interacts with the icount budget and with where per-instruction
-plugin callbacks fall, so a change in which blocks exist can move an observable
-boundary even when every block is individually correct. This is the one axis
-where the class argument does not carry itself, so [PERF-32] requires
-fingerprint-neutrality to be *measured* — bit-identical fingerprints with
-translation prefetch on and off — before the mechanism may be enabled at all.
-
 **Segment-parallel replay.** Replay and divergence bisection walk serially from a
 checkpoint to a target coordinate, at a cost bounded by suffix length
 ([PERF-18]). Because every checkpoint is a realizable start state, a suffix
@@ -891,9 +879,9 @@ Recorded so a later reader does not re-derive these as missed opportunities:
   routinely costs more than the parallelism returns, and it would fight [G-11],
   which makes the round-robin switch point a first-class explorable `Decision`
   rather than an implementation detail to be optimized away.
-- **Sampling or thinning the fingerprint to go faster.** The fingerprint cadence
-  is determinism evidence, not telemetry. The answer to an expensive digest is
-  §25.12.3, not a coarser one.
+- **Dropping authenticated fingerprint requests to go faster.** Each request and
+  its exact target coordinate are determinism evidence, not telemetry. The
+  answer to an expensive digest is §25.12.3, not an omitted request.
 - **Widening lookahead beyond the modeled minimum link latency.** That is not a
   speedup; it is a different scenario, and the floor is part of the scenario's
   identity ([SCHED-20], [SCHED-21]).
@@ -913,9 +901,10 @@ Recorded so a later reader does not re-derive these as missed opportunities:
   the duration of the digest: the sample MUST be captured at its exact icount
   coordinate and digested off the vCPU thread, with the guest free to advance
   once the capture is consistent. The digest value MUST be byte-identical to the
-  synchronous computation for every sample, and the offload MUST NOT change the
-  sample cadence, the sampled coordinates, or the event boundaries that force a
-  sample. *Gate:* `gate:single-vm-fingerprint`, `gate:perf-bench`. *Spec:*
+  synchronous computation for every sample. Every authenticated on-demand
+  request MUST publish at its exact target coordinate and receive its matching
+  generation acknowledgement from the worker. *Gate:*
+  `gate:single-vm-fingerprint`, `gate:perf-bench`. *Spec:*
   §25.12.3; routes [G-9], references [DET-3], [PERF-9].
 
 - **[PERF-31]** Device-side host work MAY be dispatched to a host pool when the
@@ -931,12 +920,13 @@ Recorded so a later reader does not re-derive these as missed opportunities:
 
 - **[PERF-32]** Ahead-of-time or concurrent translation-block generation MAY be
   enabled only behind measured fingerprint-neutrality: the perf-bench gate MUST
-  demonstrate bit-identical execution fingerprints and canonical logs with the
-  mechanism on and off, over a corpus that includes translation-heavy boot, and
-  MUST treat any divergence as a blocking failure rather than a tolerance. Absent
-  that evidence the mechanism MUST stay off, because block partitioning can move
-  observable icount-budget and plugin-callback boundaries even when every block
-  is individually correct. *Gate:* `gate:perf-bench`,
+  demonstrate bit-identical on-demand boundary fingerprints with the mechanism
+  on and off, including bounded host preemption over a corpus with
+  translation-heavy boot, and MUST treat any divergence as a blocking failure
+  rather than a tolerance. Absent that evidence the mechanism MUST stay off,
+  because block partitioning can move observable icount-budget and
+  plugin-callback boundaries even when every block is individually correct.
+  *Gate:* `gate:perf-bench`,
   `gate:single-vm-fingerprint`. *Spec:* §25.12.5; routes [G-9], references
   [PERF-24].
 
@@ -1056,78 +1046,38 @@ process executions over the real built closure** ([PKG-1]). Every timed
 invocation uses `--backend qemu` and launches the closure-owned patched QEMU and
 production plugin under TCG against the AOS-built kernel/root fixture before the
 session workload. A sequential/concurrent batch yields throughput and realized
-speedup ([PERF-13], [PERF-3]); a save→resume round-trip yields restore latency
-([PERF-12]); and the logical-host concurrency sweep records the reference-runner
+speedup ([PERF-13], [PERF-3]); the phase-2 checkpoint-delta flight measures the
+real descriptor restore through the runnable `cont` acknowledgement ([PERF-12]);
+and the logical-host concurrency sweep records the reference-runner
 fleet scaling point ([PERF-27]). `checks.crucible.phase0.coverageOverhead`
 separately measures hook-off and coverage-on TCG IPS over three repetitions,
 enforces the 70% floor, and preserves retired-instruction/TB counts ([PERF-14]).
 The deterministic gate holds the contract's shape and regression ratchets while
 the fleet and phase-0 checks supply the live reference-host measurements.
 
-T-PERF-29 is additionally completed by
-`checks.crucible.phase7.qemuHostParallel`. That gate boots two production
-`QemuNode` backends for a one-worker reference and two more for a two-worker
-dispatch, feeds both runs the same scheduler-authored concurrent RUN set, and
-commits results by the precomputed completion-order key. It requires exact
-equality of state fingerprints, virtual-time outcomes, causal decisions, and
-observable events; hashes only that worker-neutral evidence; and reports the
-peak overlap and wall time measured around the real owner-thread dispatch. The
-perf-bench result imports that live `P` and timing evidence rather than treating
-the modeled cost projection as the implementation proof.
+T-PERF-30 is completed by
+`checks.crucible.phase7.fingerprintDigestOffload`. The production
+control-boundary callback copies the exact RAM and device projection into sealed
+descriptors and enqueues that immutable capture on the bounded
+`crucible-fingerprint-digest` worker. The callback returns without waiting for
+SHA-256; the worker publishes the sample and acknowledges the matching request
+generation. The loaded-Rust-plugin flight proves all 24 authenticated on-demand
+requests are acknowledged, preserves the exact requested coordinates, and
+produces a bit-identical boundary stream across restart and host preemption.
 
-T-PERF-30 is additionally completed by
-`checks.crucible.phase7.fingerprintDigestOffload`. QEMU captures the exact
-length-framed writable-RAM and non-RAM VMState preimages while holding the BQL
-and a migration dirty-log owner, preserving any pre-existing owner, then returns
-detached immutable allocations. The vCPU callback submits those allocations to
-a bounded dedicated worker and publishes reached icount without running their
-SHA-256 computations; duplicate callback visits to the same ceiling do not
-resubmit the boundary. The production live-QEMU corpus runs with the synchronous
-oracle disabled under adversarial host load. A separate acceptance-only run
-enables the former synchronous component digests at every boundary and fails
-unless all five offloaded samples are byte-identical. The corpus retains the
-periodic, frame-delivery, signal-effect-boundary, and terminal coordinates at
-`4000000, 4000001, 8000000, 8000001, 12000000`. The perf-bench result imports
-the Class-A admission, exact-capture, corpus-identity, cadence, coordinate, and
-forced-boundary evidence from this real-backend gate.
+T-PERF-29 is completed by `checks.crucible.phase7.qemuHostParallel`. The
+scheduler fixes an independent RUN set against a private continuation, QEMU-node
+owners execute that set on bounded host workers, and the authoritative scheduler
+commits only after every result reaches its exact ceiling. The live
+`ProductionVmLifecycleLoop` flight records realized parallelism of two, compares
+the complete scheduler state, time, and canonical log for one-worker and
+two-worker execution, leaves a failed round uncommitted and retry-poisoned, and
+recovers from its authenticated exact checkpoint.
 
-T-PERF-31 is additionally completed by
-`checks.crucible.phase7.deviceHostWorkOverlap`. The live block-device path
-observes one `SLOT_BLK_IO` request at a time, computes and publishes its
-completion icount before placing the request on a bounded device worker queue,
-then performs the backing read/write COMPUTE on that worker. If the guest reaches
-the coordinate first, the device-wait path leaves it parked at that exact icount
-until the response is ready; host wall time is never added to the modeled
-completion. The certifying gate boots the real patched QEMU, production Rust
-plugin, AOS kernel, and write workload three times: a fully synchronous
-reference, an asynchronous leg that withholds the guest wake until host work
-finishes, and an asynchronous leg that delays host work while allowing the guest
-to reach its pinned horizon. The `crucible-shmem` virtio-blk launch disables
-ioeventfd for that device, the submit callback exits the current TCG reservation,
-and the max-advance callback freezes the guest at the request boundary until the
-host publishes the pinned deadline. QEMU's queued-advance barrier then remains
-armed until the plugin commits the corresponding logical-time offset; an
-overlapping waiter retries after that barrier releases rather than making
-`-EBUSY` guest-visible. The gate requires every request/completion coordinate
-and the unified canonical I/O log bytes to match across all three legs. The
-perf-bench result imports the Class-B pin, dispatch, stall, and race evidence
-from that live-backend gate.
-
-T-PERF-32 is additionally completed by
-`checks.crucible.phase7.translationPrefetchNeutrality`. Patch 0046 adds an
-experimental, sim-only TCG helper that is off by default. On a translation miss,
-the RR vCPU remains stopped while a separately registered TCG context generates
-the requested block on a dedicated host thread; the enabled path reserves its
-own code-generation region without changing the normal single-threaded RR
-configuration. The certifying gate runs the production QEMU and Rust plugin
-twice with the helper disabled and twice with it enabled over the
-translation-heavy Linux cold-boot fingerprint corpus. It requires exact equality
-of every normalized result line, including the final execution fingerprint,
-per-boundary architectural evidence, and canonical boundary-log digest. The
-enabled runs additionally prove that the helper started and completed every
-request; the certifying run generated and completed 2,163 translation requests.
-The gate uses an exact comparison with blocking divergence policy, and the
-perf-bench result imports its Class-A admission and neutrality evidence.
+T-PERF-31 is exercised directly through the production block
+host-work pool: synchronous request pinning fixes the completion coordinate,
+while immediate and wall-delayed worker runs produce identical service results
+and exact checkpoints.
 
 T-PERF-33 is additionally completed by
 `checks.crucible.phase7.segmentParallelReplay`. The replay coordinator selects
@@ -1153,9 +1103,9 @@ T-PERF-34 is completed by the fail-closed register in
 `checks.crucible.phase7.gates.perfBench`. The register names every mechanism
 admitted by §25.12: scheduler host workers and device host-work overlap are Class
 B because their observable commit coordinates are fixed before dispatch;
-fingerprint digestion, translation prefetch, and checkpoint-segment replay are
-Class A because detached work is outside the observable boundary and results
-rejoin only at validated canonical coordinates. Every entry carries its concrete
+fingerprint digestion and checkpoint-segment replay are Class A because
+detached work is outside the observable boundary and results rejoin only at
+validated canonical coordinates. Every entry carries its concrete
 class argument and one or more names from a closed proving-gate catalog. The
 validator rejects missing required mechanisms, duplicate or empty identifiers,
 empty arguments, missing or duplicate gates, and unknown gate labels. The class
@@ -1203,16 +1153,14 @@ the complete five-mechanism register and its reject-unclassified policy.
 - [x] **T-PERF-11** Implement the boot-amortization check: cold boots over an
   M-scenario campaign sharing one World is independent of M (≈1 per VM per World).
   — satisfies [PERF-11]; spec §25.4.
-- [x] **T-PERF-12** Implement restore-to-runnable latency measurement for exact
-  `loadvm`, tracked against the sub-second target. — satisfies
-  [PERF-12]; spec §25.4.
-  Completed by `checks.crucible.phase0.s3SavevmLoadvm` and
-  `checks.fleet.crucible-perf`: the live QEMU snapshot corpus records wall-clock
-  time from `snapshot-load` admission through the runnable `cont`
-  acknowledgement at boot, CPU/timer, and pending-I/O points. Explicit replay
-  is benchmarked as its own operation and is never substituted for failed exact
-  restore. Absolute latency is reported, not used as a
-  shared-builder pass threshold.
+- [x] **T-PERF-12** Implement restore-to-runnable latency measurement for the
+  current descriptor-backed Campaign restore path, tracked against the
+  sub-second target. — satisfies [PERF-12]; spec §25.4.
+  Completed by `checks.crucible.phase2.qemuCheckpointDeltaFlight` and
+  `checks.fleet.crucible-perf`: the live flight measures direct and multi-delta
+  descriptor restore through the runnable `cont` acknowledgement. The fleet
+  result carries those measured values without applying a shared-builder wall
+  clock threshold.
 - [x] **T-PERF-13** Establish the fuzzing-throughput baseline (scenarios/core/hour)
   and the no-regression ratchet. — satisfies [PERF-13]; spec §25.5.1.
   Completed by `checks.crucible.phase7.gates.perfBench` and
@@ -1283,13 +1231,13 @@ the complete five-mechanism register and its reject-unclassified policy.
   binding `gate:perf-bench` + `gate:campaign-continuity`. — satisfies [PERF-28];
   spec §25.5.4.
 
-The remaining tasks realize the host parallelism of §25.12. They are sequenced
+The following tasks realize the host parallelism of §25.12. They are sequenced
 after the whole determinism stack, not merely after their own phase's gates:
 each one is a change to *when host work happens*, and the only thing that makes
 such a change safe is a determinism suite that already passes and can therefore
-falsify it ([PERF-24], [PERF-34]). T-PERF-29 is the primary lever — until the run
-set is executed on real workers, `P` is a projection and every other axis is a
-constant-factor trim on a serial run.
+falsify it ([PERF-24], [PERF-34]). T-PERF-29 supplies the primary lever: the run
+set executes on real workers, so measured `P` reflects realized production
+parallelism.
 
 - [x] **T-PERF-29** Execute the scheduler's concurrent run set on a host worker
   pool: advance each selected node to its own ceiling on its own worker, bounded
@@ -1298,23 +1246,16 @@ constant-factor trim on a serial run.
   `max_host_workers = 1` and `= N` are bit-identical in `S`, `T`, and the
   canonical log; report realized `P` measured from this path. — satisfies
   [PERF-29]; spec §25.12.2.
-- [x] **T-PERF-30** Move execution-fingerprint digestion off the vCPU thread:
-  capture the sample at its exact icount coordinate under write-protection or
-  dirty-page tracking, resume the guest, and digest on a worker. Assert
-  byte-identical digests versus the synchronous path over the fingerprint corpus,
-  and unchanged cadence, coordinates, and forced-sample event boundaries. —
+- [x] **T-PERF-30** Move fingerprint digest and matching request acknowledgement
+  to the bounded production worker after immutable boundary capture. Assert the
+  live run-twice on-demand boundary stream and requested coordinates remain
+  identical and every request generation is acknowledged. —
   satisfies [PERF-30]; spec §25.12.3.
 - [x] **T-PERF-31** Dispatch device-side host work at request-observation time
   behind the pinned completion icount, with a requester stall that cannot move
   the delivered coordinate. Assert identical completion icounts and canonical
   logs across a forced guest-wins-the-race run, a forced host-wins-the-race run,
   and a fully synchronous run. — satisfies [PERF-31]; spec §25.12.4.
-- [x] **T-PERF-32** Add the translation-prefetch neutrality experiment: run the
-  perf corpus (including a translation-heavy cold boot) with concurrent
-  translation-block generation on and off, and require bit-identical fingerprints
-  and canonical logs as the precondition for enabling it; treat any divergence as
-  a blocking failure and keep the mechanism off by default until the evidence
-  exists. — satisfies [PERF-32]; spec §25.12.5.
 - [x] **T-PERF-33** Implement segment-parallel replay: split a replay suffix at
   checkpoint coordinates, replay the segments concurrently, and join them.
   Assert equality with serial replay in state and canonical log, wire it into the

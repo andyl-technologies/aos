@@ -1,0 +1,35 @@
+schema = "aos.crucible.campaign-operator-acceptance-contract.v1"
+gate = "gate:campaign-operator-acceptance"
+rfc_section = "RFC-0020 section 14.5"
+acceptance_state = "manual-evidence-required"
+actual_product_workload_required = true
+public_surfaces_only = true
+independent_driver_and_reviewer_required = true
+minimum_duration_hours = 4
+maximum_duration_hours = 8
+implementation_tasks = ["T-CAM-0.5", "T-CAM-1.7", "T-CAM-2.8", "T-CAM-3.6", "T-CAM-4.8", "T-CAM-5.8", "T-CAM-6.9", "T-CAM-7.7", "T-CAM-8.6", "T-CAM-9.7"]
+
+[provenance]
+required = true
+fields = ["build_id", "source_revision", "qemu_identity", "plugin_identity", "host_profile", "store_profile", "scenario_identity", "policy_identity"]
+
+[command_journal]
+required = true
+records_exit_status = true
+records_structured_output = true
+redacts_secrets = true
+required_operations = ["fixture", "validate", "create", "start", "status", "watch", "steer", "branch", "derive", "pause", "resume", "stop", "finding-export", "replay", "cleanup"]
+
+[artifacts]
+required = true
+items = ["runbook", "campaign-snapshots", "exact-reproduction", "thin-reproduction", "telemetry", "resource-audit", "defect-list", "finding-handoff"]
+
+[sign_offs]
+required_roles = ["driver", "independent_reviewer", "release_owner"]
+unsigned_result = "blocked"
+
+[acceptance]
+allowed_results = ["pass", "fail", "blocked", "observation"]
+accepted_result = "pass"
+unexplained_workaround_permitted = false
+hidden_repair_permitted = false

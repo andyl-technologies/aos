@@ -12,7 +12,7 @@
 //! [`aos_nix_env`], so they target the AOS store layout when
 //! `AOS_ROOT` is set and the canonical `/nix/store` otherwise.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -378,7 +378,7 @@ impl NixCli {
             anyhow::bail!("nix path-info --json failed");
         }
         // The response is a JSON object keyed by store path.
-        let entries: HashMap<String, NixPathInfoJson> =
+        let entries: BTreeMap<String, NixPathInfoJson> =
             serde_json::from_slice(&output.stdout).context("parsing nix path-info --json")?;
         paths
             .iter()

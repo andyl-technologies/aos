@@ -324,6 +324,7 @@ let
     "python3-mako"
     "python3-markdown"
     "python3-markupsafe"
+    "python3-pygdbmi"
     "python3-pygments"
     "rust"
     "rust-1_74"
@@ -726,7 +727,7 @@ let
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
-    "emulation/qemu-patches/_series.nix" = "linux-only-source";
+    "emulation/qemu-patches/_atomic-patch.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_k3s-common.nix" = "linux-only-build-helper";
     "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";

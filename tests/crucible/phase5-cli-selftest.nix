@@ -35,8 +35,8 @@
         needle = "`T-CLI-8` is completed through `checks.crucible.phase5.cliSelftest`";
       }
       {
-        label = "phase5 packaged production selftest execution";
-        needle = "process invocation of the packaged production\n  `crucible selftest --with-qemu` process";
+        label = "phase5 direct packaged production selftest execution";
+        needle = "process invocation of the packaged production\n  `crucible --campaign-deployment /tmp/executor.toml selftest` process";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/help_surface.rs" helpSurface [
@@ -57,8 +57,10 @@
         needle = "gates: Option<String>";
       }
       {
-        label = "selftest qemu flag";
-        needle = "with_qemu: bool";
+        label = "test-double-only selftest qemu flag";
+        needle = ''          #[cfg(any(test, feature = "test-double"))]
+              #[arg(long, action = ArgAction::SetTrue)]
+              with_qemu: bool'';
       }
       {
         label = "selftest corpus flag";
@@ -121,6 +123,10 @@
         needle = "fn require_selftest_qemu_backend";
       }
       {
+        label = "typed selftest host deployment";
+        needle = "ProductionLiveQemuProbeRunner::new(cli.campaign_deployment.clone())";
+      }
+      {
         label = "qemu identity report field";
         needle = "qemu_build_id: Option<String>";
       }
@@ -141,11 +147,11 @@
         needle = "duplicate selftest gate must be rejected";
       }
       {
-        label = "qemu gate requires flag";
+        label = "test-double qemu gate requires flag";
         needle = "real-QEMU selftest gate must require --with-qemu";
       }
       {
-        label = "with-qemu discovery error";
+        label = "test-double with-qemu discovery error";
         needle = "selftest --with-qemu without artifacts must fail discovery";
       }
       {
@@ -167,12 +173,24 @@
     ]
     ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
       {
+        label = "production-hidden selftest qemu flag";
+        needle = ''#[cfg_attr(not(any(test, feature = "test-double")), arg(hide = true))]'';
+      }
+      {
         label = "stale qemu runner blocker";
         needle = "real-QEMU selftest gate runner tracked by T-CLI-8";
       }
       {
         label = "stale extended runner blocker";
         needle = "real-QEMU and extended gate runners remain tracked by T-CLI-8";
+      }
+      {
+        label = "hidden selftest cgroup root";
+        needle = "CRUCIBLE_QEMU_" + "CGROUP_ROOT";
+      }
+      {
+        label = "hidden selftest run root";
+        needle = "CRUCIBLE_QEMU_" + "RUN_ROOT";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -184,15 +202,14 @@
 in
   if failures != []
   then throw "crucible phase5 CLI selftest check failed:\n${builtins.concatStringsSep "\n" failures}"
-  else
-    pkgs.mkDerivation {
-      pname = "crucible-phase5-cli-selftest";
+  else let
+    sourceChecks = pkgs.mkDerivation {
+      pname = "crucible-phase5-cli-selftest-source";
       version = "0";
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.crucible
         pkgs.rust
         pkgs.sed
       ];
@@ -245,38 +262,169 @@ in
               cli_selftest \
               -- --test-threads=1
 
-            "${pkgs.crucible}/bin/crucible" \
-              --artifact-dir "$TMPDIR/crucible-cli-selftest-artifacts" \
-              selftest \
-              --with-qemu \
-              > "$TMPDIR/production-selftest.out"
-
-            for gate in \
-              gate:single-vm-fingerprint \
-              gate:any-guest \
-              gate:qemu-inert
-            do
-              row="$(
-                sed -n \
-                  "\\|gate=$gate status=PASS runner=qemu .* qemu=.* live-icount=[0-9][0-9]* live-fingerprint=blake3:[0-9a-f][0-9a-f]*|p" \
-                  "$TMPDIR/production-selftest.out"
-              )"
-              test -n "$row"
-            done
+            mkdir -p "$out"
+            touch "$out/passed"
           '';
         }
+      ];
+    };
+    deployment = builtins.toFile "selftest-packaged-executor.toml" ''
+      schema = "crucible.campaign-packaged-executor"
+      version = 1
+      cgroup_root = "/sys/fs/cgroup/crucible"
+      run_root = "/tmp/attempts/run"
+      attempt_namespace = "cli-selftest"
+      first_project_id = 32000
+      project_id_count = 1
+      child_user_id = 65534
+      child_group_id = 65534
+      maximum_tasks = 64
+      maximum_inodes = 4096
+      finish_timeout_ms = 15000
+      maximum_slots = 1
+      maximum_vcpus = 1
+      maximum_resident_bytes = 536870912
+      maximum_disk_bytes = 2147483648
+      maximum_execution_quanta = 10000
+      maximum_checkpoint_bytes = 1073741824
+      worker_count = 1
+      host_architecture = "${pkgs.stdenv.hostPlatform.parsed.cpu.name}"
+      qemu_profile = "deterministic-tcg-v1"
+    '';
+    testing = import ../../lib/testing {inherit pkgs lib;};
+    vmTest = testing.mkVMTest {
+      name = "crucible-phase5-cli-selftest-live-qemu";
+      memory = 2048;
+      rootfsDeps = [
+        pkgs.coreutils
+        pkgs.crucible
+        pkgs.e2fsprogs
+        pkgs.grep
+        pkgs.jq
+        pkgs.sed
+        pkgs.util-linux
+        deployment
+      ];
+      testScript = ''
+        set -eu
+
+        cleanup_attempt_mount() {
+          ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+        }
+
+        trap cleanup_attempt_mount EXIT HUP INT TERM
+        mkdir -p /sys/fs/cgroup
+        ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
+        echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
+        mkdir /sys/fs/cgroup/crucible
+        echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
+
+        truncate -s 4G /tmp/attempts.img
+        ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project \
+          -E quotatype=prjquota /tmp/attempts.img
+        mkdir /tmp/attempts
+        ${pkgs.util-linux}/bin/mount -o loop,prjquota \
+          /tmp/attempts.img /tmp/attempts
+        mkdir -m 700 /tmp/attempts/run
+        install -m 600 ${deployment} /tmp/executor.toml
+
+        unset CRUCIBLE_CAMPAIGN_DEPLOYMENT
+        if ${pkgs.crucible}/bin/crucible selftest \
+          > /tmp/missing-deployment.out 2> /tmp/missing-deployment.err; then
+          echo 'production selftest accepted missing guarded host authority'
+          exit 1
+        else
+          missing_deployment_status="$?"
+        fi
+        test "$missing_deployment_status" -eq 4
+        ${pkgs.grep}/bin/grep -Fq \
+          'load guarded selftest host deployment: local QEMU execution requires guarded campaign host authority' \
+          /tmp/missing-deployment.err
+
+        ${pkgs.crucible}/bin/crucible \
+          --artifact-dir /tmp/crucible-cli-selftest-artifacts \
+          --campaign-deployment /tmp/executor.toml \
+          selftest > /tmp/production-selftest.out
+
+        ${pkgs.jq}/bin/jq -r \
+          'select(.kind == "selftest_gate") | .summary' \
+          /tmp/production-selftest.out > /tmp/selftest-gate-rows
+
+        validate_selftest_gate_rows() {
+          rows="$1"
+          row_pattern='^gate=(gate:single-vm-fingerprint|gate:any-guest|gate:qemu-inert) status=PASS runner=qemu corpus=0 runs-per-entry=5 qemu=blake3:[0-9a-f]{64} live-icount=[1-9][0-9]* live-fingerprint=blake3:[0-9a-f]{64}$'
+          test "$(${pkgs.coreutils}/bin/wc -l < "$rows")" -eq 3 || return 1
+          test "$(${pkgs.grep}/bin/grep -Ec "$row_pattern" "$rows" || true)" -eq 3 \
+            || return 1
+          for gate in \
+            gate:single-vm-fingerprint \
+            gate:any-guest \
+            gate:qemu-inert
+          do
+            test "$(${pkgs.grep}/bin/grep -Ec "^gate=$gate " "$rows" || true)" -eq 1 \
+              || return 1
+          done
+        }
+
+        validate_selftest_gate_rows /tmp/selftest-gate-rows
+
+        cp /tmp/selftest-gate-rows /tmp/duplicate-rows
+        ${pkgs.coreutils}/bin/head -n 1 /tmp/selftest-gate-rows >> /tmp/duplicate-rows
+        if validate_selftest_gate_rows /tmp/duplicate-rows; then
+          echo 'selftest evidence accepted a duplicate gate row'
+          exit 1
+        fi
+
+        ${pkgs.sed}/bin/sed \
+          '0,/live-fingerprint=blake3:[0-9a-f]\{64\}/s//live-fingerprint=blake3:0/' \
+          /tmp/selftest-gate-rows > /tmp/short-digest-rows
+        if validate_selftest_gate_rows /tmp/short-digest-rows; then
+          echo 'selftest evidence accepted a short fingerprint digest'
+          exit 1
+        fi
+
+        cp /tmp/selftest-gate-rows /tmp/non-pass-rows
+        echo 'gate=gate:extra status=FAIL runner=qemu corpus=0 runs-per-entry=5 qemu=blake3:0000000000000000000000000000000000000000000000000000000000000000 live-icount=1 live-fingerprint=blake3:0000000000000000000000000000000000000000000000000000000000000000' \
+          >> /tmp/non-pass-rows
+        if validate_selftest_gate_rows /tmp/non-pass-rows; then
+          echo 'selftest evidence accepted an extra non-PASS gate row'
+          exit 1
+        fi
+
+        cat /tmp/production-selftest.out
+
+        ${pkgs.util-linux}/bin/umount /tmp/attempts
+        trap - EXIT HUP INT TERM
+      '';
+    };
+  in
+    pkgs.mkDerivation {
+      pname = "crucible-phase5-cli-selftest";
+      version = "0";
+      src = null;
+
+      buildDeps = [pkgs.coreutils sourceChecks vmTest];
+
+      ATTR_PATH = attrPath;
+      TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
+      DEPENDENCY_COUNT = toString (builtins.length dependencies);
+      DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
+
+      phases = [
         {
           name = "write-result";
           script = ''
             set -eu
             mkdir -p "$out"
+            cp "${vmTest}/serial.log" "$out/vm-serial.log"
             cat > "$out/result" <<'RESULT'
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
             status=complete
-            evidence_scope=packaged-production-cli-live-qemu
+            evidence_scope=packaged-production-cli-live-qemu-vm
             component=crucible-cli
             selftest=production-process-three-live-qemu-gates
             guest_kernel=unmodified-stock-linux

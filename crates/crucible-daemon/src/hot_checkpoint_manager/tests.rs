@@ -270,43 +270,6 @@ fn stale_foreign_wrong_key_and_occupied_commits_are_read_only() {
 }
 
 #[test]
-fn signal_refresh_invalidates_plans_and_changes_eviction_order() {
-    let mut manager = manager(2, resources(20, 20, 2, 2, 20, 2), 2);
-    let first = slot(1, 0);
-    let second = slot(2, 0);
-    retain(
-        &mut manager,
-        candidate(1, 1, false, unit_resources()),
-        first,
-    );
-    retain(
-        &mut manager,
-        candidate(2, 2, false, unit_resources()),
-        second,
-    );
-    let stale = manager
-        .plan_admission(candidate(3, 10, false, unit_resources()))
-        .expect("initial plan");
-    let refreshed = signals(20, false);
-    let status = manager
-        .update_signals(first, refreshed)
-        .expect("signal refresh");
-    assert_eq!(
-        status.reason(),
-        HotCheckpointRetentionReason::SignalsUpdated
-    );
-    assert!(matches!(
-        manager.commit_admission(stale, slot(3, 0)),
-        Err(HotCheckpointAdmissionCommitError::StalePlan { .. })
-    ));
-
-    let plan = manager
-        .plan_admission(candidate(3, 10, false, unit_resources()))
-        .expect("recomputed plan");
-    assert_eq!(plan.demotions()[0].slot(), second);
-}
-
-#[test]
 fn orderly_demotion_releases_exact_accounting_and_coordinate() {
     let mut manager = manager(2, resources(20, 20, 2, 2, 20, 2), 2);
     let coordinate = slot(1, 0);
@@ -353,9 +316,11 @@ fn orderly_demotion_plan_is_foreign_and_generation_fenced() {
     let stale = first
         .plan_orderly_demotion(coordinate, HotCheckpointDemotionReason::DaemonShutdown)
         .expect("stale plan");
-    first
-        .update_signals(coordinate, signals(2, false))
-        .expect("invalidate plan");
+    retain(
+        &mut first,
+        candidate(2, 2, false, unit_resources()),
+        slot(2, 0),
+    );
     assert!(matches!(
         first.commit_orderly_demotion(stale),
         Err(HotCheckpointInventoryError::StalePlan { .. })
@@ -412,13 +377,13 @@ fn limits_match_the_static_pool_ceiling() {
     );
     assert_eq!(
         HotCheckpointLimits::new(
-            MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS + 1,
+            MAX_HOT_CHECKPOINT_POOL_SLOTS + 1,
             resources(1, 0, 1, 1, 1, 0),
             1,
             10,
         ),
         Err(HotCheckpointLimitsError::TooManyTemplates {
-            requested: MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS + 1,
+            requested: MAX_HOT_CHECKPOINT_POOL_SLOTS + 1,
         })
     );
     assert_eq!(
@@ -611,7 +576,7 @@ fn signals(score: i64, pinned: bool) -> HotCheckpointHotnessSignals {
 fn retain(
     manager: &mut HotCheckpointManager,
     candidate: HotCheckpointCandidate,
-    coordinate: QemuHotForkTemplatePoolSlot,
+    coordinate: HotCheckpointPoolSlot,
 ) {
     let plan = manager.plan_admission(candidate).expect("retention plan");
     assert!(plan.demotions().is_empty());
@@ -620,14 +585,14 @@ fn retain(
         .expect("retention commit");
 }
 
-fn slot(byte: u8, index: usize) -> QemuHotForkTemplatePoolSlot {
-    QemuHotForkTemplatePoolSlot::new(key(byte), index)
+fn slot(byte: u8, index: usize) -> HotCheckpointPoolSlot {
+    HotCheckpointPoolSlot::new(key(byte), index)
 }
 
-fn key(byte: u8) -> QemuHotForkTemplateKey {
+fn key(byte: u8) -> HotCheckpointPoolKey {
     let content = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &[byte]);
     let lineage =
         CampaignLineageId::parse(&format!("crucible.campaign.lineage@{}", content.encode()))
             .expect("lineage ID");
-    QemuHotForkTemplateKey::new(lineage, ContentHash::from_bytes(&[byte]))
+    HotCheckpointPoolKey::new(lineage, ContentHash::from_bytes(&[byte]))
 }

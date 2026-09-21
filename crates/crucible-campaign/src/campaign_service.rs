@@ -40,8 +40,9 @@ pub use create::{
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use discovery::{SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse};
 pub use finding_triage::{
-    CampaignFindingTriageReplayRole, GetCampaignFindingTriageReplaySegmentRequest,
-    GetCampaignFindingTriageReplaySegmentResponse,
+    CampaignFindingTriageReplayProofs, CampaignFindingTriageReplayRole,
+    CampaignFindingTriageReplaySegment, CampaignFindingTriageReplaySelection,
+    GetCampaignFindingTriageReplaySegmentRequest, GetCampaignFindingTriageReplaySegmentResponse,
 };
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use list::{
@@ -220,6 +221,8 @@ pub enum CampaignServiceOperation {
     SubmitBranchRequest,
     /// Attach one daemon runtime to a local executor endpoint.
     AttachCampaignRuntime,
+    /// Open one exclusive read-only session from an authenticated finding.
+    DebugCampaign,
 }
 
 /// Stable fail-closed authorization failure.
@@ -741,6 +744,23 @@ impl CampaignServiceFailure {
             | Self::InvalidTransition { .. } => Err(CampaignCodecError::InvalidValue {
                 reason: "campaign service failure is invalid for runtime attachment",
             }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Validates a failure for one campaign debug-session allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for failures that cannot arise after a
+    /// snapshot-bound debug request has been authenticated.
+    pub fn validate_for_debug_campaign(self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::InvalidTransition { .. } | Self::ConcurrentUpdate => {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service failure is invalid for debug allocation",
+                })
+            }
             _ => Ok(()),
         }
     }

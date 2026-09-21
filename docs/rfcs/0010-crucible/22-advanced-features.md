@@ -168,7 +168,7 @@ three are one `instantiate`, differing only in which configuration is the argume
   child branch: genesis ──d0──► c1 ──d1'─► c2' ──d2'─► ...   (different decisions)
 
   fork(c1)  =  instantiate( (def, schedule[0..1]) )   then  step(..) with d1' ≠ d1
-            =  loadvm c1's fat snapshot  (07 §4)  — or replay-from-ancestor if thin
+            =  restore c1's v9 descriptor closure — or explicitly replay from an ancestor
   CoW-shared: c2' stores only its delta from c1 (07 §5); the parent is untouched.
 ```
 
@@ -198,7 +198,8 @@ with its own mailbox and lifecycle (20 [SESS-19]).
 
 - **[ADV-8]** Every fork MUST be validated by the replay oracle (07 §6, [INV-2]):
   the realized state of a forked checkpoint MUST be content-equal whether reached
-  by `loadvm` of a fat snapshot or by replay-from-ancestor (05 [EXEC-17]). A fork
+  by version-nine descriptor-backed exact restore or by replay from an ancestor
+  (05 [EXEC-17]). A fork
   whose realization fails the oracle MUST be localized by divergence bisection (24,
   [INV-10]), never silently repaired (05 [EXEC-24], 07 [TEMP-19]). The fork's
   correctness MUST be the *same* `gate:replay-oracle` check as save/restore — fork
@@ -259,11 +260,12 @@ the whole reason Crucible's snapshots are trustworthy:
    it cannot be wrong.
 
 2. **Snapshot-restore** — the *fast* strategy that **must be validated**.
-   `loadvm` a materialized (fat) checkpoint (07 §3) directly, skipping the replay.
-   This is fast but is a *cache* of `reduce`, and a cache can be wrong: a `savevm`
-   that fails to capture a device register, a scheduler queue, or an RNG position
-   produces a snapshot that restores to the wrong state (the snapshot-completeness
-   risk, [`30-risks-spikes.md`](30-risks-spikes.md)).
+   Restore a version-nine direct-plus-delta RAM closure and device-state stream
+   from sealed descriptors (07 §3), skipping replay. This is fast but is a
+   *cache* of `reduce`, and a cache can be wrong: an incomplete capture of a
+   device register, scheduler queue, or RNG position restores the wrong state
+   (the snapshot-completeness risk,
+   [`30-risks-spikes.md`](30-risks-spikes.md)).
 
 The two explicit strategies are tied together by the **replay oracle** ([INV-2],
 07 §6): a fat checkpoint MUST hash-equal its replay-from-ancestor derivation or
@@ -279,10 +281,10 @@ yardstick against which snapshot restore is continuously checked.
   (A) replay-from-seed   : instantiate(nearest fat ancestor) then replay
                             the schedule suffix to c.   ALWAYS CORRECT (the oracle)
                             depends only on Contract A/B + schedule delta (04, 07 §4)
-  (B) snapshot-restore   : loadvm(c.fat_snapshot).        FAST, MUST BE VALIDATED
+  (B) snapshot-restore   : restore_v9(c.exact_descriptors). FAST, MUST BE VALIDATED
                             a cache of reduce(); can be incomplete/wrong
 
-  oracle (INV-2, 07 §6):  hash( loadvm(c.fat) ) == hash( replay-to-c )
+  oracle (INV-2, 07 §6):  hash( restore_v9(c) ) == hash( replay-to-c )
                           fail ⇒ reject the exact operation and localize via
                           divergence bisection (24); never change mechanisms
   replay request:         a separate operation selected explicitly by the caller
@@ -292,13 +294,13 @@ yardstick against which snapshot restore is continuously checked.
   replay-from-seed as the source of truth: (A) replay-from-seed (thin restore, 07
   §4) MUST be correct independent of any snapshot's completeness, depending only on
   Contract A/B determinism (04) and the recorded schedule delta; (B)
-  snapshot-restore (fat `loadvm`, 07 §3) MUST be treated as a validatable cache of
-  `reduce`. *Gate:* `gate:replay-oracle`. *Spec:* §22.4; cross-ref 07 §3, §4, 05
+  version-nine descriptor-backed snapshot restore (07 §3) MUST be treated as a
+  validatable cache of `reduce`. *Gate:* `gate:replay-oracle`. *Spec:* §22.4; cross-ref 07 §3, §4, 05
   §4, §5.
 
 - **[ADV-11]** A fat (snapshot) checkpoint MUST be validated against its
   replay-from-ancestor derivation by the replay oracle (07 §6, [INV-2]) before it
-  is trusted: `hash(loadvm(fat)) == hash(replay-to-c)`. A fat snapshot that fails
+  is trusted: `hash(restore_v9(fat)) == hash(replay-to-c)`. A fat snapshot that fails
   MUST reject the exact operation without deleting, rewriting, or converting the
   checkpoint and without automatically invoking replay; the failure MUST be
   localized to the first differing decision/instruction by divergence bisection
@@ -306,8 +308,8 @@ yardstick against which snapshot restore is continuously checked.
   mechanism by which snapshot bugs are *made visible*. *Gate:* `gate:replay-oracle`,
   `gate:divergence-bisect`. *Spec:* §22.4; cross-ref 07 §6.
 
-- **[ADV-12]** A target whose complete VMState and host continuation cannot be
-  captured MUST reject exact snapshot capability and every exact capture request.
+- **[ADV-12]** A target whose complete RAM, device state, and host continuation
+  cannot be captured MUST reject exact snapshot capability and every exact capture request.
   It MUST NOT create a partial checkpoint or redirect the request to replay. Thin
   reconstruction records remain a separately requested representation whose
   correctness never depends on snapshot completeness. *Gate:*
@@ -385,8 +387,8 @@ self-deduplicating.
   `gate:content-address`. *Spec:* §22.5.1; cross-ref 05 §3, [INV-3].
 
 - **[ADV-16]** Each frontier node MUST be realized via `instantiate` (05 §5),
-  forking from the cheapest correct cached ancestor (loadvm a fat ancestor, else
-  replay a thin suffix). Search MUST keep most checkpoints thin and materialize
+  forking from the cheapest correct cached ancestor (restore a version-nine exact
+  descriptor closure, or explicitly replay a thin suffix). Search MUST keep most checkpoints thin and materialize
   only hot nodes (repeated fork hubs, shared replay paths) under the temporal
   graph's materialization budget (07 [TEMP-14]); the choice of which nodes are fat
   MUST be a performance decision that does not change any node's denoted state (07
@@ -609,13 +611,13 @@ guest** by varying when the timer interrupt preempts the running vCPU.
 
 ### 22.5.6 App-controlled randomness as a search dimension
 
-When a scenario opts into app-requested randomness (`Decision::AppRandom`, 16/05),
+When a scenario opts into app-requested randomness (`BackendRngEvidence`, 16/05),
 the value served to the guest at each draw is itself a degree of freedom. Search
 and fuzzing MAY treat the served value as a mutation/branch dimension. This is
 strictly additive: a scenario with no app-random draws explores exactly as before.
 
 - **[ADV-40]** When a scenario opts into app-requested randomness
-  (`Decision::AppRandom`, 16/05), search and fuzzing MAY explore alternative served
+  (`BackendRngEvidence`, 16/05), search and fuzzing MAY explore alternative served
   values as a mutation/branch dimension, bounded by the per-scenario draw cap and a
   per-draw seeded value-sampling budget. This capability MUST be strictly
   optional/additive: a scenario with no app-random draws MUST explore identically
@@ -814,7 +816,7 @@ store MUST NOT be required for correctness.
   23, 07 §7.
 
 - **[ADV-29]** A reproduction artifact MUST reproduce a finding regardless of how
-  the finding was reached (campaign forking, state-space search, or
+  the finding was reached (campaign branching, state-space search, or
   coverage-guided fuzzing): all three reduce to the same `(def, seed, schedule)`
   bundle because all three are operations on the one execution model (05) and
   temporal graph (07). A campaign-fork finding MUST emit the same kind
@@ -1100,7 +1102,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   coverage-off and coverage-on single-VM fingerprint streams. The production
   plugin now owns stock QEMU TB translation/execution/flush callbacks and exact
   TB-entry icount observation, with Rust callback-model and executable C ABI
-  evidence. Its bounded callback sink is now connected through the ABI-v2 per-VM
+  evidence. Its bounded callback sink is connected through the current per-VM
   SPSC transport: the host drains it at quantum completion, validates the record
   and boundary, and the generic `SimulationBackend`/`BackendQuantumLoop` path
   appends the observation to the scheduler log before the session actor publishes
@@ -1168,9 +1170,9 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   Completed by `checks.crucible.phase6.reproductionArtifacts`: interesting
   findings now emit a `FindingReproductionArtifact` wrapper around the existing
   self-contained `(seed, scenario, schedule)` `ReproductionArtifact`, with explicit
-  discovery-path tags for campaign forks, state-space search failures,
+  discovery-path tags for campaign branches, state-space search failures,
   coverage-guided fuzzing candidates, and retained corpus entries. Campaign
-  forks and `CoverageGuidedFuzzIteration` expose path-specific emission hooks,
+  branches and `CoverageGuidedFuzzIteration` expose path-specific emission hooks,
   state-space search records the artifact directly in each `SearchDiscoveredFailure`,
   retained corpus artifacts can be reloaded from the `DagStore`, and the gate
   proves the same configuration yields the same artifact id across
@@ -1269,13 +1271,13 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   replay-oracle-checked fat checkpoint path, and the gate verifies their
   content addresses and replay evidence.
 - [x] **T-ADV-21** Implement optional, additive exploration of app-controlled
-  randomness (`Decision::AppRandom`, 16/05) as a mutation/branch dimension over
+  randomness (`BackendRngEvidence`, 16/05) as a mutation/branch dimension over
   served values, bounded by the per-scenario draw cap and a per-draw seeded
   value-sampling budget, recording each alternative as a `Decision`; prove a
   scenario with no app-random draws explores identically to before. — satisfies
   [ADV-40]; spec §22.5.6; cross-ref 16, 05 §3.
   Completed by `checks.crucible.phase6.appRandomBranching`: `TemporalGraph`
-  derives unique draw sites from recorded `Decision::AppRandom` observations,
+  derives unique draw sites from recorded `BackendRngEvidence` observations,
   deterministically samples alternatives under a validated per-draw budget, and
   replaces the observed response at its original schedule prefix. Every
   alternative remains a recorded decision and passes the graph's reduction path,

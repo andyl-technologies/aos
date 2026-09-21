@@ -113,7 +113,7 @@ Campaign lineage records:
 scenario schema and ID
 campaign policy schema and generator versions
 Crucible engine version
-QEMU build and patch-series digest
+QEMU build and atomic-patch digest
 QEMU machine type and device capability manifest
 control, shared-memory, guest-choice, and measurement protocol versions
 exact-closure schema and object-codec versions
@@ -121,21 +121,21 @@ host architecture and required deterministic execution capabilities
 immutable guest image/config artifact identities
 ```
 
-Compatibility is explicit per artifact type:
+Admission is explicit per artifact type:
 
-- semantic campaign facts may remain readable under a newer compatible decoder;
+- the normal runtime accepts only each fact type's current operation-specific
+  schema;
 - a configuration remains meaningful only with its scenario/schedule schema;
 - exact closure restore requires the declared QEMU/machine/device contract;
 - hot templates never survive daemon or host-process restart;
-- incompatible exact state can fall back to thin replay only when the scenario
-  and execution semantics remain compatible;
+- replay uses its separately typed, authenticated current admission and is not
+  a fallback for incompatible exact state;
 - otherwise a new lineage is required.
 
-- **[CSEC-9]** No decoder may infer compatibility from version ordering alone.
-  Admitted version pairs and migrations are explicit and tested.
-- **[CSEC-10]** Offline migration rewrites create new authenticated objects that
-  record source object IDs, migration tool identity, and output schema. Runtime
-  silent lowering is prohibited.
+- **[CSEC-9]** Every decoder admits only its exact current version and rejects
+  every other version before interpreting its body.
+- **[CSEC-10]** Runtime and offline tools do not rewrite noncurrent objects into
+  current ones. Producers must create current authenticated objects directly.
 
 ## 09.7 Policy and scenario changes
 
@@ -147,7 +147,7 @@ Compatibility is explicit per artifact type:
 | Retention policy | Same lineage; new policy/pin projection |
 | Measurement objective over already retained samples | Same lineage; re-evaluate observations |
 | Legal choice domain, signal program, topology, workload, property semantics | New scenario and lineage |
-| Guest/QEMU binary or patch series | New provenance lineage |
+| Guest/QEMU binary or atomic patch | New provenance lineage |
 
 The initial implementation does not attempt prefix-equivalence reuse across
 scenario changes. Users should encode anticipated future variation as declared

@@ -399,7 +399,6 @@ pub(crate) fn engine_decision_kind(decision: &crucible::Decision) -> &'static st
         crucible::Decision::RngDraw(_) => "rng-draw",
         crucible::Decision::Override(_) => "override",
         crucible::Decision::Preemption(_) => "preemption",
-        crucible::Decision::AppRandom(_) => "app-random",
         crucible::Decision::Selection(_) => "campaign-selection",
     }
 }
@@ -522,9 +521,9 @@ pub(crate) fn local_double_search_status(
     BackendCommandStatus::Passed
 }
 
-pub(crate) fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
+pub(crate) fn search_backend_unavailable_error(plan: &SearchDriverPlan) -> CliError {
     backend_error(format!(
-        "search scenario {} strategy={} max-states={} on-violation={} requires the exploration-engine driver over phase-6 search policies tracked by T-CLI-13",
+        "search scenario {} strategy={} max-states={} on-violation={} has no authenticated local backend or remote daemon route",
         plan.scenario.label(),
         plan.strategy_arg.label(),
         plan.max_states,

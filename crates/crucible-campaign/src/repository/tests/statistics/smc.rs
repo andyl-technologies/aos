@@ -54,19 +54,23 @@ fn smc_policy_with_resampling(
     )
     .expect("SMC design");
     CampaignPolicy::new(
-        base.scenario(),
-        campaign_seed,
-        CampaignMode::Statistical,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 16,
-        },
-        base.choice_policies().clone(),
-        base.objectives().clone(),
-        base.guidance().clone(),
-        base.stop_conditions().clone(),
-        base.fairness(),
-        base.retention(),
-        base.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base.scenario(),
+            campaign_seed,
+            CampaignMode::Statistical,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 16,
+            },
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            base.objectives().clone(),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            base.retention(),
+            base.admits_scenario_defaults(),
+        ),
     )
     .expect("statistical policy")
     .with_sequential_monte_carlo_design(initial, sequential)
@@ -317,13 +321,13 @@ fn forced_duplicate_resampling_policy(
                         .ok()?,
                         AttemptId::from_content_id(content_id(
                             ObjectKind::CampaignFact,
-                            3,
+                            8,
                             &format!("forced-attempt-{coordinate}"),
                         ))
                         .ok()?,
                         ObservationId::from_content_id(content_id(
                             ObjectKind::Observation,
-                            8,
+                            12,
                             &format!("forced-observation-{coordinate}"),
                         ))
                         .ok()?,

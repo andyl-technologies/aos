@@ -2203,6 +2203,10 @@ async fn real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_gra
         .await
         .unwrap();
     assert_eq!(cancelled, 1);
+    let cleanup = registry.db.oci_upload_cleanup_candidates(2).await.unwrap();
+    assert_eq!(cleanup.len(), 1);
+    assert_eq!(cleanup[0].upload.state, "cancelled");
+    assert!(!cleanup[0].chunks.is_empty());
 
     let amd64 = image_graph_for(
         "multi-amd64",

@@ -100,16 +100,32 @@ fn qemu_patch_created_files_match_license_inventory() -> Result<(), Box<dyn Erro
     }
 
     let inventory = fs::read_to_string(patch_dir.join("LICENSES.md"))?;
-    let inventoried = inventory
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('|').map(str::trim);
-            let _leading = fields.next()?;
-            let path = fields.next()?.strip_prefix('`')?.strip_suffix('`')?;
-            let license = fields.next()?;
-            (license == "GPL-2.0-or-later").then(|| path.to_owned())
-        })
-        .collect::<BTreeSet<_>>();
+    let mut inventoried = BTreeSet::new();
+    for line in inventory.lines() {
+        let mut fields = line.split('|').map(str::trim);
+        let Some(path) = fields
+            .nth(1)
+            .and_then(|path| path.strip_prefix('`'))
+            .and_then(|path| path.strip_suffix('`'))
+        else {
+            continue;
+        };
+        let license = fields
+            .next()
+            .ok_or("license inventory row lacks a license")?;
+        assert!(
+            matches!(
+                license,
+                "GPL-2.0-only"
+                    | "GPL-2.0-or-later"
+                    | "LGPL-2.1-or-later"
+                    | "MIT"
+                    | "MIT OR Apache-2.0"
+            ),
+            "QEMU patch-created file uses an unrecognized license: {license}"
+        );
+        inventoried.insert(path.to_owned());
+    }
     assert_eq!(created, inventoried, "QEMU patch-created file set drifted");
     Ok(())
 }
@@ -390,7 +406,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
     )));
     assert!(header.contains("#define CRUCIBLE_SHMEM_REGION_HEADER_ABI_VERSION_OFFSET 8u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_REGION_HEADER_SIZE 256u"));
-    assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 128u"));
+    assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 256u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u"));
 
@@ -404,7 +420,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
         version_bytes[3],
     ]);
     assert_eq!(version, fixture.abi_version);
-    assert_eq!(fixture.total_len, 19_296);
+    assert_eq!(fixture.total_len, 19_424);
     Ok(())
 }
 
@@ -542,7 +558,7 @@ fn visit_rust_sources(
 struct GoldenFixture {
     abi_version: u32,
     total_len: usize,
-    chunks: Vec<(usize, Vec<u8>)>,
+    bytes: Vec<u8>,
 }
 
 fn parse_fixture(source: &str) -> Result<GoldenFixture, Box<dyn Error>> {
@@ -558,13 +574,25 @@ fn parse_fixture(source: &str) -> Result<GoldenFixture, Box<dyn Error>> {
         match key {
             "abi_version" => abi_version = Some(value.parse()?),
             "total_len" => total_len = Some(value.parse()?),
-            offset => chunks.push((offset.parse()?, decode_hex(value)?)),
+            offset => chunks.push((offset.parse::<usize>()?, decode_hex(value)?)),
         }
     }
+    let total_len = total_len.ok_or("missing fixture length")?;
+    let mut bytes = vec![0; total_len];
+    for (offset, chunk) in chunks {
+        let end = offset
+            .checked_add(chunk.len())
+            .ok_or("fixture chunk extent overflows")?;
+        let destination = bytes
+            .get_mut(offset..end)
+            .ok_or("fixture chunk exceeds the declared length")?;
+        destination.copy_from_slice(&chunk);
+    }
+
     Ok(GoldenFixture {
         abi_version: abi_version.ok_or("missing fixture ABI version")?,
-        total_len: total_len.ok_or("missing fixture length")?,
-        chunks,
+        total_len,
+        bytes,
     })
 }
 
@@ -574,7 +602,9 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let pair = std::str::from_utf8(pair)?;
             Ok(u8::from_str_radix(pair, 16)?)
@@ -583,26 +613,12 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 fn bytes_at(fixture: &GoldenFixture, offset: usize, len: usize) -> Result<Vec<u8>, Box<dyn Error>> {
-    let mut bytes = vec![0; len];
-    let mut written = vec![false; len];
-    for (chunk_offset, chunk) in &fixture.chunks {
-        for (index, byte) in chunk.iter().enumerate() {
-            let absolute = chunk_offset + index;
-            if (offset..offset + len).contains(&absolute) {
-                let destination = absolute - offset;
-                bytes[destination] = *byte;
-                written[destination] = true;
-            }
-        }
-    }
-    if written.iter().any(|present| !present) {
-        return Err(format!(
-            "fixture has no committed bytes for {offset}..{}",
-            offset + len
-        )
-        .into());
-    }
-    Ok(bytes)
+    let end = offset.checked_add(len).ok_or("fixture range overflows")?;
+    fixture
+        .bytes
+        .get(offset..end)
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| "fixture range exceeds the declared length".into())
 }
 
 fn display_repo_path(path: &Path) -> String {

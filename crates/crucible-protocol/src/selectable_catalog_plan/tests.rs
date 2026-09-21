@@ -50,6 +50,8 @@ fn restored_plan() -> Result<SelectableCatalogPlan, Box<dyn std::error::Error>> 
 #[test]
 fn cold_and_restored_plans_round_trip_with_frozen_header() -> Result<(), Box<dyn std::error::Error>>
 {
+    assert_eq!(SELECTABLE_CATALOG_PLAN_VERSION, 3);
+
     let cold = SelectableCatalogPlan::new(
         limits()?,
         vec![declaration(
@@ -69,65 +71,6 @@ fn cold_and_restored_plans_round_trip_with_frozen_header() -> Result<(), Box<dyn
     assert_eq!(u32::from_be_bytes(bytes[20..24].try_into()?), KNOWN_FLAGS);
     assert_eq!(u64::from_be_bytes(bytes[96..104].try_into()?), 0x4000);
     assert_eq!(SelectableCatalogPlan::decode(&bytes), Ok(restored));
-    Ok(())
-}
-
-#[test]
-fn selection_free_v1_plan_remains_readable_but_pending_v1_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    let plan = SelectableCatalogPlan::new(
-        SelectablePlanLimits::new(1, 1, 1)?,
-        Vec::new(),
-        SelectablePlanContinuation::cold(),
-    )?;
-    let mut legacy = vec![0_u8; V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES];
-    legacy[..8].copy_from_slice(&V1_SELECTABLE_CATALOG_PLAN_MAGIC);
-    legacy[8..12].copy_from_slice(&V1_SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
-    legacy[12..16].copy_from_slice(&(V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    legacy[16..20].copy_from_slice(&(V1_SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    legacy[24..28].copy_from_slice(&1_u32.to_be_bytes());
-    legacy[40..48].copy_from_slice(&1_u64.to_be_bytes());
-    legacy[48..56].copy_from_slice(&1_u64.to_be_bytes());
-    assert_eq!(SelectableCatalogPlan::decode(&legacy), Ok(plan));
-
-    legacy[20..24].copy_from_slice(&FLAG_PENDING.to_be_bytes());
-    legacy[92..96].copy_from_slice(&1_u32.to_be_bytes());
-    assert_eq!(
-        SelectableCatalogPlan::decode(&legacy),
-        Err(SelectableCatalogPlanError::LegacyPendingReplyTargetMissing)
-    );
-    Ok(())
-}
-
-#[test]
-fn selection_free_v2_plan_remains_readable_but_pending_v2_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    let cold = SelectableCatalogPlan::new(
-        limits()?,
-        vec![declaration(
-            "network.policy",
-            SelectablePlanPresence::Required,
-        )?],
-        SelectablePlanContinuation::cold(),
-    )?;
-    let mut v2_cold = cold.encode()?;
-    v2_cold[..8].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_MAGIC);
-    v2_cold[8..12].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
-    assert_eq!(SelectableCatalogPlan::decode(&v2_cold), Ok(cold));
-    let mut malformed_v2_cold = v2_cold;
-    malformed_v2_cold[80..88].copy_from_slice(&1_u64.to_be_bytes());
-    assert!(matches!(
-        SelectableCatalogPlan::decode(&malformed_v2_cold),
-        Err(SelectableCatalogPlanError::InvalidContinuation { .. })
-    ));
-
-    let mut v2_pending = restored_plan()?.encode()?;
-    v2_pending[..8].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_MAGIC);
-    v2_pending[8..12].copy_from_slice(&V2_SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
-    assert_eq!(
-        SelectableCatalogPlan::decode(&v2_pending),
-        Err(SelectableCatalogPlanError::V2PendingCoordinateAmbiguous)
-    );
     Ok(())
 }
 

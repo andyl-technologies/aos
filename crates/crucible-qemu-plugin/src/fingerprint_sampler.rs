@@ -4,8 +4,8 @@
 //! the guest's exact black-box state at a scheduler boundary and publishes it
 //! into the shared-memory [`FingerprintSample`] slot for the host to compare
 //! run-to-run. This module owns the boundary-time capture: it wraps the patched
-//! QEMU digest exports (writable RAM, serialized non-RAM VMState, and the VMState
-//! schema) in safe Rust and assembles them together with the per-vCPU register
+//! QEMU's aggregate immutable capture export in safe Rust and assembles its
+//! RAM and admitted read-only device/volatile projection outputs with the per-vCPU register
 //! digests and round-robin cursor already gathered by
 //! [`PluginNvcpuFingerprintInputs`].
 //!
@@ -13,81 +13,61 @@
 //! scheduling, virtual time, or the guest, exactly like the register and cursor
 //! introspection it composes.
 
+use std::fs::File;
+use std::io::Read;
+use std::os::fd::{AsRawFd as _, FromRawFd, RawFd};
 use std::os::raw::{c_int, c_void};
-use std::ptr::NonNull;
 
 use crucible_shmem::{
     FINGERPRINT_DIGEST_BYTES, FINGERPRINT_SAMPLE_MAX_VCPUS, FingerprintSample,
     FingerprintSampleError, FingerprintSampleVcpu,
 };
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-/// NUL-terminated writable-RAM digest export name for `dlsym`.
-const QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL_C: &[u8] =
-    b"qemu_plugin_crucible_guest_ram_sha256\0";
-/// NUL-terminated device-state VMState digest export name for `dlsym`.
-const QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL_C: &[u8] =
-    b"qemu_plugin_crucible_device_state_sha256\0";
-/// NUL-terminated device-state schema digest export name for `dlsym`.
-const QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL_C: &[u8] =
-    b"qemu_plugin_crucible_device_state_schema_sha256\0";
-/// NUL-terminated immutable fingerprint-material capture export name for `dlsym`.
-const QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_SYMBOL_C: &[u8] =
-    b"qemu_plugin_crucible_fingerprint_capture\0";
-/// NUL-terminated immutable-buffer SHA-256 export name for `dlsym`.
-const QEMU_PLUGIN_CRUCIBLE_SHA256_BYTES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_sha256_bytes\0";
-/// NUL-terminated fingerprint-material release export name for `dlsym`.
-const QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_FREE_SYMBOL_C: &[u8] =
-    b"qemu_plugin_crucible_fingerprint_capture_free\0";
+const QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_MATERIAL_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_capture_fingerprint_material\0";
 
 use crate::{
     PluginNvcpuFingerprintInputs, PluginVcpuIntrospector, PluginVcpuRegisterDigest,
     VcpuIntrospectionError, resolve_qemu_read_vcpu_regs_symbol, resolve_qemu_rr_cursor_symbol,
 };
 
-/// Required QEMU export that digests length-framed writable guest RAM.
-pub const QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL: &str =
-    "qemu_plugin_crucible_guest_ram_sha256";
-/// Required QEMU export that digests serialized non-RAM VMState.
-pub const QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL: &str =
-    "qemu_plugin_crucible_device_state_sha256";
-/// Required QEMU export that digests the registered non-RAM VMState schema.
-pub const QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL: &str =
-    "qemu_plugin_crucible_device_state_schema_sha256";
-/// Required QEMU export that captures immutable fingerprint preimages.
-pub const QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_SYMBOL: &str =
-    "qemu_plugin_crucible_fingerprint_capture";
-/// Required QEMU export that digests an immutable capture buffer.
-pub const QEMU_PLUGIN_CRUCIBLE_SHA256_BYTES_SYMBOL: &str = "qemu_plugin_crucible_sha256_bytes";
-/// Required QEMU export that releases an immutable capture buffer.
-pub const QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_FREE_SYMBOL: &str =
-    "qemu_plugin_crucible_fingerprint_capture_free";
-
 /// Component-failure bit set when the writable-RAM digest read fails.
-pub const FINGERPRINT_FAILURE_RAM: u32 = 1 << 0;
-/// Component-failure bit set when the device-state VMState digest read fails.
-pub const FINGERPRINT_FAILURE_DEVICE_STATE: u32 = 1 << 1;
-/// Component-failure bit set when the device-state schema digest read fails.
-pub const FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA: u32 = 1 << 2;
-/// Component-failure bit set when the gate-only synchronous oracle disagrees.
-pub const FINGERPRINT_FAILURE_ORACLE_MISMATCH: u32 = 1 << 3;
+pub(crate) const FINGERPRINT_FAILURE_RAM: u32 = 1 << 0;
+/// Component-failure bit set when the device/volatile projection digest read fails.
+pub(crate) const FINGERPRINT_FAILURE_DEVICE_STATE: u32 = 1 << 1;
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QemuFingerprintMaterialFds {
+    pub(crate) ram_fd: c_int,
+    pub(crate) ram_material_length: u64,
+    pub(crate) ram_bytes: u64,
+    pub(crate) device_fd: c_int,
+    pub(crate) device_material_length: u64,
+    pub(crate) device_bytes: u64,
+    pub(crate) device_schema_digest: [u8; FINGERPRINT_DIGEST_BYTES],
+    pub(crate) device_schema_sections: u64,
+}
 
-/// QEMU's side-effect-free 32-byte digest export.
-///
-/// The patched adapter writes a SHA-256 digest into `digest_out`, stores an
-/// associated length or section count in `count_out`, and returns zero on
-/// success.
-pub type QemuDigestFn = extern "C" fn(*mut u8, *mut u64) -> c_int;
+impl Default for QemuFingerprintMaterialFds {
+    fn default() -> Self {
+        Self {
+            ram_fd: -1,
+            ram_material_length: 0,
+            ram_bytes: 0,
+            device_fd: -1,
+            device_material_length: 0,
+            device_bytes: 0,
+            device_schema_digest: [0; FINGERPRINT_DIGEST_BYTES],
+            device_schema_sections: 0,
+        }
+    }
+}
 
-/// QEMU's exact-boundary immutable fingerprint capture export.
-pub type QemuFingerprintCaptureFn =
-    extern "C" fn(*mut *mut u8, *mut u64, *mut u64, *mut *mut u8, *mut u64, *mut u64) -> c_int;
-
-/// QEMU's worker-safe immutable-buffer SHA-256 export.
-pub type QemuSha256BytesFn = extern "C" fn(*const u8, u64, *mut u8) -> c_int;
-
-/// QEMU's release export for an immutable fingerprint capture buffer.
-pub type QemuFingerprintCaptureFreeFn = extern "C" fn(*mut c_void);
+/// QEMU's aggregate exact-boundary sealed-material capture export.
+pub(crate) type QemuCaptureFingerprintMaterialFn =
+    extern "C" fn(*mut QemuFingerprintMaterialFds) -> c_int;
 
 /// A component digest and the byte or section count it covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,80 +77,67 @@ struct DigestReading {
     ok: bool,
 }
 
-/// Resolved exports used to copy exact-boundary material and digest it later.
-#[derive(Clone, Copy, Debug)]
-struct PluginFingerprintCaptureExports {
-    capture: QemuFingerprintCaptureFn,
-    sha256_bytes: QemuSha256BytesFn,
-    free: QemuFingerprintCaptureFreeFn,
-}
-
-impl PluginFingerprintCaptureExports {
-    fn resolve() -> Option<Self> {
-        Some(Self {
-            capture: resolve_capture_symbol()?,
-            sha256_bytes: resolve_sha256_bytes_symbol()?,
-            free: resolve_capture_free_symbol()?,
-        })
-    }
-}
-
 /// One QEMU-allocated immutable fingerprint preimage.
 #[derive(Debug)]
 struct CapturedFingerprintMaterial {
-    data: NonNull<u8>,
+    file: File,
     material_length: u64,
     observed_bytes: u64,
-    free: QemuFingerprintCaptureFreeFn,
 }
 
-// SAFETY: the QEMU capture export returns a detached `g_malloc` allocation.
-// No QEMU object aliases or mutates it after capture returns, and the matching
-// release export is `g_free`, which may be invoked by the digest worker.
-unsafe impl Send for CapturedFingerprintMaterial {}
-
 impl CapturedFingerprintMaterial {
-    fn digest(&self, sha256_bytes: QemuSha256BytesFn) -> DigestReading {
-        let mut digest = [0_u8; FINGERPRINT_DIGEST_BYTES];
-        let status = sha256_bytes(
-            self.data.as_ptr(),
-            self.material_length,
-            digest.as_mut_ptr(),
-        );
+    fn digest(mut self) -> DigestReading {
+        let mut hasher = Sha256::new();
+        let mut remaining = self.material_length;
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut ok = true;
+
+        while remaining != 0 {
+            // The minimum is bounded by the local buffer on every host.
+            let requested = remaining.min(buffer.len() as u64) as usize;
+            match self.file.read(&mut buffer[..requested]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Ok(0) | Err(_) => {
+                    ok = false;
+                    break;
+                }
+                Ok(read) => {
+                    hasher.update(&buffer[..read]);
+                    remaining -= read as u64;
+                }
+            }
+        }
+        let digest = if ok && remaining == 0 {
+            hasher.finalize().into()
+        } else {
+            [0; FINGERPRINT_DIGEST_BYTES]
+        };
         DigestReading {
             digest,
             count: self.observed_bytes,
-            ok: status == 0,
+            ok: ok && remaining == 0,
         }
-    }
-}
-
-impl Drop for CapturedFingerprintMaterial {
-    fn drop(&mut self) {
-        (self.free)(self.data.as_ptr().cast());
     }
 }
 
 /// An exact-coordinate sample whose large component digests remain pending.
 ///
-/// The vCPU callback captures this value under QEMU's dirty-tracked observation
-/// boundary, then transfers it to the dedicated digest worker. Its buffers are
-/// immutable and detached from guest memory, so guest execution may resume
-/// while [`Self::digest`] hashes them.
+/// The control callback captures this value at the quiesced exact boundary,
+/// then transfers it to the dedicated digest worker. Its buffers are immutable
+/// and detached from guest memory. The callback waits for ordered digest
+/// publication before acknowledging the boundary or resuming guest execution.
 #[derive(Debug)]
 pub(crate) struct CapturedFingerprintSample {
     sample: FingerprintSample,
     ram: CapturedFingerprintMaterial,
     device: CapturedFingerprintMaterial,
-    sha256_bytes: QemuSha256BytesFn,
-    synchronous_oracle: Option<FingerprintSample>,
 }
 
 impl CapturedFingerprintSample {
     /// Digests the detached component preimages and produces the final sample.
     pub(crate) fn digest(mut self) -> FingerprintSample {
-        let ram = self.ram.digest(self.sha256_bytes);
-        let device = self.device.digest(self.sha256_bytes);
+        let ram = self.ram.digest();
+        let device = self.device.digest();
         if !ram.ok {
             self.sample.component_failures |= FINGERPRINT_FAILURE_RAM;
         }
@@ -179,140 +146,19 @@ impl CapturedFingerprintSample {
         }
         self.sample.ram_digest = ram.digest;
         self.sample.device_state_digest = device.digest;
-        if self
-            .synchronous_oracle
-            .as_ref()
-            .is_some_and(|oracle| oracle != &self.sample)
-        {
-            self.sample.component_failures |= FINGERPRINT_FAILURE_ORACLE_MISMATCH;
-        }
         self.sample
     }
 }
 
-/// Handle to the patched QEMU RAM and device-state digest exports.
-#[derive(Clone, Copy, Debug)]
-pub struct PluginFingerprintDigester {
-    guest_ram_sha256: QemuDigestFn,
-    device_state_sha256: QemuDigestFn,
-    device_state_schema_sha256: QemuDigestFn,
-}
-
-impl PluginFingerprintDigester {
-    /// Binds the patched QEMU RAM, device-state, and schema digest exports.
-    #[must_use]
-    pub const fn new(
-        guest_ram_sha256: QemuDigestFn,
-        device_state_sha256: QemuDigestFn,
-        device_state_schema_sha256: QemuDigestFn,
-    ) -> Self {
-        Self {
-            guest_ram_sha256,
-            device_state_sha256,
-            device_state_schema_sha256,
-        }
-    }
-
-    /// Resolves the patched QEMU digest exports from the loaded process.
-    ///
-    /// Returns `None` when any of the three exports is absent (fail closed), so
-    /// the plugin only samples fingerprints against a QEMU build that carries
-    /// the fingerprint helper patch.
-    #[must_use]
-    pub fn resolve() -> Option<Self> {
-        Some(Self::new(
-            resolve_digest_symbol(QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL_C)?,
-            resolve_digest_symbol(QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL_C)?,
-            resolve_digest_symbol(QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL_C)?,
-        ))
-    }
-
-    fn read(function: QemuDigestFn) -> DigestReading {
-        let mut digest = [0_u8; FINGERPRINT_DIGEST_BYTES];
-        let mut count = 0_u64;
-        // SAFETY: the patched QEMU export writes exactly FINGERPRINT_DIGEST_BYTES
-        // into `digest` and a single u64 into `count`; both point at live local
-        // storage of the correct size for the duration of the call.
-        let status = function(digest.as_mut_ptr(), &mut count);
-        DigestReading {
-            digest,
-            count,
-            ok: status == 0,
-        }
-    }
-}
-
-/// Assembles the shared-memory fingerprint sample from all boundary inputs.
-///
-/// `current_icount` is the aggregate icount the sample is stamped with;
-/// `nvcpu_inputs` supplies the per-vCPU register digests and round-robin cursor;
-/// the digester supplies the guest-RAM, device-state, and schema digests.
-///
-/// # Errors
-///
-/// Returns [`FingerprintSamplerError`] when the register set exceeds the fixed
-/// slot capacity or the resulting sample fails shared-memory validation.
-pub fn assemble_fingerprint_sample(
-    current_icount: u64,
-    nvcpu_inputs: &PluginNvcpuFingerprintInputs,
-    digester: &PluginFingerprintDigester,
-) -> Result<FingerprintSample, FingerprintSamplerError> {
-    let registers = nvcpu_inputs.vcpu_registers();
-    if registers.len() > FINGERPRINT_SAMPLE_MAX_VCPUS {
-        return Err(FingerprintSamplerError::TooManyVcpus {
-            requested: registers.len(),
-            capacity: FINGERPRINT_SAMPLE_MAX_VCPUS,
-        });
-    }
-
-    let ram = PluginFingerprintDigester::read(digester.guest_ram_sha256);
-    let device = PluginFingerprintDigester::read(digester.device_state_sha256);
-    let schema = PluginFingerprintDigester::read(digester.device_state_schema_sha256);
-
-    let mut component_failures = 0_u32;
-    if !ram.ok {
-        component_failures |= FINGERPRINT_FAILURE_RAM;
-    }
-    if !device.ok {
-        component_failures |= FINGERPRINT_FAILURE_DEVICE_STATE;
-    }
-    if !schema.ok {
-        component_failures |= FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA;
-    }
-
-    let cursor = nvcpu_inputs.rr_cursor();
-    let mut sample = FingerprintSample {
-        sample_icount: current_icount,
-        vcpu_count: registers.len() as u32,
-        rr_current_vcpu: cursor.current_vcpu() as u32,
-        rr_position_in_quantum: cursor.cursor_position(),
-        rr_switch_quantum: cursor.rr_switch_quantum(),
-        component_failures,
-        ram_bytes: ram.count,
-        ram_digest: ram.digest,
-        device_state_bytes: device.count,
-        device_state_digest: device.digest,
-        device_state_schema_digest: schema.digest,
-        vcpus: [FingerprintSampleVcpu::default(); FINGERPRINT_SAMPLE_MAX_VCPUS],
-    };
-    for (slot, register) in sample.vcpus.iter_mut().zip(registers) {
-        *slot = vcpu_from_register_digest(register);
-    }
-
-    sample.validate().map_err(FingerprintSamplerError::Slot)
-}
-
 /// The resolved capability set the plugin needs to sample fingerprints live.
 ///
-/// It pairs the per-vCPU register/RR-cursor introspector with the RAM and
-/// device-state digesters. Both are `dlsym`-resolved from the loaded QEMU, so a
-/// value of this type is proof the running QEMU carries the full fingerprint
-/// helper patch surface.
+/// It pairs the per-vCPU register/RR-cursor introspector with one aggregate
+/// sealed-material capture. Both are `dlsym`-resolved from the loaded QEMU, so
+/// the value proves the running QEMU carries the complete current observer.
 #[derive(Clone, Copy, Debug)]
-pub struct PluginFingerprintSampling {
+pub(crate) struct PluginFingerprintSampling {
     introspector: PluginVcpuIntrospector,
-    digester: PluginFingerprintDigester,
-    capture: PluginFingerprintCaptureExports,
+    capture: QemuCaptureFingerprintMaterialFn,
 }
 
 impl PluginFingerprintSampling {
@@ -320,19 +166,11 @@ impl PluginFingerprintSampling {
     #[cfg(test)]
     pub(crate) const fn from_test_exports(
         introspector: PluginVcpuIntrospector,
-        digester: PluginFingerprintDigester,
-        capture: QemuFingerprintCaptureFn,
-        sha256_bytes: QemuSha256BytesFn,
-        free: QemuFingerprintCaptureFreeFn,
+        capture: QemuCaptureFingerprintMaterialFn,
     ) -> Self {
         Self {
             introspector,
-            digester,
-            capture: PluginFingerprintCaptureExports {
-                capture,
-                sha256_bytes,
-                free,
-            },
+            capture,
         }
     }
 
@@ -340,129 +178,69 @@ impl PluginFingerprintSampling {
     ///
     /// Returns `None` (fail closed) when any register, RR-cursor, or digest
     /// export is absent, so the plugin never publishes a partial fingerprint
-    /// against a QEMU build missing the helper patch.
+    /// against a QEMU build missing the required fingerprint exports.
     #[must_use]
-    pub fn resolve() -> Option<Self> {
+    pub(crate) fn resolve() -> Option<Self> {
         let introspector = PluginVcpuIntrospector::require(
             resolve_qemu_read_vcpu_regs_symbol(),
             resolve_qemu_rr_cursor_symbol(),
         )
         .ok()?;
-        let digester = PluginFingerprintDigester::resolve()?;
-        let capture = PluginFingerprintCaptureExports::resolve()?;
+        let capture = resolve_capture_symbol()?;
         Some(Self {
             introspector,
-            digester,
             capture,
         })
-    }
-
-    /// Captures one fingerprint sample for `vcpu_count` at `current_icount`.
-    ///
-    /// This is the boundary-time entry point: it reads every vCPU's registers
-    /// and the RR cursor, digests guest RAM and device state, and assembles the
-    /// shared-memory [`FingerprintSample`] the host reads after the quantum.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FingerprintSamplerError`] when introspection fails or the
-    /// assembled sample exceeds the slot capacity or fails validation.
-    pub fn sample(
-        &self,
-        current_icount: u64,
-        vcpu_count: u32,
-    ) -> Result<FingerprintSample, FingerprintSamplerError> {
-        let inputs = self
-            .introspector
-            .read_nvcpu_fingerprint_inputs(vcpu_count)
-            .map_err(FingerprintSamplerError::Introspection)?;
-        assemble_fingerprint_sample(current_icount, &inputs, &self.digester)
     }
 
     /// Captures one exact-coordinate sample for asynchronous component digestion.
     ///
     /// Register and RR-cursor introspection, the static schema digest, and the
     /// immutable RAM/device preimage copies happen at the boundary. The large
-    /// SHA-256 operations do not; callers transfer the returned value to the
-    /// digest worker and may resume guest execution immediately.
-    /// `synchronous_oracle` is a gate-only mode that also runs the former
-    /// synchronous digest path and marks the eventual sample failed unless both
-    /// results are byte-identical.
-    ///
+    /// SHA-256 operations do not; callers transfer the returned value and request
+    /// identity to the digest worker, which publishes and acknowledges the sample
+    /// after the boundary callback has released the vCPU thread.
     /// # Errors
     ///
     /// Returns [`FingerprintSamplerError`] when introspection or capture fails,
-    /// QEMU returns invalid capture pointers, the register set exceeds the fixed
+    /// QEMU returns invalid or aliased sealed descriptors, the register set exceeds the fixed
     /// slot capacity, or the sample metadata fails shared-memory validation.
     pub(crate) fn capture(
         &self,
         current_icount: u64,
         vcpu_count: u32,
-        synchronous_oracle: bool,
     ) -> Result<CapturedFingerprintSample, FingerprintSamplerError> {
         let inputs = self
             .introspector
             .read_nvcpu_fingerprint_inputs(vcpu_count)
             .map_err(FingerprintSamplerError::Introspection)?;
-        let schema = PluginFingerprintDigester::read(self.digester.device_state_schema_sha256);
-        let mut sample = sample_metadata(current_icount, &inputs, schema)?;
-
-        let mut ram_data = std::ptr::null_mut();
-        let mut ram_material_length = 0_u64;
-        let mut ram_bytes = 0_u64;
-        let mut device_data = std::ptr::null_mut();
-        let mut device_material_length = 0_u64;
-        let mut device_bytes = 0_u64;
-        let status = (self.capture.capture)(
-            &mut ram_data,
-            &mut ram_material_length,
-            &mut ram_bytes,
-            &mut device_data,
-            &mut device_material_length,
-            &mut device_bytes,
-        );
+        let mut captured = QemuFingerprintMaterialFds::default();
+        let status = (self.capture)(&mut captured);
         if status != 0 {
+            close_returned_fds(captured.ram_fd, captured.device_fd);
             return Err(FingerprintSamplerError::Capture { status });
         }
-        let ram_data =
-            NonNull::new(ram_data).ok_or(FingerprintSamplerError::NullCaptureBuffer {
-                component: "guest RAM",
-            })?;
-        let device_data = match NonNull::new(device_data) {
-            Some(data) => data,
-            None => {
-                (self.capture.free)(ram_data.as_ptr().cast());
-                return Err(FingerprintSamplerError::NullCaptureBuffer {
-                    component: "device state",
-                });
-            }
-        };
-        sample.ram_bytes = ram_bytes;
-        sample.device_state_bytes = device_bytes;
-        let mut captured = CapturedFingerprintSample {
-            sample,
-            ram: CapturedFingerprintMaterial {
-                data: ram_data,
-                material_length: ram_material_length,
-                observed_bytes: ram_bytes,
-                free: self.capture.free,
-            },
-            device: CapturedFingerprintMaterial {
-                data: device_data,
-                material_length: device_material_length,
-                observed_bytes: device_bytes,
-                free: self.capture.free,
-            },
-            sha256_bytes: self.capture.sha256_bytes,
-            synchronous_oracle: None,
-        };
-        if synchronous_oracle {
-            captured.synchronous_oracle = Some(assemble_fingerprint_sample(
-                current_icount,
-                &inputs,
-                &self.digester,
-            )?);
+        if let Err(error) = validate_capture_evidence(&captured) {
+            close_returned_fds(captured.ram_fd, captured.device_fd);
+            return Err(error);
         }
+        let (ram, device) = capture_files(
+            captured.ram_fd,
+            captured.ram_material_length,
+            captured.ram_bytes,
+            captured.device_fd,
+            captured.device_material_length,
+            captured.device_bytes,
+        )?;
+        let mut sample = sample_metadata(current_icount, &inputs, captured.device_schema_digest)?;
+        sample.ram_bytes = captured.ram_bytes;
+        sample.device_state_bytes = captured.device_bytes;
+        sample.device_state_sections = captured.device_schema_sections;
+        let captured = CapturedFingerprintSample {
+            sample,
+            ram,
+            device,
+        };
         captured
             .sample
             .validate()
@@ -471,10 +249,130 @@ impl PluginFingerprintSampling {
     }
 }
 
+fn validate_capture_evidence(
+    captured: &QemuFingerprintMaterialFds,
+) -> Result<(), FingerprintSamplerError> {
+    if captured.ram_bytes == 0
+        || captured.device_bytes == 0
+        || captured.device_schema_digest.iter().all(|byte| *byte == 0)
+        || captured.device_schema_sections == 0
+    {
+        return Err(FingerprintSamplerError::InvalidCaptureEvidence);
+    }
+
+    Ok(())
+}
+
+fn close_returned_fd(fd: RawFd) {
+    if fd >= 0 {
+        // SAFETY: a nonnegative returned descriptor transfers one owned handle.
+        drop(unsafe { File::from_raw_fd(fd) });
+    }
+}
+
+fn close_returned_fds(ram_fd: RawFd, device_fd: RawFd) {
+    close_returned_fd(ram_fd);
+    if device_fd != ram_fd {
+        close_returned_fd(device_fd);
+    }
+}
+
+fn capture_files(
+    ram_fd: RawFd,
+    ram_material_length: u64,
+    ram_bytes: u64,
+    device_fd: RawFd,
+    device_material_length: u64,
+    device_bytes: u64,
+) -> Result<(CapturedFingerprintMaterial, CapturedFingerprintMaterial), FingerprintSamplerError> {
+    if ram_fd < 0
+        || device_fd < 0
+        || ram_fd == device_fd
+        || descriptors_alias(ram_fd, device_fd).unwrap_or(true)
+    {
+        close_returned_fds(ram_fd, device_fd);
+        return Err(FingerprintSamplerError::InvalidCaptureDescriptor {
+            component: "descriptor set",
+        });
+    }
+    let ram = match capture_file(ram_fd, ram_material_length, ram_bytes, "guest RAM") {
+        Ok(ram) => ram,
+        Err(error) => {
+            close_returned_fd(device_fd);
+            return Err(error);
+        }
+    };
+    let device = capture_file(
+        device_fd,
+        device_material_length,
+        device_bytes,
+        "device state",
+    )?;
+    Ok((ram, device))
+}
+
+fn descriptors_alias(left: RawFd, right: RawFd) -> std::io::Result<bool> {
+    let mut left_metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let mut right_metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: each pointer names writable storage for one `stat`; `fstat`
+    // initializes it completely on success and does not retain the pointer.
+    if unsafe { libc::fstat(left, left_metadata.as_mut_ptr()) } != 0
+        // SAFETY: `right_metadata` is writable storage for one `stat` and is
+        // initialized completely on success.
+        || unsafe { libc::fstat(right, right_metadata.as_mut_ptr()) } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let (left_metadata, right_metadata) =
+        // SAFETY: both preceding `fstat` calls succeeded.
+        unsafe { (left_metadata.assume_init(), right_metadata.assume_init()) };
+    Ok(left_metadata.st_dev == right_metadata.st_dev
+        && left_metadata.st_ino == right_metadata.st_ino)
+}
+
+fn capture_file(
+    fd: RawFd,
+    material_length: u64,
+    observed_bytes: u64,
+    component: &'static str,
+) -> Result<CapturedFingerprintMaterial, FingerprintSamplerError> {
+    if fd < 0 {
+        return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
+    }
+    // SAFETY: QEMU transfers ownership of each successful capture descriptor.
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file
+        .metadata()
+        .map_err(|_| FingerprintSamplerError::InvalidCaptureDescriptor { component })?;
+    // SAFETY: `file` owns a valid descriptor and `lseek` does not retain it.
+    let offset = unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) };
+    // SAFETY: `file` owns a valid descriptor and `fcntl` does not retain it.
+    let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
+    // SAFETY: `file` owns a valid descriptor and `fcntl` does not retain it.
+    let descriptor_flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+    let required_seals =
+        libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+    if !metadata.file_type().is_file()
+        || metadata.len() != material_length
+        || material_length == 0
+        || offset != 0
+        || seals != required_seals
+        || descriptor_flags < 0
+        || descriptor_flags & libc::FD_CLOEXEC == 0
+    {
+        return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
+    }
+    Ok(CapturedFingerprintMaterial {
+        file,
+        material_length,
+        observed_bytes,
+    })
+}
+
 fn sample_metadata(
     current_icount: u64,
     nvcpu_inputs: &PluginNvcpuFingerprintInputs,
-    schema: DigestReading,
+    device_state_schema_digest: [u8; FINGERPRINT_DIGEST_BYTES],
 ) -> Result<FingerprintSample, FingerprintSamplerError> {
     let registers = nvcpu_inputs.vcpu_registers();
     if registers.len() > FINGERPRINT_SAMPLE_MAX_VCPUS {
@@ -490,16 +388,13 @@ fn sample_metadata(
         rr_current_vcpu: cursor.current_vcpu() as u32,
         rr_position_in_quantum: cursor.cursor_position(),
         rr_switch_quantum: cursor.rr_switch_quantum(),
-        component_failures: if schema.ok {
-            0
-        } else {
-            FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA
-        },
+        component_failures: 0,
         ram_bytes: 0,
         ram_digest: [0; FINGERPRINT_DIGEST_BYTES],
         device_state_bytes: 0,
+        device_state_sections: 0,
         device_state_digest: [0; FINGERPRINT_DIGEST_BYTES],
-        device_state_schema_digest: schema.digest,
+        device_state_schema_digest,
         vcpus: [FingerprintSampleVcpu::default(); FINGERPRINT_SAMPLE_MAX_VCPUS],
     };
     for (slot, register) in sample.vcpus.iter_mut().zip(registers) {
@@ -508,57 +403,17 @@ fn sample_metadata(
     Ok(sample)
 }
 
-/// Resolves one patched QEMU digest export by NUL-terminated name.
 #[cfg(unix)]
-fn resolve_digest_symbol(name_c: &[u8]) -> Option<QemuDigestFn> {
-    let symbol = resolve_symbol_address(name_c)?;
-    // SAFETY: the address resolved one of the patched QEMU digest exports,
-    // whose declaration matches `QemuDigestFn` exactly.
-    Some(unsafe { std::mem::transmute::<*mut c_void, QemuDigestFn>(symbol) })
-}
-
-/// Resolves one patched QEMU digest export by NUL-terminated name.
-#[cfg(not(unix))]
-fn resolve_digest_symbol(_name_c: &[u8]) -> Option<QemuDigestFn> {
-    None
-}
-
-#[cfg(unix)]
-fn resolve_capture_symbol() -> Option<QemuFingerprintCaptureFn> {
-    let symbol = resolve_symbol_address(QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_SYMBOL_C)?;
+fn resolve_capture_symbol() -> Option<QemuCaptureFingerprintMaterialFn> {
+    let symbol =
+        resolve_symbol_address(QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_MATERIAL_SYMBOL_C)?;
     // SAFETY: the address resolved the patched fingerprint capture export,
-    // whose declaration matches `QemuFingerprintCaptureFn` exactly.
-    Some(unsafe { std::mem::transmute::<*mut c_void, QemuFingerprintCaptureFn>(symbol) })
+    // whose declaration matches `QemuCaptureFingerprintMaterialFn` exactly.
+    Some(unsafe { std::mem::transmute::<*mut c_void, QemuCaptureFingerprintMaterialFn>(symbol) })
 }
 
 #[cfg(not(unix))]
-fn resolve_capture_symbol() -> Option<QemuFingerprintCaptureFn> {
-    None
-}
-
-#[cfg(unix)]
-fn resolve_sha256_bytes_symbol() -> Option<QemuSha256BytesFn> {
-    let symbol = resolve_symbol_address(QEMU_PLUGIN_CRUCIBLE_SHA256_BYTES_SYMBOL_C)?;
-    // SAFETY: the address resolved the patched immutable-buffer digest export,
-    // whose declaration matches `QemuSha256BytesFn` exactly.
-    Some(unsafe { std::mem::transmute::<*mut c_void, QemuSha256BytesFn>(symbol) })
-}
-
-#[cfg(not(unix))]
-fn resolve_sha256_bytes_symbol() -> Option<QemuSha256BytesFn> {
-    None
-}
-
-#[cfg(unix)]
-fn resolve_capture_free_symbol() -> Option<QemuFingerprintCaptureFreeFn> {
-    let symbol = resolve_symbol_address(QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_FREE_SYMBOL_C)?;
-    // SAFETY: the address resolved the patched capture release export, whose
-    // declaration matches `QemuFingerprintCaptureFreeFn` exactly.
-    Some(unsafe { std::mem::transmute::<*mut c_void, QemuFingerprintCaptureFreeFn>(symbol) })
-}
-
-#[cfg(not(unix))]
-fn resolve_capture_free_symbol() -> Option<QemuFingerprintCaptureFreeFn> {
+fn resolve_capture_symbol() -> Option<QemuCaptureFingerprintMaterialFn> {
     None
 }
 
@@ -579,7 +434,7 @@ fn vcpu_from_register_digest(register: &PluginVcpuRegisterDigest) -> Fingerprint
 
 /// Error produced while assembling a plugin fingerprint sample.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub enum FingerprintSamplerError {
+pub(crate) enum FingerprintSamplerError {
     /// More vCPU register digests were supplied than the slot can carry.
     #[error("fingerprint sampler saw {requested} vcpus but the slot holds {capacity}")]
     TooManyVcpus {
@@ -597,9 +452,12 @@ pub enum FingerprintSamplerError {
         /// Negative errno-style status returned by the patched QEMU export.
         status: c_int,
     },
-    /// QEMU reported success without returning a required capture buffer.
-    #[error("QEMU fingerprint capture returned a null {component} buffer")]
-    NullCaptureBuffer {
+    /// QEMU reported an empty RAM, device, or schema observation.
+    #[error("QEMU fingerprint capture returned empty component evidence")]
+    InvalidCaptureEvidence,
+    /// QEMU returned an invalid, unsealed, or wrongly positioned memfd.
+    #[error("QEMU fingerprint capture returned an invalid {component} descriptor")]
+    InvalidCaptureDescriptor {
         /// Stable component name used in the diagnostic.
         component: &'static str,
     },

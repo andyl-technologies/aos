@@ -1,20 +1,21 @@
-# 14 — QEMU fault-mutation patch series
+# 14 — QEMU fault-mutation capability tasks
 
-The complete node adapter and its exact-checkpoint handoff require sixty-one new single-purpose patches after the
-currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
-has its own specification in this directory and remains part of the one atomic
-RFC-0014 implementation PR.
+The complete node adapter and its exact-checkpoint handoff ship in the single
+atomic Crucible QEMU integration patch. The files in this directory specify
+numbered capability tasks within that integration. Their numbers and names are
+requirement and evidence identities; they do not describe independent patches
+or an application sequence.
 
 This directory specifies engineering and licensing boundaries; it is not legal
 advice. The controlling repository policies are
 [`LICENSING.md`](../../../../LICENSING.md), the
 [`Crucible/QEMU process boundary`](../../0010-crucible/37-licensing-process-boundary.md),
-the existing [`QEMU patch-series contract`](../../0010-crucible/11-qemu-patches.md),
+the existing [`atomic QEMU integration contract`](../../0010-crucible/11-qemu-patches.md),
 and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-patches/README.md).
 
-## 14.1 Ordered patch inventory
+## 14.1 Capability task map
 
-| Number and patch name | Responsibility | Risk |
+| Capability task | Responsibility | Risk |
 | --- | --- | --- |
 | [`0047-crucible-fault-command-abi`](01-command-abi.md) | Closed fault command/result ABI, capability registry, dispatcher shell | Feature |
 | [`0048-crucible-fault-safe-boundary`](02-safe-boundary.md) | Exact-icount quiescence, authorization, command commit and acknowledgement | Determinism-critical |
@@ -52,7 +53,6 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0083-crucible-inert-clock-restore`](34-inert-clock-restore.md) | Preserve QEMU-native timers when restored guest-clock faults are inactive | Determinism-critical restore ordering |
 | [`0084-crucible-exact-restore-network-announcement`](35-exact-restore-network-announcement.md) | Suppress migration-only virtio-net announcements during exact restore | Determinism-critical network continuation |
 | [`0085-crucible-register-rejection-atomicity`](36-register-rejection-atomicity.md) | Prove exact RR ownership and whole-machine architectural atomicity for rejected register commands | Determinism-critical fault rejection |
-| [`0086-crucible-genesis-observation-boundary`](37-genesis-observation-boundary.md) | Admit all-vCPU definition sampling under the BQL only at the exact prelaunch genesis boundary | Determinism-critical observation |
 | [`0087-crucible-deterministic-rcu-quiescence`](38-deterministic-rcu-quiescence.md) | Prevent host-timed forced RCU kicks from changing guest interrupt visibility in sim mode | Determinism-critical scheduler execution |
 | [`0088-crucible-deterministic-host-kick-boundary`](39-deterministic-host-kick-boundary.md) | Defer state-free latency hints while preserving committed control and interrupt progress | Determinism-critical scheduler execution |
 | [`0089-crucible-exact-boundary-vcpu-introspection`](40-exact-boundary-vcpu-introspection.md) | Admit quiescent all-vCPU registers and the committed RR cursor at exact control boundaries | Determinism-critical checkpoint observation |
@@ -83,79 +83,11 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0133-crucible-authenticate-fault-result-payloads`](65-authenticate-fault-result-payloads.md) | Hash the exact retained payload for every queued fault result, including typed rejections | Transactional result correctness |
 | [`0134-crucible-clock-impulse-read-error-policies`](66-clock-impulse-read-error-policies.md) | Persist effective impulse policies in clock VMState and expose deterministic x86 TSC read-error behavior | Guest-clock correctness |
 
-The numbers are reserved by this RFC. If the existing series grows before
-implementation, the PR may renumber the files while preserving this exact order
-and names; all references and `_series.nix` update atomically.
-
-Patches `0060` through `0062` follow the node-lifecycle patch because they evolve
-the pre-existing block co-simulation ABI rather than the generic node command
-ABI. Patches `0063` through `0066` then complete the native stop, terminal
-lifecycle, authentication, and immutable process-generation prerequisites.
-Patch `0067` serializes and hardens every already-implemented core fault domain.
-Patch `0068` follows with guest-clock faults; patch `0069` adds the accelerator
-device; patch `0070` closes VMState and aggregate gates for the complete
-registry; patch `0071` binds lifecycle preparation and application to the
-same live VM-state digest; patch `0072` keeps the command-result schema
-stable while command-specific evidence remains on occurrence events; patch
-`0073` admits exact stop requests from drained device callbacks; and patch
-`0074` makes result opportunities durable one-shots while closing deferred
-typed-result evidence; and patch `0075` makes each occurrence self-contained
-across plugin-process replacement and binds accelerator one-shots to the exact
-selected job sequence and opportunity identity. Patch `0076` makes 9p
-completion wakes independent of plugin installation order, and patch `0077`
-serializes the authoritative inter-vCPU RR cursor. Patch `0078` limits the
-black-box fingerprint to guest continuation state and canonicalizes transient
-CPU interrupt-control notifications without changing live QEMU state. Patch
-`0079` closes the remaining native-stop lost-wake window so exact checkpoint and
-restore control work progresses while guest execution remains paused. Patch
-`0080` orders memory-retention admission before virtual-time observation so an
-inactive fault domain remains inert during fresh-process restore. Patch `0081`
-then makes the live instruction matrix validate the typed deferred-result
-evidence contract introduced by patch `0074`, including composed-command
-payload identity. Patch `0082` then removes raw device serialization from the
-QEMU-local instruction selector digest, while retaining device state in the
-authenticated occurrence evidence and canonical host fingerprint. Patch `0083`
-then prevents the clock VMState commit from rearming native device timers when
-the restored source has no effective Crucible transform; active clock faults
-still rearm and the dedicated wander-timer cleanup remains unconditional. Patch
-`0084` distinguishes an exact restore into the same modeled network from an
-ordinary migration, suppressing only the synthetic virtio-net guest
-announcement that would otherwise introduce packets absent from uninterrupted
-execution. Patch `0085` then admits live architectural observation only from an
-exact callback owned by the serialized RR vCPU, revalidates the complete
-register manifest for every realized CPU at read and decode, and proves that a
-rejected register command changes neither any canonical GDB register byte nor
-any mutation-derived TLB, TB, flags, interrupt, timer, or control-flow effect.
-Patch `0086` then extends that same stopped-state observation authority to the
-unique prelaunch genesis boundary at raw icount zero. This lets the independent
-definition process sample every realized vCPU after initialization without
-weakening live RR ownership or relying on plugin-exit behavior. Patch `0087`
-then removes the remaining host-timed translation-block exit from sim mode:
-forced RCU progress waits for the next bounded deterministic RR execution
-boundary instead of asynchronously changing where a pending interrupt becomes
-guest-visible. Patch `0088` applies the bounded rule to QEMU's generic RR kick
-entry point during active execution slices, while preserving immediate progress
-between slices and for already-committed control and interrupt state through an
-all-vCPU exit of the shared RR execution thread.
-Patch `0089` then admits authoritative quiescent all-vCPU registers and the
-committed RR cursor from exact deterministic control boundaries even when the
-main-loop callback has no current vCPU; live unowned contexts remain rejected.
-Patch `0090` replaces the pre-runnable RR pointer approximation in patch
-`0088` with deterministic translation-block-boundary exits and an explicit
-initial-wait completion flag. State-free kicks publish `exit_request` without
-setting the asynchronous icount decrementer, so the current block completes
-before host work is serviced; startup condition-variable wakeups and immediate
-exits for committed state remain intact.
-Patch `0091` closes the remaining fresh-process checkpoint gap. Before the
-first runnable selection, serialized RR state intentionally has no current
-owner, but its unique next coordinate is vCPU 0 at position 0. The formal
-cursor API exposes that coordinate only at the exact raw-zero boundary and
-does not modify scheduler state; every later invalid owner remains rejected.
-Patch `0107` closes the corresponding execution-state gap: the RR thread now
-commits the fresh guest's vCPU 0, position 0 cursor before computing its first
-budget. Host-driven startup work can no longer choose the virtual cursor
-origin, a loop-local restart cannot discard a partial turn, and a cursor
-restored from VMState remains authoritative.
+The table order records capability dependencies. The atomic patch and its
+source-level and live gates provide the implementation and evidence as one unit.
+Changes update the atomic patch, generated ABI, complete corresponding-source
+identity, license inventory, and affected gates together. Task numbers are
+documentation identities only; they do not select runtime or packaging behavior.
 
 ## 14.2 Process and license boundary
 
@@ -163,9 +95,9 @@ restored from VMState remains authoritative.
 Apache-2.0 host process               QEMU process / applicable GPL scope
 ┌────────────────────────────┐       ┌──────────────────────────────────┐
 │ signal/binding/adapters    │       │ crucible-qemu-plugin GPL-2.0-only│
-│ schedules typed effect     │       │ validates command + calls patch │
+│ schedules typed effect     │       │ validates command + calls QEMU  │
 │                            │       │                                  │
-│ dual MIT/Apache protocol   │◄═════►│ patched QEMU source/files        │
+│ dual MIT/Apache protocol   │◄═════►│ atomic integration source       │
 │ fixed-width SHM entries    │ SHM   │ upstream/per-file GPL scope      │
 └────────────────────────────┘       └──────────────────────────────────┘
 ```
@@ -181,16 +113,17 @@ Apache-2.0 host process               QEMU process / applicable GPL scope
 - Modified upstream files retain their notices. New unmarked QEMU files follow
   the pinned QEMU default, currently GPL-2.0-or-later, unless an explicit
   per-file notice applies. New files update `LICENSES.md` in the same commit.
-- Every commit touching QEMU patches or in-QEMU/plugin code carries a DCO
+- Every commit touching the atomic QEMU patch or in-QEMU/plugin code carries a
+  DCO
   `Signed-off-by` line. Commit messages and patches contain no AI attribution.
 - Distribution of the patched binary includes identity-matched complete
-  corresponding source: pinned QEMU, all patches, plugin/QEMU-side sources,
-  generated ABI inputs, build scripts, and notices.
+  corresponding source: pinned QEMU, the atomic integration patch,
+  plugin/QEMU-side sources, generated ABI inputs, build scripts, and notices.
 
 - **[QFP-1]** `gate:license-boundary` MUST reject any QEMU-private type or direct
   call crossing into the Apache host and any Apache-only dependency on the GPL
   side.
-- **[QFP-2]** Every new patch MUST update the ordered series identity,
+- **[QFP-2]** Every atomic integration change MUST update its source identity,
   corresponding-source closure, catalog, invariant mapping, microtest inventory,
   and license inventory where applicable.
 
@@ -313,9 +246,9 @@ lifecycle. No clock operation/kind combination is inferred or translated.
 | clock | `T1 source:hash` |
 | accelerator | `T1 device:hash` |
 
-## 14.4 Common per-patch acceptance template
+## 14.4 Common capability acceptance template
 
-Every patch document fixes:
+Every retained design-slice specification fixes:
 
 1. exact capability and effect keys;
 2. command and result payload fields;
@@ -324,35 +257,35 @@ Every patch document fixes:
 5. mutation/state semantics and composition with other commands;
 6. failure acknowledgement and replay preconditions;
 7. VMState/dirty-tracking/fingerprint obligations;
-8. focused live microtests, rollback/revert sensitivity, and non-sim inertness;
+8. focused live tests, negative controls, and non-sim inertness;
 9. architecture/device coverage;
 10. licensing, DCO, inventory, and corresponding-source updates.
 
 Mock, fake, and test-double backends are prohibited. Pure host algebra tests may
 exercise composition without a backend, but every capability requires a live
-patched-QEMU test that proves the guest or QEMU architectural/device state
+integrated-QEMU test that proves the guest or QEMU architectural/device state
 changed exactly as specified.
 
 ## 14.5 Inertness
 
-All patches require `-accel sim`, the matched plugin, successful fault ABI
-negotiation, and the relevant armed capability. Without all predicates, upstream
-behavior is unchanged. Pure additive plugin exports return unsupported when not
-armed. Hooks in shared QEMU paths take the verbatim upstream branch when the
-sim-fault predicate is false.
+Every fault-mutation capability in the atomic patch requires `-accel sim`, the
+matched plugin, successful fault ABI negotiation, and the relevant armed
+capability. Without all predicates, upstream behavior is unchanged. Pure
+additive plugin exports return unsupported when not armed. Hooks in shared QEMU
+paths take the verbatim upstream branch when the sim-fault predicate is false.
 
-- **[QFP-3]** Each patch has a focused microtest that is green with the patch,
-  red when that patch alone is reverted, and proves non-sim behavior equals the
-  unpatched pinned QEMU.
+- **[QFP-3]** Each capability has focused source and runtime evidence that
+  exercises its active path and proves non-sim behavior equals the unpatched
+  pinned QEMU.
 - **[QFP-4]** Empty enabled rule indexes receive dedicated overhead and
   determinism tests; inertness is not inferred from the absence of authored
   faults.
-- **[QFP-5]** No patch may use GDB, QMP memory/register writes, host timing, or an
-  unversioned callback as the canonical mutation mechanism.
+- **[QFP-5]** The integration may not use GDB, QMP memory/register writes, host
+  timing, or an unversioned callback as the canonical mutation mechanism.
 
 ## 14.6 Review ownership and commits
 
-The implementation remains one PR, but each numbered patch is a separate signed
-commit with its microtest and documentation update. Boundary-crate ABI commits
-precede dependent GPL-side commits and remain independently reviewable. Squashing
-the patch series into one opaque QEMU change is prohibited.
+The implementation ships as one atomic QEMU patch with identity-matched complete
+corresponding source. Review and test evidence remain organized by the numbered capability tasks
+above. Each capability and boundary is independently assessable within the
+single distributable atomic patch.

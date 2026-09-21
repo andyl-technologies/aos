@@ -504,11 +504,11 @@ fn transport_checksum_ipv6(
 
 fn internet_checksum(bytes: &[u8]) -> u16 {
     let mut sum = 0_u32;
-    let mut words = bytes.chunks_exact(2);
-    for word in &mut words {
+    let (words, remainder) = bytes.as_chunks::<2>();
+    for word in words {
         sum += u32::from(u16::from_be_bytes([word[0], word[1]]));
     }
-    if let Some(byte) = words.remainder().first() {
+    if let Some(byte) = remainder.first() {
         sum += u32::from(*byte) << 8;
     }
     while sum >> 16 != 0 {

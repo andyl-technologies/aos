@@ -267,7 +267,7 @@
     }
     {
       label = "deterministic virtio rng device";
-      needle = "format!(\"virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID}\")";
+      needle = "virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID},bus={QEMU_PCI_BUS},addr={QEMU_RNG_PCI_ADDRESS}";
     }
     {
       label = "launch hash version";
@@ -478,7 +478,7 @@
     }
     {
       label = "virtio-rng assertion";
-      needle = "[\"-device\", \"virtio-rng-pci,rng=crucible-rng0\"]";
+      needle = "virtio-rng-pci,rng=crucible-rng0,bus=pcie.0,addr=0x1";
     }
     {
       label = "any-guest stock cmdline pass-through test";
@@ -696,7 +696,7 @@ in
             guest_entropy_fw_cfg=opt/crucible/seed
             guest_entropy_seed_source=scenario-seed
             guest_entropy_rng_object=rng-builtin,id=crucible-rng0
-            guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0
+            guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0,bus=pcie.0,addr=0x1
             guest_entropy_host_sources=disabled
             virtual_time_ns=icount<<shift
             tsc_source=icount

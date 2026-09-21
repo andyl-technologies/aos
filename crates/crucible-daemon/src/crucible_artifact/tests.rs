@@ -12,15 +12,12 @@ use crucible::{
 };
 use crucible_campaign::{
     AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BudgetGrant,
-    CampaignCommandId, CampaignControlAction, CampaignExecutorStore, CampaignLineage, CampaignMode,
-    CampaignName, CampaignPolicy, CampaignRepository, CampaignSeed, ChoiceClassContext,
-    ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue,
-    ControlRequest, CoverageProjection, DaemonEpoch, DiscreteAlternative, DiscreteDomain,
-    ExactCheckpointId, ExecutionRetentionIntent, ExecutorService, ExplorerPolicy, FairnessPolicy,
-    FindingCandidateBundle, FindingCandidateBundleId, FindingExactPins, FindingExactRetention,
-    FindingExactRetentionCandidate, FindingExactRetentionDisposition,
-    FindingExactRetentionEvidence, FindingKind, FindingReplayCaptureIncomplete, FindingTarget,
-    MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
+    CampaignCommandId, CampaignControlAction, CampaignLineage, CampaignMode, CampaignName,
+    CampaignPolicy, CampaignRepository, CampaignSeed, ChoiceClassContext, ChoiceCoordinate,
+    ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ControlRequest,
+    CoverageProjection, DaemonEpoch, DiscreteAlternative, DiscreteDomain, ExecutionRetentionIntent,
+    ExecutorService, ExplorerPolicy, FairnessPolicy, FindingCandidateBundleId, FindingKind,
+    FindingTarget, MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
     PropertyVerdictSet, PuctPolicy, RetentionPolicy, SelectableDeclaration, Selection,
     SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
 };
@@ -30,17 +27,103 @@ use crucible_cas::content_store::{
 
 use super::*;
 use crate::{
-    AllowAllAttemptAdmission, AssignmentLedger, AttemptExecutionKey, AttemptExecutionProduct,
-    AttemptResultStageOutcome, AttemptRuntimeState, AttemptWorkResult,
-    AttemptWorkerReconcileOutcome, CompletedFindingCandidate, CompletionOutcome,
-    CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
-    ExecutorCapacity, LocalExecutorError, LocalExecutorSupervisor,
-    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, MemoryAssignmentLedger,
-    PreparedAttemptWorkResult, evaluate_crucible_measurement_publication,
+    AssignmentLedger, AttemptExecutionKey, AttemptExecutionProduct, AttemptResultStageOutcome,
+    AttemptRuntimeState, AttemptWorkResult, AttemptWorkerReconcileOutcome,
+    CompletedFindingCandidate, CompletionOutcome, CrucibleMeasurementPublication,
+    CrucibleMeasurementReplayEvidence, ExactCheckpointStore, ExecutorCapacity, LocalExecutorError,
+    LocalExecutorSupervisor, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    MemoryAssignmentLedger, PreparedAttemptWorkResult, evaluate_crucible_measurement_publication,
     incorporate_and_acknowledge_finding_candidate, prepare_attempt_result,
     publish_prepared_attempt_result, reconcile_published_attempt_result,
     stage_prepared_attempt_result,
 };
+
+fn minimize_signature_preserving_finding<F>(
+    finding: &FindingReproductionArtifact,
+    signature: &FindingSignature,
+    seed: crucible::Seed,
+    pass: FindingReplayPass,
+    transcript: &mut CrucibleFindingReplayTranscript,
+    mut signature_oracle: F,
+) -> Result<MinimizationRun, CrucibleArtifactError>
+where
+    F: FnMut(&FindingReproductionArtifact) -> Result<CrucibleFindingReplayEvidence, EngineError>,
+{
+    minimize_signature_preserving_finding_with_outcomes(
+        finding,
+        signature,
+        seed,
+        pass,
+        transcript,
+        |candidate| {
+            signature_oracle(candidate)
+                .map(|evidence| AutomaticFindingReplayOutcome::observed(evidence, Vec::new()))
+        },
+    )
+}
+
+fn prepare_signature_preserving_minimized_finding_candidate(
+    signature: FindingSignature,
+    observation: ObservationId,
+    finding: &FindingReproductionArtifact,
+    exact_pins: FindingExactPins,
+    seed: crucible::Seed,
+    transcript: CrucibleFindingReplayTranscript,
+) -> Result<PreparedCrucibleFindingCandidate, CrucibleArtifactError> {
+    prepare_signature_preserving_minimized_finding_candidate_with_retention(
+        signature,
+        observation,
+        finding,
+        exact_pins,
+        test_disabled_finding_exact_retention()?,
+        seed,
+        transcript,
+    )
+}
+
+impl CrucibleCampaignArtifactStore {
+    fn publish_signature_preserving_minimized_finding_candidate<F>(
+        &self,
+        signature: FindingSignature,
+        observation: ObservationId,
+        finding: &FindingReproductionArtifact,
+        exact_pins: FindingExactPins,
+        seed: crucible::Seed,
+        mut signature_oracle: F,
+    ) -> Result<FindingCandidateBundleId, CrucibleArtifactError>
+    where
+        F: FnMut(
+            &FindingReproductionArtifact,
+        ) -> Result<CrucibleFindingReplayEvidence, EngineError>,
+    {
+        let mut transcript = CrucibleFindingReplayTranscript::new();
+        minimize_signature_preserving_finding(
+            finding,
+            &signature,
+            seed,
+            FindingReplayPass::Minimization,
+            &mut transcript,
+            &mut signature_oracle,
+        )?;
+        minimize_signature_preserving_finding(
+            finding,
+            &signature,
+            seed,
+            FindingReplayPass::Verification,
+            &mut transcript,
+            &mut signature_oracle,
+        )?;
+        let prepared = prepare_signature_preserving_minimized_finding_candidate(
+            signature,
+            observation,
+            finding,
+            exact_pins,
+            seed,
+            transcript,
+        )?;
+        prepared.publish(self)
+    }
+}
 
 fn empty_measurement_publication(
     scenario: ScenarioDefId,
@@ -70,13 +153,15 @@ fn observation_with_measurements(
     assert!(retained.produced_selections().is_empty());
     let observation = Observation::new(
         retained.attempt(),
-        retained.child(),
-        retained.child_content(),
-        retained.path(),
-        retained.stop().clone(),
-        measurements.id().expect("replacement measurement ID"),
-        retained.properties(),
-        retained.coverage(),
+        Observation::outcome(
+            retained.child(),
+            retained.child_content(),
+            retained.path(),
+            retained.stop().clone(),
+            measurements.id().expect("replacement measurement ID"),
+            retained.properties(),
+            retained.coverage(),
+        ),
         retained.discovered_choices().clone(),
     )
     .expect("observation with replacement measurements");
@@ -206,291 +291,26 @@ fn replay_evidence(
     CrucibleFindingReplayEvidence::new(
         Some(signature),
         configuration,
-        crate::crucible_measurement::empty_test_measurement_set(),
+        MeasurementSet::from_evaluation(
+            crucible_campaign::CampaignHash::derive(
+                "crucible.test.measurement-definitions.v1",
+                b"finding replay",
+            ),
+            1,
+            crucible_campaign::CampaignHash::derive(
+                "crucible.test.measurement-evaluation.v1",
+                b"finding replay",
+            ),
+            b"finding replay".to_vec(),
+            BTreeSet::new(),
+        )
+        .expect("empty replay measurements"),
         PropertyVerdictSet::new(BTreeMap::new()).expect("empty replay properties"),
         CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("empty replay coverage"),
         Vec::new(),
         Vec::new(),
     )
     .expect("typed replay evidence")
-}
-
-pub(crate) struct PreparedFindingRecoveryFixture {
-    pub(crate) lineage: CampaignLineage,
-    pub(crate) attempt: crucible_campaign::AttemptId,
-    pub(crate) observation: ObservationCandidate,
-    pub(crate) unbound_result: PreparedSemanticAttemptResult,
-    pub(crate) result: PreparedSemanticAttemptResult,
-    pub(crate) replay_capture_child: ContentId,
-}
-
-pub(crate) fn prepared_finding_recovery_fixture(
-    repository: &Arc<CampaignRepository>,
-    campaign: &str,
-    checkpoint: ExactCheckpointId,
-) -> PreparedFindingRecoveryFixture {
-    let scenario = crucible::happy_path_scenario()
-        .expect("recovery scenario")
-        .scenario;
-    let configuration = crucible::Configuration {
-        def: scenario.scenario_def(),
-        schedule: crucible::Schedule::empty(),
-    };
-    let scenario_record = encode_crucible_scenario_artifact(&scenario).expect("scenario record");
-    let configuration_record =
-        encode_crucible_configuration_artifact(&scenario_record, &configuration.schedule)
-            .expect("configuration record");
-    repository
-        .publish_scenario_artifact(
-            scenario_record.scenario(),
-            scenario_record.payload_schema(),
-            scenario_record.payload().to_vec(),
-        )
-        .expect("publish recovery scenario");
-    repository
-        .publish_configuration_artifact(
-            configuration_record.scenario(),
-            configuration_record.scenario_artifact(),
-            configuration_record.configuration(),
-            configuration_record.payload_schema(),
-            configuration_record.payload().to_vec(),
-        )
-        .expect("publish recovery configuration");
-    let lineage = CampaignLineage::new(
-        scenario_record.scenario(),
-        scenario_record.id().expect("scenario ID"),
-        configuration_record.configuration(),
-        configuration_record.id().expect("configuration ID"),
-        "crucible-test",
-        "qemu-test",
-        BTreeMap::from([(String::from("control"), 1)]),
-        scenario_record.payload_schema(),
-        1,
-    )
-    .expect("recovery lineage");
-    let widening = ProgressiveWideningPolicy::new(
-        crucible_campaign::ExactRational::new(1, 1).expect("widening coefficient"),
-        crucible_campaign::ExactRational::new(1, 2).expect("widening exponent"),
-        1,
-        100,
-        1,
-    )
-    .expect("widening policy");
-    let policy = CampaignPolicy::new(
-        lineage.scenario(),
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness policy"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
-    )
-    .expect("recovery policy");
-    let created = repository
-        .create(campaign, &lineage, &policy, &BTreeMap::new())
-        .expect("create recovery campaign");
-    let funded = repository
-        .apply_control(
-            campaign,
-            &ControlRequest {
-                command: CampaignCommandId::from_hash(CampaignHash::derive(
-                    "crucible.test.prepared-recovery.command.v1",
-                    b"fund",
-                )),
-                expected_snapshot: created.snapshot_id(),
-                action: CampaignControlAction::GrantBudget(
-                    BudgetGrant::new(0, 1).expect("attempt grant"),
-                ),
-            },
-        )
-        .expect("fund recovery campaign");
-    repository
-        .apply_control(
-            campaign,
-            &ControlRequest {
-                command: CampaignCommandId::from_hash(CampaignHash::derive(
-                    "crucible.test.prepared-recovery.command.v1",
-                    b"resume",
-                )),
-                expected_snapshot: funded.new_snapshot,
-                action: CampaignControlAction::Resume,
-            },
-        )
-        .expect("resume recovery campaign");
-    let attempt = repository
-        .admit_initial_discovery_if_ready(campaign)
-        .expect("admit recovery attempt")
-        .expect("recovery attempt");
-    let attempt_record = repository
-        .load_attempt(attempt)
-        .expect("load recovery attempt");
-    let measurements = crate::crucible_measurement::empty_test_measurement_set();
-    let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
-    let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage");
-    let observation = Observation::new(
-        attempt,
-        configuration_record.configuration(),
-        configuration_record
-            .id()
-            .expect("observation configuration"),
-        attempt_record.path(),
-        StopOutcome::TerminalSuccess,
-        measurements.id().expect("measurement ID"),
-        properties.id().expect("property ID"),
-        coverage.id().expect("coverage ID"),
-        BTreeSet::new(),
-    )
-    .expect("recovery observation");
-    let observation_candidate = ObservationCandidate::new(
-        configuration_record.clone(),
-        measurements,
-        properties,
-        coverage,
-        Vec::new(),
-        observation,
-    )
-    .expect("recovery observation candidate");
-    let observation_id = observation_candidate
-        .observation()
-        .id()
-        .expect("recovery observation ID");
-
-    let fingerprint = ContentHash::from_bytes(b"complete-recovery-finding");
-    let finding = FindingReproductionArtifact::capture(
-        FindingDiscoveryPath::StateSpaceSearch,
-        fingerprint,
-        &scenario,
-        &configuration,
-    )
-    .expect("capture recovery finding");
-    let signature = FindingSignature::new(
-        FindingKind::Divergence,
-        CampaignHash::from_bytes(fingerprint.bytes),
-        None,
-        String::from("qemu.complete-recovery-divergence"),
-        Some(FindingTarget::Configuration(
-            configuration_record.id().expect("finding target"),
-        )),
-        BTreeSet::new(),
-    )
-    .expect("recovery signature");
-    let seed = crucible::Seed::from_u64(0xcafe);
-    let mut transcript = CrucibleFindingReplayTranscript::new();
-    for pass in [
-        FindingReplayPass::Minimization,
-        FindingReplayPass::Verification,
-    ] {
-        minimize_signature_preserving_finding(
-            &finding,
-            &signature,
-            seed,
-            pass,
-            &mut transcript,
-            |candidate| Ok(replay_evidence(candidate, signature.clone())),
-        )
-        .expect("recovery finding replay pass");
-    }
-    let mut finding = prepare_signature_preserving_minimized_finding_candidate(
-        signature,
-        observation_id,
-        &finding,
-        FindingExactPins::default(),
-        seed,
-        transcript,
-    )
-    .expect("prepare recovery finding");
-
-    let replay_capture_bytes = b"complete V5 recovery replay capture".to_vec();
-    let replay_capture_child = ContentId::for_bytes(ObjectKind::Trace, 1, &replay_capture_bytes);
-    let incomplete = || {
-        crate::FindingReplayCaptureInput::Incomplete(
-            FindingReplayCaptureIncomplete::MissingTerminalFingerprints,
-        )
-    };
-    let replay_captures = crate::FindingReplayCaptureStore::prepare_set([
-        crate::FindingReplayCaptureInput::Complete {
-            content_hash: ContentHash::from_bytes(&replay_capture_bytes),
-            bytes: replay_capture_bytes,
-        },
-        incomplete(),
-        incomplete(),
-        incomplete(),
-    ])
-    .expect("prepare recovery replay captures");
-    let executor_store = CampaignExecutorStore::new(Arc::clone(repository));
-    let publication_guard = executor_store
-        .acquire_finding_replay_publication_guard()
-        .expect("acquire recovery capture publication guard");
-    crate::FindingReplayCaptureStore::publish_set(&publication_guard, &replay_captures)
-        .expect("publish recovery replay captures");
-    drop(publication_guard);
-
-    let bundle = finding.bundle();
-    finding.bundle = FindingCandidateBundle::new_with_replay_captures(
-        bundle.observation(),
-        bundle.signature().clone(),
-        bundle.reproduction(),
-        bundle.minimized(),
-        bundle.signature_minimization().clone(),
-        bundle.exact_pins().clone(),
-        bundle.triage_evidence(),
-        replay_captures.references(),
-    )
-    .expect("bind recovery replay captures");
-    let mut result =
-        PreparedSemanticAttemptResult::new(observation_candidate.clone(), Some(finding))
-            .expect("prepare recovery semantic result");
-    let unbound_result = result.clone();
-    let exact_pins = FindingExactPins::new(
-        BTreeSet::new(),
-        BTreeSet::new(),
-        BTreeSet::from([checkpoint]),
-        BTreeSet::new(),
-    )
-    .expect("recovery exact pins");
-    let source_snapshot = repository
-        .head(campaign)
-        .expect("recovery head")
-        .snapshot_id();
-    let basis = repository
-        .attempt_retention_policy_basis_at(source_snapshot, attempt)
-        .expect("recovery retention basis");
-    let exact_retention = FindingExactRetention::new(
-        basis.snapshot(),
-        basis.policy(),
-        basis.admission(),
-        1,
-        FindingExactRetentionDisposition::Complete,
-    )
-    .expect("complete recovery retention");
-    let evidence = FindingExactRetentionEvidence::new(
-        vec![FindingExactRetentionCandidate::new(checkpoint, 0)],
-        checkpoint,
-        0,
-        None,
-        exact_pins.clone(),
-    )
-    .expect("complete recovery evidence");
-    let finding = result
-        .prepare_bound_finding_exact_retention(exact_pins, exact_retention, Some(evidence))
-        .expect("bind complete recovery retention");
-    result.commit_bound_production_replay_finding(finding);
-
-    PreparedFindingRecoveryFixture {
-        lineage,
-        attempt,
-        observation: observation_candidate,
-        unbound_result,
-        result,
-        replay_capture_child,
-    }
 }
 
 mod configuration;

@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginIdleLoop",
-  taskIds ? ["T-PLUG-5"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -61,8 +61,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-5 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-PLUG-5 narrowed live evidence gap";
+        needle = "T-PLUG-5 remains open for direct live evidence of the futex park";
       }
       {
         label = "idle callback hot loop text";

@@ -291,7 +291,7 @@ fn aggregate_identity_binds_network_adapter_bytes() {
 }
 
 #[test]
-fn aggregate_identity_preserves_legacy_hex_material_hash() {
+fn aggregate_identity_preserves_canonical_v9_hex_material_hash() {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let plan = FaultSignalPlan::empty();
@@ -465,13 +465,13 @@ fn pending_network_output_resource_coordinates_cross_production_envelope() {
 }
 
 #[test]
-fn aggregate_codec_rejects_pre_policy_version() {
+fn aggregate_codec_rejects_an_unsupported_version() {
     let plan = FaultSignalPlan::empty();
-    let seed = ContentHash::from_bytes(b"old policy checkpoint seed");
+    let seed = ContentHash::from_bytes(b"unsupported checkpoint seed");
     let mut bytes = empty_checkpoint(&plan, None)
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("checkpoint should encode: {error}"));
-    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v5\0");
+    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v?\0");
 
     assert!(matches!(
         ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed),

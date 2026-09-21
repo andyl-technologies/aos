@@ -35,10 +35,11 @@ test_content_id!(
 );
 
 fn typed_content<T: TestContentId>(kind: ObjectKind, schema: &str, label: &str) -> T {
-    let version = if schema == "crucible.campaign.branch-path" {
-        2
-    } else {
-        1
+    let version = match schema {
+        "crucible.campaign.attempt" => 8,
+        "crucible.campaign.branch-path" => 2,
+        "crucible.campaign.observation" => 12,
+        _ => 1,
     };
     T::from_test_content(ContentId::for_bytes(kind, version, label.as_bytes()))
         .expect("typed content ID")
@@ -55,20 +56,24 @@ fn policy(objectives: &[(&str, ObjectiveGoal, u64)]) -> CampaignPolicy {
         })
         .collect();
     CampaignPolicy::new(
-        crate::ScenarioDefId::from_hash(crate::CampaignHash::derive("test", b"scenario")),
-        CampaignSeed::from_bytes([0x5a; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            puct: PuctPolicy::new(1_000_000, 0, 0),
-            widening: None,
-        },
-        BTreeMap::new(),
-        objectives,
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 64, true, true),
-        false,
+        CampaignPolicy::identity(
+            crate::ScenarioDefId::from_hash(crate::CampaignHash::derive("test", b"scenario")),
+            CampaignSeed::from_bytes([0x5a; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                puct: PuctPolicy::new(1_000_000, 0, 0),
+                widening: None,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            objectives,
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 64, true, true),
+            false,
+        ),
     )
     .expect("policy")
 }
@@ -91,24 +96,26 @@ fn observation_basis_with_stop(
             "crucible.campaign.attempt",
             &format!("attempt-{label}"),
         ),
-        ConfigurationId::from_hash(crate::CampaignHash::derive(
-            "configuration",
-            label.as_bytes(),
-        )),
-        typed_content(
-            ObjectKind::Configuration,
-            "crucible.campaign.configuration-artifact",
-            &format!("configuration-{label}"),
+        Observation::outcome(
+            ConfigurationId::from_hash(crate::CampaignHash::derive(
+                "configuration",
+                label.as_bytes(),
+            )),
+            typed_content(
+                ObjectKind::Configuration,
+                "crucible.campaign.configuration-artifact",
+                &format!("configuration-{label}"),
+            ),
+            typed_content(
+                ObjectKind::CampaignFact,
+                "crucible.campaign.branch-path",
+                &format!("path-{label}"),
+            ),
+            stop,
+            measurements.id().expect("measurement ID"),
+            properties.id().expect("property ID"),
+            coverage.id().expect("coverage ID"),
         ),
-        typed_content(
-            ObjectKind::CampaignFact,
-            "crucible.campaign.branch-path",
-            &format!("path-{label}"),
-        ),
-        stop,
-        measurements.id().expect("measurement ID"),
-        properties.id().expect("property ID"),
-        coverage.id().expect("coverage ID"),
         BTreeSet::new(),
     )
     .expect("observation");
@@ -153,9 +160,9 @@ fn scenario_failure_is_a_versioned_inadmissible_objective() {
             .schema_version(),
         2
     );
-    let mut downgraded = evaluation.canonical_bytes();
-    downgraded[..4].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(ObjectiveEvaluation::from_canonical_bytes(&downgraded).is_err());
+    let mut noncurrent = evaluation.canonical_bytes();
+    noncurrent[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(ObjectiveEvaluation::from_canonical_bytes(&noncurrent).is_err());
 
     let candidate = RankingCandidate::new(evaluation, 0, 0);
     let ranked = rank_survivors(
@@ -327,21 +334,23 @@ fn missing_measurements_and_property_failures_are_explicit_filters() {
             "crucible.campaign.attempt",
             "filtered",
         ),
-        ConfigurationId::from_hash(crate::CampaignHash::derive("configuration", b"filtered")),
-        typed_content(
-            ObjectKind::Configuration,
-            "crucible.campaign.configuration-artifact",
-            "filtered",
+        Observation::outcome(
+            ConfigurationId::from_hash(crate::CampaignHash::derive("configuration", b"filtered")),
+            typed_content(
+                ObjectKind::Configuration,
+                "crucible.campaign.configuration-artifact",
+                "filtered",
+            ),
+            typed_content(
+                ObjectKind::CampaignFact,
+                "crucible.campaign.branch-path",
+                "filtered",
+            ),
+            StopOutcome::TerminalSuccess,
+            measurements.id().expect("measurement ID"),
+            properties.id().expect("property ID"),
+            coverage.id().expect("coverage ID"),
         ),
-        typed_content(
-            ObjectKind::CampaignFact,
-            "crucible.campaign.branch-path",
-            "filtered",
-        ),
-        StopOutcome::TerminalSuccess,
-        measurements.id().expect("measurement ID"),
-        properties.id().expect("property ID"),
-        coverage.id().expect("coverage ID"),
         BTreeSet::new(),
     )
     .expect("observation");

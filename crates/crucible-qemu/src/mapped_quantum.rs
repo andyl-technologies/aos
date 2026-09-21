@@ -4,14 +4,12 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crucible::{
-    AppRandomDecision, BackendInput, ExecutionFingerprint, ExecutionHorizon, Icount,
+    BackendInput, BackendRngEvidence, ExecutionFingerprint, ExecutionHorizon, Icount,
     ObservableEvent, RngStreamId, SchedulerSendAuthorizer,
     observable_event_from_whitebox_marker_payload,
 };
-// crucible-lint: allow host-nondeterminism-state -- mapped callback records remain untrusted until scheduler validation.
-use crucible::Decision;
 use crucible_protocol::app_random_transport::{
-    AppRandomDecisionTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
+    BackendRngEvidenceTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
     app_random_stream_name,
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
@@ -47,6 +45,8 @@ mod error;
 mod fault_commands;
 #[path = "mapped_quantum/fingerprint.rs"]
 mod fingerprint;
+#[path = "mapped_quantum/marker_drain.rs"]
+mod marker_drain;
 #[path = "mapped_quantum/preemption.rs"]
 mod preemption;
 #[path = "mapped_quantum/restore.rs"]
@@ -70,7 +70,7 @@ pub struct QemuMappedQuantumShmemHotPath {
     last_marker_icount: Option<u64>,
     pending_marker_events: Vec<ObservableEvent>,
     // crucible-lint: allow host-nondeterminism-state -- pending values cross only to the authoritative scheduler validator.
-    pending_app_random_decisions: Vec<Decision>,
+    pending_rng_evidence: Vec<BackendRngEvidence>,
     pending_selectable_requests: Vec<SelectablePlanPendingRequest>,
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
     queued_selectable_reply: Option<SelectionReply>,
@@ -78,32 +78,15 @@ pub struct QemuMappedQuantumShmemHotPath {
 }
 
 impl QemuMappedQuantumShmemHotPath {
-    /// Publishes the shared shutdown flag and wakes this VM slot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the configured slot
-    /// is absent or its non-private futex wake fails.
-    pub fn request_plugin_shutdown(&self) -> Result<(), QemuMappedQuantumShmemHotPathError> {
-        let slot = self
-            .region
-            .node_slot(self.config.vm_slot)
-            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
-        self.region
-            .header()
-            .request_shutdown([slot])
-            .map(|_wake| ())
-            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionControl { source })
-    }
-
     /// Returns this VM's most recent plugin-published fingerprint sample.
     ///
-    /// Reads the per-node fingerprint sample slot the plugin publishes at each
-    /// scheduler boundary when launched with `fingerprint=on`, returning a
-    /// tear-free snapshot. Returns `None` when the plugin has published no
-    /// sample yet — for example when fingerprint sampling was left disabled.
-    /// The read borrows `&self` and mutates nothing, so it is safe to call
-    /// after `finish_quantum` while the slot is quiescent.
+    /// Reads the per-node fingerprint sample slot after the host requests a
+    /// capture generation and the plugin acknowledges it from the BQL-held,
+    /// device-quiesced control boundary. The returned snapshot is tear-free.
+    /// Returns `None` when the plugin has published no requested sample yet,
+    /// for example when fingerprint sampling was left disabled. The read
+    /// borrows `&self` and mutates nothing, so it is safe to call after
+    /// `finish_quantum` while the slot is quiescent.
     ///
     /// # Errors
     ///
@@ -237,7 +220,7 @@ impl QemuMappedQuantumShmemHotPath {
             next_guest_introspection_response_sequence: 1,
             last_marker_icount: None,
             pending_marker_events: Vec::new(),
-            pending_app_random_decisions: Vec::new(),
+            pending_rng_evidence: Vec::new(),
             pending_selectable_requests,
             selectable_catalog_plan,
             queued_selectable_reply: None,
@@ -282,7 +265,7 @@ impl QemuMappedQuantumShmemHotPath {
                 .next_guest_introspection_response_sequence,
             last_marker_icount: self.last_marker_icount,
             pending_marker_events: self.pending_marker_events.clone(),
-            pending_app_random_decisions: self.pending_app_random_decisions.clone(),
+            pending_rng_evidence: self.pending_rng_evidence.clone(),
             pending_selectable_requests: self.pending_selectable_requests.clone(),
             selectable_catalog_plan: self.selectable_catalog_plan.clone(),
             queued_selectable_reply: self.queued_selectable_reply.clone(),
@@ -431,217 +414,6 @@ impl QemuMappedQuantumShmemHotPath {
                 })?;
         }
         Ok(events)
-    }
-
-    fn drain_markers_at_quantum_boundary(
-        &mut self,
-        boundary: NodeSlotSnapshot,
-    ) -> Result<(), QemuNodeChannelError> {
-        let boundary_icount = boundary.current_icount;
-        let node = self.config.node.clone();
-        let ring = self
-            .region
-            .whitebox_marker_ring_mut(self.config.vm_slot)
-            .map_err(|error| {
-                QemuNodeChannelError::new("drain white-box markers", error.to_string())
-            })?;
-        if ring.header.read_index() != self.next_marker_sequence {
-            return Err(QemuNodeChannelError::new(
-                "drain white-box markers",
-                format!(
-                    "marker read sequence changed: expected {}, observed {}",
-                    self.next_marker_sequence,
-                    ring.header.read_index()
-                ),
-            ));
-        }
-
-        while let Some(entry) =
-            ring.header
-                .dequeue_whitebox_marker(ring.entries)
-                .map_err(|error| {
-                    QemuNodeChannelError::new("drain white-box markers", error.to_string())
-                })?
-        {
-            let entry = entry.validate().map_err(|error| {
-                QemuNodeChannelError::new("drain white-box markers", error.to_string())
-            })?;
-            if entry.current_icount() > boundary_icount {
-                return Err(QemuNodeChannelError::new(
-                    "drain white-box markers",
-                    format!(
-                        "marker icount {} exceeds completed quantum boundary {}",
-                        entry.current_icount(),
-                        boundary_icount
-                    ),
-                ));
-            }
-            if let Some(previous) = self.last_marker_icount
-                && entry.current_icount() < previous
-            {
-                return Err(QemuNodeChannelError::new(
-                    "drain white-box markers",
-                    format!(
-                        "marker icount regressed from {previous} to {}",
-                        entry.current_icount()
-                    ),
-                ));
-            }
-            if entry.kind() == WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION {
-                let record =
-                    AppRandomDecisionTransportRecord::decode(entry.payload()).map_err(|error| {
-                        QemuNodeChannelError::new("drain app-random decisions", error.to_string())
-                    })?;
-                self.pending_app_random_decisions
-                    // crucible-lint: allow host-nondeterminism-state -- decoding does not admit the plugin conjecture as authoritative state.
-                    .push(Decision::AppRandom(AppRandomDecision {
-                        node: node.clone(),
-                        stream: RngStreamId::from_name(app_random_stream_name(
-                            &node.name,
-                            record.stream_tag(),
-                        )),
-                        request_id: u64::from(record.request_id()),
-                        width: record.width_bytes().saturating_mul(8),
-                        value: record.value(),
-                    }));
-            } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED {
-                let registration =
-                    SelectableRegister::decode(entry.payload()).map_err(|error| {
-                        QemuNodeChannelError::new(
-                            "mirror selectable registration",
-                            error.to_string(),
-                        )
-                    })?;
-                if let Some(plan) = self.selectable_catalog_plan.as_mut() {
-                    plan.apply_registration(&registration).map_err(|error| {
-                        QemuNodeChannelError::new(
-                            "mirror selectable registration",
-                            error.to_string(),
-                        )
-                    })?;
-                }
-            } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING {
-                if boundary.status != STATUS_IDLE
-                    || boundary.idle_wake_icount != boundary.current_icount
-                {
-                    return Err(QemuNodeChannelError::new(
-                        "drain selectable pending requests",
-                        format!(
-                            "pending selectable requires an exact quiesced boundary, observed status {} current icount {} idle wake icount {}",
-                            boundary.status, boundary.current_icount, boundary.idle_wake_icount,
-                        ),
-                    ));
-                }
-                let record =
-                    SelectablePendingTransportRecord::decode(entry.payload()).map_err(|error| {
-                        QemuNodeChannelError::new(
-                            "drain selectable pending requests",
-                            error.to_string(),
-                        )
-                    })?;
-                let expected_boundary_icount = entry
-                    .current_icount()
-                    .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
-                    .ok_or_else(|| {
-                        QemuNodeChannelError::new(
-                            "drain selectable pending requests",
-                            format!(
-                                "selectable trap icount {} cannot represent its stopped boundary",
-                                entry.current_icount()
-                            ),
-                        )
-                    })?;
-                if boundary_icount != expected_boundary_icount {
-                    return Err(QemuNodeChannelError::new(
-                        "drain selectable pending requests",
-                        format!(
-                            "selectable trap icount {} requires stopped boundary {expected_boundary_icount}, observed {boundary_icount}",
-                            entry.current_icount()
-                        ),
-                    ));
-                }
-                let pending = SelectablePlanPendingRequest::new(
-                    record.request().clone(),
-                    entry.current_icount(),
-                    entry.vcpu_index(),
-                    record.guest_virtual_address(),
-                );
-                if let Some(plan) = self.selectable_catalog_plan.as_mut() {
-                    plan.apply_pending_request(pending.clone())
-                        .map_err(|error| {
-                            QemuNodeChannelError::new(
-                                "mirror selectable request",
-                                error.to_string(),
-                            )
-                        })?;
-                }
-                self.pending_selectable_requests
-                    // crucible-lint: allow host-nondeterminism-state -- the host validates this untrusted request before selection authority admits it.
-                    .push(pending);
-            } else if entry.kind() == WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED {
-                let reply = SelectionReply::decode(entry.payload()).map_err(|error| {
-                    QemuNodeChannelError::new("mirror selectable completion", error.to_string())
-                })?;
-                if self.queued_selectable_reply.as_ref() != Some(&reply) {
-                    return Err(QemuNodeChannelError::new(
-                        "mirror selectable completion",
-                        "plugin completion differs from the exact queued reply",
-                    ));
-                }
-                if let Some(plan) = self.selectable_catalog_plan.as_mut() {
-                    plan.apply_completed_reply(&reply).map_err(|error| {
-                        QemuNodeChannelError::new("mirror selectable completion", error.to_string())
-                    })?;
-                }
-                self.queued_selectable_reply = None;
-            } else {
-                let frame =
-                    WhiteboxDoorbellFrame::new(entry.kind(), entry.payload()).map_err(|error| {
-                        QemuNodeChannelError::new("drain white-box markers", error.to_string())
-                    })?;
-                let payload = decode_whitebox_marker_payload(&frame).map_err(|error| {
-                    QemuNodeChannelError::new("drain white-box markers", error.to_string())
-                })?;
-                if payload
-                    == WhiteboxMarkerPayload::Lifecycle(
-                        WhiteboxLifecycleMarkerEvent::SetupComplete,
-                    )
-                    && let Some(plan) = self.selectable_catalog_plan.as_mut()
-                    && plan.continuation().phase()
-                        == crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Registering
-                {
-                    plan.apply_freeze().map_err(|error| {
-                        QemuNodeChannelError::new("mirror selectable freeze", error.to_string())
-                    })?;
-                }
-                let event = observable_event_from_whitebox_marker_payload(
-                    Icount {
-                        retired: entry.current_icount(),
-                    },
-                    node.clone(),
-                    &payload,
-                )
-                .ok_or_else(|| {
-                    QemuNodeChannelError::new(
-                        "drain white-box markers",
-                        format!(
-                            "marker kind {} is not observational and cannot enter the marker ring",
-                            entry.kind()
-                        ),
-                    )
-                })?;
-                self.pending_marker_events.push(event);
-            }
-            self.last_marker_icount = Some(entry.current_icount());
-            self.next_marker_sequence =
-                self.next_marker_sequence.checked_add(1).ok_or_else(|| {
-                    QemuNodeChannelError::new(
-                        "drain white-box markers",
-                        "marker sequence overflowed",
-                    )
-                })?;
-        }
-        Ok(())
     }
 
     /// Commits the host half of one acknowledged coverage restore generation.
@@ -968,12 +740,21 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         })
     }
 
+    fn virtual_timer_fire_witness(
+        &mut self,
+    ) -> Result<Option<crate::node::QemuVirtualTimerFireWitness>, QemuNodeChannelError> {
+        self.with_hot_path("virtual-timer fire witness", |hot_path| {
+            QemuShmemHotPathChannel::virtual_timer_fire_witness(hot_path)
+        })
+    }
+
     fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
         self.with_hot_path("start_quantum", |hot_path| {
-            let pending = QemuQuantumShmemHotPath::start_quantum(hot_path, horizon)
+            let pending = QemuQuantumShmemHotPath::start_quantum(hot_path, horizon, stop_condition)
                 .map_err(QemuNodeChannelError::from)?;
             let start_operations = hot_path.operation_log().to_vec();
             assert_qemu_quantum_hot_path_is_shmem_only(&start_operations)
@@ -1109,11 +890,11 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
     }
 
     // crucible-lint: allow host-nondeterminism-state -- callers must validate this untrusted causal batch before another quantum.
-    fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, QemuNodeChannelError> {
+    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, QemuNodeChannelError> {
         let boundary =
             self.with_hot_path("causal boundary", |hot_path| Ok(hot_path.node_snapshot()))?;
         self.drain_markers_at_quantum_boundary(boundary)?;
-        Ok(std::mem::take(&mut self.pending_app_random_decisions))
+        Ok(std::mem::take(&mut self.pending_rng_evidence))
     }
 
     fn drain_pending_selectable_requests(

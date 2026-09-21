@@ -59,7 +59,7 @@
         needle = "pub enum EventLevel";
       }
       {
-        label = "event log class enum";
+        label = "canonical event class";
         needle = "pub enum SchedulerEventLogClass";
       }
       {
@@ -100,7 +100,7 @@
       }
       {
         label = "control decision command id";
-        needle = "command_id: control.sequence";
+        needle = "command_id: operation.sequence";
       }
       {
         label = "entry hash material includes source level class";

@@ -18,8 +18,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crucible_qemu::{
-    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, QemuGuardedFreshNodeLaunch,
-    QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, launch_qemu_live_node_guarded,
+    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, QemuLiveNodeIdentity,
+    QemuLiveNodeStepGateConfig, QemuProductionFreshLaunchAdmission,
+    launch_qemu_production_fresh_node,
 };
 
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
@@ -84,13 +85,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             return Err(error.into());
         }
         let launch_config = config.clone().with_run_directory(directory.path());
-        let mut node = match launch_qemu_live_node_guarded(
+        let mut node = match launch_qemu_production_fresh_node(
             &launch_config,
-            QemuGuardedFreshNodeLaunch::new(
+            QemuProductionFreshLaunchAdmission::admit(
+                &launch_config,
                 &directory,
                 owner.process_contract()?,
                 QemuLiveNodeIdentity::new("node", "router", "crash-detector"),
-            ),
+            )?,
         ) {
             Ok(node) => node,
             Err(mut error) => {

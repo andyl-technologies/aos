@@ -6,19 +6,16 @@
 //! time, but never fold host timing into virtual-time ordering state.
 
 mod accelerator_io_servicer;
-mod block_io_gate;
 mod block_io_servicer;
-mod block_node_gate;
 pub(crate) mod bounded_scheduler_preemption;
 mod deadline;
 mod device_host_work;
+mod exact_restore;
 pub(crate) mod host_io_runtime;
-mod host_parallel_gate;
-mod network_io_gate;
-mod network_io_servicer;
-mod ninep_io_gate;
 mod ninep_io_servicer;
 mod node_step_gate;
+mod rr_control_boundary_trace;
+mod runtime_determinism_trace;
 
 /// Keeps a host-only QEMU liveness deadline inside the supervision boundary.
 pub(super) struct HostSupervisionDeadline(deadline::HostSupervisionDeadline);
@@ -44,44 +41,22 @@ pub use accelerator_io_servicer::{
     QemuLiveAcceleratorCheckpoint, QemuLiveAcceleratorServiceStep, QemuLiveAcceleratorServicer,
     QemuLiveAcceleratorServicerError,
 };
-pub use block_io_gate::{
-    BlockIoAdvanceOutcome, QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError,
-    QemuLiveBlockIoReport, run_qemu_live_block_io_gate,
-};
 pub use block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoDeliveryStep,
     QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoIntakeStep, QemuLiveBlockIoObservedRequest,
     QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
     QemuSharedBlockDevice,
 };
-pub use block_node_gate::{
-    BlockNodeOutcome, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
-    QemuLiveBlockNodeReport, run_qemu_live_block_node_gate,
-};
 pub use device_host_work::{
     QemuDeviceHostWorkDelay, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
-    QemuLiveBlockStorageEvents,
+};
+pub use exact_restore::{
+    QemuProductionExactRestoreLaunch, QemuProductionExactRestoreProfile,
+    QemuProductionExactRestoreRequest,
 };
 pub use host_io_runtime::{
     QemuBlockFaultCoordinator, QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError,
     QemuNinepFaultCoordinator,
-};
-pub use host_parallel_gate::{
-    QemuLiveHostParallelGateError, QemuLiveHostParallelReport, run_qemu_live_host_parallel_gate,
-};
-pub use network_io_gate::{
-    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport,
-    run_qemu_live_network_io_gate,
-};
-pub use network_io_servicer::{
-    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_ETHERTYPE, LIVE_NETWORK_PROBE_PAYLOAD,
-    LIVE_NETWORK_REPLY_LATENCY_ICOUNT, LIVE_NETWORK_REPLY_PAYLOAD, LiveNetworkIoServiceStep,
-    LiveNetworkIoSnapshot, LiveNetworkTxObservation, QemuLiveNetworkIoServicer,
-    QemuLiveNetworkIoServicerError,
-};
-pub use ninep_io_gate::{
-    NinepIoAdvanceOutcome, QemuLive9pIoGateConfig, QemuLive9pIoGateError, QemuLive9pIoReport,
-    run_qemu_live_9p_io_gate,
 };
 pub use ninep_io_servicer::{
     NinepIoDiagnostics, NinepIoDiagnosticsSnapshot, QemuLive9pIoRequestPin,
@@ -89,19 +64,18 @@ pub use ninep_io_servicer::{
     QemuLive9pIoTransactionCheckpoint, QemuLive9pResponseEvidence,
 };
 pub use node_step_gate::{
-    QemuGuardedExactNodeLaunch, QemuGuardedFreshNodeLaunch, QemuGuardedRestoredNodeLaunch,
-    QemuLiveExactSnapshotReport, QemuLiveHotForkChildExecutionReport, QemuLiveHotForkChildReport,
-    QemuLiveHotForkChildStressReport, QemuLiveHotForkChildWorldReport, QemuLiveNodeIdentity,
-    QemuLiveNodeLifecycleFaultReport, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
-    QemuLiveNodeStepQuantum, QemuLiveNodeStepReport, QemuLiveNodeStepSchedule,
-    QemuLiveRetainedNetworkSnapshotReport, QemuLiveSelectableProductSnapshotReport,
-    QemuLiveSourceSetReport, launch_qemu_live_node, launch_qemu_live_node_exact_snapshot,
-    launch_qemu_live_node_exact_snapshot_guarded, launch_qemu_live_node_exact_snapshot_paused,
-    launch_qemu_live_node_exact_snapshot_paused_guarded, launch_qemu_live_node_guarded,
-    launch_qemu_live_node_restored, launch_qemu_live_node_restored_guarded,
-    run_qemu_live_exact_snapshot_gate, run_qemu_live_hot_fork_child_execution_gate,
-    run_qemu_live_hot_fork_child_gate, run_qemu_live_hot_fork_child_stress_gate,
-    run_qemu_live_hot_fork_child_world_gate, run_qemu_live_node_lifecycle_fault_gate,
-    run_qemu_live_node_step_gate, run_qemu_live_retained_network_snapshot_gate,
-    run_qemu_live_selectable_product_snapshot_gate, run_qemu_live_source_set_gate,
+    QemuLiveHotForkChildReport, QemuLiveHotForkChildStressReport, QemuLiveNodeIdentity,
+    QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuProductionFreshLaunchAdmission,
+    launch_qemu_production_fresh_node, run_qemu_live_hot_fork_child_gate,
+    run_qemu_live_hot_fork_child_stress_gate,
+};
+pub use rr_control_boundary_trace::{
+    QemuRrControlBoundaryTraceError, QemuRrControlBoundaryTracePhase,
+    QemuRrControlBoundaryTraceRecord, parse_qemu_rr_control_boundary_trace,
+};
+pub use runtime_determinism_trace::{
+    QemuRuntimeDeterminismIdlePhase, QemuRuntimeDeterminismIdleRecord,
+    QemuRuntimeDeterminismTimerOwner, QemuRuntimeDeterminismTimerRecord,
+    QemuRuntimeDeterminismTimerScope, QemuRuntimeDeterminismTraceError,
+    QemuRuntimeDeterminismTraceRecord, parse_qemu_runtime_determinism_trace,
 };

@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Resolves a command's savepoint argument as an exported handle.
+/// Resolves a command's savepoint argument as a hash or exported handle.
 ///
 /// # Errors
 ///
@@ -28,9 +28,8 @@ pub(crate) fn resolve_savepoint_ref(
         ));
     }
     if value.starts_with("blake3:") {
-        return Err(artifact_error(
-            "a checkpoint hash is not a portable savepoint; provide a current .crucible-savepoint handle",
-        ));
+        return parse_blake3_content_hash("savepoint", value)
+            .map(ResumeSavepointRef::CheckpointHash);
     }
 
     let path = Path::new(value);
@@ -41,10 +40,12 @@ pub(crate) fn resolve_savepoint_ref(
         ))
     })?;
     let handle = decode_savepoint_handle(&bytes)?;
-    Ok(ResumeSavepointRef {
-        path: path.to_path_buf(),
-        handle,
-    })
+    Ok(ResumeSavepointRef::Handle(Box::new(
+        ResolvedSavepointHandle {
+            path: path.to_path_buf(),
+            handle,
+        },
+    )))
 }
 
 /// Decodes and validates the canonical line-oriented savepoint-handle format.
@@ -324,7 +325,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     }
 
     let schema = schema.ok_or_else(|| missing_line("schema"))?;
-    if schema != SAVEPOINT_HANDLE_SCHEMA {
+    if schema != REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA {
         return Err(artifact_error(format!(
             "unsupported savepoint handle schema `{schema}`"
         )));
@@ -339,14 +340,11 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     let boundary_predicate =
         boundary_predicate.ok_or_else(|| missing_line("boundary-predicate"))?;
     let checkpoint = checkpoint.ok_or_else(|| missing_line("checkpoint"))?;
-    if matches!(
-        boundary_proof,
-        SavepointBoundaryProof::CampaignObservation { .. }
-    ) && replay_closure_payload.is_none()
-    {
+    if replay_closure_payload.is_none() {
         return Err(missing_line("campaign-replay-closure"));
     }
     validate_savepoint_boundary_proof(
+        &schema,
         at,
         selector.as_ref(),
         &boundary_proof,
@@ -384,6 +382,7 @@ struct SavepointBoundaryAnchor {
 }
 
 fn validate_savepoint_boundary_proof(
+    schema: &str,
     at: SaveAtArg,
     selector: Option<&SaveAtSelector>,
     proof: &SavepointBoundaryProof,
@@ -516,18 +515,22 @@ fn validate_savepoint_boundary_proof(
         };
 
     let shape_is_valid = matches!(
-        (at, proof),
+        (schema, at, proof),
         (
+            REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA,
             SaveAtArg::VirtualTime,
             SavepointBoundaryProof::Coordinate { .. }
         ) | (
+            REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA,
             SaveAtArg::Quiescence | SaveAtArg::Property | SaveAtArg::Marker,
             SavepointBoundaryProof::Breakpoint { .. }
         ) | (
+            REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA,
             SaveAtArg::Marker,
             SavepointBoundaryProof::CampaignMarkerEvent { .. }
         )
-    ) || campaign_observation_shape_is_valid;
+    ) || (schema == REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
+        && campaign_observation_shape_is_valid);
     if !shape_is_valid {
         return Err(artifact_error(format!(
             "savepoint boundary proof and selector do not match --at {}",

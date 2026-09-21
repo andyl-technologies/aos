@@ -58,11 +58,10 @@ in
 
     preBuild = ''
       export CRUCIBLE_QEMU_BUILD_ID=${qemu-crucible.passthru.qemuBuildIdentity}
-      export CRUCIBLE_QEMU_PATCH_SERIES_HASH=${qemu-crucible.passthru.patchSeriesHash}
+      export CRUCIBLE_QEMU_ATOMIC_PATCH_HASH=${qemu-crucible.passthru.atomicPatchHash}
       export CRUCIBLE_SHMEM_HEADER_HASH=${qemu-crucible.passthru.shmemHeaderHash}
       header="${qemu-crucible}/include/qemu/qemu-plugin.h"
       test -f "$header"
-      grep -q 'qemu_plugin_crucible_rr_switch_quantum' "$header"
       grep -q 'qemu_plugin_read_vcpu_regs' "$header"
       grep -q 'qemu_plugin_rr_cursor' "$header"
       grep -q 'qemu_plugin_inject_preemption' "$header"
@@ -111,8 +110,6 @@ in
       #error "qemu-crucible generated shmem header ABI does not match the Rust plugin"
       #endif
 
-      uint64_t (*crucible_probe_rr_switch_quantum)(void) =
-          qemu_plugin_crucible_rr_switch_quantum;
       int (*crucible_probe_read_vcpu_regs)(unsigned int, uint8_t *, size_t,
                                            size_t *, uint64_t *) =
           qemu_plugin_read_vcpu_regs;

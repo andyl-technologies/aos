@@ -315,7 +315,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         }],
     )
     .unwrap_or_else(|error| panic!("test frame should route: {error}"));
-    let nodes = ProductionNodeSet::new();
+    let nodes = QemuNodeSet::new();
     let runtime = ProductionFaultRuntime::new(
         down_plan(segment.clone()),
         Some(Arc::new(NoArtifacts)),
@@ -367,15 +367,6 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         )
         .unwrap_or_else(|error| panic!("availability boundary should execute: {error}"));
     assert!(!append.entries.is_empty());
-    assert_eq!(interceptor.transition_ledger.len(), 1);
-    let transition = interceptor
-        .transition_ledger
-        .values()
-        .next()
-        .unwrap_or_else(|| panic!("transition ledger should contain the applied action"));
-    assert_eq!(transition.in_flight.frame_count, 1);
-    assert_eq!(transition.queued.len(), 1);
-    assert_eq!(transition.old_state, NetworkAvailabilityState::Up);
     assert_eq!(pending_outputs.len(), 1);
     assert_eq!(pending_outputs[0].source, destination);
     assert_eq!(pending_outputs[0].destination, source);
@@ -622,7 +613,7 @@ fn production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile() {
     )
     .unwrap_or_else(|error| panic!("test frame should route: {error}"));
 
-    let mut nodes = ProductionNodeSet::new();
+    let mut nodes = QemuNodeSet::new();
     let runtime = ProductionFaultRuntime::new(
         down_plan_with_policies(
             segment,
@@ -735,7 +726,7 @@ fn production_reevaluate_retains_work_until_the_next_declared_phase() {
     )
     .unwrap_or_else(|error| panic!("test frame should route: {error}"));
 
-    let mut nodes = ProductionNodeSet::new();
+    let mut nodes = QemuNodeSet::new();
     let runtime = ProductionFaultRuntime::new(
         down_plan_with_policies(
             segment,

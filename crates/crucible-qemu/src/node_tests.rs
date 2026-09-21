@@ -73,6 +73,7 @@ enum ChannelCall {
         outcome: QemuAsyncWaitOutcome,
     },
     ShmemStart(u64),
+    ShmemStartNextIdle(u64),
     ShmemFinish(u64),
     ShmemPreemption(SchedulerPreemptionCommand),
     ShmemDeliver {
@@ -84,6 +85,7 @@ enum ChannelCall {
     ShmemFingerprint,
     ShmemSelectableReply(u64),
     HostFingerprintBoundary,
+    HostCheckpointQuiesce,
     HostCheckpointClearWhileStopped,
     HostCheckpointAbort,
     HostFaultEventLimit {
@@ -93,12 +95,6 @@ enum ChannelCall {
     },
     QmpStop,
     QmpContinue,
-    QmpHotForkReadiness,
-    QmpHotForkThreadInventory,
-    QmpHotForkRcuInventory,
-    QmpHotForkAioInventory,
-    QmpHotForkAioHandlerInventory,
-    QmpHotForkBlockBackendInventory,
     QmpHotForkPluginResourceInventory,
     QmpHotForkPluginBarrier,
     QmpHotForkInstallDescriptor(String, crucible_shmem::SetupRegionBackingIdentity),
@@ -141,10 +137,6 @@ enum ChannelCall {
         wake_name: String,
         identity: crate::QmpHotForkPluginEndpointIdentity,
     },
-    QmpHotForkBottomHalfInventory,
-    QmpHotForkMutexInventory,
-    QmpHotForkTimerInventory,
-    QmpHotForkMonitorInventory,
     QmpHotForkTemplate,
     QmpHotForkInstallProcessContract,
     QmpHotForkReleaseProcessContract,
@@ -161,6 +153,11 @@ enum ChannelCall {
     },
     QmpExactSave(ContentHash),
     QmpExactDelete(ContentHash),
+    QmpExactInstallDescriptor(String),
+    QmpExactCapture(crate::QmpCheckpointIdentity),
+    QmpExactCommit(crate::QmpCheckpointIdentity),
+    QmpExactAbort(crate::QmpCheckpointIdentity),
+    QmpExactQueryEpoch,
     QmpActivateDebugGuest,
     QmpRetireProcessScopedEndpoints,
     PluginQuit,
@@ -191,6 +188,12 @@ struct ScriptedShmemHotPath {
     )>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ScriptedPendingQuantum {
+    horizon: u64,
+    stop_condition: crate::QemuQuantumStopCondition,
+}
+
 #[derive(Clone)]
 struct ScriptedHostIoRuntime {
     log: SharedLog,
@@ -204,7 +207,6 @@ struct ScriptedHostIoRuntime {
 #[derive(Clone)]
 struct ScriptedQmpMachineControl {
     log: SharedLog,
-    process_id: u32,
     track_process_endpoint_retirement: bool,
     fail_stop: bool,
     fail_snapshot: bool,
@@ -593,28 +595,43 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         })
     }
 
+    fn virtual_timer_fire_witness(
+        &mut self,
+    ) -> Result<Option<QemuVirtualTimerFireWitness>, QemuNodeChannelError> {
+        Ok(None)
+    }
+
     fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
-        self.log
-            .lock()
-            .unwrap()
-            .push(ChannelCall::ShmemStart(horizon.icount.retired));
+        self.log.lock().unwrap().push(match stop_condition {
+            crate::QemuQuantumStopCondition::Ceiling => {
+                ChannelCall::ShmemStart(horizon.icount.retired)
+            }
+            crate::QemuQuantumStopCondition::NextAuthenticatedIdle => {
+                ChannelCall::ShmemStartNextIdle(horizon.icount.retired)
+            }
+        });
         if self.fail_advance {
             return Err(QemuNodeChannelError::new(
                 "advance_to_horizon",
                 "futex wake failed",
             ));
         }
-        Ok(QemuNodePendingQuantum::new(horizon.icount.retired))
+        Ok(QemuNodePendingQuantum::new(ScriptedPendingQuantum {
+            horizon: horizon.icount.retired,
+            stop_condition,
+        }))
     }
 
     fn poll_quantum(
         &mut self,
         pending: &mut QemuNodePendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-        let horizon = *pending.downcast_mut::<u64>("finish_quantum")?;
+        let pending = *pending.downcast_mut::<ScriptedPendingQuantum>("finish_quantum")?;
+        let horizon = pending.horizon;
         self.log
             .lock()
             .unwrap()
@@ -622,13 +639,28 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         if let Some(events) = self.quantum_coverage.lock().unwrap().pop_front() {
             self.teardown_coverage.lock().unwrap().extend(events);
         }
+        let (outcome, final_state) = match pending.stop_condition {
+            crate::QemuQuantumStopCondition::Ceiling => (
+                AdvanceOutcome::ReachedHorizon,
+                QemuNodeIdleState {
+                    current_icount: Icount { retired: horizon },
+                    next_deadline: None,
+                },
+            ),
+            crate::QemuQuantumStopCondition::NextAuthenticatedIdle => (
+                AdvanceOutcome::Paused {
+                    at: Icount { retired: 73 },
+                },
+                QemuNodeIdleState {
+                    current_icount: Icount { retired: 73 },
+                    next_deadline: Some(Icount { retired: 91 }),
+                },
+            ),
+        };
         Ok(QemuAsyncQuantumCompletion {
             ceiling: Icount { retired: horizon },
-            outcome: AdvanceOutcome::ReachedHorizon,
-            final_state: QemuNodeIdleState {
-                current_icount: Icount { retired: horizon },
-                next_deadline: None,
-            },
+            outcome,
+            final_state,
             inbound_frames_consumed: 0,
             emitted_frames: Vec::new(),
             operations: vec![
@@ -721,6 +753,14 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         Ok(())
     }
 
+    fn deliver_frame_at(
+        &mut self,
+        input: BackendInput,
+        _delivery_icount: Icount,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.deliver_frame(input)
+    }
+
     fn emit_frame(&mut self) -> Result<Option<QemuNodeEmittedFrame>, QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::ShmemEmit);
         Ok(Some(QemuNodeEmittedFrame {
@@ -768,6 +808,17 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    fn quiesce_for_checkpoint(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::HostCheckpointQuiesce);
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
     fn clone_hot_fork_host_io_continuation(
         &mut self,
@@ -1272,11 +1323,6 @@ fn hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation()
     );
     assert_eq!(child_console.console_generation(), 1);
     assert!(!child_console.resource_plan_bound());
-    let diagnostic_drain = node.drain_hot_fork_child_diagnostics()?;
-    assert_eq!(diagnostic_drain.bytes_read(), 26);
-    assert_eq!(diagnostic_drain.total_retained(), 26);
-    assert!(!diagnostic_drain.eof());
-
     let proof = node.stage_hot_fork_plugin_endpoints()?;
     assert_eq!(
         proof.state(),
@@ -1632,6 +1678,31 @@ fn qemu_node_routes_scheduler_operations_over_strict_channels() -> Result<(), Bo
 }
 
 #[test]
+fn next_idle_advance_pauses_below_an_unrelated_large_ceiling() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+
+    let outcome = node.advance_to_next_idle(Icount { retired: 1_000_000 })?;
+
+    assert_eq!(
+        outcome,
+        AdvanceOutcome::Paused {
+            at: Icount { retired: 73 },
+        }
+    );
+    assert_eq!(
+        node.last_step_final_state(),
+        Some(QemuNodeIdleState {
+            current_icount: Icount { retired: 73 },
+            next_deadline: Some(Icount { retired: 91 }),
+        })
+    );
+    assert!(recorded(&log).contains(&ChannelCall::ShmemStartNextIdle(1_000_000)));
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
 fn selectable_reply_and_ceiling_are_published_before_qemu_resumes() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
@@ -1768,7 +1839,6 @@ fn scripted_hot_fork_capture_node(
     descriptor_script: DescriptorScript,
 ) -> Result<QemuNode, Box<dyn Error>> {
     let child = Command::new("sleep").arg("60").spawn()?;
-    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -1789,7 +1859,6 @@ fn scripted_hot_fork_capture_node(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
-            process_id,
             track_process_endpoint_retirement: false,
             fail_stop: false,
             fail_snapshot: false,
@@ -1936,7 +2005,6 @@ fn scripted_node_with_fault_events(
     let mut events = events.into_iter();
     let staged_fault_events = events.next().into_iter().collect();
     let child = Command::new("sleep").arg("60").spawn()?;
-    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -1957,7 +2025,6 @@ fn scripted_node_with_fault_events(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
-            process_id,
             track_process_endpoint_retirement: false,
             fail_stop: false,
             fail_snapshot: false,
@@ -2042,7 +2109,6 @@ fn scripted_node_with_coverage(
     let teardown_coverage = teardown_coverage.into_iter().collect::<Vec<_>>();
     let coverage_enabled = !quantum_coverage.is_empty() || !teardown_coverage.is_empty();
     let child = Command::new("sleep").arg("60").spawn()?;
-    let process_id = child.id();
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
             log: Arc::clone(&log),
@@ -2063,7 +2129,6 @@ fn scripted_node_with_coverage(
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
-            process_id,
             track_process_endpoint_retirement: options.track_process_endpoint_retirement,
             fail_stop: options.fail_qmp_stop,
             fail_snapshot: options.fail_qmp_snapshot,

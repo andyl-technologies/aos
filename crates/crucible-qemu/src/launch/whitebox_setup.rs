@@ -5,12 +5,7 @@
 //! address-space map. The reserved port may be attested only when QEMU reports
 //! that the generic `io` fallback region, rather than a device region, owns it.
 
-use std::{
-    io::Write as _,
-    path::Path,
-    process::{Command, Stdio},
-    time::Duration,
-};
+use std::time::Duration;
 
 use crucible_protocol::{
     WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
@@ -47,15 +42,6 @@ impl QemuWhiteboxSetupValidation {
             trap: QemuWhiteboxSetupTrap::X86Port,
             observed_region: UNASSIGNED_X86_IO_REGION.to_owned(),
         }
-    }
-
-    /// Returns the collision-checked x86 reserved port.
-    ///
-    /// This compatibility accessor is meaningful only for validation returned
-    /// by [`probe_x86_whitebox_setup`].
-    #[must_use]
-    pub const fn port(&self) -> u16 {
-        WHITEBOX_DOORBELL_X86_64_RESERVED_PORT
     }
 
     /// Returns the QEMU I/O region observed at the reserved port.
@@ -153,52 +139,10 @@ pub fn validate_aarch64_whitebox_setup(
     })
 }
 
-/// Probes the exact stopped QEMU machine and validates its x86 I/O port map.
-///
-/// The control plugin is removed from the probe process because setup
-/// validation must finish before the real process is allowed to register the
-/// white-box callback. All machine, firmware, disk, and device arguments remain
-/// byte-for-byte identical to the subsequent launch.
-///
-/// # Errors
-///
-/// Returns [`QemuWhiteboxSetupError`] when the probe cannot be spawned or
-/// controlled, exits unsuccessfully, emits non-UTF-8 monitor output, omits the
-/// reserved port, or reports a device region at that port.
-pub fn probe_x86_whitebox_setup(
-    command: &QemuLaunchCommand,
-    run_directory: &Path,
-) -> Result<QemuWhiteboxSetupValidation, QemuWhiteboxSetupError> {
-    crate::spawn::prepare_vmstate_container(command, run_directory)
-        .map_err(|source| QemuWhiteboxSetupError::VmStatePreparation { source })?;
-    let args = x86_whitebox_probe_args(command)?;
-
-    let mut child = Command::new(&command.executable)
-        .args(&args)
-        .current_dir(run_directory)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| QemuWhiteboxSetupError::Spawn { source })?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or(QemuWhiteboxSetupError::MonitorStdinUnavailable)?;
-    stdin
-        .write_all(X86_WHITEBOX_MONITOR_QUERY)
-        .map_err(|source| QemuWhiteboxSetupError::MonitorWrite { source })?;
-    drop(stdin);
-    let output = child
-        .wait_with_output()
-        .map_err(|source| QemuWhiteboxSetupError::Wait { source })?;
-    validate_x86_whitebox_probe_output(output)
-}
-
 /// Probes an admitted QEMU machine under its exact attempt process contract.
 ///
-/// Unlike [`probe_x86_whitebox_setup`], this path consumes an already prepared
-/// VMState artifact and launches the stopped probe through the same cgroup,
+/// This path consumes an already prepared VMState artifact and launches the
+/// stopped probe through the same cgroup,
 /// cancellation event, credentials, resource ceilings, and descriptor-pinned
 /// directory as the eventual production VM.
 ///
@@ -230,20 +174,39 @@ pub(crate) fn probe_x86_whitebox_setup_guarded(
 fn x86_whitebox_probe_args(
     command: &QemuLaunchCommand,
 ) -> Result<Vec<String>, QemuWhiteboxSetupError> {
-    let mut args = Vec::with_capacity(command.args.len() + 1);
+    x86_whitebox_probe_args_from(&command.args)
+}
+
+fn x86_whitebox_probe_args_from(
+    command_args: &[String],
+) -> Result<Vec<String>, QemuWhiteboxSetupError> {
+    super::validation::validate_optional_diagnostic_trace(command_args).map_err(|_source| {
+        QemuWhiteboxSetupError::MalformedLaunchCommand {
+            option: "-D/-trace",
+        }
+    })?;
+
+    let mut args = Vec::with_capacity(command_args.len() + 1);
     let mut index = 0;
-    while index < command.args.len() {
-        match command.args[index].as_str() {
+    while index < command_args.len() {
+        match command_args[index].as_str() {
             "-plugin" => {
-                if command.args.get(index + 1).is_none() {
+                if command_args.get(index + 1).is_none() {
                     return Err(QemuWhiteboxSetupError::MalformedLaunchCommand {
                         option: "-plugin",
                     });
                 }
                 index += 2;
             }
+            option @ ("-D" | "-trace") => {
+                let option = if option == "-D" { "-D" } else { "-trace" };
+                command_args
+                    .get(index + 1)
+                    .ok_or(QemuWhiteboxSetupError::MalformedLaunchCommand { option })?;
+                index += 2;
+            }
             "-monitor" => {
-                if command.args.get(index + 1).is_none() {
+                if command_args.get(index + 1).is_none() {
                     return Err(QemuWhiteboxSetupError::MalformedLaunchCommand {
                         option: "-monitor",
                     });
@@ -257,8 +220,7 @@ fn x86_whitebox_probe_args(
                 } else {
                     "-drive"
                 };
-                let value = command
-                    .args
+                let value = command_args
                     .get(index + 1)
                     .ok_or(QemuWhiteboxSetupError::MalformedLaunchCommand { option })?;
                 let read_only = probe_read_only_storage_argument(option, value)?;
@@ -266,12 +228,14 @@ fn x86_whitebox_probe_args(
                 index += 2;
             }
             _ => {
-                args.push(command.args[index].clone());
+                args.push(command_args[index].clone());
                 index += 1;
             }
         }
     }
-    args.push("-S".to_owned());
+    if !args.iter().any(|argument| argument == "-S") {
+        args.push("-S".to_owned());
+    }
     Ok(args)
 }
 
@@ -282,20 +246,20 @@ fn probe_read_only_storage_argument(
     option: &'static str,
     value: &str,
 ) -> Result<String, QemuWhiteboxSetupError> {
-    let supported = match option {
-        "-blockdev" => is_vmstate_blockdev(value) || is_crucible_shmem_blockdev(value),
-        "-drive" => is_root_overlay_drive(value),
-        _ => false,
+    let (supported, read_only_property) = match option {
+        "-blockdev" => (
+            is_vmstate_blockdev(value) || is_crucible_shmem_blockdev(value),
+            "read-only=on",
+        ),
+        "-drive" => (is_root_overlay_drive(value), "readonly=on"),
+        _ => {
+            return Err(QemuWhiteboxSetupError::UnsupportedProbeStorageArgument { option });
+        }
     };
     if !supported {
         return Err(QemuWhiteboxSetupError::UnsupportedProbeStorageArgument { option });
     }
 
-    let read_only_property = match option {
-        "-blockdev" => "read-only=on",
-        "-drive" => "readonly=on",
-        _ => unreachable!("supported probe storage options are exhaustive"),
-    };
     Ok(format!("{value},{read_only_property}"))
 }
 
@@ -406,13 +370,6 @@ pub enum QemuWhiteboxSetupError {
         /// Instruction ABI declared by the guest asset.
         actual: u16,
     },
-    /// The stopped probe's exact-VMState container could not be prepared.
-    #[error("failed to prepare stopped QEMU white-box VMState container: {source}")]
-    VmStatePreparation {
-        /// Underlying run-directory or qemu-img failure.
-        #[source]
-        source: crate::QemuSpawnError,
-    },
     /// The contained setup probe violated its attempt or cleanup contract.
     #[cfg(target_os = "linux")]
     #[error("contained QEMU white-box setup probe failed: {source}")]
@@ -432,30 +389,6 @@ pub enum QemuWhiteboxSetupError {
     UnsupportedProbeStorageArgument {
         /// Rejected storage option.
         option: &'static str,
-    },
-    /// The stopped QEMU probe could not be spawned.
-    #[error("failed to spawn stopped QEMU white-box setup probe")]
-    Spawn {
-        /// Underlying process error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The probe's monitor input pipe was unavailable.
-    #[error("stopped QEMU white-box setup probe has no monitor stdin")]
-    MonitorStdinUnavailable,
-    /// The HMP query could not be written.
-    #[error("failed to write QEMU I/O-map monitor query")]
-    MonitorWrite {
-        /// Underlying pipe error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The probe process could not be reaped.
-    #[error("failed to wait for stopped QEMU white-box setup probe")]
-    Wait {
-        /// Underlying wait error.
-        #[source]
-        source: std::io::Error,
     },
     /// The probe process rejected the configuration.
     #[error("stopped QEMU white-box setup probe exited with {status}: {stderr}")]
@@ -509,6 +442,68 @@ impl QemuWhiteboxSetupError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::launch::{
+        QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+        QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME, QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+    };
+
+    #[test]
+    fn setup_probe_removes_fixed_control_boundary_trace_pair() {
+        let launch = [
+            "-nodefaults",
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+            "-plugin",
+            "plugin.so",
+            "-monitor",
+            "none",
+        ]
+        .map(str::to_owned);
+
+        let probe = x86_whitebox_probe_args_from(&launch)
+            .unwrap_or_else(|error| panic!("trace stripping should validate: {error}"));
+
+        assert_eq!(probe, ["-nodefaults", "-monitor", "stdio", "-S"]);
+    }
+
+    #[test]
+    fn setup_probe_removes_fixed_runtime_determinism_trace_pair() {
+        let launch = [
+            "-nodefaults",
+            "-D",
+            QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+            "-plugin",
+            "plugin.so",
+            "-monitor",
+            "none",
+        ]
+        .map(str::to_owned);
+
+        let probe = x86_whitebox_probe_args_from(&launch)
+            .unwrap_or_else(|error| panic!("trace stripping should validate: {error}"));
+
+        assert_eq!(probe, ["-nodefaults", "-monitor", "stdio", "-S"]);
+    }
+
+    #[test]
+    fn setup_probe_rejects_noncanonical_control_boundary_trace_pair() {
+        for launch in [
+            vec!["-D", "/tmp/trace"],
+            vec!["-trace", "enable=*"],
+            vec!["-D", QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME],
+            vec!["-trace", QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION],
+        ] {
+            let launch = launch.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(matches!(
+                x86_whitebox_probe_args_from(&launch),
+                Err(QemuWhiteboxSetupError::MalformedLaunchCommand { .. })
+            ));
+        }
+    }
 
     #[test]
     fn setup_probe_opens_builder_storage_forms_read_only() {
@@ -586,7 +581,6 @@ FlatView #2
 "#;
         let validation = QemuWhiteboxSetupValidation::parse_hmp_mtree(output)
             .unwrap_or_else(|error| panic!("unassigned port should validate: {error}"));
-        assert_eq!(validation.port(), WHITEBOX_DOORBELL_X86_64_RESERVED_PORT);
         assert_eq!(validation.observed_region(), "io");
     }
 
@@ -610,11 +604,11 @@ FlatView #2
     #[test]
     fn aarch64_setup_rejects_a_mismatched_guest_instruction_abi() {
         assert!(matches!(
-            validate_aarch64_whitebox_setup(WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION - 1),
+            validate_aarch64_whitebox_setup(u16::MAX),
             Err(QemuWhiteboxSetupError::InstructionAbiMismatch {
                 expected: WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
                 actual,
-            }) if actual == WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION - 1
+            }) if actual == u16::MAX
         ));
     }
 }

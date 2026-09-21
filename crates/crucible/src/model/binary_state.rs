@@ -1146,14 +1146,6 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
             writer.write_u64(preemption.at.retired);
             write_preemption_kind_binary(&preemption.kind, writer);
         }
-        Decision::AppRandom(random) => {
-            writer.write_u8(4);
-            writer.write_string(&random.node.name);
-            write_rng_stream_binary(&random.stream, writer);
-            writer.write_u64(random.request_id);
-            writer.write_u8(random.width);
-            writer.write_u64(random.value);
-        }
         Decision::Selection(selection) => {
             writer.write_u8(5);
             writer.write_binary_blob(selection.canonical_bytes());
@@ -1203,15 +1195,6 @@ pub(super) fn read_decision_binary(
                 retired: reader.read_u64()?,
             },
             kind: read_preemption_kind_binary(reader)?,
-        })),
-        4 => Ok(Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: reader.read_string()?,
-            },
-            stream: read_rng_stream_binary(reader)?,
-            request_id: reader.read_u64()?,
-            width: reader.read_u8()?,
-            value: reader.read_u64()?,
         })),
         5 => SelectionDecision::from_canonical_bytes(reader.read_binary_blob_bounded(
             "campaign selection decision",

@@ -12,9 +12,7 @@ use std::sync::Arc;
 
 use crucible_campaign::{ConfigurationArtifactId, ExactCheckpointId};
 
-use crate::{
-    MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS, QemuHotForkTemplateKey, QemuHotForkTemplatePoolSlot,
-};
+use crate::{HotCheckpointPoolKey, HotCheckpointPoolSlot, MAX_HOT_CHECKPOINT_POOL_SLOTS};
 
 /// Maximum normalized contribution accepted for one hotness component.
 pub const MAX_HOT_CHECKPOINT_SCORE_COMPONENT: u64 = 1_000_000_000_000;
@@ -45,7 +43,7 @@ pub struct HotCheckpointManager {
     limits: HotCheckpointLimits,
     generation: u64,
     usage: HotCheckpointUsage,
-    retained: BTreeMap<QemuHotForkTemplatePoolSlot, HotCheckpointStatus>,
+    retained: BTreeMap<HotCheckpointPoolSlot, HotCheckpointStatus>,
     last_fork_nanos: Option<u64>,
     fork_window: Option<u64>,
     forks_in_window: u32,
@@ -87,7 +85,7 @@ impl HotCheckpointManager {
 
     /// Returns the retained status at an exact stable pool coordinate.
     #[must_use]
-    pub fn status(&self, slot: QemuHotForkTemplatePoolSlot) -> Option<HotCheckpointStatus> {
+    pub fn status(&self, slot: HotCheckpointPoolSlot) -> Option<HotCheckpointStatus> {
         self.retained.get(&slot).copied()
     }
 
@@ -198,7 +196,7 @@ impl HotCheckpointManager {
     pub fn commit_admission(
         &mut self,
         plan: HotCheckpointAdmissionPlan,
-        installed_slot: QemuHotForkTemplatePoolSlot,
+        installed_slot: HotCheckpointPoolSlot,
     ) -> Result<HotCheckpointAdmissionCommit, HotCheckpointAdmissionCommitError> {
         if !Arc::ptr_eq(&self.identity, &plan.manager) {
             return Err(HotCheckpointAdmissionCommitError::ForeignPlan);
@@ -268,31 +266,6 @@ impl HotCheckpointManager {
         Ok(HotCheckpointAdmissionCommit { retained, demoted })
     }
 
-    /// Replaces one retained source's operational score and pin state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HotCheckpointInventoryError`] when the coordinate is absent or
-    /// the inventory generation can no longer advance.
-    pub fn update_signals(
-        &mut self,
-        slot: QemuHotForkTemplatePoolSlot,
-        signals: HotCheckpointHotnessSignals,
-    ) -> Result<HotCheckpointStatus, HotCheckpointInventoryError> {
-        let next_generation = self
-            .generation
-            .checked_add(1)
-            .ok_or(HotCheckpointInventoryError::GenerationExhausted)?;
-        let status = self
-            .retained
-            .get_mut(&slot)
-            .ok_or(HotCheckpointInventoryError::MissingSlot)?;
-        status.signals = signals;
-        status.reason = HotCheckpointRetentionReason::SignalsUpdated;
-        self.generation = next_generation;
-        Ok(*status)
-    }
-
     /// Plans an independently secured orderly demotion without mutation.
     ///
     /// # Errors
@@ -303,7 +276,7 @@ impl HotCheckpointManager {
     /// work when no unambiguous commit generation remains.
     pub fn plan_orderly_demotion(
         &self,
-        slot: QemuHotForkTemplatePoolSlot,
+        slot: HotCheckpointPoolSlot,
         reason: HotCheckpointDemotionReason,
     ) -> Result<HotCheckpointOrderlyDemotionPlan, HotCheckpointInventoryError> {
         self.generation

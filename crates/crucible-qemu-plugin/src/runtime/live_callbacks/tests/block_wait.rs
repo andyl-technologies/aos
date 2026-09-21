@@ -7,7 +7,7 @@ fn live_block_wait_defers_until_the_host_publishes_a_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(48, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
@@ -21,11 +21,37 @@ fn live_block_wait_defers_until_the_host_publishes_a_deadline() {
 }
 
 #[test]
+fn live_block_wait_does_not_authorize_a_deadline_during_next_idle() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::NextAuthenticatedIdle)
+        .unwrap_or_else(|error| panic!("next-idle advance should publish: {error}"));
+    slot.store_device_completion_deadline_icount(12);
+    let state = test_live_state(148, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+
+    assert_eq!(
+        state.on_block_wait(1),
+        Err(LiveVcpuTimeCallbackError::IdleHotLoop {
+            source: IdleHotLoopError::WakeNotAuthorized {
+                desired_wake_icount: 12,
+                ceiling_icount: 20,
+            }
+        })
+    );
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+    assert!(!state.idle_advance_is_pending());
+}
+
+#[test]
 fn live_block_wait_parks_when_an_advance_still_owns_the_qemu_barrier() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
     let state = test_live_state(48, 1, 0, 0, &slot)
@@ -52,7 +78,7 @@ fn live_block_wait_queues_and_commits_the_device_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
     let state = test_live_state(48, 1, 0, 0, &slot)
@@ -76,7 +102,7 @@ fn live_block_wait_stops_at_scheduler_ceiling_before_device_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(50);
     let state = test_live_state(48, 1, 0, 0, &slot)
@@ -100,7 +126,7 @@ fn live_block_wait_preserves_an_earlier_timer_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
     let state = test_live_state(48, 1, 0, 0, &slot)
@@ -120,7 +146,7 @@ fn live_block_wait_arms_from_its_fresh_raw_coordinate() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
     let state = test_live_state(48, 1, 0, 0, &slot)
@@ -145,7 +171,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let outbound_header = RingHeader::new();
     let inbound_header = RingHeader::new();
@@ -186,7 +212,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
         Ordering::Release,
     );
     state
-        .on_vcpu_init(49, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
     LAST_QUEUED_ADVANCE_NS.set(-1);
@@ -246,7 +272,7 @@ fn busy_boundary_retains_backpressured_inbound_until_guest_acceptance() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 7, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let outbound_header = RingHeader::new();
     let inbound_header = RingHeader::new();
@@ -287,7 +313,7 @@ fn busy_boundary_retains_backpressured_inbound_until_guest_acceptance() {
         Ordering::Release,
     );
     state
-        .on_vcpu_init(50, 0)
+        .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_RX_INJECT_COUNT.store(0, Ordering::SeqCst);
     TEST_RX_LAST_LEN.store(0, Ordering::SeqCst);
@@ -311,7 +337,7 @@ fn busy_boundary_retains_backpressured_inbound_until_guest_acceptance() {
     let retry_icount = 7 + crate::NETWORK_RX_RETRY_INTERVAL_ICOUNT;
     let retry_ceiling = authorize_advance_ceiling(7, retry_icount, None)
         .unwrap_or_else(|error| panic!("retry ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(retry_ceiling)
+    slot.publish_scheduler_advance(retry_ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("retry ceiling should publish: {error}"));
     TEST_ICOUNT_RAW.set(retry_icount);
     state

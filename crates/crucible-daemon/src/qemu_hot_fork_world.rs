@@ -28,6 +28,7 @@ use crate::{
 };
 
 mod lifecycle;
+pub(crate) use lifecycle::QemuHotForkProductionLifecycleContext;
 pub use lifecycle::QemuProductionHotForkWorldLifecycle;
 
 /// Unforgeable process-local identity of one atomic world assembly attempt.
@@ -37,7 +38,7 @@ pub use lifecycle::QemuProductionHotForkWorldLifecycle;
 /// owner, preventing children from another retry or concurrent assembly from
 /// being mixed into this world even when all semantic source fields match.
 #[derive(Clone)]
-pub struct QemuHotForkWorldAssemblyToken {
+pub(crate) struct QemuHotForkWorldAssemblyToken {
     identity: Arc<()>,
 }
 
@@ -70,21 +71,25 @@ mod sealed {
 /// The trait is sealed because installed-node, source-process, configuration,
 /// event-prefix, and assembly-incarnation claims must come from the concrete
 /// reconciliation owner rather than from a caller-provided implementation.
-pub trait QemuHotForkWorldChild: sealed::QemuHotForkWorldChild {
+pub(crate) trait QemuHotForkWorldChild: sealed::QemuHotForkWorldChild {
     /// Typed child inspection failure.
     type Error: Error;
 
-    /// Returns the exact retained source basis after node installation.
+    /// Returns the retained source basis and its required world assembly token.
     ///
     /// # Errors
     ///
     /// Returns the reconciliation failure when the child has not completed
     /// private-channel admission and process-neutral scheduler installation.
-    fn source_basis(&self) -> Result<QemuHotForkWorldChildSourceBasis, Self::Error>;
-
-    /// Returns the exact world assembly for which this child was launched.
-    #[must_use]
-    fn world_assembly_token(&self) -> Option<&QemuHotForkWorldAssemblyToken>;
+    fn admission_basis(
+        &self,
+    ) -> Result<
+        (
+            QemuHotForkWorldChildSourceBasis,
+            &QemuHotForkWorldAssemblyToken,
+        ),
+        Self::Error,
+    >;
 
     /// Transfers every incomplete child authority to fail-closed quarantine.
     fn quarantine(&mut self);
@@ -106,12 +111,16 @@ where
         crate::QemuHotForkAttemptReconciliationError<crate::LinuxQemuHotForkReconciliationError>,
     >;
 
-    fn source_basis(&self) -> Result<QemuHotForkWorldChildSourceBasis, Self::Error> {
-        self.world_child_source_basis()
-    }
-
-    fn world_assembly_token(&self) -> Option<&QemuHotForkWorldAssemblyToken> {
-        QemuHotForkAttemptReconciliation::world_assembly_token(self)
+    fn admission_basis(
+        &self,
+    ) -> Result<
+        (
+            QemuHotForkWorldChildSourceBasis,
+            &QemuHotForkWorldAssemblyToken,
+        ),
+        Self::Error,
+    > {
+        self.world_child_admission_basis()
     }
 
     fn quarantine(&mut self) {
@@ -126,7 +135,7 @@ struct ExpectedWorldSource {
 
 /// Reason one child was refused before it could enter a world transaction.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum QemuHotForkWorldChildAdmissionFailure {
+pub(crate) enum QemuHotForkWorldChildAdmissionFailure {
     /// The continuation does not retain a source QEMU for this node.
     #[error("hot-fork child node is not a retained source member of the captured world")]
     UnexpectedNode,
@@ -151,15 +160,14 @@ pub enum QemuHotForkWorldChildAdmissionFailure {
     /// The child belongs to another source-QEMU process incarnation.
     #[error("hot-fork child source process differs from the world continuation")]
     SourceProcessMismatch,
-    /// The child was launched for another world transaction or for the legacy
-    /// single-node execution path.
+    /// The child was launched for another world transaction.
     #[error("hot-fork child belongs to another world assembly")]
     WorldAssemblyMismatch,
 }
 
 /// Rejected child admission retaining the exact child authority.
 #[must_use = "quarantine, retry, or otherwise retain the rejected child authority"]
-pub struct QemuHotForkWorldChildAdmissionError<C> {
+pub(crate) struct QemuHotForkWorldChildAdmissionError<C> {
     node: NodeId,
     child: C,
     failure: QemuHotForkWorldChildAdmissionFailure,
@@ -196,7 +204,7 @@ impl<C> Error for QemuHotForkWorldChildAdmissionError<C> where C: 'static {}
 
 /// Incomplete world publication retaining every already-admitted child.
 #[must_use = "complete the world or transfer the retained assembly to quarantine"]
-pub struct QemuHotForkWorldIncomplete<C>
+pub(crate) struct QemuHotForkWorldIncomplete<C>
 where
     C: QemuHotForkWorldChild,
 {
@@ -208,14 +216,8 @@ impl<C> QemuHotForkWorldIncomplete<C>
 where
     C: QemuHotForkWorldChild,
 {
-    /// Returns the canonically ordered retained source nodes missing a child.
-    #[must_use]
-    pub fn missing_nodes(&self) -> &[NodeId] {
-        &self.missing
-    }
-
     /// Recovers the unchanged assembly for additional admission attempts.
-    pub fn into_assembly(self) -> QemuHotForkWorldAssembly<C> {
+    pub(crate) fn into_assembly(self) -> QemuHotForkWorldAssembly<C> {
         *self.assembly
     }
 }
@@ -249,7 +251,7 @@ impl<C> Error for QemuHotForkWorldIncomplete<C> where C: QemuHotForkWorldChild +
 
 /// Linear all-or-nothing assembly transaction for one child world.
 #[must_use = "publish a complete child world or retain it for fail-closed cleanup"]
-pub struct QemuHotForkWorldAssembly<C>
+pub(crate) struct QemuHotForkWorldAssembly<C>
 where
     C: QemuHotForkWorldChild,
 {
@@ -291,18 +293,6 @@ where
             children: BTreeMap::new(),
             published: false,
         }
-    }
-
-    /// Returns the number of retained source nodes required by this world.
-    #[must_use]
-    pub fn expected_child_count(&self) -> usize {
-        self.expected.len()
-    }
-
-    /// Returns the number of exact children admitted so far.
-    #[must_use]
-    pub fn admitted_child_count(&self) -> usize {
-        self.children.len()
     }
 
     /// Clones the unforgeable identity required by every per-node launch.
@@ -349,15 +339,15 @@ where
             Some(_) if self.children.contains_key(&node) => {
                 Err(QemuHotForkWorldChildAdmissionFailure::DuplicateNode)
             }
-            Some(expected) => match child.world_assembly_token() {
-                Some(token) if token.same_assembly(&self.token) => child
-                    .source_basis()
-                    .map_err(
-                        |error| QemuHotForkWorldChildAdmissionFailure::ChildNotReady {
-                            message: error.to_string().chars().take(512).collect(),
-                        },
-                    )
-                    .and_then(|basis| {
+            Some(expected) => child
+                .admission_basis()
+                .map_err(
+                    |error| QemuHotForkWorldChildAdmissionFailure::ChildNotReady {
+                        message: error.to_string().chars().take(512).collect(),
+                    },
+                )
+                .and_then(|(basis, token)| {
+                    if token.same_assembly(&self.token) {
                         validate_world_child_basis(
                             &node,
                             self.configuration,
@@ -365,9 +355,10 @@ where
                             &expected.process,
                             &basis,
                         )
-                    }),
-                Some(_) | None => Err(QemuHotForkWorldChildAdmissionFailure::WorldAssemblyMismatch),
-            },
+                    } else {
+                        Err(QemuHotForkWorldChildAdmissionFailure::WorldAssemblyMismatch)
+                    }
+                }),
         };
         if let Err(failure) = result {
             return Err(QemuHotForkWorldChildAdmissionError {
@@ -434,7 +425,7 @@ where
 /// the whole value, install the one unified event log and host continuation,
 /// and only then lend modeled execution capability.
 #[must_use = "install the complete child set or retain it for fail-closed cleanup"]
-pub struct QemuHotForkCompleteWorldAssembly<C>
+pub(crate) struct QemuHotForkCompleteWorldAssembly<C>
 where
     C: QemuHotForkWorldChild,
 {
@@ -446,17 +437,6 @@ impl<C> QemuHotForkCompleteWorldAssembly<C>
 where
     C: QemuHotForkWorldChild,
 {
-    /// Returns the exact process-neutral host continuation for this world.
-    pub const fn continuation(&self) -> &ProductionVmHotForkWorldContinuation {
-        &self.continuation
-    }
-
-    /// Returns the number of installed running QEMU children.
-    #[must_use]
-    pub fn child_count(&self) -> usize {
-        self.children.len()
-    }
-
     pub(crate) fn quarantine(self) {
         for (_node, mut child) in self.children {
             child.quarantine();
@@ -501,7 +481,7 @@ mod tests {
 
     struct FakeChild {
         basis: Result<QemuHotForkWorldChildSourceBasis, FakeChildError>,
-        token: Option<QemuHotForkWorldAssemblyToken>,
+        token: QemuHotForkWorldAssemblyToken,
         quarantined: Arc<AtomicUsize>,
     }
 
@@ -510,12 +490,17 @@ mod tests {
     impl QemuHotForkWorldChild for FakeChild {
         type Error = FakeChildError;
 
-        fn source_basis(&self) -> Result<QemuHotForkWorldChildSourceBasis, Self::Error> {
-            self.basis.clone()
-        }
-
-        fn world_assembly_token(&self) -> Option<&QemuHotForkWorldAssemblyToken> {
-            self.token.as_ref()
+        fn admission_basis(
+            &self,
+        ) -> Result<
+            (
+                QemuHotForkWorldChildSourceBasis,
+                &QemuHotForkWorldAssemblyToken,
+            ),
+            Self::Error,
+        > {
+            let basis = self.basis.clone()?;
+            Ok((basis, &self.token))
         }
 
         fn quarantine(&mut self) {
@@ -669,7 +654,7 @@ mod tests {
                 first.clone(),
                 FakeChild {
                     basis: Ok(basis(first, configuration, event_log_offset, first_process)),
-                    token: Some(token.clone()),
+                    token: token.clone(),
                     quarantined: Arc::clone(&quarantined),
                 },
             )
@@ -685,7 +670,7 @@ mod tests {
                         event_log_offset,
                         second_process.clone(),
                     )),
-                    token: Some(QemuHotForkWorldAssemblyToken::new()),
+                    token: QemuHotForkWorldAssemblyToken::new(),
                     quarantined: Arc::clone(&quarantined),
                 },
             )
@@ -708,7 +693,7 @@ mod tests {
                         event_log_offset,
                         second_process,
                     )),
-                    token: Some(token),
+                    token,
                     quarantined: Arc::clone(&quarantined),
                 },
             )
@@ -725,7 +710,7 @@ mod tests {
             .publish()
             .err()
             .unwrap_or_else(|| panic!("partial child world must not publish"));
-        assert_eq!(incomplete.missing_nodes(), &[second]);
+        assert_eq!(incomplete.missing, [second]);
         drop(incomplete);
         assert_eq!(quarantined.load(Ordering::Acquire), 3);
     }

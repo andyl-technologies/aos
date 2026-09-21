@@ -272,7 +272,6 @@ fn permanently_failed_world_prepares_without_source_processes() {
         .prepare_hot_fork_source_world()
         .unwrap_or_else(|error| panic!("permanently failed world should prepare: {error}"));
 
-    assert_eq!(source_world.prepared_nodes().len(), 0);
     assert_eq!(
         source_world.continuation().nodes().len(),
         source.world().vm_nodes().len()

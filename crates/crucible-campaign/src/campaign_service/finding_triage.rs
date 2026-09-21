@@ -75,6 +75,80 @@ impl Canonical for CampaignFindingTriageReplayRole {
     }
 }
 
+/// Authenticated campaign and finding coordinates for one replay read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignFindingTriageReplaySelection {
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    finding: FindingId,
+    bundle: FindingCandidateBundleId,
+    role: CampaignFindingTriageReplayRole,
+    evidence: FindingTriageReplayEvidenceId,
+}
+
+impl CampaignFindingTriageReplaySelection {
+    /// Creates the complete logical selection for segmented replay evidence.
+    #[must_use]
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        finding: FindingId,
+        bundle: FindingCandidateBundleId,
+        role: CampaignFindingTriageReplayRole,
+        evidence: FindingTriageReplayEvidenceId,
+    ) -> Self {
+        Self {
+            principal,
+            campaign,
+            snapshot,
+            finding,
+            bundle,
+            role,
+            evidence,
+        }
+    }
+}
+
+/// Storage-object and segment coordinates for one replay read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignFindingTriageReplaySegment {
+    object_ordinal: u32,
+    object: ContentId,
+    segment_index: u32,
+}
+
+impl CampaignFindingTriageReplaySegment {
+    /// Creates one segment coordinate within the authenticated object inventory.
+    #[must_use]
+    pub const fn new(object_ordinal: u32, object: ContentId, segment_index: u32) -> Self {
+        Self {
+            object_ordinal,
+            object,
+            segment_index,
+        }
+    }
+}
+
+/// Merkle proofs that bind one replay response to its finding occurrence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignFindingTriageReplayProofs {
+    finding: MerkleMapLookupProof,
+    occurrence: MerkleMapLookupProof,
+}
+
+impl CampaignFindingTriageReplayProofs {
+    /// Groups the finding and occurrence lookup proofs for one response.
+    #[must_use]
+    pub fn new(finding: MerkleMapLookupProof, occurrence: MerkleMapLookupProof) -> Self {
+        Self {
+            finding,
+            occurrence,
+        }
+    }
+}
+
 /// Strict request for one canonical segment of a stored replay envelope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetCampaignFindingTriageReplaySegmentRequest {
@@ -101,20 +175,24 @@ impl GetCampaignFindingTriageReplaySegmentRequest {
     ///
     /// Returns [`CampaignCodecError`] when the ordinal, content identity,
     /// segment index, or encoded request is invalid.
-    // crucible-lint: allow rust-allow -- the request binds every authenticated segment coordinate explicitly.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        principal: CampaignPrincipal,
-        campaign: CampaignName,
-        snapshot: CampaignSnapshotId,
-        finding: FindingId,
-        bundle: FindingCandidateBundleId,
-        role: CampaignFindingTriageReplayRole,
-        evidence: FindingTriageReplayEvidenceId,
-        object_ordinal: u32,
-        object: ContentId,
-        segment_index: u32,
+        selection: CampaignFindingTriageReplaySelection,
+        segment: CampaignFindingTriageReplaySegment,
     ) -> Result<Self, CampaignCodecError> {
+        let CampaignFindingTriageReplaySelection {
+            principal,
+            campaign,
+            snapshot,
+            finding,
+            bundle,
+            role,
+            evidence,
+        } = selection;
+        let CampaignFindingTriageReplaySegment {
+            object_ordinal,
+            object,
+            segment_index,
+        } = segment;
         if object_ordinal > MAX_STORAGE_OBJECT_ORDINAL
             || object.kind() != ObjectKind::Finding
             || (object_ordinal == 0 && object != evidence.content_id())
@@ -251,7 +329,7 @@ impl Canonical for GetCampaignFindingTriageReplaySegmentRequest {
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         require_service_version(u32::decode(decoder)?)?;
-        Self::new(
+        let selection = CampaignFindingTriageReplaySelection::new(
             CampaignPrincipal::decode(decoder)?,
             CampaignName::decode(decoder)?,
             CampaignSnapshotId::decode(decoder)?,
@@ -259,10 +337,13 @@ impl Canonical for GetCampaignFindingTriageReplaySegmentRequest {
             FindingCandidateBundleId::decode(decoder)?,
             CampaignFindingTriageReplayRole::decode(decoder)?,
             FindingTriageReplayEvidenceId::decode(decoder)?,
+        );
+        let segment = CampaignFindingTriageReplaySegment::new(
             u32::decode(decoder)?,
             ContentId::decode(decoder)?,
             u32::decode(decoder)?,
-        )
+        );
+        Self::new(selection, segment)
     }
 }
 
@@ -292,8 +373,6 @@ impl GetCampaignFindingTriageReplaySegmentResponse {
     ///
     /// Returns [`CampaignCodecError`] when the request basis, role binding,
     /// storage description, segment boundary, proof, or message size is invalid.
-    // crucible-lint: allow rust-allow -- the response binds every authenticated segment coordinate explicitly.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         request: &GetCampaignFindingTriageReplaySegmentRequest,
         snapshot_body: CampaignSnapshot,
@@ -301,8 +380,7 @@ impl GetCampaignFindingTriageReplaySegmentResponse {
         bundle: FindingCandidateBundle,
         description: FindingTriageReplayStorageDescription,
         range_bytes: Vec<u8>,
-        finding_proof: MerkleMapLookupProof,
-        occurrence_proof: MerkleMapLookupProof,
+        proofs: CampaignFindingTriageReplayProofs,
     ) -> Result<Self, CampaignCodecError> {
         let (range_offset, range_length) = canonical_segment(&description, request)?;
         let response = Self {
@@ -318,8 +396,8 @@ impl GetCampaignFindingTriageReplaySegmentResponse {
             range_offset,
             range_length,
             range_bytes,
-            finding_proof,
-            occurrence_proof,
+            finding_proof: proofs.finding,
+            occurrence_proof: proofs.occurrence,
         };
         response.validate_body_for(request)?;
         ensure_message_size(
@@ -369,12 +447,6 @@ impl GetCampaignFindingTriageReplaySegmentResponse {
     #[must_use]
     pub const fn segment_index(&self) -> u32 {
         self.segment_index
-    }
-
-    /// Returns the canonical byte offset derived from the storage description.
-    #[must_use]
-    pub const fn range_offset(&self) -> u64 {
-        self.range_offset
     }
 
     /// Returns the canonical byte length derived from the storage description.

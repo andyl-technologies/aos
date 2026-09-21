@@ -56,30 +56,6 @@
         needle = "[`InvalidationQuery::evaluate`]";
       }
       {
-        label = "shared seam constant";
-        needle = "pub const FUTURE_RATCHET_SHARED_SEAM";
-      }
-      {
-        label = "seam interface constant";
-        needle = "pub const FUTURE_RATCHET_SEAM_INTERFACE";
-      }
-      {
-        label = "shared seam includes SharedDagStore";
-        needle = "SharedDagStore+InvalidationQuery::evaluate";
-      }
-      {
-        label = "seam interface includes put";
-        needle = "DagStore::put";
-      }
-      {
-        label = "seam interface includes get";
-        needle = "DagStore::get";
-      }
-      {
-        label = "seam interface includes has";
-        needle = "DagStore::has";
-      }
-      {
         label = "merge bar includes content-address";
         needle = "gate:content-address";
       }

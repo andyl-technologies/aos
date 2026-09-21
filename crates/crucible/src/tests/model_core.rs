@@ -1,5 +1,12 @@
 //! Core model, scenario identity, and step-transition unit tests.
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crate::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use super::*;
 use crucible_campaign::{
     BooleanDomain, CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate,
@@ -59,7 +66,7 @@ fn try_step_appends_decision_without_mutating_parent() {
         value: 42,
     });
 
-    let child = valid_step(&config, decision.clone());
+    let child = accepted_step!(&config, decision.clone());
 
     assert!(config.schedule.is_empty());
     assert_eq!(child.schedule.decisions(), &[decision]);
@@ -89,9 +96,9 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
     corrupted.push(0);
     assert!(SelectionDecision::from_canonical_bytes(&corrupted).is_err());
 
-    let mut legacy = encoded;
-    legacy[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
-    assert!(Schedule::from_compact_binary(&legacy).is_err());
+    let mut noncurrent = encoded;
+    noncurrent[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v0\0");
+    assert!(Schedule::from_compact_binary(&noncurrent).is_err());
     Ok(())
 }
 
@@ -105,7 +112,7 @@ fn try_step_is_pure_temporal_graph_edge_constructor() {
         let original_parent = parent.clone();
         let decision = generated_decision(seed, 64);
 
-        let child = valid_step(&parent, decision.clone());
+        let child = accepted_step!(&parent, decision.clone());
 
         assert_eq!(parent, original_parent);
         assert_eq!(child.def, parent.def);
@@ -290,16 +297,20 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
         ContentHash::from_canonical_material("crucible.model.world.v4", &material)
     );
     assert_eq!(base_world.vm_nodes().len(), 1);
-    assert_eq!(base_world.vm_nodes()[0].arch, VmArchitecture::Aarch64);
-    assert_eq!(base_world.vm_nodes()[0].memory_mib, 2048);
-    assert_eq!(base_world.vm_nodes()[0].cmdline, cmdline);
-    assert_eq!(base_world.vm_nodes()[0].ready_point, ready_point);
-    assert_eq!(base_world.vm_nodes()[0].white_box, WhiteBoxPolicy::Enabled);
-    assert_eq!(base_world.vm_nodes()[0].smp_vcpus, 2);
-    assert_eq!(base_world.vm_nodes()[0].icount_shift, 1);
-    assert_eq!(base_world.vm_nodes()[0].kernel, Some(kernel));
-    assert_eq!(base_world.vm_nodes()[0].root_image, Some(root_image));
-    assert_eq!(base_world.vm_nodes()[0].initrd, Some(initrd));
+    let Some(base_node) = base_world.vm_nodes().first() else {
+        panic!("template world should contain one VM node");
+    };
+    let base_node = base_node.clone();
+    assert_eq!(base_node.arch, VmArchitecture::Aarch64);
+    assert_eq!(base_node.memory_mib, 2048);
+    assert_eq!(base_node.cmdline, cmdline);
+    assert_eq!(base_node.ready_point, ready_point);
+    assert_eq!(base_node.white_box, WhiteBoxPolicy::Enabled);
+    assert_eq!(base_node.smp_vcpus, 2);
+    assert_eq!(base_node.icount_shift, 1);
+    assert_eq!(base_node.kernel, Some(kernel));
+    assert_eq!(base_node.root_image, Some(root_image));
+    assert_eq!(base_node.initrd, Some(initrd));
     assert_eq!(
         World::from_canonical_toml(&toml)
             .unwrap_or_else(|error| panic!("world TOML should parse: {error}")),
@@ -546,22 +557,17 @@ fn reduce_is_prefix_closed_by_schedule_hash() {
     let scenario =
         ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=prefix");
     let root = Configuration::genesis(scenario.clone());
-    let child = valid_step(
+    let child = accepted_step!(
         &root,
         Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: 4 },
             order: vec![event_key(4, 1), event_key(4, 2)],
         }),
     );
-    let grandchild = valid_step(
+    let grandchild = accepted_step!(
         &child,
-        Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: String::from("node-a"),
-            },
+        Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_node("app/request"),
-            request_id: 3,
-            width: 16,
             value: 0xace,
         }),
     );
@@ -820,14 +826,6 @@ fn compact_checkpoint_round_trips_concrete_execution_closure() {
         .unwrap_or_else(|error| panic!("checkpoint closure should decode: {error}"));
     assert_eq!(restored, checkpoint);
     assert_eq!(restored.execution_closure, Some(closure));
-
-    let mut legacy = bytes;
-    legacy[..b"crucible.checkpoint.v4\0".len()].copy_from_slice(b"crucible.checkpoint.v3\0");
-    assert_eq!(
-        Checkpoint::from_compact_binary(&legacy)
-            .unwrap_or_else(|error| panic!("selection-free V3 checkpoint should decode: {error}")),
-        checkpoint
-    );
 }
 
 #[test]
@@ -847,14 +845,6 @@ fn compact_checkpoint_versions_campaign_selection_grammar() {
             .unwrap_or_else(|error| panic!("V4 selection checkpoint should decode: {error}")),
         checkpoint
     );
-
-    let mut forged_legacy = bytes;
-    forged_legacy[..b"crucible.checkpoint.v4\0".len()].copy_from_slice(b"crucible.checkpoint.v3\0");
-    assert!(matches!(
-        Checkpoint::from_compact_binary(&forged_legacy),
-        Err(EngineError::ScenarioSerialization { reason })
-            if reason == "checkpoint V3 cannot contain a campaign selection decision"
-    ));
 }
 
 #[test]
@@ -1146,7 +1136,7 @@ fn temporal_graph_replay_checkpoint_rejects_materialized_payload_drift() {
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let config = valid_step(&genesis, generated_decision(84, 0));
+    let config = accepted_step!(&genesis, generated_decision(84, 0));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
@@ -1224,7 +1214,7 @@ fn temporal_graph_replay_oracle_rejects_cached_snapshot_to_thin() {
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let config = valid_step(&genesis, generated_decision(87, 0));
+    let config = accepted_step!(&genesis, generated_decision(87, 0));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
@@ -1362,8 +1352,8 @@ fn temporal_graph_replay_oracle_admits_cached_ancestors_before_target() {
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let ancestor = valid_step(&genesis, generated_decision(88, 0));
-    let target = valid_step(&ancestor, generated_decision(88, 1));
+    let ancestor = accepted_step!(&genesis, generated_decision(88, 0));
+    let target = accepted_step!(&ancestor, generated_decision(88, 1));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),

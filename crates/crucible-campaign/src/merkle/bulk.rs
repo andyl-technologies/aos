@@ -314,7 +314,7 @@ mod tests {
         ));
         let map = MerkleMap::new(blobs.clone());
         let entries = (0..CONTINUATIONS).map(|index| {
-            let request_content = ContentId::parse(&format!("campaign-fact.7.{index:064x}"))
+            let request_content = ContentId::parse(&format!("campaign-fact.9.{index:064x}"))
                 .expect("ordered synthetic request identity");
             let request = crate::BranchRequestId::from_content_id(request_content)
                 .expect("typed synthetic request identity");
@@ -396,7 +396,7 @@ mod tests {
     }
 
     fn synthetic_request(index: usize) -> crate::BranchRequestId {
-        let content = ContentId::parse(&format!("campaign-fact.7.{index:064x}"))
+        let content = ContentId::parse(&format!("campaign-fact.9.{index:064x}"))
             .expect("synthetic request content identity");
         crate::BranchRequestId::from_content_id(content).expect("synthetic request identity")
     }

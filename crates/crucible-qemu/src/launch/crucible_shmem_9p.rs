@@ -1,8 +1,8 @@
 //! Crucible-shmem 9p device attachment for deterministic QEMU launches.
 //!
 //! A [`CrucibleShmem9pDevice`] attaches a stock virtio-9p device to a launched
-//! guest. The carried QEMU patch series (`0019-crucible-9p-shmem`) intercepts
-//! the *stock* virtio-9p transport: when the plugin has registered its 9p
+//! guest. The atomic Crucible integration patch intercepts the *stock*
+//! virtio-9p transport: when the plugin has registered its 9p
 //! callbacks (`crucible_9p_callbacks_ready()`), every 9p PDU the guest submits is
 //! forwarded over the `SLOT_9P_IO` shared-memory rings to the host servicer
 //! instead of being handled by QEMU's fsdev backend. There is therefore no
@@ -10,11 +10,8 @@
 //! `-blockdev driver=crucible-shmem` backend); the `-fsdev` backend is a launch formality
 //! the plugin bypasses.
 //!
-//! The default backend is [`synth`](CrucibleShmem9pFsdevBackend::Synth), a
-//! hermetic synthetic filesystem that consults no host path. A
-//! [`local`](CrucibleShmem9pFsdevBackend::Local) passthrough backend is offered
-//! only as a fallback for a QEMU build that lacks the synth fsdev; it names a
-//! host directory and is therefore non-hermetic.
+//! The backend is QEMU 11.1.1's hermetic `synth` filesystem, which consults no
+//! host path.
 //!
 //! Argv layout (emitted only when a device is attached; a launch without one is
 //! byte-identical to a launch that never knew about this type):
@@ -24,13 +21,6 @@
 //! -device virtio-9p-pci,fsdev=<fsdev_id>,mount_tag=<mount_tag>,id=<device_id>
 //! ```
 //!
-//! or, with the local fallback backend:
-//!
-//! ```text
-//! -fsdev local,id=<fsdev_id>,path=<host_path>,security_model=none
-//! -device virtio-9p-pci,fsdev=<fsdev_id>,mount_tag=<mount_tag>,id=<device_id>
-//! ```
-
 use super::QemuLaunchCommandError;
 
 /// Default `-fsdev` identifier bound to the crucible-shmem 9p device.
@@ -41,27 +31,6 @@ pub const DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID: &str = "crucible-9p-device0";
 
 /// Default 9p mount tag the guest uses to mount the crucible filesystem.
 pub const DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG: &str = "crucible";
-
-/// The `-fsdev` backend the crucible-shmem 9p device is launched with.
-///
-/// The plugin intercepts 9p PDUs before the backend is consulted, so the backend
-/// choice never affects the data a crucible-serviced 9p op observes. It only
-/// determines which fsdev QEMU registers to satisfy the `-device` reference.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CrucibleShmem9pFsdevBackend {
-    /// Hermetic synthetic backend (`-fsdev synth`); no host path. Preferred: the
-    /// crucible plugin forwards every PDU over `SLOT_9P_IO`, so the synth tree is
-    /// never read and the launch stays hermetic.
-    Synth,
-    /// Host-directory passthrough backend (`-fsdev local`), a non-hermetic
-    /// fallback for a QEMU build without the synth fsdev. The named directory is
-    /// never actually read on the crucible path, but naming a host path makes the
-    /// launch non-hermetic, so this variant is used only when synth is absent.
-    Local {
-        /// Host directory path passed to the local fsdev backend.
-        path: String,
-    },
-}
 
 /// A crucible-shmem 9p device attached to a launched guest.
 ///
@@ -77,8 +46,6 @@ pub struct CrucibleShmem9pDevice {
     device_id: String,
     /// 9p mount tag the guest addresses the filesystem by.
     mount_tag: String,
-    /// The fsdev backend QEMU registers to satisfy the device reference.
-    backend: CrucibleShmem9pFsdevBackend,
 }
 
 impl CrucibleShmem9pDevice {
@@ -92,7 +59,6 @@ impl CrucibleShmem9pDevice {
             fsdev_id: DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID.to_owned(),
             device_id: DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID.to_owned(),
             mount_tag: DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG.to_owned(),
-            backend: CrucibleShmem9pFsdevBackend::Synth,
         }
     }
 
@@ -108,13 +74,6 @@ impl CrucibleShmem9pDevice {
     #[must_use]
     pub fn with_mount_tag(mut self, mount_tag: impl Into<String>) -> Self {
         self.mount_tag = mount_tag.into();
-        self
-    }
-
-    /// Returns the device with an explicit fsdev backend.
-    #[must_use]
-    pub fn with_backend(mut self, backend: CrucibleShmem9pFsdevBackend) -> Self {
-        self.backend = backend;
         self
     }
 
@@ -136,30 +95,18 @@ impl CrucibleShmem9pDevice {
         &self.mount_tag
     }
 
-    /// Returns the fsdev backend the device is launched with.
-    #[must_use]
-    pub const fn backend(&self) -> &CrucibleShmem9pFsdevBackend {
-        &self.backend
-    }
-
     /// Appends the `-fsdev`/`-device` argument pair for this device.
     pub(crate) fn append_qemu_args(&self, args: &mut Vec<String>) {
         args.push("-fsdev".to_owned());
-        match &self.backend {
-            CrucibleShmem9pFsdevBackend::Synth => {
-                args.push(format!("synth,id={}", self.fsdev_id));
-            }
-            CrucibleShmem9pFsdevBackend::Local { path } => {
-                args.push(format!(
-                    "local,id={},path={},security_model=none",
-                    self.fsdev_id, path
-                ));
-            }
-        }
+        args.push(format!("synth,id={}", self.fsdev_id));
         args.push("-device".to_owned());
         args.push(format!(
-            "virtio-9p-pci,fsdev={},mount_tag={},id={}",
-            self.fsdev_id, self.mount_tag, self.device_id
+            "virtio-9p-pci,fsdev={},mount_tag={},id={},bus={},addr={}",
+            self.fsdev_id,
+            self.mount_tag,
+            self.device_id,
+            super::QEMU_PCI_BUS,
+            super::QEMU_NINEP_PCI_ADDRESS,
         ));
     }
 
@@ -169,33 +116,19 @@ impl CrucibleShmem9pDevice {
         lines.push(format!("crucible_shmem_9p_fsdev_id={}", self.fsdev_id));
         lines.push(format!("crucible_shmem_9p_device_id={}", self.device_id));
         lines.push(format!("crucible_shmem_9p_mount_tag={}", self.mount_tag));
-        match &self.backend {
-            CrucibleShmem9pFsdevBackend::Synth => {
-                lines.push("crucible_shmem_9p_backend=synth".to_owned());
-            }
-            CrucibleShmem9pFsdevBackend::Local { path } => {
-                lines.push("crucible_shmem_9p_backend=local".to_owned());
-                lines.push(format!("crucible_shmem_9p_backend_path={path}"));
-            }
-        }
+        lines.push("crucible_shmem_9p_backend=synth".to_owned());
     }
 
-    /// Validates the identifiers, mount tag, and backend of this device.
+    /// Validates the identifiers and mount tag of this device.
     ///
     /// # Errors
     ///
     /// Returns [`QemuLaunchCommandError::InvalidLaunchText`] when an identifier,
-    /// the mount tag, or a local backend path is empty or contains a newline, NUL
-    /// byte, comma, or `=` (any of which would corrupt the comma-separated QEMU
-    /// option it is spliced into). A local backend path may contain neither a
-    /// comma nor an `=`, so it must not embed those characters.
+    /// or the mount tag is empty or contains a newline, NUL byte, comma, or `=`.
     pub(crate) fn validate(&self) -> Result<(), QemuLaunchCommandError> {
         validate_option_token("crucible_shmem_9p_fsdev_id", &self.fsdev_id)?;
         validate_option_token("crucible_shmem_9p_device_id", &self.device_id)?;
         validate_option_token("crucible_shmem_9p_mount_tag", &self.mount_tag)?;
-        if let CrucibleShmem9pFsdevBackend::Local { path } = &self.backend {
-            validate_option_token("crucible_shmem_9p_backend_path", path)?;
-        }
         Ok(())
     }
 }
@@ -230,7 +163,6 @@ mod tests {
         assert_eq!(device.fsdev_id(), DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID);
         assert_eq!(device.device_id(), DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID);
         assert_eq!(device.mount_tag(), DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG);
-        assert_eq!(device.backend(), &CrucibleShmem9pFsdevBackend::Synth);
     }
 
     #[test]
@@ -244,27 +176,7 @@ mod tests {
                 "-fsdev".to_owned(),
                 "synth,id=crucible-9p-fsdev0".to_owned(),
                 "-device".to_owned(),
-                "virtio-9p-pci,fsdev=crucible-9p-fsdev0,mount_tag=crucible,id=crucible-9p-device0"
-                    .to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn args_use_local_backend_when_selected() {
-        let device =
-            CrucibleShmem9pDevice::new().with_backend(CrucibleShmem9pFsdevBackend::Local {
-                path: "/scratch/9p".to_owned(),
-            });
-        let mut args = Vec::new();
-        device.append_qemu_args(&mut args);
-        assert_eq!(
-            args,
-            vec![
-                "-fsdev".to_owned(),
-                "local,id=crucible-9p-fsdev0,path=/scratch/9p,security_model=none".to_owned(),
-                "-device".to_owned(),
-                "virtio-9p-pci,fsdev=crucible-9p-fsdev0,mount_tag=crucible,id=crucible-9p-device0"
+                "virtio-9p-pci,fsdev=crucible-9p-fsdev0,mount_tag=crucible,id=crucible-9p-device0,bus=pcie.0,addr=0x4"
                     .to_owned(),
             ]
         );
@@ -287,18 +199,6 @@ mod tests {
                 "crucible_shmem_9p_backend=synth".to_owned(),
             ]
         );
-    }
-
-    #[test]
-    fn hash_material_records_local_backend_path() {
-        let device =
-            CrucibleShmem9pDevice::new().with_backend(CrucibleShmem9pFsdevBackend::Local {
-                path: "/scratch/9p".to_owned(),
-            });
-        let mut lines = Vec::new();
-        device.append_hash_material(&mut lines);
-        assert!(lines.contains(&"crucible_shmem_9p_backend=local".to_owned()));
-        assert!(lines.contains(&"crucible_shmem_9p_backend_path=/scratch/9p".to_owned()));
     }
 
     #[test]
@@ -337,20 +237,6 @@ mod tests {
                 .with_ids("", DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID)
                 .validate(),
             Err(QemuLaunchCommandError::InvalidLaunchText { .. })
-        ));
-    }
-
-    #[test]
-    fn validate_rejects_comma_in_local_path() {
-        assert!(matches!(
-            CrucibleShmem9pDevice::new()
-                .with_backend(CrucibleShmem9pFsdevBackend::Local {
-                    path: "/bad,path".to_owned()
-                })
-                .validate(),
-            Err(QemuLaunchCommandError::InvalidLaunchText {
-                field: "crucible_shmem_9p_backend_path"
-            })
         ));
     }
 }

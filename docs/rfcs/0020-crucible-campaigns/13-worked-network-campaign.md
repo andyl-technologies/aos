@@ -199,7 +199,7 @@ beam_width = 128
 
 [realization]
 prefer = "hot-fork"
-durable_on = ["finding", "pareto-admission", "hibernate"]
+durable_on = ["finding", "pareto-admission", "archive-transfer"]
 
 [retention]
 findings = "forever"
@@ -411,7 +411,7 @@ coordinator authenticates and recomputes them before advancing the campaign.
 Running the fixture through direct and loopback-RPC component adapters produces
 the same canonical campaign snapshots.
 
-## Replay, hibernation, and offline transfer
+## Replay, exact pause, and offline transfer
 
 To debug the loop, the operator requests the finding's midpoint:
 
@@ -427,19 +427,31 @@ a derived session and do not alter the canonical finding.
 The same storage representation supports longer-lived operations:
 
 ```text
-crucible campaign hibernate network-recovery --durability archive
-crucible campaign resume network-recovery
-crucible campaign export network-recovery --snapshot 7f4d… --to archive
+crucible campaign pause network-recovery \
+  --expected 7f4d… --command 5454… --active checkpoint
+crucible campaign resume network-recovery \
+  --expected 8a2c… --command 5353…
+crucible campaign archive transfer \
+  --source-state source-state \
+  --source-policy source-policy.toml \
+  --source-store source-store.toml \
+  --source-campaign network-recovery \
+  --snapshot 8a2c… \
+  --mode executable \
+  --destination-state archive-state \
+  --destination-policy archive-policy.toml \
+  --destination-store archive-store.toml \
+  --archive network-recovery-copy
 ```
 
-Hibernation converts required hot templates into exact closures, publishes all
-objects, atomically advances the snapshot, and only then releases host-local
-processes. `archive` is a configured logical store or durability policy; it may
-compose directory, packed local, and S3-compatible leaf drivers without
-changing the command or campaign identity. Offline transfer walks the closure,
-copies only missing logical objects, verifies them, and requires the complete
-execution closure locally before restore. No remote worker or demand pager is
-part of this RFC.
+Exact pause converts required hot templates into exact closures, publishes all
+objects, and atomically advances the snapshot before the operator releases
+host-local processes. The named archive is stored through an explicitly
+configured composed store, which may include directory, packed local, and
+S3-compatible leaf drivers without changing campaign identity. Offline transfer
+walks the closure, copies only missing logical objects, verifies them, and
+requires the complete execution closure locally before restore. No remote
+worker or demand pager is part of this RFC.
 
 ## What the result can claim
 

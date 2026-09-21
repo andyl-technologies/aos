@@ -266,7 +266,7 @@ mod tests {
             .expect("lineage"),
             CampaignPolicyId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Policy,
-                1,
+                4,
                 b"policy",
             ))
             .expect("policy"),
@@ -291,7 +291,7 @@ mod tests {
             ],
             [
                 String::from("44b9be4816bcc474866073114dc4b431d31d9e633e8a3da096bb16df6f009f80"),
-                String::from("5f7e7ba8b251b4e5cac220b310de759d14556f4ce72285f51eb7603880a1135a"),
+                String::from("ed762b7053cdbb07d8fcaffe856ff018d68df423acae0be5659b6ac453afec7b"),
             ]
         );
 

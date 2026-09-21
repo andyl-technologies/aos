@@ -134,7 +134,7 @@
       }
       {
         label = "RPC mismatch result marker";
-        needle = "rpc_major_mismatch_rejection=true";
+        needle = "rpc_exact_version_rejection=true";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/tests/gate_abi_conformance.rs" shmemGateTest [
@@ -209,8 +209,8 @@
         needle = "GOLDEN_VECTOR_RPC_REGENERATION_RULE";
       }
       {
-        label = "RPC major mismatch error";
-        needle = "RpcAbiError::MajorVersionMismatch";
+        label = "RPC exact version mismatch error";
+        needle = "RpcAbiError::ExactVersionMismatch";
       }
       {
         label = "RPC golden corpus";
@@ -219,8 +219,8 @@
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" apiGateTest [
       {
-        label = "RPC explicit version and mismatch check";
-        needle = "rpc_protocol_version_is_explicit_and_rejects_major_mismatch";
+        label = "RPC exact version and mismatch check";
+        needle = "rpc_protocol_version_is_exact_and_rejects_all_drift";
       }
       {
         label = "RPC golden vector coverage";
@@ -277,7 +277,7 @@ in
             printf '%s\n' 'protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit,doorbell-frame,doorbell-marker'
             printf '%s\n' 'rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied'
             printf '%s\n' 'version_bump_rule=shmem+protocol+rpc-golden-corpora'
-            printf '%s\n' 'rpc_major_mismatch_rejection=true'
+            printf '%s\n' 'rpc_exact_version_rejection=true'
             printf '%s\n' 'engine_test_double_aggregate=true'
           } > "$out/result"
         ''

@@ -5,14 +5,13 @@
 //! verified Crucible evaluation into measurement-set schema v2 and recomputes
 //! it from authenticated scheduler entries before accepting retained bytes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use crucible::SchedulerEventLogEntry;
 use crucible::model::{
-    MeasurementAggregateValue, MeasurementDefinitions, MeasurementEvaluation,
-    MeasurementEvaluationError, MeasurementRuntimeSample, MeasurementTerminalState,
-    evaluate_measurements, verify_measurement_evaluation,
+    MeasurementAggregateValue, MeasurementEvaluation, MeasurementEvaluationError,
 };
+#[cfg(test)]
+use crucible::model::{MeasurementDefinitions, MeasurementTerminalState};
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, CampaignPolicy, MeasurementSet, ObjectiveEvaluation,
     ObjectiveValue, Observation, PropertyVerdictSet, evaluate_objectives,
@@ -23,15 +22,12 @@ mod evidence;
 
 pub use evidence::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1, CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
-    CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
+    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementPublication,
+    CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,
     CrucibleObservationBoundaryEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     derive_crucible_measurement_samples, evaluate_crucible_measurement_publication,
     evaluate_crucible_observation_measurement_publication, verify_crucible_measurement_publication,
 };
-
-/// Payload schema for a canonical Crucible measurement evaluation v1 body.
-pub const CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1: u32 = 1;
 
 /// Failure while binding or verifying a Crucible measurement evaluation.
 #[derive(Debug, thiserror::Error)]
@@ -117,94 +113,32 @@ pub enum CrucibleMeasurementError {
     },
 }
 
-/// Encodes one already-verified Crucible evaluation as measurement-set v2.
-///
-/// `evidence` contains immutable campaign objects needed to reproduce or audit
-/// the evaluation. The caller must supply the complete set required by its
-/// execution-model retention policy.
-///
-/// # Errors
-///
-/// Returns [`CrucibleMeasurementError`] when the bounded campaign record cannot
-/// retain the canonical evaluation or its evidence children.
-pub fn encode_crucible_measurement_set(
-    evaluation: &MeasurementEvaluation,
-    evidence: BTreeSet<ContentId>,
-) -> Result<MeasurementSet, CrucibleMeasurementError> {
-    MeasurementSet::from_evaluation(
-        campaign_hash(evaluation.definitions()),
-        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1,
-        campaign_hash(evaluation.content_hash()),
-        evaluation.canonical_bytes().to_vec(),
-        evidence,
-    )
-    .map_err(Into::into)
-}
-
-/// Evaluates one Crucible run and encodes the exact campaign measurement set.
-///
-/// # Errors
-///
-/// Returns [`CrucibleMeasurementError`] for invalid replay inputs, exceeded
-/// evaluation bounds, exact-arithmetic failures, or campaign record limits.
-pub fn evaluate_crucible_measurement_set(
-    definitions: &MeasurementDefinitions,
-    entries: &[SchedulerEventLogEntry],
-    samples: Vec<MeasurementRuntimeSample>,
-    terminal: &MeasurementTerminalState,
-    evidence: BTreeSet<ContentId>,
-) -> Result<MeasurementSet, CrucibleMeasurementError> {
-    let evaluation = evaluate_measurements(definitions, entries, samples, terminal)?;
-    encode_crucible_measurement_set(&evaluation, evidence)
-}
-
 #[cfg(test)]
 pub(crate) fn empty_test_measurement_set() -> MeasurementSet {
-    evaluate_crucible_measurement_set(
+    let publication = evaluate_crucible_measurement_publication(
+        crucible_campaign::ScenarioDefId::from_hash(CampaignHash::derive(
+            "crucible.test.measurement-scenario",
+            b"empty",
+        )),
+        crucible_campaign::ConfigurationId::from_hash(CampaignHash::derive(
+            "crucible.test.measurement-configuration",
+            b"empty",
+        )),
         &MeasurementDefinitions::empty(),
-        &[],
         Vec::new(),
-        &MeasurementTerminalState {
+        MeasurementTerminalState {
             scenario_ready_at: None,
             at: Default::default(),
             node_icounts: BTreeMap::new(),
             scheduler_quiescent: true,
         },
-        BTreeSet::new(),
-    )
-    .expect("empty test measurement evaluation")
-}
+        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    );
+    let Ok(publication) = publication else {
+        panic!("empty test measurement publication must be valid: {publication:?}");
+    };
 
-/// Recomputes and authenticates one retained Crucible measurement-set payload.
-///
-/// # Errors
-///
-/// Returns [`CrucibleMeasurementError`] for an unsupported payload,
-/// mismatched definition/evaluation identities, or any exact replay failure.
-pub fn verify_crucible_measurement_set(
-    measurement_set: &MeasurementSet,
-    definitions: &MeasurementDefinitions,
-    entries: &[SchedulerEventLogEntry],
-    samples: Vec<MeasurementRuntimeSample>,
-    terminal: &MeasurementTerminalState,
-) -> Result<MeasurementEvaluation, CrucibleMeasurementError> {
-    let retained = measurement_set.evaluation();
-    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1 {
-        return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
-            actual: retained.payload_schema(),
-            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1,
-        });
-    }
-    if retained.definitions() != campaign_hash(definitions.content_hash()) {
-        return Err(CrucibleMeasurementError::DefinitionIdentityMismatch);
-    }
-
-    let evaluation =
-        verify_measurement_evaluation(definitions, entries, samples, terminal, retained.payload())?;
-    if retained.evaluation() != campaign_hash(evaluation.content_hash()) {
-        return Err(CrucibleMeasurementError::EvaluationIdentityMismatch);
-    }
-    Ok(evaluation)
+    publication.measurement_set().clone()
 }
 
 /// Projects numeric aggregates from a verified Crucible evaluation.
@@ -275,11 +209,7 @@ pub fn evaluate_crucible_objectives(
     properties: &PropertyVerdictSet,
 ) -> Result<ObjectiveEvaluation, CrucibleMeasurementError> {
     let retained = measurement_set.evaluation();
-    if !matches!(
-        retained.payload_schema(),
-        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1
-            | CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
-    ) {
+    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual: retained.payload_schema(),
             expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,

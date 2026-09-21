@@ -245,9 +245,9 @@ the event-log schema itself (L3).
 ([`13-shmem-abi.md`](13-shmem-abi.md)). It defines the region header (per-node
 clocks, status words), the SPSC ring buffers, the `FrameEntry` layout, the
 version constant, and the `unsafe` accessors that map and read/write the region.
-The C side of the QEMU patch series is generated from / checked against these
-definitions (a `cbindgen`-style header emit + the `gate:abi-conformance` golden
-vectors). *Not in it:* any message *semantics* or framing (that is
+The C side of the atomic QEMU integration is generated from / checked against
+these definitions (a `cbindgen`-style header emit + the
+`gate:abi-conformance` golden vectors). *Not in it:* any message *semantics* or framing (that is
 `crucible-protocol`), any scheduling, any QEMU process control.
 It is `MIT OR Apache-2.0`, contains no QEMU dependency or header, and may expose
 only protocol-shaped values allowed by 37/[BOUND-6].
@@ -365,7 +365,8 @@ in it:* the API *definition* (that's `crucible-api`), canonical campaign state
 (that's `crucible-campaign`), scheduler algorithms, or the CLI.
 
 **`crucible-cli`** owns the **`crucible` binary**: scenario authoring helpers,
-`run`/`reproduce`/`query`/`fork`/`search` subcommands ([`23-cli.md`](23-cli.md)),
+`run`/`verify`/`save`/`resume`/`replay`/`search`/`fuzz` subcommands
+([`23-cli.md`](23-cli.md)),
 talking to the daemon (or an embedded session) over `crucible-api`. It is a thin
 client; it owns no algorithms.
 
@@ -614,7 +615,7 @@ enters a release build.
 | `gate:scheduler-liveness` | `crucible` `tests/` (`--features test-double`) | reaches quiescence/limit |
 | `gate:control-responsive` | `crucible-session` + `crucible-api` `tests/` | bounded-quantum ack |
 | `gate:any-guest` | `crucible-qemu` `tests/` (guest matrix) | unmodified-guest boot |
-| `gate:qemu-inert` / `gate:patch-microtests` | AOS QEMU package tests ([`26`](26-packaging-aos-integration.md)) + `crucible-qemu-plugin` | sim-off identity; per-patch |
+| `gate:qemu-inert` / `gate:patch-microtests` | AOS QEMU package tests ([`26`](26-packaging-aos-integration.md)) + `crucible-qemu-plugin` | sim-off identity; atomic-patch capability evidence |
 | `gate:divergence-bisect` | `crucible-harness` | first-differing-step localization |
 | `gate:adversarial-determinism` | `crucible-harness` (host-hostile driver) | N-run byte-identical logs |
 | `gate:e2e-determinism` | `crucible-harness` + `crucible-cli` (final acceptance) | full multi-VM reproduce |
@@ -730,8 +731,8 @@ primitives.
   with no upstream binary dependency. — satisfies [CRATE-17]; spec §7,
   [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md).
 - [x] **T-CRATE-15** Add a lint forbidding any dependency on `ratchet-*` /
-  `aos-nix-*`, and locate the content-addressing primitives in `crucible-sim`
-  marked as the future-ratchet-integration seam. — satisfies [CRATE-18]; spec §7.
+  `aos-nix-*`, while keeping the content-addressing primitives in
+  `crucible-sim`. — satisfies [CRATE-18]; spec §7.
 - [x] **T-CRATE-16** Remove the test-only surface from the production dependency
   graph: no shipped crate may depend on `crucible` with the `test-double`
   feature, and no feature may be declared without a `cfg` that consumes it.

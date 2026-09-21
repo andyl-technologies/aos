@@ -1240,12 +1240,12 @@ application of explorer-supplied preemption decisions
   plugin observes a consistent `(ceiling, pending-inputs)` snapshot (wake after
   inbox write). — satisfies [SCHED-35], [SCHED-36]; spec §8.10.
   Completed by `checks.crucible.phase3.schedulerWakeOrdering`.
-  `RegionAllocation::publish_scheduler_inputs_and_ceiling` is now the typed
+  `RegionAllocation::publish_scheduler_inputs_and_advance` is now the typed
   shmem handoff for RUN publication: it prevalidates the destination slot and
   inbox capacity, release-publishes every pending input frame to the directed
   inbox, release-publishes the node ceiling, and only then increments the
   non-private futex wake word, preserving wake after inbox write.
-  `NodeSlot::publish_scheduler_inbox_and_ceiling` gives production adapters the
+  `NodeSlot::publish_scheduler_inbox_and_advance` gives production adapters the
   same borrowed-ring ordering, and the QEMU RUN hot path now publishes through
   that helper; QEMU inbound frame wakeups use it with a nonempty pending-input
   batch and the currently published ceiling. `SchedulerRunCeilingPublication`
@@ -1266,13 +1266,13 @@ application of explorer-supplied preemption decisions
   recomputes every runtime node's `NetworkLookahead` from the new
   `SchedulerLookaheadGraph`, records per-node `SchedulerTopologyLookaheadUpdate`
   evidence, and treats topology-only recomputes as scheduler progress.
-  The runtime `queue_topology_change` APIs on `SingleScheduler` and
-  `SchedulerActorHandle` let fault/heal/latency handlers enqueue those changes
-  after construction. `SingleScheduler::authorize_cross_node_send` freezes
+  `SingleScheduler::schedule_topology_change` lets fault, heal, and latency
+  handlers enqueue those changes after construction.
+  `SingleScheduler::authorize_cross_node_send` freezes
   cross-node sends while a topology change is pending, then authorizes sends only
   against the current effective edge set and topology epoch; SimDouble and QEMU outbound emission paths require an explicit scheduler send authorizer
   before writing or draining VM-to-router frames. Focused regressions cover lowered latency before PICK,
-  runtime and actor queueing, pending-change send freeze/unfreeze, no delivery
+  runtime scheduling, pending-change send freeze/unfreeze, no delivery
   of an in-flight frame under a stale horizon, topology-only liveness progress,
   and sim/QEMU outbound authorization.
 - [x] **T-SCHED-23** Model partition/heal as effective-edge removal/restoration
@@ -1316,15 +1316,16 @@ application of explorer-supplied preemption decisions
   serial and concurrent runs are bit-identical via `gate:e2e-determinism`. —
   satisfies [SCHED-40], [SCHED-41]; spec §8.12.
   Completed by `checks.crucible.phase3.schedulerConcurrency`.
-  `ConcurrentQuantumLoop` adds a bounded concurrent RUN set that selects a
-  deterministic `SchedulerConcurrentRunSet` from the same horizon candidates as
-  serial PICK. The run set is bounded by `max_host_workers`, each candidate's
-  conservative lookahead target, and a common-frontier/same-target filter so a
-  skewed peer is not over-admitted past a possible dependency; zero worker
-  budgets fail loudly. The concurrent path publishes the selected ceilings before host dispatch, advances the chosen
-  nodes, then serializes each completion through RESOLVE/EMIT/STEP on the single
-  scheduler. Focused regressions cover worker-bound run-set selection, invalid
-  worker-budget rejection, skewed-peer exclusion, and a serial-vs-concurrent
+  `ConcurrentQuantumLoop` adds a concurrent RUN set that selects every
+  deterministic `SchedulerConcurrentRunSet` candidate admitted by the same
+  horizon calculation as serial PICK. Conservative lookahead and a
+  common-frontier/same-target filter prevent a skewed peer from advancing past a
+  possible dependency. Host worker count belongs only to backend dispatch and
+  cannot change the semantic RUN set. The concurrent path publishes the
+  selected ceilings before host dispatch, advances the chosen nodes in bounded
+  batches, then serializes each completion through RESOLVE/EMIT/STEP on the
+  single scheduler. Focused regressions cover worker-independent run-set
+  selection, skewed-peer exclusion, and a serial-vs-concurrent
   comparison proving the same intermediate frontiers, final configuration,
   frontier, event-log offset, and event-log entry hashes for simultaneous due
   inputs. This is the scheduler-side proof used by `gate:e2e-determinism`;

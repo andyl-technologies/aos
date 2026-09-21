@@ -8,26 +8,18 @@
 use super::*;
 
 use crucible_daemon::campaign_store_composition::{
-    ContentId, InventoryGeneration, PhysicalStorageIdentity, StoreGraphAdmin,
-    StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition, StoreNodeId,
+    ContentId, StoreNodeId, StorePhysicalRepairDisposition,
 };
 use crucible_daemon::{
     CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
-    CampaignLoopbackServerConfig,
+    CampaignLoopbackServerConfig, PreparedCampaignLocalService,
 };
 use serde::Serialize;
 
-use crate::cli_campaign_store::load_campaign_store_maintenance_observational;
+use crate::cli_campaign_store::load_campaign_repository_store;
 
 const STORE_REPAIR_REPORT_SCHEMA: &str = "crucible.cli.store-repair.v1";
 const UNUSED_REPAIR_ENDPOINT: &str = "/tmp/crucible-campaign-store-repair-owner.sock";
-
-#[derive(Clone, Copy)]
-struct PhysicalSnapshot<'a> {
-    capability: StoreGraphPhysicalAdmin<'a>,
-    identity: PhysicalStorageIdentity,
-    generation: InventoryGeneration,
-}
 
 #[derive(Serialize)]
 struct StoreRepairReport {
@@ -51,7 +43,6 @@ pub(super) fn run_store_repair(
 ) -> Result<String, CliError> {
     match &args.command {
         StoreRepairCommand::Placement(args) => run_store_placement_repair(args, format),
-        StoreRepairCommand::OperationalState(args) => run_operational_state_repair(args, format),
     }
 }
 
@@ -75,121 +66,40 @@ fn run_store_placement_repair(
         ));
     }
 
-    let _owner = acquire_stopped_owner(&args.state, &args.policy)?;
-    let (graph, maintenance) = load_campaign_store_maintenance_observational(&args.deployment)?;
-    let source_snapshot = physical_snapshot(&maintenance, &source, "source")?;
-    let target_snapshot = physical_snapshot(&maintenance, &target, "target")?;
-    if source_snapshot.identity == target_snapshot.identity {
-        return Err(repair_error(
-            "store repair source and target resolve to the same physical storage identity",
-        ));
-    }
-
-    let source_handle = source_snapshot
-        .capability
-        .read(content)
-        .map_err(|error| repair_error(format!("store repair source read failed: {error}")))?;
-    let source_bytes = source_handle
-        .read_all(args.maximum_bytes)
-        .map_err(|error| {
-            repair_error(format!(
-                "store repair source authentication failed: {error}"
-            ))
-        })?;
-    let logical_bytes = source_bytes.len() as u64;
-    let result = target_snapshot
-        .capability
-        .repair_with_authenticated_bytes(content, source_bytes, target_snapshot.generation)
-        .map_err(|error| repair_error(format!("store repair apply failed: {error}")))?;
+    let owner = prepare_repair_owner(&args.state, &args.policy, &args.deployment)?;
+    let authority = owner
+        .store_maintenance_authority()
+        .map_err(|error| repair_error(format!("store repair authority unavailable: {error}")))?;
+    let receipt = authority
+        .repair_physical_copy(&source, &target, content, args.maximum_bytes)
+        .map_err(|error| repair_error(format!("store repair failed: {error}")))?;
 
     let report = StoreRepairReport {
         schema: STORE_REPAIR_REPORT_SCHEMA,
-        configuration: encode_store_bytes(&graph.configuration_id().as_bytes()),
+        configuration: encode_store_bytes(&receipt.configuration().as_bytes()),
         content: content.encode(),
         source: source.as_str().to_owned(),
-        source_storage_identity: source_snapshot.identity.to_hex(),
-        source_generation: source_snapshot.generation.to_hex(),
+        source_storage_identity: receipt.source_storage_identity().to_hex(),
+        source_generation: receipt.source_generation().to_hex(),
         target: target.as_str().to_owned(),
-        target_storage_identity: target_snapshot.identity.to_hex(),
-        target_generation: target_snapshot.generation.to_hex(),
-        logical_bytes,
-        disposition: match result {
-            StoreGraphPhysicalRepairDisposition::AlreadyAuthenticated => "already-authenticated",
-            StoreGraphPhysicalRepairDisposition::ReplacedMissing => "replaced-missing",
-            StoreGraphPhysicalRepairDisposition::ReplacedCorrupt => "replaced-corrupt",
+        target_storage_identity: receipt.target_storage_identity().to_hex(),
+        target_generation: receipt.target_generation().to_hex(),
+        logical_bytes: receipt.logical_length(),
+        disposition: match receipt.disposition() {
+            StorePhysicalRepairDisposition::AlreadyAuthenticated => "already-authenticated",
+            StorePhysicalRepairDisposition::ReplacedMissing => "replaced-missing",
+            StorePhysicalRepairDisposition::ReplacedCorrupt => "replaced-corrupt",
         },
         authenticated: true,
     };
     render_store_repair(&report, format)
 }
 
-#[derive(Serialize)]
-struct OperationalStateRepairReport {
-    schema: &'static str,
-    assignment_records: usize,
-    assignments_migrated: usize,
-    prepared_journals: usize,
-    prepared_journals_migrated: usize,
-    receipt: String,
-    receipt_id: String,
-    authenticated: bool,
-}
-
-fn run_operational_state_repair(
-    args: &StoreOperationalStateRepairArgs,
-    format: OutputFormat,
-) -> Result<String, CliError> {
-    let owner = acquire_stopped_owner(&args.state, &args.policy)?;
-    let config = crucible_daemon::OperationalStateMigrationConfig {
-        assignment_ledger: args.ledger.clone(),
-        prepared_results: args.prepared_results.clone(),
-        receipt: args.receipt.clone(),
-        maximum_assignment_entries: args.maximum_assignment_entries,
-        maximum_assignment_bytes: args.maximum_assignment_bytes,
-        maximum_prepared_result_entries: args.maximum_prepared_result_entries,
-        maximum_prepared_result_bytes: args.maximum_prepared_result_bytes,
-    };
-    let summary = crucible_daemon::migrate_operational_state(&owner, &config)
-        .map_err(|error| repair_error(format!("operational-state migration failed: {error}")))?;
-    let report = OperationalStateRepairReport {
-        schema: "crucible.cli.store-operational-state-repair.v1",
-        assignment_records: summary.assignment_records,
-        assignments_migrated: summary.assignments_migrated,
-        prepared_journals: summary.prepared_journals,
-        prepared_journals_migrated: summary.prepared_journals_migrated,
-        receipt: args.receipt.display().to_string(),
-        receipt_id: summary.receipt_id,
-        authenticated: true,
-    };
-    match format {
-        OutputFormat::Jsonl => serde_json::to_string(&report)
-            .map(|mut output| {
-                output.push('\n');
-                output
-            })
-            .map_err(|error| repair_error(format!("encode migration report: {error}"))),
-        OutputFormat::Json => serde_json::to_string_pretty(&report)
-            .map(|mut output| {
-                output.push('\n');
-                output
-            })
-            .map_err(|error| repair_error(format!("encode migration report: {error}"))),
-        OutputFormat::Table | OutputFormat::Markdown => Ok(format!(
-            "authenticated operational state: {} assignment records ({} migrated), {} prepared journals ({} migrated); receipt {} at {}\n",
-            report.assignment_records,
-            report.assignments_migrated,
-            report.prepared_journals,
-            report.prepared_journals_migrated,
-            report.receipt_id,
-            report.receipt,
-        )),
-    }
-}
-
-fn acquire_stopped_owner(
+fn prepare_repair_owner(
     state: &Path,
     policy: &Path,
-) -> Result<crucible_daemon::PreparedCampaignStoppedOwner, CliError> {
+    deployment: &Path,
+) -> Result<PreparedCampaignLocalService, CliError> {
     let endpoint = CampaignLoopbackEndpointConfig::new(
         UNUSED_REPAIR_ENDPOINT,
         rustix::process::geteuid().as_raw(),
@@ -206,45 +116,14 @@ fn acquire_stopped_owner(
     )
     .map_err(|error| repair_error(format!("invalid campaign owner profile: {error}")))?;
 
+    let repository = load_campaign_repository_store(deployment)?;
     config
-        .acquire_existing_owner()
+        .prepare_with_store(repository)
         .map_err(|error| repair_error(format!("campaign owner acquisition failed: {error}")))
 }
 
-fn physical_snapshot<'a>(
-    maintenance: &'a StoreGraphAdmin,
-    node: &StoreNodeId,
-    role: &str,
-) -> Result<PhysicalSnapshot<'a>, CliError> {
-    let capability = maintenance
-        .physical()
-        .into_iter()
-        .find(|capability| capability.node() == node)
-        .ok_or_else(|| {
-            repair_error(format!(
-                "configured store {role} node `{}` is not a physical repair boundary",
-                node.as_str()
-            ))
-        })?;
-    let mut fence = capability
-        .admin()
-        .acquire_inventory_fence()
-        .map_err(|error| {
-            repair_error(format!(
-                "store repair {role} inventory acquisition failed: {error}"
-            ))
-        })?;
-    let summary = fence.visit_inventory(&mut |_| Ok(())).map_err(|error| {
-        repair_error(format!(
-            "store repair {role} inventory authentication failed: {error}"
-        ))
-    })?;
-
-    Ok(PhysicalSnapshot {
-        capability,
-        identity: summary.storage_identity(),
-        generation: summary.generation(),
-    })
+fn encode_store_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn render_store_repair(
@@ -384,11 +263,12 @@ mod tests {
         assert_eq!(corrupt["disposition"], "replaced-corrupt");
         assert_eq!(corrupt["logical_bytes"], bytes.len());
 
-        let StoreRepairCommand::Placement(placement) = &args.command else {
-            panic!("placement fixture command");
-        };
+        let StoreRepairCommand::Placement(placement) = &args.command;
+        let repository =
+            crate::cli_campaign_store::load_campaign_repository_store(&placement.deployment)
+                .expect("reload fixture store");
         let owner = service_config(&placement.state, &placement.policy)
-            .acquire_existing_owner()
+            .prepare_with_store(repository)
             .expect("hold live owner lock");
         let error = run_store_repair(&args, OutputFormat::Jsonl)
             .expect_err("repair must reject a live owner");
@@ -399,57 +279,6 @@ mod tests {
         let error = run_store_repair(&args, OutputFormat::Jsonl)
             .expect_err("repair must reject aliased physical storage");
         assert!(error.to_string().contains("same physical storage identity"));
-    }
-
-    #[test]
-    fn operational_state_repair_uses_stopped_owner_and_assignment_writer_locks() {
-        let directory = tempdir().expect("migration fixture");
-        let root = directory.path();
-        fs::set_permissions(root, Permissions::from_mode(0o700)).expect("secure fixture");
-        let state = secure_directory(root, "state");
-        let ledger_root = secure_directory(root, "ledger");
-        let prepared_results = secure_directory(root, "prepared-results");
-        let policy = root.join("policy.toml");
-        write_policy(&policy, root);
-        drop(
-            service_config(&state, &policy)
-                .prepare()
-                .expect("initialize stopped owner"),
-        );
-        drop(
-            crucible_daemon::DirectoryAssignmentLedger::open(&ledger_root)
-                .expect("initialize assignment ledger"),
-        );
-        let args = StoreRepairArgs {
-            command: StoreRepairCommand::OperationalState(StoreOperationalStateRepairArgs {
-                state,
-                policy,
-                ledger: ledger_root.clone(),
-                prepared_results,
-                receipt: root.join("migration-receipt"),
-                maximum_assignment_entries: 10,
-                maximum_assignment_bytes: 1_024,
-                maximum_prepared_result_entries: 10,
-                maximum_prepared_result_bytes: 1_024,
-            }),
-        };
-
-        let output = run_store_repair(&args, OutputFormat::Jsonl).expect("migrate empty state");
-        let report: serde_json::Value = serde_json::from_str(&output).expect("migration report");
-        assert_eq!(
-            report["schema"],
-            "crucible.cli.store-operational-state-repair.v1"
-        );
-        assert_eq!(report["assignment_records"], 0);
-        assert_eq!(report["prepared_journals"], 0);
-        assert_eq!(report["authenticated"], true);
-
-        let held_writer = crucible_daemon::DirectoryAssignmentLedger::open(&ledger_root)
-            .expect("hold assignment writer");
-        let error = run_store_repair(&args, OutputFormat::Jsonl)
-            .expect_err("migration must reject live assignment writer");
-        assert!(error.to_string().contains("lock-writer"));
-        drop(held_writer);
     }
 
     fn secure_directory(root: &Path, name: &str) -> PathBuf {

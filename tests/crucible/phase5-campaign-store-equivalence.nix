@@ -83,7 +83,7 @@ in
             --lib content_store::s3 \
             -- --list)
           for expected_test in \
-            content_store::s3::tests::s3_blob_leaf_passes_the_shared_persistent_conformance_suite \
+            content_store::s3::tests::behavior::s3_blob_leaf_passes_the_shared_persistent_conformance_suite \
             content_store::s3_ref::tests::s3_ref_leaf_passes_the_shared_persistent_conformance_suite
           do
             printf '%s\n' "$s3_listing" | grep -Fqx "$expected_test: test"

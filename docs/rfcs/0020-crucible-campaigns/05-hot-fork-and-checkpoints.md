@@ -16,7 +16,7 @@ realizations of one semantic edge, not two campaign branches.
 | Tier | Representation | Primary uses |
 | --- | --- | --- |
 | **Hot** | Paused fork-template QEMU processes, OS copy-on-write RAM, isolated child disk overlays, cloned host continuation | High-fanout on-host exploration |
-| **Exact** | Portable authenticated closure containing QEMU VM state, disk deltas, host continuation, scheduler/fault state, logs, and provenance | Hibernation, debugging, failure retention, offline maintenance transfer |
+| **Exact** | Portable authenticated closure containing QEMU VM state, disk deltas, host continuation, scheduler/fault state, logs, and provenance | Exact pause, debugging, failure retention, offline maintenance transfer |
 | **Thin** | Scenario, schedule, graph ancestry, and retained artifacts sufficient to replay from a valid ancestor | Source of truth and storage fallback |
 
 All three denote one `ConfigurationId`. A materialization index may record which
@@ -123,20 +123,15 @@ template itself.
 ## 05.5 Control protocol
 
 The Apache host and GPL QEMU process communicate through new versioned messages.
-The host uses the bounded `query-crucible-hot-fork-readiness` QMP command to
-read QEMU's own proof state; it never infers readiness from launch arguments or
-ordinary paused status. The version-1 response is:
+The host acquires QEMU's aggregate `crucible-hot-fork-template` transaction,
+whose response binds the complete proof and barrier state; it never infers
+readiness from launch arguments or ordinary paused status.
 
-```text
-CrucibleHotForkReadiness {
-    schema-version: u32 = 1,
-    required-proofs: u64 = 0x01ff,
-    acknowledged-proofs: u64,
-    ready: bool,
-}
-```
+The aggregate template response carries the required proof bitmap, the
+acknowledged subset, and the derived `ready` boolean under its own versioned
+schema. QEMU does not expose a separate readiness query.
 
-The nine low-order proof bits have this fixed meaning:
+The seven low-order parent-template proof bits have this fixed meaning:
 
 | Bit | QEMU-owned proof |
 | --- | --- |
@@ -147,45 +142,18 @@ The nine low-order proof bits have this fixed meaning:
 | 4 | relevant RCU callbacks and read-side sections are quiescent |
 | 5 | writable block roots are at immutable external-snapshot boundaries |
 | 6 | plugin command/event channels and shared-memory rings are frozen |
-| 7 | every mapping and descriptor has a closed child disposition |
-| 8 | every omitted thread and process-private resource has a child reinitializer |
 
-`required-proofs` MUST equal `0x01ff`, `acknowledged-proofs` MUST be a
+`required-proofs` MUST equal `0x007f`, `acknowledged-proofs` MUST be a
 subset, and `ready` MUST equal exact bitmap equality. An unknown version,
 changed required bitmap, unknown acknowledged bit, or contradictory boolean is
-a protocol failure. The first QEMU-side checkpoint acknowledges only proofs it
-can already derive from precise sim RR plus the authenticated VM-stop/device
-flush boundary. Bits 3 through 8 remain clear, so hot fork remains unavailable,
-until their subsystem-owned barriers and reinitializers land. The query is
-observational and does not itself pause, prepare, fork, or mutate the VM.
+a protocol failure. The aggregate response is observational until its explicit
+preparation action retains the subsystem barriers. Mapping, descriptor, and
+child-reinitialization proofs remain part of the private child result rather
+than the parent template's required bitmap.
 
-Patched QEMU also exposes the versioned, bounded internal thread-registry
-snapshot used to drive that future barrier:
-
-```text
-CrucibleHotForkThreadInventory {
-    schema-version: u32 = 4,
-    generation: u64,
-    complete: bool,
-    overflowed: bool,
-    unclassified-threads: u32,
-    threads: [
-        {
-            thread-id: positive i64,
-            name: nonempty UTF-8 string of at most 256 bytes,
-            name-valid: bool,
-            joinable: bool,
-            disposition:
-                coordinator |
-                unclassified |
-                rcu-restart |
-                monitor-restart |
-                unclassified-aio |
-                vcpu-restart,
-        },
-    ],
-}
-```
+QEMU maintains a versioned, bounded internal thread registry for template
+admission and child reconstruction. The registry is not a standalone QMP
+report.
 
 `threads` MUST contain at most 65,536 entries in strictly increasing thread-ID
 order. `unclassified-threads` MUST equal the number of `unclassified` and
@@ -193,9 +161,9 @@ order. `unclassified-threads` MUST equal the number of `unclassified` and
 `complete` MUST equal
 `!overflowed && all(name-valid) && coordinator-count == 1`. The process-local
 generation advances when a QEMU-created thread registers, unregisters, or
-changes disposition. The first query registers the process-lifetime QMP
-main-loop coordinator; later observational queries with no thread transition
-return the same generation and body. Every thread created through
+changes disposition. Template preparation registers the process-lifetime QMP main-loop coordinator;
+repeated internal snapshots without a thread transition retain the same
+generation and body. Every thread created through
 `qemu_thread_create()` is registered before its start routine and unregistered
 through a cleanup handler. Threads created by linked libraries or raw pthread
 calls are not silently treated as QEMU-owned.
@@ -226,11 +194,12 @@ the carried set, and rejects every other owner or waiter. The child re-verifies
 each carried mutex, rebinds coordinator-owned mutexes to its thread ID,
 reinitializes the pthread state of mutexes a vanished thread held, forgets
 vanished waiters, and requires the whole registry to be quiescent or
-child-owned before it adopts the surviving coordinator record. Generic and other AIO workers remain fork
-blockers and are counted in `unclassified-threads`; neither these
+child-owned before it adopts the surviving coordinator record. Generic and
+other AIO workers remain fork blockers and are counted in
+`unclassified-threads`; neither these
 classifications nor the transaction acknowledges readiness bit 8. Plain
 `unclassified` remains the fail-closed value for every other
-`qemu_thread_create()` caller. Earlier schema versions are rejected rather than
+`qemu_thread_create()` caller. Noncurrent schemas are rejected rather than
 silently interpreting their smaller disposition registry under version-4
 semantics.
 
@@ -282,22 +251,8 @@ the state it compared against to the child's stderr, which descriptor
 application has routed to the branch-private diagnostics stream the host
 retains.
 
-Patched QEMU also exposes the bounded observational RCU inventory used to
-define the next subsystem-owned barrier:
-
-```text
-CrucibleHotForkRcuInventory {
-    schema-version: u32 = 1,
-    generation: u64,
-    complete: bool,
-    overflowed: bool,
-    registered-readers: u32,
-    active-readers: u32,
-    pending-callbacks: u64,
-    drain-active: bool,
-    readers: [ { thread-id: positive i64, active: bool } ],
-}
-```
+QEMU maintains a bounded internal RCU snapshot for its retained RCU barrier.
+The snapshot is not exposed as a standalone QMP report.
 
 `readers` MUST contain at most 65,536 entries in strictly increasing thread-ID
 order. `registered-readers` and `active-readers` MUST match the retained body,
@@ -306,12 +261,11 @@ The process-local generation advances only when a reader registers or
 unregisters. `pending-callbacks` is incremented before callback queue
 publication and decremented only after callback return, so it conservatively
 covers the callback worker's dequeue, grace-period, and execution interval.
-Every retained reader MUST also appear in the matching QEMU thread inventory.
+Every retained reader MUST also appear in the internal QEMU thread registry.
 
-The inventory response remains only one lock-bounded observation. It does not
-itself drive or hold quiescence and therefore MUST NOT acknowledge proof bit 4
-or authorize a fork. Patched QEMU separately exposes the version-1 reversible
-RCU admission barrier:
+The internal snapshot remains one lock-bounded observation. It does not itself
+drive or hold quiescence. The version-1 reversible RCU admission barrier owns
+the retained proof:
 
 ```text
 CrucibleHotForkRcuBarrierAction = hold | query | release
@@ -347,79 +301,24 @@ first reopens admission and then wakes every parked submitter. The held barrier
 is proof for the parent RCU state only; the callback worker remains an omitted
 thread requiring an exact child reinitializer before proof bit 8 can be set.
 
-Patched QEMU also exposes the bounded observational AioContext activity used
-to define the AIO/BH side of the next subsystem barrier:
-
-```text
-CrucibleHotForkAioInventory {
-    schema-version: u32 = 1,
-    generation: u64,
-    complete: bool,
-    overflowed: bool,
-    context-count: u32,
-    assigned-contexts: u32,
-    active-polls: u64,
-    active-dispatches: u64,
-    pending-bottom-halves: u64,
-    active-bottom-halves: u64,
-    queued-coroutines: u64,
-    contexts: [
-        {
-            context-id: positive u64,
-            home-thread-id: nonnegative i64,
-            active-polls: u32,
-            active-dispatches: u32,
-            pending-bottom-halves: u32,
-            active-bottom-halves: u32,
-            queued-coroutines: u32,
-            notify-pending: bool,
-        },
-    ],
-}
-```
+QEMU maintains bounded internal AioContext state for the retained
+asynchronous-worker barrier. The state is not exposed as a standalone QMP
+report.
 
 `contexts` contains at most 65,536 records in strictly increasing
 `context-id` order. Zero `home-thread-id` means the context has not yet run on
-a home thread; every positive home thread MUST appear in the matching QEMU
-thread inventory. The top-level counts are exact checked sums, and `complete`
+a home thread; every positive home thread MUST appear in the internal QEMU
+thread registry. The top-level counts are exact checked sums, and `complete`
 equals `!overflowed && assigned-contexts == context-count`. The generation
 advances on context creation, destruction, or home-thread reassignment.
 
-Patched POSIX QEMU separately exposes every allocated `QEMUBH`, including
-inert, pending, active, canceled, one-shot, and deferred-deletion instances:
-
-```text
-CrucibleHotForkBottomHalfInventory {
-    schema-version: u32 = 1,
-    generation: u64,
-    complete: bool,
-    overflowed: bool,
-    stable: bool,
-    bottom-half-count: u32,
-    pending-bottom-halves: u32,
-    scheduled-bottom-halves: u32,
-    deleted-bottom-halves: u32,
-    active-callbacks: u64,
-    bottom-halves: [
-        {
-            bottom-half-id: positive u64,
-            context-id: positive u64,
-            name: nonempty UTF-8 string of at most 128 bytes,
-            name-valid: bool,
-            pending: bool,
-            scheduled: bool,
-            deleted: bool,
-            oneshot: bool,
-            idle: bool,
-            active-callbacks: u32,
-        },
-    ],
-}
-```
+QEMU maintains bounded internal state for every allocated `QEMUBH`, including
+inert, pending, active, canceled, one-shot, and deferred-deletion instances.
+The retained asynchronous-worker barrier consumes this state directly.
 
 `bottom-halves` contains at most 65,536 records in strictly increasing
-`bottom-half-id` order. Every `context-id` MUST appear in the matching
-AioContext inventory. `scheduled` or `idle` implies `pending`; active and
+`bottom-half-id` order. Every `context-id` MUST appear in the internal
+AioContext registry. `scheduled` or `idle` implies `pending`; active and
 deleted state may coexist with pending state because a callback can rearm or
 delete itself. The top-level counts are exact checked sums. `complete` equals
 `!overflowed && stable && all(name-valid)`. Creation, final free, enqueue,
@@ -428,94 +327,25 @@ monotonic generation. Snapshotting serializes the allocation list and accepts
 `stable` only when no lock-free state transition is active at either copy
 boundary and that generation does not change during the bounded copy.
 Diagnostic names are copied at creation rather than dereferencing callback
-metadata during the query. The command is executed out of band after explicit
-QMP OOB negotiation, so the query does not create and then observe its own
-one-shot QMP-dispatch bottom half. A peer that cannot negotiate OOB MUST fail
-closed rather than issue this inventory through ordinary in-band dispatch.
+metadata while the barrier inspects it.
 
-Patched POSIX QEMU also exposes every allocated POSIX AIO handler through an
-out-of-band query:
-
-```text
-CrucibleHotForkAioHandlerInventory {
-    schema-version: u32 = 1,
-    generation: u64,
-    complete: bool,
-    overflowed: bool,
-    handler-count: u32,
-    read-handlers: u32,
-    write-handlers: u32,
-    poll-handlers: u32,
-    deleted-handlers: u32,
-    active-callbacks: u64,
-    handlers: [
-        {
-            handler-id: positive u64,
-            context-id: positive u64,
-            fd: nonnegative i64,
-            deleted: bool,
-            read-callback: bool,
-            write-callback: bool,
-            poll-callback: bool,
-            poll-ready-callback: bool,
-            poll-begin-callback: bool,
-            poll-end-callback: bool,
-            active-callbacks: u32,
-        },
-    ],
-}
-```
+QEMU maintains bounded internal POSIX AIO-handler state for the retained
+asynchronous-worker barrier. The state is not exposed as a standalone QMP
+report.
 
 `handlers` contains at most 65,536 records in strictly increasing
-`handler-id` order. Every `context-id` MUST appear in the matching AioContext
-inventory, every non-deleted `fd` MUST appear in the exact process descriptor
+`handler-id` order. Every `context-id` MUST appear in the internal AioContext
+registry, every non-deleted `fd` MUST appear in the exact process descriptor
 inventory, and each entry MUST install at least one read, write, or poll
 callback. The callback-class, deletion, and active-callback totals are exact
 checked sums, and `complete` equals `!overflowed`. Allocation, final free,
 deferred deletion, and poll-callback replacement advance the process-local
 generation. Active callback counts are instantaneous and serialize with the
-snapshot on the handler registry lock; they do not advance the generation
-because the out-of-band query itself executes inside its QMP descriptor's read
-callback. The command is executed out of band so its own QMP dispatch cannot
-create an in-band bottom-half observation.
+snapshot on the handler registry lock; they do not advance the generation.
 
-Patched QEMU also exposes every allocated `BlockBackend`, including hidden
-backends, through an out-of-band query:
-
-```text
-CrucibleHotForkBlockBackendInventory {
-    schema-version: u32 = 1,
-    generation: u64,
-    complete: bool,
-    overflowed: bool,
-    backend-count: u32,
-    named-backends: u32,
-    rooted-backends: u32,
-    device-backends: u32,
-    writable-backends: u32,
-    quiesced-backends: u32,
-    in-flight: u64,
-    backends: [
-        {
-            backend-id: positive u64,
-            context-id: positive u64,
-            reference-count: positive u32,
-            name: UTF-8 string of at most 255 bytes,
-            named: bool,
-            name-valid: bool,
-            root-present: bool,
-            device-attached: bool,
-            permissions: u64,
-            shared-permissions: u64,
-            write-permission: bool,
-            permissions-disabled: bool,
-            quiesce-depth: u32,
-            in-flight: u32,
-            request-queuing-disabled: bool,
-        },
-    ],
-}
-```
+QEMU maintains bounded internal state for every allocated `BlockBackend`,
+including hidden backends. The retained block barrier consumes this state
+directly.
 
 `backends` contains at most 65,536 records in strictly increasing
 `backend-id` order. Every `context-id` MUST appear in the matching AioContext
@@ -526,12 +356,11 @@ sum are exact. `complete` equals `!overflowed && all(name-valid)`. Allocation,
 final free, reference-count, AioContext, monitor-name, root/device attachment,
 permission, and permission-suppression changes advance the process-local
 generation. Quiesce depth, in-flight I/O, and request-queue policy are
-instantaneous atomic observations; the host therefore requires the entire
-response to match across its procfs capture. Structural fields are copied into
-a dedicated registry under the BQL transition that owns them, so the OOB query
-does not dereference the live BQL-owned block graph.
+instantaneous atomic observations. Structural fields are copied into a
+dedicated registry under the BQL transition that owns them, so template
+preparation does not race the live BQL-owned block graph.
 
-This inventory is not the immutable writable-root proof. It does not enumerate
+This internal snapshot is not the immutable writable-root proof. It does not enumerate
 the complete `BlockDriverState` graph, freeze producers, drain I/O, create an
 external snapshot, retain root identities across `fork(2)`, or define child
 overlay reconstruction. It therefore MUST NOT acknowledge proof bit 5. The
@@ -735,8 +564,8 @@ graph, or create a branch-private child overlay. The host MUST authenticate and
 open the immutable snapshot plus empty active overlay before preparation;
 child-side descriptor, graph, and overlay reconstruction remain proof bits 7
 and 8.
-It MUST acquire the block drain before the asynchronous-source barrier, because
-draining may require AIO progress, and release the asynchronous-source barrier
+It MUST acquire the block drain before the asynchronous-worker barrier, because
+draining may require AIO progress, and release the asynchronous-worker barrier
 before releasing the block drain. The standalone barrier command cannot bind a
 root or acknowledge bit 5 by itself, and the remaining proof bits still prevent
 `fork(2)`.
@@ -750,7 +579,7 @@ out-of-band query:
 
 ```text
 CrucibleHotForkPluginResourceInventory {
-    schema-version: u32 = 2,
+    schema-version: u32 = 3,
     generation: u64,
     registered: bool,
     complete: bool,
@@ -774,7 +603,6 @@ CrucibleHotForkPluginResourceInventory {
     run-control-worker: bool,
     teardown-worker: bool,
     fingerprint-worker: bool,
-    state-dump: bool,
     app-random: bool,
 }
 ```
@@ -782,16 +610,15 @@ CrucibleHotForkPluginResourceInventory {
 Resource-mask bits 0 through 9 are mandatory and respectively mean control
 socket, shared-memory mapping, wake descriptor, time control, vCPU callbacks,
 network callbacks, block callbacks, 9p callbacks, accelerator callbacks, and
-fault transport. Optional bits 10 through 14 respectively mean coverage,
-white-box, fingerprint, raw state dump, and app-random resources; no other bit
-is valid. Callback-mask bits 0 and 2 through 11 are mandatory and respectively
+fault transport. Optional bits 10 through 12 and bit 14 respectively mean
+coverage, white-box, fingerprint, and app-random resources; no other bit is
+valid. Callback-mask bits 0 and 2 through 11 are mandatory and respectively
 mean vCPU initialization, idle/resume, control boundary, sim shared memory,
 time advance, network, block submit/poll, block event/continuation, block wait,
-9p, and accelerator callbacks. Bit 1 records the legacy TCG-execution hook when
-installed; the current runtime deliberately leaves it clear. Optional bits 12
-and 13 respectively mean TB translation and flush callbacks; no other bit is
-valid. Coverage requires both feature callback bits, white-box requires TB
-translation, and the five feature booleans MUST equal their resource bits.
+9p, and accelerator callbacks. Optional bits 12 and 13 respectively mean TB
+translation and flush callbacks; no other bit is valid. Coverage requires both
+feature callback bits, white-box requires TB translation, and the four feature
+booleans MUST equal their resource bits.
 Worker-mask bits 0 and 1 are mandatory and respectively seal the RUN control
 reader and sole teardown worker. Bit 2 seals the fingerprint digest worker and
 MUST be present exactly when the fingerprint resource bit and feature boolean
@@ -889,7 +716,7 @@ plan; the focused mapping regression observes the `dc` `VmFlags` bit appear on
 hold and disappear on release.
 
 This is a retained barrier over the callback classes covered by the sealed
-manifest, every ABI-v20-or-newer shared-memory ring producer and consumer
+manifest, every current shared-memory ring producer and consumer
 including Apache host endpoints, and the mandatory RUN-control/teardown workers
 plus the optional fingerprint digest worker. While this retained state is quiescent,
 the host can now capture a bounded, versioned image of every ring-backed range
@@ -1089,13 +916,13 @@ complete child remap/rebind. That checkpoint kept readiness bits 6 through 8
 clear; version 13 below composes bit 6 without claiming bits 7 or 8.
 
 The next source checkpoint adds a process-lifetime reversible bottom-half and
-timer-source barrier through the OOB
-`crucible-hot-fork-bh-timer-barrier` command:
+async-worker barrier through the OOB
+`crucible-hot-fork-async-worker-barrier` command:
 
 ```text
-CrucibleHotForkBhTimerBarrierAction = hold | query | release
+CrucibleHotForkAsyncWorkerBarrierAction = hold | query | release
 
-CrucibleHotForkBhTimerBarrierState {
+CrucibleHotForkAsyncWorkerBarrierState {
     schema-version: u32 = 2,
     generation: u64,
     owner-thread-id: i64,
@@ -1126,7 +953,7 @@ CrucibleHotForkBhTimerBarrierState {
 boundary. A race-closed two-phase admission gate prevents every later outer
 AioContext poll or GLib dispatch, AioHandler mutation or callback, coroutine
 schedule, bottom-half or timer creation, mutation, and callback dispatch from
-entering the covered asynchronous-source operations. Producers wait until
+entering the covered asynchronous-worker operations. Producers wait until
 release; event-loop dispatch uses nonblocking admission and leaves already
 queued sources parked, so OOB QMP remains live. Work admitted before the hold
 may finish and may make nested source mutations inside that admission.
@@ -1144,7 +971,7 @@ active-aio-handler-callbacks == 0 && active-timer-callbacks == 0`. The owner is
 positive only while held, and the generation advances on each hold and release
 transition.
 
-This barrier closes the in-process asynchronous-source admission and dispatch
+This barrier closes the in-process asynchronous-worker admission and dispatch
 races and is sufficient for proof bit 3 while retained and quiescent. It does
 not choose child-side descriptor, context, coroutine, or clock disposition;
 those obligations remain separately represented by proof bits 7 and 8.
@@ -1196,7 +1023,7 @@ CrucibleHotForkTemplateState {
     missing-proofs: u64,
     plugin-barrier: CrucibleHotForkPluginBarrierState,
     rcu-barrier: CrucibleHotForkRcuBarrierState,
-    bh-timer-barrier: CrucibleHotForkBhTimerBarrierState,
+    async-worker-barrier: CrucibleHotForkAsyncWorkerBarrierState,
     block-barrier: CrucibleHotForkBlockBarrierState,
     resource-stage: CrucibleHotForkTemplateResourceStageState,
     rollback-complete: bool,
@@ -1214,7 +1041,7 @@ stable and block roots are quiesced, the coordinator schedules immutable-root
 binding on the main AioContext. Every repeated `prepare` MUST carry the exact
 same complete binding list; omission or mismatch fails closed. Once the binding
 is complete, the coordinator acquires the RCU
-admission barrier, the bottom-half/timer source barrier, and the plugin callback
+admission barrier, the asynchronous-worker barrier, and the plugin callback
 barrier, and retains all four while previously admitted work drains. A repeated
 `prepare` reevaluates the retained transaction. Once all four barriers are
 quiescent, QEMU reports `prepared` only when all seven parent-side template
@@ -1230,7 +1057,7 @@ a pending `blocked` or `aborted` completion before interpreting the next action,
 so query, prepare, or abort may observe the preceding transaction's terminal
 outcome without starting a new generation. The typed client preserves these
 legal asynchronous states while rejecting a prepared abort response.
-Version 12 introduced the atomic resource report. It carries the exact
+The current atomic resource report carries the exact
 private-ring and endpoint mutation generations, the
 endpoint-to-ring generation edge, their originating template generation, and
 whether every retained resource is bound to the current active transaction.
@@ -1238,7 +1065,7 @@ For retained endpoints it also requires the captured barrier generation and
 parent/child worker masks to match the exact current quiescent plugin barrier;
 generation or worker-state drift clears both `worker-disposition-bound` and
 `transaction-bound`.
-Version 13 acknowledges plugin-ring proof bit 6 only when every required
+Plugin-ring proof bit 6 is acknowledged only when every required
 retained resource stage, the shrink-sealed private ring, the endpoint-to-ring
 edge, the exact quiescent
 plugin-barrier generation, and the complete parent/child worker-disposition
@@ -1246,7 +1073,7 @@ plan all remain bound to the active template transaction. The nested
 `readiness-proof-acknowledged` value and outer bit 6 are independently derived
 from that basis and MUST agree; stale, partial, or cross-transaction state
 clears both.
-Version 14 additionally derives the complete registered plugin child-runtime
+The report also derives the complete registered plugin child-runtime
 plan before endpoint ownership is committed. QEMU copies the exact template,
 ring, endpoint, barrier, mapping, descriptor, kernel-identity,
 process-generation, and worker basis into one unconsumed one-shot adapter. The
@@ -1256,7 +1083,7 @@ endpoint staging requires the same copied plan, and exact endpoint release
 clears the parent-process adapter. This is a pre-fork plan binding, not evidence
 that any descriptor was replaced or that the child runtime executed, so it
 does not acknowledge proof bit 7 or 8.
-Version 15 additionally converts the copied runtime plan and the retained
+The template transaction converts the copied runtime plan and the retained
 branch-private control and wake source descriptors into the exact plugin
 portion of a future destructive child transaction. The nondestructive adapter
 contains two source-to-target replacements, a strictly sorted retain set of
@@ -1296,7 +1123,7 @@ independently contributed result endpoint rather than merely retaining that
 source. QMP, block, AIO, and the other supported-profile owners do not
 yet provide their concrete contributions, so this still cannot acknowledge
 proof bit 7 or 8.
-Version 16 adds the first non-plugin child contribution. The host creates a
+The host creates a
 fresh connected nonblocking Unix stream pair, retains its consumer endpoint,
 and transfers the child endpoint through standard QMP `getfd`. The
 `crucible-hot-fork-child-diagnostics` operation independently duplicates and
@@ -1326,8 +1153,8 @@ This supplies
 branch-private child diagnostics without enumerating the remaining QMP, block,
 AIO, console, or filesystem resources, invoking `fork(2)`, or acknowledging
 proof bit 7 or 8.
-Version 17 adds a second non-plugin contribution for a fresh branch-private QMP
-connection. After diagnostics staging, the host creates another connected
+The current template stages a second non-plugin contribution for a fresh
+branch-private QMP connection. After diagnostics staging, the host creates another connected
 nonblocking Unix stream pair and transfers the child endpoint through standard
 QMP `getfd`. The `crucible-hot-fork-child-qmp` operation duplicates
 and authenticates that endpoint by Linux `SO_COOKIE`, requires the same active
@@ -1340,8 +1167,7 @@ child-QMP QEMU duplicate, monitor name, and node pair, then diagnostics and the
 private ring. This contribution therefore preserves exact future monitor
 authority without claiming that monitor reconstruction or child disposition
 has occurred; proof bits 7 and 8 remain clear.
-Version 18 and child-QMP schema version 2 additionally prepare a one-shot
-child-monitor adapter bound to the exact retained descriptor, Linux socket
+The current child-QMP contract prepares a one-shot child-monitor adapter bound to the exact retained descriptor, Linux socket
 identity, template generation, and child-QMP mutation generation. A future
 child runtime is accepted only if it reports that inherited monitors were
 disposed, the dispatcher and private endpoint were rebuilt, parser and
@@ -1350,8 +1176,7 @@ exactly one replacement monitor exists, and neither queued nor partial requests
 remain. This is a fail-closed runtime contract, not the concrete monitor
 implementation or its composition with the authenticated child transaction;
 it does not invoke `fork(2)` or acknowledge proof bit 7 or 8.
-Version 19, resource-stage version 9, and child-QMP schema version 3 admit that
-endpoint only while QEMU observes the complete supported parent-monitor
+The current resource stage admits that endpoint only while QEMU observes the complete supported parent-monitor
 profile: one OOB-enabled I/O-thread QMP monitor, no HMP monitor, suspension,
 negotiation, queued request, partial parser, or unstable parser observation.
 The exact positive monitor lifecycle generation is copied into the sealed QMP
@@ -1360,8 +1185,7 @@ child-channel query. A changed or foreign generation therefore fails before
 resource-plan composition or host-channel acceptance. This binds the audited
 profile to the future child transaction; it still does not dispose or recreate
 the inherited monitor.
-Version 20, resource-stage version 10, and child-QMP schema version 4 retain the
-exact admitted `MonitorQMP`, monitor `IOThread`, dispatcher coroutine, and
+The current child ownership basis retains the exact admitted `MonitorQMP`, monitor `IOThread`, dispatcher coroutine, and
 lifecycle generation as one QEMU-private child ownership basis. Staging checks
 the basis against a fresh complete supported-profile inventory immediately
 before commit, idempotent restage repeats that exact comparison, and release
@@ -1370,16 +1194,14 @@ pointers remain inside the GPL process. This makes future destructive monitor
 reconstruction target exact retained owners; it does not perform that
 reconstruction, invoke `fork(2)`, release input, or acknowledge proof bit 7 or
 8.
-Version 21, resource-stage version 11, and child-QMP schema version 5 extend
-that private basis with the exact inherited `Chardev`. Staging requires it to
+That private basis also includes the exact inherited `Chardev`. Staging requires it to
 remain the admitted monitor's connected frontend, support GMainContext
 dispatch, and expose both backend disconnect and add-client operations. Only
 `monitor-disposition-bound` crosses QAPI. This proves that the retained owner
 has the concrete endpoint operations required by a future child transition;
 it does not invoke either operation, reconstruct the monitor, fork, release
 input, or acknowledge proof bit 7 or 8.
-Version 22, resource-stage version 12, and child-QMP schema version 6 further
-retain the exact connected Unix-socket frontend, address, channel, socket,
+The current socket basis retains the exact connected Unix-socket frontend, address, channel, socket,
 listener, read and HUP sources, `GMainContext`, and positive monotonic
 connection generation. Staging admits only the listening Unix profile and
 rejects TLS, telnet, TN3270, WebSocket, reconnect and connect-task state,
@@ -1422,9 +1244,9 @@ resource transaction requires both the plugin and QMP reinitializers to match
 their complete sealed bases before descriptor mutation, then consumes them as
 one linear reconstruction step. A same-endpoint adapter from another QMP
 generation is rejected before mutation, and either runtime failure leaves the
-child transaction fail-closed. Child-QMP schema version 7 now retains the exact
+child transaction fail-closed. The current child-QMP schema retains the exact
 concrete monitor runtime and private monitor basis in that one-shot adapter
-before fork; child application no longer accepts a runtime supplied after
+before fork; child application rejects a runtime supplied after
 descriptor mutation begins. Concrete child-only monitor disposal,
 dispatcher/IOThread reconstruction, endpoint attachment, greeting, and input
 release primitives now exist, but the production fork owner does not yet invoke
@@ -1449,7 +1271,7 @@ production command. Those obligations remain part of the closed
 supported-profile registry, so readiness bit 8 stays clear.
 
 The fork runtime now composes that registry transaction inside exact retained
-RCU and asynchronous-source transactions. The outer transactions close reader,
+RCU and asynchronous-worker transactions. The outer transactions close reader,
 callback, reader-registry, AIO, GLib, coroutine, bottom-half, and timer admission;
 require the exact coordinator reader and both complete callback states to be
 quiescent; and bind the process, monitor-thread owner, inventory generations,
@@ -1463,7 +1285,7 @@ vanished reader records, rebinds the coordinator reader, and resets the
 proven-empty callback queue while inherited descriptor admission is still
 closed. It then commits the complete descriptor disposition and only afterward
 starts one fresh `call_rcu` worker. Plugin reconstruction follows, and a final
-runtime phase releases the child's copied asynchronous-source barrier before
+runtime phase releases the child's copied asynchronous-worker barrier before
 child-QMP activation starts the replacement monitor IOThread. The
 registered-thread transaction admits exactly the coordinator, RCU worker, and
 classified monitor worker, rejecting generic and other AIO workers before
@@ -1474,7 +1296,7 @@ fail-closed rollback. Raw and library-owned locks and the remaining subsystem
 dispositions still keep readiness bit 8 clear.
 
 QEMU also installs a Linux-only main-loop fork coordinator. A raw event notifier
-is polled outside the asynchronous-source admission barrier, allowing one OOB
+is polled outside the asynchronous-worker admission barrier, allowing one OOB
 owner to submit an immutable prepare/parent/child operation while all covered
 BH and AIO work is parked. Preparation, `fork(2)`, and parent disposition run on
 the designated source main-loop thread. The immediate child closes and disables
@@ -1485,8 +1307,8 @@ parent-death containment and authenticate the immediate child before any
 reconstruction or externally visible action. A real-fork unit test proves the
 thread ownership and returned-PID contract.
 
-Template contract version 25, resource-stage version 13, and fork-result schema
-version 2 now expose that coordinator as the public `crucible-hot-fork` QMP
+The current template contract, resource stage, and fork-result schema expose
+that coordinator as the public `crucible-hot-fork` QMP
 command. The request carries the exact template, private-ring, diagnostics,
 child-QMP, child-console, monitor, plugin-endpoint, plugin-barrier,
 descriptor-table, parent-process, child-process, child-process-contract, and
@@ -1508,7 +1330,7 @@ crucible-hot-fork(
     plugin-endpoint-generation: u64,
     plugin-barrier-generation: u64,
     rcu-barrier-generation: u64,
-    bh-timer-barrier-generation: u64,
+    async-worker-barrier-generation: u64,
     block-barrier-generation: u64,
     parent-process-generation: u64,
     child-process-generation: u64,
@@ -1653,7 +1475,7 @@ child-generation cgroup/pidfd authority, resource accounting, private channel
 authentication, and campaign observation remains required before this command
 may serve a production campaign flight.
 
-The version-3 child-QMP report first derived `disposition-complete` from that
+The child-QMP report derives `disposition-complete` from that
 exact accepted one-shot status instead of hard-coding false. Prepared but
 unattempted, contradictory, failed, and reset adapters remain incomplete; the
 accepted result must still match the retained descriptor, socket identity,
@@ -1694,7 +1516,7 @@ The caller MUST explicitly `abort` an incomplete retained transaction before
 resuming or abandoning the template. Abort rolls the four barriers back but
 does not silently discard separately owned staged descriptors; those are
 released through their exact resource operations after rollback.
-Rollback releases plugin, asynchronous-source, and RCU admission before it
+Rollback releases plugin, asynchronous-worker, and RCU admission before it
 schedules graph and native block release on the main AioContext; this ordering
 prevents new AIO work from entering while the block layer is still drained.
 Graph admission reopens immediately before native drain cleanup inside that one
@@ -1711,14 +1533,14 @@ proof classes alone do not trigger rollback.
 `missing-proofs` MUST equal `required-proofs & ~acknowledged-proofs`.
 `rollback-complete` is true exactly when no transaction is active and none of
 the four barriers is held. `ready` is true exactly for an active `prepared`
-transaction whose plugin, RCU, asynchronous-source, and block barriers are
+transaction whose plugin, RCU, asynchronous-worker, and block barriers are
 quiescent and whose missing bitmap is zero.
 Proof bit 4 is present exactly while the transaction remains active and its
 complete RCU barrier is quiescent. Proof bit 3 is present exactly while the
-transaction remains active and its complete asynchronous-source barrier is
+transaction remains active and its complete asynchronous-worker barrier is
 quiescent. Proof bit 5 is present exactly while the transaction remains active
 and its complete immutable writable-root binding remains retained by the
-quiescent block barrier. Version 19 composes plugin-ring proof bit
+quiescent block barrier. The current template composes plugin-ring proof bit
 6 from the exact transaction-bound frozen ring, diagnostics stream, retained
 child-QMP stream and prepared reinitializer, endpoint pair, worker plan, and
 plugin barrier. The resource-table binding remains nondestructive. Template
@@ -1731,49 +1553,22 @@ composes those child-only operations for the supported QEMU profile, while
 daemon-owned containment, reaping, accounting, and campaign publication remain
 outside the template contract.
 
-The standalone AioContext, AIO-handler, and block-backend responses remain
-observational. The retained asynchronous-source barrier composes the context,
-handler, coroutine, bottom-half, and timer admission classes and derives proof
-bit 3 only while they are complete and quiescent. The coordinator now composes
+The internal AioContext, AIO-handler, and block-backend snapshots remain
+observational until retained by their barriers. The asynchronous-worker
+barrier composes the context, handler, coroutine, bottom-half, and timer
+admission classes and derives proof bit 3 only while they are complete and
+quiescent. The coordinator now composes
 the retained native block drain, graph-writer barrier, and exact immutable
 writable-root binding to derive proof bit 5. It must retain the exact
 descriptor/mapping and child reconstruction plans so the fork command can
 consume them after the parent template is prepared.
 
-Patched POSIX QEMU also exposes the bounded observational mutex inventory used
-to define the process-private lock side of the child-reinitialization proof:
-
-```text
-CrucibleHotForkMutexInventory {
-    schema-version: u32 = 1,
-    generation: u64,
-    complete: bool,
-    overflowed: bool,
-    mutex-count: u32,
-    recursive-mutexes: u32,
-    owned-mutexes: u32,
-    acquisition-waiters: u64,
-    condition-waiters: u64,
-    unlock-transitions: u32,
-    invalid-mutexes: u32,
-    mutexes: [
-        {
-            mutex-id: positive u64,
-            owner-thread-id: nonnegative i64,
-            recursion-depth: u32,
-            acquisition-waiters: u32,
-            condition-waiters: u32,
-            recursive: bool,
-            unlock-active: bool,
-            ownership-valid: bool,
-        },
-    ],
-}
-```
+QEMU maintains bounded internal mutex state for template admission and child
+reconstruction. The state is not exposed as a standalone QMP report.
 
 `mutexes` contains at most 65,536 records in strictly increasing `mutex-id`
 order. Owner zero and recursion depth zero are equivalent; every positive owner
-MUST appear in the matching QEMU thread inventory; and a nonrecursive mutex
+MUST appear in the internal QEMU thread registry; and a nonrecursive mutex
 MUST have depth at most one. All top-level counts are exact checked sums.
 `complete` equals `!overflowed && invalid-mutexes == 0`. The process-local
 generation advances on mutex creation and destruction, while ownership and
@@ -1782,39 +1577,16 @@ snapshot serialize on a private raw pthread mutex, so a response cannot contain
 a half-updated owner/depth pair and the inventory lock cannot recursively enter
 the `QemuMutex` registry it observes.
 
-This response is still observational. It does not acquire all QEMU locks,
+This internal snapshot does not acquire all QEMU locks,
 retain a barrier across `fork(2)`, prove that an omitted raw or library mutex is
 safe, select a child disposition, or run a child reinitializer. It therefore
 MUST NOT acknowledge proof bit 8. The future coordinator must retain the
 appropriate subsystem barriers and explicitly account for every omitted
 process-private resource before authorizing a fork.
 
-Patched POSIX QEMU also exposes the bounded observational live-timer inventory
-used to define the timer side of the AIO/BH barrier:
-
-```text
-CrucibleHotForkTimerInventory {
-    schema-version: u32 = 1,
-    generation: u64,
-    complete: bool,
-    overflowed: bool,
-    timer-count: u32,
-    pending-timers: u32,
-    active-callbacks: u32,
-    timers: [
-        {
-            timer-id: positive u64,
-            timer-list-id: positive u64,
-            clock: realtime | virtual | host | virtual-realtime,
-            expire-time-ns: i64,
-            scale: positive u32,
-            attributes: u32,
-            pending: bool,
-            callback-active: bool,
-        },
-    ],
-}
-```
+QEMU maintains bounded internal timer state for the retained
+asynchronous-worker barrier. The state is not exposed as a standalone QMP
+report.
 
 `timers` contains at most 65,536 records in strictly increasing `timer-id`
 order. It contains every pending timer and every callback active at the
@@ -1829,58 +1601,18 @@ racing the timer-list lock, and callback registry entries own copied metadata
 rather than a timer pointer, so a callback may legally free its enclosing timer
 before the inventory entry is removed.
 
-This response is still observational. It does not prevent a timer from being
-armed, canceled, or fired after the query, retain a timer-list or AIO barrier
+This internal snapshot does not prevent a timer from being armed, canceled, or
+fired before the barrier is retained, retain a timer-list or AIO barrier
 across `fork(2)`, select a child disposition, or reinitialize clock state. It
 therefore MUST NOT acknowledge proof bit 3. The version-6 coordinator supplies
-the required retained timer and AIO/BH composition; this standalone inventory
-still cannot promote the proof by itself.
+the required retained timer and AIO/BH composition; an unretained snapshot
+cannot promote the proof by itself.
 
-The Phase 6 host audit complements that query with bounded operational evidence
-for one exact Linux process generation. It accepts only while proof bit 2 is
-set, brackets the procfs capture with two identical thread-registry, RCU,
-AioContext, AIO-handler, block-backend, plugin-resource, bottom-half, mutex, and
-timer snapshots inside two identical readiness reports,
-authenticates the QEMU PID/start-time/executable identity before and after, and
-rejects any incomplete QMP inventory before requiring two complete
-process-inventory passes to match byte-for-byte. Every
-bottom half MUST name a context in the matching AioContext inventory. Each
-QEMU-registered thread MUST be present in that exact process generation.
-Procfs threads absent from
-the internal registry are reported separately as externally created blockers.
-Each pass also records descriptor numbers and link targets and
-`/proc/<pid>/maps` records, including writable/shared classification. A warm
-pass occurs before the two compared passes so audit-allocation growth is not
-mistaken for target drift in conformance fixtures.
-
-The version-1 operational limits are 65,536 threads, 65,536 descriptors,
-65,536 mappings, 256 bytes per thread name, 4 KiB per descriptor target, 8 KiB
-per mapping record, and 16 MiB of aggregate retained record bytes. Every count,
-length, numeric identifier, mapping grammar, and aggregate addition is checked
-before retention. The aggregate limit applies to each pass; exact comparison
-retains at most two bounded passes, and the warm pass is released first.
-Exceeding a bound, changing process generation, readiness, or QEMU registry,
-missing a registered thread from procfs, or observing different process passes
-rejects the audit.
-This observed fixed point is deliberately not a quiescence proof: it does not
-retain a mutex or QEMU-internal AIO/BH/timer/plugin barrier, traverse the
-BQL-owned block graph, inventory process-lifetime plugin heap ownership, resolve
-external-thread dispositions, or run child reinitializers. The block inventory
-cannot prove an immutable writable-root boundary. It cannot set any readiness
-bit, prepare a template, or authorize `fork(2)`.
-The thread registry identifies the live RCU callback and AIO-context workers
-by subsystem-specific unresolved dispositions. The RCU inventory exposes the
-exact observed reader and callback state, the AioContext inventory exposes
-home-thread binding plus instantaneous poll, dispatch, bottom-half, coroutine,
-and notification activity, the bottom-half inventory exposes every allocated
-instance and its exact AioContext and lifecycle state, the mutex inventory
-exposes instantaneous owner, recursion, waiter, and unlock-transition state,
-and the timer inventory exposes every pending timer and active callback, while
-any other non-coordinator remains plain `unclassified`. These observational
-inventory values are not child dispositions or held barriers. The version-2
-coordinator now separately retains the RCU admission/drain barrier; the other
-proofs must be produced while later coordinator versions hold their
-corresponding subsystem barriers.
+The retained template coordinator consumes these internal registries through
+its RCU, asynchronous-worker, block, plugin, monitor, and child-resource
+barriers. Callers receive one aggregate proof state and cannot independently
+mint readiness from an observational subsystem snapshot. Bounds, structural
+validation, and generation checks remain inside the owning QEMU transaction.
 
 Later template realization adds the remaining operations:
 
@@ -2083,23 +1815,28 @@ remains mandatory before T-CAM-7.4 is marked complete.
 
 ## 05.9 Exact durable closure
 
-The RFC-0014 exact closure is retained as the portable representation. It
-contains a manifest and authenticated objects for scenario/configuration,
-scheduler, logs, signal artifacts, trigger/assertion/lifecycle/fault state,
-per-node snapshots, disk overlays, QEMU VMState, generations, and service state.
+The RFC-0014 exact closure is retained as the portable representation. The
+current schema is version nine. It contains a manifest and authenticated
+objects for scenario/configuration, scheduler, logs, signal artifacts,
+trigger/assertion/lifecycle/fault state, per-node snapshots, disk overlays,
+QEMU direct-plus-delta RAM layers, final device state, generations, and service
+state.
 
-The single-host implementation stores VMState as a dense chunk sequence and a
-root overlay as immutable backing plus a canonical sparse changed-chunk map. It
-keeps every running QEMU node paused after exact capture, discovers allocated
+The single-host implementation stores QEMU RAM as a bounded direct layer
+followed by bounded parent-relative delta layers. The final non-RAM device
+state is a separate authenticated descriptor. A root overlay is represented as
+immutable backing plus a canonical sparse changed-chunk map. Capture keeps
+every running QEMU node paused, discovers allocated
 overlay ranges with `SEEK_DATA`/`SEEK_HOLE`, canonicalizes allocated all-zero
-chunks back to holes, and streams only nonzero changed chunks plus VMState into
-the content store. A filesystem without reliable extent discovery fails closed
+chunks back to holes, and streams only nonzero changed chunks plus the
+descriptor-backed QEMU state into the content store. A filesystem without
+reliable extent discovery fails closed
 rather than falling back to work proportional to the virtual disk. The closure
 is durably published before transient QMP snapshots are deleted and only nodes
 that were running are resumed. No second full-file staging tree is created.
 
-Version-seven and version-eight sparse artifacts carry a logical `length`, no
-dense `chunks`, and strictly ordered, nonoverlapping, nonadjacent extents. Each
+Version-nine sparse overlay artifacts carry a logical `length`, no dense
+`chunks`, and strictly ordered, nonoverlapping, nonadjacent extents. Each
 extent contains a `start_chunk` and one or more consecutive BLAKE3 chunk
 identities; chunks are 4 MiB except for a final partial logical chunk. Omitted
 logical chunks are canonical zeroes. The sparse artifact identity is
@@ -2110,112 +1847,60 @@ stream without hashing every omitted zero during capture.
 
 Restore authenticates the extent geometry, identity, and every stored chunk,
 then writes those chunks into a new destination-side staging file and creates
-omitted ranges as holes. Dense legacy artifacts stream through a fixed 1 MiB
-buffer and authenticate their complete byte-stream hash. A corrupt, short,
-long, or missing source leaves no partial destination. Cleanup attempts every
+omitted ranges as holes. Each RAM and device-state object is materialized into
+an already-open sealed descriptor, rewound, and bound into one v9 restore
+request before QEMU starts. A corrupt, short, long, or missing source leaves no
+partial destination. Cleanup attempts every
 captured node even when one delete or resume fails. Hashing, chunk persistence,
 portable closure validation, and campaign-store streaming observe attempt
 cancellation between bounded I/O chunks; cancellation cannot bypass cleanup or
 be misclassified as retryable store I/O. The remaining storage work is:
 
-- admit QEMU-emitted RAM dirty-page/extent manifests when the fork/snapshot
-  capability is available;
 - compact and tier long delta chains without changing configuration identity.
 
-The single-node exact-checkpoint foundation uses four registered immutable
-objects. `crucible.qemu.vm-snapshot@device-state.2` is the owner-decoded
-storage profile for canonical `QemuVmSnapshotV1` metadata and its projected
-Apache state. `crucible.executor.scheduler-continuation@device-state.3` retains
-the complete canonical `SingleSchedulerCheckpoint` required to continue all
-scheduler, device, network, search, trigger, RNG, and event-log state.
-Device-state version 1 remains reserved for opaque QEMU VMState, so the three
-leaf roles cannot alias one logical content ID.
+Only version-nine manifests are decoded and authenticated. There is no
+alternate monolithic VMState reader or restore path.
 `crucible.qemu.vmstate@device-state.1` is the opaque QEMU qcow2 VMState byte
-stream. `crucible.executor.exact-checkpoint-root@exact-manifest.3` is a generic
-content envelope with exactly these sorted children:
-
-```text
-snapshot-metadata      -> crucible.qemu.vm-snapshot@device-state.2
-scheduler-continuation -> crucible.executor.scheduler-continuation@device-state.3
-qemu-vmstate           -> crucible.qemu.vmstate@device-state.1
-```
-
-Its fixed 88-byte body contains the 32-byte aggregate snapshot identity, the
-32-byte materialized configuration identity, and big-endian `u64` metadata,
-scheduler-continuation, and VMState byte lengths. The root therefore
-authenticates one exact triple rather than independently reusable objects.
-Preparation validates and hashes all children without writes. Publication
-places metadata, scheduler continuation, and VMState first, requires durable
-receipts for all three, and places the root last. The caller MUST
-durably stage the expected root in its bounded assignment ledger before the
-first put. The executor's `checkpoint-publishing`, `paused`, and
-replay-validation `checkpoint-promoting(source,promoted)` records are the
-retention roots across publication and restart. The promoting phase is
-persisted before the first replacement write and retains both the raw source
-and expected promoted root; only a fully authenticated exact raw-to-matching
-pair may become `paused(promoted)`. A failed put may leave unreachable
-immutable children for GC, but may not make an incomplete root visible. The
-live session returns metadata, the scheduler continuation, and its reopenable VMState source
-as one linear capture result, reaps QEMU, and hands that value to the fixed
-worker pool. Preparation, root staging, publication, and paused-state
-reconciliation each consume a distinct retryable phase token, so storage or
-ledger failure never repeats guest execution or capture.
-
-Raw paused-root replay validation uses the same guarded fat/thin comparison as
-exact-pin validation, but its owner is the lineage-qualified attempt ledger.
-The replacement reuses the source VMState content identity and rewrites only
-the metadata/root carrying the matching oracle result. Restart can finish a
-complete staged pair after authenticating both roots, shared VMState, and exact
-metadata transition without rerunning QEMU. Missing/incomplete promoted bytes
-leave the raw root retained for bounded validation/publication retry; stable
-failure can explicitly restore `paused(raw)`.
-
-The store admits only durable, conditional-create, streaming-read and
-streaming-put backends. The VMState source is finite and reopenable and is
-rejected from its declared length before it is opened when outside the exact
-attempt ceiling. Dense restore copies the complete authenticated stream into
-staging storage and may expose it to QEMU only after EOF, exact length, and
-digest have all been observed. Sparse overlay restore authenticates the exact
+stream. Production publication uses
+`crucible.executor.exact-checkpoint-root@exact-manifest.4`. The root commits to
+the version-nine closure manifest and its direct-or-delta RAM layers, device
+state, scheduler continuation, immutable backing, and fault checkpoint. The
+assignment ledger stages that root before publication, and publication makes
+the authenticated children durable before exposing the root. A process-local
+replay claim is issued only by a completed guarded raw-to-promoted comparison;
+persisted bytes alone cannot authorize restore, and reopening the store requires
+the comparison to run again. Offline conversion returns authenticated data but
+never process-launch authority. Sparse overlay restore authenticates the exact
 extent manifest and every named chunk before atomically exposing a file whose
 omitted ranges are zero holes.
 
-The complete multi-node production continuation uses version eight of the same
+The complete multi-node production continuation uses version nine of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.8` manifest and exact opaque
+`crucible.production-exact-closure@device-state.9` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered
 `crucible.executor.production-checkpoint-index@exact-manifest.1` page. A page
 contains at most 4,096 objects and has this canonical body and child mapping:
 
-Version five added the strictly node-ordered selectable catalog plans to the
-bounded lifecycle-continuation object. Each plan remains the canonical
+The current manifest carries strictly node-ordered selectable catalog plans in
+the bounded lifecycle-continuation object. Each plan remains the canonical
 `CRUCSCP3` process-neutral body, is at most 32 MiB, and must be frozen and bound
-to a live checkpoint target. The closure reader continues to accept a canonical
-version-four manifest as an exact legacy identity; such a closure has no
-selectable catalog plans and therefore cannot restore a selectable-bearing
-scenario.
-
-Version six additionally binds every live target to the BLAKE3 identity of
+to a live checkpoint target. Every live target is bound to the BLAKE3 identity of
 the immutable root-image bytes supplied to QEMU. Lifecycle construction hashes
 the selected image, and capture includes that identity in both the target record
 and target-manifest identity. Restore rejects a mismatch before launching QEMU.
-Canonical version-four and version-five manifests remain readable with no backing claim;
-they retain their original bytes and identities, while version-six and later
-targets make the backing proof. Version seven replaces each dense overlay chunk
-sequence with the canonical sparse extent representation above while retaining
-dense VMState chunks. Canonical version-six manifests remain readable and retain
-their original bytes and identities. Version eight additionally retains one
+The manifest uses the canonical sparse extent representation above for overlay
+chunks while retaining dense device-state chunks. It additionally retains one
 canonical process-free host-I/O checkpoint for every permanently failed VM. Its
 strictly node-ordered manifest record binds the owner's original execution
 binding, checkpoint object identity, fingerprint sample time, and execution
-fingerprint hash. Those records participate in the closure identity, object
-inventory, byte budgets, publication, and authentication. A permanently failed
-node without exactly one matching record is rejected. Versions four through
-seven remain readable with their original bytes and identities only when their
-service-state partition contains no permanently failed node; they cannot
-silently synthesize the missing execution authority.
+fingerprint hash. The current schema records each live target's exact checkpoint identity, ordered direct-plus-delta
+RAM layers, shared topology identity, and final device-state object. Those
+records participate in the closure identity, object inventory, byte budgets,
+publication, and authentication. A permanently failed node without exactly one
+matching record is rejected. Every noncurrent schema is rejected during decode.
 
 ```text
 "CRUCPIDX" || object_count:u32be
@@ -2257,7 +1942,8 @@ production resource bound. Before inventory allocation, the loader also
 requires `object_count * 32 <= manifest_bytes`; every deduplicated object must
 occur as at least one 32-byte identity in the canonical manifest, so this
 conservative relation bounds hostile zero-length inventories by the 64 MiB
-manifest ceiling.
+manifest ceiling. Noncurrent production closure versions are rejected during
+decode; runtime restore requires the version-nine descriptor set.
 
 For a packaged fresh attempt, the modeled driver yields checkpoint ownership
 only at an exact safe boundary. The production lifecycle first retains the
@@ -2281,66 +1967,35 @@ same crash-safe retirement protocol to the dedicated `campaign-workers` and
 `campaign-checkpoint-promotions` namespaces before creating any worker. The
 separate baked-genesis catalog is not retired by this recovery pass.
 
-The single-host restore transaction accepts either a current exact-pin
-selection or the exact root retained by a paused execution origin. The latter
-must name the attempt's pre-selection or post-selection configuration; a
-foreign root is rejected before the first destination write. The transaction
-pins the pre-provisioned run directory and VMState inode before copying. A
-valid declared length is checked against the
-attempt's aggregate writable-byte reservation before truncation. Beginning the
-copy marks the destination unavailable for launch; only an exact-length,
-authenticated, file-synchronized completion records the aggregate
-`ExactCheckpointId` root binding, which covers `QemuVmSnapshot` metadata, the
-complete scheduler continuation, and the opaque VMState child. The exact
-launcher MUST require that binding
-immediately before guarded spawn; metadata identity alone is insufficient. An
-interrupted or failed copy remains
-unready rather than falling back to the previously provisioned image, and a
-replacement attempt restarts from byte zero. This operational binding is not a
-new content identity and does not alter the immutable checkpoint root. Derive
-`binding` by applying canonical `ContentHash` material hashing with domain
-`crucible.executor.exact-vmstate-restore-binding.v1` to the lowercase
-hexadecimal encoding of the typed `ExactCheckpointId`'s 32-byte digest.
-The binding marker is process-local authority rather than trusted on-disk
-metadata. After daemon restart, reopening the same pinned inode treats it as
-unbound and repeats authenticated materialization from the retained root before
-exact restore.
+The single-host restore transaction accepts a current version-nine exact-pin
+selection or the version-nine root retained by a paused execution origin. The
+latter must name the attempt's pre-selection or post-selection configuration;
+a foreign root is rejected before the first destination write. Before any
+root-overlay write or memfd creation, the transaction checks the aggregate
+overlay, RAM-layer, and device-state bytes against the checkpoint resource
+ceiling. It then authenticates and seals every RAM and device descriptor,
+rewinds them, and builds one request whose ordered layers, topology, target,
+frontier, and checkpoint identity match the manifest. The launcher rechecks
+that binding immediately before guarded spawn; metadata identity alone is
+insufficient. An interrupted or failed materialization remains unready. It
+cannot fall back to a provisioned image, a monolithic VMState file, or a
+previous generation.
 
-Version-two roots with only snapshot metadata and VMState and version-three
-single-node roots remain readable for legacy authentication, migration, and
-source-bound promotion. Version two is never resumable. Version three retains
-the complete single scheduler continuation and remains useful for the existing
-single-node oracle path, but it cannot represent the complete production
-multi-node trigger/assertion/fault/network closure and MUST NOT be advertised as
-packaged production resume. A version-four attempt resume must install and
-validate the complete production closure described above before modeled guest
-work. Packaged version-four capture and ledger handoff are implemented; exact
-production semantic installation is now cancellation-bounded and authenticates
-the restored configuration and scheduler continuation before launch authority
-can exist. The installer requires the branch post-selection configuration (or
-the discovery start) as an exact schedule prefix and rejects any later campaign
-branch edge as a different attempt before native-catalog publication.
-Version-four source-bound replay-oracle promotion is implemented over the
-complete portable closure. It validates one exact raw-snapshot check per live
-node, derives only matching snapshot and dependent manifest/root identities,
-reuses unchanged chunked artifacts, and reauthenticates the exact raw/promoted
-pair after restart before the paused-root CAS. Production-loop process
-reconstruction and resume-driver selection are now composed in the packaged
-worker: the resume-only admission rejects `NotRun` before native publication or
-resource installation, restores the complete scheduler/evidence continuation,
-and never falls back to fresh replay. The ordinary guarded lifecycle can now
-capture a separate candidate at the exact scenario-genesis ready boundary
-without executing a modeled quantum, tear QEMU down, and admit only a complete
-version-four native closure whose live-node set exactly equals the World. That
-capability is the authenticated bootstrap source for baked-genesis replay; it
-does not publish a campaign root or advertise exact restore. The concrete
-node-specific replay factory now shares one completely authenticated compact
-target catalog, opens only the requested baked snapshot, streams the selected
-fat and baked artifact pairs into separate descriptor-pinned generations under
-one exact attempt guard, and launches them through disjoint exact and thin
-profile capabilities. Packaged startup captures that baked source before
-binding the endpoint, installs one fixed promotion owner per semantic worker,
-and advertises `ExactRestore` only when that nonempty owner set exists.
+Production process reconstruction and resume-driver selection require a
+version-nine manifest with descriptor-backed exact RAM and device state. The
+installer requires the branch post-selection configuration (or the discovery
+start) as an exact schedule prefix and rejects any later campaign branch edge
+as a different attempt before native-catalog publication. The resume-only
+admission rejects `NotRun` before native publication or resource installation,
+restores the complete scheduler/evidence continuation, and never falls back to
+fresh replay. The concrete node-specific replay factory shares one completely
+authenticated compact target catalog, opens only the requested version-nine
+snapshot, streams the selected exact and baked descriptor sets into separate
+pinned generations under one attempt guard, and launches them through disjoint
+exact and thin profile capabilities. Packaged startup captures that baked
+source before binding the endpoint, installs one fixed promotion owner per
+semantic worker, and advertises `ExactRestore` only when that nonempty owner set
+contains a current version-nine root.
 Assignment-root-aware cleanup of abandoned attempt and promotion native
 catalogs is implemented by the crash-safe retirement protocol above. A
 `checkpoint-publishing(root)` record interrupted before immutable publication
@@ -2349,13 +2004,14 @@ must reproduce that root. Once the root is complete in campaign CAS, the native
 catalog is redundant and may be retired without weakening recovery or GC
 reachability.
 
-A newly captured exact root records replay-oracle state `NotRun` and is not
-eligible for resume. The single-host owner authenticates the selected root and
-compares that exact fat snapshot with an independently realized thin path. The
-comparison returns a capability bound to the source snapshot identity rather
-than an unbound boolean. A matching result publishes new snapshot metadata and
-a new exact root while reusing the already-authenticated VMState child, then
-atomically replaces the operational exact-pin selection. A mismatching,
+A newly captured version-nine exact root records replay-oracle state `NotRun`
+and is not eligible for resume. The single-host owner authenticates the
+selected root and compares that descriptor-backed exact snapshot with an
+independently realized thin path. The comparison returns a capability bound to
+the source snapshot identity rather than an unbound boolean. A matching result
+publishes new snapshot metadata and a new exact root while reusing the already
+authenticated RAM-layer and device-state objects, then atomically replaces the
+operational exact-pin selection. A mismatching,
 foreign, stale, or unavailable comparison publishes nothing through this
 promotion path and leaves the raw root non-resumable. Selection replacement
 failure may leave only the newly published immutable root unreachable and
@@ -2376,9 +2032,9 @@ private structures. Apache storage code treats QEMU blobs as opaque bytes.
 - **[HFORK-16]** Exact restore MUST authenticate the complete closure and pass
   the replay oracle before the restored runtime can become a fork template.
 
-## 05.10 Hibernation, debugging, and offline maintenance transfer
+## 05.10 Exact pause, debugging, and offline maintenance transfer
 
-### Hibernation
+### Exact pause
 
 Pin the exact closure, release QEMU processes and hot pages, and retain the lazy
 campaign continuation. Resume restores the closure and continues from the same
@@ -2461,7 +2117,7 @@ The supported launch profile optimizes the complete child-ready path:
   generation, carries the child phase, staged resource generations,
   authenticated endpoint identities, and worker state, and advances its
   checked process-local generation only when registration or observed status
-  changes. Version 3 also carries the exact source VMA start, length, and zero
+  changes. The report also carries the exact source VMA start, length, and zero
   offset in both the initialization plan and persistent status. QEMU rejects a
   non-page-aligned, overflowing, differently sized, or nonzero-offset plan; the
   plugin independently requires that geometry to equal its retained mapping
@@ -2486,7 +2142,7 @@ The supported launch profile optimizes the complete child-ready path:
   real-fork child-resource unit path composes that adapter with exact descriptor
   closure and mapping verification through a fake registered runtime; the
   plugin's actual callback remains covered separately by its exact-plan and
-  remap tests. The version-14 retained template transaction now derives that
+  remap tests. The retained template transaction derives that
   exact plan and copies it into the one-shot adapter before it admits the
   endpoint stage. Its report carries the checked parent/child generation pair
   and whether the unconsumed adapter still matches every retained resource

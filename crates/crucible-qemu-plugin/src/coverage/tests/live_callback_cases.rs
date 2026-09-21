@@ -3,6 +3,53 @@
 use super::*;
 
 #[test]
+fn combined_whitebox_and_coverage_share_one_ordered_translation_registration() {
+    let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
+    CALLBACK_MODEL_TRANSLATION_CALLBACK.store(0, Ordering::SeqCst);
+    CALLBACK_MODEL_TRANSLATION_REGISTRATIONS.store(0, Ordering::SeqCst);
+    CALLBACK_MODEL_COMBINED_ORDER.store(0, Ordering::SeqCst);
+    let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 16));
+    let coverage_header = RingHeader::new();
+    let mut coverage_entries = vec![CoverageEntry::default(); 16];
+    let output = callback_model_shmem_producer(&coverage_header, &mut coverage_entries);
+    let mut apis = callback_model_apis();
+    apis.tb_n_insns = callback_model_ordered_tb_n_insns;
+    let whitebox = LiveTbTranslationConsumer::new(
+        callback_model_whitebox_translate,
+        0xA11CE_usize as *mut c_void,
+    );
+    let owner = LiveBasicBlockCoverage::register_with_whitebox(
+        0xC0DE,
+        callback,
+        apis,
+        output,
+        Arc::new(LiveCallbackQuiescence::new()),
+        Some(whitebox),
+    )
+    .unwrap_or_else(|error| panic!("combined translation owner should register: {error}"));
+
+    assert_eq!(
+        CALLBACK_MODEL_TRANSLATION_REGISTRATIONS.load(Ordering::SeqCst),
+        1
+    );
+    let translate_address = CALLBACK_MODEL_TRANSLATION_CALLBACK.load(Ordering::SeqCst);
+    let translate =
+        // SAFETY: the registration stub stored this exact callback ABI.
+        unsafe { std::mem::transmute::<usize, QemuVcpuTbTransCbFn>(translate_address) };
+    let mut tb = TestTb {
+        guest_pc: 0x4010,
+        insns: vec![TestInsn { size: 4 }],
+    };
+    translate(
+        std::ptr::from_mut(&mut tb).cast::<QemuPluginTb>(),
+        CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
+    );
+
+    assert_eq!(CALLBACK_MODEL_COMBINED_ORDER.load(Ordering::SeqCst), 2);
+    assert_eq!(owner.translated_block_count(), 1);
+}
+
+#[test]
 fn coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount() {
     let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
     CALLBACK_MODEL_TRANSLATION_CALLBACK.store(0, Ordering::SeqCst);
@@ -53,8 +100,8 @@ fn coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount()
         ],
     };
     translate(
-        plugin_id,
         std::ptr::from_mut(&mut tb).cast::<QemuPluginTb>(),
+        CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
     );
     let execute_address = CALLBACK_MODEL_EXEC_CALLBACK.swap(0, Ordering::SeqCst);
     assert_ne!(execute_address, 0);
@@ -114,7 +161,10 @@ fn paused_restore_resets_scoreboard_map_and_setup_ring_before_reemission() {
         guest_pc: 0x4010,
         insns: vec![TestInsn { size: 4 }],
     };
-    translate(0xC0DE, std::ptr::from_mut(&mut tb).cast::<QemuPluginTb>());
+    translate(
+        std::ptr::from_mut(&mut tb).cast::<QemuPluginTb>(),
+        CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
+    );
     let execute_address = CALLBACK_MODEL_EXEC_CALLBACK.load(Ordering::SeqCst);
     let execute =
         // SAFETY: translation registered this exact execution callback ABI.

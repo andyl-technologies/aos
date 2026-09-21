@@ -56,7 +56,7 @@ fn assert_frozen_golden_vectors(expected_abis: &[BoundaryAbi]) {
 
     let implemented_targets = gate_targets()
         .iter()
-        .filter(|target| target.gate == "gate:abi-conformance" && !target.placeholder)
+        .filter(|target| target.gate == "gate:abi-conformance")
         .map(|target| target.package)
         .collect::<BTreeSet<_>>();
     assert!(implemented_targets.contains("crucible-shmem"));

@@ -132,7 +132,7 @@ pub fn prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
         let assets = &lifecycle.config.guest_assets[&vm.arch];
         lifecycle.launch_configs.insert(
             retained_node.clone(),
-            ProductionLiveNodeStepGateConfig::new_with_root_image(
+            QemuLiveNodeStepGateConfig::new_with_root_image(
                 &lifecycle.config.executable,
                 &lifecycle.config.plugin,
                 &assets.kernel,
@@ -271,7 +271,7 @@ fn lifecycle_without_backends(
         .lower_to_event_graph_for_world(source.world())
         .map_err(|error| test_support_error("lower test trigger graph", error))?
         .into_event_graph();
-    let nodes = ProductionNodeSet::new();
+    let nodes = QemuNodeSet::new();
     let artifacts = (!source.plan().fault_signals().programs().is_empty()).then(|| {
         let store: Arc<dyn crucible::model::DagStore> =
             Arc::new(crucible::model::MemoryDagStore::new());
@@ -335,7 +335,6 @@ fn lifecycle_without_backends(
         terminal_verdict: None,
         checkpoint_terminal_cause: None,
         initial_lifecycle_observations_pending: true,
-        logical_replay_boundary: None,
         branch: None,
         continuation_branches: VecDeque::new(),
         signal_fault_branches: VecDeque::new(),
@@ -347,7 +346,6 @@ fn lifecycle_without_backends(
         failed_host_io: BTreeMap::new(),
         storage_fault_observations,
         fault_runtime,
-        fault_evaluation_cursor,
         fault_replay_installed: false,
         fault_search_overrides_installed: false,
         icount_shift: 0,
@@ -382,6 +380,7 @@ fn lifecycle_without_backends(
         source: source.clone(),
         config,
         checkpoint_targets: BTreeMap::new(),
+        exact_ram_parents: BTreeMap::new(),
         recorded_controls: Vec::new(),
         signal_artifact_objects: BTreeMap::new(),
         debug_backend_paths: BTreeMap::new(),

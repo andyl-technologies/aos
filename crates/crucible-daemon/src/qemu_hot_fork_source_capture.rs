@@ -20,7 +20,7 @@ use thiserror::Error;
 use crate::{
     AttemptExecutionContext, AttemptWorkerFailure, CrucibleArtifactError, CrucibleAttemptExecution,
     ExactCheckpointStore, QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleError,
-    QemuAttemptProductionVmLifecycleFactory, QemuAttemptResourceGuardFactory,
+    QemuAttemptProductionVmLifecycleFactory, QemuAttemptResourceGuardFactory, QemuExactResumeBasis,
     QemuFreshAttemptLifecycleFactory, QemuHotForkSourceWorldKey,
     decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
 };
@@ -141,7 +141,7 @@ impl AuthenticatedQemuHotForkSourceBasis {
 }
 
 /// Production lifecycle factory fixed to one authenticated source basis.
-pub struct ProductionQemuHotForkSourceFactory<R> {
+pub(crate) struct ProductionQemuHotForkSourceFactory<R> {
     basis: AuthenticatedQemuHotForkSourceBasis,
     lifecycles: QemuAttemptProductionVmLifecycleFactory<R>,
 }
@@ -167,12 +167,6 @@ impl<R> ProductionQemuHotForkSourceFactory<R> {
         }
 
         Ok(Self { basis, lifecycles })
-    }
-
-    /// Returns the immutable authenticated basis.
-    #[must_use]
-    pub const fn basis(&self) -> &AuthenticatedQemuHotForkSourceBasis {
-        &self.basis
     }
 }
 
@@ -235,7 +229,7 @@ where
     /// Returns [`ProductionQemuHotForkExactSourceCaptureError`] when the attempt
     /// differs from the fixed basis, exact closure authentication fails,
     /// guarded restore fails, or source preparation returns another boundary.
-    pub fn capture_exact(
+    pub(crate) fn capture_exact(
         &mut self,
         checkpoints: &ExactCheckpointStore,
         input: &CrucibleAttemptExecution,
@@ -265,10 +259,7 @@ where
             .authenticate_resume_boundary(
                 checkpoints,
                 checkpoint,
-                &scenario,
-                input.scenario(),
-                initial,
-                post_selection,
+                QemuExactResumeBasis::new(&scenario, input.scenario(), initial, post_selection),
                 context,
             )
             .map_err(|source| {
@@ -284,10 +275,7 @@ where
             .begin_resume(
                 checkpoints,
                 checkpoint,
-                &scenario,
-                input.scenario(),
-                initial,
-                post_selection,
+                QemuExactResumeBasis::new(&scenario, input.scenario(), initial, post_selection),
                 context,
             )
             .map_err(crate::qemu_campaign_lifecycle::classify_production_lifecycle_failure)

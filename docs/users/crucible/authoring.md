@@ -32,10 +32,8 @@ Use `World::from_nodes_and_links` for VM-only worlds and
 `LinkDef` values establish guest frame transport and its baseline latency,
 jitter, loss, and bandwidth.
 
-The complete two-VM lifecycle construction in
-[`crucible-qemu-live-world-network.rs`](../../../crates/crucible-api/examples/crucible-qemu-live-world-network.rs)
-is the smallest production example. It deliberately has no signal-driven
-faults; use it to separate basic transport failures from fault-plan failures.
+Begin with a two-VM world and one `LinkDef`. Run it without signal-driven faults
+first so basic transport failures remain separate from fault-plan failures.
 
 ## 2. Declare fault-addressable topology
 
@@ -60,9 +58,9 @@ correspond to declared endpoints, a block target must correspond to a world I/O
 node, and a QEMU hardware target must match a capability the backend can
 realize.
 
-The production shared-cause example shows a complete network, block-storage,
-and node topology in
-[`topology()`](../../../crates/crucible-api/examples/crucible-qemu-signal-shared-cause.rs).
+The representative scenario generator shows a complete network, block-storage,
+and 9p topology in
+[`representative_scenario()`](../../../crates/crucible-api/examples/crucible-e2e-determinism-scenario.rs).
 
 ## 3. Build the signal program
 
@@ -129,8 +127,9 @@ immutable topology and lowers the signal plan into the world's event graph.
 Do not attach a pre-resolved target set copied from another world: content
 identity and target contracts are world-specific.
 
-The complete implementation-backed pattern is in
-[`shared_cause_plan()` and `build_source()`](../../../crates/crucible-api/examples/crucible-qemu-signal-shared-cause.rs).
+The representative scenario generator provides an implementation-backed signal
+plan in
+[`representative_fault_plan()`](../../../crates/crucible-api/examples/crucible-e2e-determinism-scenario.rs).
 
 ## 6. Declare application properties
 

@@ -57,7 +57,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::BorrowedFd;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crucible::ContentHash;
@@ -78,8 +78,8 @@ use crucible_device::{
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeSlotSnapshot, RegionHeaderSnapshot, SLOT_BLK_IO, STATUS_IDLE, STATUS_RUNNING,
-    SetupRegionMapError, icount_to_virtual_ns, mmap_setup_region,
+    RegionHeaderSnapshot, SLOT_BLK_IO, STATUS_IDLE, STATUS_RUNNING, SetupRegionMapError,
+    icount_to_virtual_ns, mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -327,16 +327,6 @@ impl QemuSharedBlockDevice {
     /// authoritative device lock is poisoned.
     pub fn actual_durable_frontier(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
         Ok(self.lock()?.storage_fault_state().actual_durable_frontier())
-    }
-
-    /// Returns the aggregate number of pending storage operations.
-    ///
-    /// # Errors
-    ///
-    /// Returns a lock or device-state error when the count cannot be read.
-    pub fn pending_operation_count(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
-        self.pending_operation_usage()
-            .map(|(operations, _bytes)| operations)
     }
 
     /// Returns the aggregate pending count and largest retained request extent.
@@ -1554,17 +1544,6 @@ impl QemuLiveBlockIoServicer {
         Ok(self.device.lock()?.storage_fault_state().clone())
     }
 
-    /// Returns the aggregate number of pending operations in the authoritative device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the device lock is poisoned or its retained
-    /// operation count cannot be represented.
-    pub fn storage_pending_operation_count(&self) -> Result<u64, QemuLiveBlockIoServicerError> {
-        self.storage_pending_operation_usage()
-            .map(|(operations, _bytes)| operations)
-    }
-
     /// Returns the aggregate pending count and largest retained request extent.
     ///
     /// # Errors
@@ -1639,21 +1618,6 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
-    /// Drains completed physical-media outcomes for durable event recording.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
-    /// thread panicked while holding the authoritative device lock.
-    pub fn drain_storage_persistence_media_outcomes(
-        &mut self,
-    ) -> Result<Vec<BlockPersistenceMediaOutcome>, QemuLiveBlockIoServicerError> {
-        Ok(self
-            .device
-            .lock()?
-            .drain_storage_persistence_media_outcomes())
-    }
-
     /// Borrows completed physical-media outcomes without acknowledging them.
     ///
     /// # Errors
@@ -1668,18 +1632,6 @@ impl QemuLiveBlockIoServicer {
             .lock()?
             .storage_persistence_media_outcomes()
             .to_vec())
-    }
-
-    /// Drains integrated storage-service evidence for durable event recording.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLiveBlockIoServicerError::DeviceLockPoisoned`] when another
-    /// thread panicked while holding the authoritative device lock.
-    pub fn drain_storage_service_outcomes(
-        &mut self,
-    ) -> Result<Vec<BlockServiceCompletion>, QemuLiveBlockIoServicerError> {
-        Ok(self.device.lock()?.drain_storage_service_outcomes())
     }
 
     /// Borrows integrated storage-service evidence without acknowledging it.
@@ -1907,24 +1859,6 @@ impl QemuLiveBlockIoServicer {
     pub fn next_completion_icount(&self) -> Result<Option<u64>, QemuLiveBlockIoServicerError> {
         Ok(self.device.lock()?.next_exact_local_event())
     }
-
-    /// Reads the guest VM node slot's published state from the servicer's mapping.
-    ///
-    /// A caller driving the guest can read `current_icount`, `device_io_active`,
-    /// and `idle_wake_icount` here to observe whether the guest is progressing or
-    /// blocked on device I/O, without a second mapping of the region.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLiveBlockIoServicerError::RegionAccess`] when the guest node
-    /// slot cannot be borrowed from the mapped region.
-    pub fn vm_node_snapshot(&self) -> Result<NodeSlotSnapshot, QemuLiveBlockIoServicerError> {
-        Ok(self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?
-            .snapshot())
-    }
 }
 
 /// The per-call outcome of one [`QemuLiveBlockIoServicer::service`] step.
@@ -2051,6 +1985,9 @@ pub struct BlockIoDiagnostics {
     max_current_icount: AtomicU64,
     last_device_io_active: AtomicBool,
     last_idle_wake_icount: AtomicU64,
+    last_control_boundary_ack: AtomicU32,
+    active_control_boundary_ack_seen: AtomicBool,
+    last_active_control_boundary_ack: AtomicU32,
 }
 
 impl BlockIoDiagnostics {
@@ -2069,6 +2006,7 @@ impl BlockIoDiagnostics {
         current_icount: u64,
         device_io_active: bool,
         idle_wake_icount: u64,
+        control_boundary_ack: u32,
         serviced: &QemuLiveBlockIoServiceStep,
     ) {
         self.service_calls.fetch_add(1, Ordering::Relaxed);
@@ -2094,7 +2032,12 @@ impl BlockIoDiagnostics {
             self.frames_delivered
                 .fetch_add(serviced.delivered, Ordering::Relaxed);
         }
-        self.observe_slot(current_icount, device_io_active, idle_wake_icount);
+        self.observe_slot(
+            current_icount,
+            device_io_active,
+            idle_wake_icount,
+            control_boundary_ack,
+        );
     }
 
     /// Records the latest guest-slot state independently of a servicing call.
@@ -2110,6 +2053,7 @@ impl BlockIoDiagnostics {
         current_icount: u64,
         device_io_active: bool,
         idle_wake_icount: u64,
+        control_boundary_ack: u32,
     ) {
         self.last_current_icount
             .store(current_icount, Ordering::Relaxed);
@@ -2119,6 +2063,14 @@ impl BlockIoDiagnostics {
             .store(device_io_active, Ordering::Relaxed);
         self.last_idle_wake_icount
             .store(idle_wake_icount, Ordering::Relaxed);
+        self.last_control_boundary_ack
+            .store(control_boundary_ack, Ordering::Relaxed);
+        if device_io_active && control_boundary_ack & 1 == 0 {
+            self.active_control_boundary_ack_seen
+                .store(true, Ordering::Relaxed);
+            self.last_active_control_boundary_ack
+                .store(control_boundary_ack, Ordering::Relaxed);
+        }
     }
 
     /// Returns a plain-value snapshot of the accumulated observations.
@@ -2140,6 +2092,14 @@ impl BlockIoDiagnostics {
             max_current_icount: self.max_current_icount.load(Ordering::Relaxed),
             last_device_io_active: self.last_device_io_active.load(Ordering::Relaxed),
             last_idle_wake_icount: self.last_idle_wake_icount.load(Ordering::Relaxed),
+            last_control_boundary_ack: self.last_control_boundary_ack.load(Ordering::Relaxed),
+            last_active_control_boundary_ack: self
+                .active_control_boundary_ack_seen
+                .load(Ordering::Relaxed)
+                .then(|| {
+                    self.last_active_control_boundary_ack
+                        .load(Ordering::Relaxed)
+                }),
         }
     }
 }
@@ -2167,18 +2127,10 @@ pub struct BlockIoDiagnosticsSnapshot {
     pub last_device_io_active: bool,
     /// The guest slot's last published idle-wake icount.
     pub last_idle_wake_icount: u64,
-}
-
-impl BlockIoDiagnosticsSnapshot {
-    /// Compares deterministic block traffic, excluding host poll sample points.
-    pub(crate) fn deterministic_observation_eq(&self, other: &Self) -> bool {
-        self.frames_processed == other.frames_processed
-            && self.write_frames_processed == other.write_frames_processed
-            && self.frames_delivered == other.frames_delivered
-            && self.first_request_icount == other.first_request_icount
-            && self.first_completion_horizon == other.first_completion_horizon
-            && self.last_device_io_active == other.last_device_io_active
-    }
+    /// The guest slot's final release-acknowledged host control token.
+    pub last_control_boundary_ack: u32,
+    /// Most recent even host token observed while guest device I/O was active.
+    pub last_active_control_boundary_ack: Option<u32>,
 }
 
 /// Builds the deterministic base-image bytes for a device of `size_bytes`.
@@ -2213,6 +2165,12 @@ fn checkpoint_boundary_is_quiescent(
 /// Error returned by the live block-I/O servicer.
 #[derive(Debug, Error)]
 pub enum QemuLiveBlockIoServicerError {
+    /// The bounded host-work owner could not be created or reached.
+    #[error("block host worker failed: {message}")]
+    HostWorker {
+        /// Stable worker diagnostic.
+        message: String,
+    },
     /// Another thread panicked while mutating the authoritative block device.
     #[error("authoritative block-device lock is poisoned")]
     DeviceLockPoisoned,

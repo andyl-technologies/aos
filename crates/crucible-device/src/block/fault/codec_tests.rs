@@ -30,12 +30,12 @@ fn block_fault_checkpoint_codec_is_bounded_versioned_and_canonical() {
         .unwrap_or_else(|error| panic!("decode checkpoint: {error}"));
     assert_eq!(restored, state);
 
-    let mut prior_version = bytes.clone();
+    let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.block-fault-state.v".len();
-    assert_eq!(prior_version[version_index], b'2');
-    prior_version[version_index] = b'1';
+    assert_eq!(unsupported_version[version_index], b'2');
+    unsupported_version[version_index] = b'?';
     assert_eq!(
-        BlockFaultState::from_canonical_bytes(&prior_version, 32),
+        BlockFaultState::from_canonical_bytes(&unsupported_version, 32),
         Err(BlockFaultStateCodecError::Version)
     );
 

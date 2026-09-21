@@ -1,21 +1,21 @@
-//! Checks `Hello`/`HelloAck` control-protocol negotiation.
+//! Checks exact-version `Hello`/`HelloAck` control-protocol agreement.
 
 #![forbid(unsafe_code)]
 
 use std::io::{Cursor, Read, Write};
 
 use crucible_protocol::{
-    CONTROL_PROTOCOL_MIN_VERSION, CONTROL_PROTOCOL_VERSION, HandshakeError, HostHandshakeConfig,
-    HostMsg, NegotiatedHandshake, PluginHandshakeConfig, PluginMsg, control_encode_host_msg,
-    control_encode_plugin_msg, host_accept_handshake, host_negotiate_handshake,
-    plugin_start_handshake, plugin_validate_handshake_ack,
+    CONTROL_PROTOCOL_VERSION, HandshakeError, HostHandshakeConfig, HostMsg, NegotiatedHandshake,
+    PluginHandshakeConfig, PluginMsg, control_encode_host_msg, control_encode_plugin_msg,
+    host_accept_handshake, host_negotiate_handshake, plugin_start_handshake,
+    plugin_validate_handshake_ack,
 };
 
 #[test]
-fn host_accepts_hello_negotiates_minimum_and_writes_hello_ack() {
+fn host_accepts_exact_hello_and_writes_hello_ack() {
     let hello = control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: CONTROL_PROTOCOL_VERSION + 2,
-        abi_version: 1,
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
     });
     let mut io = ScriptedIo::from_input(hello);
 
@@ -23,7 +23,7 @@ fn host_accepts_hello_negotiates_minimum_and_writes_hello_ack() {
         &mut io,
         HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
-            abi_version: 1,
+            abi_version: 25,
             slot_index: 3,
             node_count: 8,
         },
@@ -33,7 +33,7 @@ fn host_accepts_hello_negotiates_minimum_and_writes_hello_ack() {
         negotiated,
         Ok(NegotiatedHandshake {
             proto_version: CONTROL_PROTOCOL_VERSION,
-            abi_version: 1,
+            abi_version: 25,
             slot_index: 3,
             node_count: 8,
         })
@@ -42,7 +42,7 @@ fn host_accepts_hello_negotiates_minimum_and_writes_hello_ack() {
         io.written(),
         control_encode_host_msg(&HostMsg::HelloAck {
             proto_version: CONTROL_PROTOCOL_VERSION,
-            abi_version: 1,
+            abi_version: 25,
             slot_index: 3,
             node_count: 8,
         })
@@ -53,8 +53,8 @@ fn host_accepts_hello_negotiates_minimum_and_writes_hello_ack() {
 #[test]
 fn plugin_sends_hello_and_validates_hello_ack_before_setup() {
     let ack = control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: CONTROL_PROTOCOL_MIN_VERSION,
-        abi_version: 1,
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
         slot_index: 0,
         node_count: 4,
     });
@@ -63,16 +63,16 @@ fn plugin_sends_hello_and_validates_hello_ack_before_setup() {
     let negotiated = plugin_start_handshake(
         &mut io,
         PluginHandshakeConfig {
-            proto_version: CONTROL_PROTOCOL_VERSION + 1,
-            abi_version: 1,
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: 25,
         },
     );
 
     assert_eq!(
         negotiated,
         Ok(NegotiatedHandshake {
-            proto_version: CONTROL_PROTOCOL_MIN_VERSION,
-            abi_version: 1,
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: 25,
             slot_index: 0,
             node_count: 4,
         })
@@ -80,8 +80,8 @@ fn plugin_sends_hello_and_validates_hello_ack_before_setup() {
     assert_eq!(
         io.written(),
         control_encode_plugin_msg(&PluginMsg::Hello {
-            proto_version: CONTROL_PROTOCOL_VERSION + 1,
-            abi_version: 1,
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: 25,
         })
     );
     assert_eq!(io.flush_count(), 1);
@@ -91,7 +91,7 @@ fn plugin_sends_hello_and_validates_hello_ack_before_setup() {
 fn host_rejects_handshake_failures_without_hello_ack() {
     let config = HostHandshakeConfig {
         proto_version: CONTROL_PROTOCOL_VERSION,
-        abi_version: 1,
+        abi_version: 25,
         slot_index: 0,
         node_count: 2,
     };
@@ -105,35 +105,34 @@ fn host_rejects_handshake_failures_without_hello_ack() {
     assert_eq!(
         host_negotiate_handshake(
             PluginMsg::Hello {
-                proto_version: CONTROL_PROTOCOL_MIN_VERSION - 1,
-                abi_version: 1,
+                proto_version: u32::MAX,
+                abi_version: 25,
             },
             config,
         ),
-        Err(HandshakeError::ProtocolVersionNoOverlap {
-            plugin_max: CONTROL_PROTOCOL_MIN_VERSION - 1,
-            host_min: CONTROL_PROTOCOL_MIN_VERSION,
-            host_max: CONTROL_PROTOCOL_VERSION,
+        Err(HandshakeError::ProtocolVersionMismatch {
+            actual: u32::MAX,
+            required: CONTROL_PROTOCOL_VERSION,
         })
     );
     assert_eq!(
         host_negotiate_handshake(
             PluginMsg::Hello {
                 proto_version: CONTROL_PROTOCOL_VERSION,
-                abi_version: 2,
+                abi_version: u32::MAX,
             },
             config,
         ),
         Err(HandshakeError::AbiMismatch {
-            plugin_abi: 2,
-            host_abi: 1,
+            plugin_abi: u32::MAX,
+            host_abi: 25,
         })
     );
     assert_eq!(
         host_negotiate_handshake(
             PluginMsg::Hello {
                 proto_version: CONTROL_PROTOCOL_VERSION,
-                abi_version: 1,
+                abi_version: 25,
             },
             HostHandshakeConfig {
                 slot_index: 2,
@@ -148,22 +147,22 @@ fn host_rejects_handshake_failures_without_hello_ack() {
 
     assert_host_stream_failure_does_not_write_ack(
         PluginMsg::Hello {
-            proto_version: CONTROL_PROTOCOL_MIN_VERSION - 1,
-            abi_version: 1,
+            proto_version: u32::MAX,
+            abi_version: 25,
         },
         config,
     );
     assert_host_stream_failure_does_not_write_ack(
         PluginMsg::Hello {
             proto_version: CONTROL_PROTOCOL_VERSION,
-            abi_version: 2,
+            abi_version: u32::MAX,
         },
         config,
     );
     assert_host_stream_failure_does_not_write_ack(
         PluginMsg::Hello {
             proto_version: CONTROL_PROTOCOL_VERSION,
-            abi_version: 1,
+            abi_version: 25,
         },
         HostHandshakeConfig {
             slot_index: 2,
@@ -176,7 +175,7 @@ fn host_rejects_handshake_failures_without_hello_ack() {
 fn plugin_rejects_invalid_hello_ack() {
     let config = PluginHandshakeConfig {
         proto_version: CONTROL_PROTOCOL_VERSION,
-        abi_version: 1,
+        abi_version: 25,
     };
 
     assert_eq!(
@@ -189,38 +188,37 @@ fn plugin_rejects_invalid_hello_ack() {
         plugin_validate_handshake_ack(
             HostMsg::HelloAck {
                 proto_version: CONTROL_PROTOCOL_VERSION + 1,
-                abi_version: 1,
+                abi_version: 25,
                 slot_index: 0,
                 node_count: 2,
             },
             config,
         ),
-        Err(HandshakeError::NegotiatedProtocolOutOfRange {
-            negotiated: CONTROL_PROTOCOL_VERSION + 1,
-            plugin_min: CONTROL_PROTOCOL_MIN_VERSION,
-            plugin_max: CONTROL_PROTOCOL_VERSION,
+        Err(HandshakeError::ProtocolVersionMismatch {
+            actual: CONTROL_PROTOCOL_VERSION + 1,
+            required: CONTROL_PROTOCOL_VERSION,
         })
     );
     assert_eq!(
         plugin_validate_handshake_ack(
             HostMsg::HelloAck {
                 proto_version: CONTROL_PROTOCOL_VERSION,
-                abi_version: 2,
+                abi_version: u32::MAX,
                 slot_index: 0,
                 node_count: 2,
             },
             config,
         ),
         Err(HandshakeError::AbiMismatch {
-            plugin_abi: 1,
-            host_abi: 2,
+            plugin_abi: 25,
+            host_abi: u32::MAX,
         })
     );
     assert_eq!(
         plugin_validate_handshake_ack(
             HostMsg::HelloAck {
                 proto_version: CONTROL_PROTOCOL_VERSION,
-                abi_version: 1,
+                abi_version: 25,
                 slot_index: 2,
                 node_count: 2,
             },

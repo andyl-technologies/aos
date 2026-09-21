@@ -836,7 +836,7 @@ fn world_fault_topology_round_trips_through_only_v4_codecs() {
 }
 
 #[test]
-fn singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns() {
+fn singular_signal_and_unknown_fields_are_rejected() {
     let program = program(true);
     let binding = binding(&program);
     let plan = Plan::empty().with_fault_signals(
@@ -847,15 +847,7 @@ fn singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns() {
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode binding plan: {error}"));
     let alias = canonical.replace("signals = [\"true-output\"]", "signal = \"true-output\"");
-    let decoded = Plan::from_canonical_toml_for_world(&test_world(), &alias)
-        .unwrap_or_else(|error| panic!("decode singleton alias: {error}"));
-    assert_eq!(decoded, plan);
-    assert!(
-        decoded
-            .to_canonical_toml()
-            .unwrap_or_else(|error| panic!("canonicalize singleton alias: {error}"))
-            .contains("signals = [\"true-output\"]")
-    );
+    assert!(Plan::from_canonical_toml_for_world(&test_world(), &alias).is_err());
 
     let unknown_mapping = canonical.replace(
         "invert = false\nkind = \"active_when_true\"",

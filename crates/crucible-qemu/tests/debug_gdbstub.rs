@@ -121,7 +121,7 @@ fn debug_guest_activation_endpoint_is_fixed_and_inert() {
         window
             == [
                 "-device",
-                "virtio-serial-pci,id=crucible-debug-serial,bus=pcie.0",
+                "virtio-serial-pci,id=crucible-debug-serial,bus=pcie.0,addr=0x7",
             ]
     }));
     assert!(command.args().windows(2).any(|window| {

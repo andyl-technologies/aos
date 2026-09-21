@@ -154,10 +154,6 @@
         label = "session control-responsive test target";
         needle = ''testTarget = "gate_control_responsive";'';
       }
-      {
-        label = "implemented gate target marker";
-        needle = "placeholder = false;";
-      }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargetRust [
       {
@@ -167,10 +163,6 @@
       {
         label = "harness session control-responsive test target";
         needle = ''test_target: "gate_control_responsive",'';
-      }
-      {
-        label = "harness implemented gate target marker";
-        needle = "placeholder: false,";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -56,7 +56,7 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "single-threaded RR callback serialization";
-        needle = "QEMU serializes registered vCPU-thread callbacks";
+        needle = "QEMU serializes\n//! registered vCPU-thread callbacks";
       }
       {
         label = "MTTCG rejection";
@@ -64,11 +64,11 @@
       }
       {
         label = "callback contract";
-        needle = "callback contract: single-threaded round-robin TCG";
+        needle = "required single-threaded round-robin TCG model";
       }
       {
         label = "callback state serialization";
-        needle = "process-local callback state remains serialized on the vCPU thread";
+        needle = "plugin callback state is not accessed\n//! concurrently";
       }
       {
         label = "raw install boundary validation";
@@ -202,7 +202,7 @@
       }
       {
         label = "network RX invalid payload test";
-        needle = "network_rx_rejects_invalid_payload_before_queue_or_flush";
+        needle = "network_rx_rejects_invalid_payload_before_delivery";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
@@ -325,7 +325,6 @@ in
                 crates/crucible-qemu-plugin/src/setup/tests.rs|\
                 crates/crucible-qemu-plugin/src/network_rx.rs|\
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
-                crates/crucible-qemu-plugin/src/raw_state_dump.rs|\
                 crates/crucible-qemu-plugin/src/vcpu_introspection.rs)
                   ;;
                 *)
@@ -366,7 +365,7 @@ in
             done < "$TMPDIR/plugin-unsafe-files"
 
             if grep -RIn 'transmute' crates/crucible-qemu-plugin/src \
-              | grep -Ev 'src/(abi|coverage|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/coverage/tests(\.rs|/live_callback_cases\.rs):|src/runtime/live_whitebox(\.rs|/api\.rs):'; then
+              | grep -Ev 'src/(abi|coverage|fingerprint_sampler|network_rx|network_tx\.rs:|src/coverage/tests(\.rs|/live_callback_cases\.rs):|src/runtime/live_whitebox(\.rs|/api\.rs):'; then
               echo "transmute is confined to audited QEMU FFI adapters and tests" >&2
               exit 1
             fi
@@ -381,7 +380,7 @@ in
               fi
             done
             if grep -RIn 'as_ptr().cast' crates/crucible-qemu-plugin/src \
-              | grep -Ev 'src/(abi|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/abi/tests\.rs:|src/runtime/live_whitebox(\.rs|/api\.rs|/error\.rs):'; then
+              | grep -Ev 'src/(abi|fingerprint_sampler|network_rx|network_tx\.rs:|src/abi/tests\.rs:|src/runtime/live_whitebox(\.rs|/api\.rs|/error\.rs):'; then
               echo "pointer casts are confined to audited QEMU FFI adapters and tests" >&2
               exit 1
             fi

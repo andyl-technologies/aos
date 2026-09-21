@@ -6,27 +6,13 @@
 //! can name the bundle after every referenced object is durable; a coordinator
 //! can then recover and validate the same handoff after restart.
 //!
-//! The canonical version-1 record body has this field order:
-//!
-//! ```text
-//! u32 schema-version = 1
-//! ObservationId observation
-//! FindingSignature signature
-//! ReproductionArtifactId original-reproduction
-//! ReproductionArtifactId minimized-reproduction
-//! FindingSignatureMinimizationEvidence signature-minimization
-//! FindingExactPins exact-pins
-//! ```
-//!
 //! `FindingSignatureMinimizationEvidence` stores the stable target-signature
 //! hash followed by the bounded minimization and verification sequences. Each
 //! sequence element is an optional complete `FindingSignature` observed by the
-//! replay oracle. Version 3 additionally retains four manifest-rooted portable
-//! production replay capture outcomes. Version 4 binds the source snapshot,
-//! execution-basis admission, active campaign policy, and bounded outcome for
-//! automatic exact retention. Version 5 adds the bounded authenticated
-//! checkpoint inventory, captured-boundary evidence, selected exact pins, and
-//! executor attestation needed to verify a complete retention decision.
+//! replay oracle. The current bundle also retains the policy basis for automatic
+//! exact retention and the authenticated checkpoint inventory and executor
+//! attestation needed to verify a complete retention decision. The decoder
+//! accepts only the current bundle schema and rejects every other version.
 
 use crucible_cas::content_store::ContentId;
 
@@ -40,732 +26,16 @@ use crate::{
     ObservationId, ReproductionArtifactId,
 };
 
-const RECORD_SCHEMA_VERSION: u32 = 1;
-const TRIAGE_EVIDENCE_SCHEMA_VERSION: u32 = 2;
-const PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 3;
-const EXACT_RETENTION_SCHEMA_VERSION: u32 = 4;
-const AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION: u32 = 5;
+pub(crate) const FINDING_CANDIDATE_SCHEMA_VERSION: u32 = 6;
 const REPLAY_SIGNATURE_SCHEMA_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SIGNATURE_REPLAYS_PER_PASS: usize = MAX_FINDING_MINIMIZATION_ATTEMPTS + 1;
 
-/// Maximum authenticated exact-checkpoint candidates considered for one finding.
-pub const MAX_FINDING_EXACT_RETENTION_CANDIDATES: u32 = 4_096;
+mod exact_retention;
+mod replay_signature;
 
-/// Stable reason automatic exact retention could not complete.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FindingExactRetentionIncomplete {
-    /// No producer could capture the required canonical safe-stop boundaries.
-    MissingSafeBoundaryCapture,
-    /// The protected operational candidate inventory could not be read.
-    CandidateInventoryUnavailable,
-    /// More candidates existed than the bounded selector may authenticate.
-    CandidateLimitExceeded,
-    /// A candidate failed exact configuration or scheduler authentication.
-    CandidateAuthenticationFailed,
-    /// Deterministic role selection failed after candidate authentication.
-    SelectionFailed,
-    /// Selected roots could not be durable before operational protection ended.
-    DurableStagingFailed,
-}
-
-impl Canonical for FindingExactRetentionIncomplete {
-    fn encode(&self, encoder: &mut Encoder) {
-        encoder.u8(match self {
-            Self::MissingSafeBoundaryCapture => 0,
-            Self::CandidateInventoryUnavailable => 1,
-            Self::CandidateLimitExceeded => 2,
-            Self::CandidateAuthenticationFailed => 3,
-            Self::SelectionFailed => 4,
-            Self::DurableStagingFailed => 5,
-        });
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        match decoder.u8()? {
-            0 => Ok(Self::MissingSafeBoundaryCapture),
-            1 => Ok(Self::CandidateInventoryUnavailable),
-            2 => Ok(Self::CandidateLimitExceeded),
-            3 => Ok(Self::CandidateAuthenticationFailed),
-            4 => Ok(Self::SelectionFailed),
-            5 => Ok(Self::DurableStagingFailed),
-            6 => Err(CampaignCodecError::InvalidValue {
-                reason: "missing finding retention policy is not a current schema",
-            }),
-            tag => Err(CampaignCodecError::UnknownTag {
-                kind: "finding-exact-retention-incomplete",
-                tag,
-            }),
-        }
-    }
-}
-
-/// Closed outcome of the active policy's automatic exact-retention decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FindingExactRetentionDisposition {
-    /// The active policy did not request exact finding retention.
-    Disabled,
-    /// Every safely eligible requested role was captured, selected, and staged.
-    Complete,
-    /// Thin evidence remains publishable, but exact retention did not complete.
-    Incomplete(FindingExactRetentionIncomplete),
-}
-
-impl Canonical for FindingExactRetentionDisposition {
-    fn encode(&self, encoder: &mut Encoder) {
-        match self {
-            Self::Disabled => encoder.u8(0),
-            Self::Complete => encoder.u8(1),
-            Self::Incomplete(reason) => {
-                encoder.u8(2);
-                reason.encode(encoder);
-            }
-        }
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        match decoder.u8()? {
-            0 => Ok(Self::Disabled),
-            1 => Ok(Self::Complete),
-            2 => Ok(Self::Incomplete(FindingExactRetentionIncomplete::decode(
-                decoder,
-            )?)),
-            tag => Err(CampaignCodecError::UnknownTag {
-                kind: "finding-exact-retention-disposition",
-                tag,
-            }),
-        }
-    }
-}
-
-/// Active-policy basis and bounded outcome for automatic exact finding retention.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FindingExactRetention {
-    snapshot: CampaignSnapshotId,
-    policy: CampaignPolicyId,
-    admission: AttemptAdmissionId,
-    authenticated_candidates: u32,
-    disposition: FindingExactRetentionDisposition,
-}
-
-impl FindingExactRetention {
-    /// Builds one policy-bound automatic exact-retention outcome.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError::LimitExceeded`] when the authenticated
-    /// candidate count exceeds 4,096.
-    pub fn new(
-        snapshot: CampaignSnapshotId,
-        policy: CampaignPolicyId,
-        admission: AttemptAdmissionId,
-        authenticated_candidates: u32,
-        disposition: FindingExactRetentionDisposition,
-    ) -> Result<Self, CampaignCodecError> {
-        if authenticated_candidates > MAX_FINDING_EXACT_RETENTION_CANDIDATES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-exact-retention-candidate-count",
-            });
-        }
-        if disposition == FindingExactRetentionDisposition::Disabled
-            && authenticated_candidates != 0
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "disabled finding exact retention has authenticated candidates",
-            });
-        }
-        if matches!(disposition, FindingExactRetentionDisposition::Incomplete(_))
-            && authenticated_candidates != 0
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "incomplete finding exact retention has authenticated candidates",
-            });
-        }
-        Ok(Self {
-            snapshot,
-            policy,
-            admission,
-            authenticated_candidates,
-            disposition,
-        })
-    }
-
-    /// Returns the immutable snapshot that selected the execution-basis admission.
-    #[must_use]
-    pub const fn snapshot(self) -> CampaignSnapshotId {
-        self.snapshot
-    }
-
-    /// Returns the authenticated active policy that decided retention.
-    #[must_use]
-    pub const fn policy(self) -> CampaignPolicyId {
-        self.policy
-    }
-
-    /// Returns the execution-basis admission governed by the policy decision.
-    #[must_use]
-    pub const fn admission(self) -> AttemptAdmissionId {
-        self.admission
-    }
-
-    /// Returns the number of exact candidates authenticated by the selector.
-    #[must_use]
-    pub const fn authenticated_candidates(self) -> u32 {
-        self.authenticated_candidates
-    }
-
-    /// Returns the closed exact-retention outcome.
-    #[must_use]
-    pub const fn disposition(self) -> FindingExactRetentionDisposition {
-        self.disposition
-    }
-}
-
-impl Canonical for FindingExactRetention {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.snapshot.encode(encoder);
-        Some(self.policy).encode(encoder);
-        self.admission.encode(encoder);
-        self.authenticated_candidates.encode(encoder);
-        self.disposition.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let snapshot = CampaignSnapshotId::decode(decoder)?;
-        let policy = Option::<CampaignPolicyId>::decode(decoder)?.ok_or(
-            CampaignCodecError::InvalidValue {
-                reason: "finding exact retention requires a policy",
-            },
-        )?;
-        Self::new(
-            snapshot,
-            policy,
-            AttemptAdmissionId::decode(decoder)?,
-            u32::decode(decoder)?,
-            FindingExactRetentionDisposition::decode(decoder)?,
-        )
-    }
-}
-
-/// One production checkpoint and its authenticated scheduler event boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FindingExactRetentionCandidate {
-    checkpoint: ExactCheckpointId,
-    event_count: u64,
-}
-
-impl FindingExactRetentionCandidate {
-    /// Creates one candidate projection authenticated from immutable checkpoint bytes.
-    #[must_use]
-    pub const fn new(checkpoint: ExactCheckpointId, event_count: u64) -> Self {
-        Self {
-            checkpoint,
-            event_count,
-        }
-    }
-
-    /// Returns the production checkpoint root.
-    #[must_use]
-    pub const fn checkpoint(self) -> ExactCheckpointId {
-        self.checkpoint
-    }
-
-    /// Returns the scheduler event count at the checkpoint boundary.
-    #[must_use]
-    pub const fn event_count(self) -> u64 {
-        self.event_count
-    }
-}
-
-impl Canonical for FindingExactRetentionCandidate {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.checkpoint.encode(encoder);
-        self.event_count.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Ok(Self::new(
-            ExactCheckpointId::decode(decoder)?,
-            u64::decode(decoder)?,
-        ))
-    }
-}
-
-/// Authenticated candidate inventory and deterministic exact-pin selection proof.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FindingExactRetentionEvidence {
-    candidates: Vec<FindingExactRetentionCandidate>,
-    captured_failure: ExactCheckpointId,
-    failure_events: u64,
-    measurement_boundary_events: Option<u64>,
-    selected: FindingExactPins,
-}
-
-impl FindingExactRetentionEvidence {
-    /// Builds a bounded canonical selector proof over production roots.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] for an empty, unsorted, duplicate, or
-    /// oversized inventory, a missing captured root, or invalid boundaries.
-    pub fn new(
-        candidates: Vec<FindingExactRetentionCandidate>,
-        captured_failure: ExactCheckpointId,
-        failure_events: u64,
-        measurement_boundary_events: Option<u64>,
-        selected: FindingExactPins,
-    ) -> Result<Self, CampaignCodecError> {
-        if candidates.is_empty()
-            || candidates.len() > MAX_FINDING_EXACT_RETENTION_CANDIDATES as usize
-        {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-exact-retention-candidate-count",
-            });
-        }
-        if candidates
-            .windows(2)
-            .any(|pair| pair[0].checkpoint() >= pair[1].checkpoint())
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding exact retention candidates are not strictly sorted",
-            });
-        }
-        if candidates
-            .iter()
-            .filter(|candidate| candidate.checkpoint() == captured_failure)
-            .count()
-            != 1
-            || !candidates.iter().any(|candidate| {
-                candidate.checkpoint() == captured_failure
-                    && candidate.event_count() == failure_events
-            })
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding exact retention captured failure boundary is invalid",
-            });
-        }
-        if measurement_boundary_events.is_some_and(|events| events > failure_events) {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding exact retention measurement boundary follows failure",
-            });
-        }
-
-        Ok(Self {
-            candidates,
-            captured_failure,
-            failure_events,
-            measurement_boundary_events,
-            selected,
-        })
-    }
-
-    /// Returns the complete sorted eligible candidate inventory.
-    #[must_use]
-    pub fn candidates(&self) -> &[FindingExactRetentionCandidate] {
-        &self.candidates
-    }
-
-    /// Returns the checkpoint captured at the failure boundary.
-    #[must_use]
-    pub const fn captured_failure(&self) -> ExactCheckpointId {
-        self.captured_failure
-    }
-
-    /// Returns the authenticated failure event boundary.
-    #[must_use]
-    pub const fn failure_events(&self) -> u64 {
-        self.failure_events
-    }
-
-    /// Returns the authenticated successful-measurement boundary.
-    #[must_use]
-    pub const fn measurement_boundary_events(&self) -> Option<u64> {
-        self.measurement_boundary_events
-    }
-
-    /// Returns the role selection derived by the producer.
-    #[must_use]
-    pub const fn selected(&self) -> &FindingExactPins {
-        &self.selected
-    }
-}
-
-impl Canonical for FindingExactRetentionEvidence {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.candidates.encode(encoder);
-        self.captured_failure.encode(encoder);
-        self.failure_events.encode(encoder);
-        self.measurement_boundary_events.encode(encoder);
-        self.selected.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::new(
-            Vec::<FindingExactRetentionCandidate>::decode(decoder)?,
-            ExactCheckpointId::decode(decoder)?,
-            u64::decode(decoder)?,
-            Option::<u64>::decode(decoder)?,
-            FindingExactPins::decode(decoder)?,
-        )
-    }
-}
-
-/// Stable category of the modeled target reported by a finding replay.
-///
-/// Exact target object identities are deliberately absent because minimizing a
-/// reproduction can replace its configuration or choice-opportunity artifact.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FindingReplayTargetKind {
-    /// The replay associates the failure with a modeled configuration.
-    Configuration,
-    /// The replay associates the failure with a runtime choice opportunity.
-    ChoiceOpportunity,
-}
-
-impl Canonical for FindingReplayTargetKind {
-    fn encode(&self, encoder: &mut Encoder) {
-        encoder.u8(match self {
-            Self::Configuration => 0,
-            Self::ChoiceOpportunity => 1,
-        });
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        match decoder.u8()? {
-            0 => Ok(Self::Configuration),
-            1 => Ok(Self::ChoiceOpportunity),
-            tag => Err(CampaignCodecError::UnknownTag {
-                kind: "finding-replay-target-kind",
-                tag,
-            }),
-        }
-    }
-}
-
-/// Failure identity independently derived from one execution-model replay.
-///
-/// This projection retains every stable semantic field that must match during
-/// minimization. It omits exact target and causal-evidence object identities,
-/// which legitimately change when a candidate shortens the reproduction. The
-/// execution-model adapter derives it from the candidate's observed
-/// [`FindingSignature`], rather than from the requested target signature. The
-/// execution-model fingerprint identifies the reproduced failure payload;
-/// failure class, property identity, and target category prevent that digest
-/// from crossing semantic failure domains. Complete observed signatures remain
-/// in [`FindingSignatureMinimizationEvidence`] as immutable provenance.
-///
-/// Schema v1 uses the
-/// `crucible.campaign.finding-replay-signature.v1` hash domain. It is nested in
-/// the finding-candidate-bundle schema and does not alter the canonical bytes or
-/// cluster keys of the existing [`FindingSignature`] type.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FindingReplaySignature {
-    schema_version: u32,
-    kind: FindingKind,
-    fingerprint: CampaignHash,
-    property: Option<String>,
-    failure_class: String,
-    target_kind: Option<FindingReplayTargetKind>,
-}
-
-impl FindingReplaySignature {
-    /// Projects one independently observed finding into stable replay identity.
-    #[must_use]
-    pub fn from_observed(signature: &FindingSignature) -> Self {
-        Self {
-            schema_version: REPLAY_SIGNATURE_SCHEMA_VERSION,
-            kind: signature.kind(),
-            fingerprint: signature.fingerprint(),
-            property: signature.property().map(ToOwned::to_owned),
-            failure_class: signature.failure_class().to_owned(),
-            target_kind: signature.target().map(|target| match target {
-                FindingTarget::Configuration(_) => FindingReplayTargetKind::Configuration,
-                FindingTarget::ChoiceOpportunity(_) => FindingReplayTargetKind::ChoiceOpportunity,
-            }),
-        }
-    }
-
-    /// Returns the canonical replay-signature schema version.
-    #[must_use]
-    pub const fn schema_version(&self) -> u32 {
-        self.schema_version
-    }
-
-    /// Returns the closed failure kind observed by the replay.
-    #[must_use]
-    pub const fn kind(&self) -> FindingKind {
-        self.kind
-    }
-
-    /// Returns the execution-model fingerprint observed by the replay.
-    #[must_use]
-    pub const fn fingerprint(&self) -> CampaignHash {
-        self.fingerprint
-    }
-
-    /// Returns the scenario property identity observed by the replay.
-    #[must_use]
-    pub fn property(&self) -> Option<&str> {
-        self.property.as_deref()
-    }
-
-    /// Returns the normalized failure class observed by the replay.
-    #[must_use]
-    pub fn failure_class(&self) -> &str {
-        &self.failure_class
-    }
-
-    /// Returns the stable target category observed by the replay.
-    #[must_use]
-    pub const fn target_kind(&self) -> Option<FindingReplayTargetKind> {
-        self.target_kind
-    }
-
-    /// Returns the deterministic key compared across minimization replays.
-    #[must_use]
-    pub fn cluster_key(&self) -> CampaignHash {
-        CampaignHash::derive(
-            "crucible.campaign.finding-replay-signature.v1",
-            &codec::encode(self),
-        )
-    }
-
-    fn new(
-        kind: FindingKind,
-        fingerprint: CampaignHash,
-        property: Option<String>,
-        failure_class: String,
-        target_kind: Option<FindingReplayTargetKind>,
-    ) -> Result<Self, CampaignCodecError> {
-        if let Some(property) = &property {
-            validate_identifier(property, "finding replay property identity is invalid")?;
-        }
-        validate_identifier(&failure_class, "finding replay failure class is invalid")?;
-        if matches!(kind, FindingKind::PropertyViolation) != property.is_some() {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding replay property identity disagrees with failure kind",
-            });
-        }
-        Ok(Self {
-            schema_version: REPLAY_SIGNATURE_SCHEMA_VERSION,
-            kind,
-            fingerprint,
-            property,
-            failure_class,
-            target_kind,
-        })
-    }
-}
-
-impl Canonical for FindingReplaySignature {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
-        self.kind.encode(encoder);
-        self.fingerprint.encode(encoder);
-        self.property.encode(encoder);
-        self.failure_class.encode(encoder);
-        self.target_kind.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        if u32::decode(decoder)? != REPLAY_SIGNATURE_SCHEMA_VERSION {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported finding replay signature schema version",
-            });
-        }
-        Self::new(
-            FindingKind::decode(decoder)?,
-            CampaignHash::decode(decoder)?,
-            decoder.option(|decoder| {
-                decoder.string_bounded(
-                    MAX_IDENTIFIER_BYTES,
-                    "finding-replay-property-identity-bytes",
-                )
-            })?,
-            decoder.string_bounded(MAX_IDENTIFIER_BYTES, "finding-replay-failure-class-bytes")?,
-            Option::<FindingReplayTargetKind>::decode(decoder)?,
-        )
-    }
-}
-
-/// Stable replay-signature results retained for both minimization passes.
-///
-/// Each entry retains the complete [`FindingSignature`] independently observed
-/// by the replay oracle, or `None` when the candidate did not produce a finding.
-/// Index zero is the original reproduction and subsequent entries map
-/// one-to-one to [`FindingMinimizationEvidence::attempts`]. Repository loading
-/// recomputes [`FindingReplaySignature`] from these complete observed values.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FindingSignatureMinimizationEvidence {
-    target_signature: CampaignHash,
-    minimization_pass: Vec<Option<FindingSignature>>,
-    verification_pass: Vec<Option<FindingSignature>>,
-}
-
-impl FindingSignatureMinimizationEvidence {
-    /// Builds and validates two stable replay-signature passes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] unless both passes are identical, begin
-    /// with the target signature, map exactly to the fingerprint minimization
-    /// attempts, and select only a candidate whose stable replay signature
-    /// equals the target.
-    pub fn new(
-        signature: &FindingSignature,
-        minimization: &FindingMinimizationEvidence,
-        minimization_pass: Vec<Option<FindingSignature>>,
-        verification_pass: Vec<Option<FindingSignature>>,
-    ) -> Result<Self, CampaignCodecError> {
-        let value = Self::new_structural(
-            FindingReplaySignature::from_observed(signature).cluster_key(),
-            minimization_pass,
-            verification_pass,
-        )?;
-        value.validate_against(signature, minimization)?;
-        Ok(value)
-    }
-
-    /// Returns the stable target replay-signature hash.
-    #[must_use]
-    pub const fn target_signature(&self) -> CampaignHash {
-        self.target_signature
-    }
-
-    /// Returns the original and candidate signature results from minimization.
-    #[must_use]
-    pub fn minimization_pass(&self) -> &[Option<FindingSignature>] {
-        &self.minimization_pass
-    }
-
-    /// Returns the independently repeated signature results from import verification.
-    #[must_use]
-    pub fn verification_pass(&self) -> &[Option<FindingSignature>] {
-        &self.verification_pass
-    }
-
-    pub(crate) fn validate_against(
-        &self,
-        signature: &FindingSignature,
-        minimization: &FindingMinimizationEvidence,
-    ) -> Result<(), CampaignCodecError> {
-        self.validate_signature_basis(signature)?;
-        let target = FindingReplaySignature::from_observed(signature).cluster_key();
-        let expected_len = minimization.attempts().len().checked_add(1).ok_or(
-            CampaignCodecError::LimitExceeded {
-                limit: "finding-signature-minimization-pass-count",
-            },
-        )?;
-        if self.minimization_pass.len() != expected_len
-            || self.verification_pass.len() != expected_len
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding signature minimization replay basis is inconsistent",
-            });
-        }
-
-        for (attempt, observed_signature) in minimization
-            .attempts()
-            .iter()
-            .zip(self.minimization_pass.iter().skip(1))
-        {
-            let preserves_signature = observed_signature
-                .as_ref()
-                .map(FindingReplaySignature::from_observed)
-                .map(|signature| signature.cluster_key())
-                == Some(target);
-            let filtered_fingerprint = preserves_signature.then_some(signature.fingerprint());
-            if attempt.accepted() && !preserves_signature
-                || attempt.observed_fingerprint() != filtered_fingerprint
-            {
-                return Err(CampaignCodecError::InvalidValue {
-                    reason: "finding signature minimization attempt disagrees with replay evidence",
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_signature_basis(
-        &self,
-        signature: &FindingSignature,
-    ) -> Result<(), CampaignCodecError> {
-        let target = FindingReplaySignature::from_observed(signature).cluster_key();
-        if self.target_signature != target
-            || self.minimization_pass.first() != Some(&Some(signature.clone()))
-            || self.verification_pass.first() != Some(&Some(signature.clone()))
-            || self.minimization_pass != self.verification_pass
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding signature minimization replay basis is inconsistent",
-            });
-        }
-        Ok(())
-    }
-
-    fn new_structural(
-        target_signature: CampaignHash,
-        minimization_pass: Vec<Option<FindingSignature>>,
-        verification_pass: Vec<Option<FindingSignature>>,
-    ) -> Result<Self, CampaignCodecError> {
-        if minimization_pass.is_empty()
-            || minimization_pass.len() > MAX_SIGNATURE_REPLAYS_PER_PASS
-            || verification_pass.is_empty()
-            || verification_pass.len() > MAX_SIGNATURE_REPLAYS_PER_PASS
-        {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-signature-minimization-pass-count",
-            });
-        }
-        Ok(Self {
-            target_signature,
-            minimization_pass,
-            verification_pass,
-        })
-    }
-
-    pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
-        let mut children = Vec::new();
-        for (pass_name, pass) in [
-            ("minimization", &self.minimization_pass),
-            ("verification", &self.verification_pass),
-        ] {
-            for (index, signature) in pass.iter().enumerate() {
-                if let Some(signature) = signature {
-                    children.extend(signature_children(
-                        &format!("signature-minimization.{pass_name}.{index:04x}"),
-                        signature,
-                    ));
-                }
-            }
-        }
-        children
-    }
-}
-
-impl Canonical for FindingSignatureMinimizationEvidence {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.target_signature.encode(encoder);
-        self.minimization_pass.encode(encoder);
-        self.verification_pass.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::new_structural(
-            CampaignHash::decode(decoder)?,
-            decoder.sequence_bounded(
-                MAX_SIGNATURE_REPLAYS_PER_PASS,
-                "finding-signature-minimization-pass-count",
-                Option::<FindingSignature>::decode,
-            )?,
-            decoder.sequence_bounded(
-                MAX_SIGNATURE_REPLAYS_PER_PASS,
-                "finding-signature-minimization-pass-count",
-                Option::<FindingSignature>::decode,
-            )?,
-        )
-    }
-}
+pub use exact_retention::*;
+pub use replay_signature::*;
 
 /// Four native replay records required to reconstruct successful triage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1009,22 +279,6 @@ impl FindingReplayCaptureSet {
         ]
     }
 
-    /// Returns strict canonical bytes for the four fixed outcomes.
-    #[must_use]
-    pub fn canonical_bytes(self) -> Vec<u8> {
-        codec::encode(&self)
-    }
-
-    /// Decodes four strict canonical capture outcomes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] for malformed, noncanonical, or unknown
-    /// outcome bytes.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
-        codec::decode(bytes)
-    }
-
     fn content_children(self) -> Vec<(String, ContentId)> {
         [
             (
@@ -1074,6 +328,39 @@ impl Canonical for FindingReplayCaptureSet {
 
 /// Immutable worker-produced basis for one minimized finding publication.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FindingCandidateCore {
+    observation: ObservationId,
+    signature: FindingSignature,
+    reproduction: ReproductionArtifactId,
+    minimized: ReproductionArtifactId,
+    signature_minimization: FindingSignatureMinimizationEvidence,
+    exact_pins: FindingExactPins,
+}
+
+impl FindingCandidateCore {
+    /// Collects the immutable identities and evidence shared by every candidate form.
+    #[must_use]
+    pub const fn new(
+        observation: ObservationId,
+        signature: FindingSignature,
+        reproduction: ReproductionArtifactId,
+        minimized: ReproductionArtifactId,
+        signature_minimization: FindingSignatureMinimizationEvidence,
+        exact_pins: FindingExactPins,
+    ) -> Self {
+        Self {
+            observation,
+            signature,
+            reproduction,
+            minimized,
+            signature_minimization,
+            exact_pins,
+        }
+    }
+}
+
+/// Immutable worker-produced basis for one minimized finding publication.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingCandidateBundle {
     schema_version: u32,
     observation: ObservationId,
@@ -1084,190 +371,99 @@ pub struct FindingCandidateBundle {
     exact_pins: FindingExactPins,
     triage_evidence: Option<FindingTriageEvidenceSet>,
     replay_captures: Option<FindingReplayCaptureSet>,
-    exact_retention: Option<FindingExactRetention>,
+    exact_retention: FindingExactRetention,
     exact_retention_evidence: Option<FindingExactRetentionEvidence>,
 }
 
 impl FindingCandidateBundle {
-    /// Builds one bounded, acyclic finding candidate handoff.
-    ///
-    /// The original reproduction must use schema v1 and the minimized
-    /// reproduction must use schema v2, which retains the original identity and
-    /// verifier-produced minimization trace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when reproduction versions are invalid or
-    /// the encoded bundle exceeds 4 MiB.
-    pub fn new(
-        observation: ObservationId,
-        signature: FindingSignature,
-        reproduction: ReproductionArtifactId,
-        minimized: ReproductionArtifactId,
-        signature_minimization: FindingSignatureMinimizationEvidence,
-        exact_pins: FindingExactPins,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            RECORD_SCHEMA_VERSION,
-            observation,
-            signature,
-            reproduction,
-            minimized,
-            signature_minimization,
-            exact_pins,
-            None,
-            None,
-            None,
-            None,
-        )
-    }
-
-    /// Builds a candidate with native replay evidence for both triage passes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] under the same conditions as [`Self::new`].
-    pub fn new_with_triage_evidence(
-        observation: ObservationId,
-        signature: FindingSignature,
-        reproduction: ReproductionArtifactId,
-        minimized: ReproductionArtifactId,
-        signature_minimization: FindingSignatureMinimizationEvidence,
-        exact_pins: FindingExactPins,
-        triage_evidence: FindingTriageEvidenceSet,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            TRIAGE_EVIDENCE_SCHEMA_VERSION,
-            observation,
-            signature,
-            reproduction,
-            minimized,
-            signature_minimization,
-            exact_pins,
-            Some(triage_evidence),
-            None,
-            None,
-            None,
-        )
-    }
-
-    /// Builds a candidate with portable replay captures and optional native triage records.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] under the same conditions as [`Self::new`].
-    // crucible-lint: allow rust-allow -- every immutable replay-capture handoff field remains explicit.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_replay_captures(
-        observation: ObservationId,
-        signature: FindingSignature,
-        reproduction: ReproductionArtifactId,
-        minimized: ReproductionArtifactId,
-        signature_minimization: FindingSignatureMinimizationEvidence,
-        exact_pins: FindingExactPins,
-        triage_evidence: Option<FindingTriageEvidenceSet>,
-        replay_captures: FindingReplayCaptureSet,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION,
-            observation,
-            signature,
-            reproduction,
-            minimized,
-            signature_minimization,
-            exact_pins,
-            triage_evidence,
-            Some(replay_captures),
-            None,
-            None,
-        )
-    }
-
-    /// Builds a candidate with policy-bound exact retention and optional replay captures.
+    /// Builds a candidate with policy-bound exact retention.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the evidence shape, retention
     /// disposition, or another candidate invariant is invalid.
-    // crucible-lint: allow rust-allow -- every immutable finding handoff field remains explicit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_exact_retention(
-        observation: ObservationId,
-        signature: FindingSignature,
-        reproduction: ReproductionArtifactId,
-        minimized: ReproductionArtifactId,
-        signature_minimization: FindingSignatureMinimizationEvidence,
-        exact_pins: FindingExactPins,
+        core: FindingCandidateCore,
         triage_evidence: Option<FindingTriageEvidenceSet>,
-        replay_captures: Option<FindingReplayCaptureSet>,
         exact_retention: FindingExactRetention,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            EXACT_RETENTION_SCHEMA_VERSION,
-            observation,
-            signature,
-            reproduction,
-            minimized,
-            signature_minimization,
-            exact_pins,
+        Self::new_current(core, triage_evidence, None, exact_retention, None)
+    }
+
+    /// Builds a candidate with portable replay captures and policy-bound exact retention.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the evidence shape, retention
+    /// disposition, or another candidate invariant is invalid.
+    pub fn new_with_replay_captures_and_exact_retention(
+        core: FindingCandidateCore,
+        triage_evidence: Option<FindingTriageEvidenceSet>,
+        replay_captures: FindingReplayCaptureSet,
+        exact_retention: FindingExactRetention,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_current(
+            core,
             triage_evidence,
-            replay_captures,
-            Some(exact_retention),
+            Some(replay_captures),
+            exact_retention,
             None,
         )
     }
 
-    /// Builds a version-five candidate with independently verifiable selection evidence.
+    /// Builds a version-six candidate with independently verifiable selection evidence.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the complete retention disposition,
     /// candidate count, selected pins, or evidence shape disagree.
-    // crucible-lint: allow rust-allow -- every authenticated retention handoff field remains explicit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_authenticated_exact_retention(
-        observation: ObservationId,
-        signature: FindingSignature,
-        reproduction: ReproductionArtifactId,
-        minimized: ReproductionArtifactId,
-        signature_minimization: FindingSignatureMinimizationEvidence,
-        exact_pins: FindingExactPins,
+        core: FindingCandidateCore,
         triage_evidence: Option<FindingTriageEvidenceSet>,
-        replay_captures: Option<FindingReplayCaptureSet>,
         exact_retention: FindingExactRetention,
         evidence: FindingExactRetentionEvidence,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION,
+        Self::new_current(core, triage_evidence, None, exact_retention, Some(evidence))
+    }
+
+    /// Builds a captured candidate with independently verifiable retention evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the complete retention disposition,
+    /// candidate count, selected pins, or evidence shape disagree.
+    pub fn new_with_replay_captures_and_authenticated_exact_retention(
+        core: FindingCandidateCore,
+        triage_evidence: Option<FindingTriageEvidenceSet>,
+        replay_captures: FindingReplayCaptureSet,
+        exact_retention: FindingExactRetention,
+        evidence: FindingExactRetentionEvidence,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_current(
+            core,
+            triage_evidence,
+            Some(replay_captures),
+            exact_retention,
+            Some(evidence),
+        )
+    }
+
+    pub(crate) fn new_current(
+        core: FindingCandidateCore,
+        triage_evidence: Option<FindingTriageEvidenceSet>,
+        replay_captures: Option<FindingReplayCaptureSet>,
+        exact_retention: FindingExactRetention,
+        exact_retention_evidence: Option<FindingExactRetentionEvidence>,
+    ) -> Result<Self, CampaignCodecError> {
+        let FindingCandidateCore {
             observation,
             signature,
             reproduction,
             minimized,
             signature_minimization,
             exact_pins,
-            triage_evidence,
-            replay_captures,
-            Some(exact_retention),
-            Some(evidence),
-        )
-    }
-
-    // crucible-lint: allow rust-allow -- the versioned constructor validates every authenticated bundle field and its schema/evidence agreement.
-    #[allow(clippy::too_many_arguments)]
-    fn new_versioned(
-        schema_version: u32,
-        observation: ObservationId,
-        signature: FindingSignature,
-        reproduction: ReproductionArtifactId,
-        minimized: ReproductionArtifactId,
-        signature_minimization: FindingSignatureMinimizationEvidence,
-        exact_pins: FindingExactPins,
-        triage_evidence: Option<FindingTriageEvidenceSet>,
-        replay_captures: Option<FindingReplayCaptureSet>,
-        exact_retention: Option<FindingExactRetention>,
-        exact_retention_evidence: Option<FindingExactRetentionEvidence>,
-    ) -> Result<Self, CampaignCodecError> {
-        if reproduction.content_id().schema_version() != 1
+        } = core;
+        if reproduction.content_id().schema_version() != 2
             || minimized.content_id().schema_version() != 2
         {
             return Err(CampaignCodecError::InvalidValue {
@@ -1275,77 +471,56 @@ impl FindingCandidateBundle {
             });
         }
         signature_minimization.validate_signature_basis(&signature)?;
-        let evidence_shape = match schema_version {
-            RECORD_SCHEMA_VERSION => {
-                triage_evidence.is_none() && replay_captures.is_none() && exact_retention.is_none()
-            }
-            TRIAGE_EVIDENCE_SCHEMA_VERSION => {
-                triage_evidence.is_some() && replay_captures.is_none() && exact_retention.is_none()
-            }
-            PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION => {
-                replay_captures.is_some() && exact_retention.is_none()
-            }
-            EXACT_RETENTION_SCHEMA_VERSION => {
-                exact_retention.is_some() && exact_retention_evidence.is_none()
-            }
-            AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION => {
-                exact_retention.is_some() && exact_retention_evidence.is_some()
-            }
-            _ => false,
-        };
-        if !evidence_shape {
+        if exact_retention.disposition() == FindingExactRetentionDisposition::Complete
+            && exact_retention_evidence.is_none()
+        {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "finding candidate schema disagrees with replay evidence",
+                reason: "complete finding exact retention requires authenticated evidence",
             });
         }
-        if let Some(retention) = exact_retention {
-            match retention.disposition() {
-                FindingExactRetentionDisposition::Disabled if !exact_pins.all().is_empty() => {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "disabled finding exact retention has exact pins",
-                    });
-                }
-                FindingExactRetentionDisposition::Complete
-                    if retention.authenticated_candidates() == 0
-                        || exact_pins.all().is_empty()
-                        || exact_pins.all().len()
-                            > retention.authenticated_candidates() as usize
-                        || exact_pins.pre_failure().len() > 1
-                        || exact_pins.measurement_boundary().len() > 1
-                        || exact_pins.post_failure().len() != 1
-                        || !exact_pins.additional().is_empty() =>
-                {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "complete finding exact retention has invalid selected checkpoints",
-                    });
-                }
-                FindingExactRetentionDisposition::Incomplete(_)
-                    if retention.authenticated_candidates() != 0
-                        || !exact_pins.all().is_empty() =>
-                {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "incomplete finding exact retention has selected checkpoints",
-                    });
-                }
-                _ => {}
-            }
-        }
-        if let Some(evidence) = &exact_retention_evidence {
-            let retention = exact_retention.ok_or(CampaignCodecError::InvalidValue {
-                reason: "finding exact retention evidence has no disposition",
-            })?;
-            if retention.disposition() != FindingExactRetentionDisposition::Complete
-                || retention.authenticated_candidates() as usize != evidence.candidates().len()
-                || &exact_pins != evidence.selected()
-            {
+        match exact_retention.disposition() {
+            FindingExactRetentionDisposition::Disabled if !exact_pins.all().is_empty() => {
                 return Err(CampaignCodecError::InvalidValue {
-                    reason: "authenticated finding exact retention evidence disagrees with outcome",
+                    reason: "disabled finding exact retention has exact pins",
                 });
             }
+            FindingExactRetentionDisposition::Complete
+                if exact_retention.authenticated_candidates() == 0
+                    || exact_pins.all().is_empty()
+                    || exact_pins.all().len()
+                        > exact_retention.authenticated_candidates() as usize
+                    || exact_pins.pre_failure().len() > 1
+                    || exact_pins.measurement_boundary().len() > 1
+                    || exact_pins.post_failure().len() != 1
+                    || !exact_pins.additional().is_empty() =>
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "complete finding exact retention has invalid selected checkpoints",
+                });
+            }
+            FindingExactRetentionDisposition::Incomplete(_)
+                if exact_retention.authenticated_candidates() != 0
+                    || !exact_pins.all().is_empty() =>
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "incomplete finding exact retention has selected checkpoints",
+                });
+            }
+            _ => {}
+        }
+        if let Some(evidence) = &exact_retention_evidence
+            && (exact_retention.disposition() != FindingExactRetentionDisposition::Complete
+                || exact_retention.authenticated_candidates() as usize
+                    != evidence.candidates().len()
+                || &exact_pins != evidence.selected())
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "authenticated finding exact retention evidence disagrees with outcome",
+            });
         }
 
         let value = Self {
-            schema_version,
+            schema_version: FINDING_CANDIDATE_SCHEMA_VERSION,
             observation,
             signature,
             reproduction,
@@ -1419,13 +594,13 @@ impl FindingCandidateBundle {
         self.replay_captures
     }
 
-    /// Returns the active-policy exact-retention outcome, when recorded.
+    /// Returns the active-policy exact-retention outcome.
     #[must_use]
-    pub const fn exact_retention(&self) -> Option<FindingExactRetention> {
+    pub const fn exact_retention(&self) -> FindingExactRetention {
         self.exact_retention
     }
 
-    /// Returns independently verifiable selector evidence for a version-five bundle.
+    /// Returns independently verifiable selector evidence for a version-six bundle.
     #[must_use]
     pub const fn exact_retention_evidence(&self) -> Option<&FindingExactRetentionEvidence> {
         self.exact_retention_evidence.as_ref()
@@ -1484,20 +659,18 @@ impl FindingCandidateBundle {
         if let Some(replay_captures) = self.replay_captures {
             children.extend(replay_captures.content_children());
         }
-        if let Some(exact_retention) = self.exact_retention {
-            children.push((
-                "exact-retention.snapshot".to_owned(),
-                exact_retention.snapshot().content_id(),
-            ));
-            children.push((
-                "exact-retention.policy".to_owned(),
-                exact_retention.policy().content_id(),
-            ));
-            children.push((
-                "exact-retention.admission".to_owned(),
-                exact_retention.admission().content_id(),
-            ));
-        }
+        children.push((
+            "exact-retention.snapshot".to_owned(),
+            self.exact_retention.snapshot().content_id(),
+        ));
+        children.push((
+            "exact-retention.policy".to_owned(),
+            self.exact_retention.policy().content_id(),
+        ));
+        children.push((
+            "exact-retention.admission".to_owned(),
+            self.exact_retention.admission().content_id(),
+        ));
         children
     }
 }
@@ -1511,90 +684,36 @@ impl Canonical for FindingCandidateBundle {
         self.minimized.encode(encoder);
         self.signature_minimization.encode(encoder);
         self.exact_pins.encode(encoder);
-        if matches!(
-            self.schema_version,
-            TRIAGE_EVIDENCE_SCHEMA_VERSION
-                | PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
-                | EXACT_RETENTION_SCHEMA_VERSION
-                | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
-        ) {
-            self.triage_evidence.encode(encoder);
-        }
-        if matches!(
-            self.schema_version,
-            PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
-                | EXACT_RETENTION_SCHEMA_VERSION
-                | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
-        ) {
-            self.replay_captures.encode(encoder);
-        }
-        if matches!(
-            self.schema_version,
-            EXACT_RETENTION_SCHEMA_VERSION | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
-        ) {
-            self.exact_retention.encode(encoder);
-        }
-        if self.schema_version == AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION {
-            self.exact_retention_evidence.encode(encoder);
-        }
+        self.triage_evidence.encode(encoder);
+        self.replay_captures.encode(encoder);
+        Some(self.exact_retention).encode(encoder);
+        self.exact_retention_evidence.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            RECORD_SCHEMA_VERSION
-                | TRIAGE_EVIDENCE_SCHEMA_VERSION
-                | PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
-                | EXACT_RETENTION_SCHEMA_VERSION
-                | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
-        ) {
+        if schema_version != FINDING_CANDIDATE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported finding candidate bundle schema version",
             });
         }
-        Self::new_versioned(
-            schema_version,
-            ObservationId::decode(decoder)?,
-            FindingSignature::decode(decoder)?,
-            ReproductionArtifactId::decode(decoder)?,
-            ReproductionArtifactId::decode(decoder)?,
-            FindingSignatureMinimizationEvidence::decode(decoder)?,
-            FindingExactPins::decode(decoder)?,
-            if matches!(
-                schema_version,
-                TRIAGE_EVIDENCE_SCHEMA_VERSION
-                    | PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
-                    | EXACT_RETENTION_SCHEMA_VERSION
-                    | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
-            ) {
-                Option::<FindingTriageEvidenceSet>::decode(decoder)?
-            } else {
-                None
-            },
-            if matches!(
-                schema_version,
-                PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
-                    | EXACT_RETENTION_SCHEMA_VERSION
-                    | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
-            ) {
-                Option::<FindingReplayCaptureSet>::decode(decoder)?
-            } else {
-                None
-            },
-            if matches!(
-                schema_version,
-                EXACT_RETENTION_SCHEMA_VERSION | AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION
-            ) {
-                Option::<FindingExactRetention>::decode(decoder)?
-            } else {
-                None
-            },
-            if schema_version == AUTHENTICATED_EXACT_RETENTION_SCHEMA_VERSION {
-                Option::<FindingExactRetentionEvidence>::decode(decoder)?
-            } else {
-                None
-            },
+        Self::new_current(
+            FindingCandidateCore::new(
+                ObservationId::decode(decoder)?,
+                FindingSignature::decode(decoder)?,
+                ReproductionArtifactId::decode(decoder)?,
+                ReproductionArtifactId::decode(decoder)?,
+                FindingSignatureMinimizationEvidence::decode(decoder)?,
+                FindingExactPins::decode(decoder)?,
+            ),
+            Option::<FindingTriageEvidenceSet>::decode(decoder)?,
+            Option::<FindingReplayCaptureSet>::decode(decoder)?,
+            Option::<FindingExactRetention>::decode(decoder)?.ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "current finding candidate bundle omits exact retention disposition",
+                },
+            )?,
+            Option::<FindingExactRetentionEvidence>::decode(decoder)?,
         )
     }
 }
@@ -1654,8 +773,6 @@ fn exact_pin_children(pins: &FindingExactPins) -> Vec<(String, ContentId)> {
 }
 
 #[cfg(test)]
-// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
-#[allow(clippy::expect_used)]
 mod tests {
     use std::collections::BTreeSet;
 
@@ -1663,26 +780,45 @@ mod tests {
     use crate::{FindingKind, FindingMinimizationAttempt};
     use crucible_cas::content_store::ObjectKind;
 
+    fn disabled_exact_retention() -> Result<FindingExactRetention, CampaignCodecError> {
+        FindingExactRetention::new(
+            CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignSnapshot,
+                3,
+                b"disabled-finding-retention-snapshot",
+            ))?,
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                4,
+                b"disabled-finding-retention-policy",
+            ))?,
+            AttemptAdmissionId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                3,
+                b"disabled-finding-retention-admission",
+            ))?,
+            0,
+            FindingExactRetentionDisposition::Disabled,
+        )
+    }
+
     #[test]
-    fn bundle_round_trip_preserves_an_acyclic_child_graph() {
+    fn bundle_round_trip_preserves_an_acyclic_child_graph() -> Result<(), CampaignCodecError> {
         let observation = ObservationId::from_content_id(ContentId::for_bytes(
             ObjectKind::Observation,
-            1,
+            12,
             b"finding-candidate-observation",
-        ))
-        .expect("observation ID");
+        ))?;
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            1,
+            2,
             b"finding-candidate-original",
-        ))
-        .expect("original reproduction ID");
+        ))?;
         let minimized = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
             2,
             b"finding-candidate-minimized",
-        ))
-        .expect("minimized reproduction ID");
+        ))?;
         let signature = FindingSignature::new(
             FindingKind::Divergence,
             CampaignHash::derive("test", b"finding-candidate-signature"),
@@ -1690,174 +826,174 @@ mod tests {
             String::from("qemu.replay-divergence"),
             None,
             BTreeSet::new(),
-        )
-        .expect("finding signature");
+        )?;
         let minimization = FindingMinimizationEvidence::new(
             original,
-            1,
+            3,
             b"test-policy".to_vec(),
             Vec::new(),
             CampaignHash::derive("test", b"finding-candidate-final-state"),
-        )
-        .expect("minimization evidence");
+        )?;
         let signature_minimization = FindingSignatureMinimizationEvidence::new(
             &signature,
             &minimization,
             vec![Some(signature.clone())],
             vec![Some(signature.clone())],
-        )
-        .expect("signature minimization evidence");
-        let bundle = FindingCandidateBundle::new(
-            observation,
-            signature,
-            original,
-            minimized,
-            signature_minimization,
-            FindingExactPins::default(),
-        )
-        .expect("finding candidate bundle");
+        )?;
+        let bundle = FindingCandidateBundle::new_with_exact_retention(
+            FindingCandidateCore::new(
+                observation,
+                signature,
+                original,
+                minimized,
+                signature_minimization,
+                FindingExactPins::default(),
+            ),
+            None,
+            disabled_exact_retention()?,
+        )?;
 
-        let decoded = FindingCandidateBundle::from_canonical_bytes(&bundle.canonical_bytes())
-            .expect("decode finding candidate bundle");
+        let decoded = FindingCandidateBundle::from_canonical_bytes(&bundle.canonical_bytes())?;
         assert_eq!(decoded, bundle);
-        assert_eq!(decoded.content_children().len(), 3);
+        assert_eq!(decoded.content_children().len(), 6);
+        let bundle_content = decoded.id()?.content_id();
         assert!(
             decoded
                 .content_children()
                 .iter()
-                .all(|(_, child)| *child != decoded.id().expect("bundle ID").content_id())
+                .all(|(_, child)| *child != bundle_content)
         );
 
         let triage_id = |label: &[u8]| {
             FindingTriageReplayEvidenceId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Finding,
-                1,
+                2,
                 label,
             ))
-            .expect("triage replay evidence ID")
         };
         let triage_evidence = FindingTriageEvidenceSet::new(
-            triage_id(b"minimization-original"),
-            triage_id(b"minimization-selected"),
-            triage_id(b"verification-original"),
-            triage_id(b"verification-selected"),
+            triage_id(b"minimization-original")?,
+            triage_id(b"minimization-selected")?,
+            triage_id(b"verification-original")?,
+            triage_id(b"verification-selected")?,
         );
-        let rich_bundle = FindingCandidateBundle::new_with_triage_evidence(
-            bundle.observation(),
-            bundle.signature().clone(),
-            bundle.reproduction(),
-            bundle.minimized(),
-            bundle.signature_minimization().clone(),
-            bundle.exact_pins().clone(),
-            triage_evidence,
-        )
-        .expect("rich finding candidate bundle");
+        let rich_bundle = FindingCandidateBundle::new_with_exact_retention(
+            FindingCandidateCore::new(
+                bundle.observation(),
+                bundle.signature().clone(),
+                bundle.reproduction(),
+                bundle.minimized(),
+                bundle.signature_minimization().clone(),
+                bundle.exact_pins().clone(),
+            ),
+            Some(triage_evidence),
+            disabled_exact_retention()?,
+        )?;
 
         let decoded_rich =
-            FindingCandidateBundle::from_canonical_bytes(&rich_bundle.canonical_bytes())
-                .expect("decode rich finding candidate bundle");
+            FindingCandidateBundle::from_canonical_bytes(&rich_bundle.canonical_bytes())?;
         assert_eq!(decoded_rich, rich_bundle);
-        assert_eq!(decoded_rich.schema_version(), 2);
+        assert_eq!(
+            decoded_rich.schema_version(),
+            FINDING_CANDIDATE_SCHEMA_VERSION
+        );
         assert_eq!(decoded_rich.triage_evidence(), Some(triage_evidence));
-        assert_eq!(decoded_rich.content_children().len(), 7);
+        assert_eq!(decoded_rich.content_children().len(), 10);
 
-        let capture_root =
+        let capture_id = |label: &[u8]| {
             FindingReplayCaptureEvidenceId::from_manifest_content_id(ContentId::for_bytes(
                 ObjectKind::ExactManifest,
                 1,
-                b"portable-finding-replay-capture-manifest",
+                label,
             ))
-            .expect("capture manifest ID");
+        };
         let replay_captures = FindingReplayCaptureSet::new(
-            FindingReplayCaptureReference::Complete(capture_root),
+            FindingReplayCaptureReference::Complete(capture_id(b"minimization-original")?),
             FindingReplayCaptureReference::Incomplete(
                 FindingReplayCaptureIncomplete::MissingEventLogPrefix,
             ),
-            FindingReplayCaptureReference::Incomplete(
-                FindingReplayCaptureIncomplete::MissingTerminalFingerprints,
-            ),
-            FindingReplayCaptureReference::Incomplete(
-                FindingReplayCaptureIncomplete::MissingSignalArtifactStore,
-            ),
+            FindingReplayCaptureReference::Complete(capture_id(b"verification-original")?),
+            FindingReplayCaptureReference::Complete(capture_id(b"verification-selected")?),
         );
-        let captured_bundle = FindingCandidateBundle::new_with_replay_captures(
-            bundle.observation(),
-            bundle.signature().clone(),
-            bundle.reproduction(),
-            bundle.minimized(),
-            bundle.signature_minimization().clone(),
-            bundle.exact_pins().clone(),
+        let captured_bundle = FindingCandidateBundle::new_with_replay_captures_and_exact_retention(
+            FindingCandidateCore::new(
+                bundle.observation(),
+                bundle.signature().clone(),
+                bundle.reproduction(),
+                bundle.minimized(),
+                bundle.signature_minimization().clone(),
+                bundle.exact_pins().clone(),
+            ),
             Some(triage_evidence),
             replay_captures,
-        )
-        .expect("captured finding candidate bundle");
-
+            disabled_exact_retention()?,
+        )?;
         let decoded_captured =
-            FindingCandidateBundle::from_canonical_bytes(&captured_bundle.canonical_bytes())
-                .expect("decode captured finding candidate bundle");
+            FindingCandidateBundle::from_canonical_bytes(&captured_bundle.canonical_bytes())?;
         assert_eq!(decoded_captured, captured_bundle);
-        assert_eq!(decoded_captured.schema_version(), 3);
-        assert_eq!(decoded_captured.triage_evidence(), Some(triage_evidence));
         assert_eq!(decoded_captured.replay_captures(), Some(replay_captures));
-        assert_eq!(decoded_captured.content_children().len(), 8);
+        assert_eq!(decoded_captured.content_children().len(), 13);
 
         let policy = CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
             4,
             b"finding-exact-retention-policy",
-        ))
-        .expect("policy ID");
+        ))?;
         let admission = AttemptAdmissionId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
             3,
             b"finding-exact-retention-admission",
-        ))
-        .expect("admission ID");
+        ))?;
         let exact_retention = FindingExactRetention::new(
             CampaignSnapshotId::from_content_id(ContentId::for_bytes(
                 ObjectKind::CampaignSnapshot,
                 3,
                 b"finding-exact-retention-snapshot",
-            ))
-            .expect("snapshot ID"),
+            ))?,
             policy,
             admission,
             0,
             FindingExactRetentionDisposition::Incomplete(
                 FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
             ),
-        )
-        .expect("exact retention diagnostic");
+        )?;
         let retained_bundle = FindingCandidateBundle::new_with_exact_retention(
-            bundle.observation(),
-            bundle.signature().clone(),
-            bundle.reproduction(),
-            bundle.minimized(),
-            bundle.signature_minimization().clone(),
-            bundle.exact_pins().clone(),
+            crate::FindingCandidateCore::new(
+                bundle.observation(),
+                bundle.signature().clone(),
+                bundle.reproduction(),
+                bundle.minimized(),
+                bundle.signature_minimization().clone(),
+                bundle.exact_pins().clone(),
+            ),
             Some(triage_evidence),
-            Some(replay_captures),
             exact_retention,
-        )
-        .expect("policy-bound finding candidate bundle");
+        )?;
 
         let decoded_retained =
-            FindingCandidateBundle::from_canonical_bytes(&retained_bundle.canonical_bytes())
-                .expect("decode policy-bound finding candidate bundle");
+            FindingCandidateBundle::from_canonical_bytes(&retained_bundle.canonical_bytes())?;
         assert_eq!(decoded_retained, retained_bundle);
-        assert_eq!(decoded_retained.schema_version(), 4);
-        assert_eq!(decoded_retained.exact_retention(), Some(exact_retention));
-        assert_eq!(decoded_retained.content_children().len(), 11);
+        assert_eq!(
+            decoded_retained.schema_version(),
+            FINDING_CANDIDATE_SCHEMA_VERSION
+        );
+        assert_eq!(decoded_retained.exact_retention(), exact_retention);
+        assert_eq!(decoded_retained.content_children().len(), 10);
+
+        let mut wrong_version = bundle.canonical_bytes();
+        wrong_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(FindingCandidateBundle::from_canonical_bytes(&wrong_version).is_err());
+        Ok(())
     }
 
     #[test]
-    fn signature_evidence_rejects_equal_fingerprint_with_a_different_failure_class() {
+    fn signature_evidence_rejects_equal_fingerprint_with_a_different_failure_class()
+    -> Result<(), CampaignCodecError> {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            1,
+            2,
             b"signature-evidence-original",
-        ))
-        .expect("original reproduction ID");
+        ))?;
         let fingerprint = CampaignHash::derive("test", b"shared-fingerprint");
         let target = FindingSignature::new(
             FindingKind::Divergence,
@@ -1866,8 +1002,7 @@ mod tests {
             String::from("qemu.replay-divergence"),
             None,
             BTreeSet::new(),
-        )
-        .expect("target signature");
+        )?;
         let different_class = FindingSignature::new(
             FindingKind::Divergence,
             fingerprint,
@@ -1875,12 +1010,11 @@ mod tests {
             String::from("qemu.different-failure-class"),
             None,
             BTreeSet::new(),
-        )
-        .expect("different signature");
+        )?;
         let final_state = CampaignHash::derive("test", b"signature-evidence-final-state");
         let rejected_minimization = FindingMinimizationEvidence::new(
             original,
-            1,
+            3,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,
@@ -1891,19 +1025,17 @@ mod tests {
                 false,
             )],
             final_state,
-        )
-        .expect("minimization evidence");
+        )?;
 
         FindingSignatureMinimizationEvidence::new(
             &target,
             &rejected_minimization,
             vec![Some(target.clone()), Some(different_class.clone())],
             vec![Some(target.clone()), Some(different_class.clone())],
-        )
-        .expect("a different complete signature remains rejected");
+        )?;
         let selected_minimization = FindingMinimizationEvidence::new(
             original,
-            1,
+            3,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,
@@ -1914,8 +1046,7 @@ mod tests {
                 true,
             )],
             final_state,
-        )
-        .expect("selected minimization evidence");
+        )?;
         assert!(
             FindingSignatureMinimizationEvidence::new(
                 &target,
@@ -1925,16 +1056,17 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
     }
 
     #[test]
-    fn signature_evidence_rejects_a_mismatched_verification_pass() {
+    fn signature_evidence_rejects_a_mismatched_verification_pass() -> Result<(), CampaignCodecError>
+    {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            1,
+            2,
             b"verification-mismatch-original",
-        ))
-        .expect("original reproduction ID");
+        ))?;
         let signature = FindingSignature::new(
             FindingKind::Divergence,
             CampaignHash::derive("test", b"verification-mismatch-fingerprint"),
@@ -1942,16 +1074,14 @@ mod tests {
             String::from("qemu.replay-divergence"),
             None,
             BTreeSet::new(),
-        )
-        .expect("finding signature");
+        )?;
         let minimization = FindingMinimizationEvidence::new(
             original,
-            1,
+            3,
             b"test-policy".to_vec(),
             Vec::new(),
             CampaignHash::derive("test", b"verification-mismatch-final-state"),
-        )
-        .expect("minimization evidence");
+        )?;
 
         assert!(
             FindingSignatureMinimizationEvidence::new(
@@ -1962,24 +1092,23 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
     }
 
     #[test]
-    fn signature_projection_accepts_constructed_shrink_evidence_with_new_artifact_identities() {
+    fn signature_projection_accepts_constructed_shrink_evidence_with_new_artifact_identities()
+    -> Result<(), CampaignCodecError> {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            1,
+            2,
             b"shrinking-winner-original",
-        ))
-        .expect("original reproduction ID");
+        ))?;
         let original_configuration = crate::ConfigurationArtifactId::from_content_id(
             ContentId::for_bytes(ObjectKind::Configuration, 1, b"original-configuration"),
-        )
-        .expect("original configuration ID");
+        )?;
         let minimized_configuration = crate::ConfigurationArtifactId::from_content_id(
             ContentId::for_bytes(ObjectKind::Configuration, 1, b"minimized-configuration"),
-        )
-        .expect("minimized configuration ID");
+        )?;
         let fingerprint = CampaignHash::derive("test", b"shrinking-winner-fingerprint");
         let original_signature = FindingSignature::new(
             FindingKind::Divergence,
@@ -1992,8 +1121,7 @@ mod tests {
                 1,
                 b"original-causal-evidence",
             )]),
-        )
-        .expect("original signature");
+        )?;
         let minimized_signature = FindingSignature::new(
             FindingKind::Divergence,
             fingerprint,
@@ -2005,8 +1133,7 @@ mod tests {
                 1,
                 b"minimized-causal-evidence",
             )]),
-        )
-        .expect("minimized signature");
+        )?;
         assert_ne!(
             original_signature.cluster_key(),
             minimized_signature.cluster_key()
@@ -2015,7 +1142,7 @@ mod tests {
         let final_state = CampaignHash::derive("test", b"shrinking-winner-final-state");
         let minimization = FindingMinimizationEvidence::new(
             original,
-            1,
+            3,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,
@@ -2026,8 +1153,7 @@ mod tests {
                 true,
             )],
             final_state,
-        )
-        .expect("minimization evidence");
+        )?;
         let original_replay = FindingReplaySignature::from_observed(&original_signature);
         let minimized_replay = FindingReplaySignature::from_observed(&minimized_signature);
         assert_eq!(original_replay, minimized_replay);
@@ -2043,25 +1169,24 @@ mod tests {
                 Some(original_signature.clone()),
                 Some(minimized_signature.clone()),
             ],
-        )
-        .expect("shrinking candidate preserves stable replay signature");
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn replay_signature_separates_property_and_target_categories() {
+    fn replay_signature_separates_property_and_target_categories() -> Result<(), CampaignCodecError>
+    {
         let fingerprint = CampaignHash::derive("test", b"semantic-domain-fingerprint");
         let configuration = crate::ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Configuration,
             1,
             b"semantic-domain-config",
-        ))
-        .expect("configuration ID");
+        ))?;
         let opportunity = crate::ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
             1,
             b"semantic-domain-opportunity",
-        ))
-        .expect("choice opportunity ID");
+        ))?;
         let signature = |property: &str, target| {
             FindingSignature::new(
                 FindingKind::PropertyViolation,
@@ -2071,20 +1196,19 @@ mod tests {
                 Some(target),
                 BTreeSet::new(),
             )
-            .expect("property-violation signature")
         };
         let configuration_target = signature(
             "scenario.property-a",
             FindingTarget::Configuration(configuration),
-        );
+        )?;
         let different_property = signature(
             "scenario.property-b",
             FindingTarget::Configuration(configuration),
-        );
+        )?;
         let choice_target = signature(
             "scenario.property-a",
             FindingTarget::ChoiceOpportunity(opportunity),
-        );
+        )?;
 
         assert_ne!(
             FindingReplaySignature::from_observed(&configuration_target),
@@ -2094,5 +1218,6 @@ mod tests {
             FindingReplaySignature::from_observed(&configuration_target),
             FindingReplaySignature::from_observed(&choice_target)
         );
+        Ok(())
     }
 }
