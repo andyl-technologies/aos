@@ -4,9 +4,11 @@
   lib,
   ...
 }: let
-  enabled = lib.attrByPath ["aos" "pam" "enable"] true config;
   sessionTracking = lib.abilities.interfaces.loginSessionTracking.interface;
-  configured = enabled && config.aos.abilities.environment != null;
+  configured =
+    config.aos.abilities.environment
+    != null
+    && config.aos.pam.enable;
 in {
   config.aos.abilities = {
     requirementTemplates.login-session-tracking = {
