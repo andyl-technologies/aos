@@ -797,6 +797,7 @@ let
     "tools/workerd/_pyodide-sources.nix" = "target-independent-source";
     "tools/workerd/_pyodide.nix" = "native-build-helper";
     "tools/workerd/_python-repositories.nix" = "native-build-helper";
+    "tools/workerd/_runtime-check.nix" = "native-build-helper";
     "tools/workerd/_rust-repository.nix" = "native-build-helper";
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
