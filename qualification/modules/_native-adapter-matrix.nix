@@ -2,7 +2,6 @@
 {
   lib,
   packages,
-  bindings,
   scenarioPolicy ? builtins.fromJSON (builtins.readFile ../native-adapter-scenarios.json),
   regressions,
 }: let
@@ -29,9 +28,6 @@
       }) (postconditionsFor scenario);
     };
   selectedPackages = builtins.filter (package: package ? abilities) packages;
-  selectedImplementationKeys = lib.unique (map
-    (binding: binding.implementation)
-    (builtins.attrValues bindings));
   selectExact = context: predicate: values: let
     matches = builtins.filter predicate values;
   in
@@ -46,9 +42,8 @@
     (selectExact "native qualification interface '${identity.descriptor}'"
       (entry: entry.descriptor == identity.descriptor)
       package.contract.value.interface_documents).document;
-  selectedImplementations = builtins.concatMap (package: let
+  qualifiedImplementations = builtins.concatMap (package: let
     projection = package.contract.value;
-    packageName = projection.package.name;
   in
     map (name: let
       implementation = providerByName package name;
@@ -56,18 +51,18 @@
       inherit package name implementation;
       qualification = projection.qualification.implementations.${name};
       interface = interfaceByIdentity package implementation.interface;
-    }) (builtins.filter
-      (name: builtins.elem "${packageName}:${name}" selectedImplementationKeys)
-      (builtins.attrNames projection.qualification.implementations)))
+    }) (builtins.attrNames projection.qualification.implementations))
   selectedPackages;
-  containerExecutionDeclarations = map (entry: let
+  containerExecutionDeclarations =
+    map (entry: let
     identity = interfaceIdentity entry.interface;
   in {
     adapter = entry.qualification.adapter;
     scope = entry.qualification.scope;
     interface = identity;
     guarantees = builtins.sort builtins.lessThan (map (guarantee: guarantee.name) entry.implementation.guarantees);
-  }) selectedImplementations;
+    })
+    qualifiedImplementations;
   resolvedArtifact = owner: selector: {
     inherit selector;
     path = builtins.toString (lib.abilities.authenticatedPackageOutputFor {
@@ -77,7 +72,7 @@
   };
   projectedHandler = owner: handler: {
     artifact = resolvedArtifact owner handler.artifact;
-    entry_point = handler.entryPoint;
+    entry_point = handler.entry_point;
     inherit (handler) arguments result;
   };
   interfaceIdentity = interface: lib.abilities.interfaceIdentity interface;
@@ -102,8 +97,7 @@
   in
     assert qualification.conformance_families != [];
     assert unique qualification.conformance_families;
-    assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformance_families;
-    {
+    assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformance_families; {
       inherit adapter;
       inherit scope;
       inherit (qualification) observation_kind;
@@ -130,7 +124,7 @@
     adapters =
       builtins.sort
       (left: right: builtins.lessThan left.adapter right.adapter)
-      (map adapterFor selectedImplementations);
+      (map adapterFor qualifiedImplementations);
     families = scenarioFamilies;
     invalidation_dimensions = scenarioPolicy.invalidation_dimensions;
     scenarios = map scenarioFor scenarioPolicy.scenarios;
@@ -182,7 +176,8 @@
   providerContractFor = cell:
     selectExact "native qualification contract '${cell.id}'"
     (adapter:
-      adapter.adapter == cell.adapter
+      adapter.adapter
+      == cell.adapter
       && adapter.interface_descriptor == cell.interface.descriptor)
     selectedSurface.adapters;
   inapplicableReason = cell: let
@@ -225,10 +220,12 @@
   validDisposition = disposition:
     builtins.isAttrs disposition
     && (
-      (builtins.attrNames disposition == ["kind" "value"]
+      (builtins.attrNames disposition
+        == ["kind" "value"]
         && disposition.kind == "exact"
         && token disposition.value)
-      || (builtins.attrNames disposition == ["kind" "supported" "unsupported"]
+      || (builtins.attrNames disposition
+        == ["kind" "supported" "unsupported"]
         && disposition.kind == "cancellation-route"
         && token disposition.supported
         && token disposition.unsupported
@@ -237,7 +234,6 @@
   check = "native-adapter-matrix";
 in
   assert packages != [];
-  assert bindings != {};
   assert builtins.attrNames scenarioPolicy == expectedScenarioPolicyKeys;
   assert scenarioPolicy.invalidation_dimensions != [];
   assert unique scenarioPolicy.invalidation_dimensions;

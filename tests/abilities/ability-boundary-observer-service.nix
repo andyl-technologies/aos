@@ -66,6 +66,7 @@
   };
   forwardedAbilities = forwarded.config.aos.abilities;
   forwardReference = outputReference "aos-ability-boundary-observer:forward-endpoint";
+  forwardInterface = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
   portableOptionTree = options:
     builtins.all
     (name: let
@@ -96,10 +97,9 @@ in
   ["localKey" "package"]
   == {
     description = "Discovers the selected protected execution observer endpoint.";
-    interface = "aos.execution.observation-endpoint";
-    abi = 1;
-    descriptor = null;
-    methods = ["observe"];
+    interface = forwardInterface.identity.name;
+    inherit (forwardInterface.identity) abi descriptor;
+    inherit (forwardInterface) methods;
     guarantees = [];
     strength = "required";
     fallback = null;

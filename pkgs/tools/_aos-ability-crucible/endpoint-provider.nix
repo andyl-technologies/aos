@@ -1,18 +1,14 @@
-##! Pure provider for the package-owned execution-observer endpoint.
+##! Pure Crucible provider for the execution-observation endpoint.
 {
   config,
   lib,
-  packageName,
   ...
 }: let
-  alias = "execution-observer-endpoint";
-  declaration = config.aos.abilities.interfaces."${packageName}:${alias}";
+  endpoint = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
   settings = import ./settings.nix {
     socketName = config.aos.services.abilityCrucible.socketName;
   };
-  identity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration declaration
-  );
+  identity = endpoint.identity;
   entriesFor = context:
     builtins.map
     (requestName: {
@@ -32,12 +28,12 @@
     else throw "the Ability Crucible endpoint request selects an unknown endpoint";
   provide = context: let
     entries = builtins.map checkedEntry (entriesFor context);
-    reference = {
+    referenceFor = entry: {
       _type = "aos-resource-reference";
       interface = identity;
       resource = {
         provider = context.instance.id;
-        key = "observer";
+        key = (builtins.head entry.bindings).slot;
       };
       operations = ["observe"];
       lifetime = "instance";
@@ -48,12 +44,12 @@
     outputs = builtins.listToAttrs (builtins.map (entry: {
         name = entry.requestName;
         value = {
-          resource = reference;
+          resource = referenceFor entry;
           socket-path = settings.socketPath;
         };
       })
       entries);
   };
 in {
-  config.aos.abilities.implementations.${alias} = {inherit provide;};
+  config.aos.abilities.implementations.${endpoint.alias} = {inherit provide;};
 }

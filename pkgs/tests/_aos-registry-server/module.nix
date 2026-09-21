@@ -121,7 +121,7 @@
   };
   cacheStorage = serviceManagement.forProducer {
     consumerInstance = "aos-registry-server";
-    key = "cache-storage";
+    key = "registry-cache-data";
     interface = serviceManagement.interfaces.persistentStorageAllocation;
     parameters = {
       name = "cache";
@@ -150,7 +150,7 @@
     };
   };
   registryPath = resultOf "registry-storage" "planned-path";
-  cachePath = resultOf "cache-storage" "planned-path";
+  cachePath = resultOf "registry-cache-data" "planned-path";
   storePath = resultOf "store-storage" "planned-path";
   runtimePath = resultOf "runtime-storage" "planned-path";
   repositoryPath = registryPath;
@@ -165,7 +165,7 @@
     inherit serviceTypes;
     consumerInstance = "aos-registry-server";
     declaration = {
-      name = "git-configuration";
+      name = "registry-git-env-file";
       source = {
         kind = "interpolated-text";
         fragments = [
@@ -186,7 +186,7 @@
     inherit serviceTypes;
     consumerInstance = "aos-registry-server";
     declaration = {
-      name = "cache-configuration";
+      name = "registry-cache-env-file";
       source = {
         kind = "interpolated-text";
         fragments = [(literal "REGISTRY_CACHE_ENABLED=true\n")];
@@ -236,7 +236,7 @@
       execution_model = "foreground";
       start = [
         (selfCommand "bin/aos-registry-server-git" [
-          (resultOf "git-configuration" "planned-path")
+          (resultOf "registry-git-env-file" "planned-path")
         ])
       ];
     } {
@@ -246,7 +246,7 @@
       configuration.views = [
         {
           name = "git";
-          source = resultOf "git-configuration" "planned-path";
+          source = resultOf "registry-git-env-file" "planned-path";
           optional = false;
         }
       ];
@@ -288,7 +288,7 @@
       configuration.views = [
         {
           name = "cache";
-          source = resultOf "cache-configuration" "planned-path";
+          source = resultOf "registry-cache-env-file" "planned-path";
           optional = false;
         }
         {

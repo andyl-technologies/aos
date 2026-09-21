@@ -14,15 +14,19 @@
     builtins.filter
     (cell: builtins.elem (builtins.head (lib.splitString "/" cell)) adapters)
     all;
-  groups = {
-    reference = byAdapters [
-      "credential-delivery"
-      "host-network-policy"
-      "host-storage"
-      "managed-configuration"
-      "network-endpoint"
-      "nginx-validation"
+  specializedAdapters = [
+    "image-rollout"
+    "kubernetes-object"
+    "service-management"
+    "systemd-bootstrap"
+    "systemd-manager"
     ];
+  groups = {
+    reference =
+      builtins.filter (
+        cell: !builtins.elem (builtins.head (lib.splitString "/" cell)) specializedAdapters
+      )
+      all;
     kubernetes = byAdapters ["kubernetes-object"];
     systemd = byAdapters [
       "systemd-bootstrap"

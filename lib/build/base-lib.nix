@@ -50,6 +50,8 @@
   systemName ? "system",
   ## Exact authenticated package modules selected for the host graph.
   hostPackageModules ? [],
+  ## Stage-specific host modules selected by the image graph.
+  hostConfigurationModules ? [],
   ## Exact authenticated provider modules selected by host bindings.
   hostProviderModules ? [],
   ## Resolver-produced host provider instances.
@@ -64,6 +66,8 @@
   hostAbilityEnvironment,
   ## Exact authenticated package modules selected for the initrd graph.
   initrdPackageModules ? [],
+  ## Stage-specific initrd modules selected by the image graph.
+  initrdConfigurationModules ? [],
   ## Exact authenticated provider modules selected by initrd bindings.
   initrdProviderModules ? [],
   ## Resolver-produced initrd provider instances.
@@ -95,6 +99,7 @@
     abilityRequests,
     abilityRequirements,
     extraModules ? [],
+    evaluationSpecialArgs ? {},
   }:
     lib.evalModules {
       modules =
@@ -121,10 +126,19 @@
         selectedProviderModules
         ;
       enableAbilitySelection = true;
-      specialArgs.abilityResolution = {
+      specialArgs =
+        {
+          abilityResolution = {
         requests = abilityRequests;
         requirements = abilityRequirements;
       };
+        }
+        // evaluationSpecialArgs;
+    };
+
+  checkedInitrdStaticContract = {
+    identity = "${initrdStaticAbilityContract}/contract.json";
+    path = "${initrdStaticAbilityContract}/contract.json";
     };
 
   # Evaluate the schema first so the ABI hash is available to the complete
@@ -137,6 +151,11 @@
     abilityBindings = hostAbilityBindings;
     abilityRequests = hostAbilityRequests;
     abilityRequirements = hostAbilityRequirements;
+    extraModules = hostConfigurationModules;
+    evaluationSpecialArgs = {
+      initrdAbilityEvaluation = initrdSchemaEval;
+      initrdStaticContract = checkedInitrdStaticContract;
+    };
   };
   initrdSchemaEval = evaluationFor {
     environment = initrdAbilityEnvironment;
@@ -146,6 +165,16 @@
     abilityBindings = initrdAbilityBindings;
     abilityRequests = initrdAbilityRequests;
     abilityRequirements = initrdAbilityRequirements;
+    extraModules =
+      initrdConfigurationModules
+      ++ [
+        {
+          aos.config.evalAtBoot = {
+            baseLib = baseLibOut;
+            baseLibAbiHash = abiHash;
+          };
+        }
+      ];
   };
 
   # A base library is bound to the complete option schema it exposes, not to
@@ -180,7 +209,9 @@
     abilityBindings = hostAbilityBindings;
     abilityRequests = hostAbilityRequests;
     abilityRequirements = hostAbilityRequirements;
-    extraModules = [
+    extraModules =
+      hostConfigurationModules
+      ++ [
       {
         aos.config.evalAtBoot = {
           baseLib = baseLibOut;
@@ -188,6 +219,10 @@
         };
       }
     ];
+    evaluationSpecialArgs = {
+      initrdAbilityEvaluation = initrdSchemaEval;
+      initrdStaticContract = checkedInitrdStaticContract;
+    };
   };
 
   # Root ownership shipped by the image is local system state, just like

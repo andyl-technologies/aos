@@ -11,7 +11,7 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = nativeAdapterMatrix;
+  matrix = nativeAdapterMatrix.spec;
   cells = import ./_ability-provider-negative-cells.nix {inherit lib matrix;};
 in
   import ./_ability-provider-negative-cohort.nix {

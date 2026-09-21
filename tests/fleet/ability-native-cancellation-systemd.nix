@@ -11,7 +11,7 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = nativeAdapterMatrix;
+  matrix = nativeAdapterMatrix.spec;
   cells = import ./_ability-cancellation-cells.nix {
     inherit lib matrix;
   };

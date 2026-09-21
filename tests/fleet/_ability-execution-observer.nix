@@ -24,7 +24,7 @@
       aos.tests.executionObserver.forwardToSelectedEndpoint = true;
       aos.abilities.bindings."fleet-observer:forward-endpoint" = {
         request = "aos-ability-boundary-observer:forward-endpoint";
-        implementation = "aos-ability-crucible:execution-observer-endpoint";
+        implementation = "aos-ability-crucible:execution-observation-endpoint";
         providerInstance = "aos-ability-crucible:ability-crucible";
         slot = "forward-observer";
       };
@@ -34,7 +34,12 @@ in {
   controller = package;
 
   module = {
-    environment.systemPackages = [package];
+    aos.packages.aos-ability-boundary-observer = {
+      inherit package;
+      bundle = true;
+    };
+    aos.abilities.stages.host.modules = [
+      {
     aos.tests.executionObserver = observerConfig;
     aos.abilities.executionObserver = {
       request = "aos-ability-boundary-observer:endpoint";
@@ -53,11 +58,13 @@ in {
       // lib.optionalAttrs forwardToCrucible {
         "fleet-observer:forward-endpoint" = {
           request = "aos-ability-boundary-observer:forward-endpoint";
-          implementation = "aos-ability-crucible:execution-observer-endpoint";
+              implementation = "aos-ability-crucible:execution-observation-endpoint";
           providerInstance = "aos-ability-crucible:ability-crucible";
           slot = "forward-observer";
         };
       };
+      }
+    ];
   };
 
   hostModule = ''

@@ -24,11 +24,16 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.aos-ability-crucible];
+    aos.packages.aos-ability-crucible = {
+      package = pkgs.aos-ability-crucible;
+      bundle = true;
+    };
+    aos.abilities.stages.host.modules = [
+      {
     aos.services.abilityCrucible.enable = true;
     aos.abilities.bindings."ability-crucible:observer-endpoint" = {
       request = "aos-ability-crucible:observer-endpoint";
-      implementation = "aos-ability-crucible:execution-observer-endpoint";
+          implementation = "aos-ability-crucible:execution-observation-endpoint";
       providerInstance = "aos-ability-crucible:ability-crucible";
       slot = "observer";
     };
@@ -37,5 +42,7 @@ in {
       resourceOutput = "resource";
       socketOutput = "socket-path";
     };
+      }
+    ];
   };
 }

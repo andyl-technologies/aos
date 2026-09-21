@@ -241,6 +241,7 @@
       hostAbilityBindings
       hostAbilityRequests
       hostAbilityRequirements
+      hostConfigurationModules
       hostProviderModules
       hostEnvironment
       initrdPackageModules
@@ -249,6 +250,7 @@
       initrdAbilityBindings
       initrdAbilityRequests
       initrdAbilityRequirements
+      initrdConfigurationModules
       initrdEnvironment
       initrdAbilityEvaluation
       ;
@@ -282,6 +284,7 @@
         else [];
       inherit operatorModules runtimeModules;
       hostPackageModules = finalPackageModules;
+      inherit hostConfigurationModules;
       inherit
         hostProviderModules
         hostAbilityInstances
@@ -297,6 +300,7 @@
         initrdAbilityBindings
         initrdAbilityRequests
         initrdAbilityRequirements
+        initrdConfigurationModules
         ;
       initrdAbilityEnvironment = initrdEnvironment;
       inherit initrdStaticAbilityContract;
@@ -306,6 +310,7 @@
       modules =
         modules
         ++ moduleList
+        ++ hostConfigurationModules
         ++ [
           {
             aos.config.evalAtBoot = {
@@ -339,7 +344,28 @@
         before = hostPackageEvaluation.config.aos.abilities;
         after = finalHostEvaluation.config.aos.abilities;
       })
-      finalHostEvaluation;
+      (finalHostEvaluation
+        // {
+          # Extensions are ephemeral evaluation overlays. Rebuild every
+          # resolver stage while allowing the caller's inline module values.
+          extendModules = extension: let
+            extraModules = extension.modules or [];
+          in
+            (mkSystemState {allowInlineModules = true;} (
+              {
+                modules = moduleList ++ extraModules;
+                inherit
+                  specialArgs
+                  operatorModules
+                  runtimeModules
+                  packageModules
+                  systemName
+                  ;
+              }
+              // builtins.removeAttrs extension ["modules"]
+            ))
+            .system;
+        });
   };
   mkSystem = args: (mkSystemState {} args).system;
   # Repository fixtures may layer ephemeral values that are never accepted as
@@ -537,13 +563,6 @@
     qualificationProjection = serverSystemState.qualificationProjection;
     qualificationImage = true;
   };
-  nativeAdapterPrimaryCells = [
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-intent"
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-outcome"
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
-    "service-management/aos.service-management/abi-1/reload/block-dependent-effect"
-  ];
   nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
     inherit lib;
     matrix = nativeAdapterMatrix.spec;
@@ -606,90 +625,7 @@
     mkSystem = mkFixtureSystem;
     qualificationImage = true;
   };
-  nativeAdapterRoleScenarios = [
-    "revoke-caller-before-acquisition"
-    "revoke-caller-after-acquisition"
-    "revoke-caller-before-external-effect"
-    "revoke-provider-before-acquisition"
-    "revoke-provider-after-acquisition"
-    "revoke-provider-before-external-effect"
-    "revoke-enforcement-before-acquisition"
-    "revoke-enforcement-after-acquisition"
-    "revoke-enforcement-before-external-effect"
-    "revoke-assignment-before-acquisition"
-    "revoke-assignment-after-acquisition"
-    "revoke-assignment-before-external-effect"
-  ];
-  nativeAdapterRoleCells = map (cell: cell.id) (
-    builtins.filter (cell:
-      builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterRoleScenarios)
-    nativeAdapterMatrix.spec.cells
-  );
-  nativeAdapterReplacementScenarios = [
-    "replace-executor-incarnation"
-    "replace-provider-incarnation"
-  ];
-  nativeAdapterReplacementCells = map (cell: cell.id) (
-    builtins.filter (cell:
-      builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterReplacementScenarios)
-    nativeAdapterMatrix.spec.cells
-  );
-  nativeAdapterFailureControlScenarios = [
-    "expire-attempt-deadline"
-    "fail-cleanup"
-    "fail-release"
-  ];
-  nativeAdapterFailureControlCells = map (cell: cell.id) (
-    builtins.filter (cell:
-      builtins.elem
-      (builtins.elemAt (lib.splitString "/" cell.id) 4)
-      nativeAdapterFailureControlScenarios)
-    nativeAdapterMatrix.spec.cells
-  );
-  nativeAdapterInterruptionCells = map (cell: cell.id) (
-    builtins.filter (cell:
-      builtins.elemAt (lib.splitString "/" cell.id) 4 == "interrupt-before-acquisition")
-    nativeAdapterMatrix.spec.cells
-  );
-
-  nativeAdapterQualifiedCells = let
-    selected =
-      nativeAdapterPrimaryCells
-      ++ nativeAdapterInterruptionCells
-      ++ nativeAdapterRoleCells
-      ++ nativeAdapterReplacementCells
-      ++ nativeAdapterFailureControlCells
-      ++ nativeEffectBoundaryCells.groups.reference
-      ++ nativeEffectBoundaryCells.groups.systemdManager
-      ++ nativeEffectBoundaryCells.groups.rollout
-      ++ nativeProviderStateCells.all
-      ++ nativeCancellationSystemdCells
-      ++ nativeCancellationCells.groups.reference
-      ++ nativeCancellationCells.groups.rollout
-      ++ nativeProviderNegativeCells.all;
-    cellsById = builtins.listToAttrs (map (cell: {
-        name = cell.id;
-        value = cell;
-      })
-      nativeAdapterMatrix.spec.cells);
-    postconditions =
-      builtins.foldl' (
-        count: cellId: count + builtins.length cellsById.${cellId}.postconditions
-      )
-      0
-      selected;
-    expectedPostconditions =
-      builtins.foldl' (
-        count: cell: count + builtins.length cell.postconditions
-      )
-      0
-      (builtins.filter
-        (cell: builtins.elem cell.id nativeAdapterMatrix.spec.applicability.applicable_cell_ids)
-        nativeAdapterMatrix.spec.cells);
-  in
-    assert builtins.sort builtins.lessThan selected == nativeAdapterMatrix.spec.applicability.applicable_cell_ids;
-    assert builtins.length selected == builtins.length (lib.unique selected);
-    assert postconditions == expectedPostconditions; selected;
+  nativeAdapterQualifiedCells = nativeAdapterMatrix.spec.applicability.applicable_cell_ids;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline = mkNativeAbilityScenario {

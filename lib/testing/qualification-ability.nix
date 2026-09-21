@@ -77,7 +77,8 @@
   in
     {
       requiredInputs = cohort.requiredInputs or [];
-      execution = cohort.execution or {
+      execution =
+        cohort.execution or {
         bootInput = "candidate-image";
         fixtureRole = null;
         recordsGuestKernel = true;
@@ -143,9 +144,11 @@
     if matrixSpec == null
     then scenarioCohortInputs
     else matrixCohortInputs;
-  requiresStagingHub = builtins.any (
+  requiresStagingHub =
+    builtins.any (
     cohort: builtins.elem "predecessor-image" cohort.requiredInputs
-  ) qualificationCohorts;
+    )
+    qualificationCohorts;
   fixtureRoots = lib.unique (
     map builtins.toString (
       [fixtureScriptRoot setupModuleRoot]
@@ -475,12 +478,14 @@ in
       else builtins.attrNames cohort.report == ["kind"]
     ))
   qualificationCohorts;
-  assert matrixSpec == null
+  assert matrixSpec
+  == null
   || builtins.all (cohort: cohort.report.kind == "matrix") qualificationCohorts;
   assert !(builtins.any (cohort: cohort.report.kind == "release-transition") qualificationCohorts)
   || builtins.all (cohort: cohort.report.kind == "release-transition") qualificationCohorts;
   assert (matrixQualifiedCells != []) == (matrixSpec != null);
-  assert matrixQualifiedCells == lib.concatMap (cohort: cohort.qualifiedCells) matrixCohortInputs;
+  assert builtins.sort builtins.lessThan matrixQualifiedCells
+  == builtins.sort builtins.lessThan (lib.concatMap (cohort: cohort.qualifiedCells) matrixCohortInputs);
   assert builtins.length matrixQualifiedCells == builtins.length (lib.unique matrixQualifiedCells);
   assert builtins.sort builtins.lessThan matrixQualifiedCells == matrixApplicableCellIds;
   assert builtins.length matrixCohortInputs == builtins.length (lib.unique (map (cohort: cohort.id) matrixCohortInputs));

@@ -32,7 +32,7 @@
   showLoc = loc: builtins.concatStringsSep "." loc;
 
   # Helper: show the source file and value of a definition.
-  showDef = def: "'${builtins.toString def.value}' (defined in ${def.file})";
+  showDef = def: "${builtins.toJSON def.value} (defined in ${def.file})";
 
   # Helper: show all definitions.
   showDefs = defs: builtins.concatStringsSep ", " (builtins.map showDef defs);

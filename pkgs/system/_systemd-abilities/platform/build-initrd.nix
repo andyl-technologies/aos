@@ -103,7 +103,9 @@
     then throw "systemd initrd requires its checked static contract"
     else if initrdStaticContract.identity == expectedContractIdentity
     then initrdStaticContract
-    else throw "systemd initrd static contract differs from the completed initrd fixed point";
+    else
+      throw
+      "systemd initrd static contract '${initrdStaticContract.identity}' differs from completed fixed point '${expectedContractIdentity}'";
   specification = buildContext.writeTextFile {
     name = "aos-initrd-source-stage-materialization";
     destination = "/specification.json";

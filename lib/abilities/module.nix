@@ -1625,8 +1625,24 @@ in {
         then normalized
         else let
           rejected = builtins.filter (name: !requestAccepted requests.${name}) (builtins.attrNames requests);
+          describe = name: let
+            request = requests.${name};
+            requirement = config.aos.abilities.requirementTemplates.${request.requirement} or null;
+            matches =
+              if requirement == null
+              then []
+              else interfacesMatchingRequirement requirement;
+          in {
+            inherit name;
+            inherit (request) parameters requirement;
+            matching_interfaces =
+              builtins.map (
+                interface: interfaceIdentityForDeclaration "rejected request" interface
+              )
+              matches;
+          };
         in
-          throw "Ability request(s) do not match their requirement interface request type: ${builtins.concatStringsSep ", " rejected}";
+          throw "Ability requests do not match their requirement interface request types: ${builtins.toJSON (builtins.map describe rejected)}";
       description = "Concrete ability requests emitted by configured instances.";
     };
     bindings = mkOption {

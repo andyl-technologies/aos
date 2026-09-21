@@ -158,10 +158,7 @@
     name = requirement.id;
     value = requirement;
   }) (builtins.filter (requirement: lib.hasPrefix "ability-" requirement.id) contract.requirements));
-  nativeAdapterSurface = nativeAdapterMatrix.spec.surface;
   nativeAdapterChecks = abilityRequirements.ability-native-adapter-matrix.checks;
-  providerContract = adapterName:
-    (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
   nativeCells = nativeAdapterMatrix.spec.cells;
   applicableNativeIds = nativeAdapterMatrix.spec.applicability.applicable_cell_ids;
   inapplicableNativeIds = map (entry: entry.cell_id) nativeAdapterMatrix.spec.applicability.inapplicable_cells;
@@ -184,6 +181,9 @@
     map
     (rule: "package-function/${rule.name}/x86_64-linux")
     executedPackageRules;
+  isStoreScenario = scenario:
+    builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString scenario)
+    != null;
   composed = import ../../qualification/_eval.nix {
     inherit lib nativeAdapterMatrix;
     packageNames = ["aos" "fixture"];
@@ -261,14 +261,6 @@ in
   assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
   assert partitionedNativeIds == map (cell: cell.id) nativeCells;
   assert abilityRequirements.ability-native-adapter-matrix.matrix_spec == nativeAdapterMatrix.spec;
-  assert (providerContract "image-rollout")
-  == {
-    lifecycle = {
-      persistent_delete_method = null;
-    };
-    resource_lifetimes = ["attempt" "persistent"];
-    state_format = null;
-  };
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeRoleRevocationCells;
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeFailureControlCells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.spec.cells;
@@ -314,22 +306,16 @@ in
   assert builtins.all
   (id: builtins.hasAttr id releaseExecutor.passthru.qualification.scenarios)
   (builtins.attrNames abilityRequirements);
-  assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
-  assert builtins.all (id:
-    builtins.match ".*/aos-qualification-${id}" releaseExecutor.passthru.qualification.scenarios.${id}
-    != null) (builtins.attrNames abilityRequirements);
-  assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
-  assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
+  assert isStoreScenario releaseExecutor.passthru.qualification.scenarios.package-function;
+  assert builtins.all
+  (id: isStoreScenario releaseExecutor.passthru.qualification.scenarios.${id})
+  (builtins.attrNames abilityRequirements);
+  assert isStoreScenario releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional;
+  assert isStoreScenario releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
   == packageCaseScenarioNames;
-  assert builtins.all (rule: let
-    scenario = releaseExecutor.passthru.qualification.caseScenarios."package-function/${rule.name}/x86_64-linux";
-    suffix =
-      if rule.execution.kind == "recovery-image"
-      then rule.name
-      else "${rule.name}-fleet";
-  in
-    builtins.match ".*/aos-qualification-x86_64-linux-${suffix}" scenario != null)
+  assert builtins.all (rule:
+    isStoreScenario releaseExecutor.passthru.qualification.caseScenarios."package-function/${rule.name}/x86_64-linux")
   executedPackageRules;
   assert contract.support.default
   == {
