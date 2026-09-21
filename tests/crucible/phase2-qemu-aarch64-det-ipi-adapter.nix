@@ -4,32 +4,20 @@
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchName = "0042-crucible-aarch64-det-ipi-adapter.patch";
-  series = import (patchDir + "/_series.nix");
-  prefixPatchFiles =
-    builtins.genList
-    (index: builtins.elemAt series.patchFiles index)
-    41;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import (patchDir + "/_atomic-patch.nix");
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
   failures =
     lib.optionals (!(hasInfix "crucible_sim_det_ipi_drain_pending" patchSource)) [
-      "${patchName}: AArch64 deterministic IPI drain adapter is absent"
+      "${atomicPatch.file}: AArch64 deterministic IPI drain adapter is absent"
     ]
     ++ lib.optionals (!(hasInfix "crucible_sim_det_ipi_deliver_commanded" patchSource)) [
-      "${patchName}: AArch64 commanded IPI adapter is absent"
+      "${atomicPatch.file}: AArch64 commanded IPI adapter is absent"
     ]
     ++ lib.optionals (!(hasInfix "cpu_interrupt(dst_cpu, CPU_INTERRUPT_HARD)" patchSource)) [
-      "${patchName}: AArch64 hard-interrupt delivery is absent"
-    ]
-    ++ lib.optionals (
-      builtins.length series.patchFiles
-      <= 41
-      || builtins.elemAt series.patchFiles 41 != patchName
-    ) [
-      "${patchName}: AArch64 adapter patch is not patch-series entry 42"
+      "${atomicPatch.file}: AArch64 hard-interrupt delivery is absent"
     ];
 in
   if failures != []
@@ -57,30 +45,24 @@ in
             tar -xf ${qemuPackage.src} -C qemu-source
             cd qemu-source/qemu-${qemuPackage.version}
 
-            for patch in ${builtins.concatStringsSep " " prefixPatchFiles}; do
-              patch --batch --fuzz=0 -p1 < "${patchDir}/$patch" > /dev/null
-            done
-
             if grep -q 'crucible_sim_det_ipi_deliver_commanded' target/arm/cpu.c; then
-              fail "prefix unexpectedly exposes the AArch64 IPI adapter"
+              fail "stock QEMU unexpectedly exposes the AArch64 IPI adapter"
             fi
 
-            patch --batch --fuzz=0 -p1 < "${patchDir}/${patchName}" > /dev/null
+            patch --batch --fuzz=0 -p1 < "${patchDir}/${atomicPatch.file}" > /dev/null
             grep -q 'crucible_sim_det_ipi_drain_pending' target/arm/cpu.c
             grep -q 'crucible_sim_det_ipi_deliver_commanded' target/arm/cpu.c
             grep -q 'cpu_interrupt(dst_cpu, CPU_INTERRUPT_HARD)' target/arm/cpu.c
-            grep -q 'qemu_plugin_crucible_maybe_fire_ipi_delivery_cb' target/arm/cpu.c
 
             cat > "$out/result" <<'RESULT'
             PASS
             gate=gate:patch-microtests
-            patch=0042-crucible-aarch64-det-ipi-adapter.patch
+            atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true
-            prefix_negative_control=true
+            stock_tree_negative_control=true
             aarch64_rr_drain_adapter=true
             aarch64_commanded_ipi_adapter=true
-            aarch64_delivery_callback=true
             qemu_package=${qemuPackage}
             qemu_package_version=${qemuPackage.version}
             RESULT

@@ -4,6 +4,64 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
 
+#[test]
+fn read_only_relay_allows_fragmented_queries_and_transport_acknowledgements() {
+    let mut filter = ReadOnlyGdbFilter::default();
+    let packet = rsp_packet(b"m1000,20");
+    let split = packet.len() / 2;
+
+    assert_eq!(filter.accept(&packet[..split]), Ok(Vec::new()));
+    assert_eq!(filter.accept(&packet[split..]), Ok(packet));
+    assert_eq!(filter.accept(b"+-"), Ok(b"+-".to_vec()));
+    assert_eq!(
+        filter.accept(&rsp_packet(b"QStartNoAckMode")),
+        Ok(rsp_packet(b"QStartNoAckMode"))
+    );
+}
+
+#[test]
+fn read_only_relay_rejects_every_state_changing_command_family() {
+    let commands: &[&[u8]] = &[
+        b"P0=00",
+        b"G00",
+        b"M1000,1:00",
+        b"X1000,1:0",
+        b"c",
+        b"s",
+        b"C05",
+        b"S05",
+        b"vCont;c",
+        b"k",
+        b"D",
+        b"R00",
+        b"Z0,1000,1",
+        b"z0,1000,1",
+        b"qRcmd,7265736574",
+        b"QNonStop:1",
+    ];
+    for command in commands {
+        let mut filter = ReadOnlyGdbFilter::default();
+        assert_eq!(
+            filter.accept(&rsp_packet(command)),
+            Err(DebugRelayError::ReadOnlyCommand),
+            "state-changing command was accepted: {}",
+            String::from_utf8_lossy(command)
+        );
+    }
+    let mut filter = ReadOnlyGdbFilter::default();
+    assert_eq!(
+        filter.accept(&[0x03]),
+        Err(DebugRelayError::InvalidReadOnlyPacket)
+    );
+}
+
+fn rsp_packet(payload: &[u8]) -> Vec<u8> {
+    let checksum = payload
+        .iter()
+        .fold(0_u8, |sum, byte| sum.wrapping_add(*byte));
+    format!("${}#{checksum:02x}", String::from_utf8_lossy(payload)).into_bytes()
+}
+
 fn client(name: &str) -> DebugClientId {
     DebugClientId::new(name)
         .unwrap_or_else(|error| panic!("test client identity should be valid: {error}"))
@@ -52,7 +110,13 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
         .await
         .unwrap_or_else(|error| panic!("loopback relay should open: {error}"));
     let id = registry
-        .register(stream, session_ref, lease, holder)
+        .register(
+            stream,
+            session_ref,
+            lease,
+            holder,
+            DebugRelayAccess::ReadWrite,
+        )
         .unwrap_or_else(|error| panic!("loopback relay should register: {error}"));
     assert_eq!(
         registry.existing(
@@ -81,12 +145,12 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
         },
         holder,
     ));
-    let stream = registry
-        .stream(id, session_ref, &owner, 7, holder)
+    let (stream, bytes) = registry
+        .prepare_write(id, session_ref, &owner, 7, holder, b"gdb")
         .unwrap_or_else(|error| panic!("relay stream should be lease-owned: {error}"));
     let readable_stream = Arc::clone(&stream);
     assert_eq!(
-        DebugRelayRegistry::write_stream(stream, b"gdb")
+        DebugRelayRegistry::write_stream(stream, &bytes)
             .await
             .unwrap_or_else(|error| panic!("relay write should succeed: {error}")),
         3
@@ -172,6 +236,7 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
                 generation: 8,
             },
             replacement_holder,
+            DebugRelayAccess::ReadWrite,
         )
         .unwrap_or_else(|error| panic!("replacement relay should register: {error}"));
     let closed = registry

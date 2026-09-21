@@ -24,9 +24,9 @@ use crate::open_set::OPEN_SET_CAPABILITY_CATEGORIES;
 ///
 /// Version 6 requires a complete scenario-form payload for inline session creation.
 pub const RPC_PROTOCOL_MAJOR: u16 = 6;
-/// RPC protocol minor version for backward-compatible additions.
+/// RPC protocol minor version.
 pub const RPC_PROTOCOL_MINOR: u16 = 0;
-/// RPC protocol patch version for compatible fixes.
+/// RPC protocol patch version.
 pub const RPC_PROTOCOL_PATCH: u16 = 0;
 /// RPC protocol build identifier recorded in `Hello` and `Attached`.
 pub const RPC_PROTOCOL_BUILD: &str = "crucible-rpc-abi-v6";
@@ -59,9 +59,9 @@ pub const RPC_OPEN_SET_PAYLOAD_KINDS: &[&str] = OPEN_SET_CAPABILITY_CATEGORIES;
 pub struct ProtocolVersion {
     /// Major version, bumped for wire-incompatible changes.
     pub major: u16,
-    /// Minor version, bumped for backward-compatible additions.
+    /// Minor protocol version.
     pub minor: u16,
-    /// Patch version, bumped for compatible fixes.
+    /// Patch protocol version.
     pub patch: u16,
     /// Build identifier carried alongside the semantic version.
     pub build: &'static str,
@@ -273,13 +273,13 @@ pub enum RpcEventClass {
 /// RPC ABI negotiation failure.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum RpcAbiError {
-    /// A peer offered an incompatible major protocol version.
-    #[error("RPC protocol major version mismatch: expected {expected}, actual {actual}")]
-    MajorVersionMismatch {
-        /// Local RPC major version.
-        expected: u16,
-        /// Peer RPC major version.
-        actual: u16,
+    /// A peer offered any version other than the sole current protocol version.
+    #[error("RPC protocol version mismatch: expected {expected:?}, actual {actual:?}")]
+    ExactVersionMismatch {
+        /// Sole protocol version admitted by this build.
+        expected: ProtocolVersion,
+        /// Peer protocol version.
+        actual: ProtocolVersion,
     },
 }
 
@@ -290,19 +290,17 @@ pub use golden::GOLDEN_RPC_VECTORS;
 
 /// Negotiates the local RPC protocol version with a peer version.
 ///
-/// Backward-compatible minor and patch differences are accepted within the
-/// current major version. A major-version difference is rejected before any
-/// message-specific decoding can proceed.
+/// Any version difference is rejected before message-specific decoding.
 ///
 /// # Errors
 ///
-/// Returns [`RpcAbiError::MajorVersionMismatch`] when `peer.major` differs
-/// from [`RPC_PROTOCOL_VERSION`].
-pub const fn negotiate_rpc_protocol(peer: ProtocolVersion) -> Result<ProtocolVersion, RpcAbiError> {
-    if peer.major != RPC_PROTOCOL_VERSION.major {
-        return Err(RpcAbiError::MajorVersionMismatch {
-            expected: RPC_PROTOCOL_VERSION.major,
-            actual: peer.major,
+/// Returns [`RpcAbiError::ExactVersionMismatch`] when `peer` differs from
+/// [`RPC_PROTOCOL_VERSION`] in any field.
+pub fn negotiate_rpc_protocol(peer: ProtocolVersion) -> Result<ProtocolVersion, RpcAbiError> {
+    if peer != RPC_PROTOCOL_VERSION {
+        return Err(RpcAbiError::ExactVersionMismatch {
+            expected: RPC_PROTOCOL_VERSION,
+            actual: peer,
         });
     }
     Ok(RPC_PROTOCOL_VERSION)

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    BackendEffect, BackendError, BackendNetworkOutput, BackendSnapshot, Decision,
+    BackendEffect, BackendError, BackendNetworkOutput, BackendRngEvidence, BackendSnapshot,
     FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
     SimulationBackend, StepObservation, VirtualTime,
 };
@@ -34,6 +34,10 @@ use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
 #[cfg(target_os = "linux")]
 #[path = "node_set/block_boundary.rs"]
 mod block_boundary;
+#[path = "node_set/collection.rs"]
+mod collection;
+#[path = "node_set/concurrent.rs"]
+mod concurrent;
 #[path = "node_set/fault_events.rs"]
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
@@ -41,6 +45,7 @@ mod lifecycle;
 
 #[cfg(target_os = "linux")]
 pub use block_boundary::QemuNodeSetBlockBoundaryCheckpoint;
+pub use concurrent::QemuHostParallelismEvidence;
 
 /// A fully validated, no-fail terminal node-generation map update.
 pub struct QemuNodeTerminalReplacementPlan {
@@ -58,6 +63,7 @@ pub struct QemuNodeSetPreparedHotForkTemplate {
     node: NodeId,
     source_process: QemuProcessIdentity,
     template_generation: u64,
+    maximum_ring_image_bytes: usize,
     identity: QemuHotForkTemplateIdentity,
 }
 
@@ -69,6 +75,7 @@ impl std::fmt::Debug for QemuNodeSetPreparedHotForkTemplate {
             .field("node", &self.node)
             .field("source_process", &self.source_process)
             .field("template_generation", &self.template_generation)
+            .field("maximum_ring_image_bytes", &self.maximum_ring_image_bytes)
             .field("configuration", &self.identity.configuration())
             .field("event_log_offset", &self.identity.event_log().offset())
             .field("launch_resources", &self.identity.launch_resources())
@@ -113,6 +120,12 @@ impl QemuNodeSetPreparedHotForkTemplate {
     pub const fn launch_resources(&self) -> QemuLaunchResourceRequirements {
         self.identity.launch_resources()
     }
+
+    /// Returns the admitted bound for each branch-private ring image.
+    #[must_use]
+    pub const fn maximum_ring_image_bytes(&self) -> usize {
+        self.maximum_ring_image_bytes
+    }
 }
 
 /// Identity-checked operational loan to one retained hot-fork source.
@@ -155,6 +168,16 @@ impl QemuNodeSetPreparedHotForkSource<'_> {
         self.prepared.launch_resources()
     }
 
+    /// Returns the source-local target process-contract stage for ownership
+    /// tests.
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    #[must_use]
+    pub fn hot_fork_child_process_contract_stage_for_test(
+        &self,
+    ) -> Option<crate::QemuHotForkChildProcessContractStageProof> {
+        self.source.hot_fork_child_process_contract_stage()
+    }
+
     /// Stages child-private files and forks this exact prepared source.
     ///
     /// # Errors
@@ -192,6 +215,21 @@ impl QemuNodeSetPreparedHotForkSource<'_> {
             destinations,
             maximum_bytes,
         )
+    }
+
+    /// Detaches one successful child's consumed setup and prepares the next.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::QemuHotForkSourceRearmError`] when the launch does not
+    /// match this retained source, any source-side close fails, or fresh setup
+    /// cannot be prepared within the original ring-image bound.
+    pub fn rearm_after_child<A>(
+        &mut self,
+        launch: &mut crate::QemuHotForkChildLaunch<A>,
+    ) -> Result<crate::QemuHotForkDetachedChildResources, crate::QemuHotForkSourceRearmError> {
+        self.source
+            .rearm_after_hot_fork_child(launch, self.prepared.maximum_ring_image_bytes)
     }
 
     /// Queries the exact parent-owned record for one forked child.
@@ -420,6 +458,7 @@ pub struct QemuNodeSet {
     permanently_closed: Vec<NodeId>,
     fault_event_staging_budget: Option<QemuFaultEventStagingBudget>,
     pending_selectable_requests: BTreeMap<NodeId, SelectablePlanPendingRequest>,
+    last_host_parallelism: Option<QemuHostParallelismEvidence>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -436,17 +475,6 @@ enum PendingSelectableRetention {
 }
 
 impl QemuNodeSet {
-    /// Builds an empty node set.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            nodes: BTreeMap::new(),
-            permanently_closed: Vec::new(),
-            fault_event_staging_budget: None,
-            pending_selectable_requests: BTreeMap::new(),
-        }
-    }
-
     /// Inserts a live node under its scheduler identity.
     ///
     /// Returns the prior node when `node` was already present.
@@ -517,6 +545,7 @@ impl QemuNodeSet {
             node: node.clone(),
             source_process,
             template_generation: state.generation(),
+            maximum_ring_image_bytes,
             identity: QemuHotForkTemplateIdentity::new_prepared(
                 configuration,
                 event_log,
@@ -695,22 +724,6 @@ impl QemuNodeSet {
             })?;
         validate_retained_hot_fork_token(prepared, &current_process, &state)?;
         Ok(QemuNodeSetPreparedHotForkSource { source, prepared })
-    }
-
-    /// Stops and removes one intended-crash runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent or its bounded shutdown
-    /// ladder cannot reap the QEMU child.
-    pub fn stop_intended_crash(&mut self, node: &NodeId) -> Result<(), BackendError> {
-        let mut backend = self
-            .nodes
-            .remove(node)
-            .ok_or_else(|| BackendError::Rejected {
-                message: format!("QEMU backend set has no live node `{}` to crash", node.name),
-            })?;
-        SimulationBackend::shutdown(&mut backend)
     }
 
     /// Returns whether the selected QEMU runtime is currently live.
@@ -975,18 +988,6 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Returns the number of live nodes in the set.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Returns whether the set has no live nodes.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
-    }
-
     /// Returns the exact QEMU fault capabilities admitted for `node`.
     ///
     /// # Errors
@@ -1230,23 +1231,6 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Applies one admitted QEMU fault command at `node`'s current boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent or the command fails
-    /// capability, coordinate, transport, liveness, or result validation.
-    pub fn apply_fault_command_at_current_boundary(
-        &mut self,
-        node: &NodeId,
-        header: FaultCommandHeaderV1,
-        payload: &[u8],
-    ) -> Result<DequeuedFaultResult, BackendError> {
-        self.node_mut(node)?
-            .apply_fault_command_at_current_boundary(header, payload)
-            .map_err(BackendError::from)
-    }
-
     pub(crate) fn apply_fault_command_at_current_boundary_with_limits(
         &mut self,
         node: &NodeId,
@@ -1480,12 +1464,6 @@ fn validate_retained_hot_fork_token(
     Ok(())
 }
 
-impl Default for QemuNodeSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SimulationBackend for QemuNodeSet {
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
         let node = {
@@ -1638,10 +1616,10 @@ impl SimulationBackend for QemuNodeSet {
         Ok(events)
     }
 
-    fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, BackendError> {
+    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
         let mut decisions = Vec::new();
         for node in self.nodes.values_mut() {
-            decisions.extend(node.drain_causal_decisions()?);
+            decisions.extend(node.drain_rng_evidence()?);
         }
         Ok(decisions)
     }
@@ -1884,6 +1862,7 @@ mod tests {
             },
             source_process: process.clone(),
             template_generation: 1,
+            maximum_ring_image_bytes: usize::MAX,
             identity: QemuHotForkTemplateIdentity::new_prepared(
                 ContentHash::from_bytes(b"configuration-a"),
                 EventLog::new(),
@@ -1918,6 +1897,7 @@ mod tests {
             },
             source_process: process.clone(),
             template_generation: 1,
+            maximum_ring_image_bytes: usize::MAX,
             identity: QemuHotForkTemplateIdentity::new_prepared(
                 ContentHash::from_bytes(b"configuration-a"),
                 EventLog::new(),
@@ -1965,6 +1945,7 @@ mod tests {
             },
             source_process,
             template_generation: 1,
+            maximum_ring_image_bytes: usize::MAX,
             identity: QemuHotForkTemplateIdentity::new_prepared(
                 ContentHash::from_bytes(b"configuration-a"),
                 EventLog::new(),

@@ -21,7 +21,7 @@ fn rpc_abi_conformance_runs_named_checks() {
 }
 
 #[test]
-fn rpc_protocol_version_is_explicit_and_rejects_major_mismatch() {
+fn rpc_protocol_version_is_exact_and_rejects_all_drift() {
     assert_abi_version_field();
 }
 
@@ -33,30 +33,33 @@ fn assert_abi_version_field() {
     assert_eq!(RPC_PROTOCOL_VERSION, GOLDEN_VECTOR_RPC_PROTOCOL_VERSION);
     assert!(GOLDEN_VECTOR_RPC_REGENERATION_RULE.contains("RPC_PROTOCOL_VERSION"));
 
-    let compatible_minor = ProtocolVersion {
-        major: RPC_PROTOCOL_MAJOR,
-        minor: RPC_PROTOCOL_MINOR + 1,
-        patch: RPC_PROTOCOL_PATCH,
-        build: RPC_PROTOCOL_BUILD,
-    };
-    assert_eq!(
-        negotiate_rpc_protocol(compatible_minor),
-        Ok(RPC_PROTOCOL_VERSION)
-    );
-
-    let incompatible_major = ProtocolVersion {
-        major: RPC_PROTOCOL_MAJOR + 1,
-        minor: RPC_PROTOCOL_MINOR,
-        patch: RPC_PROTOCOL_PATCH,
-        build: RPC_PROTOCOL_BUILD,
-    };
-    assert_eq!(
-        negotiate_rpc_protocol(incompatible_major),
-        Err(RpcAbiError::MajorVersionMismatch {
-            expected: RPC_PROTOCOL_MAJOR,
-            actual: RPC_PROTOCOL_MAJOR + 1,
-        })
-    );
+    let drifted_versions = [
+        ProtocolVersion {
+            major: RPC_PROTOCOL_MAJOR + 1,
+            ..RPC_PROTOCOL_VERSION
+        },
+        ProtocolVersion {
+            minor: RPC_PROTOCOL_MINOR + 1,
+            ..RPC_PROTOCOL_VERSION
+        },
+        ProtocolVersion {
+            patch: RPC_PROTOCOL_PATCH + 1,
+            ..RPC_PROTOCOL_VERSION
+        },
+        ProtocolVersion {
+            build: "crucible-rpc-abi-v6-drifted",
+            ..RPC_PROTOCOL_VERSION
+        },
+    ];
+    for drifted in drifted_versions {
+        assert_eq!(
+            negotiate_rpc_protocol(drifted),
+            Err(RpcAbiError::ExactVersionMismatch {
+                expected: RPC_PROTOCOL_VERSION,
+                actual: drifted,
+            })
+        );
+    }
 }
 
 #[test]

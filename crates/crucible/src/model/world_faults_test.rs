@@ -7,6 +7,131 @@ fn id(value: &str) -> SignalId {
         .unwrap_or_else(|error| panic!("test signal ID should be canonical: {error}"))
 }
 
+fn x86_tsc_clock(id: SignalId) -> WorldNodeClockSource {
+    WorldNodeClockSource {
+        id,
+        implementation: "target/i386/tcg".to_owned(),
+        source_kind: WorldNodeClockSourceKind::X86Tsc,
+        base_domain: WorldNodeClockBaseDomain::SchedulerVirtual,
+        timer_relationship: WorldNodeClockTimerRelationship::None,
+        width_bits: 64,
+        wraps: true,
+        read_error: false,
+        frequency_numerator: 1_000_000_000,
+        frequency_denominator: 1,
+        model_phases: vec![
+            FaultPhase::ClockRead,
+            FaultPhase::Synchronize,
+            FaultPhase::SourceSwitch,
+        ],
+        monotonicity: WorldNodeClockMonotonicity::ClampMonotonic,
+        vmstate: true,
+        semantic_version: 1,
+    }
+}
+
+enum ProgrammableClockFixture {
+    X86Rtc,
+    X86Pit,
+    X86Hpet,
+    X86ApicTimer,
+    X86AcpiPmTimer,
+    ArmCounter { frequency_hz: u64 },
+    ArmRtc,
+}
+
+fn programmable_clock(id: SignalId, fixture: ProgrammableClockFixture) -> WorldNodeClockSource {
+    let (implementation, source_kind, base_domain, width_bits, wraps, frequency, monotonicity) =
+        match fixture {
+            ProgrammableClockFixture::X86Rtc => (
+                "hw/rtc/mc146818rtc",
+                WorldNodeClockSourceKind::X86Rtc,
+                WorldNodeClockBaseDomain::RtcEpoch,
+                64,
+                false,
+                1_000_000_000,
+                WorldNodeClockMonotonicity::AllowBackward,
+            ),
+            ProgrammableClockFixture::X86Pit => (
+                "hw/timer/i8254",
+                WorldNodeClockSourceKind::X86Pit,
+                WorldNodeClockBaseDomain::SchedulerVirtual,
+                64,
+                false,
+                1_000_000_000,
+                WorldNodeClockMonotonicity::AllowBackward,
+            ),
+            ProgrammableClockFixture::X86Hpet => (
+                "hw/timer/hpet",
+                WorldNodeClockSourceKind::X86Hpet,
+                WorldNodeClockBaseDomain::SchedulerVirtual,
+                64,
+                true,
+                10_000_000,
+                WorldNodeClockMonotonicity::AllowBackward,
+            ),
+            ProgrammableClockFixture::X86ApicTimer => (
+                "hw/intc/apic",
+                WorldNodeClockSourceKind::X86ApicTimer,
+                WorldNodeClockBaseDomain::SchedulerVirtual,
+                64,
+                false,
+                1_000_000_000,
+                WorldNodeClockMonotonicity::AllowBackward,
+            ),
+            ProgrammableClockFixture::X86AcpiPmTimer => (
+                "hw/acpi/core",
+                WorldNodeClockSourceKind::X86AcpiPmTimer,
+                WorldNodeClockBaseDomain::SchedulerVirtual,
+                24,
+                true,
+                3_579_545,
+                WorldNodeClockMonotonicity::AllowBackward,
+            ),
+            ProgrammableClockFixture::ArmCounter { frequency_hz } => (
+                "target/arm/generic-timer",
+                WorldNodeClockSourceKind::ArmCounter,
+                WorldNodeClockBaseDomain::SchedulerVirtual,
+                64,
+                false,
+                frequency_hz,
+                WorldNodeClockMonotonicity::ClampMonotonic,
+            ),
+            ProgrammableClockFixture::ArmRtc => (
+                "hw/rtc/pl031",
+                WorldNodeClockSourceKind::ArmRtc,
+                WorldNodeClockBaseDomain::RtcEpoch,
+                32,
+                true,
+                1,
+                WorldNodeClockMonotonicity::AllowBackward,
+            ),
+        };
+
+    WorldNodeClockSource {
+        id,
+        implementation: implementation.to_owned(),
+        source_kind,
+        base_domain,
+        timer_relationship: WorldNodeClockTimerRelationship::Programmable,
+        width_bits,
+        wraps,
+        read_error: false,
+        frequency_numerator: frequency,
+        frequency_denominator: 1,
+        model_phases: vec![
+            FaultPhase::ClockRead,
+            FaultPhase::Arm,
+            FaultPhase::Fire,
+            FaultPhase::Synchronize,
+            FaultPhase::SourceSwitch,
+        ],
+        monotonicity,
+        vmstate: true,
+        semantic_version: 1,
+    }
+}
+
 fn two_endpoint_topology() -> WorldFaultTopology {
     WorldFaultTopology {
         network_interfaces: vec![
@@ -220,12 +345,18 @@ fn node_capabilities_with_register(register: WorldNodeRegister) -> WorldNodeFaul
         interrupts: Vec::new(),
         hardware_errors: Vec::new(),
         clock_sources: vec![
-            WorldNodeClockSource::emulated_x86_tsc_v1(id("x86-tsc-vcpu-0")),
-            WorldNodeClockSource::emulated_x86_rtc_v1(id("x86-mc146818-rtc")),
-            WorldNodeClockSource::emulated_x86_pit_v1(id("x86-i8254-pit")),
-            WorldNodeClockSource::emulated_x86_hpet_v1(id("x86-hpet-0")),
-            WorldNodeClockSource::emulated_x86_apic_timer_v1(id("x86-local-apic-timer-vcpu-0")),
-            WorldNodeClockSource::emulated_x86_acpi_pm_timer_v1(id("x86-acpi-pm-timer")),
+            x86_tsc_clock(id("x86-tsc-vcpu-0")),
+            programmable_clock(id("x86-mc146818-rtc"), ProgrammableClockFixture::X86Rtc),
+            programmable_clock(id("x86-i8254-pit"), ProgrammableClockFixture::X86Pit),
+            programmable_clock(id("x86-hpet-0"), ProgrammableClockFixture::X86Hpet),
+            programmable_clock(
+                id("x86-local-apic-timer-vcpu-0"),
+                ProgrammableClockFixture::X86ApicTimer,
+            ),
+            programmable_clock(
+                id("x86-acpi-pm-timer"),
+                ProgrammableClockFixture::X86AcpiPmTimer,
+            ),
         ],
         accelerators: Vec::new(),
         ready_markers: Vec::new(),
@@ -254,15 +385,19 @@ fn sample_x86_register() -> WorldNodeRegister {
 }
 
 #[test]
-fn emulated_clock_constructors_cover_the_realized_pc_and_virt_sources() {
+fn clock_manifests_cover_the_realized_pc_and_virt_sources() {
     let x86 = node_capabilities_with_register(sample_x86_register());
     x86.validate()
         .unwrap_or_else(|error| panic!("complete x86 clock manifest should validate: {error}"));
     assert_eq!(x86.clock_sources.len(), 6);
 
-    let arm_counter =
-        WorldNodeClockSource::emulated_arm_counter_v1(id("arm-generic-counter-vcpu-0"), 62_500_000);
-    let arm_rtc = WorldNodeClockSource::emulated_arm_rtc_v1(id("arm-pl031-rtc-0"));
+    let arm_counter = programmable_clock(
+        id("arm-generic-counter-vcpu-0"),
+        ProgrammableClockFixture::ArmCounter {
+            frequency_hz: 62_500_000,
+        },
+    );
+    let arm_rtc = programmable_clock(id("arm-pl031-rtc-0"), ProgrammableClockFixture::ArmRtc);
     assert_eq!(
         arm_counter.source_kind,
         WorldNodeClockSourceKind::ArmCounter

@@ -131,7 +131,19 @@ where
                 )
                 .await?;
             } else {
-                let probe_boundary = current_remote_resume_summary(client, created.session).await?;
+                let probe_boundary = wait_for_save_workflow_summary(
+                    client,
+                    created.session,
+                    |summary| {
+                        matches!(
+                            summary.state,
+                            LiveStateKind::Paused | LiveStateKind::Stopped
+                        )
+                    },
+                    "completed execution-fingerprint probe boundary",
+                    Duration::from_millis(RUN_INTERACTIVE_ACK_QUANTA_BOUND),
+                )
+                .await?;
                 if should_continue_after_probe(probe_boundary.state) {
                     acknowledge_stream_command(
                         &control,
@@ -218,11 +230,43 @@ where
         )
         .await?;
     }
+    if interactive_terminal_evidence.is_some() && run_plan.collect_execution_fingerprints {
+        query_execution_fingerprint(
+            &control,
+            &mut command_id,
+            run_plan,
+            &mut acknowledged_commands,
+            &mut execution_fingerprints,
+        )
+        .await?;
+    }
+    let final_snapshot = interactive_terminal_evidence
+        .as_ref()
+        .map(|evidence| (*evidence.snapshot).clone());
     let resolved_effect_trace = if let Some(evidence) = interactive_terminal_evidence {
         evidence.resolved_effect_trace
     } else {
         query_resolved_effect_trace(&control, &mut command_id, &mut acknowledged_commands).await?
     };
+    let reproduction = client
+        .get_reproduction(
+            crucible_api::GetReproductionRequest::new(created.session)
+                .with_expected_epoch(created.session.epoch),
+        )
+        .await;
+    let destroyed = client
+        .destroy_session(
+            DestroySessionRequest::new(created.session).with_expected_epoch(created.session.epoch),
+        )
+        .await;
+    let reproduction = reproduction.map_err(control_client_error)?;
+    destroyed.map_err(control_client_error)?;
+    if reproduction.session != created.session {
+        return Err(CliError::Identity(format!(
+            "reproduction context session {:?} did not match live session {:?}",
+            reproduction.session, created.session
+        )));
+    }
     if state_updates.last() != Some(&observation.final_state) {
         state_updates.push(observation.final_state.clone());
     }
@@ -237,6 +281,7 @@ where
         outcome: observation.outcome,
         terminal_savepoint: observation.terminal_savepoint,
         terminal_configuration: Some(observation.terminal_configuration),
+        final_snapshot,
         final_frontier_ticks: observation.frontier_ticks,
         final_quanta: observation.quanta,
         budget_timed_out: observation.budget_timed_out,
@@ -247,6 +292,7 @@ where
         execution_fingerprints,
         resolved_effect_trace,
         acknowledged_commands,
+        reproduction_commands: reproduction.commands,
         watch_statuses: observation.watch_statuses,
     })
 }
@@ -335,7 +381,7 @@ pub(super) fn canonical_debug_session_ref(session: crucible_api::SessionRef) -> 
 }
 
 fn should_continue_after_probe(state: LiveStateKind) -> bool {
-    state != LiveStateKind::Stopped
+    state == LiveStateKind::Paused
 }
 
 async fn drive_run_to_exact_budget<C>(
@@ -581,16 +627,35 @@ where
     C: ControlClient + Sync,
 {
     let mut watch_statuses = Vec::new();
+    let mut poll_round = 0_u64;
     loop {
-        for _ in 0..run_plan.observer_profile.pre_poll_yields {
+        apply_verify_host_pressure(run_plan.host_profile, poll_round).await?;
+        if run_plan.host_profile.host_io_stall_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(
+                run_plan.host_profile.host_io_stall_ms,
+            ))
+            .await;
+        }
+        let randomized_yields = run_plan.host_profile.randomized_yields(poll_round);
+        for _ in 0..run_plan
+            .host_profile
+            .pre_poll_yields
+            .saturating_add(randomized_yields)
+        {
             tokio::task::yield_now().await;
         }
+        let event_timeout_ms = run_plan
+            .host_profile
+            .jittered_timeout_ms(run_plan.host_profile.event_timeout_ms, poll_round);
+        let state_timeout_ms = run_plan
+            .host_profile
+            .jittered_timeout_ms(run_plan.host_profile.state_timeout_ms, poll_round);
         let mut stream_ended = false;
-        match run_plan.observer_profile.poll_order {
+        match run_plan.host_profile.poll_order {
             VerifyPollOrder::EventThenState => {
                 if observe_next_event(
                     control,
-                    run_plan.observer_profile.event_timeout_ms,
+                    event_timeout_ms,
                     streamed_events,
                     streamed_event_frames,
                     coverage_events,
@@ -601,30 +666,19 @@ where
                     stream_ended = true;
                 }
                 if !stream_ended
-                    && observe_next_state_update(
-                        control,
-                        run_plan.observer_profile.state_timeout_ms,
-                        state_updates,
-                    )
-                    .await?
+                    && observe_next_state_update(control, state_timeout_ms, state_updates).await?
                 {
                     stream_ended = true;
                 }
             }
             VerifyPollOrder::StateThenEvent => {
-                if observe_next_state_update(
-                    control,
-                    run_plan.observer_profile.state_timeout_ms,
-                    state_updates,
-                )
-                .await?
-                {
+                if observe_next_state_update(control, state_timeout_ms, state_updates).await? {
                     stream_ended = true;
                 }
                 if !stream_ended
                     && observe_next_event(
                         control,
-                        run_plan.observer_profile.event_timeout_ms,
+                        event_timeout_ms,
                         streamed_events,
                         streamed_event_frames,
                         coverage_events,
@@ -662,7 +716,7 @@ where
                 drain_terminal_event_log(
                     control,
                     terminal_event_log_len,
-                    run_plan.observer_profile.event_timeout_ms,
+                    event_timeout_ms,
                     streamed_events,
                     streamed_event_frames,
                     coverage_events,
@@ -706,7 +760,7 @@ where
                 session.clone(),
                 watch_statuses,
                 run_plan.watch_streams_live_status,
-                run_plan.observer_profile.event_timeout_ms,
+                event_timeout_ms,
                 streamed_events,
                 streamed_event_frames,
                 coverage_events,
@@ -724,7 +778,7 @@ where
                 session.clone(),
                 watch_statuses,
                 run_plan.watch_streams_live_status,
-                run_plan.observer_profile.event_timeout_ms,
+                event_timeout_ms,
                 streamed_events,
                 streamed_event_frames,
                 coverage_events,
@@ -736,7 +790,7 @@ where
             drain_terminal_event_log(
                 control,
                 session.event_log_len,
-                run_plan.observer_profile.event_timeout_ms,
+                event_timeout_ms,
                 streamed_events,
                 streamed_event_frames,
                 coverage_events,
@@ -763,10 +817,36 @@ where
                 session.frontier.ticks, session.quanta_stepped
             )));
         }
-        for _ in 0..run_plan.observer_profile.post_poll_yields {
+        for _ in 0..run_plan.host_profile.post_poll_yields {
             tokio::task::yield_now().await;
         }
+        poll_round = poll_round.saturating_add(1);
     }
+}
+
+async fn apply_verify_host_pressure(
+    profile: VerifyHostProfile,
+    poll_round: u64,
+) -> Result<(), CliError> {
+    if profile.priority_pressure_iterations == 0 {
+        return Ok(());
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let mut accumulator = profile.scheduling_seed ^ poll_round.rotate_left(23);
+        for iteration in 0..profile.priority_pressure_iterations {
+            accumulator =
+                accumulator.rotate_left(5) ^ iteration.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            std::hint::spin_loop();
+            if iteration.is_multiple_of(profile.priority_yield_every) {
+                std::thread::yield_now();
+            }
+        }
+        std::hint::black_box(accumulator);
+    })
+    .await
+    .map_err(|error| backend_error(format!("verify host pressure worker failed: {error}")))?;
+    Ok(())
 }
 
 pub(super) async fn query_execution_fingerprint(
@@ -950,12 +1030,12 @@ pub(super) fn parse_interactive_session_command(
     match command {
         "continue" => Ok(SessionCommandKind::Continue),
         "pause" => Ok(SessionCommandKind::Pause),
-        "step" | "step-quantum" => Ok(SessionCommandKind::StepQuantum),
+        "step-quantum" => Ok(SessionCommandKind::StepQuantum),
         "step-event" => Ok(SessionCommandKind::StepEvent),
         "step-assertion" => Ok(SessionCommandKind::StepAssertion),
         "step-timer" => Ok(SessionCommandKind::StepTimer),
         "step-duration" => Ok(SessionCommandKind::StepDuration),
-        "save" | "create-savepoint" => Ok(SessionCommandKind::CreateSavepoint),
+        "create-savepoint" => Ok(SessionCommandKind::CreateSavepoint),
         "fork" => Ok(SessionCommandKind::Fork),
         "query" => Ok(SessionCommandKind::Query),
         "stop" => Ok(SessionCommandKind::Stop),
@@ -1164,7 +1244,9 @@ mod completion_probe_tests {
     use super::*;
 
     #[test]
-    fn terminal_fingerprint_probe_does_not_issue_continue() {
+    fn fingerprint_probe_continues_only_from_paused_boundary() {
+        assert!(!should_continue_after_probe(LiveStateKind::Loaded));
+        assert!(!should_continue_after_probe(LiveStateKind::Running));
         assert!(!should_continue_after_probe(LiveStateKind::Stopped));
         assert!(should_continue_after_probe(LiveStateKind::Paused));
     }

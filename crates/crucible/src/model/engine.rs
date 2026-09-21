@@ -5,11 +5,6 @@ use super::*;
 /// An engine-spine error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineError {
-    /// The operation's signature is fixed but its behavior is not implemented.
-    NotImplemented {
-        /// The operation whose implementation is deferred.
-        operation: &'static str,
-    },
     /// A cached checkpoint is not a fat loadable snapshot.
     CheckpointNotLoadable {
         /// The checkpoint that cannot be loaded.
@@ -42,7 +37,7 @@ pub enum EngineError {
         /// Stable reason for the topology rejection.
         reason: &'static str,
     },
-    /// A fat checkpoint does not carry enough materialized state for `loadvm`.
+    /// A fat checkpoint does not carry enough materialized state for descriptor restore.
     CheckpointMaterializedStateIncomplete {
         /// The checkpoint whose materialized state is incomplete.
         checkpoint: ContentHash,
@@ -572,9 +567,6 @@ pub enum EngineError {
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotImplemented { operation } => {
-                write!(f, "{operation} is not implemented yet")
-            }
             Self::CheckpointNotLoadable { kind, .. } => {
                 write!(
                     f,
@@ -1397,7 +1389,6 @@ pub(super) fn replayed_node_icounts(
 pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>> {
     match decision {
         Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
-        Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
         Decision::DeliveryOrder(_)
         | Decision::RngDraw(_)
         | Decision::Override(_)
@@ -1425,13 +1416,10 @@ pub(super) fn decisions_are_independent(
 }
 
 pub(super) fn decisions_have_commuting_resources(left: &Decision, right: &Decision) -> bool {
-    match (left, right) {
+    matches!(
+        (left, right),
         (Decision::Preemption(_), Decision::Preemption(_))
-        | (Decision::Preemption(_), Decision::AppRandom(_))
-        | (Decision::AppRandom(_), Decision::Preemption(_)) => true,
-        (Decision::AppRandom(left), Decision::AppRandom(right)) => left.stream != right.stream,
-        _ => false,
-    }
+    )
 }
 
 pub(super) fn decision_reduction_order_key(decision: &Decision) -> ContentHash {
@@ -1492,29 +1480,44 @@ pub(super) fn schedule_from_decisions(decisions: Vec<Decision>) -> Schedule {
 }
 
 pub(super) fn minimization_candidates(
-    seed: Seed,
+    config: MinimizationConfig,
     artifact: ContentHash,
     schedule: &Schedule,
     maximum_candidates: usize,
-) -> Vec<MinimizationCandidate> {
+) -> Result<Vec<MinimizationCandidate>, EngineError> {
+    if !config.validates_schedule(schedule) {
+        return Err(EngineError::UnifiedOperationEvidenceMismatch {
+            operation: "finding minimization",
+            reason: "automatic interesting window does not match the original schedule",
+        });
+    }
     let decisions = schedule.decisions();
+    let removable_start = config
+        .interesting_window()
+        .map_or(0, InterestingScheduleWindow::start);
     let mut candidates = Vec::new();
     {
         let mut collector = MinimizationCandidateCollector {
-            seed,
+            seed: config.seed,
             artifact,
             decisions,
+            removable_start,
             candidates: &mut candidates,
             maximum_candidates,
             remaining_work: maximum_candidates,
             admitted_kept_indices: BTreeSet::new(),
         };
         collector.collect_campaign_branch_suffix_reductions();
-        for kept_len in 0..decisions.len() {
+        for kept_len in 0..decisions.len().saturating_sub(removable_start) {
             if collector.is_finished() {
                 break;
             }
-            collector.collect_for_len(kept_len, 0, &mut Vec::new());
+            let mut kept_indices = (0..removable_start).collect::<Vec<_>>();
+            collector.collect_for_len(
+                removable_start + kept_len,
+                removable_start,
+                &mut kept_indices,
+            );
         }
     }
     candidates.sort_by(|left, right| {
@@ -1524,7 +1527,7 @@ pub(super) fn minimization_candidates(
             .then_with(|| left.order_key.cmp(&right.order_key))
             .then_with(|| left.removed_indices.cmp(&right.removed_indices))
     });
-    candidates
+    Ok(candidates)
 }
 
 pub(super) fn minimization_candidate_limit(artifact: &ReproductionArtifact) -> usize {
@@ -1554,6 +1557,7 @@ struct MinimizationCandidateCollector<'a> {
     seed: Seed,
     artifact: ContentHash,
     decisions: &'a [Decision],
+    removable_start: usize,
     candidates: &'a mut Vec<MinimizationCandidate>,
     maximum_candidates: usize,
     remaining_work: usize,
@@ -1570,14 +1574,17 @@ impl MinimizationCandidateCollector<'_> {
     }
 
     fn collect_campaign_branch_suffix_reductions(&mut self) {
-        if !self.decisions.iter().any(is_campaign_branch_selection) {
+        if !self.decisions[self.removable_start..]
+            .iter()
+            .any(is_campaign_branch_selection)
+        {
             return;
         }
 
         // Always retain the empty candidate, then reserve the remaining bounded
         // window for exact branch prefixes that can remove a trailing suffix.
-        self.admit_candidate(Vec::new());
-        for index in 0..self.decisions.len().saturating_sub(1) {
+        self.admit_candidate((0..self.removable_start).collect());
+        for index in self.removable_start..self.decisions.len().saturating_sub(1) {
             if self.is_finished() {
                 break;
             }

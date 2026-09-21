@@ -35,7 +35,7 @@ authoritative statement is always the prose requirement.
 ## 16.1 The principle: zero guest cooperation is the default and the floor
 
 Crucible's guest is a sealed box. Determinism is established by pinning the
-entire entropy boundary from *outside* the VM (the QEMU patch series, the
+entire entropy boundary from *outside* the VM (the atomic QEMU patch, the
 launch configuration, and the in-VM plugin), so the *same* unmodified image
 that runs in production runs deterministically here. Nothing inside the guest is
 load-bearing for any core function. That is the floor below which the channel
@@ -315,8 +315,8 @@ and release manifest all record `doorbell_instruction_abi_version=4`. A
 native-only suite that accepts externally retained AArch64 assets requires the
 operator to declare that same version and rejects a mismatch before launching
 QEMU. The production AArch64 setup API likewise accepts an explicit retained
-guest instruction ABI and rejects every value other than v4; an older HLT image
-cannot be attested as the inert-HINT contract through this supported path.
+guest instruction ABI and rejects every value other than v4; no other instruction contract can be
+attested through this supported path.
 
 - **[GHC-15]** On **x86_64**, the doorbell MUST be a write to a **reserved port-I/O
   address** (`out` to a configured, otherwise-unused port). Port I/O is the
@@ -552,10 +552,10 @@ Doorbell protocol version 3 kind table (closed, versioned set):
   every complete marker body is at most 4,608 bytes, matching the dedicated
   shared-memory marker entry; count bounds do not waive this aggregate limit
 
-  Adding the RFC-0020 measurement vocabulary (kinds 6-9) bumps the doorbell
-  protocol version from 2 to 3 ([GHC-21]); all nine bodies are golden-vectored.
+  The current doorbell protocol includes the RFC-0020 measurement vocabulary
+  (kinds 6-9) ([GHC-21]); all nine bodies are golden-vectored.
   Unlike every observational kind, kind 5 is guest->host only,
-  produces a Decision::AppRandom (05), and elicits a host->guest reply (§16.5.3).
+  produces a BackendRngEvidence (05), and elicits a host->guest reply (§16.5.3).
 ```
 
 Implementation note: `crucible-protocol::doorbell_marker` owns the closed marker
@@ -624,7 +624,7 @@ one marker kind that is *in-band* rather than purely descriptive.
   from the **single seeded decision source** of the contract
   ([`04-determinism-contract.md`](04-determinism-contract.md)), **forked per
   `(node, stream)` by name-hash of `stream_tag`** so distinct streams are
-  independent and reproducible, MUST record it as a `Decision::AppRandom` (decision
+  independent and reproducible, MUST record it as a `BackendRngEvidence` (decision
   kind 05) in the schedule, and MUST write the value back **at the doorbell trap
   icount** as a host→guest reply that obeys the injection contract ([GHC-31],
   [DET-11]): delivered at an explicit delivery icount, never "as soon as computed,"
@@ -879,10 +879,7 @@ the transport layer by construction.
   target, executes the frozen `hint #0x4c` instruction, reads `x0`/`x1`
   inline, admits the same marker at the live callback boundary, reaches the
   exact host-published ceiling, and exits through normal plugin teardown.
-  Instruction ABI version 4 supersedes the version-3 `HLT #0x04c1` candidate.
-  The plugin's pre-execution callback could publish one version-3 response, but
-  the exception-class instruction then prevented the EL0 agent from reaching its
-  next poll. The inert HINT preserves the synchronous callback boundary and lets
+  Instruction ABI version 4 uses the inert HINT, which preserves the synchronous callback boundary and lets
   the instruction retire normally; sustained request/reply coverage is therefore
   required in addition to the one-shot marker gate. Because an inert HINT can
   remain inside a larger translation block, its instruction callback MUST NOT
@@ -957,7 +954,7 @@ the transport layer by construction.
   lifecycle, event, and coverage marker payloads append as observational
   scheduler event-log entries stamped with the exact marker icount and guest
   source. The live gate proves the production x86 guest → QEMU-plugin callback →
-  ABI-v4 SPSC shmem ring → host quantum-boundary validation and canonical decode
+  current-ABI SPSC shmem ring → host quantum-boundary validation and canonical decode
   → unified `EventLog` path, with no callback allocation or diagnostic I/O.
   Model tests prove marker content and interleaving cannot change schedule
   decisions, causal event-log projections, or backend fingerprints, and the live
@@ -1069,9 +1066,9 @@ the transport layer by construction.
   with the scheduler marker-neutrality proof, this establishes black-box
   sufficiency, opt-in additivity, and live white-box on/off fingerprint equality.
 - [x] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
-  doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
+  doorbell kind (kind=5, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,
-  record a `Decision::AppRandom` (05), and write the value back at the trap icount
+  record a `BackendRngEvidence` (05), and write the value back at the trap icount
   as a host→guest reply obeying the injection contract; bounds-check `width` ≤8;
   malformed → decode diagnostic + drop. Reuse the spike-S5 guest-memory path (second
   client, no new spike). — satisfies [GHC-37]; spec §16.5.3, §16.7.
@@ -1086,7 +1083,7 @@ the transport layer by construction.
   `RngStreamId::from_name(...)` so requests are served from scenario-seed
   name-hashed decision streams that are isolated across nodes with the same tag,
   preserving the guest request id and recording `RngDraw` followed by
-  `Decision::AppRandom` before writing the little-endian reply at the trap
+  `BackendRngEvidence` before writing the little-endian reply at the trap
   icount. The gate also consumes the T-GHC-13 S5 result, reruns the app-random
   reply-range client of that guest-memory path, and reruns the random-request
   doorbell-frame and marker-payload golden-vector tests.
@@ -1095,7 +1092,7 @@ the transport layer by construction.
   request `0x01020304` for three bytes on tag `live-rng`, the production plugin
   returns the scenario-seeded value through patched QEMU at the trap icount,
   and the host consumes the typed shmem record as an authoritative
-  `Decision::AppRandom` only after independently deriving the same value.
+  `BackendRngEvidence` only after independently deriving the same value.
 - [x] **T-GHC-17** Enforce the app-random per-scenario draw cap (part of the scenario
   hash; exceeding fails loud) and prove the engine functions with zero app-random
   requests (fingerprint-identical with app-random compiled in vs out); add the
@@ -1108,7 +1105,7 @@ the transport layer by construction.
   enforce the cap through typed `AppRandomDrawCapExceeded` errors for live
   requests, explorer overrides, direct configuration stepping, and manually
   supplied schedules, including resumed schedules whose prior
-  `Decision::AppRandom` entries already consume draw budget. The
+  `BackendRngEvidence` entries already consume draw budget. The
   `guest_host_channel_determinism` test adds a zero-request compiled-in-unused
   run fingerprint-identical to the white-box-disabled run, while the gate keeps
   binding the phase2 no-decisions/no-replies byte identity proof. The guest ABI

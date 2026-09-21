@@ -105,7 +105,6 @@ Output-format values:
 | `selftest` | Run packaged determinism gates. | [Self-test](running.md#self-test) |
 | `save` | Stop at a deterministic coordinate and export a savepoint. | [Savepoints](reproduction.md#savepoints) |
 | `resume` | Continue from a savepoint or checkpoint. | [Resume](reproduction.md#resume) |
-| `fork` | Continue from a savepoint with a new seed or decision override. | [Fork](reproduction.md#fork) |
 | `replay` | Validate and reduce a recorded reproduction artifact. | [Replay](reproduction.md#replay) |
 | `search` | Explore a bounded schedule space. | [State-space search](exploration.md#state-space-search) |
 | `fuzz` | Sample a scenario family using basic-block coverage. | [Coverage-guided fuzzing](exploration.md#coverage-guided-fuzzing) |
@@ -171,12 +170,11 @@ uses `selftest_gate`, `selftest_scenario`, and terminal `final_outcome` records.
 | `--marker <name>` | Required with `--at marker` | Guest-marker ID whose observation supplies the boundary. |
 | `--out <path>` | Default below `--artifact-dir` | Select the exported savepoint-handle path. |
 
-Savepoint handle schema v6 records the selected property violation or guest
-marker, its exact boundary proof, and a content-addressed canonical predicate
-payload. The reader rejects mismatched selectors, predicates, terminal
-conditions, frontiers, and undeclared property identities. The canonical trace
-exposes the same proof as `save_boundary_proof`, with percent-encoded selector
-values. The normal reader rejects every other schema version.
+The current savepoint handle schema v6 records the authenticated Campaign
+replay closure, exact boundary proof, and content-addressed predicate or
+observation evidence. The reader rejects mismatched selectors, predicates,
+terminal conditions, frontiers, undeclared property identities, and incomplete
+replay closures. Earlier handle schemas fail closed during decoding.
 
 A property or marker miss returns exit 3 without a handle. An explicit
 `--trace` is still honored and ends with `save_boundary_failure`, preserving the
@@ -186,35 +184,23 @@ partial control trail for diagnosis.
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `SAVEPOINT` | Required | Current portable savepoint-handle path. |
+| `SAVEPOINT` | Required | Authenticated `.crucible-savepoint` handle path. |
 | `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the resumed terminal condition. |
 | `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
 | `--interactive` | Off | Drive the resumed session from standard input. |
-| `--watch` | Off | Collect live session-status updates. |
-
-### `fork`
-
-| Argument or option | Required/default | Meaning |
-| --- | --- | --- |
-| `SAVEPOINT` | Required | Current portable savepoint-handle path. |
-| `--override <decision=value>` | Repeatable; conflicts with global `--seed` | Pin a scheduler-recorded live World-network choice. The percent-encoded point starts with `live-world-network/`; the value uses the canonical loss/duplicate/corrupt choice vocabulary. |
-| `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the child branch's terminal condition. |
-| `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
-| `--label <name>` | Optional | Label the forked branch. |
-| `--interactive` | Off | Drive the forked session from standard input. |
 | `--watch` | Off | Collect live session-status updates. |
 
 ### `replay`
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `ARTIFACT` | Required | v3 reproduction-artifact path; production replay requires the matching packaged QEMU/plugin identity. |
+| `ARTIFACT` | Required | v4 reproduction-artifact path; production replay requires the matching packaged QEMU/plugin identity. |
 | `--check <original-log>` | Optional | After live replay succeeds, require byte-identical canonical JSONL output. |
-| `--to <savepoint>` | Optional | Live-replay the artifact, then validate a current savepoint handle as its typed prefix. |
+| `--to <savepoint>` | Optional | Live-replay the artifact, then validate a target savepoint handle or checkpoint hash as its typed prefix. A v4 artifact can resolve its own terminal checkpoint hash without a separate store object. |
 | `--bisect <other-artifact>` | Optional | Live-replay both artifacts, then locate their first evidence divergence. |
 
-The v3 artifact's live recipe declares its fingerprint evidence scope. Run,
-verify, and fuzz use the full execution stream; search and fork use one terminal
+The v4 artifact's live recipe declares its fingerprint evidence scope. Run,
+verify, and fuzz use the full execution stream; search uses one terminal
 sample per VM node. Interactive control recipes are rejected until exact command
 timing can be reproduced.
 
@@ -229,7 +215,7 @@ timing can be reproduced.
 | `--on-violation <stop\|collect>` | Engine default `stop` when omitted | Stop at the first property/timeout finding or continue within the supplied budget. |
 | `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Write the signed findings ledger here, including an empty ledger when no finding is retained. |
 | `--schedule-named-truths <path>` | Optional | Load schedule-named assertion truth data. |
-| `--retained-evidence <path>` | Hidden/internal | Load backend-retained assertion evidence for gate workflows. |
+| `--retained-evidence <path>` | Optional | Load authenticated backend-retained assertion evidence. |
 
 Search policy values:
 
@@ -343,7 +329,7 @@ Debugger verbs:
 
 | Value | Used by | Meaning |
 | --- | --- | --- |
-| `quiescence` | `run --until`, `resume --until`, `fork --until`, `save --at` | Stop when the scheduler has no immediately runnable work. This is the default terminal condition. |
+| `quiescence` | `run --until`, `resume --until`, `save --at` | Stop when the scheduler has no immediately runnable work. This is the default terminal condition. |
 | `virtual-time` | `--until`, `save --at` | Stop at the positive `--max-virtual-time` duration. |
 | `property` | `--until`, `save --at` | Stop on a property verdict; `save` requires `--property` and selects that assertion's violated phase. |
 | `stopped` | `--until` only | Stop only after an explicit stopped state. |
@@ -835,7 +821,7 @@ Unknown variants or fields in any table are rejected.
 | Field | Required/default | Meaning |
 | --- | --- | --- |
 | `id` | Required | Stable binding identity. |
-| `signals` | Required nonempty list; `signal` alias only for one input | Canonical input signals. |
+| `signals` | Required nonempty list | Canonical input signals. |
 | `sampling` | Default `at_boundary` | String value `at_boundary`, `at_opportunity`, `at_change`, `cadence_nanos`, or `at_event`; the latter two use adjacent parameter fields. |
 | `mapping` | Required | Closed signal-to-effect transfer below. |
 | `selector` | Required | `exact`, `target_set`, `fault_domain`, or version-1 `dynamic_path`. |
@@ -1242,7 +1228,7 @@ schedule needed to reproduce a result. Signal-fault reproduction artifacts
 also embed every reachable normalized trace/spatial/sampler object, authenticate
 each object while restoring it into an isolated in-memory store, and include
 mutation provenance when search changed a trace or mapping. A savepoint handle
-names a checkpoint for `resume`, `fork`, and debugger attachment. Preserve every
+names a checkpoint for `resume` and debugger attachment. Preserve every
 store object referenced by exported handles; reproduction artifacts carry their
 own signal closure.
 

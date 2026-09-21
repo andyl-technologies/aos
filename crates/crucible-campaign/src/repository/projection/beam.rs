@@ -595,15 +595,12 @@ impl CampaignRepository {
             let Some(parent) = current.parent() else {
                 return Ok(None);
             };
-            if let Some(transition) = current.transition() {
-                match self.read_fact(transition.content_id())? {
-                    CampaignFact::ObservationCredited(observation) => {
-                        if !known.contains(&observation.content_id()) {
-                            content.insert(observation.content_id());
-                        }
-                    }
-                    _ => {}
-                }
+            if let Some(transition) = current.transition()
+                && let CampaignFact::ObservationCredited(observation) =
+                    self.read_fact(transition.content_id())?
+                && !known.contains(&observation.content_id())
+            {
+                content.insert(observation.content_id());
             }
             current = self.read_snapshot(parent.content_id())?.snapshot;
         }
@@ -1024,23 +1021,28 @@ mod tests {
 
         let metric = "beam.latency";
         let policy = CampaignPolicy::new(
-            crate::ScenarioDefId::from_hash(CampaignHash::derive("beam-test", b"scenario")),
-            CampaignSeed::from_bytes([0x42; 32]),
-            CampaignMode::Strict,
-            ExplorerPolicy::Beam {
-                width: 1,
-                novelty_reserve: 1,
-            },
-            BTreeMap::new(),
-            BTreeMap::from([(
-                metric.to_owned(),
-                Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000).expect("Beam objective"),
-            )]),
-            BTreeMap::new(),
-            BTreeSet::new(),
-            FairnessPolicy::new(0, 0).expect("fairness"),
-            RetentionPolicy::new(true, 64, true, true),
-            false,
+            CampaignPolicy::identity(
+                crate::ScenarioDefId::from_hash(CampaignHash::derive("beam-test", b"scenario")),
+                CampaignSeed::from_bytes([0x42; 32]),
+                CampaignMode::Strict,
+                ExplorerPolicy::Beam {
+                    width: 1,
+                    novelty_reserve: 1,
+                },
+            ),
+            CampaignPolicy::rules(
+                BTreeMap::new(),
+                BTreeMap::from([(
+                    metric.to_owned(),
+                    Objective::new(metric, ObjectiveGoal::Minimize, 1_000_000)
+                        .expect("Beam objective"),
+                )]),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                FairnessPolicy::new(0, 0).expect("fairness"),
+                RetentionPolicy::new(true, 64, true, true),
+                false,
+            ),
         )
         .expect("Beam policy");
         assert!(!execution_basis_is_guidance_eligible(
@@ -1070,27 +1072,29 @@ mod tests {
                 let observation = Observation::new(
                     crate::AttemptId::from_content_id(ContentId::for_bytes(
                         ObjectKind::CampaignFact,
-                        1,
+                        8,
                         format!("attempt-{suffix}").as_bytes(),
                     ))
                     .expect("attempt id"),
-                    configuration,
-                    crate::ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
-                        ObjectKind::Configuration,
-                        1,
-                        format!("configuration-{suffix}").as_bytes(),
-                    ))
-                    .expect("configuration artifact id"),
-                    crate::BranchPathId::from_content_id(ContentId::for_bytes(
-                        ObjectKind::CampaignFact,
-                        2,
-                        format!("path-{suffix}").as_bytes(),
-                    ))
-                    .expect("branch path id"),
-                    StopOutcome::TerminalSuccess,
-                    measurements.id().expect("measurements id"),
-                    properties.id().expect("properties id"),
-                    coverage.id().expect("coverage id"),
+                    Observation::outcome(
+                        configuration,
+                        crate::ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+                            ObjectKind::Configuration,
+                            1,
+                            format!("configuration-{suffix}").as_bytes(),
+                        ))
+                        .expect("configuration artifact id"),
+                        crate::BranchPathId::from_content_id(ContentId::for_bytes(
+                            ObjectKind::CampaignFact,
+                            2,
+                            format!("path-{suffix}").as_bytes(),
+                        ))
+                        .expect("branch path id"),
+                        StopOutcome::TerminalSuccess,
+                        measurements.id().expect("measurements id"),
+                        properties.id().expect("properties id"),
+                        coverage.id().expect("coverage id"),
+                    ),
                     BTreeSet::new(),
                 )
                 .expect("observation");

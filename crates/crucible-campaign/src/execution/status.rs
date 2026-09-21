@@ -233,10 +233,6 @@ impl GetAttemptExecutionDisposition {
     const fn is_completed(self) -> bool {
         matches!(self, Self::Completed { .. })
     }
-
-    const fn uses_terminal_failure_schema(self) -> bool {
-        matches!(self, Self::TerminalFailure)
-    }
 }
 
 /// Strict status response bound to one exact execution query.
@@ -284,11 +280,7 @@ impl GetAttemptExecutionResponse {
         finding_candidate: Option<FindingCandidateBundleId>,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: response_schema_version(
-                disposition.is_completed(),
-                disposition.uses_terminal_failure_schema(),
-                finding_candidate,
-            )?,
+            schema_version: response_schema_version(disposition.is_completed(), finding_candidate)?,
             daemon_epoch: request.daemon_epoch(),
             attempt: request.attempt(),
             execution: request.execution(),
@@ -401,17 +393,12 @@ impl Canonical for GetAttemptExecutionResponse {
         self.execution.encode(encoder);
         self.request_digest.encode(encoder);
         self.disposition.encode(encoder);
-        if let Some(finding_candidate) = self.finding_candidate {
-            finding_candidate.encode(encoder);
-        }
+        self.finding_candidate.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
-            && schema_version != GET_ATTEMPT_EXECUTION_RESPONSE_SCHEMA_VERSION
-            && schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION
-        {
+        if schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported get attempt execution response schema version",
             });
@@ -421,11 +408,7 @@ impl Canonical for GetAttemptExecutionResponse {
         let execution = ExecutionId::decode(decoder)?;
         let request_digest = CampaignHash::decode(decoder)?;
         let disposition = GetAttemptExecutionDisposition::decode(decoder)?;
-        let finding_candidate = if schema_version == FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
-            Some(FindingCandidateBundleId::decode(decoder)?)
-        } else {
-            None
-        };
+        let finding_candidate = Option::<FindingCandidateBundleId>::decode(decoder)?;
         let response = Self {
             schema_version,
             daemon_epoch,
@@ -437,7 +420,6 @@ impl Canonical for GetAttemptExecutionResponse {
         };
         if response_schema_version(
             response.disposition.is_completed(),
-            response.disposition.uses_terminal_failure_schema(),
             response.finding_candidate,
         )? != schema_version
         {

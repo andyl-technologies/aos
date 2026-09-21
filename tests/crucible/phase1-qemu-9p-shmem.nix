@@ -1,12 +1,12 @@
 {
   pkgs,
   lib,
-  patchName ? "0018-crucible-dev-cb-api.patch",
   qemuPackage ? null,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   microtestSource = builtins.readFile ./phase1-qemu-9p-shmem.c;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -28,169 +28,125 @@
       qemu_package=${qemuPackage}
       qemu_package_version=${qemuPackage.version}
     '';
-  tPatch13PatchNames = [
-    "0018-crucible-dev-cb-api.patch"
-    "0019-crucible-9p-shmem.patch"
-  ];
-  patchContextNames =
-    [
-      "0001-crucible-sim-accel.patch"
-      "0002-crucible-rr-fingerprint-helpers.patch"
-      "0003-crucible-icount-no-realtime.patch"
-      "0004-crucible-no-warp-with-plugin.patch"
-      "0005-crucible-det-glib-prng.patch"
-      "0006-crucible-clock-deadline.patch"
-      "0007-crucible-block-rtc-read.patch"
-      "0008-crucible-det-getrandom.patch"
-      "0009-crucible-net-deterministic.patch"
-      "0010-crucible-plugin-time-advance.patch"
-      "0011-crucible-plugin-icount-raw.patch"
-      "0012-crucible-plugin-vcpu-exit.patch"
-      "0013-crucible-plugin-wake-fd.patch"
-      "0014-crucible-plugin-tcg-exec-cb.patch"
-      "0015-crucible-blk-shmem.patch"
-      "0016-crucible-blk-shmem-io-fixes.patch"
-      "0017-crucible-blk-write-sentinel.patch"
-      "0018-crucible-dev-cb-api.patch"
-      "0019-crucible-9p-shmem.patch"
-    ]
-    ++ lib.optionals (patchName == "0076-crucible-9p-completion-wake-registration.patch") [
-      "0076-crucible-9p-completion-wake-registration.patch"
-    ];
-  taskIds =
-    if patchName == "0076-crucible-9p-completion-wake-registration.patch"
-    then ["T-PATCH-20"]
-    else ["T-PATCH-13"];
-  notifierCompileFlag =
-    if patchName == "0076-crucible-9p-completion-wake-registration.patch"
-    then "-DEXPECT_UNCONDITIONAL_9P_WAKE_REGISTRATION"
-    else "";
-  notifierResultLine =
-    if patchName == "0076-crucible-9p-completion-wake-registration.patch"
-    then "late_plugin_9p_wake_notifier_registered=true"
-    else "sim_off_9p_has_no_wake_notifier=true";
+  taskIds = ["T-PATCH-13" "T-PATCH-20"];
+  notifierCompileFlag = "-DEXPECT_UNCONDITIONAL_9P_WAKE_REGISTRATION";
+  notifierResultLine = "late_plugin_9p_wake_notifier_registered=true";
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  patchRequirements =
-    if patchName == "0018-crucible-dev-cb-api.patch"
-    then [
-      {
-        label = "9p callback registration symbol";
-        needle = "qemu_plugin_register_9p_cb";
-      }
-      {
-        label = "9p burst callback type";
-        needle = "qemu_plugin_9p_burst_cb_t";
-      }
-      {
-        label = "9p submit callback type";
-        needle = "qemu_plugin_9p_submit_cb_t";
-      }
-      {
-        label = "9p poll callback type";
-        needle = "qemu_plugin_9p_poll_cb_t";
-      }
-      {
-        label = "9p pending sentinel";
-        needle = "#define QEMU_PLUGIN_9P_POLL_PENDING (-2)";
-      }
-    ]
-    else if patchName == "0019-crucible-9p-shmem.patch"
-    then [
-      {
-        label = "virtio 9p forwarder";
-        needle = "virtio_9p_forward_crucible";
-      }
-      {
-        label = "upstream fallback guard";
-        needle = "crucible_9p_callbacks_ready()";
-      }
-      {
-        label = "raw 9p request copy";
-        needle = "iov_to_buf(elem->out_sg, elem->out_num, 0, request, request_len)";
-      }
-      {
-        label = "raw 9p response delivery";
-        needle = "iov_from_buf(elem->in_sg, elem->in_num, 0, response";
-      }
-      {
-        label = "burst finish";
-        needle = "crucible_9p_finish_burst";
-      }
-      {
-        label = "forwarding failure clears pdu slot";
-        needle = "v->elems[pdu->idx] = NULL;";
-      }
-      {
-        label = "per-device request id";
-        needle = "next_crucible_9p_request_id";
-      }
-      {
-        label = "event-driven wake notifier";
-        needle = "virtio_9p_crucible_wake";
-      }
-      {
-        label = "sim-off wake-notifier registration guard";
-        needle = "crucible_9p_wake_registered";
-      }
-      {
-        label = "pending PDU retention";
-        needle = "crucible_9p_pending_pdu";
-      }
-      {
-        label = "terminal pending cleanup";
-        needle = "virtio_9p_abandon_crucible_pending";
-      }
-      {
-        label = "pending callback teardown guard";
-        needle = "crucible 9p callbacks disappeared with a request pending";
-      }
-      {
-        label = "pending reset cleanup";
-        needle = "virtio-9p reset with a Crucible request pending";
-      }
-      {
-        label = "terminal host-error shutdown";
-        needle = "qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR)";
-      }
-      {
-        label = "shutdown-aware pending cleanup";
-        needle = "crucible_9p_shutdown_underway()";
-      }
-      {
-        label = "response length validation";
-        needle = "le32_to_cpu(response_header.size_le)";
-      }
-      {
-        label = "response tag validation";
-        needle = "le16_to_cpu(response_header.tag_le) != pdu->tag";
-      }
-      {
-        label = "completion clears pending ownership before PDU release";
-        needle = "v->crucible_9p_pending_pdu = NULL;";
-      }
-    ]
-    else [
-      {
-        label = "unconditional device-lifetime notifier registration";
-        needle = "qemu_plugin_wake_notifier_add(&v->crucible_9p_wake_notifier);";
-      }
-      {
-        label = "registered notifier ownership state";
-        needle = "v->crucible_9p_wake_registered = true;";
-      }
-    ];
+  patchRequirements = [
+    {
+      label = "9p callback registration symbol";
+      needle = "qemu_plugin_register_9p_cb";
+    }
+    {
+      label = "9p burst callback type";
+      needle = "qemu_plugin_9p_burst_cb_t";
+    }
+    {
+      label = "9p submit callback type";
+      needle = "qemu_plugin_9p_submit_cb_t";
+    }
+    {
+      label = "9p poll callback type";
+      needle = "qemu_plugin_9p_poll_cb_t";
+    }
+    {
+      label = "9p pending sentinel";
+      needle = "#define QEMU_PLUGIN_9P_POLL_PENDING (-2)";
+    }
+
+    {
+      label = "virtio 9p forwarder";
+      needle = "virtio_9p_forward_crucible";
+    }
+    {
+      label = "upstream fallback guard";
+      needle = "crucible_9p_callbacks_ready()";
+    }
+    {
+      label = "raw 9p request copy";
+      needle = "iov_to_buf(elem->out_sg, elem->out_num, 0, request, request_len)";
+    }
+    {
+      label = "raw 9p response delivery";
+      needle = "iov_from_buf(elem->in_sg, elem->in_num, 0, response";
+    }
+    {
+      label = "burst finish";
+      needle = "crucible_9p_finish_burst";
+    }
+    {
+      label = "forwarding failure clears pdu slot";
+      needle = "v->elems[pdu->idx] = NULL;";
+    }
+    {
+      label = "per-device request id";
+      needle = "next_crucible_9p_request_id";
+    }
+    {
+      label = "event-driven wake notifier";
+      needle = "virtio_9p_crucible_wake";
+    }
+    {
+      label = "sim-off wake-notifier registration guard";
+      needle = "crucible_9p_wake_registered";
+    }
+    {
+      label = "pending PDU retention";
+      needle = "crucible_9p_pending_pdu";
+    }
+    {
+      label = "terminal pending cleanup";
+      needle = "virtio_9p_abandon_crucible_pending";
+    }
+    {
+      label = "pending callback teardown guard";
+      needle = "crucible 9p callbacks disappeared with a request pending";
+    }
+    {
+      label = "pending reset cleanup";
+      needle = "virtio-9p reset with a Crucible request pending";
+    }
+    {
+      label = "terminal host-error shutdown";
+      needle = "qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR)";
+    }
+    {
+      label = "shutdown-aware pending cleanup";
+      needle = "crucible_9p_shutdown_underway()";
+    }
+    {
+      label = "response length validation";
+      needle = "le32_to_cpu(response_header.size_le)";
+    }
+    {
+      label = "response tag validation";
+      needle = "le16_to_cpu(response_header.tag_le) != pdu->tag";
+    }
+    {
+      label = "completion clears pending ownership before PDU release";
+      needle = "v->crucible_9p_pending_pdu = NULL;";
+    }
+
+    {
+      label = "unconditional device-lifetime notifier registration";
+      needle = "qemu_plugin_wake_notifier_add(&v->crucible_9p_wake_notifier);";
+    }
+    {
+      label = "registered notifier ownership state";
+      needle = "v->crucible_9p_wake_registered = true;";
+    }
+  ];
 
   failures =
-    failuresFor "pkgs/emulation/qemu.nix" qemuNix (
-      map (name: {
-        label = "QEMU patch wiring for ${name}";
-        needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
-      })
-      tPatch13PatchNames
-    )
-    ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
+    failuresFor "pkgs/emulation/qemu.nix" qemuNix [
+      {
+        label = "atomic QEMU patch wiring";
+        needle = "< \${atomicPatchPath}";
+      }
+    ]
+    ++ failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource patchRequirements
     ++ failuresFor "tests/crucible/phase1-qemu-9p-shmem.c" microtestSource [
       {
         label = "patched virtio 9p include";
@@ -291,10 +247,10 @@
     ];
 in
   if failures != []
-  then throw "crucible phase1 QEMU 9p-shmem check failed for ${patchName}:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase1 QEMU 9p-shmem check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase1-qemu-9p-shmem-${lib.removeSuffix ".patch" patchName}";
+      pname = "crucible-phase1-qemu-9p-shmem";
       version = "0";
       src = null;
 
@@ -339,7 +295,7 @@ in
             cat > stock-9p-negative.c <<'STOCK_NEGATIVE'
             #include <stddef.h>
             #include <stdint.h>
-            #include "qemu/qemu-plugin.h"
+            #include "plugins/qemu-plugin.h"
 
             int main(void)
             {
@@ -358,12 +314,10 @@ in
             fi
             grep -q 'qemu_plugin_register_9p_cb' stock-9p-negative.err
 
-            for patch in ${builtins.concatStringsSep " " patchContextNames}; do
-              patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
-            done
+            patch --batch --fuzz=0 -p1 < "${patchDir}/${atomicPatch.file}"
 
-            grep -q 'qemu_plugin_register_9p_cb' include/qemu/qemu-plugin.h
-            grep -q '#define QEMU_PLUGIN_9P_POLL_PENDING (-2)' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_register_9p_cb' include/plugins/qemu-plugin.h
+            grep -q '#define QEMU_PLUGIN_9P_POLL_PENDING (-2)' include/plugins/qemu-plugin.h
             grep -q 'virtio_9p_forward_crucible' hw/9pfs/virtio-9p-device.c
             grep -q 'crucible_9p_callbacks_ready()' hw/9pfs/virtio-9p-device.c
             grep -q 'next_crucible_9p_request_id' hw/9pfs/virtio-9p.h
@@ -373,7 +327,7 @@ in
             grep -q 'qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR)' hw/9pfs/virtio-9p-device.c
             ! grep -Eq 'main_loop_wait|aio_poll|aio_bh_poll' hw/9pfs/virtio-9p-device.c
 
-            mkdir -p fixture-src/hw/9pfs fixture/include/fsdev fixture/include/hw/virtio fixture/include/hw fixture/include/qemu fixture/include/system
+            mkdir -p fixture-src/hw/9pfs fixture/include/fsdev fixture/include/hw/core fixture/include/hw/virtio fixture/include/hw fixture/include/migration fixture/include/qapi fixture/include/qemu fixture/include/system
             cp hw/9pfs/virtio-9p-device.c fixture-src/hw/9pfs/virtio-9p-device.c
 
             cat > fixture/include/qemu/osdep.h <<'OSDEP_FIXTURE'
@@ -395,6 +349,7 @@ in
 
             #define g_autofree
             #define g_assert assert
+            #define coroutine_fn
             #define QEMU_PACKED __attribute__((packed))
             #define QEMU_BUILD_BUG_ON(condition) \
                 typedef char qemu_build_bug_on[(condition) ? -1 : 1] __attribute__((unused))
@@ -464,6 +419,97 @@ in
 
             #endif
             OSDEP_FIXTURE
+
+            cat > fixture/include/qapi/error.h <<'ERROR_FIXTURE'
+            #ifndef QAPI_ERROR_H
+            #define QAPI_ERROR_H
+
+            #include "qemu/osdep.h"
+
+            #endif
+            ERROR_FIXTURE
+
+            cat > fixture/include/migration/qemu-file-types.h <<'QEMU_FILE_TYPES_FIXTURE'
+            #ifndef MIGRATION_QEMU_FILE_TYPES_H
+            #define MIGRATION_QEMU_FILE_TYPES_H
+
+            typedef struct QEMUFile {
+                int error;
+            } QEMUFile;
+
+            static inline int qemu_file_get_error(QEMUFile *file)
+            {
+                return file->error;
+            }
+
+            static inline void qemu_put_buffer(QEMUFile *file,
+                                               const uint8_t *buffer,
+                                               size_t size)
+            {
+                (void)file;
+                (void)buffer;
+                (void)size;
+            }
+
+            static inline void qemu_put_byte(QEMUFile *file, int value)
+            {
+                (void)file;
+                (void)value;
+            }
+
+            static inline void qemu_put_be16(QEMUFile *file,
+                                             unsigned int value)
+            {
+                (void)file;
+                (void)value;
+            }
+
+            static inline void qemu_put_be32(QEMUFile *file,
+                                             unsigned int value)
+            {
+                (void)file;
+                (void)value;
+            }
+            #endif
+            QEMU_FILE_TYPES_FIXTURE
+
+            cat > fixture/include/hw/core/qdev-properties.h <<'QDEV_CORE_FIXTURE'
+            #ifndef HW_CORE_QDEV_PROPERTIES_H
+            #define HW_CORE_QDEV_PROPERTIES_H
+            #include "hw/qdev-properties.h"
+            #endif
+            QDEV_CORE_FIXTURE
+
+            cat > fixture/include/qemu/crucible-hot-fork-plugin.h <<'HOT_FORK_PLUGIN_FIXTURE'
+            #ifndef QEMU_CRUCIBLE_HOT_FORK_PLUGIN_H
+            #define QEMU_CRUCIBLE_HOT_FORK_PLUGIN_H
+
+            #include "plugins/qemu-plugin.h"
+
+            static inline void qemu_plugin_crucible_callback_registered(
+                qemu_plugin_id_t plugin_id, uint64_t callback_mask)
+            {
+                (void)plugin_id;
+                (void)callback_mask;
+            }
+
+            #endif
+            HOT_FORK_PLUGIN_FIXTURE
+
+            cat > fixture/include/qemu/plugin.h <<'PLUGIN_FIXTURE'
+            #ifndef QEMU_PLUGIN_INTERNAL_H
+            #define QEMU_PLUGIN_INTERNAL_H
+
+            static inline void qemu_plugin_crucible_exact_boundary_enter(void)
+            {
+            }
+
+            static inline void qemu_plugin_crucible_exact_boundary_leave(void)
+            {
+            }
+
+            #endif
+            PLUGIN_FIXTURE
 
             cat > fixture/include/qemu/sockets.h <<'SOCKETS_FIXTURE'
             #ifndef QEMU_SOCKETS_H
@@ -604,15 +650,23 @@ in
             } VirtQueueElement;
 
             typedef struct Property Property;
+            typedef struct QEMUFile QEMUFile;
 
             typedef struct VMStateField {
                 const char *name;
             } VMStateField;
 
+            typedef struct CrucibleFingerprintProjection {
+                const char *schema;
+                uint32_t version;
+                bool (*save)(QEMUFile *file, const void *opaque, Error **errp);
+            } CrucibleFingerprintProjection;
+
             typedef struct VMStateDescription {
                 const char *name;
                 int minimum_version_id;
                 int version_id;
+                const CrucibleFingerprintProjection *crucible_fingerprint_projection;
                 const VMStateField *fields;
             } VMStateDescription;
 
@@ -637,11 +691,12 @@ in
                 const char *name;
                 const char *parent;
                 size_t instance_size;
-                void (*class_init)(ObjectClass *klass, void *data);
+                void (*class_init)(ObjectClass *klass, const void *data);
             } TypeInfo;
 
             #define TYPE_VIRTIO_DEVICE "virtio-device"
             #define VIRTIO_ID_9P 9
+            #define VIRTQUEUE_MAX_SIZE 1024
             #define VIRTIO_9P_MOUNT_TAG 0
             #define DEVICE_CATEGORY_STORAGE 0
             #define VIRTIO_DEVICE(obj) ((VirtIODevice *)(obj))
@@ -665,6 +720,12 @@ in
             void device_class_set_props(DeviceClass *dc, const Property *props);
             void set_bit(int bit, unsigned long *addr);
             void type_register_static(const TypeInfo *info);
+            bool virtio_save_fingerprint_projection(QEMUFile *file,
+                                                    VirtIODevice *vdev,
+                                                    Error **errp);
+            void qemu_put_virtqueue_element(VirtIODevice *vdev,
+                                            QEMUFile *file,
+                                            VirtQueueElement *element);
 
             #endif
             VIRTIO_FIXTURE
@@ -752,12 +813,6 @@ in
                 char *fsdev_id;
             } V9fsConf;
 
-            struct V9fsState {
-                char *tag;
-                V9fsConf fsconf;
-                const V9fsTransport *transport;
-            };
-
             struct V9fsPDU {
                 uint32_t size;
                 uint16_t tag;
@@ -765,6 +820,13 @@ in
                 uint8_t cancelled;
                 V9fsState *s;
                 uint32_t idx;
+            };
+
+            struct V9fsState {
+                char *tag;
+                V9fsConf fsconf;
+                const V9fsTransport *transport;
+                V9fsPDU pdus[MAX_REQ];
             };
 
             struct V9fsTransport {
@@ -779,6 +841,8 @@ in
                                               struct iovec **piov,
                                               unsigned int *pniov, size_t size);
                 void (*push_and_notify)(V9fsPDU *pdu);
+                size_t (*msize_limit)(V9fsState *s);
+                size_t (*response_buffer_size)(V9fsPDU *pdu);
             };
 
             struct V9fsVirtioState {
@@ -865,13 +929,13 @@ in
             cp stock-9p-negative.err "$out/stock-negative-control.err"
             cp hw/9pfs/virtio-9p-device.c "$out/virtio-9p-device.c.patched"
             cp hw/9pfs/virtio-9p.h "$out/virtio-9p.h.patched"
-            cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
+            cp include/plugins/qemu-plugin.h "$out/qemu-plugin.h.patched"
 
             cat > "$out/result" <<'RESULT'
             PASS
             tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:patch-microtests
-            patch=${patchName}
+            atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}

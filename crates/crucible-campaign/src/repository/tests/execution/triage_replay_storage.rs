@@ -277,72 +277,19 @@ fn triage_replay_chunk_storage_fails_closed_under_repository_adversaries() {
             .is_err()
     );
 
-    let inline = FindingTriageReplayEvidence::new(
-        reproduction,
-        signature.clone(),
-        1,
-        b"valid record of the wrong record kind".to_vec(),
-    )
-    .expect("inline replay evidence");
-    let inline_id = repository
-        .publish_finding_triage_replay_evidence(&inline)
-        .expect("publish inline replay evidence");
-    let inline_description = repository
-        .describe_finding_triage_replay_storage(inline_id)
-        .expect("describe inline replay storage");
-    assert_eq!(inline_description.storage_schema_version(), 1);
-    assert_eq!(inline_description.objects().len(), 1);
-    assert_eq!(
-        inline_description.objects()[0].content(),
-        inline_id.content_id()
-    );
-    let inline_root_bytes = blobs
-        .read(inline_id.content_id(), None)
-        .expect("read inline storage root")
-        .read_all(crate::codec::MAX_CANONICAL_BYTES as u64)
-        .expect("copy inline storage root");
-    inline_description
-        .authenticate_root_envelope(&inline_root_bytes)
-        .expect("authenticate inline root");
-    assert_eq!(
-        FindingTriageReplayEvidence::from_storage_envelopes(
-            &inline_description,
-            &[inline_root_bytes],
-        )
-        .expect("reassemble inline storage root"),
-        inline
-    );
-    let wrong_kind_manifest = FindingTriageReplayManifest::new(
-        reproduction,
-        signature.clone(),
-        1,
-        1,
-        vec![FindingTriageReplayChunkDescriptor::new(
-            inline_id.content_id(),
+    assert!(
+        FindingTriageReplayManifest::new(
+            reproduction,
+            signature.clone(),
             1,
-        )],
-    )
-    .expect("structurally valid wrong-kind manifest");
-    let wrong_kind_root = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::FindingTriageReplayEvidence,
-        2,
-        crate::object::content_children(wrong_kind_manifest.children())
-            .expect("wrong-kind manifest children"),
-        wrong_kind_manifest.canonical_bytes(),
-    )
-    .expect("wrong-kind root envelope");
-    let wrong_kind_id = FindingTriageReplayEvidenceId::from_content_id(
-        repository
-            .put_envelope(wrong_kind_root)
-            .expect("store wrong-kind root"),
-    )
-    .expect("wrong-kind root ID");
-    assert!(matches!(
-        repository.load_finding_triage_replay_evidence(wrong_kind_id),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "campaign-child-record-kind-mismatch"
-        })
-    ));
+            1,
+            vec![FindingTriageReplayChunkDescriptor::new(
+                ordered_id.content_id(),
+                1,
+            )],
+        )
+        .is_err()
+    );
 
     let repeated = FindingTriageReplayEvidence::new(
         reproduction,

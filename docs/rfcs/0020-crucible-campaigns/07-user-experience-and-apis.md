@@ -186,7 +186,7 @@ an `action` of `vcpu-switch` or `interrupt-at`. One manifest contains at most
 authored string contains 1 through 4,096 bytes without NUL or line breaks. The
 compiler re-decodes and byte-compares its output before success and reports the
 exact Schedule content hash, count, and byte length. It intentionally cannot
-author direct guest `AppRandom` decisions or structurally embedded `Selection`
+author raw app-random decisions or structurally embedded `Selection`
 decisions: new app-random schedules use the typed model, while selections
 require repository-backed opportunity, domain, and origin validation. Runtime
 replay remains authoritative for whether an authored scheduling point exists
@@ -195,7 +195,7 @@ in the selected scenario.
 `campaign configuration compile` admits a nonempty compact Schedule V2 beside
 the same strict canonical scenario TOML. Each input and output body is bounded
 to 32 MiB. The supplied schedule MUST round-trip byte-for-byte through the
-current Schedule V2 codec; legacy encodings, empty schedules, and unresolved
+current Schedule V2 codec; noncurrent encodings, empty schedules, and unresolved
 campaign selections are rejected before output. Selection-bearing schedules
 require repository-backed resolution and are not offline-authoritative. The
 compiler derives and independently decodes the exact configuration artifact,
@@ -209,7 +209,7 @@ to those exact verifier-imported artifact IDs and fixes Crucible, QEMU,
 component-protocol, scenario-schema, and exact-closure-schema compatibility. It
 admits at most 1 MiB and reports the exact content-derived
 `CampaignLineageId`. The strict
-version-one TOML schema names the exact scenario semantic ID, 32-byte lowercase
+version-two TOML schema names the exact scenario semantic ID, 32-byte lowercase
 hexadecimal seed, campaign mode, one closed explorer variant, ordered choice
 generator references, objectives, guidance weights, stop conditions, fairness,
 retention, and default-admission intent. The compiler admits at most 16 MiB,
@@ -381,7 +381,9 @@ audited successor of the exact source snapshot. It shares the source's immutable
 semantic roots, leaves the source ref unchanged, and can atomically activate a
 compatible future policy. The returned source and new snapshot IDs make that
 edge explicit. It neither creates a branch edge nor QEMU-forks a process. **Hot
-fork** remains the daemon's QEMU realization detail.
+fork** remains the daemon's QEMU realization detail. The public mutation is
+`campaign branch`; structured APIs, stored facts, help, and documentation use
+that term.
 
 - **[CAPI-3]** Every mutating CLI command MUST print the prior and new campaign
   snapshot IDs and emit an equivalent structured result.
@@ -532,37 +534,21 @@ the same exact states, as do implementation-version 3 `boundary_integer`
 sources and implementation-version 4 `stratified_integer` sources with at most
 4,096 strata. Implementation-version 5 `log_integer` sources over strictly
 positive integer domains report those states for their at-most-65-candidate
-rounded-power order. Implementation-version 6 `permuted_integer` sources report
-the same states while walking up to `2^64 - 1` legal values without
-materialization. Implementation-version 7 `weighted_categorical` sources
+rounded-power order. Implementation-version 7 `weighted_categorical` sources
 report them for an exact request-keyed without-replacement order over at most
 256 weighted discrete alternatives. Implementation-version 8
 `ordered_mixture` reports the same states for at most 512 deduplicated values
 from recursively executable finite children under its exact depth and work
-bounds. Implementation-version 9 `progressive_integer` additionally reports
+bounds. Implementation-version 16 `progressive_integer` additionally reports
 `WaitingForFeedback(completed_visits, required_visits)` between its bounded
-initial strata and each exact visit-gated largest-gap refinement; it reports
+initial strata and each exact visit-gated, ranked refinement; it reports
 `Closed`, rather than `Exhausted`, when the request budget truncates the domain.
 Implementation-version 10 `mutate_near_corpus` reports `Ready` only while the
 exact retained completed-selection basis yields an unproposed bounded mutation,
-and otherwise waits for another credit. Implementation-version 11
-`progressive_integer` reports the same thresholds as version 9 while its next
-midpoint is selected by exact owner-derived endpoint PUCT feedback.
-Implementation-version 12 reports those same thresholds while prioritizing
-authenticated producer-landmark intervals and selecting the nearest
-lower-midpoint landmark before ordinary midpoint refinement.
-Implementation-version 13 reports the same thresholds while prioritizing exact
-owner-verified endpoint mean objective-reward discontinuity before version
-12's interval terms.
-Implementation-version 14 reports the same thresholds while prioritizing exact
-owner-verified endpoint mean globally unique coverage-identity discontinuity
-before version 13's interval terms.
-Implementation-version 15 reports the same thresholds while prioritizing exact
-owner-verified endpoint mean active-policy-weighted finding-reward
-discontinuity before version 14's interval terms.
-Implementation-version 16 reports the same thresholds while prioritizing exact
-owner-verified endpoint mean inverse-frequency coverage-rarity discontinuity
-before version 15's interval terms.
+and otherwise waits for another credit. The current progressive implementation
+ranks by exact owner-verified inverse-frequency coverage rarity, weighted
+finding reward, unique coverage, objective reward, producer landmarks, PUCT,
+cardinality, and lower offset.
 A mixture containing any suspended child remains conservatively `Open`. Other
 generated sources remain `Open` until their deterministic enumerator and
 feedback owner land. Rich admitted-value and interval explanation views and CLI
@@ -586,24 +572,27 @@ the selected model implementation's pure replay verifier before execution.
 ```text
 crucible campaign pin NAME CONFIG --expected SNAPSHOT --command ID [--tier thin|exact] [--reason TEXT]
 crucible campaign unpin NAME CONFIG --expected SNAPSHOT --command ID [--reason TEXT]
-crucible campaign replay NAME FINDING|CONFIG [--check]
-crucible campaign debug NAME FINDING|CONFIG
-crucible campaign export NAME --mode metadata|findings|debug|executable|mirror
-crucible campaign import BUNDLE [--name NAME]
+crucible campaign replay NAME --snapshot SNAPSHOT --finding FINDING [--minimized]
+crucible replay ARTIFACT [--check ORIGINAL_LOG]
+crucible debug ARTIFACT|SAVEPOINT [--at-failure]
 ```
 
-`debug` restores a retained exact closure when present or realizes the nearest
-valid ancestor. Debugger writes create a non-canonical branch. `replay` uses the
-self-contained scenario/schedule artifact and does not require the original
-campaign.
+`campaign replay` reads the requested original or minimized reproduction
+through the snapshot-bound finding proof, requires the current payload schema,
+authenticates its scenario and configuration binding, and runs its pure replay
+oracle directly. The top-level `replay` command consumes an independently
+exported self-contained artifact. The current top-level `debug` command
+consumes that artifact or an exported savepoint; debugger writes create a
+non-canonical branch. Direct campaign finding-to-debug remains open because it
+must allocate an exclusive session through the authenticated exact-checkpoint
+owner rather than materializing an unchecked temporary artifact.
 
 ## 07.6 Store, durability, and archival porcelain
 
 ```text
-crucible campaign hibernate NAME --durability DURABILITY
-crucible campaign export NAME --to STORE [--mode MODE]
-crucible campaign import BUNDLE|STORE/NAME [--name NAME]
-crucible campaign restore NAME --from STORE
+crucible campaign pause NAME --expected SNAPSHOT --command ID --active checkpoint
+crucible campaign archive transfer --source-state STATE --source-policy POLICY --source-store STORE --source-campaign NAME --snapshot SNAPSHOT --mode MODE --destination-state STATE --destination-policy POLICY --destination-store STORE --archive ARCHIVE
+crucible campaign archive inspect --state STATE --policy POLICY --store STORE --archive ARCHIVE
 
 crucible store status STORE
 crucible store ensure CONTENT_ID --in STORE
@@ -611,22 +600,24 @@ crucible store verify STORE
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL plan
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL cancel
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL apply
-crucible store repack --store STORE --node PACKED_NODE --plan PLAN_FILE plan
-crucible store repack --store STORE --node PACKED_NODE --plan PLAN_FILE apply
+crucible store transform packed --store STORE --journal JOURNAL [--node NODE] plan
+crucible store transform packed --store STORE --journal JOURNAL [--node NODE] apply
 ```
 
-Campaign commands name configured logical stores and durability policies, never
-drivers, buckets, endpoints, or local paths. A deployment may bind `archive` to
-a directory, S3-compatible backend, or composed store graph. Export and import
+Pause is a compare-and-swap campaign mutation that names its expected snapshot
+and command identity. Archive transfer is an offline owner operation over
+explicit source and destination state, policy, and composed-store roots; the
+archive name is logical and does not expose a leaf driver. Transfer and inspect
 display logical and physical byte counts by metadata, reproduction artifact,
 exact RAM, disk, log, and trace classes. Sensitive closure warnings occur before
-transfer. Store GC begins with a plan that names its logical roots, physical
-inventory basis, and policy version and becomes stale if they move. The operator
-then applies or cancels that exact plan.
-Cancellation durably retires a planned journal before apply begins; retrying
-cancellation is idempotent, and later collection requires a fresh journal.
-Packed repack persists and then applies the packed leaf's canonical
-generation-bound plan, retaining any enclosing physical-quota guard.
+transfer. The same bidirectional transfer is the current export, import, push,
+pull, and synchronization operation: its explicit source and destination owner
+profiles define direction, while the archive mode defines the retained closure.
+Store GC is always plan then apply; the plan names its logical roots,
+physical inventory basis, and policy version and becomes stale if they move.
+Packed repack is also plan then apply. Its durable journal binds the composed
+graph configuration, packed leaf, canonical plan, and exact index generation;
+apply and every replay reauthenticate the backend generation before success.
 `store status` authenticates the strict deployment and reports its exact graph
 configuration ID, root, admitted kinds, node kinds, and non-secret capability
 profile without reading object bytes. `store ensure` parses one canonical
@@ -661,26 +652,6 @@ The existing command concepts remain useful but use one implementation:
 | `resume` | Instantiate a pinned configuration and continue |
 | `replay` | Instantiate a recorded scenario/schedule artifact |
 | `triage` | Project and minimize the campaign findings ledger |
-
-The first compatibility milestone routes the default local-QEMU `run` path
-through the shared campaign owner. Operational capability discovery checks the
-global `--campaign-deployment` option, then
-`CRUCIBLE_CAMPAIGN_DEPLOYMENT`, then the installed
-`/etc/crucible/packaged-executor.toml` deployment. Absence is an actionable,
-fail-closed error before QEMU launch. Its reproduction artifacts carry the
-typed producer `campaign-run`, so replay uses the same campaign owner and its
-authenticated recorded schedule and choice closure. Replay admits only the
-current typed campaign artifact shape; it never infers campaign ownership from
-historical controls, synthesizes an empty closure, or falls back to a Session
-replay contract.
-
-The campaign-owned `run` path must record each discovered choice as a schema-v5
-`ScenarioDefault` request tied to the active policy. Repository admission
-accepts only the declared default as one finite candidate with a
-one-proposal/one-attempt budget, so this path cannot silently widen into search.
-Its execution-basis admission uses the current schema-v3 record. Historical
-request and admission schemas are admitted only by the explicit bounded store
-migration when their semantics can be authenticated.
 
 - **[CAPI-7]** These commands MUST call `CampaignService` and the same campaign
   primitives rather than maintain separate search, fuzz, branch, local-daemon,
@@ -817,12 +788,12 @@ crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
 
 The socket, state, and policy paths are an all-or-none profile. Without
 `--campaign-store`, the daemon uses the state directory's `objects` and `refs`
-children. With that option, the strict version-one deployment selects a local
-composed immutable graph and separate durable ref directory without creating
-those default children. The daemon uses its exact effective UID/GID as the
-filesystem and peer-policy owner, takes one durable repository lock before
-opening the socket, and stops the lifecycle and campaign services plus the
-attached campaign runtime as one signal-driven lifecycle.
+children. With that option, the strict current version-two deployment selects
+a composed immutable graph and exactly one local or strong-CAS remote ref
+namespace without creating those default children. The daemon uses its exact
+effective UID/GID as the filesystem and peer-policy owner, takes one durable
+repository lock before opening the socket, and stops the lifecycle and campaign
+services plus the attached campaign runtime as one signal-driven lifecycle.
 The executor socket is an absolute, dot-free, exact-owner mode-`0600` Unix
 socket in an exact-owner, non-group/other-writable directory. Startup and the
 embedded post-bind owner share one endpoint capability that authenticates the
@@ -842,7 +813,7 @@ same state-root lock. A volatile blob or ref implementation fails admission.
 The shipped `crucible serve` profile now binds local directory, compressed,
 encrypted, packed, verified, routed, tiered, read-through, write-through,
 write-back, durability-policy, metrics, logical/physical quota, namespaced, and
-campaign-profile nodes through the version-one file. The version-two profile
+campaign-profile nodes through the sole current version-two file. That schema
 also binds exact HTTPS S3 endpoints, bounded SDK workers, reloading owner-only
 credential files, S3 graph leaves, and an optional strong-CAS remote ref
 namespace. It checks the exact endpoint capability set and segment-disjoint

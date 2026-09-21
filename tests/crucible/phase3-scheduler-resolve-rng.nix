@@ -6,10 +6,13 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  executionRuntime = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible/src/model/fault_signal/execution_runtime.rs;
-  };
+  executionRuntime =
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible/src/model/fault_signal/execution_runtime.rs;
+    }
+    + builtins.readFile ../../crates/crucible/src/model/fault_signal/execution_runtime_test.rs
+    + builtins.readFile ../../crates/crucible/src/model/fault_signal/execution_runtime_replay_test.rs;
   defaultChecks = builtins.readFile ./default.nix;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   taskList = builtins.concatStringsSep "," taskIds;
@@ -51,10 +54,6 @@
       }
     ]
     ++ forbiddenFor "crates/crucible/src/model/fault_signal/execution_runtime.rs" executionRuntime [
-      {
-        label = "legacy scheduler fault outcome";
-        needle = "FaultFires";
-      }
       {
         label = "wall-clock entropy";
         needle = "thread_rng";
@@ -120,7 +119,6 @@ in
             seeded_resolution=canonical-choice-context
             recorded_outcomes=ResolvedEffectTrace
             locked_replay=recomputed-cause,outcome-only-network
-            legacy_scheduler_fault_outcomes=absent
             RESULT
           '';
         }

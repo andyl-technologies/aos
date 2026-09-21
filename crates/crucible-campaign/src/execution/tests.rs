@@ -7,6 +7,10 @@ use super::*;
 use crate::CampaignHash;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
+mod retention_policy;
+
+use retention_policy::assert_retention_policy_materialized_start;
+
 fn fixture_request() -> SubmitAttemptRequest {
     SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x11; 16]).expect("assignment"),
@@ -19,13 +23,14 @@ fn fixture_request() -> SubmitAttemptRequest {
         .expect("lineage"),
         AttemptId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            1,
+            8,
             b"executor-attempt",
         ))
         .expect("attempt"),
         AttemptResourceLimits::new(4, 8 * 1024 * 1024 * 1024, 32 * 1024 * 1024, 500_000)
             .expect("resource limits"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("submit attempt request")
 }
@@ -33,7 +38,7 @@ fn fixture_request() -> SubmitAttemptRequest {
 fn fixture_finding_candidate() -> FindingCandidateBundleId {
     FindingCandidateBundleId::from_content_id(ContentId::for_bytes(
         ObjectKind::Finding,
-        1,
+        6,
         b"executor-finding-candidate",
     ))
     .expect("finding candidate")
@@ -51,7 +56,7 @@ fn fixture_configuration(byte: u8) -> ConfigurationArtifactId {
 fn fixture_campaign_fact(byte: u8) -> CampaignFactId {
     CampaignFactId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
-        10,
+        14,
         &[byte; 32],
     ))
     .expect("campaign fact")
@@ -63,7 +68,7 @@ fn completed_responses_encode_current_optional_finding_candidates() {
     let execution = ExecutionId::from_bytes([0x71; 16]).expect("execution");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         b"candidate-bearing-completion",
     ))
     .expect("observation");
@@ -147,7 +152,7 @@ fn completed_responses_encode_current_optional_finding_candidates() {
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         b"candidate-resume-checkpoint",
     ))
     .expect("resume checkpoint");
@@ -195,7 +200,7 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
             &request_bytes
         )
         .to_hex(),
-        "0e799560b178b6f6d2a8fe1822e141ac55f436b3600bed1e5fa07ce27aaf5e69"
+        "73098d610ed7d29555b0ae966698d03e892f38e22f5829e6eb9047fcad70f132"
     );
 
     let response = SubmitAttemptResponse::new(
@@ -222,7 +227,7 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "9bf8c3a08b4637c75bca9ff467de181a98ea2828c5e302ed0ed5552dfc60f698"
+        "aab0d3330280a22dff35425a5e7105d8d1f0016b8f70322945676a25a06e92f2"
     );
 
     let different = SubmitAttemptRequest::new(
@@ -232,6 +237,7 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
         request.attempt(),
         request.resources(),
         request.retention(),
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("different request");
     assert!(!response.matches_request(&different));
@@ -247,6 +253,7 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
         request.attempt(),
         AttemptResourceLimits::new(2, 4 * 1024 * 1024, 0, 100).expect("changed resources"),
         request.retention(),
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("changed-resource request");
     assert_ne!(
@@ -262,7 +269,7 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
     );
 
     let mut unsupported_version = request_bytes.clone();
-    unsupported_version[..4].copy_from_slice(&1_u32.to_be_bytes());
+    unsupported_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
         SubmitAttemptRequest::from_canonical_bytes(&unsupported_version),
         Err(CampaignCodecError::InvalidValue {
@@ -277,8 +284,23 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
             reason: "executor assignment identity is all zero"
         })
     );
+    let discard_request = SubmitAttemptRequest::new(
+        request.assignment(),
+        request.daemon_epoch(),
+        request.lineage(),
+        request.attempt(),
+        request.resources(),
+        ExecutionRetentionIntent::Discard,
+        request.retention_policy(),
+    )
+    .expect("discard request");
+    let retention_tag = request_bytes
+        .iter()
+        .zip(discard_request.canonical_bytes())
+        .position(|(retained, discarded)| *retained != discarded)
+        .expect("retention intent tag");
     let mut unknown_retention = request_bytes.clone();
-    *unknown_retention.last_mut().expect("retention tag") = 0xff;
+    unknown_retention[retention_tag] = 0xff;
     assert_eq!(
         SubmitAttemptRequest::from_canonical_bytes(&unknown_retention),
         Err(CampaignCodecError::UnknownTag {
@@ -304,20 +326,20 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
             .expect("terminal submit response decode"),
         terminal
     );
-    let mut terminal_as_v2 = terminal_bytes;
-    terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
+    let mut terminal_with_unsupported_version = terminal_bytes;
+    terminal_with_unsupported_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        SubmitAttemptResponse::from_canonical_bytes(&terminal_as_v2),
+        SubmitAttemptResponse::from_canonical_bytes(&terminal_with_unsupported_version),
         Err(CampaignCodecError::InvalidValue {
-            reason: "submit attempt response schema/disposition mismatch"
+            reason: "unsupported submit attempt response schema version"
         })
     );
-    let mut accepted_as_v3 = response_bytes;
-    accepted_as_v3[..4].copy_from_slice(&3_u32.to_be_bytes());
+    let mut accepted_with_unsupported_version = response_bytes;
+    accepted_with_unsupported_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        SubmitAttemptResponse::from_canonical_bytes(&accepted_as_v3),
+        SubmitAttemptResponse::from_canonical_bytes(&accepted_with_unsupported_version),
         Err(CampaignCodecError::InvalidValue {
-            reason: "submit attempt response schema/disposition mismatch"
+            reason: "unsupported submit attempt response schema version"
         })
     );
 }
@@ -326,19 +348,22 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
 fn materialized_start_capture_is_explicit_versioned_and_basis_bound() {
     let execute = fixture_request();
     let configuration = fixture_configuration(0x91);
-    let capture = SubmitAttemptRequest::new_capture_materialized_start(
+    let capture = SubmitAttemptRequest::new(
         execute.assignment(),
         execute.daemon_epoch(),
         execute.lineage(),
         execute.attempt(),
         execute.resources(),
         execute.retention(),
-        configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_capture_materialized_start(assignment, configuration)
+    })
     .expect("capture request");
 
     let bytes = capture.canonical_bytes();
-    assert_eq!(&bytes[..4], &3_u32.to_be_bytes());
+    assert_eq!(&bytes[..4], &6_u32.to_be_bytes());
     assert_eq!(
         capture.start_mode(),
         AttemptStartMode::CaptureMaterializedStart { configuration }
@@ -359,24 +384,26 @@ fn materialized_start_capture_is_explicit_versioned_and_basis_bound() {
             execute.resources(),
             execute.retention(),
             AttemptStartMode::Execute,
+            execute.retention_policy(),
         ),
-        attempt_execution_basis_digest(
-            execute.lineage(),
-            execute.attempt(),
-            execute.resources(),
-            execute.retention(),
-        )
+        execute.execution_basis_digest()
     );
 
-    let changed_configuration = SubmitAttemptRequest::new_capture_materialized_start(
+    let changed_configuration = SubmitAttemptRequest::new(
         execute.assignment(),
         execute.daemon_epoch(),
         execute.lineage(),
         execute.attempt(),
         execute.resources(),
         execute.retention(),
-        fixture_configuration(0x92),
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_capture_materialized_start(
+            assignment,
+            fixture_configuration(0x92),
+        )
+    })
     .expect("changed configuration request");
     assert_ne!(
         capture.execution_basis_digest(),
@@ -384,7 +411,7 @@ fn materialized_start_capture_is_explicit_versioned_and_basis_bound() {
     );
 
     let mut unknown_mode = bytes;
-    unknown_mode[execute.canonical_bytes().len()] = 0xff;
+    unknown_mode[execute.canonical_bytes().len() - 2] = 0xff;
     assert_eq!(
         SubmitAttemptRequest::from_canonical_bytes(&unknown_mode),
         Err(CampaignCodecError::UnknownTag {
@@ -393,13 +420,12 @@ fn materialized_start_capture_is_explicit_versioned_and_basis_bound() {
         })
     );
 
-    let mut version_three_execute = capture.canonical_bytes();
-    version_three_execute.truncate(execute.canonical_bytes().len() + 1);
-    *version_three_execute.last_mut().expect("start mode tag") = 0;
+    let mut unsupported_execute_version = capture.canonical_bytes();
+    unsupported_execute_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        SubmitAttemptRequest::from_canonical_bytes(&version_three_execute),
+        SubmitAttemptRequest::from_canonical_bytes(&unsupported_execute_version),
         Err(CampaignCodecError::InvalidValue {
-            reason: "submit attempt request version 3 requires materialized-start capture",
+            reason: "unsupported executor component-message schema version",
         })
     );
 }
@@ -409,22 +435,24 @@ fn savepoint_capture_scope_is_explicit_versioned_and_control_bound() {
     let execute = fixture_request();
     let capture_fact = fixture_campaign_fact(0xa1);
     let configuration = fixture_configuration(0xa2);
-    let capture = SubmitAttemptRequest::new_savepoint_capture(
+    let capture = SubmitAttemptRequest::new(
         execute.assignment(),
         execute.daemon_epoch(),
         execute.lineage(),
         execute.attempt(),
         execute.resources(),
         execute.retention(),
-        capture_fact,
-        configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(assignment, capture_fact, configuration)
+    })
     .expect("scoped capture request");
     let scope = AttemptExecutionScope::SavepointCapture {
         request: capture_fact,
     };
 
-    assert_eq!(&capture.canonical_bytes()[..4], &4_u32.to_be_bytes());
+    assert_eq!(&capture.canonical_bytes()[..4], &6_u32.to_be_bytes());
     assert_eq!(capture.execution_scope(), scope);
     assert_eq!(
         capture.start_mode(),
@@ -444,27 +472,39 @@ fn savepoint_capture_scope_is_explicit_versioned_and_control_bound() {
         execute.execution_basis_digest()
     );
 
-    let changed_fact = SubmitAttemptRequest::new_savepoint_capture(
+    let changed_fact = SubmitAttemptRequest::new(
         execute.assignment(),
         execute.daemon_epoch(),
         execute.lineage(),
         execute.attempt(),
         execute.resources(),
         execute.retention(),
-        fixture_campaign_fact(0xa3),
-        configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            fixture_campaign_fact(0xa3),
+            configuration,
+        )
+    })
     .expect("capture with changed fact");
-    let changed_configuration = SubmitAttemptRequest::new_savepoint_capture(
+    let changed_configuration = SubmitAttemptRequest::new(
         execute.assignment(),
         execute.daemon_epoch(),
         execute.lineage(),
         execute.attempt(),
         execute.resources(),
         execute.retention(),
-        capture_fact,
-        fixture_configuration(0xa4),
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            capture_fact,
+            fixture_configuration(0xa4),
+        )
+    })
     .expect("capture with changed configuration");
     assert_ne!(
         capture.execution_basis_digest(),
@@ -516,28 +556,28 @@ fn savepoint_capture_scope_is_explicit_versioned_and_control_bound() {
         cancel
     );
 
-    let mut obsolete_status = status.canonical_bytes();
-    obsolete_status[..4].copy_from_slice(&2_u32.to_be_bytes());
+    let mut unsupported_status_version = status.canonical_bytes();
+    unsupported_status_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(matches!(
-        GetAttemptExecutionRequest::from_canonical_bytes(&obsolete_status),
+        GetAttemptExecutionRequest::from_canonical_bytes(&unsupported_status_version),
         Err(CampaignCodecError::InvalidValue {
             reason: "unsupported executor control-request schema version"
         })
     ));
 
-    let mut obsolete_checkpoint = checkpoint.canonical_bytes();
-    obsolete_checkpoint[..4].copy_from_slice(&2_u32.to_be_bytes());
+    let mut unsupported_checkpoint_version = checkpoint.canonical_bytes();
+    unsupported_checkpoint_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(matches!(
-        CheckpointAttemptExecutionRequest::from_canonical_bytes(&obsolete_checkpoint),
+        CheckpointAttemptExecutionRequest::from_canonical_bytes(&unsupported_checkpoint_version),
         Err(CampaignCodecError::InvalidValue {
             reason: "unsupported executor control-request schema version"
         })
     ));
 
-    let mut obsolete_cancel = cancel.canonical_bytes();
-    obsolete_cancel[..4].copy_from_slice(&2_u32.to_be_bytes());
+    let mut unsupported_cancel_version = cancel.canonical_bytes();
+    unsupported_cancel_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(matches!(
-        CancelAttemptExecutionRequest::from_canonical_bytes(&obsolete_cancel),
+        CancelAttemptExecutionRequest::from_canonical_bytes(&unsupported_cancel_version),
         Err(CampaignCodecError::InvalidValue {
             reason: "unsupported executor control-request schema version"
         })
@@ -561,12 +601,12 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &request_bytes,
         )
         .to_hex(),
-        "1de5573b7844799d67468fa16a02eca1f0ca18da8fcef37254cb5439f582bac9"
+        "2d7a8087238c6807aca5bd3e056d12082cad8aa8516ded847617dd1e972ef8ac"
     );
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         b"executor-status-observation",
     ))
     .expect("observation");
@@ -587,7 +627,7 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "8bc812429e8d43891bf90d4db7e1eb0cf2c52bd952884df309753f2254074f0a"
+        "96f31d687e20741befb022fc96b3d5cb4dcef93ca01a2175101abf8e50d94b3c"
     );
 
     let other_execution = ExecutionId::from_bytes([0x38; 16]).expect("other execution");
@@ -604,7 +644,8 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
         GetAttemptExecutionResponse::new(&request, GetAttemptExecutionDisposition::Canceled)
             .expect("canceled status response")
             .canonical_bytes();
-    *unknown_disposition.last_mut().expect("disposition tag") = 0xff;
+    let disposition_tag = unknown_disposition.len() - 2;
+    unknown_disposition[disposition_tag] = 0xff;
     assert_eq!(
         GetAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
         Err(CampaignCodecError::UnknownTag {
@@ -622,12 +663,12 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
             .expect("terminal status decode"),
         terminal
     );
-    let mut terminal_as_v2 = terminal_bytes;
-    terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
+    let mut terminal_with_unsupported_version = terminal_bytes;
+    terminal_with_unsupported_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        GetAttemptExecutionResponse::from_canonical_bytes(&terminal_as_v2),
+        GetAttemptExecutionResponse::from_canonical_bytes(&terminal_with_unsupported_version),
         Err(CampaignCodecError::InvalidValue {
-            reason: "get attempt execution response schema/disposition mismatch"
+            reason: "unsupported get attempt execution response schema version"
         })
     );
 }
@@ -638,7 +679,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
     let prior_execution = ExecutionId::from_bytes([0x3d; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         b"executor-resume-checkpoint-root",
     ))
     .expect("checkpoint root");
@@ -656,7 +697,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             &request_bytes,
         )
         .to_hex(),
-        "5ac0a6c32480b9b337a39f9b4768db543de765dbe7de44099066565ee6b4a24c"
+        "8ea751b3fbdc96c840f4803d34e9df0b97dd11aaafcbe6fe7ef757d8dc74105e"
     );
 
     let execution = ExecutionId::from_bytes([0x3e; 16]).expect("resumed execution");
@@ -677,12 +718,12 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             &response_bytes,
         )
         .to_hex(),
-        "fda096f0dfd2bccd0d8cc060fb90eed72e0e965c62e2f3c597113663a73c34e4"
+        "ef27c6c347f165ae453e976a8eadbac0c423f2361c73ea3dc462a62bb62393f8"
     );
 
     let other_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         b"other-resume-checkpoint-root",
     ))
     .expect("other checkpoint root");
@@ -701,7 +742,8 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
     )
     .expect("already canceled response")
     .canonical_bytes();
-    *unknown_disposition.last_mut().expect("disposition tag") = 0xff;
+    let disposition_tag = unknown_disposition.len() - 2;
+    unknown_disposition[disposition_tag] = 0xff;
     assert_eq!(
         ResumeAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
         Err(CampaignCodecError::UnknownTag {
@@ -723,20 +765,20 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             .expect("terminal resume response decode"),
         terminal
     );
-    let mut terminal_as_v2 = terminal_bytes;
-    terminal_as_v2[..4].copy_from_slice(&2_u32.to_be_bytes());
+    let mut terminal_with_unsupported_version = terminal_bytes;
+    terminal_with_unsupported_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        ResumeAttemptExecutionResponse::from_canonical_bytes(&terminal_as_v2),
+        ResumeAttemptExecutionResponse::from_canonical_bytes(&terminal_with_unsupported_version),
         Err(CampaignCodecError::InvalidValue {
-            reason: "resume attempt execution response schema/disposition mismatch"
+            reason: "unsupported resume attempt execution response schema version"
         })
     );
-    let mut accepted_as_v3 = response_bytes;
-    accepted_as_v3[..4].copy_from_slice(&3_u32.to_be_bytes());
+    let mut accepted_with_unsupported_version = response_bytes;
+    accepted_with_unsupported_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        ResumeAttemptExecutionResponse::from_canonical_bytes(&accepted_as_v3),
+        ResumeAttemptExecutionResponse::from_canonical_bytes(&accepted_with_unsupported_version),
         Err(CampaignCodecError::InvalidValue {
-            reason: "resume attempt execution response schema/disposition mismatch"
+            reason: "unsupported resume attempt execution response schema version"
         })
     );
 }
@@ -747,7 +789,7 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
     let prior_execution = ExecutionId::from_bytes([0x4d; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         b"materialized-start-resume-checkpoint",
     ))
     .expect("checkpoint root");
@@ -761,7 +803,7 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
     .expect("materialized-start resume request");
 
     let bytes = request.canonical_bytes();
-    assert_eq!(&bytes[..4], &3_u32.to_be_bytes());
+    assert_eq!(&bytes[..4], &6_u32.to_be_bytes());
     assert_eq!(
         ResumeAttemptExecutionRequest::from_canonical_bytes(&bytes)
             .expect("decode materialized-start resume"),
@@ -777,12 +819,13 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
     );
     assert_eq!(
         request.prior_execution_basis_digest(),
-        attempt_execution_basis_digest_for_start_mode(
+        attempt_execution_basis_digest_with_retention_policy(
             assignment.lineage(),
             assignment.attempt(),
             assignment.resources(),
             assignment.retention(),
             AttemptStartMode::CaptureMaterializedStart { configuration },
+            crate::AttemptRetentionPolicyDisposition::Disabled,
         )
     );
     assert_ne!(
@@ -790,66 +833,11 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
         request.execution_basis_digest()
     );
 
-    let policy_basis = AttemptRetentionPolicyBasis::new(
-        CampaignSnapshotId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignSnapshot,
-            3,
-            b"materialized-start-policy-snapshot",
-        ))
-        .expect("policy snapshot"),
-        AttemptAdmissionId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            3,
-            b"materialized-start-policy-admission",
-        ))
-        .expect("policy admission"),
-        CampaignPolicyId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Policy,
-            1,
-            b"materialized-start-policy",
-        ))
-        .expect("policy"),
-    );
-    let policy_assignment = assignment
-        .clone()
-        .with_retention_policy_basis(policy_basis)
-        .expect("policy-bound fresh assignment");
-    let policy_resume = ResumeAttemptExecutionRequest::new_from_materialized_start(
-        &policy_assignment,
+    assert_retention_policy_materialized_start(
+        &assignment,
         prior_execution,
         checkpoint,
         configuration,
-    )
-    .expect("policy-bound materialized-start resume");
-    let policy_bytes = policy_resume.canonical_bytes();
-    assert_eq!(&policy_bytes[..4], &6_u32.to_be_bytes());
-    let decoded_policy_resume = ResumeAttemptExecutionRequest::from_canonical_bytes(&policy_bytes)
-        .expect("decode policy-bound materialized-start resume");
-    assert_eq!(decoded_policy_resume, policy_resume);
-    assert_eq!(
-        decoded_policy_resume.retention_policy_basis(),
-        Some(policy_basis)
-    );
-    assert_eq!(decoded_policy_resume.prior_retention_policy_basis(), None);
-    assert_eq!(
-        decoded_policy_resume
-            .assignment_request()
-            .expect("reconstruct fresh policy-bound assignment"),
-        policy_assignment
-    );
-    assert_eq!(
-        decoded_policy_resume.prior_execution_basis_digest(),
-        attempt_execution_basis_digest_for_start_mode(
-            assignment.lineage(),
-            assignment.attempt(),
-            assignment.resources(),
-            assignment.retention(),
-            AttemptStartMode::CaptureMaterializedStart { configuration },
-        )
-    );
-    assert_eq!(
-        decoded_policy_resume.execution_basis_digest(),
-        policy_assignment.execution_basis_digest()
     );
 
     let standard = ResumeAttemptExecutionRequest::new(&assignment, prior_execution, checkpoint)
@@ -859,15 +847,18 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
         standard.execution_basis_digest()
     );
 
-    let capture_assignment = SubmitAttemptRequest::new_capture_materialized_start(
+    let capture_assignment = SubmitAttemptRequest::new(
         assignment.assignment(),
         assignment.daemon_epoch(),
         assignment.lineage(),
         assignment.attempt(),
         assignment.resources(),
         assignment.retention(),
-        configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_capture_materialized_start(assignment, configuration)
+    })
     .expect("capture assignment");
     assert_eq!(
         ResumeAttemptExecutionRequest::new(&capture_assignment, prior_execution, checkpoint),
@@ -887,8 +878,14 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
         })
     );
 
+    let standard_bytes = standard.canonical_bytes();
+    let start_mode_tag = bytes
+        .iter()
+        .zip(&standard_bytes)
+        .position(|(materialized, ordinary)| materialized != ordinary)
+        .expect("prior start mode tag");
     let mut unknown_mode = bytes;
-    unknown_mode[standard.canonical_bytes().len()] = 0xff;
+    unknown_mode[start_mode_tag] = 0xff;
     assert_eq!(
         ResumeAttemptExecutionRequest::from_canonical_bytes(&unknown_mode),
         Err(CampaignCodecError::UnknownTag {
@@ -897,15 +894,12 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
         })
     );
 
-    let mut version_three_execute = request.canonical_bytes();
-    version_three_execute.truncate(standard.canonical_bytes().len() + 1);
-    *version_three_execute
-        .last_mut()
-        .expect("prior start mode tag") = 0;
+    let mut unsupported_execute_version = request.canonical_bytes();
+    unsupported_execute_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        ResumeAttemptExecutionRequest::from_canonical_bytes(&version_three_execute),
+        ResumeAttemptExecutionRequest::from_canonical_bytes(&unsupported_execute_version),
         Err(CampaignCodecError::InvalidValue {
-            reason: "resume attempt request version 3 requires materialized-start capture",
+            reason: "unsupported executor component-message schema version",
         })
     );
 }
@@ -919,22 +913,28 @@ fn selected_savepoint_resume_preserves_the_semantic_start_authority() {
         b"selected-resume-snapshot",
     ))
     .expect("snapshot");
-    let selected = SubmitAttemptRequest::new_selected_savepoint(
+    let selected = SubmitAttemptRequest::new(
         ordinary.assignment(),
         ordinary.daemon_epoch(),
         ordinary.lineage(),
         ordinary.attempt(),
         ordinary.resources(),
         ordinary.retention(),
-        snapshot,
-        fixture_campaign_fact(0xb1),
-        fixture_campaign_fact(0xb2),
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_selected_savepoint(
+            assignment,
+            snapshot,
+            fixture_campaign_fact(0xb1),
+            fixture_campaign_fact(0xb2),
+        )
+    })
     .expect("selected assignment");
     let prior_execution = ExecutionId::from_bytes([0xb3; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         b"selected-resume-checkpoint",
     ))
     .expect("checkpoint");
@@ -943,7 +943,7 @@ fn selected_savepoint_resume_preserves_the_semantic_start_authority() {
         .expect("selected resume request");
     let bytes = request.canonical_bytes();
 
-    assert_eq!(&bytes[..4], &4_u32.to_be_bytes());
+    assert_eq!(&bytes[..4], &6_u32.to_be_bytes());
     assert_eq!(
         ResumeAttemptExecutionRequest::from_canonical_bytes(&bytes)
             .expect("decode selected resume"),
@@ -959,23 +959,17 @@ fn selected_savepoint_resume_preserves_the_semantic_start_authority() {
         selected.execution_basis_digest()
     );
 
-    let ordinary_resume =
-        ResumeAttemptExecutionRequest::new(&ordinary, prior_execution, checkpoint)
-            .expect("ordinary resume request");
-    let mut version_four_execute = bytes.clone();
-    version_four_execute.truncate(ordinary_resume.canonical_bytes().len() + 1);
-    *version_four_execute
-        .last_mut()
-        .expect("prior start mode tag") = 0;
+    let mut unsupported_selected_version = bytes.clone();
+    unsupported_selected_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
-        ResumeAttemptExecutionRequest::from_canonical_bytes(&version_four_execute),
+        ResumeAttemptExecutionRequest::from_canonical_bytes(&unsupported_selected_version),
         Err(CampaignCodecError::InvalidValue {
-            reason: "resume attempt request version 4 requires selected-savepoint start",
+            reason: "unsupported executor component-message schema version",
         })
     );
 
     let mut unsupported_version = bytes;
-    unsupported_version[..4].copy_from_slice(&7_u32.to_be_bytes());
+    unsupported_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(
         ResumeAttemptExecutionRequest::from_canonical_bytes(&unsupported_version),
         Err(CampaignCodecError::InvalidValue {
@@ -1002,12 +996,12 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &request_bytes,
         )
         .to_hex(),
-        "e9d78b74ec0daea24ba7162230e9969096fc5aaf3f39204d41f7deae053af45f"
+        "7f143a2bb2e74ae9cdc3f568633b016e30b3a7ba3d8651d1e351e0a6dc62123c"
     );
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         b"executor-cancellation-observation",
     ))
     .expect("observation");
@@ -1028,7 +1022,7 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "036e6f61251e9b34cf52f7da9be50ed4d3b0b0f6f106c34a73951d7b7f9dcaa5"
+        "00fb0f2cb19b855b630d79d0c09fa67e78c6a3f7e2eef6975e11cd283be5b701"
     );
 
     let other = CancelAttemptExecutionRequest::new(
@@ -1049,7 +1043,8 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
     )
     .expect("already canceled response")
     .canonical_bytes();
-    *unknown_disposition.last_mut().expect("disposition tag") = 0xff;
+    let disposition_tag = unknown_disposition.len() - 2;
+    unknown_disposition[disposition_tag] = 0xff;
     assert_eq!(
         CancelAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
         Err(CampaignCodecError::UnknownTag {
@@ -1077,12 +1072,12 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
             &request_bytes,
         )
         .to_hex(),
-        "c8d3b52f8c4acc70c550074a64f5f7c547eac20f232b0fa9da0b55621350717c"
+        "3aae78e714d18563b0b87b5f8c74e36b7fd05ec22c049e254f825d762deccea3"
     );
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         b"executor-checkpoint-root",
     ))
     .expect("checkpoint root");
@@ -1103,7 +1098,7 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
             &response_bytes,
         )
         .to_hex(),
-        "f63b6aafce5ff5625364895cf8e67d0ff3111932ce18aceb14509300240ebd67"
+        "50b849a5d33bfcd04b246d0f9d6f142e37ba7fe53dfac46e43657185651424c2"
     );
 
     let other = CheckpointAttemptExecutionRequest::new(
@@ -1124,7 +1119,8 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
     )
     .expect("already requested response")
     .canonical_bytes();
-    *unknown_disposition.last_mut().expect("disposition tag") = 0xff;
+    let disposition_tag = unknown_disposition.len() - 2;
+    unknown_disposition[disposition_tag] = 0xff;
     assert_eq!(
         CheckpointAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
         Err(CampaignCodecError::UnknownTag {
@@ -1208,6 +1204,7 @@ fn checked_client_rejects_cross_request_replay_and_ledger_is_exact() {
         prior_request.attempt(),
         AttemptResourceLimits::new(8, 16 * 1024 * 1024, 0, 1_000).expect("changed limits"),
         prior_request.retention(),
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("changed request");
     assert_eq!(

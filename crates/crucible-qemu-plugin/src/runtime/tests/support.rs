@@ -19,7 +19,7 @@ use crucible_shmem::{
     ABI_VERSION, DEFAULT_QUEUE_CAPACITY, RegionAllocation, RegionConfig, authorize_advance_ceiling,
 };
 
-use crate::{PluginArgs, PluginStatePartition};
+use crate::PluginArgs;
 
 use super::super::LiveInstallCapabilities;
 
@@ -58,7 +58,7 @@ impl LiveInstallFixture {
             .unwrap_or_else(|| panic!("test VM slot should exist"));
         let ceiling = authorize_advance_ceiling(0, 1, None)
             .unwrap_or_else(|error| panic!("boot ceiling should authorize: {error}"));
-        slot.publish_scheduler_ceiling(ceiling)
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
             .unwrap_or_else(|error| panic!("boot ceiling should publish: {error}"));
         let bytes = allocation
             .setup_region_bytes()
@@ -232,37 +232,28 @@ impl Drop for LiveInstallFixture {
     }
 }
 
-pub(super) fn test_state() -> PluginStatePartition {
-    let model = crate::QemuPluginExecutionModel::validate(
-        1,
-        crate::QemuTcgThreading::SingleThreadedRoundRobin,
-    )
-    .unwrap_or_else(|error| panic!("test execution model should validate: {error}"));
-    crate::install_required_runtime_api_scaffold(
-        model,
-        Some(test_deadline),
-        Some(test_direct_advance),
-        Some(test_inject_preemption),
-        Some(test_read_vcpu_regs),
-        Some(test_rr_cursor),
-        Some(test_icount_raw),
-        Some(test_force_vcpu_exit),
-        Some(test_register_wake_fd),
-        Some(test_register_tcg_exec_cb),
-    )
-    .unwrap_or_else(|error| panic!("test runtime capabilities should validate: {error}"))
+pub(super) fn test_execution_model() -> crate::QemuPluginExecutionModel {
+    crate::QemuPluginExecutionModel::validate(1, crate::QemuTcgThreading::SingleThreadedRoundRobin)
+        .unwrap_or_else(|error| panic!("test execution model should validate: {error}"))
 }
 
 pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
     LiveInstallCapabilities {
         icount_raw: test_icount_raw,
         force_vcpu_exit: test_force_vcpu_exit,
+        idle_wake_wait: crate::QemuIdleWakeWait::test_stub(test_wait_idle_wake),
         request_vmstop: test_request_vmstop,
         inject_preemption: Some(test_inject_preemption),
         request_time_control: Some(test_request_time_control),
         clock_deadline_ns: Some(test_deadline),
         advance_time_ns: Some(test_direct_advance),
         register_time_advance_cb: Some(test_register_time_advance_cb),
+        arm_virtual_timer_witness: Some(
+            crate::runtime::live_callbacks::test_support::arm_timer_witness,
+        ),
+        query_virtual_timer_witness: Some(
+            crate::runtime::live_callbacks::test_support::query_timer_witness,
+        ),
         register_wake_fd: test_register_wake_fd,
         register_resource_manifest: test_register_resource_manifest,
         register_hot_fork_barrier: test_register_hot_fork_barrier,
@@ -392,25 +383,19 @@ pub(super) extern "C" fn test_inject_preemption(
     0
 }
 
-extern "C" fn test_read_vcpu_regs(
-    _vcpu: u32,
-    _bytes: *mut u8,
-    _capacity: usize,
-    _len: *mut usize,
-    _retired: *mut u64,
-) -> i32 {
-    0
-}
-
-extern "C" fn test_rr_cursor(_cursor: *mut crate::QemuRoundRobinCursor) -> i32 {
-    0
-}
-
 pub(super) extern "C" fn test_icount_raw() -> u64 {
     0
 }
 
 pub(super) extern "C" fn test_force_vcpu_exit() {}
+
+pub(super) extern "C" fn test_wait_idle_wake(
+    _vcpu_index: u32,
+    _wake_signal: *mut u32,
+    _expected: u32,
+) -> std::os::raw::c_int {
+    1
+}
 
 pub(super) extern "C" fn test_request_vmstop() -> std::os::raw::c_int {
     0
@@ -501,15 +486,10 @@ pub(super) fn invoke_hot_fork_child_runtime(
     if result == 0 { Ok(status) } else { Err(result) }
 }
 
-extern "C" fn test_register_tcg_exec_cb(
-    _callback: Option<crate::QemuTcgExecCbFn>,
-    _userdata: *mut std::ffi::c_void,
-) {
-}
-
 extern "C" fn test_register_vcpu_init(
     _plugin_id: crate::QemuPluginId,
     _callback: crate::QemuVcpuSimpleCbFn,
+    _userdata: *mut std::ffi::c_void,
 ) {
 }
 

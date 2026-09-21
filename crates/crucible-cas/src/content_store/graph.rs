@@ -5,9 +5,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::admin::PhysicalRepairAuthority;
+
 use super::composition::{
     DurabilityPolicyStore, MetricsState, MetricsStore, ReadThroughStore, RoutedStore, TieredStore,
-    VerifiedStore, WriteThroughStore,
+    TieredStoreChild, VerifiedStore, WriteThroughStore,
 };
 use super::compressed_directory::CompressedDirectoryBlobBackend;
 use super::directory::DirectoryBlobBackend;
@@ -30,12 +32,11 @@ use super::profile::{
 };
 use super::quota::{LogicalQuotaStore, MAXIMUM_LOGICAL_QUOTA_OBJECTS};
 use super::s3::{
-    S3BlobBackend, S3MultipartCleanupAdmin, StoreGraphS3Clients, StoreS3EndpointId,
-    validate_configuration as validate_s3_configuration,
+    S3BlobBackend, S3BlobBackendConfig, S3MultipartCleanupAdmin, StoreGraphS3Clients,
+    StoreS3EndpointId, validate_configuration as validate_s3_configuration,
 };
 use super::write_back::{
-    ObservationalWriteBackStore, StoreGraphWriteBackFence, WriteBackRetentionAdmin,
-    WriteBackRetentionFence, WriteBackStore,
+    StoreGraphWriteBackFence, WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackStore,
 };
 use super::*;
 
@@ -117,6 +118,19 @@ impl fmt::Display for StoreNodeId {
     }
 }
 
+/// Operational read, write, and promotion policy for one ordered storage tier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreTierPolicy {
+    /// Child node occupying this position in read order.
+    pub child: StoreNodeId,
+    /// Whether ordinary reads may consult this child.
+    pub readable: bool,
+    /// Whether ordinary writes must complete through this child.
+    pub writable: bool,
+    /// Whether a lower-tier read should populate this child opportunistically.
+    pub promote_reads: bool,
+}
+
 /// Closed set of immutable-store leaves and composition layers.
 #[derive(Clone, Debug)]
 pub enum StoreNodeSpec {
@@ -185,14 +199,10 @@ pub enum StoreNodeSpec {
         /// Exact kind-to-child map.
         routes: BTreeMap<ObjectKind, StoreNodeId>,
     },
-    /// Ordered read tiers with one write tier.
+    /// Ordered storage tiers with explicit per-tier policy.
     Tiered {
-        /// Children in read order.
-        tiers: Vec<StoreNodeId>,
-        /// Index of the child receiving ordinary writes.
-        write_tier: usize,
-        /// Whether verified lower-tier reads promote into preceding tiers.
-        promote_reads: bool,
+        /// Children and their exact operational roles in read order.
+        tiers: Vec<StoreTierPolicy>,
     },
     /// Reads through a cache and writes only to the authoritative source.
     ReadThrough {
@@ -283,7 +293,7 @@ impl StoreNodeSpec {
             | Self::S3 { .. } => Vec::new(),
             Self::Verified { child } => vec![child],
             Self::Routed { routes } => routes.values().collect(),
-            Self::Tiered { tiers, .. } => tiers.iter().collect(),
+            Self::Tiered { tiers } => tiers.iter().map(|tier| &tier.child).collect(),
             Self::ReadThrough { cache, source } => vec![cache, source],
             Self::WriteThrough { children } => children.iter().collect(),
             Self::WriteBack {
@@ -498,12 +508,100 @@ struct StoreGraphAuthorityIdentity;
 pub enum StoreGraphPhysicalRetention {
     /// The boundary is reachable only through a reconstructible cache edge.
     ///
-    /// This includes a read-through cache, a non-write tier, or write-back
-    /// staging. Policy-aware GC may remove such a placement only after it
-    /// authenticates an independent required placement of the same object.
+    /// This includes read-through caches, non-write tiers, and write-back
+    /// staging. Policy-aware GC may remove the placement only after it
+    /// authenticates an independent required copy of the same object.
     Cache,
     /// At least one independently authoritative graph path reaches the boundary.
     Required,
+}
+
+/// Disposition of one exact physical-copy repair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorePhysicalRepairDisposition {
+    /// The target already authenticated the requested object without mutation.
+    AlreadyAuthenticated,
+    /// A missing target placement was restored from the source.
+    ReplacedMissing,
+    /// A corrupt target placement was replaced from the source.
+    ReplacedCorrupt,
+}
+
+/// Terminal evidence for one stopped-owner physical-copy repair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorePhysicalRepairReceipt {
+    configuration: StoreGraphConfigurationId,
+    content: ContentId,
+    source: StoreNodeId,
+    source_storage_identity: PhysicalStorageIdentity,
+    source_generation: InventoryGeneration,
+    target: StoreNodeId,
+    target_storage_identity: PhysicalStorageIdentity,
+    target_generation: InventoryGeneration,
+    logical_length: u64,
+    disposition: StorePhysicalRepairDisposition,
+}
+
+impl StorePhysicalRepairReceipt {
+    /// Returns the exact graph configuration that admitted both boundaries.
+    #[must_use]
+    pub const fn configuration(&self) -> StoreGraphConfigurationId {
+        self.configuration
+    }
+
+    /// Returns the authenticated logical object identity.
+    #[must_use]
+    pub const fn content(&self) -> ContentId {
+        self.content
+    }
+
+    /// Returns the physical source node.
+    #[must_use]
+    pub const fn source(&self) -> &StoreNodeId {
+        &self.source
+    }
+
+    /// Returns the physical namespace authenticated as the repair source.
+    #[must_use]
+    pub const fn source_storage_identity(&self) -> PhysicalStorageIdentity {
+        self.source_storage_identity
+    }
+
+    /// Returns the source inventory generation authenticated before repair.
+    #[must_use]
+    pub const fn source_generation(&self) -> InventoryGeneration {
+        self.source_generation
+    }
+
+    /// Returns the physical target node.
+    #[must_use]
+    pub const fn target(&self) -> &StoreNodeId {
+        &self.target
+    }
+
+    /// Returns the physical namespace authenticated as the repair target.
+    #[must_use]
+    pub const fn target_storage_identity(&self) -> PhysicalStorageIdentity {
+        self.target_storage_identity
+    }
+
+    /// Returns the target inventory generation authenticated before repair.
+    #[must_use]
+    pub const fn target_generation(&self) -> InventoryGeneration {
+        self.target_generation
+    }
+
+    /// Returns the authenticated logical byte length.
+    #[must_use]
+    pub const fn logical_length(&self) -> u64 {
+        self.logical_length
+    }
+
+    /// Returns whether repair mutated the target placement.
+    #[must_use]
+    pub const fn disposition(&self) -> StorePhysicalRepairDisposition {
+        self.disposition
+    }
 }
 
 impl StoreGraphAdmin {
@@ -536,10 +634,11 @@ impl StoreGraphAdmin {
             .collect()
     }
 
-    /// Returns repack capabilities for configured packed leaves in node-ID order.
+    /// Returns packed-leaf repack boundaries in canonical node-ID order.
     ///
-    /// These capabilities are separate from the ordinary graph and preserve an
-    /// enclosing physical-quota guard when the packed leaf is quota-bound.
+    /// Repack authority remains separate from the ordinary graph and from
+    /// physical candidate deletion. Each returned boundary can only plan or
+    /// apply an exact-generation replacement of its own packed index.
     #[must_use]
     pub fn packed_repack(&self) -> Vec<StoreGraphPackedRepackAdmin<'_>> {
         self.packed_repack
@@ -562,6 +661,172 @@ impl StoreGraphAdmin {
             })
             .collect()
     }
+
+    /// Repairs one physical placement from an independently authenticated peer.
+    ///
+    /// The source and target must be distinct admitted physical namespaces.
+    /// The method authenticates the source, inventories both exact generations,
+    /// deletes only an absent-or-corrupt target placement, conditionally writes
+    /// the source bytes, and authenticates the result. A crash after target
+    /// deletion is recoverable by repeating the same immutable operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when either node is absent or aliases the other,
+    /// the source object is missing or corrupt, the target changes during
+    /// validation, or deletion, publication, and final authentication fail.
+    pub fn repair_physical_copy(
+        &self,
+        source: &StoreNodeId,
+        target: &StoreNodeId,
+        content: ContentId,
+        maximum_logical_bytes: u64,
+    ) -> Result<StorePhysicalRepairReceipt, StoreError> {
+        if source == target {
+            return Err(StoreError::Incompatible);
+        }
+
+        let source_authority = self
+            .physical
+            .get(source)
+            .ok_or_else(|| invalid_graph(source.as_str(), GraphViolation::MissingNode))?;
+        let target_authority = self
+            .physical
+            .get(target)
+            .ok_or_else(|| invalid_graph(target.as_str(), GraphViolation::MissingNode))?;
+        let (source_basis, source_present) = inventory_object(source_authority, content)?;
+        let (target_basis, target_present) = inventory_object(target_authority, content)?;
+        if source_basis.storage_identity() == target_basis.storage_identity() {
+            return Err(StoreError::InvalidComposition {
+                reason: "physical repair source and target resolve to the same physical storage identity",
+            });
+        }
+        if !source_present {
+            return Err(StoreError::NotFound { id: content });
+        }
+
+        let source_handle = source_authority.backend.read(content, None)?;
+        if source_handle.logical_length() > maximum_logical_bytes {
+            return Err(StoreError::InvalidComposition {
+                reason: "physical repair source exceeds the admitted byte limit",
+            });
+        }
+        source_handle.copy_to(&mut std::io::sink())?;
+        let logical_length = source_handle.logical_length();
+        let target_state = authenticate_repair_target(target_authority, content)?;
+        if target_state == RepairTargetState::Valid {
+            return Ok(StorePhysicalRepairReceipt {
+                configuration: self.configuration,
+                content,
+                source: source.clone(),
+                source_storage_identity: source_basis.storage_identity(),
+                source_generation: source_basis.generation(),
+                target: target.clone(),
+                target_storage_identity: target_basis.storage_identity(),
+                target_generation: target_basis.generation(),
+                logical_length,
+                disposition: StorePhysicalRepairDisposition::AlreadyAuthenticated,
+            });
+        }
+        if target_present != (target_state == RepairTargetState::Corrupt) {
+            return Err(StoreError::Incompatible);
+        }
+
+        let (reproduced_source, reproduced_source_present) =
+            inventory_object(source_authority, content)?;
+        if reproduced_source.generation() != source_basis.generation() || !reproduced_source_present
+        {
+            return Err(StoreError::Incompatible);
+        }
+        let receipt = {
+            let mut fence = target_authority.admin.acquire_inventory_fence()?;
+            let mut current_present = false;
+            let current_basis = fence.visit_inventory(&mut |record| {
+                current_present |= record.id() == content;
+                Ok(())
+            })?;
+            if current_basis.generation() != target_basis.generation()
+                || current_present != target_present
+            {
+                return Err(StoreError::Incompatible);
+            }
+            if current_present {
+                fence.delete_candidate(content)?;
+            }
+            // Reuse the authenticated reopenable handle so this target fence
+            // never nests a read lock from another physical backend. Inverse
+            // repairs can therefore make progress without a cross-store lock
+            // cycle.
+            fence.repair_put_if_absent(&PhysicalRepairAuthority::new(), content, &source_handle)?
+        };
+        if receipt.id != content
+            || receipt
+                .placements
+                .iter()
+                .any(|placement| placement.logical_length != logical_length)
+        {
+            return Err(StoreError::Incompatible);
+        }
+        let repaired = target_authority.backend.read(content, None)?;
+        repaired.copy_to(&mut std::io::sink())?;
+        if repaired.logical_length() != logical_length {
+            return Err(StoreError::Corrupt { id: content });
+        }
+
+        Ok(StorePhysicalRepairReceipt {
+            configuration: self.configuration,
+            content,
+            source: source.clone(),
+            source_storage_identity: source_basis.storage_identity(),
+            source_generation: source_basis.generation(),
+            target: target.clone(),
+            target_storage_identity: target_basis.storage_identity(),
+            target_generation: target_basis.generation(),
+            logical_length,
+            disposition: match target_state {
+                RepairTargetState::Absent => StorePhysicalRepairDisposition::ReplacedMissing,
+                RepairTargetState::Corrupt => StorePhysicalRepairDisposition::ReplacedCorrupt,
+                RepairTargetState::Valid => return Err(StoreError::Incompatible),
+            },
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepairTargetState {
+    Absent,
+    Corrupt,
+    Valid,
+}
+
+fn authenticate_repair_target(
+    authority: &StoreGraphPhysicalAuthority,
+    content: ContentId,
+) -> Result<RepairTargetState, StoreError> {
+    let handle = match authority.backend.read(content, None) {
+        Ok(handle) => handle,
+        Err(StoreError::NotFound { .. }) => return Ok(RepairTargetState::Absent),
+        Err(StoreError::Corrupt { .. }) => return Ok(RepairTargetState::Corrupt),
+        Err(error) => return Err(error),
+    };
+    match handle.copy_to(&mut std::io::sink()) {
+        Ok(_) => Ok(RepairTargetState::Valid),
+        Err(StoreError::Corrupt { .. }) => Ok(RepairTargetState::Corrupt),
+        Err(error) => Err(error),
+    }
+}
+
+fn inventory_object(
+    authority: &StoreGraphPhysicalAuthority,
+    content: ContentId,
+) -> Result<(BlobInventorySummary, bool), StoreError> {
+    let mut present = false;
+    let mut fence = authority.admin.acquire_inventory_fence()?;
+    let basis = fence.visit_inventory(&mut |record| {
+        present |= record.id() == content;
+        Ok(())
+    })?;
+    Ok((basis, present))
 }
 
 /// Borrowed generation-bound repack capability for one configured packed leaf.
@@ -600,6 +865,16 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
         self.authority.backend.plan_repack()
     }
 
+    /// Plans a deterministic replacement of the current packed generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the quota guard or packed generation cannot
+    /// be authenticated completely.
+    pub fn plan(self) -> Result<PackedRepackPlan, StoreError> {
+        self.plan_repack()
+    }
+
     /// Applies one exact-generation replacement-pack plan.
     ///
     /// Existing readers retain already-open pack inodes across the atomic
@@ -613,6 +888,29 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
     pub fn apply_repack(self, plan: &PackedRepackPlan) -> Result<PackedRepackReport, StoreError> {
         self.verify_physical_quota()?;
         self.authority.backend.apply_repack(plan)
+    }
+
+    /// Applies one exact-generation packed replacement plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the quota guard no longer matches, the plan
+    /// is stale, or durable publication fails.
+    pub fn apply(self, plan: &PackedRepackPlan) -> Result<PackedRepackReport, StoreError> {
+        self.apply_repack(plan)
+    }
+
+    /// Reclaims pack material absent from the authenticated current index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the quota guard, current index, or retained
+    /// packs fail authentication, or cleanup cannot be made durable.
+    pub fn cleanup_incomplete(
+        self,
+    ) -> Result<super::packed::PackedIncompleteCleanupReport, StoreError> {
+        self.verify_physical_quota()?;
+        self.authority.backend.cleanup_incomplete_packs()
     }
 
     fn verify_physical_quota(self) -> Result<(), StoreError> {
@@ -741,10 +1039,9 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
     /// Returns this boundary's graph-derived role for one admitted object kind.
     ///
     /// Transparent wrappers preserve their incoming role. Read-through cache,
-    /// non-write tier, and write-back staging edges are cache-only, while the
-    /// authoritative source, write tier, and write-back destination preserve
-    /// the incoming role. If another path independently reaches the same node,
-    /// [`StoreGraphPhysicalRetention::Required`] dominates.
+    /// non-write tier, and write-back staging edges are cache-only, while their
+    /// authoritative sources preserve the incoming role. If another path
+    /// independently reaches the same node, required retention dominates.
     #[must_use]
     pub fn retention(self, kind: ObjectKind) -> Option<StoreGraphPhysicalRetention> {
         self.retention.get(&kind).copied()
@@ -782,10 +1079,8 @@ pub struct StoreGraph {
     description: Vec<StoreNodeDescription>,
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
-    write_back_journals: BTreeMap<StoreNodeId, Arc<super::write_back::WriteBackJournal>>,
     namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
     profile_validation: bool,
-    observational: bool,
 }
 
 impl StoreGraph {
@@ -865,37 +1160,6 @@ impl StoreGraph {
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
             &keys,
-            authorizers,
-            &profilers,
-            &physical_quotas,
-            &s3_clients,
-        )?;
-        Ok(graph)
-    }
-
-    /// Validates and constructs a graph with keys and namespace capabilities.
-    ///
-    /// Encryption keys and namespace authorizers are consulted only by nodes
-    /// that name them. Object-profile nodes require
-    /// [`Self::build_with_all_capabilities`]. Neither supplied capability's
-    /// secret or mutable policy state enters the canonical graph configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Unauthorized`] when a required key or namespace
-    /// capability is unavailable, or a graph/composition error when admission
-    /// fails.
-    pub fn build_with_capabilities(
-        config: StoreGraphConfig,
-        keys: &StoreGraphKeyring,
-        authorizers: &StoreGraphNamespaceAuthorizers,
-    ) -> Result<Self, StoreError> {
-        let profilers = StoreGraphObjectProfilers::new();
-        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
-        let s3_clients = StoreGraphS3Clients::new();
-        let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
-            config,
-            keys,
             authorizers,
             &profilers,
             &physical_quotas,
@@ -992,38 +1256,6 @@ impl StoreGraph {
         )
     }
 
-    /// Validates a graph with keys and namespace capabilities and returns
-    /// physical maintenance authority separately.
-    ///
-    /// Namespace authorizers remain reachable only through namespaced logical
-    /// nodes. Object-profile nodes require
-    /// [`Self::build_with_admin_and_all_capabilities`]. The returned
-    /// administration value carries physical inventory and deletion authority
-    /// but no authorization credential or policy escape.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Unauthorized`] when a required key or namespace
-    /// capability is unavailable, or a graph/composition error when admission
-    /// fails.
-    pub fn build_with_admin_and_capabilities(
-        config: StoreGraphConfig,
-        keys: &StoreGraphKeyring,
-        authorizers: &StoreGraphNamespaceAuthorizers,
-    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
-        let profilers = StoreGraphObjectProfilers::new();
-        let physical_quotas = StoreGraphPhysicalQuotaBinders::new();
-        let s3_clients = StoreGraphS3Clients::new();
-        Self::build_with_admin_and_all_capabilities(
-            config,
-            keys,
-            authorizers,
-            &profilers,
-            &physical_quotas,
-            &s3_clients,
-        )
-    }
-
     /// Validates a graph with all external capabilities and returns maintenance
     /// authority separately.
     ///
@@ -1045,86 +1277,6 @@ impl StoreGraph {
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
         s3_clients: &StoreGraphS3Clients,
-    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
-        Self::build_with_mode_and_all_capabilities(
-            config,
-            keys,
-            authorizers,
-            profilers,
-            physical_quotas,
-            s3_clients,
-            GraphBuildMode::Operational,
-        )
-    }
-
-    /// Validates and opens a graph for stopped-owner observational reads.
-    ///
-    /// The exact authored configuration and every external authorization,
-    /// profile, quota, and transport capability remain admitted. Persistent
-    /// leaves and stateful wrappers open only existing state, while tier and
-    /// read-through cache promotion is disabled.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError`] when graph admission, an external capability, or
-    /// existing persistent state cannot be authenticated without recovery.
-    pub fn build_observational_with_all_capabilities(
-        config: StoreGraphConfig,
-        keys: &StoreGraphKeyring,
-        authorizers: &StoreGraphNamespaceAuthorizers,
-        profilers: &StoreGraphObjectProfilers,
-        physical_quotas: &StoreGraphPhysicalQuotaBinders,
-        s3_clients: &StoreGraphS3Clients,
-    ) -> Result<Self, StoreError> {
-        let (graph, _admin) = Self::build_observational_with_admin_and_all_capabilities(
-            config,
-            keys,
-            authorizers,
-            profilers,
-            physical_quotas,
-            s3_clients,
-        )?;
-        Ok(graph)
-    }
-
-    /// Opens an observational graph and retains authenticated maintenance boundaries.
-    ///
-    /// This has the same no-create, no-repair, and no-promotion behavior as
-    /// [`Self::build_observational_with_all_capabilities`]. The separately
-    /// returned administration value permits a caller to review a maintenance
-    /// plan against the exact existing physical generations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError`] when graph admission, an external capability, or
-    /// existing persistent state cannot be authenticated without recovery.
-    pub fn build_observational_with_admin_and_all_capabilities(
-        config: StoreGraphConfig,
-        keys: &StoreGraphKeyring,
-        authorizers: &StoreGraphNamespaceAuthorizers,
-        profilers: &StoreGraphObjectProfilers,
-        physical_quotas: &StoreGraphPhysicalQuotaBinders,
-        s3_clients: &StoreGraphS3Clients,
-    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
-        Self::build_with_mode_and_all_capabilities(
-            config,
-            keys,
-            authorizers,
-            profilers,
-            physical_quotas,
-            s3_clients,
-            GraphBuildMode::Observational,
-        )
-    }
-
-    fn build_with_mode_and_all_capabilities(
-        config: StoreGraphConfig,
-        keys: &StoreGraphKeyring,
-        authorizers: &StoreGraphNamespaceAuthorizers,
-        profilers: &StoreGraphObjectProfilers,
-        physical_quotas: &StoreGraphPhysicalQuotaBinders,
-        s3_clients: &StoreGraphS3Clients,
-        mode: GraphBuildMode,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
@@ -1157,7 +1309,6 @@ impl StoreGraph {
             &config.root,
             &config.nodes,
             &capabilities,
-            mode,
             &mut state,
         )?;
         validate_capability_edges(&config.nodes, &state.built)?;
@@ -1203,10 +1354,8 @@ impl StoreGraph {
                 description,
                 metrics: state.metrics,
                 write_back: state.write_back,
-                write_back_journals: state.write_back_journals,
                 namespace_authorizer,
                 profile_validation,
-                observational: mode == GraphBuildMode::Observational,
             },
             StoreGraphAdmin {
                 configuration,
@@ -1333,9 +1482,9 @@ impl WriteBackRetentionAdmin for StoreGraph {
         &self,
     ) -> Result<Box<dyn WriteBackRetentionFence + '_>, StoreError> {
         let journals = self
-            .write_back_journals
+            .write_back
             .iter()
-            .map(|(id, journal)| (id.as_str().to_owned(), Arc::clone(journal)))
+            .map(|(id, store)| (id.as_str().to_owned(), store.journal()))
             .collect();
         Ok(Box::new(StoreGraphWriteBackFence::acquire(
             &journals,
@@ -1366,11 +1515,6 @@ impl ImmutableBlobBackend for StoreGraph {
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.require_admitted(id)?;
-        if self.observational {
-            return Err(StoreError::Unsupported {
-                capability: "observational graph mutation",
-            });
-        }
         self.root.put_if_absent(id, source)
     }
 }
@@ -1610,13 +1754,20 @@ fn validate_local_shape(id: &StoreNodeId, node: &StoreNodeSpec) -> Result<(), St
         StoreNodeSpec::Routed { routes } if routes.is_empty() => {
             Err(invalid_graph(id.as_str(), GraphViolation::EmptyChildren))
         }
-        StoreNodeSpec::Tiered { tiers, .. } if tiers.is_empty() => {
+        StoreNodeSpec::Tiered { tiers } if tiers.is_empty() => {
             Err(invalid_graph(id.as_str(), GraphViolation::EmptyChildren))
         }
-        StoreNodeSpec::Tiered {
-            tiers, write_tier, ..
-        } if *write_tier >= tiers.len() => {
-            Err(invalid_graph(id.as_str(), GraphViolation::InvalidWriteTier))
+        StoreNodeSpec::Tiered { tiers }
+            if tiers
+                .iter()
+                .any(|tier| !tier.readable && (!tier.writable || tier.promote_reads))
+                || !tiers.iter().any(|tier| tier.readable)
+                || !tiers.iter().any(|tier| tier.writable) =>
+        {
+            Err(invalid_graph(
+                id.as_str(),
+                GraphViolation::InvalidTierPolicy,
+            ))
         }
         StoreNodeSpec::WriteThrough { children } if children.is_empty() => {
             Err(invalid_graph(id.as_str(), GraphViolation::EmptyChildren))
@@ -1745,16 +1896,14 @@ fn derive_physical_retention(
                     .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::RouteCoverage))?;
                 push(child, role);
             }
-            StoreNodeSpec::Tiered {
-                tiers, write_tier, ..
-            } => {
-                for (index, child) in tiers.iter().enumerate() {
-                    let child_role = if index == *write_tier {
+            StoreNodeSpec::Tiered { tiers } => {
+                for tier in tiers {
+                    let tier_role = if tier.writable {
                         role
                     } else {
                         StoreGraphPhysicalRetention::Cache
                     };
-                    push(child, child_role);
+                    push(&tier.child, tier_role);
                 }
             }
             StoreNodeSpec::ReadThrough { cache, source } => {
@@ -1817,9 +1966,9 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
                     extend_demand(child, &BTreeSet::from([*kind]), &mut demands, &mut queue);
                 }
             }
-            StoreNodeSpec::Tiered { tiers, .. } => {
-                for child in tiers {
-                    extend_demand(child, &kinds, &mut demands, &mut queue);
+            StoreNodeSpec::Tiered { tiers } => {
+                for tier in tiers {
+                    extend_demand(&tier.child, &kinds, &mut demands, &mut queue);
                 }
             }
             StoreNodeSpec::ReadThrough { cache, source } => {
@@ -1901,13 +2050,6 @@ struct GraphBuildState {
     s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
-    write_back_journals: BTreeMap<StoreNodeId, Arc<super::write_back::WriteBackJournal>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GraphBuildMode {
-    Operational,
-    Observational,
 }
 
 struct GraphBuildCapabilities<'a> {
@@ -1923,7 +2065,6 @@ fn instantiate(
     id: &StoreNodeId,
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     capabilities: &GraphBuildCapabilities<'_>,
-    mode: GraphBuildMode,
     state: &mut GraphBuildState,
 ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
     if let Some(backend) = state.built.get(id) {
@@ -1939,12 +2080,7 @@ fn instantiate(
             leaf
         }
         StoreNodeSpec::Directory { root } => {
-            let leaf = Arc::new(match mode {
-                GraphBuildMode::Operational => DirectoryBlobBackend::new(id.as_str(), root.clone()),
-                GraphBuildMode::Observational => {
-                    DirectoryBlobBackend::new_observational(id.as_str(), root.clone())
-                }
-            });
+            let leaf = Arc::new(DirectoryBlobBackend::new(id.as_str(), root.clone()));
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -1952,18 +2088,11 @@ fn instantiate(
             root,
             maximum_logical_object_bytes,
         } => {
-            let leaf = Arc::new(match mode {
-                GraphBuildMode::Operational => CompressedDirectoryBlobBackend::new(
-                    id.as_str(),
-                    root.clone(),
-                    *maximum_logical_object_bytes,
-                )?,
-                GraphBuildMode::Observational => CompressedDirectoryBlobBackend::new_observational(
-                    id.as_str(),
-                    root.clone(),
-                    *maximum_logical_object_bytes,
-                )?,
-            });
+            let leaf = Arc::new(CompressedDirectoryBlobBackend::new(
+                id.as_str(),
+                root.clone(),
+                *maximum_logical_object_bytes,
+            )?);
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -1973,23 +2102,13 @@ fn instantiate(
             key_id,
         } => {
             let key = capabilities.keys.resolve(key_id)?;
-            let leaf = Arc::new(match mode {
-                GraphBuildMode::Operational => EncryptedDirectoryBlobBackend::open(
-                    id.as_str(),
-                    root.clone(),
-                    *maximum_logical_object_bytes,
-                    key_id.clone(),
-                    key,
-                )?,
-                GraphBuildMode::Observational => EncryptedDirectoryBlobBackend::open_observational(
-                    id.as_str(),
-                    root.clone(),
-                    *maximum_logical_object_bytes,
-                    key_id.clone(),
-                    key,
-                    false,
-                )?,
-            });
+            let leaf = Arc::new(EncryptedDirectoryBlobBackend::open(
+                id.as_str(),
+                root.clone(),
+                *maximum_logical_object_bytes,
+                key_id.clone(),
+                key,
+            )?);
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -1999,23 +2118,13 @@ fn instantiate(
             key_id,
         } => {
             let key = capabilities.keys.resolve(key_id)?;
-            let leaf = Arc::new(match mode {
-                GraphBuildMode::Operational => EncryptedDirectoryBlobBackend::open_compressed(
-                    id.as_str(),
-                    root.clone(),
-                    *maximum_logical_object_bytes,
-                    key_id.clone(),
-                    key,
-                )?,
-                GraphBuildMode::Observational => EncryptedDirectoryBlobBackend::open_observational(
-                    id.as_str(),
-                    root.clone(),
-                    *maximum_logical_object_bytes,
-                    key_id.clone(),
-                    key,
-                    true,
-                )?,
-            });
+            let leaf = Arc::new(EncryptedDirectoryBlobBackend::open_compressed(
+                id.as_str(),
+                root.clone(),
+                *maximum_logical_object_bytes,
+                key_id.clone(),
+                key,
+            )?);
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -2023,18 +2132,12 @@ fn instantiate(
             root,
             target_pack_bytes,
         } => {
-            let leaf = Arc::new(match mode {
-                GraphBuildMode::Operational => {
-                    PackedBlobBackend::open(id.as_str(), root.clone(), *target_pack_bytes)?
-                }
-                GraphBuildMode::Observational => {
-                    PackedBlobBackend::open_existing_preserving_recovery_debris(
-                        id.as_str(),
-                        root.clone(),
-                        *target_pack_bytes,
-                    )?
-                }
-            });
+            let leaf = Arc::new(PackedBlobBackend::open(
+                id.as_str(),
+                root.clone(),
+                *target_pack_bytes,
+            )?);
+            state.physical.insert(id.clone(), leaf.clone());
             state.packed_repack.insert(
                 id.clone(),
                 StoreGraphPackedRepackAuthority {
@@ -2042,7 +2145,6 @@ fn instantiate(
                     physical_quota: None,
                 },
             );
-            state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
         StoreNodeSpec::S3 {
@@ -2053,51 +2155,22 @@ fn instantiate(
             multipart_part_bytes,
         } => {
             let client = capabilities.s3_clients.resolve(endpoint)?;
-            let administration = capabilities.s3_clients.resolve_administration(endpoint);
-            let leaf = Arc::new(match (mode, administration) {
-                (GraphBuildMode::Operational, Some(administration)) => {
-                    S3BlobBackend::new_with_admin(
-                        id.as_str(),
-                        endpoint.clone(),
-                        bucket.clone(),
-                        prefix.clone(),
-                        *maximum_logical_object_bytes,
-                        *multipart_part_bytes,
-                        client,
-                        administration,
-                    )?
-                }
-                (GraphBuildMode::Operational, None) => S3BlobBackend::new(
-                    id.as_str(),
-                    endpoint.clone(),
-                    bucket.clone(),
-                    prefix.clone(),
-                    *maximum_logical_object_bytes,
-                    *multipart_part_bytes,
-                    client,
-                )?,
-                (GraphBuildMode::Observational, Some(administration)) => {
-                    S3BlobBackend::new_observational_with_admin(
-                        id.as_str(),
-                        endpoint.clone(),
-                        bucket.clone(),
-                        prefix.clone(),
-                        *maximum_logical_object_bytes,
-                        *multipart_part_bytes,
-                        client,
-                        administration,
-                    )?
-                }
-                (GraphBuildMode::Observational, None) => S3BlobBackend::new_observational(
-                    id.as_str(),
-                    endpoint.clone(),
-                    bucket.clone(),
-                    prefix.clone(),
-                    *maximum_logical_object_bytes,
-                    *multipart_part_bytes,
-                    client,
-                )?,
-            });
+            let backend_config = S3BlobBackendConfig::new(
+                id.as_str(),
+                endpoint.clone(),
+                bucket.clone(),
+                prefix.clone(),
+                *maximum_logical_object_bytes,
+                *multipart_part_bytes,
+            );
+            let leaf = Arc::new(
+                match capabilities.s3_clients.resolve_administration(endpoint) {
+                    Some(administration) => {
+                        S3BlobBackend::new_with_admin(backend_config, client, administration)
+                    }
+                    None => S3BlobBackend::new(backend_config, client),
+                }?,
+            );
             if leaf.capabilities().planned_delete {
                 state.physical.insert(id.clone(), leaf.clone());
             }
@@ -2108,7 +2181,7 @@ fn instantiate(
         }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, capabilities, mode, state)?,
+            instantiate(configuration, child, nodes, capabilities, state)?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
@@ -2116,42 +2189,41 @@ fn instantiate(
                 .map(|(kind, child)| {
                     Ok((
                         *kind,
-                        instantiate(configuration, child, nodes, capabilities, mode, state)?,
+                        instantiate(configuration, child, nodes, capabilities, state)?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
             Arc::new(RoutedStore::new(id.as_str(), routes)?)
         }
-        StoreNodeSpec::Tiered {
-            tiers,
-            write_tier,
-            promote_reads,
-        } => {
+        StoreNodeSpec::Tiered { tiers } => {
             let tiers = tiers
                 .iter()
-                .map(|child| instantiate(configuration, child, nodes, capabilities, mode, state))
+                .map(|tier| {
+                    Ok(TieredStoreChild {
+                        backend: instantiate(
+                            configuration,
+                            &tier.child,
+                            nodes,
+                            capabilities,
+                            state,
+                        )?,
+                        readable: tier.readable,
+                        writable: tier.writable,
+                        promote_reads: tier.promote_reads,
+                    })
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            Arc::new(TieredStore::new(
-                id.as_str(),
-                tiers,
-                *write_tier,
-                *promote_reads && mode == GraphBuildMode::Operational,
-            )?)
+            Arc::new(TieredStore::new(id.as_str(), tiers)?)
         }
-        StoreNodeSpec::ReadThrough { cache, source } => {
-            let cache = instantiate(configuration, cache, nodes, capabilities, mode, state)?;
-            let source = instantiate(configuration, source, nodes, capabilities, mode, state)?;
-            Arc::new(match mode {
-                GraphBuildMode::Operational => ReadThroughStore::new(id.as_str(), cache, source),
-                GraphBuildMode::Observational => {
-                    ReadThroughStore::new_observational(id.as_str(), cache, source)
-                }
-            })
-        }
+        StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
+            id.as_str(),
+            instantiate(configuration, cache, nodes, capabilities, state)?,
+            instantiate(configuration, source, nodes, capabilities, state)?,
+        )),
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| instantiate(configuration, child, nodes, capabilities, mode, state))
+                .map(|child| instantiate(configuration, child, nodes, capabilities, state))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
         }
@@ -2162,51 +2234,27 @@ fn instantiate(
             maximum_pending_objects,
             maximum_pending_bytes,
         } => {
-            let staging = instantiate(configuration, staging, nodes, capabilities, mode, state)?;
-            let destination =
-                instantiate(configuration, destination, nodes, capabilities, mode, state)?;
-            match mode {
-                GraphBuildMode::Operational => {
-                    let store = Arc::new(WriteBackStore::new(
-                        id.as_str(),
-                        staging,
-                        destination,
-                        journal_root.clone(),
-                        *maximum_pending_objects,
-                        *maximum_pending_bytes,
-                    )?);
-                    state
-                        .write_back_journals
-                        .insert(id.clone(), store.journal());
-                    state.write_back.insert(id.clone(), Arc::clone(&store));
-                    store
-                }
-                GraphBuildMode::Observational => {
-                    let store = Arc::new(ObservationalWriteBackStore::open(
-                        id.as_str(),
-                        staging,
-                        destination,
-                        journal_root.clone(),
-                        *maximum_pending_objects,
-                        *maximum_pending_bytes,
-                    )?);
-                    state
-                        .write_back_journals
-                        .insert(id.clone(), store.journal());
-                    store
-                }
-            }
+            let store = Arc::new(WriteBackStore::new(
+                id.as_str(),
+                instantiate(configuration, staging, nodes, capabilities, state)?,
+                instantiate(configuration, destination, nodes, capabilities, state)?,
+                journal_root.clone(),
+                *maximum_pending_objects,
+                *maximum_pending_bytes,
+            )?);
+            state.write_back.insert(id.clone(), Arc::clone(&store));
+            store
         }
         StoreNodeSpec::DurabilityPolicy {
             child,
             requirements,
         } => Arc::new(DurabilityPolicyStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, capabilities, mode, state)?,
+            instantiate(configuration, child, nodes, capabilities, state)?,
             requirements.clone(),
         )),
         StoreNodeSpec::Metrics { child } => {
-            let child = instantiate(configuration, child, nodes, capabilities, mode, state)?;
+            let child = instantiate(configuration, child, nodes, capabilities, state)?;
             let (backend, metrics_state) = MetricsStore::new(id.as_str(), child);
             state.metrics.insert(id.clone(), metrics_state);
             Arc::new(backend)
@@ -2217,31 +2265,19 @@ fn instantiate(
             maximum_objects,
             maximum_logical_bytes,
         } => {
-            let child_backend =
-                instantiate(configuration, child, nodes, capabilities, mode, state)?;
+            let child_backend = instantiate(configuration, child, nodes, capabilities, state)?;
             let child_admin = state.physical.remove(child).ok_or_else(|| {
                 invalid_graph(id.as_str(), GraphViolation::InvalidLogicalQuotaChild)
             })?;
-            let store = Arc::new(match mode {
-                GraphBuildMode::Operational => LogicalQuotaStore::open(
-                    id.as_str(),
-                    state_root.clone(),
-                    *maximum_objects,
-                    *maximum_logical_bytes,
-                    configuration,
-                    child_backend,
-                    child_admin,
-                )?,
-                GraphBuildMode::Observational => LogicalQuotaStore::open_observational(
-                    id.as_str(),
-                    state_root.clone(),
-                    *maximum_objects,
-                    *maximum_logical_bytes,
-                    configuration,
-                    child_backend,
-                    child_admin,
-                )?,
-            });
+            let store = Arc::new(LogicalQuotaStore::open(
+                id.as_str(),
+                state_root.clone(),
+                *maximum_objects,
+                *maximum_logical_bytes,
+                configuration,
+                child_backend,
+                child_admin,
+            )?);
             state.physical.insert(id.clone(), store.clone());
             store
         }
@@ -2264,8 +2300,7 @@ fn instantiate(
                 *maximum_physical_bytes,
                 *maximum_inodes,
             )?;
-            let child_backend =
-                instantiate(configuration, child, nodes, capabilities, mode, state)?;
+            let child_backend = instantiate(configuration, child, nodes, capabilities, state)?;
             let child_admin = state.physical.remove(child).ok_or_else(|| {
                 invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
             })?;
@@ -2283,12 +2318,12 @@ fn instantiate(
         }
         StoreNodeSpec::Namespaced { child, namespace } => Arc::new(NamespacedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, capabilities, mode, state)?,
+            instantiate(configuration, child, nodes, capabilities, state)?,
             capabilities.authorizers.resolve(namespace)?,
         )),
         StoreNodeSpec::ProfileValidated { child, policy } => Arc::new(ProfileValidatedStore::new(
             id.as_str(),
-            instantiate(configuration, child, nodes, capabilities, mode, state)?,
+            instantiate(configuration, child, nodes, capabilities, state)?,
             capabilities.profilers.resolve(policy)?,
         )),
     };
@@ -2302,11 +2337,11 @@ fn validate_capability_edges(
 ) -> Result<(), StoreError> {
     for (id, node) in nodes {
         let children: Vec<&StoreNodeId> = match node {
-            StoreNodeSpec::Tiered {
-                tiers,
-                promote_reads: true,
-                ..
-            } => tiers.iter().collect(),
+            StoreNodeSpec::Tiered { tiers } => tiers
+                .iter()
+                .filter(|tier| tier.writable || tier.promote_reads)
+                .map(|tier| &tier.child)
+                .collect(),
             StoreNodeSpec::ReadThrough { cache, .. } => vec![cache],
             StoreNodeSpec::WriteThrough { children } => children.iter().collect(),
             StoreNodeSpec::WriteBack {

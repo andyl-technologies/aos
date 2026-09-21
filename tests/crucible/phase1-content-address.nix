@@ -11,7 +11,10 @@
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
-  crucibleGate = builtins.readFile ../../crates/crucible/tests/gate_content_address.rs;
+  crucibleGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_content_address.rs;
+  };
   predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;
   simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_content_address.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
@@ -384,8 +387,8 @@
         needle = "pub struct PartialOrderReductionPolicy";
       }
       {
-        label = "decision touched-node classifier";
-        needle = "pub fn touched_nodes(&self) -> Option<BTreeSet<NodeId>>";
+        label = "internal decision touched-node classifier";
+        needle = "fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>>";
       }
       {
         label = "proof-carrying decision independence";
@@ -550,10 +553,6 @@
       {
         label = "canonical stable digest bytes";
         needle = "pub bytes: [u8; 32]";
-      }
-      {
-        label = "content-addressing seam";
-        needle = "FUTURE_RATCHET_INTEGRATION_SEAM";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_content_address.rs" crucibleGate [
@@ -834,8 +833,8 @@
         needle = "assert!(!graph.contains_configuration(&covered));";
       }
       {
-        label = "dependent app-random same stream";
-        needle = "assert!(!same_stream_a.is_independent_from(&same_stream_b, &same_stream_proof));";
+        label = "global RNG draw remains dependent despite a supplied proof";
+        needle = "assert!(!global_rng_draw.is_independent_from(&first, &dependent_proofs));";
       }
       {
         label = "POR proof policy used by tests";
@@ -927,11 +926,11 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "implemented crucible content-address target";
-        needle = "gate: \"gate:content-address\",\n        package: \"crucible\",\n        test_target: \"gate_content_address\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
+        needle = "gate: \"gate:content-address\",\n        package: \"crucible\",\n        test_target: \"gate_content_address\",\n        required_features: &[],";
       }
       {
         label = "implemented crucible-sim content-address target";
-        needle = "gate: \"gate:content-address\",\n        package: \"crucible-sim\",\n        test_target: \"gate_content_address\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "gate: \"gate:content-address\",\n        package: \"crucible-sim\",\n        test_target: \"gate_content_address\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
@@ -949,15 +948,11 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented crucible mapping target";
-        needle = "gate = \"gate:content-address\";\n      package = \"crucible\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [\"test-double\"];\n      placeholder = false;";
+        needle = "gate = \"gate:content-address\";\n      package = \"crucible\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];";
       }
       {
         label = "implemented crucible-sim mapping target";
-        needle = "gate = \"gate:content-address\";\n      package = \"crucible-sim\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];\n      placeholder = false;";
-      }
-      {
-        label = "updated placeholder count";
-        needle = "placeholder_targets=0";
+        needle = "gate = \"gate:content-address\";\n      package = \"crucible-sim\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -1184,7 +1179,6 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-content-address-target" \
               -p crucible \
-              --features test-double \
               --test predicate_dsl \
               -- --test-threads=1
             cargo test \
@@ -1192,7 +1186,6 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-content-address-target" \
               -p crucible \
-              --features test-double \
               --test gate_content_address \
               -- --test-threads=1
             cargo test \

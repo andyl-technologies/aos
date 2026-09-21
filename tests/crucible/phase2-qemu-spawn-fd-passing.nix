@@ -60,12 +60,8 @@
         needle = "pub use spawn::{";
       }
       {
-        label = "spawn function export";
-        needle = "spawn_qemu_child_with_fds";
-      }
-      {
-        label = "spawn run-directory function export";
-        needle = "spawn_qemu_child_with_fds_in_directory";
+        label = "guarded spawn function export";
+        needle = "spawn_prepared_qemu_child_with_fds_in_directory_guarded";
       }
       {
         label = "spawn resources export";
@@ -130,16 +126,12 @@
         needle = "pub enum QemuSpawnError";
       }
       {
-        label = "public spawn API";
-        needle = "pub fn spawn_qemu_child_with_fds";
+        label = "contained guarded run-directory spawn primitive";
+        needle = "pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded";
       }
       {
-        label = "run-directory spawn API";
-        needle = "pub fn spawn_qemu_child_with_fds_in_directory";
-      }
-      {
-        label = "child current directory binding";
-        needle = "command.current_dir(run_directory);";
+        label = "child run-directory descriptor installation";
+        needle = "install_prepared_run_directory";
       }
       {
         label = "validated launch command input";
@@ -244,10 +236,6 @@
       {
         label = "spawn resources test";
         needle = "qemu_spawn_resources_create_socket_memfd_eventfd_and_host_copies";
-      }
-      {
-        label = "spawn run-directory cwd test";
-        needle = "qemu_spawn_run_directory_sets_child_cwd";
       }
       {
         label = "spawn cwd probe";

@@ -9,11 +9,11 @@ use super::{
     QMP_HOT_FORK_PLUGIN_RESOURCE_APP_RANDOM, QMP_HOT_FORK_PLUGIN_RESOURCE_COVERAGE,
     QMP_HOT_FORK_PLUGIN_RESOURCE_FINGERPRINT,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_RESOURCE_REQUIRED,
-    QMP_HOT_FORK_PLUGIN_RESOURCE_STATE_DUMP, QMP_HOT_FORK_PLUGIN_RESOURCE_WHITEBOX,
-    QMP_HOT_FORK_PLUGIN_WORKER_ALL, QMP_HOT_FORK_PLUGIN_WORKER_FINGERPRINT,
-    QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED, QMP_HOT_FORK_PLUGIN_WORKER_RUN_CONTROL,
-    QMP_HOT_FORK_PLUGIN_WORKER_TEARDOWN, QmpCommandKind, QmpError,
+    QMP_HOT_FORK_PLUGIN_RESOURCE_WHITEBOX, QMP_HOT_FORK_PLUGIN_WORKER_ALL,
+    QMP_HOT_FORK_PLUGIN_WORKER_FINGERPRINT, QMP_HOT_FORK_PLUGIN_WORKER_REQUIRED,
+    QMP_HOT_FORK_PLUGIN_WORKER_RUN_CONTROL, QMP_HOT_FORK_PLUGIN_WORKER_TEARDOWN,
 };
+use crate::qmp::{QmpCommandKind, QmpError};
 
 /// Exact scalar inventory of the installed Crucible plugin resources.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,16 +40,10 @@ pub struct QmpHotForkPluginResourceInventory {
     run_control_worker: bool,
     teardown_worker: bool,
     fingerprint_worker: bool,
-    state_dump: bool,
     app_random: bool,
 }
 
 impl QmpHotForkPluginResourceInventory {
-    #[cfg(test)]
-    pub(crate) fn one_complete(process_generation: u64) -> Self {
-        Self::one_complete_with_bindings(process_generation, 1, 2, 4096, 3, 4)
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn one_complete_with_bindings(
         process_generation: u64,
@@ -82,7 +76,6 @@ impl QmpHotForkPluginResourceInventory {
             run_control_worker: true,
             teardown_worker: true,
             fingerprint_worker: false,
-            state_dump: false,
             app_random: false,
         }
     }
@@ -219,12 +212,6 @@ impl QmpHotForkPluginResourceInventory {
     #[must_use]
     pub const fn fingerprint_worker(&self) -> bool {
         self.fingerprint_worker
-    }
-
-    /// Returns whether raw-state-dump resources are installed.
-    #[must_use]
-    pub const fn state_dump(&self) -> bool {
-        self.state_dump
     }
 
     /// Returns whether app-random resources are installed.
@@ -412,7 +399,6 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         "run-control-worker",
         "teardown-worker",
         "fingerprint-worker",
-        "state-dump",
         "app-random",
     ];
     if object.len() != fields.len() || !fields.iter().all(|field| object.contains_key(*field)) {
@@ -519,10 +505,6 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         .get("fingerprint-worker")
         .and_then(Value::as_bool)
         .ok_or_else(&malformed)?;
-    let state_dump = object
-        .get("state-dump")
-        .and_then(Value::as_bool)
-        .ok_or_else(&malformed)?;
     let app_random = object
         .get("app-random")
         .and_then(Value::as_bool)
@@ -536,7 +518,6 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
     let derived_modes = coverage == (resource_mask & QMP_HOT_FORK_PLUGIN_RESOURCE_COVERAGE != 0)
         && whitebox == (resource_mask & QMP_HOT_FORK_PLUGIN_RESOURCE_WHITEBOX != 0)
         && fingerprint == (resource_mask & QMP_HOT_FORK_PLUGIN_RESOURCE_FINGERPRINT != 0)
-        && state_dump == (resource_mask & QMP_HOT_FORK_PLUGIN_RESOURCE_STATE_DUMP != 0)
         && app_random == (resource_mask & QMP_HOT_FORK_PLUGIN_RESOURCE_APP_RANDOM != 0);
     let optional_callbacks = callback_mask & !QMP_HOT_FORK_PLUGIN_CALLBACK_REQUIRED;
     let optional_consistent = (coverage || whitebox)
@@ -579,7 +560,6 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         && !run_control_worker
         && !teardown_worker
         && !fingerprint_worker
-        && !state_dump
         && !app_random;
     let expected_complete = registered
         && registered_shape
@@ -624,7 +604,6 @@ pub(crate) fn parse_hot_fork_plugin_resource_inventory(
         run_control_worker,
         teardown_worker,
         fingerprint_worker,
-        state_dump,
         app_random,
     })
 }

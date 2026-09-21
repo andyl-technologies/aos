@@ -441,7 +441,7 @@ fn fault_system_manifest_is_fixed_authenticated_and_fail_closed() {
         vmstate_section_count: 10,
         vmstate_sections_sha256: [1; 32],
         emulator_build_id: [2; 32],
-        emulator_patch_series_hash: [3; 32],
+        emulator_atomic_patch_hash: [3; 32],
         shmem_header_hash: [4; 32],
     };
     let encoded = manifest

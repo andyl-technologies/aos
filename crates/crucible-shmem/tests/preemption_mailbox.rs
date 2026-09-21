@@ -1,4 +1,4 @@
-//! Exercises the ABI-v5 scheduler-to-plugin preemption mailbox.
+//! Exercises the current scheduler-to-plugin preemption mailbox.
 
 use crucible_shmem::{
     KIND_VM, NodeSlot, PreemptionMailboxError, SchedulerPreemptionCommand, SchedulerPreemptionKind,

@@ -17,16 +17,13 @@
 
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use thiserror::Error;
-
-use crucible::model::{ContentHash, ResolvedBindingAction, ResolvedFaultTarget};
+use crucible::model::ContentHash;
 use crucible_device::block::{
-    BaseImage, BlockDurabilityConfig, BlockExecutionOpportunity, BlockFaultState,
-    BlockPersistenceMediaOutcome, BlockPersistenceOpportunity, BlockRequestIdentity,
-    BlockRequestPersistenceOpportunity, BlockRetainedRelease, BlockServiceCompletion,
+    BaseImage, BlockDurabilityConfig, BlockFaultState, BlockRequestIdentity, BlockRetainedRelease,
     ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
     ResolvedBlockPersistenceMediaDirective,
 };
@@ -35,10 +32,12 @@ use super::block_io_servicer::{
     QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
     QemuLiveBlockIoServicerError,
 };
-use crate::{
-    QemuLiveBlockIoServicerCheckpoint, ResolvedVolatileCacheLoss, StorageFaultResolutionContext,
-    StorageFaultResolutionError, VolatileCacheLossReplay, resolve_volatile_cache_loss,
-};
+use super::host_io_runtime::QemuBlockFaultCoordinator;
+use crate::{QemuAsyncDriverRuntimeError, QemuLiveBlockIoServicerCheckpoint};
+
+mod worker;
+pub use worker::QemuLiveBlockHostWorkPoolError;
+use worker::{StorageMutation, WorkerCommand, WorkerReply, worker_loop};
 
 /// Capacity of the owner-to-worker command queue.
 ///
@@ -79,26 +78,55 @@ pub struct QemuLiveBlockHostWorkPool {
     work_in_flight: bool,
     pinned: Option<QemuLiveBlockIoHostWorkPin>,
     in_flight_pin: Option<QemuLiveBlockIoHostWorkPin>,
+    published_deadline: Option<u64>,
     in_flight_storage_fault: bool,
     storage_device: Option<ContentHash>,
-}
-
-/// Atomic storage opportunities and outcomes observed on the owning worker.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuLiveBlockStorageEvents {
-    /// Next request ready for exact resolve/persist phase evaluation.
-    pub execution_opportunity: Option<BlockExecutionOpportunity>,
-    /// Next resolved request ready for exact persist-phase evaluation.
-    pub request_persistence_opportunity: Option<BlockRequestPersistenceOpportunity>,
-    /// Next physical-media decision opportunity ready at the requested coordinate.
-    pub persistence_opportunity: Option<BlockPersistenceOpportunity>,
-    /// Completed physical-media mutations drained exactly once.
-    pub persistence_outcomes: Vec<BlockPersistenceMediaOutcome>,
-    /// Completed service contributions drained exactly once.
-    pub service_outcomes: Vec<BlockServiceCompletion>,
+    shared_device: crate::QemuSharedBlockDevice,
 }
 
 impl QemuLiveBlockHostWorkPool {
+    /// Starts the production worker around an already configured servicer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host worker cannot be spawned or acknowledge
+    /// ownership of the servicer.
+    pub(crate) fn from_servicer(
+        servicer: QemuLiveBlockIoServicer,
+    ) -> Result<(Self, Arc<Mutex<QemuLiveBlockIoServicer>>), QemuLiveBlockHostWorkPoolError> {
+        let shared_device = servicer.shared_device();
+        let servicer = Arc::new(Mutex::new(servicer));
+        let worker_servicer = Arc::clone(&servicer);
+        let (commands, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
+        let (reply_tx, replies) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let worker = thread::Builder::new()
+            .name(String::from("crucible-block-host-work"))
+            .spawn(move || {
+                let _ = ready_tx.send(());
+                worker_loop(worker_servicer, &command_rx, &reply_tx);
+            })
+            .map_err(|source| QemuLiveBlockHostWorkPoolError::SpawnWorker { source })?;
+        ready_rx
+            .recv()
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
+        Ok((
+            Self {
+                commands,
+                replies,
+                worker: Some(worker),
+                work_in_flight: false,
+                pinned: None,
+                in_flight_pin: None,
+                published_deadline: None,
+                in_flight_storage_fault: false,
+                storage_device: None,
+                shared_device,
+            },
+            servicer,
+        ))
+    }
+
     /// Starts a worker and constructs its live block servicer on that worker.
     ///
     /// # Errors
@@ -122,31 +150,6 @@ impl QemuLiveBlockHostWorkPool {
             icount_shift,
             size_bytes,
             None,
-        )
-    }
-
-    /// Starts a worker with exact admitted storage durability and mandatory directives.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::from_shmem_fd`], including a servicer
-    /// error when `config` is malformed or differs from `size_bytes`.
-    pub fn from_shmem_fd_with_storage_config(
-        shmem_fd: BorrowedFd<'_>,
-        region_len: u64,
-        vm_slot: u32,
-        icount_shift: u8,
-        size_bytes: u64,
-        storage_device: ContentHash,
-        config: BlockDurabilityConfig,
-    ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
-        Self::from_shmem_fd_with_optional_storage_config(
-            shmem_fd,
-            region_len,
-            vm_slot,
-            icount_shift,
-            size_bytes,
-            Some((storage_device, config)),
         )
     }
 
@@ -183,8 +186,9 @@ impl QemuLiveBlockHostWorkPool {
                 });
                 match servicer {
                     Ok(servicer) => {
-                        let _ = ready_tx.send(Ok(()));
-                        worker_loop(servicer, &command_rx, &reply_tx);
+                        let shared_device = servicer.shared_device();
+                        let _ = ready_tx.send(Ok(shared_device));
+                        worker_loop(Arc::new(Mutex::new(servicer)), &command_rx, &reply_tx);
                     }
                     Err(source) => {
                         let _ = ready_tx.send(Err(source));
@@ -193,15 +197,17 @@ impl QemuLiveBlockHostWorkPool {
             })
             .map_err(|source| QemuLiveBlockHostWorkPoolError::SpawnWorker { source })?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self {
+            Ok(Ok(shared_device)) => Ok(Self {
                 commands,
                 replies,
                 worker: Some(worker),
                 work_in_flight: false,
                 pinned: None,
                 in_flight_pin: None,
+                published_deadline: None,
                 in_flight_storage_fault: false,
                 storage_device,
+                shared_device,
             }),
             Ok(Err(source)) => {
                 let _ = worker.join();
@@ -246,8 +252,9 @@ impl QemuLiveBlockHostWorkPool {
                 );
                 match servicer {
                     Ok(servicer) => {
-                        let _ = ready_tx.send(Ok(()));
-                        worker_loop(servicer, &command_rx, &reply_tx);
+                        let shared_device = servicer.shared_device();
+                        let _ = ready_tx.send(Ok(shared_device));
+                        worker_loop(Arc::new(Mutex::new(servicer)), &command_rx, &reply_tx);
                     }
                     Err(source) => {
                         let _ = ready_tx.send(Err(source));
@@ -256,15 +263,17 @@ impl QemuLiveBlockHostWorkPool {
             })
             .map_err(|source| QemuLiveBlockHostWorkPoolError::SpawnWorker { source })?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self {
+            Ok(Ok(shared_device)) => Ok(Self {
                 commands,
                 replies,
                 worker: Some(worker),
                 work_in_flight: false,
                 pinned: None,
                 in_flight_pin: None,
+                published_deadline: None,
                 in_flight_storage_fault: false,
                 storage_device,
+                shared_device,
             }),
             Ok(Err(source)) => {
                 let _ = worker.join();
@@ -304,6 +313,7 @@ impl QemuLiveBlockHostWorkPool {
             WorkerReply::Pinned(result) => {
                 let pin =
                     result.map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })?;
+                self.published_deadline = pin.next_completion_icount;
                 self.pinned = Some(pin.clone());
                 Ok(pin)
             }
@@ -311,8 +321,8 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Checkpoint(_)
             | WorkerReply::Mutated(_)
             | WorkerReply::StorageState(_)
-            | WorkerReply::StorageEvents(_)
-            | WorkerReply::VolatileLoss(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+            | WorkerReply::Coordinated(_)
+            | WorkerReply::Coordination(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "pin reply",
             }),
         }
@@ -347,7 +357,7 @@ impl QemuLiveBlockHostWorkPool {
     /// # Errors
     ///
     /// Returns the same errors as [`Self::dispatch`].
-    pub fn dispatch_with_storage_fault(
+    fn dispatch_with_storage_fault(
         &mut self,
         guest_icount: u64,
         delay: QemuDeviceHostWorkDelay,
@@ -399,6 +409,7 @@ impl QemuLiveBlockHostWorkPool {
                 self.in_flight_storage_fault = false;
                 result
                     .map(|mut serviced| {
+                        self.published_deadline = serviced.next_completion_icount;
                         if let Some(observed) = pin
                             .and_then(|pinned| pinned.observed)
                             .filter(|_observed| preserve_baseline_completion)
@@ -410,12 +421,21 @@ impl QemuLiveBlockHostWorkPool {
                     })
                     .map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })
             }
+            Ok(WorkerReply::Coordinated(result)) => {
+                self.work_in_flight = false;
+                self.in_flight_pin = None;
+                result
+                    .map(|serviced| {
+                        self.published_deadline = serviced.next_completion_icount;
+                        Some(serviced)
+                    })
+                    .map_err(|source| QemuLiveBlockHostWorkPoolError::Coordinator { source })
+            }
             Ok(WorkerReply::Pinned(_))
             | Ok(WorkerReply::Checkpoint(_))
             | Ok(WorkerReply::Mutated(_))
             | Ok(WorkerReply::StorageState(_))
-            | Ok(WorkerReply::StorageEvents(_))
-            | Ok(WorkerReply::VolatileLoss(_)) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+            | Ok(WorkerReply::Coordination(_)) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "service reply",
             }),
             Err(TryRecvError::Empty) => Ok(None),
@@ -429,6 +449,111 @@ impl QemuLiveBlockHostWorkPool {
     #[must_use]
     pub const fn work_in_flight(&self) -> bool {
         self.work_in_flight
+    }
+
+    /// Installs the production fault coordinator on the worker that owns the device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when work is active, a coordinator is already installed,
+    /// or the worker disconnects.
+    pub(crate) fn install_fault_coordinator(
+        &mut self,
+        coordinator: Box<dyn QemuBlockFaultCoordinator>,
+    ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
+        if self.work_in_flight {
+            return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
+        }
+        self.commands
+            .send(WorkerCommand::InstallCoordinator(coordinator))
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
+        match self
+            .replies
+            .recv()
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
+        {
+            WorkerReply::Coordination(result) => {
+                result.map_err(|source| QemuLiveBlockHostWorkPoolError::Coordinator { source })
+            }
+            _ => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+                expected: "coordinator installation reply",
+            }),
+        }
+    }
+
+    /// Dispatches one complete coordinator-owned service pass without waiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another pass is active or the worker disconnects.
+    pub(crate) fn dispatch_coordinated(
+        &mut self,
+        guest_icount: u64,
+    ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
+        if self.work_in_flight {
+            return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
+        }
+        let pin = self
+            .pinned
+            .take()
+            .ok_or(QemuLiveBlockHostWorkPoolError::DispatchWithoutPin)?;
+        self.commands
+            .send(WorkerCommand::CoordinatedService { guest_icount })
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
+        self.work_in_flight = true;
+        self.in_flight_pin = Some(pin);
+        Ok(())
+    }
+
+    /// Returns the exact deadline published before the active worker pass.
+    ///
+    /// The value is cached from the synchronous pin and the most recently
+    /// completed service pass, so reading it never waits for host device work.
+    #[must_use]
+    pub const fn published_completion_deadline(&self) -> Option<u64> {
+        self.published_deadline
+    }
+
+    /// Applies exact boundary actions on the worker-owned device and coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when work is active, no coordinator is installed, or
+    /// either participant rejects the action.
+    pub fn apply_boundary_actions(
+        &mut self,
+        coordinate: crucible::model::FaultCoordinate,
+        evaluation_sequence: u64,
+        actions: Vec<crucible::model::ResolvedBindingAction>,
+    ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
+        if self.work_in_flight {
+            return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
+        }
+        self.commands
+            .send(WorkerCommand::ApplyBoundaryActions {
+                coordinate,
+                evaluation_sequence,
+                actions,
+            })
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
+        match self
+            .replies
+            .recv()
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
+        {
+            WorkerReply::Coordination(result) => {
+                result.map_err(|source| QemuLiveBlockHostWorkPoolError::Coordinator { source })
+            }
+            _ => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+                expected: "boundary action reply",
+            }),
+        }
+    }
+
+    /// Returns a clone of the authoritative shared block-device handle.
+    #[must_use]
+    pub fn shared_device(&self) -> crate::QemuSharedBlockDevice {
+        self.shared_device.clone()
     }
 
     /// Captures the complete worker-owned block-device continuation.
@@ -470,8 +595,8 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Serviced(_)
             | WorkerReply::Mutated(_)
             | WorkerReply::StorageState(_)
-            | WorkerReply::StorageEvents(_)
-            | WorkerReply::VolatileLoss(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+            | WorkerReply::Coordinated(_)
+            | WorkerReply::Coordination(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "checkpoint reply",
             }),
         }
@@ -512,48 +637,9 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Serviced(_)
             | WorkerReply::Checkpoint(_)
             | WorkerReply::Mutated(_)
-            | WorkerReply::StorageEvents(_)
-            | WorkerReply::VolatileLoss(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+            | WorkerReply::Coordinated(_)
+            | WorkerReply::Coordination(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "storage-state reply",
-            }),
-        }
-    }
-
-    /// Atomically observes the next persistence opportunity and drains evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error while work or a nonempty pin is outstanding, or when
-    /// the worker disconnects or violates its protocol.
-    pub fn storage_events(
-        &mut self,
-        now_nanos: u64,
-    ) -> Result<QemuLiveBlockStorageEvents, QemuLiveBlockHostWorkPoolError> {
-        self.require_storage_device_bound()?;
-        if self.work_in_flight {
-            return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
-        }
-        if self
-            .pinned
-            .as_ref()
-            .is_some_and(|pin| pin.observed.is_some())
-        {
-            return Err(QemuLiveBlockHostWorkPoolError::MutationWithPinnedRequest);
-        }
-        self.pinned = None;
-        self.commands
-            .send(WorkerCommand::StorageEvents { now_nanos })
-            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
-        match self
-            .replies
-            .recv()
-            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
-        {
-            WorkerReply::StorageEvents(result) => {
-                result.map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })
-            }
-            _ => Err(QemuLiveBlockHostWorkPoolError::Protocol {
-                expected: "storage-events reply",
             }),
         }
     }
@@ -586,90 +672,13 @@ impl QemuLiveBlockHostWorkPool {
         self.mutate(StorageMutation::InstallExecution(Box::new(directive)))
     }
 
-    /// Drops exact volatile-cache entries on the worker-owned live device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error while work or a nonempty request pin is outstanding,
-    /// when the worker disconnects or violates its protocol, or when the
-    /// servicer rejects the exact sequence selection.
-    pub fn lose_storage_volatile(
-        &mut self,
-        sequences: Vec<u64>,
-    ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
-        self.require_storage_device_bound()?;
-        self.mutate(StorageMutation::LoseVolatile(sequences))
-    }
-
-    /// Atomically resolves and applies one signal-driven cache-loss impulse.
-    ///
-    /// The worker computes eligibility, the replay entry-set digest, keyed
-    /// selection, and mutation against one uninterrupted device state. No
-    /// request service or other mutation can interleave between observation
-    /// and loss.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error while work or a nonempty request pin is outstanding,
-    /// when the action cannot resolve exactly, when mutation fails, or when the
-    /// worker disconnects or violates its protocol.
-    pub fn resolve_and_lose_storage_volatile(
-        &mut self,
-        target: ResolvedFaultTarget,
-        context: StorageFaultResolutionContext,
-        action: ResolvedBindingAction,
-        replay: VolatileCacheLossReplay,
-    ) -> Result<ResolvedVolatileCacheLoss, QemuLiveBlockHostWorkPoolError> {
-        self.require_storage_target(&target)?;
-        if self.work_in_flight {
-            return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
-        }
-        if self
-            .pinned
-            .as_ref()
-            .is_some_and(|pin| pin.observed.is_some())
-        {
-            return Err(QemuLiveBlockHostWorkPoolError::MutationWithPinnedRequest);
-        }
-        self.pinned = None;
-        self.commands
-            .send(WorkerCommand::ResolveVolatileLoss {
-                target,
-                context,
-                action: Box::new(action),
-                replay,
-            })
-            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
-        match self
-            .replies
-            .recv()
-            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
-        {
-            WorkerReply::VolatileLoss(result) => match result {
-                Ok(resolved) => Ok(resolved),
-                Err(VolatileLossWorkerError::Resolution(source)) => {
-                    Err(QemuLiveBlockHostWorkPoolError::StorageResolution { source })
-                }
-                Err(VolatileLossWorkerError::Servicer(source)) => {
-                    Err(QemuLiveBlockHostWorkPoolError::Servicer { source })
-                }
-            },
-            WorkerReply::Pinned(_)
-            | WorkerReply::Serviced(_)
-            | WorkerReply::Checkpoint(_)
-            | WorkerReply::Mutated(_)
-            | WorkerReply::StorageState(_)
-            | WorkerReply::StorageEvents(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
-                expected: "volatile-cache loss reply",
-            }),
-        }
-    }
-
     /// Drops exact controller-buffer entries on the worker-owned live device.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::lose_storage_volatile`].
+    /// Returns an error when no storage device is bound, worker state forbids
+    /// mutation, the worker disconnects, the reply violates the protocol, or
+    /// the live device rejects the mutation.
     pub fn lose_storage_controller(
         &mut self,
         sequences: Vec<u64>,
@@ -682,9 +691,9 @@ impl QemuLiveBlockHostWorkPool {
     ///
     /// # Errors
     ///
-    /// Returns the same worker-state and protocol errors as
-    /// [`Self::lose_storage_volatile`], or a servicer error when the request is
-    /// not retained or its response cannot be scheduled.
+    /// Returns an error when no storage device is bound, worker state forbids
+    /// mutation, the worker disconnects, the reply violates the protocol, or
+    /// the request is not retained or its response cannot be scheduled.
     pub fn release_storage_completion(
         &mut self,
         identity: BlockRequestIdentity,
@@ -721,8 +730,8 @@ impl QemuLiveBlockHostWorkPool {
             | WorkerReply::Serviced(_)
             | WorkerReply::Checkpoint(_)
             | WorkerReply::StorageState(_)
-            | WorkerReply::StorageEvents(_)
-            | WorkerReply::VolatileLoss(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+            | WorkerReply::Coordinated(_)
+            | WorkerReply::Coordination(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "storage mutation reply",
             }),
         }
@@ -731,25 +740,6 @@ impl QemuLiveBlockHostWorkPool {
     fn require_storage_device_bound(&self) -> Result<ContentHash, QemuLiveBlockHostWorkPoolError> {
         self.storage_device
             .ok_or(QemuLiveBlockHostWorkPoolError::StorageDeviceUnbound)
-    }
-
-    fn require_storage_target(
-        &self,
-        target: &ResolvedFaultTarget,
-    ) -> Result<(), QemuLiveBlockHostWorkPoolError> {
-        let actual = self.require_storage_device_bound()?;
-        let selected = match target {
-            ResolvedFaultTarget::BlockDevice { device }
-            | ResolvedFaultTarget::BlockRange { device, .. } => *device,
-            _ => return Err(QemuLiveBlockHostWorkPoolError::StorageTargetKind),
-        };
-        if selected != actual {
-            return Err(QemuLiveBlockHostWorkPoolError::StorageTargetMismatch {
-                expected: actual,
-                actual: selected,
-            });
-        }
-        Ok(())
     }
 }
 
@@ -791,226 +781,15 @@ impl Drop for QemuLiveBlockHostWorkPool {
     }
 }
 
-enum WorkerCommand {
-    Pin,
-    Checkpoint {
-        execution_binding: ContentHash,
-    },
-    Service {
-        guest_icount: u64,
-        delay: QemuDeviceHostWorkDelay,
-        directive: Box<Option<(BlockRequestIdentity, ResolvedBlockFaultDirective)>>,
-    },
-    Mutate(Box<StorageMutation>),
-    InspectStorageState,
-    StorageEvents {
-        now_nanos: u64,
-    },
-    ResolveVolatileLoss {
-        target: ResolvedFaultTarget,
-        context: StorageFaultResolutionContext,
-        action: Box<ResolvedBindingAction>,
-        replay: VolatileCacheLossReplay,
-    },
-    Shutdown,
-}
-
-enum StorageMutation {
-    LoseVolatile(Vec<u64>),
-    LoseController(Vec<u64>),
-    InstallPersistenceMedia(ResolvedBlockPersistenceMediaDirective),
-    InstallExecution(Box<ResolvedBlockExecutionDirective>),
-    ReleaseCompletion {
-        identity: BlockRequestIdentity,
-        release: BlockRetainedRelease,
-    },
-}
-
-enum WorkerReply {
-    Pinned(Result<QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServicerError>),
-    Serviced(Result<QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicerError>),
-    Checkpoint(Box<Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError>>),
-    Mutated(Result<(), QemuLiveBlockIoServicerError>),
-    StorageState(Box<Result<BlockFaultState, QemuLiveBlockIoServicerError>>),
-    StorageEvents(Box<Result<QemuLiveBlockStorageEvents, QemuLiveBlockIoServicerError>>),
-    VolatileLoss(Result<ResolvedVolatileCacheLoss, VolatileLossWorkerError>),
-}
-
-enum VolatileLossWorkerError {
-    Resolution(StorageFaultResolutionError),
-    Servicer(QemuLiveBlockIoServicerError),
-}
-
-fn worker_loop(
-    mut servicer: QemuLiveBlockIoServicer,
-    commands: &Receiver<WorkerCommand>,
-    replies: &SyncSender<WorkerReply>,
-) {
-    while let Ok(command) = commands.recv() {
-        let reply = match command {
-            WorkerCommand::Pin => WorkerReply::Pinned(servicer.pin_next_request_completion()),
-            WorkerCommand::Checkpoint { execution_binding } => {
-                WorkerReply::Checkpoint(Box::new(servicer.checkpoint(execution_binding)))
-            }
-            WorkerCommand::Service {
-                guest_icount,
-                delay,
-                directive,
-            } => {
-                delay.apply();
-                let result = (*directive)
-                    .map_or(Ok(()), |(request_id, directive)| {
-                        servicer.install_storage_fault_directive(request_id, directive)
-                    })
-                    .and_then(|()| servicer.service(guest_icount));
-                WorkerReply::Serviced(result)
-            }
-            WorkerCommand::Mutate(mutation) => WorkerReply::Mutated(match *mutation {
-                StorageMutation::LoseVolatile(sequences) => {
-                    servicer.lose_storage_volatile(&sequences)
-                }
-                StorageMutation::LoseController(sequences) => {
-                    servicer.lose_storage_controller(&sequences)
-                }
-                StorageMutation::InstallPersistenceMedia(directive) => {
-                    servicer.install_storage_persistence_media_directive(directive)
-                }
-                StorageMutation::InstallExecution(directive) => {
-                    servicer.install_storage_execution_directive(*directive)
-                }
-                StorageMutation::ReleaseCompletion { identity, release } => servicer
-                    .release_storage_completion(identity, release)
-                    .map(|_| ()),
-            }),
-            WorkerCommand::InspectStorageState => {
-                WorkerReply::StorageState(Box::new(servicer.storage_fault_state()))
-            }
-            WorkerCommand::StorageEvents { now_nanos } => {
-                WorkerReply::StorageEvents(Box::new((|| {
-                    Ok(QemuLiveBlockStorageEvents {
-                        execution_opportunity: servicer
-                            .next_storage_execution_opportunity(now_nanos)?,
-                        request_persistence_opportunity: servicer
-                            .next_storage_request_persistence_opportunity(now_nanos)?,
-                        persistence_opportunity: servicer
-                            .next_storage_persistence_opportunity(now_nanos)?,
-                        persistence_outcomes: servicer
-                            .drain_storage_persistence_media_outcomes()?,
-                        service_outcomes: servicer.drain_storage_service_outcomes()?,
-                    })
-                })()))
-            }
-            WorkerCommand::ResolveVolatileLoss {
-                target,
-                context,
-                action,
-                replay,
-            } => WorkerReply::VolatileLoss(
-                servicer
-                    .storage_fault_state()
-                    .map_err(VolatileLossWorkerError::Servicer)
-                    .and_then(|state| {
-                        resolve_volatile_cache_loss(&target, &state, context, &action, replay)
-                            .map_err(VolatileLossWorkerError::Resolution)
-                    })
-                    .and_then(|resolved| {
-                        servicer
-                            .lose_storage_volatile(&resolved.selected_sequences)
-                            .map_err(VolatileLossWorkerError::Servicer)?;
-                        Ok(resolved)
-                    }),
-            ),
-            WorkerCommand::Shutdown => break,
-        };
-        if replies.send(reply).is_err() {
-            break;
-        }
-    }
-}
-
-/// Error raised by [`QemuLiveBlockHostWorkPool`].
-#[derive(Debug, Error)]
-pub enum QemuLiveBlockHostWorkPoolError {
-    /// The shared-memory descriptor could not be cloned for the worker.
-    #[error("clone shared-memory descriptor for block host worker failed: {source}")]
-    CloneShmemFd {
-        /// Underlying descriptor error.
-        source: std::io::Error,
-    },
-    /// The host worker thread could not be created.
-    #[error("spawn block host worker failed: {source}")]
-    SpawnWorker {
-        /// Underlying thread creation error.
-        source: std::io::Error,
-    },
-    /// The worker-side live servicer failed.
-    #[error("block host worker servicer failed: {source}")]
-    Servicer {
-        /// Underlying live-servicer error.
-        source: QemuLiveBlockIoServicerError,
-    },
-    /// A signal-driven storage action failed exact resolution.
-    #[error("resolve signal-driven storage fault failed: {source}")]
-    StorageResolution {
-        /// Exact resolver failure.
-        source: StorageFaultResolutionError,
-    },
-    /// The worker was not constructed with an exact live storage-device identity.
-    #[error("signal-driven storage mutation requires a device-bound worker")]
-    StorageDeviceUnbound,
-    /// The selected target is not a block device or block range.
-    #[error("signal-driven storage mutation selected a non-block target")]
-    StorageTargetKind,
-    /// The selected block target belongs to another live device worker.
-    #[error("storage target device mismatch: worker {expected:?}, selected {actual:?}")]
-    StorageTargetMismatch {
-        /// Device hash bound when the worker was constructed.
-        expected: ContentHash,
-        /// Device hash supplied by the resolved action.
-        actual: ContentHash,
-    },
-    /// The worker channel closed unexpectedly.
-    #[error("block host worker disconnected")]
-    WorkerDisconnected,
-    /// A second command was attempted while work was already running.
-    #[error("block host work is already in flight")]
-    WorkAlreadyInFlight,
-    /// COMPUTE was dispatched without first pinning the request coordinate.
-    #[error("block host work dispatch requires a preceding completion pin")]
-    DispatchWithoutPin,
-    /// A checkpoint was requested after pinning but before dispatching the request.
-    #[error("block host work cannot checkpoint with an undispatched pinned request")]
-    CheckpointWithPinnedRequest,
-    /// A live mutation was requested after observing a nonempty ring head.
-    #[error("block host work cannot mutate storage state with an undispatched pinned request")]
-    MutationWithPinnedRequest,
-    /// A directive was supplied while the pinned ring head was empty.
-    #[error("a storage fault directive requires a pinned block request")]
-    DirectiveWithoutRequest,
-    /// The pinned frame could not be decoded as a block request.
-    #[error("a storage fault directive cannot target a malformed pinned block request")]
-    MalformedPinnedRequest,
-    /// The directive identity or geometry differs from the exact pinned request.
-    #[error(
-        "storage fault directive request {directive_request_id} does not match pinned request {pinned_request_id}"
-    )]
-    DirectivePinMismatch {
-        /// Request ID decoded from the pinned frame.
-        pinned_request_id: u32,
-        /// Request ID supplied with the directive.
-        directive_request_id: u32,
-    },
-    /// The worker returned a reply for a different command phase.
-    #[error("block host worker protocol violation: expected {expected}")]
-    Protocol {
-        /// Reply phase the owner expected.
-        expected: &'static str,
-    },
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::fd::AsFd;
+    use std::time::Duration;
+
     use crucible_device::block::BlockRequest;
+    use crucible_shmem::{FrameEntry, RegionAllocation, RegionConfig, SLOT_BLK_IO};
 
     use super::*;
 
@@ -1030,6 +809,123 @@ mod tests {
             ),
             next_completion_icount: Some(20),
         }
+    }
+
+    fn region_with_request(
+        request: &BlockRequest,
+    ) -> Result<(File, u64), Box<dyn std::error::Error>> {
+        let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+        let frame = FrameEntry::new(10, 0, 0, &request.encode()?)?;
+        allocation.enqueue_directed_frame(0, SLOT_BLK_IO as u32, &frame)?;
+        let layout = allocation.layout();
+        let bytes = allocation.setup_region_bytes()?;
+        let mut region = tempfile::tempfile()?;
+        region.set_len(layout.region_size)?;
+        region.write_all(&bytes)?;
+
+        Ok((region, layout.region_size))
+    }
+
+    fn worker_with_request(
+        request: &BlockRequest,
+    ) -> Result<(QemuLiveBlockHostWorkPool, File), Box<dyn std::error::Error>> {
+        let (region, region_size) = region_with_request(request)?;
+        let worker =
+            QemuLiveBlockHostWorkPool::from_shmem_fd(region.as_fd(), region_size, 0, 0, 4096)?;
+        Ok((worker, region))
+    }
+
+    fn servicer_with_request(
+        request: &BlockRequest,
+    ) -> Result<(QemuLiveBlockIoServicer, File), Box<dyn std::error::Error>> {
+        let (region, region_size) = region_with_request(request)?;
+        let servicer =
+            QemuLiveBlockIoServicer::from_shmem_fd(region.as_fd(), region_size, 0, 0, 4096)?;
+        Ok((servicer, region))
+    }
+
+    fn wait_for_completion(
+        worker: &mut QemuLiveBlockHostWorkPool,
+    ) -> Result<QemuLiveBlockIoServiceStep, Box<dyn std::error::Error>> {
+        for _ in 0..2_000 {
+            if let Some(step) = worker.try_complete()? {
+                return Ok(step);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        Err("block host worker did not complete within the test bound".into())
+    }
+
+    fn complete_worker_request(
+        worker: &mut QemuLiveBlockHostWorkPool,
+        delay: QemuDeviceHostWorkDelay,
+        completion_icount: u64,
+    ) -> Result<[QemuLiveBlockIoServiceStep; 2], Box<dyn std::error::Error>> {
+        worker.dispatch(10, delay)?;
+        let compute = wait_for_completion(worker)?;
+
+        let delivery_pin = worker.pin_next_request_completion()?;
+        assert!(delivery_pin.observed.is_none());
+        assert_eq!(delivery_pin.next_completion_icount, Some(completion_icount));
+        worker.dispatch(completion_icount, QemuDeviceHostWorkDelay::None)?;
+        let delivery = wait_for_completion(worker)?;
+        Ok([compute, delivery])
+    }
+
+    fn complete_region_bytes(region: &mut File) -> Result<Vec<u8>, std::io::Error> {
+        let mut bytes = Vec::new();
+        region.seek(SeekFrom::Start(0))?;
+        region.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    #[test]
+    fn synchronous_host_wins_and_guest_wins_preserve_completion_and_canonical_log()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = BlockRequest::read(7, 512, 512);
+        let execution_binding = ContentHash::from_bytes(b"device-host-work-overlap");
+
+        let (mut synchronous, mut synchronous_region) = servicer_with_request(&request)?;
+        let synchronous_compute = synchronous.service(10)?;
+        let completion_icount = synchronous_compute
+            .computed_completion_icount
+            .ok_or("synchronous service did not compute a completion coordinate")?;
+        let synchronous_log = [synchronous_compute, synchronous.service(completion_icount)?];
+        let synchronous_checkpoint = synchronous.checkpoint(execution_binding)?;
+        let synchronous_bytes = complete_region_bytes(&mut synchronous_region)?;
+
+        let (mut host_wins, mut host_wins_region) = worker_with_request(&request)?;
+        let host_pin = host_wins.pin_next_request_completion()?;
+        assert_eq!(host_pin.next_completion_icount, Some(completion_icount));
+        let host_wins_log = complete_worker_request(
+            &mut host_wins,
+            QemuDeviceHostWorkDelay::None,
+            completion_icount,
+        )?;
+        let host_wins_checkpoint = host_wins.checkpoint(execution_binding)?;
+        let host_wins_bytes = complete_region_bytes(&mut host_wins_region)?;
+
+        let (mut guest_wins, mut guest_wins_region) = worker_with_request(&request)?;
+        let guest_pin = guest_wins.pin_next_request_completion()?;
+        let guest_observed_horizon = guest_wins.published_completion_deadline();
+        assert_eq!(guest_pin, host_pin);
+        assert_eq!(guest_observed_horizon, guest_pin.next_completion_icount);
+        let guest_wins_log = complete_worker_request(
+            &mut guest_wins,
+            QemuDeviceHostWorkDelay::Wall(Duration::from_millis(100)),
+            completion_icount,
+        )?;
+        assert_eq!(guest_wins.published_completion_deadline(), None);
+        let guest_wins_checkpoint = guest_wins.checkpoint(execution_binding)?;
+        let guest_wins_bytes = complete_region_bytes(&mut guest_wins_region)?;
+
+        assert_eq!(host_wins_log, synchronous_log);
+        assert_eq!(guest_wins_log, synchronous_log);
+        assert_eq!(host_wins_checkpoint, synchronous_checkpoint);
+        assert_eq!(guest_wins_checkpoint, synchronous_checkpoint);
+        assert_eq!(host_wins_bytes, synchronous_bytes);
+        assert_eq!(guest_wins_bytes, synchronous_bytes);
+        Ok(())
     }
 
     #[test]

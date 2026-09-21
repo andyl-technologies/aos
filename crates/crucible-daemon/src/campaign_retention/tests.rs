@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use crucible_campaign::{
     AssignmentId, CampaignCommandId, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
-    CampaignPolicy, CampaignRepository, CampaignSeed, ConfigurationId, ExactRational,
-    ExplorerPolicy, FairnessPolicy, FindingCandidateBundleId, ObservationId, PinChange, PinRequest,
-    PinRetention, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
+    CampaignPolicy, CampaignRecordKind, CampaignRepository, CampaignSeed, ConfigurationId,
+    ExactRational, ExplorerPolicy, FairnessPolicy, FindingCandidateBundleId, ObservationId,
+    PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
+    ScenarioDefId,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -205,20 +206,24 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
     )
     .expect("widening");
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy");
     let campaign = CampaignName::new("retention-inventory").expect("campaign name");
@@ -242,19 +247,26 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
         .apply_pin(campaign.as_str(), &pin)
         .expect("pin campaign");
 
-    let observation_content =
-        ContentId::for_bytes(ObjectKind::Observation, 1, b"retained-observation");
+    let observation_content = ContentId::for_bytes(
+        ObjectKind::Observation,
+        CampaignRecordKind::Observation.schema_version(),
+        b"retained-observation",
+    );
     let observation = ObservationId::parse(&format!(
         "crucible.campaign.observation@{observation_content}"
     ))
     .expect("observation root");
     let checkpoint_content =
-        ContentId::for_bytes(ObjectKind::ExactManifest, 2, b"retained-checkpoint");
+        ContentId::for_bytes(ObjectKind::ExactManifest, 4, b"retained-checkpoint");
     let checkpoint = ExactCheckpointId::parse(&format!(
         "crucible.executor.exact-checkpoint-root@{checkpoint_content}"
     ))
     .expect("checkpoint root");
-    let finding_content = ContentId::for_bytes(ObjectKind::Finding, 1, b"retained-finding");
+    let finding_content = ContentId::for_bytes(
+        ObjectKind::Finding,
+        CampaignRecordKind::FindingCandidateBundle.schema_version(),
+        b"retained-finding",
+    );
     let finding_candidate = FindingCandidateBundleId::parse(&format!(
         "crucible.campaign.finding-candidate-bundle@{finding_content}"
     ))

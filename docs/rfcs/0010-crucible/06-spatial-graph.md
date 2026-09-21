@@ -1115,10 +1115,10 @@ authority for its shape. The contract those files may rely on:
   - Completed in `crates/crucible/src/model/plan_properties.rs` and
     `crates/crucible/src/model/fault_signal/plan.rs`: `Plan` carries one event
     graph plus one canonical `FaultSignalPlan`, and
-    `World::scenario_def_with_plan` composes the independent world and plan
-    hashes without folding plan state into topology. Canonical program and
-    binding ordering makes authoring order irrelevant while preserving scenario
-    identity sensitivity to every semantic plan change. The terminal
+    `World::scenario_def_with_plan_properties_and_seed` composes the
+    independent world and plan hashes without folding plan state into topology.
+    Canonical program and binding ordering makes authoring order irrelevant while
+    preserving scenario identity sensitivity to every semantic plan change. The terminal
     `checks.crucible.phase7.gates.signalFaultSystem` gate covers this contract.
 - [x] **T-SPAT-13** Carry `Properties` as an orthogonal content-addressed component
   (defined in 18) with build-time predicate node-reference validation. — satisfies
@@ -1153,9 +1153,9 @@ authority for its shape. The contract those files may rely on:
   orthogonal entry points and node/world templating; no boot-event folding. —
   satisfies [SPAT-23]; spec §6, §10.
   - Completed in `crates/crucible/src/model.rs`: `ScenarioBuilder` now exposes
-    distinct world-layer entry points (`world`, `node`, `node_like`, `link`,
-    `link_with_transport`, `link_def`), plan-layer entry points (`plan`,
-    `plan_entry`), properties-layer entry points (`properties`, `property`), and
+    distinct world-layer entry points (`world`, `node`, `node_like`, `link`),
+    plan-layer entry points (`plan`, `plan_entry`), properties-layer entry points
+    (`properties`, `property`), and
     `seed`, all flowing through the existing validated component composition path.
     `NodeTemplate` supports reusable node settings and builder-level `node_like`
     templating, with no boot-event topology/assertion folding API. The focused

@@ -6,16 +6,20 @@ use crucible::{
     Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, EventKey,
     GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
     SchedulerError, SchedulerNodeId, SchedulingNodeKind, Seed, TemporalGraph, VirtualTime,
+    try_step,
 };
+
+fn accepted_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    match try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
 use crucible_session::{
     CheckpointRef, CommandReply, Engine, EngineState, LiveSnapshot, LiveStateKind, Outcome,
     PauseReason, SessionActor, SessionCommand, SessionError,
 };
 use tokio::sync::mpsc;
-
-fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
-    crucible::try_step(configuration, decision).expect("test decision should be valid")
-}
 
 #[tokio::test(flavor = "current_thread")]
 async fn fork_child_uses_temporal_graph_fork_and_independent_child_actor() {
@@ -31,7 +35,7 @@ async fn fork_child_uses_temporal_graph_fork_and_independent_child_actor() {
     let parent_before = parent.snapshot();
     let base = prefix_configuration(&parent_before.configuration, 1);
     let fork_decision = generated_decision(99, 0);
-    let expected_branch = valid_step(&base, fork_decision.clone());
+    let expected_branch = accepted_step(&base, fork_decision.clone());
 
     let fork = parent
         .fork_child(&base, [fork_decision.clone()], AppendingLoop::new(400))
@@ -132,7 +136,7 @@ fn stopped_parent_can_fork_from_final_checkpoint_without_mutation() {
         .unwrap_or_else(|error| panic!("parent should stop before final fork: {error}"));
     let parent_before = parent.snapshot();
     let fork_decision = generated_decision(303, 0);
-    let expected_branch = valid_step(&parent_before.configuration, fork_decision.clone());
+    let expected_branch = accepted_step(&parent_before.configuration, fork_decision.clone());
 
     let fork = parent
         .fork_child(
@@ -303,7 +307,7 @@ async fn resume_session_from_savepoint_uses_graph_checkpoint_and_independent_act
 async fn resume_session_from_cached_snapshot_without_thin_node() {
     let scenario = generated_scenario(307);
     let genesis = Configuration::genesis(scenario.clone());
-    let config = valid_step(&genesis, generated_decision(306, 0));
+    let config = accepted_step(&genesis, generated_decision(306, 0));
     let mut materializer = graph_with_baked_genesis(&scenario);
     let checkpoint = materializer
         .save_checkpoint(&config)
@@ -554,7 +558,7 @@ impl QuantumLoop for AppendingLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.seed, self.quanta);
-        let configuration = valid_step(&request.configuration, decision.clone());
+        let configuration = accepted_step(&request.configuration, decision.clone());
         let entry = crucible::test_support::condition_boundary_entry_for_test(
             self.event_log_events,
             VirtualTime { ticks: self.quanta },

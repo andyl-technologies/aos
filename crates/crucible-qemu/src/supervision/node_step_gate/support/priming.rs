@@ -11,6 +11,13 @@ pub(in crate::supervision::node_step_gate) struct PrimeGuestOutcome {
     pub(in crate::supervision::node_step_gate) observable_events: Vec<ObservableEvent>,
 }
 
+/// Retains the first published quantum while QMP authenticates the stopped VM.
+pub(in crate::supervision::node_step_gate) struct PreparedGuestPrime {
+    hot_path: QemuMappedQuantumShmemHotPath,
+    pending: crate::QemuNodePendingQuantum,
+    prime_ceiling: u64,
+}
+
 fn retain_priming_coverage(events: &mut Vec<ObservableEvent>) {
     // Boot priming remains outside modeled scenario execution. Coverage alone
     // crosses the ready boundary as steering feedback; admitting setup-time
@@ -23,30 +30,25 @@ fn retain_priming_coverage(events: &mut Vec<ObservableEvent>) {
     });
 }
 
-/// Drives one bounded priming quantum to move the guest off the boot barrier.
+/// Publishes the first bounded quantum while the guest remains stopped.
 ///
 /// The node's own hot path does not exist yet -- it is built only after QMP
 /// connects -- so this maps a temporary hot path over the same shared-memory
-/// region. Publishing the first ceiling releases the boot barrier exactly as the
-/// M1 install gate does. The loop also pulses the plugin wake eventfd so QEMU's
-/// main loop can dispatch asynchronous device completion while the vCPU is
-/// parked. The temporary hot path is dropped before the node maps its own view
-/// of the region.
+/// region. Publishing the first ceiling releases the plugin's installation-time
+/// boot barrier exactly as the M1 install gate does. QEMU was launched with
+/// `-S`, so no guest instruction can retire before QMP capabilities and the
+/// realized projection manifest are authenticated.
 ///
 /// # Errors
 ///
-/// Returns [`QemuLiveNodeStepGateError`] when the region cannot be mapped, the
-/// hot path cannot bind, a quantum boundary cannot be published or read, or the
-/// guest never reaches the priming ceiling within `timeout`.
-pub(in crate::supervision::node_step_gate) fn prime_guest_off_boot_barrier(
+/// Returns [`QemuLiveNodeStepGateError`] when the region cannot be mapped or the
+/// hot path cannot bind and publish the first quantum.
+pub(in crate::supervision::node_step_gate) fn prepare_guest_prime(
     setup: &crate::QemuHostPluginSetup,
-    timeout: Duration,
     identity: QemuLiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
-    block: Option<&mut QemuLiveBlockIoServicer>,
-    ninep: Option<&mut QemuLive9pIoServicer>,
     boot_backpressure_payload: Option<&[u8]>,
-) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {
+) -> Result<PreparedGuestPrime, QemuLiveNodeStepGateError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
     let shmem_config = QemuQuantumShmemConfig::new(node_id(identity.node), GATE_SLOT)
@@ -72,19 +74,57 @@ pub(in crate::supervision::node_step_gate) fn prime_guest_off_boot_barrier(
     } else {
         PRIME_CEILING_ICOUNT
     };
-    let emitted_frames = drive_mapped_prime_chain(
+    let horizon = crucible::ExecutionHorizon {
+        icount: Icount {
+            retired: prime_ceiling,
+        },
+    };
+    let pending = QemuShmemHotPathChannel::start_quantum(
+        &mut hot_path,
+        horizon,
+        crate::QemuQuantumStopCondition::Ceiling,
+    )
+    .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?;
+
+    Ok(PreparedGuestPrime {
+        hot_path,
+        pending,
+        prime_ceiling,
+    })
+}
+
+/// Drives and collects the first quantum after QMP resumes the guest.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when the quantum cannot be polled, a
+/// setup-time device request fails, or the guest does not reach its ceiling.
+pub(in crate::supervision::node_step_gate) fn complete_guest_prime(
+    setup: &crate::QemuHostPluginSetup,
+    timeout: Duration,
+    prepared: PreparedGuestPrime,
+    block: Option<&mut QemuLiveBlockIoServicer>,
+    ninep: Option<&mut QemuLive9pIoServicer>,
+    boot_backpressure_payload: Option<&[u8]>,
+) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {
+    let PreparedGuestPrime {
+        mut hot_path,
+        pending,
+        prime_ceiling,
+    } = prepared;
+    let emitted_frames = poll_mapped_prime_chain(
         setup,
         timeout,
         &mut hot_path,
+        pending,
         prime_ceiling,
-        block,
-        ninep,
+        PrimeDeviceServicers { block, ninep },
         false,
     )?;
     let mut observable_events = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
         .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming observations", source))?;
     retain_priming_coverage(&mut observable_events);
-    QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
+    QemuShmemHotPathChannel::drain_rng_evidence(&mut hot_path)
         .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming decisions", source))?;
     let retained_network = if let Some(payload) = boot_backpressure_payload {
         Some(retained_network_at_capture(
@@ -100,6 +140,37 @@ pub(in crate::supervision::node_step_gate) fn prime_guest_off_boot_barrier(
         retained_network,
         observable_events,
     })
+}
+
+/// Transfers setup-time device and callback ownership to the live runtime.
+pub(in crate::supervision::node_step_gate) fn finish_guest_prime_runtime(
+    mut runtime: QemuLiveHostIoRuntime,
+    mut block: Option<QemuLiveBlockIoServicer>,
+    ninep: Option<QemuLive9pIoServicer>,
+    accelerator: Option<QemuLiveAcceleratorServicer>,
+    block_latency: Option<BlockLatency>,
+    timeout: Duration,
+) -> Result<QemuLiveHostIoRuntime, QemuLiveNodeStepGateError> {
+    if let (Some(servicer), Some(latency)) = (block.as_mut(), block_latency) {
+        servicer
+            .set_latency_model(latency)
+            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+    }
+    if let Some(servicer) = block {
+        runtime = runtime
+            .with_block_servicer(servicer, BlockIoDiagnostics::shared())
+            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+    }
+    if let Some(servicer) = ninep {
+        runtime = runtime.with_ninep_servicer(servicer, NinepIoDiagnostics::shared());
+    }
+    if let Some(servicer) = accelerator {
+        runtime = runtime.with_accelerator_servicer(servicer);
+    }
+    runtime
+        .fence_priming_handoff(timeout)
+        .map_err(|source| QemuLiveNodeStepGateError::PrimeHandoff { source })?;
+    Ok(runtime)
 }
 
 /// Carries the state needed to continue a boot-time retained-network capture.
@@ -178,7 +249,7 @@ pub(in crate::supervision::node_step_gate) fn continue_boot_network_backpressure
         })?;
     retain_priming_coverage(&mut continued_observations);
     observable_events.append(&mut continued_observations);
-    QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path).map_err(|source| {
+    QemuShmemHotPathChannel::drain_rng_evidence(&mut hot_path).map_err(|source| {
         QemuLiveNodeStepGateError::prime("drain continued priming decisions", source)
     })?;
     let retained_network = Some(retained_network_at_capture(

@@ -1,4 +1,4 @@
-# 0089 - Exact-boundary vCPU introspection
+# Capability task 0089 — Exact-boundary vCPU introspection
 
 ## Purpose
 
@@ -6,10 +6,10 @@ Exact checkpoint capture can run from QEMU's main-loop control callback after
 the running vCPU has returned to the BQL. At that point every vCPU register file
 and the serialized RR owner and cursor are committed and stable, but
 `current_cpu` is intentionally absent. The live-instruction introspection
-contract introduced by patch `0077` rejects that context, causing otherwise
+contract introduced by capability task `0077` rejects that context, causing otherwise
 valid checkpoint fingerprint capture to fail.
 
-Patch `0089` admits authoritative all-vCPU register files and the committed RR
+Capability task `0089` admits authoritative all-vCPU register files and the committed RR
 cursor at an exact deterministic plugin boundary. It does not add fallback
 state and does not weaken arbitrary-context rejection.
 
@@ -45,7 +45,7 @@ execution and fresh-process restore; it never depends on a stale
 
 ## Files and license scope
 
-The patch modifies `plugins/api.c` and `include/qemu/qemu-plugin.h`, preserving
+The atomic patch modifies `plugins/api.c` and `include/plugins/qemu-plugin.h`, preserving
 their existing licenses. It creates no QEMU source file and changes no Unix
 socket or shared-memory protocol.
 
@@ -59,8 +59,8 @@ socket or shared-memory protocol.
    live-instruction register and cursor samples to remain valid and identical.
 4. Prove plugin-install or other unowned register and cursor reads still return
    nonzero rejection statuses.
-5. Rebuild every patch prefix and pass regeneration, ABI, license, inertness,
-   and corresponding-source gates.
+5. Rebuild the atomic patch and pass regeneration, ABI, license, inertness, and
+   corresponding-source gates.
 
 - **[QFP-INTROSPECT-BOUNDARY-1]** An exact deterministic main-loop boundary
   holding the BQL MUST read all quiescent vCPU register files and the committed

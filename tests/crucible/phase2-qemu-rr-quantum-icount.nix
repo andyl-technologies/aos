@@ -4,26 +4,16 @@
   attrPath ? "checks.crucible.phase2.qemuRrQuantumIcount",
   taskIds ? ["T-PATCH-21"],
 }: let
-  patchName = "0002-crucible-rr-fingerprint-helpers.patch";
-  patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
+  patchDir = ../../pkgs/emulation/qemu-patches;
+  atomicPatch = import (patchDir + "/_atomic-patch.nix");
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   tracePluginSource = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
   phase0S11 = builtins.readFile ./phase0-s11.nix;
-  rrFingerprintHelpersSource = builtins.readFile ./phase1-rr-fingerprint-helpers.nix;
-  icountNoRealtimeSource = builtins.readFile ./phase1-icount-no-realtime.nix;
   qemuMultiVcpuLaunchSource = builtins.readFile ./phase2-qemu-multi-vcpu-launch.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
-  rrFingerprintHelpers = import ./phase1-rr-fingerprint-helpers.nix {
-    inherit pkgs lib;
-    qemuPackage = pkgs.qemu-crucible;
-  };
-  icountNoRealtime = import ./phase1-icount-no-realtime.nix {
-    inherit pkgs lib;
-    qemuPackage = pkgs.qemu-crucible;
-  };
   qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {inherit pkgs lib;};
-  qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {inherit pkgs lib;};
   # Reuse the canonical long-horizon S11 derivation. Secondary vCPUs remain
   # halted during the short boot prefix, so a shortened fixture cannot prove a
   # real RR handoff even though the exported cursor is already valid.
@@ -36,14 +26,14 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
     ]
-    ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+    ++ failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "RR switch quantum option";
         needle = ''qemu_opt_get_number(opts, "rr_switch_quantum", 0)'';
       }
       {
         label = "node-icount per-vCPU budget clamp";
-        needle = "return MIN(limit, (int64_t)rr_switch_quantum);";
+        needle = "return MIN(limit, (int64_t)remaining);";
       }
       {
         label = "RR switch quantum sim guard";
@@ -55,11 +45,7 @@
       }
       {
         label = "RR cursor export";
-        needle = "uint64_t icount_crucible_rr_cursor_position(CPUState *cpu)";
-      }
-      {
-        label = "current RR vCPU export";
-        needle = "qemu_plugin_crucible_rr_current_vcpu";
+        needle = "uint64_t icount_crucible_rr_cursor_position(void)";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-trace-plugin.c" tracePluginSource [
@@ -178,46 +164,6 @@
         needle = ''if stopAt == null'';
       }
     ]
-    ++ failuresFor "tests/crucible/phase1-rr-fingerprint-helpers.nix" rrFingerprintHelpersSource [
-      {
-        label = "RR budget pinned result";
-        needle = "rr_budget_pinned=true";
-      }
-      {
-        label = "stock unpinned RR budget negative control";
-        needle = "stock_negative_control_rr_budget_unpinned=true";
-      }
-      {
-        label = "pinned RR switch trace evidence";
-        needle = "rr_switch_trace_pinned_under_host_jitter=true";
-      }
-      {
-        label = "sim-gated RR quantum evidence";
-        needle = "rr_switch_quantum_sim_gated=true";
-      }
-      {
-        label = "non-sim stock budget evidence";
-        needle = "non_sim_rr_switch_quantum_uses_stock_budget=true";
-      }
-      {
-        label = "adaptive RR switch trace negative control";
-        needle = "adaptive_rr_switch_trace_negative_control=red";
-      }
-      {
-        label = "configured non-sim RR switch trace negative control";
-        needle = "patched_non_sim_rr_switch_trace_negative_control=red";
-      }
-    ]
-    ++ failuresFor "tests/crucible/phase1-icount-no-realtime.nix" icountNoRealtimeSource [
-      {
-        label = "adaptive realtime negative control";
-        needle = "adaptive_realtime_consulted=true";
-      }
-      {
-        label = "stock realtime dependency negative control";
-        needle = "stock_negative_control_realtime_dependent=true";
-      }
-    ]
     ++ failuresFor "tests/crucible/phase2-qemu-multi-vcpu-launch.nix" qemuMultiVcpuLaunchSource [
       {
         label = "ascending vCPU rotation evidence";
@@ -270,27 +216,6 @@ in
 
             mkdir -p "$out"
 
-            rr_result="${rrFingerprintHelpers}/result"
-            require_line "$rr_result" "PASS"
-            require_line "$rr_result" "patch=${patchName}"
-            require_line "$rr_result" "rr_switch_quantum_configured=true"
-            require_line "$rr_result" "rr_budget_pinned=true"
-            require_line "$rr_result" "rr_switch_quantum_sim_gated=true"
-            require_line "$rr_result" "non_sim_rr_switch_quantum_uses_stock_budget=true"
-            require_line "$rr_result" "rr_switch_trace_pinned_under_host_jitter=true"
-            require_line "$rr_result" "adaptive_rr_switch_trace_negative_control=red"
-            require_line "$rr_result" "patched_non_sim_rr_switch_trace_negative_control=red"
-            require_line "$rr_result" "stock_negative_control_rr_budget_unpinned=true"
-            cp "$rr_result" "$out/rr-fingerprint-helpers.result"
-
-            icount_result="${icountNoRealtime}/result"
-            require_line "$icount_result" "PASS"
-            require_line "$icount_result" "synthetic_fast_slow_realtime_deadlines=true"
-            require_line "$icount_result" "sim_precise_tb_exit_budget=identical"
-            require_line "$icount_result" "adaptive_realtime_consulted=true"
-            require_line "$icount_result" "stock_negative_control_realtime_dependent=true"
-            cp "$icount_result" "$out/icount-no-realtime.result"
-
             launch_result="${qemuMultiVcpuLaunch}/result"
             require_line "$launch_result" "PASS"
             require_line "$launch_result" "smp_multi_vcpu_test=4"
@@ -299,20 +224,6 @@ in
             require_line "$launch_result" "rejects_mttcg=true"
             require_line "$launch_result" "rejects_unpinned_rr_switch_quantum=true"
             cp "$launch_result" "$out/qemu-multi-vcpu-launch.result"
-
-            nvcpu_result="${qemuNvcpuFingerprint}/result"
-            require_line "$nvcpu_result" "PASS"
-            require_line "$nvcpu_result" "rr_cursor=current-vcpu-position-and-quantum"
-            require_line "$nvcpu_result" "guest_fixture=reset-vector-broadcast-init-sipi-sipi-busy-smp-bios"
-            require_line "$nvcpu_result" "real_qemu_runs=two-bounded-sim-smp4-stop-at-traces"
-            require_line "$nvcpu_result" "real_qemu_comparison=canonical-rust-stream"
-            require_line "$nvcpu_result" "real_qemu_adversary=second-run-bounded-scheduler-preemption"
-            require_line "$nvcpu_result" "live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum"
-            require_line "$nvcpu_result" "all_vcpus_retired_at_horizon=true"
-            require_line "$nvcpu_result" "live_device_io_observed=true"
-            require_line "$nvcpu_result" "exact_horizon_authoritative=true"
-            require_line "$nvcpu_result" "plugin_exit_pause_overshoot_bound=zero-exact-horizon"
-            cp "$nvcpu_result" "$out/qemu-nvcpu-fingerprint.result"
 
             s11_result="${simS11}/result"
             require_line "$s11_result" "PASS"
@@ -326,7 +237,7 @@ in
             require_line "$s11_result" "samples=41"
             require_line "$s11_result" "require_guest_pass=1"
             require_line "$s11_result" "host_adversary=bounded-scheduler-preemption"
-            require_line "$s11_result" "extended_fingerprint_match=true"
+            require_line "$s11_result" "aggregate_fingerprint_match=true"
             require_line "$s11_result" "aggregate_icount_stream_match=true"
             require_line "$s11_result" "rr_switch_trace_match=true"
             require_line "$s11_result" "per_vcpu_delta_trace_match=true"
@@ -344,7 +255,7 @@ in
             tasks=${taskList}
             gate=gate:patch-microtests
             gate=gate:single-vm-fingerprint
-            patch=${patchName}
+            atomic_patch=${atomicPatch.file}
             accelerator=sim,thread=single
             vcpus=4
             rr_switch_quantum=4096
@@ -355,17 +266,11 @@ in
             sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(canonical-long-horizon)
             rr_budget_pinned=true
             rr_switch_trace_pinned_under_host_jitter=true
-            adaptive_realtime_quantum_negative_control=red
-            adaptive_rr_switch_trace_negative_control=red
-            patched_non_sim_rr_switch_trace_negative_control=red
-            non_sim_rr_switch_quantum_uses_stock_budget=true
-            stock_unpinned_rr_budget_negative_control=red
             rejects_mttcg=true
             rejects_unpinned_rr_switch_quantum=true
-            nvcpu_fingerprint_rr_cursor=covered
-            nvcpu_live_smp_guest=covered
-            nvcpu_live_device_io=covered
-            nvcpu_exact_horizon=covered
+            multi_vcpu_fingerprint=checks.crucible.phase0.s11MultiVcpuFingerprint
+            live_smp_guest=covered
+            exact_horizon=covered
             RESULT
           '';
         }

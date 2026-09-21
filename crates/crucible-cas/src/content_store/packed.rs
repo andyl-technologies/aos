@@ -36,7 +36,10 @@ use format::{
     write_pack_header,
 };
 
-use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
+use super::admin::{
+    InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
+    physical_storage_identity,
+};
 use super::directory::create_dir_all_durable;
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
@@ -78,140 +81,37 @@ const PACK_INDEX_INTERRUPTION_TRIGGER: &str =
 #[cfg(feature = "destructive-recovery-faults")]
 const PACK_INDEX_INTERRUPTION_EXIT_CODE: i32 = 91;
 
-/// Checked logical and physical accounting for one packed leaf generation.
+mod planning;
+
+pub use planning::{
+    PackedRepackPlan, PackedRepackPlanId, PackedRepackReport, PackedStorageAccounting,
+};
+
+/// Terminal report from reclaiming material outside an authenticated pack index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PackedStorageAccounting {
-    generation: u64,
-    logical_objects: u64,
-    logical_bytes: u64,
-    packs: u64,
-    physical_bytes: u64,
+pub struct PackedIncompleteCleanupReport {
+    index_generation: u64,
+    removed_unreferenced_packs: u64,
+    removed_staging_packs: u64,
 }
 
-impl PackedStorageAccounting {
-    /// Returns the monotonic index generation.
+impl PackedIncompleteCleanupReport {
+    /// Returns the authenticated index generation that authorized cleanup.
     #[must_use]
-    pub const fn generation(self) -> u64 {
-        self.generation
+    pub const fn index_generation(self) -> u64 {
+        self.index_generation
     }
 
-    /// Returns the indexed logical-object count.
+    /// Returns the number of complete pack files absent from that index.
     #[must_use]
-    pub const fn logical_objects(self) -> u64 {
-        self.logical_objects
+    pub const fn removed_unreferenced_packs(self) -> u64 {
+        self.removed_unreferenced_packs
     }
 
-    /// Returns the checked sum of indexed logical bytes.
+    /// Returns the number of abandoned staging pack files removed.
     #[must_use]
-    pub const fn logical_bytes(self) -> u64 {
-        self.logical_bytes
-    }
-
-    /// Returns the number of physical packs referenced by the index.
-    #[must_use]
-    pub const fn packs(self) -> u64 {
-        self.packs
-    }
-
-    /// Returns the checked sum of referenced physical pack bytes.
-    #[must_use]
-    pub const fn physical_bytes(self) -> u64 {
-        self.physical_bytes
-    }
-}
-
-/// Result of one deterministic replacement-pack publication.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PackedRepackReport {
-    plan: PackedRepackPlanId,
-    before: PackedStorageAccounting,
-    after: PackedStorageAccounting,
-    removed_packs: u64,
-    replayed: bool,
-}
-
-impl PackedRepackReport {
-    /// Returns the exact applied or replayed plan identity.
-    #[must_use]
-    pub const fn plan(self) -> PackedRepackPlanId {
-        self.plan
-    }
-
-    /// Returns accounting before the index-generation switch.
-    #[must_use]
-    pub const fn before(self) -> PackedStorageAccounting {
-        self.before
-    }
-
-    /// Returns accounting after replacement publication and cleanup.
-    #[must_use]
-    pub const fn after(self) -> PackedStorageAccounting {
-        self.after
-    }
-
-    /// Returns the number of superseded pack names removed durably.
-    #[must_use]
-    pub const fn removed_packs(self) -> u64 {
-        self.removed_packs
-    }
-
-    /// Returns whether the index switch had already committed before this call.
-    #[must_use]
-    pub const fn replayed(self) -> bool {
-        self.replayed
-    }
-}
-
-/// Content-derived identity of one exact packed-index repack plan.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PackedRepackPlanId([u8; 32]);
-
-impl PackedRepackPlanId {
-    /// Returns the raw plan digest.
-    #[must_use]
-    pub const fn as_bytes(self) -> [u8; 32] {
-        self.0
-    }
-}
-
-/// Canonical exact-generation plan for deterministic replacement packing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PackedRepackPlan {
-    id: PackedRepackPlanId,
-    configuration: [u8; 32],
-    instance: [u8; 32],
-    generation: u64,
-    index_digest: [u8; 32],
-    before: PackedStorageAccounting,
-}
-
-impl PackedRepackPlan {
-    /// Returns the content-derived plan identity.
-    #[must_use]
-    pub const fn id(&self) -> PackedRepackPlanId {
-        self.id
-    }
-
-    /// Returns the exact pre-apply storage accounting captured by the plan.
-    #[must_use]
-    pub const fn before(&self) -> PackedStorageAccounting {
-        self.before
-    }
-
-    /// Returns canonical bytes suitable for an external maintenance journal.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        encode_repack_plan(self)
-    }
-
-    /// Strictly decodes one canonical v1 plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Incompatible`] for truncation, trailing bytes,
-    /// checksum failure, or invalid accounting.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
-        decode_repack_plan(bytes)
+    pub const fn removed_staging_packs(self) -> u64 {
+        self.removed_staging_packs
     }
 }
 
@@ -223,7 +123,6 @@ pub struct PackedBlobBackend {
     admin: PathBuf,
     target_pack_bytes: u64,
     configuration: [u8; 32],
-    create_lock_files: bool,
 }
 
 impl PackedBlobBackend {
@@ -242,45 +141,6 @@ impl PackedBlobBackend {
         root: impl Into<PathBuf>,
         target_pack_bytes: u64,
     ) -> Result<Self, StoreError> {
-        let backend = Self::configured(name, root, target_pack_bytes, true)?;
-        create_dir_all_durable(&backend.packs)?;
-        create_dir_all_durable(&backend.admin)?;
-        backend.initialize()?;
-        Ok(backend)
-    }
-
-    /// Opens an existing packed backend without initialization or recovery cleanup.
-    ///
-    /// The packed root, its pack and administration directories, the current
-    /// index, and both lock files must already exist. Unreferenced complete packs
-    /// and owned staging files remain untouched so a separately authenticated
-    /// maintenance plan can fail closed without changing recovery evidence.
-    /// Later operations through this value never recreate a removed lock file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid bounds, absent or non-directory roots,
-    /// absent lock or index state, an incompatible index, or a corrupt
-    /// referenced pack.
-    pub fn open_existing_preserving_recovery_debris(
-        name: impl Into<String>,
-        root: impl Into<PathBuf>,
-        target_pack_bytes: u64,
-    ) -> Result<Self, StoreError> {
-        let backend = Self::configured(name, root, target_pack_bytes, false)?;
-        require_existing_directory(&backend.root)?;
-        require_existing_directory(&backend.packs)?;
-        require_existing_directory(&backend.admin)?;
-        backend.authenticate_existing()?;
-        Ok(backend)
-    }
-
-    fn configured(
-        name: impl Into<String>,
-        root: impl Into<PathBuf>,
-        target_pack_bytes: u64,
-        create_lock_files: bool,
-    ) -> Result<Self, StoreError> {
         if !(MIN_TARGET_PACK_BYTES..=MAX_PACK_BYTES).contains(&target_pack_bytes) {
             return Err(StoreError::InvalidComposition {
                 reason: "packed target size is outside the admitted bounds",
@@ -290,16 +150,19 @@ impl PackedBlobBackend {
         let root = root.into();
         let packs = root.join(PACK_DIRECTORY);
         let admin = root.join(ADMIN_DIRECTORY);
+        create_dir_all_durable(&packs)?;
+        create_dir_all_durable(&admin)?;
         let configuration = configuration_binding(&name, &root, target_pack_bytes);
-        Ok(Self {
+        let backend = Self {
             name,
             root,
             packs,
             admin,
             target_pack_bytes,
             configuration,
-            create_lock_files,
-        })
+        };
+        backend.initialize()?;
+        Ok(backend)
     }
 
     /// Returns generation-bound logical and referenced-physical accounting.
@@ -447,6 +310,33 @@ impl PackedBlobBackend {
         })
     }
 
+    /// Reclaims complete and staging packs absent from the authenticated index.
+    ///
+    /// The current index and every retained pack authenticate before deletion.
+    /// An exclusive lifecycle lock excludes puts, deletes, and repacks for the
+    /// whole operation. Each removed path is outside the retained generation,
+    /// so interruption is idempotently recoverable by repeating this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained index or one of its packs fails
+    /// authentication, an unexpected pack-directory entry is present, or a
+    /// removal cannot be made durable.
+    pub fn cleanup_incomplete_packs(&self) -> Result<PackedIncompleteCleanupReport, StoreError> {
+        let _lifecycle = self.lock_lifecycle(FlockOperation::LockExclusive)?;
+        let _state = self.lock_state()?;
+        let index = self.load_index()?;
+        self.validate_index_packs(&index)?;
+
+        let removed_unreferenced_packs = self.cleanup_unreferenced_packs(&index)?;
+        let removed_staging_packs = self.cleanup_staging_packs()?;
+        Ok(PackedIncompleteCleanupReport {
+            index_generation: index.generation,
+            removed_unreferenced_packs,
+            removed_staging_packs,
+        })
+    }
+
     fn initialize(&self) -> Result<(), StoreError> {
         let _lifecycle = self.lock_lifecycle(FlockOperation::LockExclusive)?;
         let _state = self.lock_state()?;
@@ -455,9 +345,6 @@ impl PackedBlobBackend {
             Ok(metadata) if metadata.file_type().is_file() => {
                 let index = self.load_index()?;
                 self.validate_index_packs(&index)?;
-                // Reclaim only after the retained generation and its packs authenticate.
-                self.cleanup_unreferenced_packs(&index)?;
-                self.cleanup_staging_packs()?;
             }
             Ok(_) => {
                 return Err(StoreError::InvalidComposition {
@@ -482,13 +369,6 @@ impl PackedBlobBackend {
         self.admin.join(INDEX_FILE)
     }
 
-    fn authenticate_existing(&self) -> Result<(), StoreError> {
-        let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
-        let _state = self.lock_state()?;
-        let index = self.load_index()?;
-        self.validate_index_packs(&index)
-    }
-
     fn lock_lifecycle(&self, operation: FlockOperation) -> Result<File, StoreError> {
         self.lock_file(LIFECYCLE_LOCK_FILE, operation)
     }
@@ -499,21 +379,14 @@ impl PackedBlobBackend {
 
     fn lock_file(&self, name: &str, operation: FlockOperation) -> Result<File, StoreError> {
         let path = self.admin.join(name);
-        let mut flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
-        if self.create_lock_files {
-            flags |= OFlags::CREATE;
-        }
-        let descriptor = open(&path, flags, Mode::RUSR | Mode::WUSR)
-            .map_err(|source| io_error("open packed lock", &path, source.into()))?;
-        let file = File::from(descriptor);
-        let metadata = file
-            .metadata()
-            .map_err(|source| io_error("inspect packed lock", &path, source))?;
-        if !metadata.file_type().is_file() {
-            return Err(StoreError::InvalidComposition {
-                reason: "packed lock path is not a regular file",
-            });
-        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|source| io_error("open packed lock", &path, source))?;
         flock(&file, operation)
             .map_err(|source| io_error("lock packed backend", &path, source.into()))?;
         Ok(file)
@@ -523,9 +396,7 @@ impl PackedBlobBackend {
         let path = self.index_path();
         let bytes = read_bounded_file(&path, MAX_INDEX_BYTES, "read packed index")?;
         let index = decode_index(&bytes, self.configuration)?;
-        if self.create_lock_files {
-            sync_directory(&self.admin)?;
-        }
+        sync_directory(&self.admin)?;
         Ok(index)
     }
 
@@ -954,7 +825,7 @@ impl ImmutableBlobBackend for PackedBlobBackend {
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
-        // Keep staging protected so exclusive startup cleanup cannot unlink an in-flight put.
+        // Keep staging protected so exclusive cleanup cannot unlink an in-flight put.
         let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
         {
             let _state = self.lock_state()?;
@@ -1006,9 +877,7 @@ impl BlobStoreAdmin for PackedBlobBackend {
         let state_lock = self.lock_state()?;
         let index = self.load_index()?;
         self.validate_index_packs(&index)?;
-        if self.create_lock_files {
-            self.cleanup_unreferenced_packs(&index)?;
-        }
+        self.cleanup_unreferenced_packs(&index)?;
         Ok(Box::new(PackedInventoryFence {
             backend: self,
             _lifecycle: lifecycle,
@@ -1047,9 +916,7 @@ impl BlobInventoryFence for PackedInventoryFence<'_> {
 
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
         let Some(removed) = self.index.entries.get(&id).copied() else {
-            if self.backend.create_lock_files {
-                self.backend.cleanup_unreferenced_packs(&self.index)?;
-            }
+            self.backend.cleanup_unreferenced_packs(&self.index)?;
             return Ok(PlannedDeleteDisposition::AlreadyAbsent);
         };
         let mut next = self.index.clone();
@@ -1067,6 +934,53 @@ impl BlobInventoryFence for PackedInventoryFence<'_> {
             self.backend.remove_pack(removed.pack)?;
         }
         Ok(PlannedDeleteDisposition::Deleted)
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        if let Some(existing) = self.index.entries.get(&id) {
+            self.backend
+                .open_entry(id, existing)?
+                .copy_to(&mut io::sink())?;
+            source.verified_as(id)?;
+            return Ok(packed_receipt(
+                &self.backend.name,
+                id,
+                source.logical_length(),
+            ));
+        }
+        if self.index.entries.len() >= MAX_LOGICAL_OBJECTS
+            || self.index.pack_ids().len() >= MAX_PACKS
+        {
+            return Err(StoreError::Quota);
+        }
+
+        let candidate = self.backend.build_pack(&[(id, source.clone())])?;
+        let result = (|| {
+            self.backend.publish_pack(&candidate)?;
+            let entry = candidate
+                .entries
+                .first()
+                .ok_or(StoreError::Incompatible)?
+                .to_index_entry(candidate.id);
+            let mut next = self.index.clone();
+            next.entries.insert(id, entry);
+            next.generation = next.generation.checked_add(1).ok_or(StoreError::Quota)?;
+            next.last_repack_plan = None;
+            self.backend.publish_index_reconciled(&next)?;
+            self.index = next;
+            Ok(packed_receipt(
+                &self.backend.name,
+                id,
+                source.logical_length(),
+            ))
+        })();
+        remove_temporary(&candidate.temporary, result.is_ok())?;
+        result
     }
 }
 
@@ -1320,17 +1234,6 @@ fn open_regular_file(path: &Path, operation: &'static str) -> Result<File, Store
     Ok(file)
 }
 
-fn require_existing_directory(path: &Path) -> Result<(), StoreError> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|source| io_error("inspect packed directory", path, source))?;
-    if !metadata.file_type().is_dir() {
-        return Err(StoreError::InvalidComposition {
-            reason: "packed existing path is not a directory",
-        });
-    }
-    Ok(())
-}
-
 fn remove_temporary(path: &Path, required: bool) -> Result<(), StoreError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1406,7 +1309,7 @@ fn decode_hex(value: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut digest = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = hex_nibble(pair[0])?;
         let low = hex_nibble(pair[1])?;
         digest[index] = (high << 4) | low;

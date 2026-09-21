@@ -44,7 +44,9 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             .unwrap_or_else(|| panic!("missing campaign schema {}", kind.schema_name()));
         assert_eq!(
             row[1].parse::<u32>().expect("validated schema version"),
-            kind.schema_version()
+            kind.schema_version(),
+            "{} registry version is stale",
+            kind.schema_name(),
         );
         let expected_owner = match kind {
             CampaignRecordKind::MerkleNode => "crucible-campaign::merkle",
@@ -88,6 +90,15 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             .expect("missing campaign fact schema")[1],
         "14"
     );
+    let selectable_catalog = rows
+        .get("crucible.guest-selectable.catalog-plan")
+        .expect("missing selectable catalog-plan schema");
+    assert_eq!(selectable_catalog[1], "3");
+    assert_eq!(
+        selectable_catalog[2],
+        "crucible-protocol::selectable_catalog_plan"
+    );
+    assert_eq!(selectable_catalog[3], "process-protocol-message");
     let mut owned_campaign_schemas = CampaignRecordKind::ALL
         .into_iter()
         .map(CampaignRecordKind::schema_name)
@@ -99,14 +110,14 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(planner_result[2], "crucible-campaign::exploration");
     assert_eq!(planner_result[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.planner-step-proposal");
-    for schema in [
-        "crucible.campaign.planner-request",
-        "crucible.campaign.planner-response",
+    for (schema, version) in [
+        ("crucible.campaign.planner-request", "3"),
+        ("crucible.campaign.planner-response", "1"),
     ] {
         let message = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing planner service schema {schema}"));
-        assert_eq!(message[1], "1");
+        assert_eq!(message[1], version);
         assert_eq!(message[2], "crucible-campaign::planner_service");
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
@@ -223,7 +234,8 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             .unwrap_or_else(|| panic!("missing campaign service schema {schema}"));
         let expected_version = match schema {
             "crucible.campaign.explain-campaign-attempt-response"
-            | "crucible.campaign.submit-campaign-discovery-request" => "2",
+            | "crucible.campaign.submit-campaign-branch-response" => "2",
+            "crucible.campaign.submit-campaign-discovery-request" => "3",
             _ => "1",
         };
         assert_eq!(message[1], expected_version);
@@ -311,7 +323,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.production-exact-closure",
-            "8",
+            "9",
             "crucible-api::vm_lifecycle",
             "device-state",
         ),
@@ -341,15 +353,6 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], owner);
         assert_eq!(record[3], kind);
     }
-    let replay_capture = rows
-        .get("crucible.executor.finding-replay-capture-manifest")
-        .unwrap_or_else(|| panic!("missing finding replay capture manifest schema"));
-    assert_eq!(replay_capture[1], "1");
-    assert_eq!(
-        replay_capture[2],
-        "crucible-daemon::finding_replay_capture_store"
-    );
-    assert_eq!(replay_capture[3], "exact-manifest");
     let loopback = rows
         .get("crucible.executor.loopback-frame")
         .unwrap_or_else(|| panic!("missing executor loopback frame schema"));
@@ -473,7 +476,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let scan_index = rows
         .get(scan_index_schema)
         .unwrap_or_else(|| panic!("missing ordered planner scan index schema"));
-    assert_eq!(scan_index[1], "1");
+    assert_eq!(scan_index[1], "2");
     assert_eq!(
         scan_index[2],
         "crucible-campaign::repository::planner_scan_index"
@@ -584,7 +587,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
         let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "10"
+            "11"
         } else {
             "1"
         };

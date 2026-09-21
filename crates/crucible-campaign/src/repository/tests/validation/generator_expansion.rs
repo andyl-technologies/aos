@@ -1,8 +1,6 @@
 //! Generator expansion, feedback, and owner-bound validation regressions.
 
 use super::*;
-use crate::FindingExactPins;
-
 #[test]
 fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
     let (repository, lineage, policy) = fixture();
@@ -80,7 +78,7 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         "generator-opportunity",
     );
     let integer = CandidateGeneratorSpec::new(
-        1,
+        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::ProgressiveInteger {
             initial_strata: 2,
             feedback_interval: 1,
@@ -91,10 +89,12 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         .publish_generator(&integer)
         .expect("publish integer generator");
     let incompatible = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(integer_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -112,7 +112,7 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
     ));
 
     let mixture = CandidateGeneratorSpec::new(
-        1,
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::OrderedMixture {
             components: vec![WeightedGenerator::new(integer_id, 1).expect("component")],
         },
@@ -122,10 +122,12 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         .publish_generator(&mixture)
         .expect("publish mixture");
     let incompatible_mixture = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(mixture_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -175,10 +177,12 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         })
     ));
     let valid = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(all_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -322,57 +326,12 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
         Some(&ContinuationState::Exhausted)
     );
 
-    let legacy_all = CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All)
-        .expect("legacy all generator");
-    let legacy_all_id = repository
-        .publish_generator(&legacy_all)
-        .expect("publish legacy all generator");
-    let legacy_request = BranchRequest::new(
-        valid.branch_point(),
-        valid.parent(),
-        valid.opportunity(),
-        valid.domain(),
-        CandidateSource::generated(legacy_all_id),
-        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
-            "test",
-            b"legacy-generator",
-        ))),
-        BranchBudget::new(2, 2).expect("budget"),
-        StopCondition::NextChoice,
-    )
-    .expect("legacy generated request");
-    let legacy_issued = repository
-        .submit_known_branch_request("generators", second_admitted.new_snapshot, &legacy_request)
-        .expect("accept legacy generated request as suspended work");
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
     assert!(matches!(
-        repository.project_finite_expansion(
-            legacy_issued.new_snapshot,
-            legacy_request.branch_point(),
-            None,
-            10,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "generated-expansion-projector-is-not-implemented"
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
         })
     ));
-    repository
-        .validated_heads
-        .lock()
-        .expect("validation cache")
-        .clear();
-    assert_eq!(
-        repository
-            .head("generators")
-            .expect("rebuild generated history")
-            .snapshot_id(),
-        legacy_issued.new_snapshot
-    );
 }
 
 #[test]
@@ -530,10 +489,12 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
         )
         .expect("discover exhaustive choice");
     let exhaustive = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(all_id),
         BranchRequestCause::ExhaustivePolicy(policy.id().expect("policy id")),
         BranchBudget::new(2, 2).expect("exact exhaustive budget"),
@@ -541,10 +502,12 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
     )
     .expect("exhaustive request");
     let partial = BranchRequest::new(
-        finite.branch_point(),
-        finite.parent(),
-        finite.opportunity(),
-        finite.domain(),
+        BranchRequest::identity(
+            finite.branch_point(),
+            finite.parent(),
+            finite.opportunity(),
+            finite.domain(),
+        ),
         CandidateSource::generated(all_id),
         BranchRequestCause::ExhaustivePolicy(policy.id().expect("policy id")),
         BranchBudget::new(1, 1).expect("partial budget"),
@@ -648,10 +611,12 @@ fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
         )
         .expect("discover too-wide choice");
     let too_wide = BranchRequest::new(
-        narrow_finite.branch_point(),
-        narrow_finite.parent(),
-        narrow_finite.opportunity(),
-        narrow_finite.domain(),
+        BranchRequest::identity(
+            narrow_finite.branch_point(),
+            narrow_finite.parent(),
+            narrow_finite.opportunity(),
+            narrow_finite.domain(),
+        ),
         CandidateSource::generated(all_id),
         BranchRequestCause::ExhaustivePolicy(narrow_policy.id().expect("narrow policy id")),
         BranchBudget::new(2, 2).expect("complete domain budget"),
@@ -745,10 +710,12 @@ fn generated_all_discrete_uses_stable_alternative_order() {
         .publish_generator(&generator)
         .expect("publish generator");
     let request = BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::generated(generator_id),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -865,7 +832,7 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["beta", "delta", "gamma", "alpha"]
+        vec!["delta", "beta", "alpha", "gamma"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(
@@ -903,12 +870,16 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
         ChoiceValue::Discrete(candidates[1]),
         1,
     );
-    assert!(matches!(
-        repository.issue_proposal("generated-weighted", issued.new_snapshot, &wrong),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-source-order"
-        })
-    ));
+    let wrong_result = repository.issue_proposal("generated-weighted", issued.new_snapshot, &wrong);
+    assert!(
+        matches!(
+            &wrong_result,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "proposal-value-does-not-match-source-order"
+            })
+        ),
+        "unexpected wrong weighted proposal result: {wrong_result:?}"
+    );
     let first = finite_proposal(
         &request,
         &policy,
@@ -1087,37 +1058,17 @@ fn weighted_categorical_generator_bounds_and_versions_fail_closed() {
         })
     ));
 
-    let legacy = CandidateGeneratorSpec::new(
-        crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::WeightedCategorical {
-            weights: BTreeMap::from([(alternative, 1)]),
-        },
-    )
-    .expect("legacy weighted generator");
-    let legacy_id = repository
-        .publish_generator(&legacy)
-        .expect("publish legacy weighted generator");
-    let (_, request) = generated_discrete_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        alternative,
-        legacy_id,
-        "weighted-legacy",
-        1,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&request, &domain)
-            .expect("legacy candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
+    assert!(matches!(
+        CandidateGeneratorSpec::new(
+            crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::WeightedCategorical {
+                weights: BTreeMap::from([(alternative, 1)]),
+            },
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
+        })
+    ));
 }
 
 #[test]
@@ -1213,7 +1164,7 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["beta", "alpha", "gamma", "delta"]
+        vec!["alpha", "beta", "gamma", "delta"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(
@@ -1246,12 +1197,16 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
         ChoiceValue::Discrete(candidates[1]),
         1,
     );
-    assert!(matches!(
-        repository.issue_proposal("generated-mixture", issued.new_snapshot, &wrong),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-source-order"
-        })
-    ));
+    let wrong_result = repository.issue_proposal("generated-mixture", issued.new_snapshot, &wrong);
+    assert!(
+        matches!(
+            &wrong_result,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "proposal-value-does-not-match-source-order"
+            })
+        ),
+        "unexpected wrong mixture proposal result: {wrong_result:?}"
+    );
     let first_proposal = finite_proposal(
         &request,
         &policy,
@@ -1309,37 +1264,17 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
         Some(4)
     );
 
-    let legacy = CandidateGeneratorSpec::new(
-        crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::OrderedMixture {
-            components: vec![WeightedGenerator::new(first_id, 1).expect("legacy component")],
-        },
-    )
-    .expect("legacy mixture");
-    let legacy_id = repository
-        .publish_generator(&legacy)
-        .expect("publish legacy mixture");
-    let (_, legacy_request) = generated_discrete_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        ids["alpha"],
-        legacy_id,
-        "mixture-legacy",
-        2,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&legacy_request, &domain)
-            .expect("legacy candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&legacy_request)
-            .expect("legacy continuation"),
-        ContinuationState::Open
-    );
+    assert!(matches!(
+        CandidateGeneratorSpec::new(
+            crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::OrderedMixture {
+                components: vec![WeightedGenerator::new(first_id, 1).expect("component")],
+            },
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
+        })
+    ));
 }
 
 #[test]
@@ -1553,618 +1488,12 @@ fn ordered_mixture_generator_enforces_output_work_and_depth_bounds() {
         })
     ));
 
-    let suspended_child =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("suspended child");
-    let suspended_child_id = repository
-        .publish_generator(&suspended_child)
-        .expect("publish suspended child");
-    let suspended = CandidateGeneratorSpec::new(
-        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::OrderedMixture {
-            components: vec![
-                WeightedGenerator::new(suspended_child_id, 1).expect("suspended component"),
-            ],
-        },
-    )
-    .expect("suspended mixture");
-    let suspended_id = repository
-        .publish_generator(&suspended)
-        .expect("publish suspended mixture");
-    let (_, suspended_request) = generated_discrete_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        default,
-        suspended_id,
-        "mixture-suspended-child",
-        1,
-    );
-    assert_eq!(
-        repository
-            .static_candidate_count(&suspended_request, &domain)
-            .expect("suspended candidate count"),
-        None
-    );
-    assert_eq!(
-        repository
-            .initial_continuation_state(&suspended_request)
-            .expect("suspended continuation"),
-        ContinuationState::Open
-    );
-}
-
-#[test]
-fn progressive_integer_generator_refines_only_after_exact_feedback() {
-    let (repository, lineage, policy, blobs) = counted_fixture();
-    let genesis = repository
-        .create_funded("generated-progressive", &lineage, &policy, &BTreeMap::new())
-        .expect("create progressive campaign");
-    let domain = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(0),
-            IntegerValue::Unsigned(16),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("scale"),
-            Vec::new(),
-        )
-        .expect("progressive domain"),
-    );
-    let generator = CandidateGeneratorSpec::new(
-        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: 3,
-            feedback_interval: 2,
-        },
-    )
-    .expect("progressive generator");
-    let generator_id = repository
-        .publish_generator(&generator)
-        .expect("publish progressive generator");
-    let (_, request) = generated_integer_request(
-        &repository,
-        &lineage,
-        domain.clone(),
-        IntegerValue::Unsigned(8),
-        generator_id,
-        "progressive",
-        9,
-    );
-    let expected = [0, 8, 16, 4, 12, 2, 6, 10, 14]
-        .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)));
-    assert_eq!(
-        repository
-            .static_candidate_count(&request, &domain)
-            .expect("history-independent count"),
-        None
-    );
-    for (index, expected) in expected.iter().enumerate() {
-        let visits = if index < 3 {
-            0
-        } else {
-            ((index - 2) * 2) as u64
-        };
-        assert_eq!(
-            repository
-                .candidate_at_with_feedback(&request, &domain, index as u64 + 1, visits)
-                .expect("progressive candidate"),
-            Some(expected.clone())
-        );
-    }
-
-    let requested = repository
-        .submit_known_branch_request("generated-progressive", genesis.snapshot_id(), &request)
-        .expect("submit progressive request");
-    assert_eq!(
-        requested.summary.validated_cardinality(),
-        BranchAcceptanceCount::Exact(9)
-    );
-    assert_eq!(requested.summary.maximum_proposals(), 9);
-    assert_eq!(domain.cardinality(), 17);
-    let mut current = requested.new_snapshot;
-    let mut observations = Vec::new();
-    for (index, value) in expected.iter().take(3).enumerate() {
-        let head = repository
-            .head("generated-progressive")
-            .expect("proposal head");
-        let proposal = finite_proposal(&request, &policy, &head, value.clone(), index as u64 + 1);
-        let proposed = repository
-            .issue_proposal("generated-progressive", current, &proposal)
-            .expect("issue initial progressive proposal");
-        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
-        let admitted = repository
-            .admit_proposal(
-                "generated-progressive",
-                proposed.new_snapshot,
-                proposed.proposal,
-                &selection,
-                &path,
-                &attempt,
-            )
-            .expect("admit initial progressive proposal");
-        current = admitted.new_snapshot;
-        observations.push(generated_observation(
-            &repository,
-            &lineage,
-            &admitted,
-            &path,
-            request.opportunity(),
-            &format!("initial-{index}"),
-        ));
-    }
-
-    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
-    let (_, _, waiting_invocation) = canonical_planner_basis_with_page(
-        &repository,
-        "generated-progressive",
-        current,
-        &planner_state,
-        None,
-        16,
-    );
-    let waiting_request = repository
-        .build_planner_request(
-            current,
-            waiting_invocation.id().expect("waiting invocation id"),
-        )
-        .expect("build waiting planner request");
-    assert_eq!(waiting_request.input_bundle().len(), 2);
-    let waiting_output = CanonicalFrontierPlanner
-        .plan(&waiting_request)
-        .expect("plan waiting frontier");
     assert!(matches!(
-        waiting_output.proposal().disposition(),
-        PlannerProposalDisposition::NoWork
-    ));
-
-    let request_id = request.id().expect("request id");
-    let second_request = BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
-        CandidateSource::generated(generator_id),
-        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
-            "test",
-            b"progressive-second-request",
-        ))),
-        BranchBudget::new(9, 9).expect("second request budget"),
-        StopCondition::NextChoice,
-    )
-    .expect("second progressive request");
-    let second_requested = repository
-        .submit_branch_request("generated-progressive", current, &second_request)
-        .expect("submit second progressive request");
-    current = second_requested.new_snapshot;
-    for (index, value) in expected.iter().take(3).enumerate() {
-        let head = repository
-            .head("generated-progressive")
-            .expect("second proposal head");
-        let proposal = finite_proposal(
-            &second_request,
-            &policy,
-            &head,
-            value.clone(),
-            index as u64 + 1,
-        );
-        let proposed = repository
-            .issue_proposal("generated-progressive", current, &proposal)
-            .expect("issue second progressive proposal");
-        let (selection, path, attempt) = branch_attempt(&repository, &second_request, &proposal);
-        let admitted = repository
-            .admit_proposal(
-                "generated-progressive",
-                proposed.new_snapshot,
-                proposed.proposal,
-                &selection,
-                &path,
-                &attempt,
-            )
-            .expect("admit second progressive proposal");
-        current = admitted.new_snapshot;
-    }
-    let second_request_id = second_request.id().expect("second request id");
-    let waiting_content = repository
-        .lookup_frontier_projection(
-            repository
-                .read_snapshot(current.content_id())
-                .expect("waiting snapshot")
-                .snapshot
-                .roots()
-                .exploration,
-            request_id,
-        )
-        .expect("waiting frontier lookup")
-        .0;
-    let waiting = repository
-        .read_continuation_projection(waiting_content)
-        .expect("waiting frontier projection");
-    assert_eq!(
-        waiting.state(),
-        ContinuationState::WaitingForFeedback(
-            FeedbackWait::new(0, 2).expect("initial feedback wait")
-        )
-    );
-
-    let head_before_early = repository
-        .head("generated-progressive")
-        .expect("early head");
-    let early = finite_proposal(
-        &request,
-        &policy,
-        &head_before_early,
-        expected[3].clone(),
-        4,
-    );
-    let object_count = blobs.object_count().expect("objects before early proposal");
-    assert!(matches!(
-        repository.issue_proposal("generated-progressive", current, &early),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "progressive-generator-feedback-is-insufficient"
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "candidate-generator implementation version does not match its algorithm"
         })
     ));
-    assert_eq!(
-        blobs.object_count().expect("objects after early proposal"),
-        object_count
-    );
-
-    let first_observed = repository
-        .publish_observation("generated-progressive", current, &observations[0])
-        .expect("publish first feedback observation");
-    current = first_observed.new_snapshot;
-    let after_one_content = repository
-        .lookup_frontier_projection(
-            repository
-                .read_snapshot(current.content_id())
-                .expect("one-visit snapshot")
-                .snapshot
-                .roots()
-                .exploration,
-            request_id,
-        )
-        .expect("one-visit frontier lookup")
-        .0;
-    let after_one = repository
-        .read_continuation_projection(after_one_content)
-        .expect("one-visit frontier projection");
-    assert_eq!(
-        after_one.state(),
-        ContinuationState::WaitingForFeedback(
-            FeedbackWait::new(1, 2).expect("one-visit feedback wait")
-        )
-    );
-    let second_after_one = repository
-        .read_continuation_projection(
-            repository
-                .lookup_frontier_projection(
-                    repository
-                        .read_snapshot(current.content_id())
-                        .expect("one-visit second-request snapshot")
-                        .snapshot
-                        .roots()
-                        .exploration,
-                    second_request_id,
-                )
-                .expect("one-visit second frontier lookup")
-                .0,
-        )
-        .expect("one-visit second frontier projection");
-    assert_eq!(
-        second_after_one.state(),
-        ContinuationState::WaitingForFeedback(
-            FeedbackWait::new(1, 2).expect("one-visit second feedback wait")
-        )
-    );
-
-    let second_observed = repository
-        .publish_observation("generated-progressive", current, &observations[1])
-        .expect("publish second feedback observation");
-    current = second_observed.new_snapshot;
-    let after_two_content = repository
-        .lookup_frontier_projection(
-            repository
-                .read_snapshot(current.content_id())
-                .expect("two-visit snapshot")
-                .snapshot
-                .roots()
-                .exploration,
-            request_id,
-        )
-        .expect("two-visit frontier lookup")
-        .0;
-    let after_two = repository
-        .read_continuation_projection(after_two_content)
-        .expect("two-visit frontier projection");
-    assert_eq!(after_two.state(), ContinuationState::Ready);
-    let second_after_two = repository
-        .read_continuation_projection(
-            repository
-                .lookup_frontier_projection(
-                    repository
-                        .read_snapshot(current.content_id())
-                        .expect("two-visit second-request snapshot")
-                        .snapshot
-                        .roots()
-                        .exploration,
-                    second_request_id,
-                )
-                .expect("two-visit second frontier lookup")
-                .0,
-        )
-        .expect("two-visit second frontier projection");
-    assert_eq!(second_after_two.state(), ContinuationState::Ready);
-
-    let ready_head = repository
-        .head("generated-progressive")
-        .expect("ready head");
-    let fourth = finite_proposal(&request, &policy, &ready_head, expected[3].clone(), 4);
-    let proposed = repository
-        .issue_proposal("generated-progressive", current, &fourth)
-        .expect("issue first refinement");
-    let (selection, path, attempt) = branch_attempt(&repository, &request, &fourth);
-    let admitted = repository
-        .admit_proposal(
-            "generated-progressive",
-            proposed.new_snapshot,
-            proposed.proposal,
-            &selection,
-            &path,
-            &attempt,
-        )
-        .expect("admit first refinement");
-    current = admitted.new_snapshot;
-    let after_refinement_content = repository
-        .lookup_frontier_projection(
-            repository
-                .read_snapshot(current.content_id())
-                .expect("refinement snapshot")
-                .snapshot
-                .roots()
-                .exploration,
-            request_id,
-        )
-        .expect("refinement frontier lookup")
-        .0;
-    let after_refinement = repository
-        .read_continuation_projection(after_refinement_content)
-        .expect("refinement frontier projection");
-    assert_eq!(
-        after_refinement.state(),
-        ContinuationState::WaitingForFeedback(
-            FeedbackWait::new(2, 4).expect("second feedback wait")
-        )
-    );
-
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    restarted
-        .validate_complete_head(current.content_id())
-        .expect("restart validates progressive feedback transition");
-    let rebuilt = restarted
-        .project_finite_expansion(current, request.branch_point(), None, 10)
-        .expect("rebuild progressive expansion");
-    assert_eq!(
-        restarted
-            .load_expansion_state(rebuilt)
-            .expect("load rebuilt progressive expansion")
-            .continuations()
-            .get(&request_id),
-        Some(&ContinuationState::WaitingForFeedback(
-            FeedbackWait::new(2, 4).expect("rebuilt feedback wait")
-        ))
-    );
-    assert_eq!(
-        restarted
-            .load_expansion_state(rebuilt)
-            .expect("reload rebuilt progressive expansion")
-            .continuations()
-            .get(&second_request_id),
-        Some(&ContinuationState::Ready)
-    );
-}
-
-#[test]
-fn feedback_progressive_integer_refines_the_highest_owner_scored_interval() {
-    let (repository, lineage, policy, blobs) = counted_fixture();
-    let policy = policy
-        .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
-        .expect("intervention-guided feedback policy");
-    let genesis = repository
-        .create_funded(
-            "generated-feedback-progressive",
-            &lineage,
-            &policy,
-            &BTreeMap::new(),
-        )
-        .expect("create feedback-progressive campaign");
-    let domain = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(0),
-            IntegerValue::Unsigned(16),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("scale"),
-            vec![IntegerValue::Unsigned(2), IntegerValue::Unsigned(6)],
-        )
-        .expect("feedback-progressive domain"),
-    );
-    let generator = CandidateGeneratorSpec::new(
-        crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: 3,
-            feedback_interval: 2,
-        },
-    )
-    .expect("feedback-progressive generator");
-    let generator_id = repository
-        .publish_generator(&generator)
-        .expect("publish feedback-progressive generator");
-    let (_, request) = generated_integer_request(
-        &repository,
-        &lineage,
-        domain,
-        IntegerValue::Unsigned(8),
-        generator_id,
-        "feedback-progressive",
-        9,
-    );
-    let requested = repository
-        .submit_known_branch_request(
-            "generated-feedback-progressive",
-            genesis.snapshot_id(),
-            &request,
-        )
-        .expect("submit feedback-progressive request");
-
-    let initial = [0_u64, 8, 16];
-    let mut current = requested.new_snapshot;
-    let mut observations = Vec::new();
-    for (index, value) in initial.into_iter().enumerate() {
-        let head = repository
-            .head("generated-feedback-progressive")
-            .expect("feedback-progressive proposal head");
-        let proposal = finite_proposal(
-            &request,
-            &policy,
-            &head,
-            ChoiceValue::Integer(IntegerValue::Unsigned(value)),
-            index as u64 + 1,
-        );
-        let proposed = repository
-            .issue_proposal("generated-feedback-progressive", current, &proposal)
-            .expect("issue feedback-progressive initial proposal");
-        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
-        let admitted = repository
-            .admit_proposal(
-                "generated-feedback-progressive",
-                proposed.new_snapshot,
-                proposed.proposal,
-                &selection,
-                &path,
-                &attempt,
-            )
-            .expect("admit feedback-progressive initial proposal");
-        current = admitted.new_snapshot;
-        observations.push(generated_observation(
-            &repository,
-            &lineage,
-            &admitted,
-            &path,
-            request.opportunity(),
-            &format!("feedback-progressive-{index}"),
-        ));
-    }
-
-    for (index, observation) in observations.iter().take(2).enumerate() {
-        current = repository
-            .publish_observation("generated-feedback-progressive", current, observation)
-            .expect("publish feedback-progressive observation")
-            .new_snapshot;
-        if index == 0 {
-            let early_head = repository
-                .head("generated-feedback-progressive")
-                .expect("early feedback-progressive head");
-            let early = finite_proposal(
-                &request,
-                &policy,
-                &early_head,
-                ChoiceValue::Integer(IntegerValue::Unsigned(12)),
-                4,
-            );
-            let before_early = blobs
-                .object_count()
-                .expect("objects before early feedback refinement");
-            assert!(matches!(
-                repository.issue_proposal("generated-feedback-progressive", current, &early),
-                Err(CampaignRepositoryError::Integrity {
-                    reason: "progressive-generator-feedback-is-insufficient"
-                })
-            ));
-            assert_eq!(
-                blobs
-                    .object_count()
-                    .expect("objects after early feedback refinement"),
-                before_early
-            );
-        }
-    }
-    let ready = repository
-        .head("generated-feedback-progressive")
-        .expect("feedback-progressive ready head");
-    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
-    let (_, _, invocation) = canonical_planner_basis_with_page(
-        &repository,
-        "generated-feedback-progressive",
-        current,
-        &planner_state,
-        None,
-        16,
-    );
-    let planner_request = repository
-        .build_planner_request(current, invocation.id().expect("planner invocation id"))
-        .expect("build feedback-progressive planner request");
-    let planner_output = CanonicalFrontierPlanner
-        .plan(&planner_request)
-        .expect("plan feedback-progressive frontier");
-    let PlannerProposalDisposition::Issue { proposals, .. } =
-        planner_output.proposal().disposition()
-    else {
-        panic!("ready feedback-progressive request did not issue");
-    };
-    assert_eq!(
-        proposals.first().map(Proposal::value),
-        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(12)))
-    );
-    let old_largest_gap = finite_proposal(
-        &request,
-        &policy,
-        &ready,
-        ChoiceValue::Integer(IntegerValue::Unsigned(4)),
-        4,
-    );
-    let before_rejection = blobs
-        .object_count()
-        .expect("objects before wrong feedback refinement");
-    assert!(matches!(
-        repository.issue_proposal("generated-feedback-progressive", current, &old_largest_gap,),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-source-order"
-        })
-    ));
-    assert_eq!(
-        blobs
-            .object_count()
-            .expect("objects after wrong feedback refinement"),
-        before_rejection
-    );
-
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    restarted
-        .validate_complete_head(current.content_id())
-        .expect("restart validates feedback-progressive head");
-    let restarted_head = restarted
-        .head("generated-feedback-progressive")
-        .expect("restarted feedback-progressive head");
-    let scored_refinement = finite_proposal(
-        &request,
-        &policy,
-        &restarted_head,
-        ChoiceValue::Integer(IntegerValue::Unsigned(12)),
-        4,
-    );
-    let refined = restarted
-        .issue_proposal(
-            "generated-feedback-progressive",
-            current,
-            &scored_refinement,
-        )
-        .expect("issue owner-scored feedback refinement");
-    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
-        .validate_complete_head(refined.new_snapshot.content_id())
-        .expect("restart validates owner-scored feedback refinement");
 }
 
 #[test]
@@ -2192,7 +1521,7 @@ fn landmark_progressive_integer_prioritizes_an_authenticated_producer_landmark()
         .expect("landmark-progressive domain"),
     );
     let generator = CandidateGeneratorSpec::new(
-        crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::ProgressiveInteger {
             initial_strata: 3,
             feedback_interval: 2,
@@ -2338,21 +1667,25 @@ fn measurement_progressive_integer_prioritizes_verified_objective_discontinuity(
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let objective_name = "latency";
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        BTreeMap::from([(
-            objective_name.to_owned(),
-            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
-                .expect("measurement-progressive objective"),
-        )]),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                    .expect("measurement-progressive objective"),
+            )]),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("measurement-progressive policy")
     .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
@@ -2375,7 +1708,7 @@ fn measurement_progressive_integer_prioritizes_verified_objective_discontinuity(
         .expect("measurement-progressive domain"),
     );
     let generator = CandidateGeneratorSpec::new(
-        crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::ProgressiveInteger {
             initial_strata: 3,
             feedback_interval: 2,
@@ -2521,21 +1854,25 @@ fn coverage_progressive_integer_prioritizes_verified_novelty_discontinuity() {
     let (repository, lineage, base_policy, blobs) = counted_fixture();
     let objective_name = "latency";
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        BTreeMap::from([(
-            objective_name.to_owned(),
-            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
-                .expect("coverage-progressive objective"),
-        )]),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                    .expect("coverage-progressive objective"),
+            )]),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("coverage-progressive policy");
     let campaign = "generated-coverage-progressive";
@@ -2556,7 +1893,7 @@ fn coverage_progressive_integer_prioritizes_verified_novelty_discontinuity() {
         .expect("coverage-progressive domain"),
     );
     let generator = CandidateGeneratorSpec::new(
-        crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::ProgressiveInteger {
             initial_strata: 3,
             feedback_interval: 2,
@@ -2708,224 +2045,6 @@ fn coverage_progressive_integer_prioritizes_verified_novelty_discontinuity() {
 }
 
 #[test]
-fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
-    let (repository, lineage, base_policy, blobs) = counted_fixture();
-    let finding_signal = FindingKind::Divergence.guidance_signal().to_owned();
-    let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        base_policy.mode(),
-        base_policy.explorer().clone(),
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        BTreeMap::from([(
-            finding_signal.clone(),
-            GuidanceWeight::new(finding_signal, 1_000_000).expect("finding-progressive guidance"),
-        )]),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
-    )
-    .expect("finding-progressive policy")
-    .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
-    .expect("intervention-guided finding policy");
-    let campaign = "generated-finding-progressive";
-    let genesis = repository
-        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
-        .expect("create finding-progressive campaign");
-    let domain = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(0),
-            IntegerValue::Unsigned(16),
-            1,
-            None,
-            ExactRational::new(1, 1).expect("scale"),
-            vec![IntegerValue::Unsigned(2), IntegerValue::Unsigned(6)],
-        )
-        .expect("finding-progressive domain"),
-    );
-    let generator = CandidateGeneratorSpec::new(
-        crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: 3,
-            feedback_interval: 2,
-        },
-    )
-    .expect("finding-progressive generator");
-    let generator_id = repository
-        .publish_generator(&generator)
-        .expect("publish finding-progressive generator");
-    let (_, request) = generated_integer_request(
-        &repository,
-        &lineage,
-        domain,
-        IntegerValue::Unsigned(8),
-        generator_id,
-        "finding-progressive",
-        9,
-    );
-    let requested = repository
-        .submit_known_branch_request(campaign, genesis.snapshot_id(), &request)
-        .expect("submit finding-progressive request");
-
-    let mut current = requested.new_snapshot;
-    let mut observations = Vec::new();
-    for (index, value) in [0_u64, 8, 16].into_iter().enumerate() {
-        let head = repository
-            .head(campaign)
-            .expect("finding-progressive proposal head");
-        let proposal = finite_proposal(
-            &request,
-            &policy,
-            &head,
-            ChoiceValue::Integer(IntegerValue::Unsigned(value)),
-            index as u64 + 1,
-        );
-        let proposed = repository
-            .issue_proposal(campaign, current, &proposal)
-            .expect("issue finding-progressive initial proposal");
-        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
-        let admitted = repository
-            .admit_proposal(
-                campaign,
-                proposed.new_snapshot,
-                proposed.proposal,
-                &selection,
-                &path,
-                &attempt,
-            )
-            .expect("admit finding-progressive initial proposal");
-        current = admitted.new_snapshot;
-        let coverage = if index == 0 {
-            BTreeSet::from([
-                CampaignHash::derive("test.finding-progressive", b"block-a"),
-                CampaignHash::derive("test.finding-progressive", b"block-b"),
-                CampaignHash::derive("test.finding-progressive", b"block-c"),
-            ])
-        } else {
-            BTreeSet::new()
-        };
-        observations.push(generated_observation_with_coverage(
-            &repository,
-            &lineage,
-            &admitted,
-            &path,
-            request.opportunity(),
-            &format!("finding-progressive-{index}"),
-            coverage,
-        ));
-    }
-    for (index, observation) in observations.iter().take(2).enumerate() {
-        let observed = repository
-            .publish_observation(campaign, current, observation)
-            .expect("publish finding-progressive observation");
-        current = observed.new_snapshot;
-        let fingerprint = CampaignHash::derive(
-            "test.finding-progressive",
-            if index == 0 {
-                b"endpoint-zero-replay-divergence"
-            } else {
-                b"endpoint-eight-replay-divergence"
-            },
-        );
-        let reproduction = repository
-            .publish_reproduction_artifact(
-                lineage.scenario(),
-                lineage.scenario_content(),
-                observation.child(),
-                observation.child_content(),
-                fingerprint,
-                1,
-                format!("finding-progressive reproduction {index}").into_bytes(),
-            )
-            .expect("publish finding-progressive reproduction");
-        let signature = FindingSignature::new(
-            FindingKind::Divergence,
-            fingerprint,
-            None,
-            "qemu.replay-divergence".to_owned(),
-            Some(FindingTarget::Configuration(observation.child_content())),
-            BTreeSet::from([observation.properties().content_id()]),
-        )
-        .expect("finding-progressive signature");
-        current = repository
-            .publish_finding_with_retention(
-                campaign,
-                current,
-                signature,
-                observed.observation,
-                reproduction,
-                None,
-                FindingExactPins::default(),
-            )
-            .expect("publish finding-progressive finding")
-            .new_snapshot;
-    }
-
-    let ready = repository
-        .head(campaign)
-        .expect("finding-progressive ready head");
-    let planner_state = CanonicalFrontierPlanner::initial_state().expect("planner state");
-    let (_, _, invocation) =
-        canonical_planner_basis_with_page(&repository, campaign, current, &planner_state, None, 16);
-    let planner_request = repository
-        .build_planner_request(current, invocation.id().expect("planner invocation id"))
-        .expect("build finding-progressive planner request");
-    let planner_output = CanonicalFrontierPlanner
-        .plan(&planner_request)
-        .expect("plan finding-progressive frontier");
-    let PlannerProposalDisposition::Issue { proposals, .. } =
-        planner_output.proposal().disposition()
-    else {
-        panic!("ready finding-progressive request did not issue");
-    };
-    assert_eq!(
-        proposals.first().map(Proposal::value),
-        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(12)))
-    );
-
-    let coverage_only_candidate = finite_proposal(
-        &request,
-        &policy,
-        &ready,
-        ChoiceValue::Integer(IntegerValue::Unsigned(2)),
-        4,
-    );
-    let before_rejection = blobs
-        .object_count()
-        .expect("objects before finding-discontinuity substitution");
-    assert!(matches!(
-        repository.issue_proposal(campaign, current, &coverage_only_candidate),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-source-order"
-        })
-    ));
-    assert_eq!(
-        blobs
-            .object_count()
-            .expect("objects after finding-discontinuity substitution"),
-        before_rejection
-    );
-
-    let discontinuity = finite_proposal(
-        &request,
-        &policy,
-        &ready,
-        ChoiceValue::Integer(IntegerValue::Unsigned(12)),
-        4,
-    );
-    let refined = repository
-        .issue_proposal(campaign, current, &discontinuity)
-        .expect("issue finding-progressive refinement");
-    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
-        .validate_complete_head(refined.new_snapshot.content_id())
-        .expect("restart validates finding-progressive refinement");
-}
-
-#[test]
 fn rarity_progressive_integer_prioritizes_inverse_frequency_discontinuity() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let policy = policy
@@ -2949,7 +2068,7 @@ fn rarity_progressive_integer_prioritizes_inverse_frequency_discontinuity() {
         .expect("rarity-progressive domain"),
     );
     let generator = CandidateGeneratorSpec::new(
-        crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::ProgressiveInteger {
             initial_strata: 3,
             feedback_interval: 2,

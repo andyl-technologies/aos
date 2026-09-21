@@ -43,12 +43,10 @@ does not create a separate device adapter.
   signal/binding/typed-adapter representation. Existing device algorithms may
   be moved into adapters; the old dispatcher and active-fault tables may not
   remain alongside them.
-- [x] **T-ATOM-3** Bump the scenario schema version. Older scenario versions
-  fail admission with a concise migration error and are not parsed, lowered, or
-  replayed by a compatibility engine.
+- [x] **T-ATOM-3** Cut over the scenario schema atomically. Any noncurrent
+  version fails admission before its contents are parsed, lowered, or replayed.
 - [x] **T-ATOM-4** Add repository guards for retired type, field, event, and CLI
-  names. Historical RFC text and an explicit migration guide are the only
-  allowed occurrences.
+  names so removed surfaces cannot be reintroduced.
 - [x] **T-ATOM-5** Prohibit dormant feature flags, placeholder adapters,
   accepted-but-unapplied variants, fallback approximations, `todo!`,
   `unimplemented!`, and wildcard handling of effect or operator enums.
@@ -217,7 +215,7 @@ media behavior rather than approximating them as completion errors.
 ## 7.7 Complete node and QEMU adapter workstream
 
 The node adapter implements every row in §4.5 according to the closed ledger in
-[§8](08-executable-effect-contracts.md) and the patch contracts in
+[§8](08-executable-effect-contracts.md) and the capability contracts in
 [`14-qemu-fault-patches/`](14-qemu-fault-patches/). This expands well beyond the
 current crash/slow/clock-skew implementation and requires new patched-QEMU/plugin
 APIs. Mock, fake, and test-double backends are prohibited; every effect must
@@ -305,9 +303,9 @@ produce live patched-QEMU architectural or device evidence.
   accepted.
 - [x] **T-QEMU-0070** Implement
   [`crucible-fault-vmstate`](14-qemu-fault-patches/13-vmstate-and-final-gates.md):
-  save/restore for all fault state, a cross-patch snapshot barrier, system
-  evidence closure, rollback/revert-sensitive tests, inertness/performance gates,
-  and final capability closure.
+  save/restore for all fault state, a cross-capability snapshot barrier, system
+  evidence closure, malformed and missing-capability rejection tests,
+  inertness/performance gates, and final capability closure.
 - [x] **T-QEMU-0071** Implement
   [`crucible-lifecycle-precondition`](14-qemu-fault-patches/22-lifecycle-precondition.md):
   bind lifecycle prepare and apply to one live VM-state digest, prove the
@@ -393,10 +391,6 @@ produce live patched-QEMU architectural or device evidence.
   ownership, validate every realized CPU manifest, and prove that every
   rejected register command preserves all canonical register bytes and
   mutation-side-effect counters.
-- [x] **T-QEMU-0086** Implement
-  [`crucible-genesis-observation-boundary`](14-qemu-fault-patches/37-genesis-observation-boundary.md):
-  admit the BQL-held prelaunch definition callback only at raw icount zero,
-  capture every realized vCPU before QMP quit, and remove plugin-exit sampling.
 - [x] **T-QEMU-0087** Implement
   [`crucible-deterministic-rcu-quiescence`](14-qemu-fault-patches/38-deterministic-rcu-quiescence.md):
   prevent host-originated forced RCU kicks from selecting translation-block and
@@ -453,8 +447,8 @@ produce live patched-QEMU architectural or device evidence.
   while preserving GVA targeting for ordinary guest-memory region scenarios.
 - [x] **T-QEMU-0097** Implement
   [`crucible-canonical-memory-retry-identity`](14-qemu-fault-patches/48-canonical-memory-retry-identity.md):
-  exclude TB-local instruction ordinals from memory retry identity and
-  serialize the retained compatibility field at canonical zero.
+  remove the TB-local instruction ordinal from the memory retry key and its
+  checkpoint encoding while retaining it in the live transaction and evidence.
 - [x] **T-QEMU-0098** Implement
   [`crucible-inactive-nested-tsc-guard`](14-qemu-fault-patches/49-inactive-nested-tsc-guard.md):
   guard SVM entry and exit TSC sampling before evaluating clock-fault inputs,
@@ -575,10 +569,10 @@ produce live patched-QEMU architectural or device evidence.
   provision a nonzero immutable process generation before plugin command
   admission, include it in terminal authorization and VMState identity, and
   reject launch or restore generation mismatches.
-- [x] **T-QEMU-LICENSE** Land every numbered patch as a separate DCO-signed
-  commit, retain applicable upstream notices, update the series/catalog/license
-  inventories, preserve the public shared-memory process boundary, and ship the
-  identity-matched complete corresponding source required by
+- [x] **T-QEMU-LICENSE** Land the numbered capabilities in one DCO-signed atomic
+  QEMU commit, retain applicable upstream notices, update the
+  integration/catalog/license inventories, preserve the public shared-memory
+  process boundary, and ship the identity-matched complete corresponding source required by
   [§14.2](14-qemu-fault-patches/README.md#142-process-and-license-boundary).
 
 ## 7.8 Specification-only domain guard
@@ -605,8 +599,8 @@ produce live patched-QEMU architectural or device evidence.
 - [x] **T-DOC-3** Add CLI inspection for signal graphs, trace provenance,
   capabilities, fault-domain fan-out, opportunity/effect records, checkpoint
   dependencies, replay divergence, and sensitive export closure.
-- [x] **T-DOC-4** Publish a breaking migration guide showing how to rewrite old
-  scenarios. It is documentation only; no runtime migration parser is retained.
+- [x] **T-DOC-4** Document the sole current scenario schema and its strict
+  unsupported-version rejection.
 
 ## 7.10 Per-kind completeness matrix
 
@@ -692,4 +686,4 @@ system is the sole supported implementation.
 | `STORE-1`–`STORE-7` | Complete storage/9p adapter and live storage gates |
 | `SENSOR-1`–`SENSOR-5` | Specification-only domain guard and future sensor contract |
 | `LIMIT-1`–`LIMIT-6` | Admission, algorithmic, performance, and stress gates |
-| `QFP-1`–`QFP-5` and `QFP-*` patch requirements | Separate QEMU patch tasks, live tests, VMState, packaging, and licensing |
+| `QFP-1`–`QFP-5` and `QFP-*` QEMU requirements | Numbered capability tasks within the atomic patch, live tests, VMState, packaging, and licensing |

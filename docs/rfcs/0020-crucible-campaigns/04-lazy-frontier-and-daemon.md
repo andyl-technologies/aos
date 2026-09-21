@@ -340,10 +340,9 @@ real-node executor flight remain open.
 Every attempt carries the ordered branch-edge path by which it was admitted. On
 canonical completion, the projector credits its observation to the expansion
 state at each branch point on that path. No in-memory MCTS stack is required.
-Current schema-v2 paths carry exact `(BranchPointId, BranchEdgeId)` segments
-because an edge digest is deliberately non-invertible. Normal admission rejects
-schema-v1 edge-only paths because their
-branch-point ownership cannot be authenticated.
+Canonical paths carry exact `(BranchPointId, BranchEdgeId)` segments because
+an edge digest is deliberately non-invertible. Admission and feedback require
+a fully scoped cumulative path; noncurrent encodings fail closed.
 
 ```text
 root branch point B0
@@ -539,9 +538,9 @@ The acceptance transition creates no proposal, branch edge, attempt, executor
 reservation, or VM. A projector/planner later pulls one source continuation
 under current budget and backpressure. An imported successor is accepted only
 if replaying the transition over its parent produces the exact exploration-root
-delta, reproduces any recorded acceptance summary, and makes no unrelated root
-or policy change. The removed `BranchRequestIssued` fact is rejected because it
-lacks the immutable summary required for current replay.
+delta, reproduces its recorded acceptance summary, and makes no unrelated root
+or policy change. The current repository accepts only `BranchRequestAccepted`
+facts carrying that summary; any other fact kind fails closed.
 
 The summary separates addressable source cardinality from the
 proposal-budget-visible window. It reports exact counts when the source owner
@@ -575,39 +574,23 @@ static and uses the exact boundary/default/landmark/neighbor/power order in
 exact bounded ordinal-to-stepped-value formula in §03.2.
 Implementation-version 5 `log_integer` is static for strictly positive integer
 domains and uses the exact rounded-power order in §03.2.
-Implementation-version 6 `permuted_integer` is request-keyed and static for
-integer domains with at most `2^64 - 1` legal values, using the four-round
-bijection in §03.2. Implementation-version 7 `weighted_categorical` is static
-for discrete weight maps containing at most 256 alternatives and uses the exact
+Implementation-version 7 `weighted_categorical` is static for discrete weight
+maps containing at most 256 alternatives and uses the exact
 request-keyed rejection-sampled integer order in §03.2. Implementation-version
 8 `ordered_mixture` recursively composes those finite owners under the exact
 weighted virtual-finish schedule, duplicate suppression, and work/depth/output
-bounds in §03.2. Implementation-version 9 `progressive_integer` uses the exact
-stratified-prefix and largest-gap order in §03.2, but an ordinal after the
-initial prefix is valid only when the source snapshot contains its exact
-authenticated completed-visit threshold. Implementation-version 10
-`mutate_near_corpus` uses the exact completed-selection/proposed-value
-continuation in §03.2. Implementation-version 11 `progressive_integer` uses
-version 9's exact prefix and visit gates, then requires the exact source
-snapshot's owner-derived endpoint PUCT projection to reproduce each refinement.
-Implementation-version 12 retains that basis, prioritizes intervals by their
-exact producer-landmark count before endpoint PUCT difference, and emits the
-winning interval's nearest lower-midpoint landmark before ordinary midpoint
-refinement.
-Implementation-version 13 first compares the exact owner-verified endpoint
-mean objective-reward discontinuity from §03.2, then retains version 12's
-landmark, PUCT, and value-selection rules.
-Implementation-version 14 first compares the exact owner-verified endpoint
-mean globally unique coverage-identity discontinuity from §03.2, then retains
-version 13's objective, landmark, PUCT, and value-selection rules.
-Implementation-version 15 first compares the exact owner-verified endpoint
-mean active-policy-weighted finding-reward discontinuity from §03.2, then
-retains version 14's coverage, objective, landmark, PUCT, and value-selection
-rules.
-Implementation-version 16 first compares the exact owner-verified endpoint
-mean inverse-frequency coverage-rarity discontinuity from §03.2, then retains
-version 15's finding, unique-coverage, objective, landmark, PUCT, and
-value-selection rules.
+bounds in §03.2. Implementation-version 10 `mutate_near_corpus` uses the exact
+completed-selection/proposed-value continuation in §03.2. Implementation-version
+16 `progressive_integer` emits
+the exact stratified prefix and gates later ordinals on authenticated completed
+visits. It ranks remaining intervals by inverse-frequency coverage rarity,
+finding reward, globally unique coverage, objective reward, producer landmarks,
+endpoint PUCT difference, interval length, and lower offset. The selected
+interval emits its nearest lower-midpoint landmark when one exists, or its lower
+midpoint otherwise. Implementation-version 17 `permuted_integer` is available
+only through a modeled-generated uniform integer source. It derives a
+request-keyed permutation of the exact stepped domain, admits the full `2^64`
+unsigned domain, and emits at most the request's explicit proposal budget.
 Proposals from every other generated source require the selected deterministic
 generator owner to reproduce the same value and remain fail-closed until that
 owner is implemented.
@@ -638,32 +621,30 @@ budget, create a graph child, or count as an admitted continuation value.
   domains, implementation-version 3 `boundary_integer`, and
   implementation-version 4 `stratified_integer`, and implementation-version 5
   `log_integer` over a strictly positive integer domain are static generated
-  sources, as is implementation-version 6 `permuted_integer` over an integer
-  domain with at most `2^64 - 1` legal values and implementation-version 7
-  `weighted_categorical` over at most 256 exact discrete alternatives and
-  implementation-version 8 `ordered_mixture` within its exact recursive work
-  profile. Implementation-version 9 `progressive_integer` also has a
-  deterministic ordinal order, but its refinement ordinals MUST additionally
-  satisfy the exact source-snapshot feedback threshold in §03.2.
-  Implementation-version 10 `mutate_near_corpus` and implementation-versions
-  11 through 16 `progressive_integer` have view-dependent next values whose exact
-  portable continuations and owner-derived feedback bases MUST reproduce
-  §03.2. Other generated proposal issuance MUST fail closed unless the named
-  deterministic generator owner reproduces the value from authenticated
-  campaign facts.
+  sources, as are implementation-version 7 `weighted_categorical` over at most
+  256 exact discrete alternatives and implementation-version 8
+  `ordered_mixture` within its exact recursive work profile.
+  Implementation-version 10 `mutate_near_corpus` and
+  implementation-version 16 `progressive_integer` have view-dependent next
+  values whose exact portable continuations and owner-derived feedback bases
+  MUST reproduce §03.2. Implementation-version 17 `permuted_integer` is a
+  static modeled-generated source whose exact model, domain, request identity,
+  and proposal budget MUST reproduce §03.2. Other generated proposal issuance
+  MUST fail closed unless the named deterministic generator owner reproduces
+  the value from authenticated campaign facts.
 - **[LAZY-45]** Weighted-categorical implementation-version 7 MUST derive every
   ordinal by the exact request-keyed rejection-sampled `u128` algorithm in
   §03.2, remove each selected alternative before the next draw, reject domain
   keys or counts outside its exact 256-alternative profile, and reconstruct the
-  same order during import and restart. Earlier and unknown weighted versions
-  MUST remain suspended.
+  same order during import and restart. Every other weighted implementation
+  version MUST be rejected.
 - **[LAZY-46]** Ordered-mixture implementation-version 8 MUST schedule only
   executable finite child owners by the exact virtual-finish fractions in
   §03.2, use component ordinal as the final tie-break, advance duplicate-
   producing children without emitting the value twice, and enforce the exact
   512-value, 8,192-work-unit, and 64-level bounds during local and imported
   owner replay. A suspended child MUST suspend the complete mixture.
-- **[LAZY-47]** Progressive-integer implementation-version 9 MUST index every
+- **[LAZY-47]** Progressive-integer implementation-version 16 MUST index every
   accepted request under its exact branch point, derive completed visits only
   from distinct authenticated expansion credits, reject a refinement before
   its exact threshold without writes, and atomically update every affected
@@ -671,48 +652,21 @@ budget, create a graph child, or count as an admitted continuation value.
   observation and proposal successors and restart reconstruction MUST reproduce
   the same frontier state. The complete feedback-request index, including its
   branch-point slots, MUST remain bounded to 65,536 entries so every admitted
-  history remains projectable by one bounded observation transition. A legacy
-  campaign without the canonical frontier anchor MUST reject version-9 request
-  admission rather than create a partial index over only its newer history.
+  history remains projectable by one bounded observation transition. A campaign
+  root without the mandatory canonical frontier anchor MUST reject the request
+  rather than create a partial index over only its newer history.
 - **[LAZY-48]** Corpus-mutation implementation-version 10 MUST reconstruct its
   next value from the exact completed branch selection/corpus basis and the
   immutable request's complete prior proposal set, enforce every §03.2 bound,
   wait for new authenticated credit when no candidate exists, and reproduce the
   same owner result during imported proposal validation and restart.
-- **[LAZY-49]** Feedback-progressive implementation-version 11 MUST use the
-  version-9 request/credit index and thresholds, reconstruct the complete prior
-  proposal set, batch exact active-policy PUCT projections for planner pages,
-  and reproduce the endpoint-score/length/lower-offset interval order in §03.2
-  during local issue, import, and restart. A substituted largest-gap value or a
-  missing/foreign feedback projection MUST fail before publication.
-- **[LAZY-50]** Landmark-progressive implementation-version 12 MUST use the
-  exact version-11 feedback projection plus the request's authenticated domain
-  body, reproduce the landmark-count/endpoint-score/length/lower-offset order
-  and nearest-lower-midpoint landmark selection in §03.2, and reject a
-  substituted PUCT-only midpoint before publication. Version 11 MUST continue
-  to ignore producer landmarks.
-- **[LAZY-51]** Measurement-progressive implementation-version 13 MUST use the
-  exact version-12 basis plus the active-policy objective reward sum and
-  completed-visit denominator for each endpoint, reproduce §03.2's rational
-  mean-discontinuity order, and reject a substituted landmark-only value before
-  publication. Versions 11 and 12 MUST continue to ignore this term.
-- **[LAZY-52]** Coverage-progressive implementation-version 14 MUST use the
-  exact version-13 basis plus each endpoint's globally unique canonical
-  coverage-identity count and completed-visit denominator, reproduce §03.2's
-  rational mean-discontinuity order, and reject a substituted objective-only
-  value before publication. Versions 11 through 13 MUST continue to ignore the
-  new term.
-- **[LAZY-53]** Finding-progressive implementation-version 15 MUST use the
-  exact version-14 basis plus each endpoint's active-policy-weighted verified
-  finding reward and completed-visit denominator, reproduce §03.2's rational
-  mean-discontinuity order, and reject a substituted coverage-only value before
-  publication. Versions 11 through 14 MUST continue to ignore the new term.
-- **[LAZY-54]** Rarity-progressive implementation-version 16 MUST use the exact
-  version-15 basis plus each endpoint's inverse-frequency canonical coverage
-  rarity mass and completed-visit denominator, reproduce §03.2's rational mean
-  discontinuity order, and reject a substituted unique-coverage-only value
-  before publication. Versions 11 through 15 MUST continue to ignore the new
-  term.
+- **[LAZY-54]** Progressive-integer implementation-version 16 MUST reconstruct
+  the complete prior proposal set and exact active-policy PUCT projection. It
+  MUST reproduce §03.2's ordered rarity, finding, unique-coverage, objective,
+  landmark, endpoint-score, interval-length, and lower-offset terms during
+  local issue, import, and restart. A missing or foreign feedback projection,
+  or a proposal that substitutes a value from any lower-priority interval,
+  MUST fail before publication.
 
 ## 04.13 Atomic attempt admission
 
@@ -732,9 +686,8 @@ nested path set under
 snapshot. Canonical observation incorporation adds the complete path under the
 exact child configuration; convergence retains all distinct path identities.
 For atomic planner `Issue`, the pure planner ranks only the semantic
-branch-point/source continuation. The coordinator chooses the member with the
-lowest `BranchPathId` ordering key from the exact parent set. The
-chosen member must be a scoped version-2 path. The coordinator
+branch-point/source continuation. The coordinator chooses the member with the lowest `BranchPathId` ordering key
+from the exact parent set. The chosen member must be a scoped current path. The coordinator
 appends the selected terminal segment and records that cumulative path in the
 derived attempt. This owner rule is independent of page boundaries and is
 recomputed identically for imported successors.
@@ -836,9 +789,8 @@ or continuations. A static source is an explicit finite source,
 implementation-version 2 `all` over a Boolean or discrete domain, or
 implementation-version 3 `boundary_integer`, or implementation-version 4
 `stratified_integer`, or implementation-version 5 `log_integer` over a strictly
-positive integer domain, or implementation-version 6 `permuted_integer` over an
-integer domain with at most `2^64 - 1` legal values, or implementation-version
-7 `weighted_categorical` over at most 256 discrete alternatives, or
+positive integer domain, or implementation-version 7 `weighted_categorical`
+over at most 256 discrete alternatives, or
 implementation-version 8 `ordered_mixture` over executable finite children:
 
 - no proposal at the next canonical ordinal and remaining proposal budget is
@@ -847,18 +799,18 @@ implementation-version 8 `ordered_mixture` over executable finite children:
 - all static values proposed and disposed is `Exhausted`;
 - proposal budget reached before all values are disposed is `Closed`.
 
-Implementation-version 9 `progressive_integer` uses the same pending-proposal
+Implementation-version 17 `permuted_integer` has the same static continuation
+states when its source is a modeled-generated uniform integer distribution.
+
+Implementation-version 16 `progressive_integer` uses the same pending-proposal
 and budget rules, but readiness is feedback-dependent. Its initial stratified
 prefix is `Ready` immediately. After that prefix, the source is `Ready` only
 when its completed-visit count reaches the next checked threshold, otherwise it
 is `WaitingForFeedback` with the exact current and required counts. Completing
 the bounded stream is `Exhausted` only when the request budget covers the exact
-domain; a truncated stream is `Closed`.
-
-Implementation-versions 11 through 16 have the same continuation states and
-thresholds as version 9. Feedback changes only which exact legal value owns the
-next available ordinal. Implementation-version 10 is `Ready` when its current
-exact view yields an unproposed corpus mutation, `WaitingForFeedback` when it
+domain; a truncated stream is `Closed`. Implementation-version 10 is `Ready`
+when its current exact view yields an unproposed corpus mutation,
+`WaitingForFeedback` when it
 does not, and `Closed` only when proposal budget is exhausted.
 
 `admitted_children` counts only distinct `ExecutionBasis` admissions rooted
@@ -870,9 +822,9 @@ execution results exist.
 
 The current owner deliberately rejects unimplemented history-dependent
 generators and unknown generator implementation versions. Static readiness and
-exhaustion are observation-independent, while progressive version 9 consumes
-only the exact authenticated completed-visit count. The owner projects that
-count from the nested credit-set entry count. The same schema-v4 observation
+exhaustion are observation-independent, while progressive implementation 16
+consumes only the exact authenticated completed-visit count. The owner projects
+that count from the nested credit-set entry count. The same schema-v4 observation
 transition maintains a second nested set
 from each exact child configuration artifact to every authenticated cumulative
 path that reached it; direct non-genesis admission checks membership in that
@@ -880,8 +832,8 @@ set. The compact expansion cache retains neutral guidance fields. Separate
 exact-snapshot coverage-novelty and policy-weighted finding-reward folds
 described in RFC 03 are now implemented read-only. Exact owner-published
 objective evaluations add their signed scalar reward through the same bounded
-batch. Canonical frontier engine version 8 with state schema 3 consumes the exact
-decomposed PUCT evidence only through the bounded request-batch contract in RFC 03; it
+batch. Canonical frontier engine version 8 consumes the exact decomposed
+PUCT evidence only through the bounded request-batch contract in RFC 03; it
 cannot trust or read compact expansion-cache guidance fields. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
@@ -907,26 +859,20 @@ admission is rejected.
   other than implementation-version 2 `all` over Boolean or discrete domains
   and implementation-version 3 `boundary_integer` or implementation-version 4
   `stratified_integer` or implementation-version 5 `log_integer` over a
-  strictly positive integer domain or implementation-version 6
-  `permuted_integer` over an integer domain with at most `2^64 - 1` legal
-  values or implementation-version 7 `weighted_categorical` over at most 256
-  exact discrete alternatives or implementation-version 8 `ordered_mixture`
-  within its exact recursive work profile, or implementation-version 9
-  `progressive_integer` within its exact bounds and feedback thresholds, or
-  implementation-version 10 `mutate_near_corpus` within its portable
-  proposal-set/corpus bounds, implementation-version 11 `progressive_integer`
-  within its exact PUCT-feedback bounds, or implementation-version 12 within
-  its exact PUCT-plus-landmark bounds, implementation-version 13 within its
-  exact objective-discontinuity bounds, or implementation-version 14 within its
-  exact coverage-discontinuity bounds, or implementation-version 15 within its
-  exact finding-discontinuity bounds, or implementation-version 16 within its
-  exact rarity-discontinuity bounds. Static
-  continuation state MAY bind a nonempty observation root because its state is
+  strictly positive integer domain or implementation-version 7
+  `weighted_categorical` over at most 256 exact discrete alternatives or
+  implementation-version 8 `ordered_mixture` within its exact recursive work
+  profile, or implementation-version 10 `mutate_near_corpus` within its
+  portable proposal-set/corpus bounds, or implementation-version 16
+  `progressive_integer` within its exact bounds and complete feedback order, or
+  implementation-version 17 `permuted_integer` under a modeled-generated
+  uniform integer source. Static continuation state MAY bind a nonempty
+  observation root because its state is
   independent of feedback. Every completed-visit statistic and progressive
   wakeup MUST equal the exact nested credit-set count. The compact expansion
   cache MUST keep reward, novelty, and finding fields neutral. A separate PUCT
   projection MAY use only the bounded exact-snapshot coverage and weighted-
-  finding owners in RFC 03; current PUCT engine version 6/state 2 consumes that
+  finding owners in RFC 03; canonical frontier engine version 8 consumes that
   projection through exact owner-built guidance records, including signed
   objective reward.
 
@@ -967,9 +913,9 @@ in the path it also updates one nested credit set with the immutable
 `ExpansionCredit(observation, branch_point)`. The coverage root adds the immutable
 `CoverageProjectionId`; the grow-only identity union is the deterministic union
 of those records. Accounting binds the attempt and global admission ordinal to
-the observation. The exploration root updates every indexed version-9
+the observation. The exploration root updates every indexed implementation-16
 progressive request at a credited branch point to its owner-recomputed next
-continuation state; static and suspended requests are unchanged. In strict mode
+continuation state; static requests are unchanged. In strict mode
 the accounting sequence advances only to the next global admission ordinal;
 streaming and statistical modes accept any completed admitted attempt while
 preserving the exact snapshot basis seen by planning.

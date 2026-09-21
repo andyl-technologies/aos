@@ -106,7 +106,7 @@
       }
       {
         label = "non-search decisions excluded";
-        needle = "Decision::Preemption(_) | Decision::AppRandom(_) | Decision::Selection(_) => false";
+        needle = "Decision::Preemption(_) | Decision::Selection(_) => false";
       }
       {
         label = "search result reports realized frontier";
@@ -145,10 +145,6 @@
       {
         label = "materialized scheduler pending frames";
         needle = "state.pending_frames = pending_frames_from_scheduled_events(&self.pending_events);";
-      }
-      {
-        label = "retired scheduler fault frontier is empty";
-        needle = "state.search_frontier = SearchFrontierChoices::empty();";
       }
     ]
     ++ failuresFor "crates/crucible/src/model/fault_signal/binding_runtime.rs" bindingRuntime [

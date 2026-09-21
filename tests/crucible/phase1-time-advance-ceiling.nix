@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeAdvanceCeiling",
-  taskIds ? ["T-TIME-7"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -69,15 +69,15 @@
       }
       {
         label = "scheduler ceiling publisher";
-        needle = "pub fn publish_scheduler_ceiling";
+        needle = "pub fn publish_scheduler_advance";
       }
       {
         label = "release ceiling store";
-        needle = ".store(ceiling.max_advance_icount, Ordering::Release)";
+        needle = ".store(max_advance_icount, Ordering::Release)";
       }
       {
         label = "node acquire ceiling load";
-        needle = "self.max_advance_icount.load(Ordering::Acquire)";
+        needle = "self.load_scheduler_advance()";
       }
       {
         label = "node self-extension check";
@@ -196,8 +196,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-7 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-TIME-7 production-flight completion";
+        needle = "Completed by `checks.crucible.phase1.timeAdvanceCeiling`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

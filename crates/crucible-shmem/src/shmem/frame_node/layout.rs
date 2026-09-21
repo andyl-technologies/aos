@@ -9,6 +9,46 @@ pub const STATUS_IDLE: u8 = 1;
 /// Node status: simulation complete.
 pub const STATUS_DONE: u8 = 2;
 
+/// Scheduler advances until its ceiling or an unreachable idle deadline.
+pub const ADVANCE_STOP_CONDITION_CEILING: u8 = 0;
+/// Scheduler advances until the next authenticated all-vCPU idle publication.
+pub const ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE: u8 = 1;
+
+/// Selects the boundary that completes one scheduler advance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AdvanceStopCondition {
+    /// Completes at the ceiling or an idle park that cannot reach it.
+    #[default]
+    Ceiling,
+    /// Publishes the next all-vCPU idle state without authorizing its deadline.
+    NextAuthenticatedIdle,
+}
+
+impl AdvanceStopCondition {
+    /// Returns the current one-byte shared-memory encoding.
+    #[must_use]
+    pub const fn encode(self) -> u8 {
+        match self {
+            Self::Ceiling => ADVANCE_STOP_CONDITION_CEILING,
+            Self::NextAuthenticatedIdle => ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE,
+        }
+    }
+
+    /// Decodes the current one-byte shared-memory encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError::InvalidAdvanceStopCondition`] for an unknown
+    /// value rather than assigning forward-compatible behavior to it.
+    pub const fn decode(encoded: u8) -> Result<Self, NodeSlotError> {
+        match encoded {
+            ADVANCE_STOP_CONDITION_CEILING => Ok(Self::Ceiling),
+            ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE => Ok(Self::NextAuthenticatedIdle),
+            _ => Err(NodeSlotError::InvalidAdvanceStopCondition { encoded }),
+        }
+    }
+}
+
 /// Node kind: a QEMU guest VM.
 pub const KIND_VM: u8 = 0;
 /// Node kind: a network-link or routing I/O node.
@@ -39,7 +79,7 @@ pub struct NodeSlot {
     pub(crate) status: AtomicU8,
     pub(crate) kind: AtomicU8,
     pub(crate) device_io_active: AtomicU8,
-    pub(crate) _pad0: u8,
+    pub(crate) advance_stop_condition: AtomicU8,
     pub(crate) publish_gen: AtomicU32,
     pub(crate) control_boundary_ack: AtomicU32,
     pub(crate) device_completion_deadline_icount: AtomicU64,
@@ -56,20 +96,37 @@ pub struct NodeSlot {
     pub(crate) logical_time_restore_target: AtomicU64,
     pub(crate) logical_time_restore_request: AtomicU32,
     pub(crate) logical_time_restore_ack: AtomicU32,
+    pub(crate) control_boundary_fault_command_frontier: AtomicU64,
+    pub(crate) control_boundary_capture_request: AtomicU32,
+    pub(crate) _pad3: [u8; 4],
+    pub(crate) timer_witness_generation: AtomicU64,
+    pub(crate) timer_witness_deadline_ns: AtomicU64,
+    pub(crate) timer_witness_deadline_icount: AtomicU64,
+    pub(crate) timer_witness_armed_raw_icount: AtomicU64,
+    pub(crate) timer_witness_fired_expire_ns: AtomicU64,
+    pub(crate) timer_witness_fired_virtual_ns: AtomicU64,
+    pub(crate) timer_witness_fired_raw_icount: AtomicU64,
+    pub(crate) timer_witness_completed: AtomicU32,
+    pub(crate) timer_witness_reserved: AtomicU32,
+    pub(crate) advance_publication_sequence: AtomicU64,
+    pub(crate) _pad4: [u8; 40],
 }
 
 impl Clone for NodeSlot {
     fn clone(&self) -> Self {
+        let (max_advance_icount, advance_stop_condition, advance_publication_sequence) =
+            self.load_scheduler_advance_raw();
+
         Self {
             current_icount: AtomicU64::new(self.current_icount.load(Ordering::Acquire)),
             current_ns: AtomicU64::new(self.current_ns.load(Ordering::Acquire)),
-            max_advance_icount: AtomicU64::new(self.max_advance_icount.load(Ordering::Acquire)),
+            max_advance_icount: AtomicU64::new(max_advance_icount),
             idle_wake_icount: AtomicU64::new(self.idle_wake_icount.load(Ordering::Acquire)),
             wake_signal: AtomicU32::new(self.wake_signal.load(Ordering::Acquire)),
             status: AtomicU8::new(self.status.load(Ordering::Acquire)),
             kind: AtomicU8::new(self.kind.load(Ordering::Acquire)),
             device_io_active: AtomicU8::new(self.device_io_active.load(Ordering::Acquire)),
-            _pad0: 0,
+            advance_stop_condition: AtomicU8::new(advance_stop_condition),
             publish_gen: AtomicU32::new(self.publish_gen.load(Ordering::Acquire)),
             control_boundary_ack: AtomicU32::new(self.control_boundary_ack.load(Ordering::Acquire)),
             device_completion_deadline_icount: AtomicU64::new(
@@ -105,6 +162,44 @@ impl Clone for NodeSlot {
             logical_time_restore_ack: AtomicU32::new(
                 self.logical_time_restore_ack.load(Ordering::Acquire),
             ),
+            control_boundary_fault_command_frontier: AtomicU64::new(
+                self.control_boundary_fault_command_frontier
+                    .load(Ordering::Acquire),
+            ),
+            control_boundary_capture_request: AtomicU32::new(
+                self.control_boundary_capture_request
+                    .load(Ordering::Acquire),
+            ),
+            _pad3: [0; 4],
+            timer_witness_generation: AtomicU64::new(
+                self.timer_witness_generation.load(Ordering::Acquire),
+            ),
+            timer_witness_deadline_ns: AtomicU64::new(
+                self.timer_witness_deadline_ns.load(Ordering::Acquire),
+            ),
+            timer_witness_deadline_icount: AtomicU64::new(
+                self.timer_witness_deadline_icount.load(Ordering::Acquire),
+            ),
+            timer_witness_armed_raw_icount: AtomicU64::new(
+                self.timer_witness_armed_raw_icount.load(Ordering::Acquire),
+            ),
+            timer_witness_fired_expire_ns: AtomicU64::new(
+                self.timer_witness_fired_expire_ns.load(Ordering::Acquire),
+            ),
+            timer_witness_fired_virtual_ns: AtomicU64::new(
+                self.timer_witness_fired_virtual_ns.load(Ordering::Acquire),
+            ),
+            timer_witness_fired_raw_icount: AtomicU64::new(
+                self.timer_witness_fired_raw_icount.load(Ordering::Acquire),
+            ),
+            timer_witness_completed: AtomicU32::new(
+                self.timer_witness_completed.load(Ordering::Acquire),
+            ),
+            timer_witness_reserved: AtomicU32::new(
+                self.timer_witness_reserved.load(Ordering::Acquire),
+            ),
+            advance_publication_sequence: AtomicU64::new(advance_publication_sequence),
+            _pad4: [0; 40],
         }
     }
 }
@@ -128,8 +223,9 @@ pub const NODE_SLOT_KIND_OFFSET: usize = core::mem::offset_of!(NodeSlot, kind);
 /// Byte offset of [`NodeSlot`]'s device-I/O-active field.
 pub const NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, device_io_active);
-/// Byte offset of [`NodeSlot`]'s single-byte alignment padding.
-pub const NODE_SLOT_PAD0_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad0);
+/// Byte offset of [`NodeSlot`]'s scheduler advance-stop condition.
+pub const NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, advance_stop_condition);
 /// Byte offset of [`NodeSlot`]'s publish-generation field.
 pub const NODE_SLOT_PUBLISH_GEN_OFFSET: usize = core::mem::offset_of!(NodeSlot, publish_gen);
 /// Byte offset of the plugin-published drained-control-boundary acknowledgement.
@@ -176,6 +272,46 @@ pub const NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET: usize =
 /// Byte offset of the plugin-published logical-time restore acknowledgement.
 pub const NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, logical_time_restore_ack);
+/// Byte offset of the host-bound fault-command producer frontier.
+pub const NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, control_boundary_fault_command_frontier);
+/// Byte offset of the fingerprint request generation bound to the control request.
+pub const NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, control_boundary_capture_request);
+/// Byte offset of the trailing reserved bytes.
+pub const NODE_SLOT_PAD3_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad3);
+/// Byte offset of the completed virtual-timer witness generation.
+pub const NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_generation);
+/// Byte offset of the armed virtual-timer expiry.
+pub const NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_deadline_ns);
+/// Byte offset of the armed logical wake icount.
+pub const NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_deadline_icount);
+/// Byte offset of the raw icount captured while arming the witness.
+pub const NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_armed_raw_icount);
+/// Byte offset of the expiry saved for the callback that ran.
+pub const NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_fired_expire_ns);
+/// Byte offset of virtual time at actual callback invocation.
+pub const NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_fired_virtual_ns);
+/// Byte offset of raw icount at actual callback invocation.
+pub const NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_fired_raw_icount);
+/// Byte offset of the actual-callback completion flag.
+pub const NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_completed);
+/// Byte offset of the witness reserved field.
+pub const NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_reserved);
+/// Byte offset of the scheduler advance-publication sequence.
+pub const NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, advance_publication_sequence);
+/// Byte offset of the remaining forward-compatible bytes.
+pub const NODE_SLOT_PAD4_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad4);
 /// Wire size of one [`NodeSlot`].
 pub const NODE_SLOT_SIZE: usize = core::mem::size_of::<NodeSlot>();
 /// Wire alignment of one [`NodeSlot`].
@@ -189,7 +325,7 @@ const _: () = assert!(NODE_SLOT_WAKE_SIGNAL_OFFSET == 32);
 const _: () = assert!(NODE_SLOT_STATUS_OFFSET == 36);
 const _: () = assert!(NODE_SLOT_KIND_OFFSET == 37);
 const _: () = assert!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET == 38);
-const _: () = assert!(NODE_SLOT_PAD0_OFFSET == 39);
+const _: () = assert!(NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET == 39);
 const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);
 const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET == 44);
 const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET == 48);
@@ -206,5 +342,19 @@ const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET == 104);
 const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET == 112);
 const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET == 120);
 const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET == 124);
-const _: () = assert!(NODE_SLOT_SIZE == 128);
+const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET == 128);
+const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET == 136);
+const _: () = assert!(NODE_SLOT_PAD3_OFFSET == 140);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET == 144);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET == 152);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET == 160);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET == 168);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET == 176);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET == 184);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET == 192);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET == 200);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET == 204);
+const _: () = assert!(NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET == 208);
+const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 216);
+const _: () = assert!(NODE_SLOT_SIZE == 256);
 const _: () = assert!(NODE_SLOT_ALIGN == 128);

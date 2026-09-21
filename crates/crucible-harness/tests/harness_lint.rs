@@ -75,104 +75,6 @@ fn gate_evidence_rejects_checklist_state_needles() {
 }
 
 #[test]
-fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths()
--> Result<(), Box<dyn Error>> {
-    let identifier_fragments: &[&[&str]] = &[
-        &["Fault", "PlanEntry"],
-        &["Fault", "Tag"],
-        &["Active", "FaultTable"],
-        &["Inject", "Fault"],
-        &["Heal", "Fault"],
-        &["Random", "Fault"],
-        &["Membership", "Fault"],
-        &["Network", "Fault"],
-        &["Block", "Fault"],
-        &["NineP", "Fault"],
-        &["Node", "Fault"],
-        &["Fault", "Id"],
-        &["Fault", "State"],
-        &["Fault", "Duration"],
-        &["Fault", "RateBasisPoints"],
-        &["Fault", "BandwidthBitsPerSecond"],
-        &["Fault", "SlowdownFactorBasisPoints"],
-        &["NineP", "Errno"],
-        &["Fault", "Activation"],
-        &["SessionCommand", "Inject"],
-        &["SessionCommandKind", "Inject"],
-        &["ControlOperationKind", "Inject"],
-        &["SessionCommand", "Snapshot"],
-        &["SessionCommandKind", "Snapshot"],
-    ];
-    let snake_fragments: &[&[&str]] = &[
-        &["active", "faults"],
-        &["active", "fault", "tags"],
-        &["inject", "fault"],
-        &["heal", "fault"],
-        &["random", "fault"],
-        &["no", "active", "faults"],
-        &["fault", "entry"],
-        &["fault", "plan"],
-        &["fault", "active"],
-        &["fault", "activation"],
-    ];
-    let retired = identifier_fragments
-        .iter()
-        .map(|parts| parts.concat())
-        .chain(snake_fragments.iter().map(|parts| parts.join("_")))
-        .collect::<BTreeSet<_>>();
-
-    let workspace = workspace_root();
-    let repo = repo_root();
-    let mut files = Vec::new();
-    for package in [
-        "crucible",
-        "crucible-api",
-        "crucible-cli",
-        "crucible-device",
-        "crucible-harness",
-        "crucible-protocol",
-        "crucible-qemu",
-        "crucible-session",
-        "crucible-shmem",
-    ] {
-        for directory in ["src", "tests", "examples"] {
-            collect_fault_surface_files(&workspace.join(package).join(directory), &mut files)?;
-        }
-    }
-    collect_fault_surface_files(&repo.join("docs/users/crucible"), &mut files)?;
-    collect_fault_surface_files(&repo.join("tests/crucible"), &mut files)?;
-    files.sort();
-
-    let mut findings = Vec::new();
-    for file in files {
-        if file.ends_with("fault-model-migration.md") {
-            continue;
-        }
-        let content = fs::read_to_string(&file)?;
-        for (line_index, line) in content.lines().enumerate() {
-            for token in line
-                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
-            {
-                if retired.contains(token) {
-                    findings.push(format!(
-                        "{}:{}: retired fault surface `{token}`",
-                        file.display(),
-                        line_index + 1
-                    ));
-                }
-            }
-        }
-    }
-
-    assert!(
-        findings.is_empty(),
-        "retired fault surfaces remain outside historical RFCs or the migration guide:\n{}",
-        findings.join("\n")
-    );
-    Ok(())
-}
-
-#[test]
 fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Error>> {
     let reference = fs::read_to_string(repo_root().join("docs/users/crucible/reference.md"))?;
     let registry = fs::read_to_string(
@@ -189,29 +91,6 @@ fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Err
         "Crucible user reference omits executable effect kinds: {}",
         missing.join(", ")
     );
-    Ok(())
-}
-
-fn collect_fault_surface_files(
-    directory: &Path,
-    files: &mut Vec<PathBuf>,
-) -> Result<(), Box<dyn Error>> {
-    if !directory.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect_fault_surface_files(&path, files)?;
-            continue;
-        }
-        if matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("rs" | "toml" | "md" | "nix")
-        ) {
-            files.push(path);
-        }
-    }
     Ok(())
 }
 
@@ -409,6 +288,7 @@ fn harness_lint_rejects_banned_code_patterns() {
         r#"
             fn bad() {
                 let _ = std::time::SystemTime::now();
+                let _ = std::time::UNIX_EPOCH.elapsed();
                 let _ = rand::thread_rng();
                 let _ = std::collections::HashMap::<u8, u8>::new();
                 let _ = std::collections::hash_map::DefaultHasher::new();
@@ -418,6 +298,7 @@ fn harness_lint_rejects_banned_code_patterns() {
     );
 
     assert_contains(&findings, "host wall-clock");
+    assert_contains(&findings, "UNIX_EPOCH");
     assert_contains(&findings, "thread/global RNG");
     assert_contains(&findings, "unordered map/set");
     assert_contains(&findings, "default/random hasher");

@@ -82,7 +82,6 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             payload: result_payload,
         };
         let child = Command::new("sleep").arg("60").spawn()?;
-        let process_id = child.id();
         let channels = QemuNodeChannels::new(
             ScriptedPluginControl {
                 log: Arc::clone(&log),
@@ -103,7 +102,6 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             },
             ScriptedQmpMachineControl {
                 log: Arc::clone(&log),
-                process_id,
                 track_process_endpoint_retirement: false,
                 fail_stop: false,
                 fail_snapshot: false,
@@ -183,7 +181,12 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
         }
 
         assert_eq!(
-            node.apply_fault_command_at_current_boundary(command.clone(), &payload)?,
+            node.apply_fault_command_at_current_boundary_with_limits(
+                command.clone(),
+                &payload,
+                Vec::with_capacity(32),
+                crucible_shmem::HARD_FAULT_EVENT_CAPACITY as usize,
+            )?,
             result
         );
         let expected_publications = if command_flags == 0 {

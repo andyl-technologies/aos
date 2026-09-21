@@ -1,8 +1,7 @@
 //! Session-owned debugger lifecycle, access roles, and controller leases.
 //!
 //! The coordinator serializes operations that can move or mutate a live
-//! scenario while allowing any number of explicitly registered read-only
-//! observers. It contains no transport or QEMU implementation details.
+//! scenario. It contains no transport or QEMU implementation details.
 
 use super::*;
 
@@ -120,7 +119,6 @@ pub enum DebugCoordinatorState {
 pub struct DebugCoordinator {
     state: DebugCoordinatorState,
     controller: Option<DebugControllerLease>,
-    observers: BTreeSet<DebugClientId>,
     next_generation: u64,
 }
 
@@ -129,7 +127,6 @@ impl Default for DebugCoordinator {
         Self {
             state: DebugCoordinatorState::Detached,
             controller: None,
-            observers: BTreeSet::new(),
             next_generation: 0,
         }
     }
@@ -152,33 +149,6 @@ impl DebugCoordinator {
     #[must_use]
     pub const fn controller(&self) -> Option<&DebugControllerLease> {
         self.controller.as_ref()
-    }
-
-    /// Returns the number of registered read-only observers.
-    #[must_use]
-    pub fn observer_count(&self) -> usize {
-        self.observers.len()
-    }
-
-    /// Registers a read-only observer after checking its role.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DebugCoordinatorError::CapabilityDenied`] when `role` does
-    /// not grant [`DebugCapability::Observe`].
-    pub fn add_observer(
-        &mut self,
-        client: DebugClientId,
-        role: &DebugRole,
-    ) -> Result<(), DebugCoordinatorError> {
-        require_capability(role, DebugCapability::Observe)?;
-        self.observers.insert(client);
-        Ok(())
-    }
-
-    /// Removes a read-only observer connection.
-    pub fn remove_observer(&mut self, client: &DebugClientId) {
-        self.observers.remove(client);
     }
 
     /// Acquires the single controller lease after checking the client's role.
@@ -281,7 +251,6 @@ impl DebugCoordinator {
     pub(super) fn detached(&mut self) {
         self.state = DebugCoordinatorState::Detached;
         self.controller = None;
-        self.observers.clear();
         self.next_generation = self.next_generation.saturating_add(1);
     }
 }
@@ -328,24 +297,16 @@ mod tests {
     }
 
     #[test]
-    fn one_controller_and_multiple_observers_are_enforced() {
+    fn one_controller_is_enforced() {
         let controller_role = DebugRole::new([
             DebugCapability::Observe,
             DebugCapability::Control,
             DebugCapability::Mutate,
         ]);
-        let observer_role = DebugRole::observer();
         let mut coordinator = DebugCoordinator::new();
-        coordinator
-            .add_observer(client("observer-a"), &observer_role)
-            .unwrap_or_else(|error| panic!("observer should register: {error}"));
-        coordinator
-            .add_observer(client("observer-b"), &observer_role)
-            .unwrap_or_else(|error| panic!("observer should register: {error}"));
         let lease = coordinator
             .acquire_controller(client("controller-a"), &controller_role)
             .unwrap_or_else(|error| panic!("controller should acquire: {error}"));
-        assert_eq!(coordinator.observer_count(), 2);
         assert!(matches!(
             coordinator.acquire_controller(client("controller-b"), &controller_role),
             Err(DebugCoordinatorError::ControllerBusy { .. })
@@ -376,17 +337,13 @@ mod tests {
 
     #[test]
     fn detach_clears_connections_and_invalidates_controller_lease() {
-        let role = DebugRole::new([DebugCapability::Observe, DebugCapability::Control]);
+        let role = DebugRole::new([DebugCapability::Control]);
         let mut coordinator = DebugCoordinator::new();
-        coordinator
-            .add_observer(client("observer"), &role)
-            .unwrap_or_else(|error| panic!("observer should register: {error}"));
         let stale = coordinator
             .acquire_controller(client("controller"), &role)
             .unwrap_or_else(|error| panic!("controller should acquire: {error}"));
         coordinator.detached();
 
-        assert_eq!(coordinator.observer_count(), 0);
         assert!(coordinator.controller().is_none());
         assert!(matches!(
             coordinator.release_controller(&stale),

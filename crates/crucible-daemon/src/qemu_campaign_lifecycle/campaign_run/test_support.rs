@@ -1,26 +1,23 @@
 //! Test fixture for exercising the guarded campaign savepoint projection path.
 //!
 //! The lifecycle is a deterministic modeled test double. It covers campaign
-//! capture ownership and campaign result projection; native-QEMU acceptance is a
+//! capture ownership and guarded result projection; native-QEMU acceptance is a
 //! separate packaged VM gate.
 
-use std::collections::BTreeMap;
 use std::error::Error;
 use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    AssertionId, AssertionPhase, Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog,
-    ExecutionFingerprint, FingerprintSample, GuestAssertionDetail, GuestAssertionKind,
-    GuestAssertionMarker, Icount, MarkerId, NodeId, ObservableEvent, QuantumOutcome,
-    QuantumRequest, QuantumTerminalVerdict, Schedule, SchedulerError, SchedulerEventLogEntry,
-    SchedulerQuiescence, VirtualTime,
+    AssertionId, AssertionPhase, Configuration, ContentHash, EventLog, ExecutionFingerprint,
+    FingerprintSample, GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, Icount,
+    MarkerId, NodeId, ObservableEvent, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    Schedule, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, VirtualTime,
 };
 use crucible_campaign::{ObservationCondition, ObservationStopProof, StopCondition};
-use crucible_cas::content_store::BlobHandle;
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
-use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::{
     GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
@@ -56,6 +53,7 @@ struct TestLifecycle {
     frontier: VirtualTime,
     completed_quanta: u64,
     configuration: Option<Configuration>,
+    checkpoint_directory: PathBuf,
     lifecycle_generation: u64,
     trace: GuardedDefaultCampaignTestTrace,
 }
@@ -181,6 +179,17 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         None
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        _cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "campaign save fixture cannot retain a terminal checkpoint cause",
+            ),
+        })
+    }
+
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         Ok(true)
     }
@@ -232,52 +241,53 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         &mut self,
         _context: &AttemptExecutionContext,
     ) -> Result<CapturedAttemptCheckpoint, SchedulerError> {
+        std::fs::create_dir_all(&self.checkpoint_directory).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("create campaign checkpoint fixture directory: {error}"),
+            }
+        })?;
         let configuration =
             self.configuration
                 .as_ref()
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("checkpoint requested before a completed quantum"),
+                    message: String::from(
+                        "campaign checkpoint fixture has no executed configuration",
+                    ),
                 })?;
-        let parent = if configuration.schedule.is_empty() {
-            None
-        } else {
-            Some(Configuration {
-                def: configuration.def.clone(),
-                schedule: configuration
-                    .schedule
-                    .prefix(configuration.schedule.len() - 1)
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: error.to_string(),
-                    })?,
-            })
-        };
-        let checkpoint = Checkpoint::from_recorded_configuration(
-            configuration,
-            parent.as_ref(),
-            self.frontier,
-            BTreeMap::new(),
-            CheckpointKind::Fat,
-            BTreeMap::new(),
+        let fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(
+            &self.checkpoint_directory,
         )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: error.to_string(),
-        })?;
-        let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
-            .map_err(|error| SchedulerError::BoundaryViolation {
+        .map_err(|error: crucible_api::LifecycleApiError| {
+            SchedulerError::BoundaryViolation {
                 message: error.to_string(),
-            })?;
+            }
+        })?;
+        if fixture.configuration() != configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "campaign checkpoint fixture did not retain the executed configuration",
+                ),
+            });
+        }
 
-        Ok(
-            crate::CapturedExactCheckpoint::new(snapshot, BlobHandle::from_bytes(vec![0x5a; 512]))
-                .into(),
-        )
+        Ok(CapturedAttemptCheckpoint::from_production_closure(
+            fixture.closure().clone(),
+        ))
+    }
+
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign save fixture has no replay launch profiles"),
+        })
     }
 
     fn fault_evidence_snapshot(
         &self,
     ) -> Result<crucible_api::ProductionFaultEvidenceSnapshot, SchedulerError> {
-        Err(SchedulerError::NotImplemented {
-            operation: "guarded campaign save fixture fault evidence",
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign save fixture has no fault evidence"),
         })
     }
 
@@ -293,6 +303,10 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
                 hash: ContentHash::from_bytes(b"guarded-campaign-save-fixture-fingerprint"),
             },
         })
+    }
+
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
     }
 
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
@@ -312,6 +326,7 @@ struct TestLifecycleFactory {
     continuation_start_generation: u64,
     offer_choice: bool,
     quantum_nanoseconds: u64,
+    checkpoint_root: PathBuf,
     next_lifecycle_generation: u64,
     trace: GuardedDefaultCampaignTestTrace,
 }
@@ -345,6 +360,9 @@ impl QemuFreshAttemptLifecycleFactory for TestLifecycleFactory {
             frontier: VirtualTime::default(),
             completed_quanta: 0,
             configuration: None,
+            checkpoint_directory: self
+                .checkpoint_root
+                .join(format!("generation-{lifecycle_generation}")),
             lifecycle_generation,
             trace: self.trace.clone(),
         })
@@ -368,6 +386,37 @@ pub fn run_guarded_default_campaign_test_fixture(
     run_guarded_default_campaign_test_fixture_with_trace(request).map(|(campaign, _)| campaign)
 }
 
+/// Runs the modeled fixture with explicit guest-choice publication behavior.
+///
+/// The fixed authenticated scenario declares the production recovery choice;
+/// route tests use this switch to cover both selection-free and selected saves.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run_guarded_default_campaign_test_fixture`].
+pub fn run_guarded_default_campaign_test_fixture_with_choice_offer(
+    request: GuardedDefaultCampaignRunRequest,
+    offer_choice: bool,
+) -> Result<GuardedDefaultCampaignRun, Box<dyn Error + Send + Sync>> {
+    run_guarded_default_campaign_test_fixture_with_trace_inner(request, Some(offer_choice))
+        .map(|(campaign, _)| campaign)
+}
+
+/// Runs the modeled fixture with trace capture and explicit choice publication.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run_guarded_default_campaign_test_fixture`].
+pub fn run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer(
+    request: GuardedDefaultCampaignRunRequest,
+    offer_choice: bool,
+) -> Result<
+    (GuardedDefaultCampaignRun, GuardedDefaultCampaignTestTrace),
+    Box<dyn Error + Send + Sync>,
+> {
+    run_guarded_default_campaign_test_fixture_with_trace_inner(request, Some(offer_choice))
+}
+
 /// Runs the modeled campaign lifecycle and returns its explicit reply-application trace.
 ///
 /// This is test-only evidence for distinguishing exact source replay from the
@@ -382,7 +431,17 @@ pub fn run_guarded_default_campaign_test_fixture_with_trace(
     (GuardedDefaultCampaignRun, GuardedDefaultCampaignTestTrace),
     Box<dyn Error + Send + Sync>,
 > {
-    let offer_choice = !request.scenario.selectables().is_empty();
+    run_guarded_default_campaign_test_fixture_with_trace_inner(request, None)
+}
+
+fn run_guarded_default_campaign_test_fixture_with_trace_inner(
+    request: GuardedDefaultCampaignRunRequest,
+    offer_choice: Option<bool>,
+) -> Result<
+    (GuardedDefaultCampaignRun, GuardedDefaultCampaignTestTrace),
+    Box<dyn Error + Send + Sync>,
+> {
+    let offer_choice = offer_choice.unwrap_or_else(|| !request.scenario.selectables().is_empty());
     let (quantum_nanoseconds, marker) = match &request.discovery_stop {
         StopCondition::VirtualTimeNanoseconds(deadline) if *deadline > 0 => (
             *deadline,
@@ -465,6 +524,10 @@ pub fn run_guarded_default_campaign_test_fixture_with_trace(
             (observation.clone(), observation, u64::MAX)
         };
     let trace = GuardedDefaultCampaignTestTrace::default();
+    let checkpoint_root = request
+        .lifecycle
+        .run_state_root()
+        .join("modeled-checkpoint-fixtures");
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TestLifecycleFactory {
             node,
@@ -474,6 +537,7 @@ pub fn run_guarded_default_campaign_test_fixture_with_trace(
             continuation_start_generation,
             offer_choice,
             quantum_nanoseconds,
+            checkpoint_root,
             next_lifecycle_generation: 0,
             trace: trace.clone(),
         });
@@ -487,16 +551,10 @@ pub fn run_guarded_default_campaign_test_fixture_with_trace(
 fn pending_guest_request(
     node: NodeId,
 ) -> Result<crucible_qemu::QemuNodeSelectablePendingRequest, SchedulerError> {
-    let request = SelectionRequest::new(
-        1,
-        "campaign.save.fixture-choice",
-        "campaign-save-boundary",
-        None,
-        256,
-    )
-    .map_err(|error| SchedulerError::BoundaryViolation {
-        message: error.to_string(),
-    })?;
+    let request = SelectionRequest::new(1, "product.recovery", "campaign-save-boundary", None, 256)
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: error.to_string(),
+        })?;
     Ok(
         crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
             node,

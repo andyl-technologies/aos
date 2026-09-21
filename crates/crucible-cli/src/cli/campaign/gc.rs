@@ -2,6 +2,9 @@
 
 use super::*;
 
+use crate::cli_store_maintenance::{run_store_cleanup, run_store_credentials};
+use crate::cli_store_transform::run_campaign_store_transform;
+
 use std::path::{Component, Path};
 
 use crucible_daemon::campaign_store_composition::{
@@ -11,18 +14,15 @@ use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcJournalCreateDisposition, CampaignGcJournalPhase, CampaignGcJournalTransition,
     CampaignGcPlan, CampaignLocalServiceConfig, CampaignLocalServiceMode,
-    CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig,
-    DirectoryAssignmentRetentionReader, DirectoryCampaignGcJournal,
-    DirectoryExactPinMaterializationReader, EXACT_PIN_MATERIALIZATION_DIRECTORY,
+    CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig, DirectoryAssignmentLedger,
+    DirectoryCampaignGcJournal, DirectoryExactPinMaterializationStore,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY,
 };
-#[cfg(test)]
-use crucible_daemon::{DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore};
 use serde::Serialize;
 
 use crate::cli_campaign_store::{
-    MAX_STORE_VERIFY_LOGICAL_BYTES, MAX_STORE_VERIFY_PLACEMENTS,
-    load_campaign_repository_store_observational, load_campaign_store_graph_observational,
-    verify_campaign_store_inventory,
+    MAX_STORE_VERIFY_LOGICAL_BYTES, MAX_STORE_VERIFY_PLACEMENTS, load_campaign_repository_store,
+    load_campaign_store_graph, verify_campaign_store_inventory,
 };
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v2";
@@ -59,12 +59,16 @@ pub(super) fn run_store_invocation(cli: &Cli, args: &StoreArgs) -> Result<(), Cl
         StoreCommand::Status(status) => run_store_status(status, cli.output_format())?,
         StoreCommand::Ensure(ensure) => run_store_ensure(ensure, cli.output_format())?,
         StoreCommand::Verify(verify) => run_store_verify(verify, cli.output_format())?,
+        StoreCommand::Gc(gc) => run_campaign_store_gc(gc, cli.output_format())?,
+        StoreCommand::Transform(transform) => {
+            run_campaign_store_transform(transform, cli.output_format())?
+        }
+        StoreCommand::Credentials(credentials) => {
+            run_store_credentials(credentials, cli.output_format())?
+        }
+        StoreCommand::Cleanup(cleanup) => run_store_cleanup(cleanup, cli.output_format())?,
         StoreCommand::Repair(repair) => {
             crate::cli_store_repair::run_store_repair(repair, cli.output_format())?
-        }
-        StoreCommand::Gc(gc) => run_campaign_store_gc(gc, cli.output_format())?,
-        StoreCommand::Repack(repack) => {
-            crate::cli_store_repack::run_store_repack(repack, cli.output_format())?
         }
     };
     println!("{rendered}");
@@ -154,7 +158,7 @@ struct CampaignStoreGcRequiredCopyReport {
 }
 
 fn run_store_status(args: &StoreStatusArgs, format: OutputFormat) -> Result<String, CliError> {
-    let graph = load_campaign_store_graph_observational(&args.deployment)?;
+    let graph = load_campaign_store_graph(&args.deployment)?;
     let report = store_status_report(&graph);
     render_store_status(&report, format)
 }
@@ -162,7 +166,7 @@ fn run_store_status(args: &StoreStatusArgs, format: OutputFormat) -> Result<Stri
 fn run_store_ensure(args: &StoreEnsureArgs, format: OutputFormat) -> Result<String, CliError> {
     let content = ContentId::parse(&args.content)
         .map_err(|error| usage_error(format!("invalid content ID: {error}")))?;
-    let graph = load_campaign_store_graph_observational(&args.deployment)?;
+    let graph = load_campaign_store_graph(&args.deployment)?;
     let handle = graph
         .read(content, None)
         .map_err(|error| maintenance_error(format!("store ensure read failed: {error}")))?;
@@ -184,7 +188,7 @@ fn run_store_verify(args: &StoreVerifyArgs, format: OutputFormat) -> Result<Stri
     let verified = verify_campaign_store_inventory(&args.deployment)?;
     let report = StoreVerifyReport {
         schema: STORE_VERIFY_REPORT_SCHEMA,
-        configuration: encode_store_bytes(&verified.configuration),
+        configuration: encode_bytes(&verified.configuration),
         maximum_placements: MAX_STORE_VERIFY_PLACEMENTS,
         maximum_logical_bytes: MAX_STORE_VERIFY_LOGICAL_BYTES,
         placements: verified.placements,
@@ -227,7 +231,11 @@ fn store_status_report(graph: &StoreGraph) -> StoreStatusReport {
 }
 
 fn store_configuration(graph: &StoreGraph) -> String {
-    encode_store_bytes(&graph.configuration_id().as_bytes())
+    encode_bytes(&graph.configuration_id().as_bytes())
+}
+
+fn encode_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 const fn store_node_kind(kind: StoreNodeKind) -> &'static str {
@@ -282,33 +290,19 @@ pub(super) fn run_campaign_store_gc(
         CampaignLoopbackServerConfig::default(),
     )
     .map_err(|error| maintenance_error(format!("invalid campaign owner profile: {error}")))?;
-
-    if args.operation == CampaignStoreGcCommand::Cancel {
-        let _owner = config.acquire_existing_owner().map_err(|error| {
-            maintenance_error(format!("campaign owner acquisition failed: {error}"))
-        })?;
-        let report = cancel_campaign_store_gc(args)?;
-        return render_campaign_store_gc(&report, format);
-    }
-
-    let owner = config.acquire_existing_owner().map_err(|error| {
+    let store = load_campaign_repository_store(&args.store)?;
+    let prepared = config.prepare_with_store(store).map_err(|error| {
         maintenance_error(format!("campaign owner acquisition failed: {error}"))
-    })?;
-    let store = load_campaign_repository_store_observational(&args.store)?;
-    let prepared = owner.prepare_store_gc_with_store(store).map_err(|error| {
-        maintenance_error(format!("campaign GC state authentication failed: {error}"))
     })?;
     let authority = prepared.store_gc_authority().map_err(|error| {
         maintenance_error(format!("campaign GC authority unavailable: {error}"))
     })?;
     let ledger_path = args.state.join("executor-ledger");
-    let mut ledger = DirectoryAssignmentRetentionReader::open_optional_existing(&ledger_path)
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_path)
         .map_err(|error| maintenance_error(format!("assignment ledger open failed: {error}")))?;
     let exact_pin_path = args.state.join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
-    let mut exact_pins = DirectoryExactPinMaterializationReader::open_optional_existing(
-        &exact_pin_path,
-    )
-    .map_err(|error| maintenance_error(format!("exact-pin journal open failed: {error}")))?;
+    let mut exact_pins = DirectoryExactPinMaterializationStore::open(&exact_pin_path)
+        .map_err(|error| maintenance_error(format!("exact-pin journal open failed: {error}")))?;
 
     let report = match args.operation {
         CampaignStoreGcCommand::Plan => {
@@ -385,65 +379,58 @@ pub(super) fn run_campaign_store_gc(
                 physical,
             }
         }
-        CampaignStoreGcCommand::Cancel => unreachable!("cancellation returns before store setup"),
+        CampaignStoreGcCommand::Cancel => {
+            let mut journal = DirectoryCampaignGcJournal::open(&args.journal).map_err(|error| {
+                maintenance_error(format!("campaign GC journal open failed: {error}"))
+            })?;
+            let plan_id = journal.plan().id().map_err(|error| {
+                maintenance_error(format!("campaign GC plan identity failed: {error}"))
+            })?;
+            let roots = journal.roots().len();
+            let physical = physical_report(journal.plan());
+            let required_copies = cache_required_copy_report(journal.plan(), journal.candidates())?;
+            let transition = journal.cancel().map_err(|error| {
+                maintenance_error(format!("campaign GC cancellation failed: {error}"))
+            })?;
+            let unreachable_candidates = journal
+                .candidates()
+                .iter()
+                .filter(|candidate| {
+                    matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
+                })
+                .count();
+            let unreachable_candidates = u64::try_from(unreachable_candidates)
+                .map_err(|_| maintenance_error("campaign GC candidate count overflow"))?;
+            CampaignStoreGcReport {
+                schema: CAMPAIGN_GC_REPORT_SCHEMA,
+                operation: "cancel",
+                plan_version: CAMPAIGN_GC_PLAN_VERSION,
+                plan: plan_id.to_hex(),
+                journal: journal.root().display().to_string(),
+                journal_disposition: match transition {
+                    CampaignGcJournalTransition::Advanced => "cancelled",
+                    CampaignGcJournalTransition::Existing => "already-cancelled",
+                },
+                phase: journal_phase(journal.phase()),
+                apply_status: None,
+                roots,
+                reachable_objects: None,
+                candidates: journal.candidates().summary().candidates(),
+                unreachable_candidates,
+                reachable_cache_candidates: journal
+                    .candidates()
+                    .summary()
+                    .candidates()
+                    .checked_sub(unreachable_candidates)
+                    .ok_or_else(|| maintenance_error("campaign GC candidate count underflow"))?,
+                candidate_logical_bytes: journal.candidates().logical_bytes(),
+                cache_required_copies: required_copies,
+                physical,
+            }
+        }
     };
 
     render_campaign_store_gc(&report, format)
-}
-
-fn cancel_campaign_store_gc(args: &CampaignStoreGcArgs) -> Result<CampaignStoreGcReport, CliError> {
-    let mut journal = DirectoryCampaignGcJournal::open(&args.journal)
-        .map_err(|error| maintenance_error(format!("campaign GC journal open failed: {error}")))?;
-    let plan_id = journal
-        .plan()
-        .id()
-        .map_err(|error| maintenance_error(format!("campaign GC plan identity failed: {error}")))?;
-    let roots = journal.roots().len();
-    let physical = physical_report(journal.plan());
-    let plan_version = CAMPAIGN_GC_PLAN_VERSION;
-    let required_copies = cache_required_copy_report(journal.plan(), journal.candidates())?;
-    let (unreachable_candidates, reachable_cache_candidates) =
-        candidate_reason_counts(journal.candidates())?;
-    let transition = journal
-        .cancel()
-        .map_err(|error| maintenance_error(format!("campaign GC cancellation failed: {error}")))?;
-    Ok(CampaignStoreGcReport {
-        schema: CAMPAIGN_GC_REPORT_SCHEMA,
-        operation: "cancel",
-        plan_version,
-        plan: plan_id.to_hex(),
-        journal: journal.root().display().to_string(),
-        journal_disposition: match transition {
-            CampaignGcJournalTransition::Advanced => "cancelled",
-            CampaignGcJournalTransition::Existing => "already-cancelled",
-        },
-        phase: journal_phase(journal.phase()),
-        apply_status: None,
-        roots,
-        reachable_objects: None,
-        candidates: journal.candidates().summary().candidates(),
-        unreachable_candidates,
-        reachable_cache_candidates,
-        candidate_logical_bytes: journal.candidates().logical_bytes(),
-        cache_required_copies: required_copies,
-        physical,
-    })
-}
-
-fn candidate_reason_counts(
-    candidates: &CampaignGcCandidateManifest,
-) -> Result<(u64, u64), CliError> {
-    let unreachable = candidates
-        .iter()
-        .filter(|candidate| matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable))
-        .count();
-    let reachable_cache = candidates.len().saturating_sub(unreachable);
-    Ok((
-        u64::try_from(unreachable)
-            .map_err(|_| maintenance_error("campaign GC unreachable candidate count overflow"))?,
-        u64::try_from(reachable_cache)
-            .map_err(|_| maintenance_error("campaign GC cache candidate count overflow"))?,
-    ))
 }
 
 fn cache_required_copy_report(
@@ -831,10 +818,7 @@ mod tests {
     use std::fs::{self, Permissions};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    use crucible_cas::content_store::{
-        BlobHandle, BlobStoreAdmin, DirectoryBlobBackend, DirectoryRefBackend, ObjectKind,
-        RefStoreAdmin,
-    };
+    use crucible_cas::content_store::{BlobHandle, ObjectKind};
     use tempfile::TempDir;
 
     use super::*;
@@ -842,11 +826,13 @@ mod tests {
     #[test]
     fn store_status_ensure_and_verify_authenticate_one_graph_and_inventory() {
         let fixture = GcFixture::new();
+        let graph = load_campaign_store_graph(&fixture.store).expect("load inspection graph");
         let bytes = b"authenticated store ensure fixture";
         let content = ContentId::for_bytes(ObjectKind::Scenario, 1, bytes);
-        DirectoryBlobBackend::new("primary", &fixture.objects)
+        graph
             .put_if_absent(content, &BlobHandle::from_bytes(bytes.to_vec()))
             .expect("publish ensure fixture");
+        drop(graph);
 
         let status = run_store_status(
             &StoreStatusArgs {
@@ -960,10 +946,10 @@ mod tests {
         assert_eq!(planned["phase"], "planned");
         assert_eq!(planned["candidates"], 0);
         assert!(
-            !fixture
+            fixture
                 .state
                 .join(EXACT_PIN_MATERIALIZATION_DIRECTORY)
-                .exists()
+                .is_dir()
         );
 
         let replay = run_campaign_store_gc(&args, OutputFormat::Jsonl)
@@ -998,12 +984,6 @@ mod tests {
         let planned: serde_json::Value =
             serde_json::from_str(&planned).expect("decode planning report");
 
-        let retired_store = fixture.root.join("retired-store.toml");
-        let ledger = fixture.state.join("executor-ledger");
-        let retired_ledger = fixture.state.join("retired-executor-ledger");
-        fs::rename(&fixture.store, &retired_store).expect("retire store during cancellation");
-        fs::rename(&ledger, &retired_ledger).expect("retire ledger during cancellation");
-
         args.operation = CampaignStoreGcCommand::Cancel;
         let cancelled = run_campaign_store_gc(&args, OutputFormat::Jsonl)
             .expect("cancel planned repository GC");
@@ -1019,9 +999,6 @@ mod tests {
         let replayed: serde_json::Value =
             serde_json::from_str(&replayed).expect("decode cancellation replay report");
         assert_eq!(replayed["journal_disposition"], "already-cancelled");
-
-        fs::rename(&retired_store, &fixture.store).expect("restore store after cancellation");
-        fs::rename(&retired_ledger, &ledger).expect("restore ledger after cancellation");
 
         args.operation = CampaignStoreGcCommand::Apply;
         let error = run_campaign_store_gc(&args, OutputFormat::Jsonl)
@@ -1092,79 +1069,12 @@ mod tests {
         assert!(store.find_subcommand("status").is_some());
         assert!(store.find_subcommand("ensure").is_some());
         assert!(store.find_subcommand("verify").is_some());
-        let repair = store
-            .find_subcommand("repair")
-            .expect("store repair command");
-        let repack = store
-            .find_subcommand("repack")
-            .expect("store repack command");
+        assert!(store.find_subcommand("transform").is_some());
+        assert!(store.find_subcommand("credentials").is_some());
+        assert!(store.find_subcommand("cleanup").is_some());
+        assert!(store.find_subcommand("repair").is_some());
         assert!(gc.find_subcommand("plan").is_some());
-        assert!(gc.find_subcommand("cancel").is_some());
         assert!(gc.find_subcommand("apply").is_some());
-        assert!(repack.find_subcommand("plan").is_some());
-        assert!(repack.find_subcommand("apply").is_some());
-        let repack_ids = repack
-            .get_arguments()
-            .filter(|argument| !argument.is_global_set())
-            .map(|argument| argument.get_id().as_str())
-            .filter(|id| *id != "help")
-            .collect::<BTreeSet<_>>();
-        assert_eq!(repack_ids, BTreeSet::from(["store", "node", "plan"]));
-        let placement = repair
-            .find_subcommand("placement")
-            .expect("placement repair command");
-        let operational = repair
-            .find_subcommand("operational-state")
-            .expect("operational-state repair command");
-        let repair_ids = placement
-            .get_arguments()
-            .filter(|argument| !argument.is_global_set())
-            .map(|argument| argument.get_id().as_str())
-            .filter(|id| *id != "help")
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            repair_ids,
-            BTreeSet::from([
-                "content",
-                "deployment",
-                "source",
-                "target",
-                "maximum_bytes",
-                "state",
-                "policy",
-            ])
-        );
-        let operational_ids = operational
-            .get_arguments()
-            .filter(|argument| !argument.is_global_set())
-            .map(|argument| argument.get_id().as_str())
-            .filter(|id| *id != "help")
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            operational_ids,
-            BTreeSet::from([
-                "state",
-                "policy",
-                "ledger",
-                "prepared_results",
-                "receipt",
-                "maximum_assignment_entries",
-                "maximum_assignment_bytes",
-                "maximum_prepared_result_entries",
-                "maximum_prepared_result_bytes",
-            ])
-        );
-        let help = operational.clone().render_long_help().to_string();
-        for required in [
-            "stopped-daemon",
-            "owner lock",
-            "writer lock",
-            "retry",
-            "refuse",
-            "provenance",
-        ] {
-            assert!(help.contains(required), "missing `{required}` in {help}");
-        }
     }
 
     struct GcFixture {
@@ -1230,7 +1140,7 @@ root = {objects:?}
             .expect("write GC store deployment");
             fs::set_permissions(&store, Permissions::from_mode(0o600))
                 .expect("secure GC store deployment");
-            let fixture = Self {
+            Self {
                 journal: root.join("journal"),
                 _directory: directory,
                 root,
@@ -1238,55 +1148,7 @@ root = {objects:?}
                 objects,
                 policy,
                 store,
-            };
-            fixture.initialize_existing_gc_state();
-            fixture
-        }
-
-        fn initialize_existing_gc_state(&self) {
-            let endpoint = CampaignLoopbackEndpointConfig::new(
-                UNUSED_GC_ENDPOINT,
-                rustix::process::geteuid().as_raw(),
-                rustix::process::getegid().as_raw(),
-                0o600,
-            )
-            .expect("GC fixture endpoint");
-            let config = CampaignLocalServiceConfig::new(
-                endpoint,
-                &self.state,
-                &self.policy,
-                CampaignLocalServiceMode::ReadWrite,
-                CampaignLoopbackServerConfig::default(),
-            )
-            .expect("GC fixture service config");
-            let store = crate::cli_campaign_store::load_campaign_repository_store(&self.store)
-                .expect("load operational fixture store");
-            drop(
-                config
-                    .prepare_with_store(store)
-                    .expect("initialize fixture owner journals"),
-            );
-            drop(
-                DirectoryAssignmentLedger::open(self.state.join("executor-ledger"))
-                    .expect("initialize fixture ledger"),
-            );
-            let primary = DirectoryBlobBackend::new("primary", &self.objects);
-            let mut inventory = primary
-                .acquire_inventory_fence()
-                .expect("initialize fixture physical inventory fence");
-            inventory
-                .visit_inventory(&mut |_| Ok(()))
-                .expect("initialize fixture physical inventory state");
-            drop(inventory);
-            verify_campaign_store_inventory(&self.store)
-                .expect("initialize fixture physical inventory state");
-            let refs = DirectoryRefBackend::new(self.root.join("refs"));
-            let mut fence = refs
-                .acquire_ref_inventory_fence()
-                .expect("initialize fixture ref inventory state");
-            fence
-                .visit_refs(&mut |_| Ok(()))
-                .expect("authenticate fixture ref inventory");
+            }
         }
 
         fn args(&self, operation: CampaignStoreGcCommand) -> CampaignStoreGcArgs {

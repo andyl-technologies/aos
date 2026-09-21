@@ -3,7 +3,7 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::{self, Cursor, Read};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -250,20 +250,13 @@ fn verification_admin(
             )
         })
         .collect();
-    let fixture = StoreNodeId::new("verification-fixture").expect("valid fixture node");
-    let (_graph, mut admin) = StoreGraph::build_with_admin(StoreGraphConfig {
-        root: fixture.clone(),
-        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
-        nodes: BTreeMap::from([(
-            fixture,
-            StoreNodeSpec::Memory {
-                max_logical_bytes: 1,
-            },
-        )]),
-    })
-    .expect("paired verification administration");
-    admin.physical = physical;
-    admin
+    StoreGraphAdmin {
+        configuration: StoreGraphConfigurationId([0x31; 32]),
+        authority_identity: Arc::new(StoreGraphAuthorityIdentity),
+        physical,
+        packed_repack: BTreeMap::new(),
+        s3_multipart_cleanup: BTreeMap::new(),
+    }
 }
 
 #[test]

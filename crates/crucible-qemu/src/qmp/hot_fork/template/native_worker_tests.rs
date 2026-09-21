@@ -13,7 +13,7 @@ fn quiescent_aio_without_retired_native_workers_remains_draining() -> Result<(),
 
     let state = parse_hot_fork_template_state(&report)?;
     assert_eq!(state.outcome(), QmpHotForkTemplateOutcome::Draining);
-    assert!(state.bh_timer_barrier().quiescent());
+    assert!(state.async_worker_barrier().quiescent());
     assert!(!state.ready());
     assert_eq!(state.missing_proofs(), QMP_HOT_FORK_AIO_PROOF);
     Ok(())
@@ -31,8 +31,8 @@ fn missing_native_worker_proof_cannot_claim_prepared() {
 #[test]
 fn aio_proof_still_requires_closed_quiescent_admission() {
     let mut report = prepared_report();
-    report["bh-timer-barrier"]["admissions-in-flight"] = json!(1);
-    report["bh-timer-barrier"]["quiescent"] = json!(false);
+    report["async-worker-barrier"]["admissions-in-flight"] = json!(1);
+    report["async-worker-barrier"]["quiescent"] = json!(false);
     report["outcome"] = json!("draining");
     report["ready"] = json!(false);
 
@@ -42,7 +42,7 @@ fn aio_proof_still_requires_closed_quiescent_admission() {
 /// Reproduces the complete prepared response used by the typed QMP fixture.
 pub(super) fn prepared_report() -> Value {
     json!({
-        "schema-version": 25,
+        "schema-version": 26,
         "generation": 4,
         "outcome": "prepared",
         "transaction-active": true,
@@ -81,8 +81,8 @@ pub(super) fn prepared_report() -> Value {
             "drain-active": false,
             "quiescent": true
         },
-        "bh-timer-barrier": {
-            "schema-version": 2,
+        "async-worker-barrier": {
+            "schema-version": 3,
             "generation": 6,
             "owner-thread-id": 44,
             "held": true,

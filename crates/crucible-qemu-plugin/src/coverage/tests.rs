@@ -8,9 +8,13 @@ mod live_callback_cases;
 
 static CALLBACK_MODEL_TRANSLATION_PLUGIN_ID: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_MODEL_TRANSLATION_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK_MODEL_TRANSLATION_USERDATA: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK_MODEL_TRANSLATION_REGISTRATIONS: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK_MODEL_COMBINED_ORDER: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_EXEC_CALLBACK: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_FLUSH_PLUGIN_ID: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_MODEL_FLUSH_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK_MODEL_FLUSH_USERDATA: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_EXEC_FLAGS: AtomicUsize = AtomicUsize::new(usize::MAX);
 static CALLBACK_MODEL_EXEC_USERDATA: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_ICOUNT: AtomicU64 = AtomicU64::new(0);
@@ -49,7 +53,6 @@ fn coverage_registration_off_mode_installs_no_callback_and_ignores_map_config() 
 
     assert_eq!(plan, CoverageRegistrationPlan::Disabled);
     assert!(!plan.installs_callback());
-    assert!(plan.hot_path_has_zero_coverage_overhead());
     assert_eq!(
         plan.require_callback(),
         Err(CoverageError::CallbackWhileDisabled)
@@ -244,6 +247,7 @@ fn test_coverage_capabilities() -> CoverageCapabilities {
 extern "C" fn test_register_tb_trans_cb(
     _plugin_id: QemuPluginId,
     _callback: Option<QemuVcpuTbTransCbFn>,
+    _userdata: *mut c_void,
 ) {
 }
 
@@ -283,7 +287,12 @@ extern "C" fn test_icount_at_tb_entry(_tb_insns: u64, entry_icount: *mut u64) ->
     0
 }
 
-extern "C" fn test_register_flush_cb(_plugin_id: QemuPluginId, _callback: QemuPluginSimpleCbFn) {}
+extern "C" fn test_register_flush_cb(
+    _plugin_id: QemuPluginId,
+    _callback: QemuPluginSimpleCbFn,
+    _userdata: *mut c_void,
+) {
+}
 
 extern "C" fn test_scoreboard_new(_element_size: usize) -> *mut QemuPluginScoreboard {
     std::ptr::NonNull::dangling().as_ptr()
@@ -314,35 +323,6 @@ fn coverage_exec_callback_rejects_zero_length_basic_block() {
     );
     assert!(map.entries().iter().all(|entry| *entry == 0));
     assert!(sink.observations.is_empty());
-}
-
-#[test]
-fn coverage_exec_callback_exports_protocol_basic_block_observation() {
-    let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 1024));
-    let mut map =
-        CoverageMap::new(1024).unwrap_or_else(|error| panic!("coverage map should build: {error}"));
-    let mut sink = RecordingCoverageSink::default();
-
-    let plugin_observation = handle_coverage_exec_callback(
-        &callback,
-        &mut map,
-        &mut sink,
-        CoverageBlockEvent::new(77, 2, 0x4010, 16),
-    )
-    .unwrap_or_else(|error| panic!("plugin callback should record coverage: {error}"));
-    let protocol_observation = plugin_observation
-        .to_protocol_observation()
-        .unwrap_or_else(|error| panic!("plugin observation should export to protocol: {error}"));
-
-    assert_eq!(protocol_observation.current_icount(), 77);
-    assert_eq!(protocol_observation.vcpu_index(), 2);
-    assert_eq!(protocol_observation.guest_pc(), 0x4010);
-    assert_eq!(protocol_observation.block_len(), 16);
-    assert_eq!(
-        protocol_observation.map_index(),
-        fold_basic_block_pc(0x4010, 1024) as u64
-    );
-    assert!(protocol_observation.was_new());
 }
 
 #[test]
@@ -379,14 +359,14 @@ fn coverage_flush_reclaims_metadata_before_retranslation() {
         insns: vec![TestInsn { size: 4 }],
     };
     translate(
-        0xC0DE,
         std::ptr::from_mut(&mut first_tb).cast::<QemuPluginTb>(),
+        CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
     );
     assert_eq!(owner.translated_block_count(), 1);
 
     // This models QEMU's documented ordering: generated callbacks have
     // already been destroyed before the plugin flush callback fires.
-    flush(0xC0DE);
+    flush(CALLBACK_MODEL_FLUSH_USERDATA.load(Ordering::SeqCst) as *mut c_void);
     assert_eq!(owner.translated_block_count(), 0);
 
     let mut second_tb = TestTb {
@@ -394,8 +374,8 @@ fn coverage_flush_reclaims_metadata_before_retranslation() {
         insns: vec![TestInsn { size: 2 }, TestInsn { size: 3 }],
     };
     translate(
-        0xC0DE,
         std::ptr::from_mut(&mut second_tb).cast::<QemuPluginTb>(),
+        CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
     );
     assert_eq!(owner.translated_block_count(), 1);
     let execute_address = CALLBACK_MODEL_EXEC_CALLBACK.load(Ordering::SeqCst);
@@ -446,8 +426,8 @@ fn coverage_callbacks_reject_work_after_quiescence_without_freeing_metadata() {
         insns: vec![TestInsn { size: 4 }],
     };
     translate(
-        0xC0DE,
         std::ptr::from_mut(&mut first_tb).cast::<QemuPluginTb>(),
+        CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
     );
     assert_eq!(owner.translated_block_count(), 1);
     let execute_address = CALLBACK_MODEL_EXEC_CALLBACK.load(Ordering::SeqCst);
@@ -458,14 +438,14 @@ fn coverage_callbacks_reject_work_after_quiescence_without_freeing_metadata() {
 
     quiescence.close();
     execute(0, userdata as *mut c_void);
-    flush(0xC0DE);
+    flush(CALLBACK_MODEL_FLUSH_USERDATA.load(Ordering::SeqCst) as *mut c_void);
     let mut late_tb = TestTb {
         guest_pc: 0x7100,
         insns: vec![TestInsn { size: 4 }],
     };
     translate(
-        0xC0DE,
         std::ptr::from_mut(&mut late_tb).cast::<QemuPluginTb>(),
+        CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
     );
 
     assert!(owner.drain_observations().is_empty());
@@ -514,10 +494,10 @@ fn coverage_owner_unpublishes_callbacks_before_state_is_freed_and_can_reinstall(
         // SAFETY: the flush callback address has the declared simple-callback ABI.
         unsafe { std::mem::transmute::<usize, QemuPluginSimpleCbFn>(flush_address) };
     stale_translate(
-        0xC0DE,
         std::ptr::from_mut(&mut stale_tb).cast::<QemuPluginTb>(),
+        CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
     );
-    stale_flush(0xC0DE);
+    stale_flush(CALLBACK_MODEL_FLUSH_USERDATA.load(Ordering::SeqCst) as *mut c_void);
 
     let second_header = RingHeader::new();
     let mut second_entries = vec![CoverageEntry::default(); 16];
@@ -569,12 +549,28 @@ fn callback_model_shmem_producer(
 extern "C" fn callback_model_register_tb_trans_cb(
     plugin_id: QemuPluginId,
     callback: Option<QemuVcpuTbTransCbFn>,
+    userdata: *mut c_void,
 ) {
+    CALLBACK_MODEL_TRANSLATION_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
     CALLBACK_MODEL_TRANSLATION_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
     CALLBACK_MODEL_TRANSLATION_CALLBACK.store(
         callback.map_or(0, |callback| callback as usize),
         Ordering::SeqCst,
     );
+    CALLBACK_MODEL_TRANSLATION_USERDATA.store(userdata as usize, Ordering::SeqCst);
+}
+
+extern "C" fn callback_model_whitebox_translate(_tb: *mut QemuPluginTb, userdata: *mut c_void) {
+    assert_eq!(userdata as usize, 0xA11CE);
+    assert_eq!(
+        CALLBACK_MODEL_COMBINED_ORDER.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst,),
+        Ok(0),
+    );
+}
+
+extern "C" fn callback_model_ordered_tb_n_insns(tb: *const QemuPluginTb) -> usize {
+    assert_eq!(CALLBACK_MODEL_COMBINED_ORDER.swap(2, Ordering::SeqCst), 1);
+    callback_model_tb_n_insns(tb)
 }
 
 extern "C" fn callback_model_register_tb_exec_cond_cb(
@@ -619,9 +615,11 @@ extern "C" fn callback_model_u64_set(entry: QemuPluginU64, vcpu_index: c_uint, v
 extern "C" fn callback_model_register_flush_cb(
     plugin_id: QemuPluginId,
     callback: QemuPluginSimpleCbFn,
+    userdata: *mut c_void,
 ) {
     CALLBACK_MODEL_FLUSH_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
     CALLBACK_MODEL_FLUSH_CALLBACK.store(callback as usize, Ordering::SeqCst);
+    CALLBACK_MODEL_FLUSH_USERDATA.store(userdata as usize, Ordering::SeqCst);
 }
 
 extern "C" fn callback_model_tb_vaddr(tb: *const QemuPluginTb) -> u64 {

@@ -21,7 +21,7 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
     let slot = NodeSlot::new(KIND_VM);
     let priming = authorize_advance_ceiling(0, 100, None)
         .unwrap_or_else(|error| panic!("priming ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(priming)
+    slot.publish_scheduler_advance(priming, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("priming ceiling should publish: {error}"));
     slot.publish_reached_icount(100, 0)
         .unwrap_or_else(|error| panic!("priming boundary should publish: {error}"));
@@ -60,8 +60,11 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
     assert_eq!(network.tx.next_seq(), 29);
     let restored_ceiling = authorize_advance_ceiling(100, 500, None)
         .unwrap_or_else(|error| panic!("restore ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(restored_ceiling)
-        .unwrap_or_else(|error| panic!("restore ceiling should publish: {error}"));
+    slot.publish_scheduler_advance(
+        restored_ceiling,
+        crucible_shmem::AdvanceStopCondition::Ceiling,
+    )
+    .unwrap_or_else(|error| panic!("restore ceiling should publish: {error}"));
     let generation = slot
         .arm_logical_time_restore(500)
         .unwrap_or_else(|error| panic!("logical-time restore should arm: {error}"));

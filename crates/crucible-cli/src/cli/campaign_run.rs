@@ -1,87 +1,57 @@
-//! CLI projection for campaign-owned local QEMU runs and continuations.
+//! Thin CLI projection for guarded campaign-backed runs.
 //!
-//! This module validates command semantics, translates the deployment and
+//! This module validates command compatibility, translates the deployment and
 //! backend configuration into one shared daemon request, and renders the
-//! daemon-owned campaign result through the shared run output contract.
+//! daemon-owned campaign result through the existing run output contract.
 
 use super::*;
 
 use std::sync::Arc;
 
 use super::packaged_executor::{
-    load_guarded_campaign_run_deployment, resolve_guarded_campaign_deployment_path,
+    load_campaign_run_deployment, resolve_guarded_campaign_deployment_path,
 };
+use crucible_api as campaign_output_api;
+use crucible_api::InProcessLifecycleClient;
 use crucible_campaign::{
     AttemptResourceLimits, CampaignState, ObservationCondition, ObservationStopSatisfaction,
     StopCondition, StopOutcome,
 };
-// crucible-lint: allow host-nondeterminism-state -- rendering projects accepted scheduler evidence into the existing CLI wire-frame contract without influencing execution.
-use crucible_api as campaign_output_api;
 use crucible_daemon::ExactCheckpointStore;
 use crucible_daemon::campaign_store_composition::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignContinuationControl, GuardedCampaignReplayClosure,
-    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignRun,
-    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
+    GuardedCampaignReplayClosure, GuardedDefaultCampaignObservationSource,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
     GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
 };
 
-/// Validates that the shared campaign owner can resume this logical checkpoint exactly.
-fn validate_campaign_resume_contract(
+#[path = "campaign_run/execution.rs"]
+mod execution;
+use execution::execute_local_qemu_campaign;
+
+/// Returns whether the shared campaign owner can resume this logical checkpoint exactly.
+pub(super) fn guarded_campaign_resume_eligible(
     plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
-) -> Result<(), CliError> {
-    let supported = plan.execution_mode == RunExecutionMode::ToCompletion
+) -> bool {
+    plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.startup_commands == [SessionCommandKind::Start, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
         && plan.accepted_interactive_commands.is_empty()
         && guarded_resume_stop(plan, evidence).is_ok()
-        && campaign_resume_evidence_supported(evidence);
-    supported.then_some(()).ok_or_else(|| {
-        backend_error(
-            "the requested checkpoint, stop, or control mode does not satisfy the campaign QEMU resume contract",
-        )
-    })
-}
-
-/// Validates that the shared campaign owner can execute a standard fork exactly.
-fn validate_campaign_fork_contract(
-    plan: &ForkInvocationPlan,
-    evidence: &ResumeHandleEvidence,
-) -> Result<(), CliError> {
-    let supported = plan.execution_mode == RunExecutionMode::ToCompletion
-        && plan.startup_commands == [SessionCommandKind::Fork, SessionCommandKind::Continue]
-        && plan.initial_control_commands == [SessionCommandKind::Query]
-        && plan.accepted_interactive_commands.is_empty()
-        && guarded_continuation_stop(
-            plan.terminal_condition,
-            plan.max_virtual_time_ticks,
-            &evidence.scenario_form,
-        )
-        .is_ok()
-        && campaign_resume_evidence_supported(evidence);
-    supported.then_some(()).ok_or_else(|| {
-        backend_error(
-            "the requested checkpoint, fork recipe, stop, or control mode does not satisfy the campaign QEMU fork contract",
-        )
-    })
+        && campaign_resume_evidence_supported(evidence)
 }
 
 fn campaign_resume_evidence_supported(evidence: &ResumeHandleEvidence) -> bool {
     evidence.schedule.decisions().iter().all(|decision| {
         matches!(
             decision,
-            // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
             crucible::Decision::DeliveryOrder(_)
-                // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
                 | crucible::Decision::RngDraw(_)
-                // crucible-lint: allow host-nondeterminism-state -- eligibility reads authenticated scheduler evidence only to choose the exact campaign resume route.
                 | crucible::Decision::Preemption(_)
-                // crucible-lint: allow host-nondeterminism-state -- eligibility reads an authenticated typed choice whose exact closure is carried by the savepoint.
                 | crucible::Decision::Selection(_)
         )
     }) && evidence.schedule.decisions().iter().all(|decision| {
-        // crucible-lint: allow host-nondeterminism-state -- eligibility inspects authenticated scheduler evidence only to reject unsupported model-sampled selections before routing.
         let crucible::Decision::Selection(decision) = decision else {
             return true;
         };
@@ -103,20 +73,24 @@ pub(crate) fn run_local_qemu_campaign_resume_workflow(
     resume_plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> Result<ResumeWorkflowReport, CliError> {
-    validate_campaign_resume_contract(resume_plan, evidence)?;
+    if !guarded_campaign_resume_eligible(resume_plan, evidence) {
+        return Err(backend_error(
+            "the requested checkpoint, stop, or control mode does not have an exact campaign-backed QEMU resume adapter",
+        ));
+    }
 
-    run_local_qemu_campaign_continuation_workflow(backend, resume_plan, evidence, None)
+    run_local_qemu_campaign_continuation_workflow(backend, resume_plan, evidence)
 }
 
 fn run_local_qemu_campaign_continuation_workflow(
     backend: &ResolvedLocalBackend,
     resume_plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
-    continuation_control: Option<GuardedCampaignContinuationControl>,
 ) -> Result<ResumeWorkflowReport, CliError> {
     let deployment_path = resolve_guarded_campaign_deployment_path(None)?;
-    let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
+    let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, None)?;
+    let verify_determinism_findings = deployment.verify_determinism_findings;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -134,7 +108,7 @@ fn run_local_qemu_campaign_continuation_workflow(
         .map_err(|error| campaign_run_error("create transient exact checkpoint store", error))?;
     let checkpoint_root = checkpoint_directory.path().to_path_buf();
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "campaign-resume-checkpoints",
+        "guarded-campaign-resume-checkpoints",
         &checkpoint_root,
     ));
     let checkpoints = Arc::new(
@@ -150,13 +124,9 @@ fn run_local_qemu_campaign_continuation_workflow(
         deployment.host,
         resources,
     );
-    let request = attach_guarded_resume_source(
-        request,
-        evidence,
-        final_stop,
-        Arc::clone(&checkpoints),
-        continuation_control,
-    );
+    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    let request =
+        attach_guarded_resume_source(request, evidence, final_stop, Arc::clone(&checkpoints));
     let request = if resume_plan.watch_streams_live_status {
         request.with_watch_frames()
     } else {
@@ -178,7 +148,6 @@ fn attach_guarded_resume_source(
     evidence: &ResumeHandleEvidence,
     final_stop: StopCondition,
     checkpoints: Arc<ExactCheckpointStore>,
-    continuation_control: Option<GuardedCampaignContinuationControl>,
 ) -> GuardedDefaultCampaignRunRequest {
     if let (Some(proof), Some(source_evidence)) = (
         evidence.source_observation_proof.as_deref(),
@@ -186,118 +155,23 @@ fn attach_guarded_resume_source(
     ) {
         let source =
             GuardedDefaultCampaignObservationSource::new(proof.clone(), source_evidence.clone());
-        return match continuation_control {
-            Some(control) => request.with_controlled_observation_resume_source(
-                evidence.schedule.clone(),
-                evidence.replay_closure.clone(),
-                evidence.checkpoint.clone(),
-                source,
-                final_stop,
-                checkpoints,
-                control,
-            ),
-            None => request.with_observation_resume_source(
-                evidence.schedule.clone(),
-                evidence.replay_closure.clone(),
-                evidence.checkpoint.clone(),
-                source,
-                final_stop,
-                checkpoints,
-            ),
-        };
-    }
-
-    match continuation_control {
-        Some(control) => request.with_controlled_resume_source(
+        return request.with_observation_resume_source(
             evidence.schedule.clone(),
             evidence.replay_closure.clone(),
             evidence.checkpoint.clone(),
+            source,
             final_stop,
             checkpoints,
-            control,
-        ),
-        None => request.with_resume_source(
-            evidence.schedule.clone(),
-            evidence.replay_closure.clone(),
-            evidence.checkpoint.clone(),
-            final_stop,
-            checkpoints,
-        ),
-    }
-}
-
-/// Forks one local-QEMU checkpoint through campaign-owned continuation control.
-pub(super) fn run_local_qemu_campaign_fork_workflow(
-    backend: &ResolvedLocalBackend,
-    fork_plan: &ForkInvocationPlan,
-    evidence: &ResumeHandleEvidence,
-) -> Result<ForkWorkflowReport, CliError> {
-    validate_campaign_fork_contract(fork_plan, evidence)?;
-
-    let resume_plan = ResumeInvocationPlan {
-        savepoint: fork_plan.source.clone(),
-        store_root: fork_plan.store_root.clone(),
-        terminal_condition: fork_plan.terminal_condition,
-        max_virtual_time: fork_plan.max_virtual_time.clone(),
-        max_virtual_time_ticks: fork_plan.max_virtual_time_ticks,
-        execution_mode: fork_plan.execution_mode,
-        watch_streams_live_status: fork_plan.watch_streams_live_status,
-        startup_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
-        initial_control_commands: fork_plan.initial_control_commands.clone(),
-        accepted_interactive_commands: Vec::new(),
-    };
-    let control = guarded_campaign_fork_control(fork_plan, evidence)?;
-    let resumed =
-        run_local_qemu_campaign_continuation_workflow(backend, &resume_plan, evidence, control)?;
-
-    Ok(campaign_fork_workflow_report(fork_plan, evidence, resumed))
-}
-
-fn guarded_campaign_fork_control(
-    plan: &ForkInvocationPlan,
-    evidence: &ResumeHandleEvidence,
-) -> Result<Option<GuardedCampaignContinuationControl>, CliError> {
-    if let Some(seed) = plan.fork_seed {
-        return Ok(Some(GuardedCampaignContinuationControl::reseed(
-            evidence.checkpoint.virtual_time,
-            crucible::Seed::from_u64(seed),
-        )));
-    }
-    if plan.decision_overrides.is_empty() {
-        return Ok(None);
+        );
     }
 
-    let overrides = fork_override_decisions(plan)
-        .into_iter()
-        .filter_map(|decision| match decision {
-            crucible::Decision::Override(decision) => Some(decision),
-            _ => None,
-        })
-        .collect();
-    GuardedCampaignContinuationControl::scheduler_overrides(
-        evidence.checkpoint.virtual_time,
-        overrides,
+    request.with_resume_source(
+        evidence.schedule.clone(),
+        evidence.replay_closure.clone(),
+        evidence.checkpoint.clone(),
+        final_stop,
+        checkpoints,
     )
-    .map(Some)
-    .map_err(|error| campaign_run_error("model fork continuation input", error))
-}
-
-fn campaign_fork_workflow_report(
-    fork_plan: &ForkInvocationPlan,
-    evidence: &ResumeHandleEvidence,
-    resumed: ResumeWorkflowReport,
-) -> ForkWorkflowReport {
-    ForkWorkflowReport {
-        run: resumed.run,
-        source_checkpoint: resumed.source_checkpoint,
-        branch_checkpoint: evidence.checkpoint.id,
-        branch_configuration: resumed.resumed_configuration,
-        terminal_configuration: resumed.terminal_configuration,
-        scenario_form: evidence.scenario_form.clone(),
-        scenario_label: fork_plan.source.label(),
-        label: fork_plan.label.clone(),
-        terminal_oracle: resumed.terminal_oracle,
-    }
 }
 
 fn guarded_resume_stop(
@@ -345,8 +219,9 @@ pub(super) fn run_local_qemu_campaign_replay(
 ) -> Result<RunWorkflowReport, CliError> {
     let deployment_path =
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
-    let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
+    let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
+    let verify_determinism_findings = deployment.verify_determinism_findings;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -370,7 +245,8 @@ pub(super) fn run_local_qemu_campaign_replay(
         resources,
     )
     .with_discovery_stop(guarded_discovery_stop(run_plan)?)
-    .with_initial_replay(schedule, replay_closure);
+    .with_initial_replay(schedule, Some(replay_closure));
+    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     let request = if run_plan.watch_streams_live_status {
         request.with_watch_frames()
     } else {
@@ -382,32 +258,25 @@ pub(super) fn run_local_qemu_campaign_replay(
     campaign_run_report(run_plan, &campaign, terminal_outcome, status)
 }
 
-/// Validates that the shared campaign owner can execute this run exactly.
-fn validate_campaign_run_contract(plan: &RunInvocationPlan) -> Result<(), CliError> {
-    guarded_discovery_stop(plan)?;
-    guarded_campaign_execution_shape_supported(plan)
-        .then_some(())
-        .ok_or_else(|| {
-            backend_error(
-                "the requested control mode does not satisfy the campaign QEMU run contract",
-            )
-        })
+/// Returns whether the shared batch campaign owner can execute this run exactly.
+pub(super) fn batch_campaign_run_eligible(plan: &RunInvocationPlan) -> bool {
+    guarded_discovery_stop(plan).is_ok() && guarded_campaign_execution_shape_eligible(plan)
 }
 
-fn guarded_campaign_execution_shape_supported(plan: &RunInvocationPlan) -> bool {
+fn guarded_campaign_execution_shape_eligible(plan: &RunInvocationPlan) -> bool {
     plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.save_policy == RunSavePolicy::Never
         && plan.startup_commands == [SessionCommandKind::Start, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
         && plan.accepted_interactive_commands.is_empty()
-        && plan.observer_profile == VERIFY_BASELINE_PROFILE
+        && plan.host_profile.is_valid()
         && !plan.collect_execution_fingerprints
 }
 
-/// Validates that the shared campaign owner can capture this save exactly.
-fn validate_campaign_save_contract(plan: &SaveInvocationPlan) -> Result<(), CliError> {
-    guarded_campaign_save_stop(plan)?;
-    validate_campaign_run_contract(&plan.run_plan)
+/// Returns whether the shared campaign owner can capture this save exactly.
+pub(super) fn guarded_campaign_save_eligible(plan: &SaveInvocationPlan) -> bool {
+    guarded_campaign_save_stop(plan).is_ok()
+        && guarded_campaign_execution_shape_eligible(&plan.run_plan)
 }
 
 /// Runs one local-QEMU semantic save through campaign savepoint capture.
@@ -418,13 +287,18 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     save_plan: &SaveInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    validate_campaign_save_contract(save_plan)?;
+    if !guarded_campaign_save_eligible(save_plan) {
+        return Err(backend_error(
+            "the requested save boundary or control mode does not have an exact campaign-backed QEMU adapter",
+        ));
+    }
 
     let run_plan = &save_plan.run_plan;
     let deployment_path =
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
-    let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
+    let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
+    let verify_determinism_findings = deployment.verify_determinism_findings;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -443,7 +317,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
         .map_err(|error| campaign_run_error("create transient exact checkpoint store", error))?;
     let checkpoint_root = checkpoint_directory.path().to_path_buf();
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "campaign-savepoints",
+        "guarded-campaign-savepoints",
         &checkpoint_root,
     ));
     let checkpoints = Arc::new(
@@ -466,6 +340,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
     )
     .with_discovery_stop(stop.clone())
     .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
+    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     let report = run_guarded_default_campaign(request)
         .map_err(|error| {
             campaign_run_error("capture savepoint through shared campaign owner", error)
@@ -522,7 +397,7 @@ fn campaign_save_workflow_report(
     let evidence = savepoint.evidence();
     let frontier = evidence.frontier();
     let checkpoint = recorded_checkpoint_for_configuration(configuration, frontier)
-        .map_err(|error| campaign_run_error("build logical checkpoint", error))?;
+        .map_err(|error| campaign_run_error("build recorded logical checkpoint", error))?;
     let oracle = validate_savepoint_checkpoint(save_plan, configuration, &checkpoint, frontier)?;
     let mut run = campaign_run_report(
         &save_plan.run_plan,
@@ -555,24 +430,19 @@ fn campaign_save_workflow_report(
     })
 }
 
-// crucible-lint: allow host-nondeterminism-state -- validation reads the canonical campaign schedule only to fail closed before portable export.
 fn validate_portable_campaign_save_schedule(schedule: &Schedule) -> Result<(), CliError> {
     let supports_portable_resume = schedule.decisions().iter().all(|decision| {
         matches!(
             decision,
-            // crucible-lint: allow host-nondeterminism-state -- validation accepts only scheduler-authored decisions supported by portable replay.
             crucible::Decision::DeliveryOrder(_)
-                // crucible-lint: allow host-nondeterminism-state -- validation accepts only scheduler-authored decisions supported by portable replay.
                 | crucible::Decision::RngDraw(_)
-                // crucible-lint: allow host-nondeterminism-state -- validation accepts only scheduler-authored decisions supported by portable replay.
                 | crucible::Decision::Preemption(_)
-                // crucible-lint: allow host-nondeterminism-state -- portable save retains the exact authenticated choice closure for this selection.
                 | crucible::Decision::Selection(_)
         )
     });
     if !supports_portable_resume {
         return Err(backend_error(
-            "campaign-backed save reached a recorded decision that portable resume and fork cannot yet authenticate from the savepoint handle",
+            "campaign-backed save cannot authenticate an Override decision from the portable savepoint handle",
         ));
     }
     Ok(())
@@ -898,7 +768,7 @@ fn campaign_save_boundary_proof(
 
     // The campaign owner stops directly on NamedBoundary and does not register
     // a session breakpoint. Preserve the scheduler-owned marker identity so
-    // the handle cannot claim an actor-assigned breakpoint that never fired.
+    // the v6 handle cannot claim an actor-assigned breakpoint that never fired.
     if !entry.has_valid_content_hash() {
         return Err(campaign_run_error_message(
             "campaign marker proof has an invalid retained event content hash",
@@ -956,43 +826,8 @@ pub(super) fn run_local_qemu_campaign_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    validate_campaign_run_contract(run_plan)?;
-
-    let deployment_path =
-        resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
-    let deployment = load_guarded_campaign_run_deployment(&deployment_path)?;
-    let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
-    let qemu_build_id = match backend {
-        ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
-        #[cfg(any(test, feature = "test-double"))]
-        ResolvedLocalBackend::Double => {
-            return Err(backend_error(
-                "campaign QEMU run requires a resolved production backend",
-            ));
-        }
-    };
     let lifecycle = production_qemu_lifecycle_config(backend)?;
-    let scenario = run_plan.scenario.scenario_form().clone();
-    let seed = run_plan
-        .request_seed
-        .unwrap_or_else(|| scenario.scenario_def().seed());
-    let request = GuardedDefaultCampaignRunRequest::new(
-        scenario,
-        seed,
-        env!("CARGO_PKG_VERSION"),
-        qemu_build_id,
-        lifecycle,
-        deployment.host,
-        resources,
-    )
-    .with_discovery_stop(guarded_discovery_stop(run_plan)?);
-    let request = if run_plan.watch_streams_live_status {
-        request.with_watch_frames()
-    } else {
-        request
-    };
-    let campaign = run_guarded_default_campaign(request)
-        .map_err(|error| campaign_run_error("execute shared campaign owner", error))?;
+    let campaign = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
 
     campaign_run_outcome(
         CampaignRunOutcomeContext {
@@ -1006,7 +841,77 @@ pub(super) fn run_local_qemu_campaign_workflow(
     )
 }
 
-fn guarded_run_resources(
+/// Runs a fresh interactive local-QEMU session through the guarded daemon owner.
+pub(super) fn run_local_qemu_interactive_workflow(
+    backend: &ResolvedLocalBackend,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: &RunInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    if run_plan.execution_mode != RunExecutionMode::Interactive {
+        return Err(backend_error(
+            "guarded interactive QEMU execution requires --interactive",
+        ));
+    }
+
+    let deployment_path =
+        resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
+    let deployment = load_campaign_run_deployment(&deployment_path)?;
+    let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
+    let lifecycle = production_qemu_lifecycle_config(backend)?;
+    let host = deployment.host;
+    let control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
+        "crucible-cli-interactive-qemu",
+        Vec::new(),
+        move |scenario, source, _seed| {
+            let source = source.ok_or_else(|| crucible_api::LifecycleApiError::LoopFactory {
+                message: String::from(
+                    "guarded interactive QEMU sessions require an inline scenario form",
+                ),
+            })?;
+            crucible_daemon::build_guarded_interactive_qemu_session(
+                scenario,
+                source,
+                lifecycle.clone(),
+                host.clone(),
+                resources,
+            )
+            .map_err(|error| crucible_api::LifecycleApiError::LoopFactory {
+                message: error.to_string(),
+            })
+        },
+    )
+    .with_terminal_session_retention(true);
+    let client = InProcessLifecycleClient::new(control_plane);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let report = runtime.block_on(run_control_client_workflow_stdin_async(
+        &client, run_plan, false,
+    ))?;
+    let mut outcome =
+        finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)?;
+    append_qemu_control_plane_execution_proof(
+        &mut outcome,
+        backend,
+        "interactive-session-default-path",
+    );
+    Ok(outcome)
+}
+
+/// Runs one local-QEMU reduction and returns its authenticated campaign report.
+pub(crate) fn run_local_qemu_campaign_report(
+    backend: &ResolvedLocalBackend,
+    run_plan: &RunInvocationPlan,
+    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+) -> Result<RunWorkflowReport, CliError> {
+    let campaign = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
+    let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
+    campaign_run_report(run_plan, &campaign, terminal_outcome, status)
+}
+
+pub(crate) fn guarded_run_resources(
     deployment: AttemptResourceLimits,
     requested_quanta: Option<u64>,
 ) -> Result<AttemptResourceLimits, CliError> {
@@ -1030,8 +935,20 @@ fn guarded_run_resources(
 
 fn guarded_discovery_stop(plan: &RunInvocationPlan) -> Result<StopCondition, CliError> {
     if plan.terminal_condition == RunTerminalCondition::Property {
-        return Err(backend_error(
-            "campaign-backed QEMU execution does not yet support stopping at the first property violation",
+        if plan
+            .scenario
+            .scenario_form()
+            .properties()
+            .assertions()
+            .is_empty()
+        {
+            return Err(invalid_scenario(format!(
+                "run --until property requires scenario {} to declare at least one assertion",
+                plan.scenario.scenario_id().to_hex()
+            )));
+        }
+        return Ok(StopCondition::Observation(
+            ObservationCondition::AnyAssertionViolationTransition,
         ));
     }
 
@@ -1067,8 +984,8 @@ fn guarded_discovery_stop(plan: &RunInvocationPlan) -> Result<StopCondition, Cli
         RunTerminalCondition::VirtualTime => Err(usage_error(
             "--until virtual-time requires --max-virtual-time",
         )),
-        RunTerminalCondition::Property => Err(backend_error(
-            "campaign-backed QEMU execution does not yet support stopping at the first property violation",
+        RunTerminalCondition::Property => Ok(StopCondition::Observation(
+            ObservationCondition::AnyAssertionViolationTransition,
         )),
     }
 }
@@ -1201,7 +1118,7 @@ fn campaign_stop_status(
     })
 }
 
-pub(super) fn campaign_run_report(
+pub(crate) fn campaign_run_report(
     run_plan: &RunInvocationPlan,
     campaign: &GuardedDefaultCampaignRun,
     terminal_outcome: OutcomeKind,
@@ -1272,6 +1189,7 @@ fn campaign_run_report_with_state(
         outcome: Some(terminal_outcome),
         terminal_savepoint: None,
         terminal_configuration: Some(configuration.clone()),
+        final_snapshot: None,
         final_frontier_ticks: evidence.frontier().ticks,
         final_quanta: evidence.quanta(),
         budget_timed_out: terminal_outcome == OutcomeKind::Timeout,
@@ -1289,6 +1207,7 @@ fn campaign_run_report_with_state(
         execution_fingerprints,
         resolved_effect_trace: evidence.resolved_effect_trace().map(ToOwned::to_owned),
         acknowledged_commands: Vec::new(),
+        reproduction_commands: Vec::new(),
         watch_statuses,
     })
 }
@@ -1380,7 +1299,5 @@ fn campaign_run_error(context: &str, error: impl fmt::Display) -> CliError {
 }
 
 #[cfg(test)]
-// crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
-#[allow(clippy::expect_used)]
 #[path = "campaign_run/tests.rs"]
 mod tests;

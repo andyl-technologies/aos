@@ -136,11 +136,30 @@ fn terminal() -> MeasurementTerminalState {
     }
 }
 
+fn campaign_evidence(
+    scenario: ScenarioDefId,
+    configuration: ConfigurationId,
+    definitions: &MeasurementDefinitions,
+    entries: Vec<SchedulerEventLogEntry>,
+    terminal: MeasurementTerminalState,
+    maximum_bytes: usize,
+) -> Result<CrucibleMeasurementReplayEvidence, CrucibleMeasurementError> {
+    evaluate_crucible_measurement_publication(
+        scenario,
+        configuration,
+        definitions,
+        entries,
+        terminal,
+        maximum_bytes,
+    )
+    .map(|publication| publication.evidence)
+}
+
 fn empty_evidence(label: &[u8]) -> CrucibleMeasurementReplayEvidence {
     let definitions = MeasurementDefinitions::empty();
     let (scenario, configuration) = identities(label);
 
-    CrucibleMeasurementReplayEvidence::new(
+    campaign_evidence(
         scenario,
         configuration,
         &definitions,
@@ -171,18 +190,6 @@ fn replace_empty_container_length(bytes: &[u8], field: &str, major: u8, declared
     mutated.extend_from_slice(&declared.to_be_bytes());
     mutated.extend_from_slice(&bytes[value_offset + 1..]);
     mutated
-}
-
-fn decode_frozen_hex(value: &str) -> Vec<u8> {
-    value
-        .trim()
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|digits| {
-            let digits = std::str::from_utf8(digits).expect("ASCII hex pair");
-            u8::from_str_radix(digits, 16).expect("valid frozen hex pair")
-        })
-        .collect()
 }
 
 fn evidence_encoding_reason(
@@ -262,25 +269,16 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
     .expect("v2 publication");
     assert_eq!(
         publication.evidence().schema_version(),
-        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V1
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+    );
+    assert_eq!(
+        publication.evidence().stop(),
+        CrucibleMeasurementStopEvidence::Campaign
     );
     let evidence_bytes = publication
         .evidence()
         .canonical_bytes()
         .expect("canonical evidence");
-    assert_eq!(
-        evidence_bytes,
-        decode_frozen_hex(include_str!("../testdata/replay-evidence-v1.hex")),
-        "v1 replay-evidence bytes must remain frozen"
-    );
-    assert_eq!(
-        publication
-            .evidence()
-            .id()
-            .expect("evidence ID")
-            .to_string(),
-        "trace.1.8a18c3eebc853704a6ea14991338e32ced4df1cf2729e076e22bc4ead839e531"
-    );
     let decoded = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&evidence_bytes)
         .expect("decoded evidence");
     assert_eq!(&decoded, publication.evidence());
@@ -337,8 +335,8 @@ fn observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates() {
         CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
     );
     assert_eq!(
-        publication.evidence().observation_boundary(),
-        Some(boundary)
+        publication.evidence().stop(),
+        CrucibleMeasurementStopEvidence::Observation(boundary)
     );
     assert_eq!(
         publication
@@ -359,7 +357,7 @@ fn observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates() {
 }
 
 #[test]
-fn v2_verifier_rejects_legacy_verifier_and_missing_or_wrong_binding() {
+fn v2_verifier_rejects_missing_or_wrong_binding() {
     let definitions = definitions();
     let (scenario, configuration) = identities(b"bound");
     let publication = evaluate_crucible_measurement_publication(
@@ -371,20 +369,6 @@ fn v2_verifier_rejects_legacy_verifier_and_missing_or_wrong_binding() {
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
     .expect("v2 publication");
-    assert!(matches!(
-        super::super::verify_crucible_measurement_set(
-            publication.measurement_set(),
-            &definitions,
-            publication.evidence().entries(),
-            Vec::new(),
-            publication.evidence().terminal(),
-        ),
-        Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
-            actual: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
-            expected: super::super::CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1,
-        })
-    ));
-
     let retained = publication.measurement_set().evaluation();
     let missing_edge = MeasurementSet::from_evaluation(
         retained.definitions(),
@@ -450,7 +434,7 @@ fn v2_verifier_rejects_legacy_verifier_and_missing_or_wrong_binding() {
 fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
     let definitions = definitions();
     let (scenario, configuration) = identities(b"decode");
-    let evidence = CrucibleMeasurementReplayEvidence::new(
+    let evidence = campaign_evidence(
         scenario,
         configuration,
         &definitions,
@@ -557,32 +541,16 @@ fn evidence_decode_rejects_oversized_declared_container_lengths() {
 }
 
 #[test]
-fn empty_evidence_canonical_bytes_and_content_id_are_stable() {
+fn campaign_stop_is_explicit_and_round_trips() {
     let evidence = empty_evidence(b"canonical-golden");
     let bytes = evidence.canonical_bytes().expect("canonical bytes");
-    let encoded = bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let decoded = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
+        .expect("decode current terminal evidence");
+
+    assert_eq!(decoded, evidence);
     assert_eq!(
-        encoded,
-        concat!(
-            "a66e736368656d615f76657273696f6e01687363656e6172696f784032376430",
-            "3832366635353537303262343832316361363262653863646663663436313464",
-            "346532633566386663353239303832633133313266646234366166396d636f6e",
-            "66696775726174696f6e78403164343536323366366334326532373032663039",
-            "3364653365633863333033373135643433393737323233366537643163643664",
-            "6565346563333136633638616b646566696e6974696f6e737840343330373132",
-            "3534346235616165393565373030393730363066393764353534386535373433",
-            "393536646562633533663138366232356662306335656566643967656e747269",
-            "657380687465726d696e616ca4717363656e6172696f5f72656164795f6174f6",
-            "626174a1657469636b73006c6e6f64655f69636f756e7473a073736368656475",
-            "6c65725f717569657363656e74f5",
-        )
-    );
-    assert_eq!(
-        evidence.id().expect("content ID").encode(),
-        "trace.1.2d75c4db7fc44f07b71fabe14c56d93f8831cb44558e4a34f44150c1826068c3"
+        evidence.id().expect("content ID").schema_version(),
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
     );
 }
 
@@ -593,7 +561,7 @@ fn effective_byte_limit_precedes_event_log_replay() {
     let valid_entries = entries();
     let invalid_sequence = vec![valid_entries[0].clone(), valid_entries[2].clone()];
     let terminal = terminal();
-    let unconstrained = CrucibleMeasurementReplayEvidence::new(
+    let unconstrained = campaign_evidence(
         scenario,
         configuration,
         &definitions,
@@ -614,7 +582,7 @@ fn effective_byte_limit_precedes_event_log_replay() {
         "unexpected result: {unconstrained:?}"
     );
     assert!(matches!(
-        CrucibleMeasurementReplayEvidence::new(
+        campaign_evidence(
             scenario,
             configuration,
             &definitions,

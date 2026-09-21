@@ -245,7 +245,7 @@ genuinely unresolved and is tracked as a spike in
 - **Alternatives considered:**
   - *A custom PCI device for the whole channel.* Rejected: requires a bespoke
     guest driver, undermining "any unmodified guest" even for the opt-in path,
-    and adds device-model surface to the patch series.
+    and adds device-model surface to the atomic QEMU integration.
   - *Pure virtio-serial with no doorbell (host polls the ring).* Rejected: host
     polling is arrival-driven, not icount-driven, so it cannot stamp markers
     deterministically against instruction count.
@@ -506,19 +506,19 @@ genuinely unresolved and is tracked as a spike in
 - **Affects:** [G-8], [G-9], [INV-3], [DET-11], [DET-13], [DET-34], [SHM-*],
   [PROTO-*], [BOUND-4]–[BOUND-8]; files 04 (§4.4, §4.9), 13, 14, 37.
 
-### D-16 — QEMU patches are inert unless sim mode is active
+### D-16 — The atomic QEMU patch is inert unless sim mode is active
 
 - **Status:** Decided
-- **Decision:** Every mechanism in the AOS QEMU patch series is **inert unless
+- **Decision:** Every mechanism in the atomic AOS QEMU patch is **inert unless
   simulation mode is explicitly activated** (plugin loaded + sim flags). The same
   AOS QEMU source built and run without sim mode active is **behaviorally
-  identical to upstream**; each patch carries a micro-test proving both that it
-  *takes effect* in sim mode and that it is *inert* out of sim mode.
+  identical to upstream**; each capability has focused evidence proving both
+  that it *takes effect* in sim mode and that it is *inert* out of sim mode.
 - **Rationale:** AOS ships *one* QEMU package, used both for production
-  virtualization and for Crucible. A determinism patch that changed non-sim
-  behavior would silently alter AOS's production QEMU — unacceptable. Gating every
-  patch behind sim mode lets Crucible's mechanisms live in the shipped QEMU
-  without risk, keeps the patch series upstreamable (inert-by-default is the
+  virtualization and for Crucible. An atomic patch that changed non-sim
+  behavior would silently alter AOS's production QEMU — unacceptable. Gating
+  the integration behind sim mode lets Crucible's mechanisms live in the shipped QEMU
+  without risk, keeps the atomic patch upstreamable (inert-by-default is the
   posture upstream expects), and makes the inertness itself testable
   ([gate:qemu-inert]). It also means a single from-source build serves both
   purposes, consistent with AOS's hermetic-from-source principle (G-7).
@@ -526,9 +526,9 @@ genuinely unresolved and is tracked as a spike in
   - *A separate "Crucible QEMU" fork built only for simulation.* Rejected: two
     QEMU builds to maintain, two security surfaces, and divergence risk; one
     inert-by-default package is simpler and safer.
-  - *Patches always active but "harmless" in production.* Rejected: "harmless"
-    is unprovable in general; inert-unless-sim-mode with a per-patch inertness
-    test is the provable posture ([INV-7]).
+  - *The integration is always active but "harmless" in production.* Rejected:
+    "harmless" is unprovable in general; inert-unless-sim-mode with focused capability
+    evidence and an aggregate inertness test is the provable posture ([INV-7]).
 - **Affects:** [G-7], [INV-7], [DET-36], [DET-37]; files 04 (§4.10), 10, 11.
 
 ### D-17 — Standalone of the RFC-0007 (ratchet) ratchet; shared substrate gated for later
@@ -622,7 +622,7 @@ genuinely unresolved and is tracked as a spike in
 - **Status:** Decided
 - **Decision:** A node's clock remains a **single aggregate icount** even with N
   vCPUs; per-vCPU architectural state lives **inside the plugin** and is folded
-  into the **extended fingerprint** (all N vCPUs' register files + the round-robin
+  into the **aggregate fingerprint** (all N vCPUs' register files + the round-robin
   cursor). The shared-memory ABI is **unchanged**: there are **no per-vCPU shmem
   slots** and no per-vCPU clocks.
 - **Rationale:** Virtual time is a property of the *node*, not of an individual
@@ -644,14 +644,14 @@ genuinely unresolved and is tracked as a spike in
 
 ### D-24 — vCPU-switch and interrupt timing is a first-class `Decision::Preemption`
 
-- **Status:** Decided, gated by S12 fallback
+- **Status:** Decided and validated by S12
 - **Decision:** The vCPU-switch boundary and timer-interrupt delivery timing are a
   first-class **`Decision::Preemption`** in the Decision taxonomy: deterministic by
   default, but **branchable by the explorer** to explore concurrency interleavings.
   It works for single-vCPU guests too — varying the timer-interrupt delivery icount
   explores intra-thread races without a second vCPU. Phase 0 does not enable this
   branchable surface until the commanded preemption-injection capability is paired
-  with a non-fallback S12 race-yield proof.
+  with the S12 race-yield proof.
 - **Rationale:** Once the vCPU switch is an icount-commandable quantum (D-22), the
   *choice* of switch point (or interrupt-delivery point) is exactly the kind of
   resolved, reproducible decision the temporal graph already branches on for faults
@@ -668,8 +668,8 @@ genuinely unresolved and is tracked as a spike in
 - **Affects:** [G-11], the EXEC Decision taxonomy, [SCHED-46], [ADV-39]; files 03,
   07, 08, 22.
 - **Phase-0 S12 outcome:** `checks.crucible.phase0.s12PreemptionDecision` finds
-  the `qemu_plugin_inject_preemption` QEMU/plugin surface, the phase2 patch
-  microtest (`checks.crucible.phase2.qemuPreemptionInject`) covers deterministic
+  the `qemu_plugin_inject_preemption` QEMU/plugin surface, the focused Phase-2
+  capability test (`checks.crucible.phase2.qemuPreemptionInject`) covers deterministic
   commanded landing, and — as of the T-D-4 spike — the commanded-preemption
   **discrimination** is now demonstrated at the **deterministic model layer**:
   the four S12 discrimination fields advanced from `not_tested` to `modeled`
@@ -696,9 +696,11 @@ genuinely unresolved and is tracked as a spike in
 - **Status:** Decided
 - **Decision:** Application-controlled randomness is an **optional white-box
   exploration dimension**: a guest may request a random value via the doorbell, and
-  the host serves it as a **`Decision::AppRandom`** drawn from the *single seeded
-  decision source* and written back over the doorbell. It is **never required** to
-  run any guest; a guest that does not opt in is unaffected.
+  the host authenticates the transport `BackendRngEvidence`, records the draw as
+  a scheduler-authorized **`Decision::RngDraw`**, records the modeled choice as
+  **`Decision::Selection`**, and writes the value back over the doorbell. Both
+  decisions come from the *single seeded decision source*. This dimension is
+  **never required** to run any guest; a guest that does not opt in is unaffected.
 - **Rationale:** White-box guests that want their *own* randomness driven by the
   explorer (so the search can branch on the values the application draws) get it for
   free from the existing seeded decision source — the same source that resolves
@@ -713,7 +715,8 @@ genuinely unresolved and is tracked as a spike in
   - *A separate entropy source for app randomness.* Rejected: a second seeded
     source is a second thing to keep deterministic; the single decision source
     already serves every reproducible choice.
-- **Affects:** [DET-44], [GHC-37], [GHC-38], the EXEC AppRandom Decision, [ADV-40];
+- **Affects:** [DET-44], [GHC-37], [GHC-38], the EXEC authenticated RNG-draw
+  `RngDraw` and `Selection` decisions, [ADV-40];
   files 16, 04, 03, 22.
 
 ### D-27 — Guided / adaptive exploration: pluggable fixed-point guidance + optional deterministic bandit
@@ -822,15 +825,13 @@ genuinely unresolved and is tracked as a spike in
     artifact without redefining the oracle.
 - **Affects:** file 36 ([DBG-*]), [SESS-32], [SESS-33], [CLI-27]; references
   [ADV-33], [INV-2], D-8.
-- **Phase-0 S14 outcome:** `checks.crucible.phase0.s14GdbstubFallback` originally
-  found no hermetic gdb client package and no known gdbstub single-step mediation hook in
-  the scanned AOS QEMU patch/plugin integration surface. The session/backend
-  `open_gdbstub` path is implemented by
-  `checks.crucible.phase5.sessionDebugTimeTravel`; D-30 remains the target
-  architecture decision, but Phase 0 still enables only the conservative policy fallback:
-  `fallback_adopted=read_only_attach_crucible_driven_step_until_gdbstub_gate`.
-  Live read-only attach neutrality and gdb single-step routing are not claimed
-  until the packaged client and CLI live attach path pass S14 without fallback.
+- **S14 outcome:** `checks.crucible.phase7.debuggerLiveArchitectures` completes
+  T-DBG-14 against packaged x86_64 and aarch64 QEMU under TCG with packaged GDB.
+  Both targets negotiate RSP, preserve repeated register reads, and accept
+  hardware-breakpoint insertion and removal while remaining stopped. Captured
+  production-daemon evidence additionally exercises scheduler-mediated continue
+  and single-step through the stable gateway across runtime replacement. The
+  completed path uses no model double and exposes no raw QEMU single-step path.
 
 ### D-31 — Stock guest cmdline; guest entropy suppression removed from the launch contract
 
@@ -855,12 +856,12 @@ genuinely unresolved and is tracked as a spike in
   so removing them from the launch contract is strictly better.
 - **Evidence:** Phase-0 **S6 / T-RISK-6** ([RISK-13], [DET-33]) ran the
   single-VM fingerprint procedure twice with randomization enabled under fully
-  seeded boot entropy and obtained bit-identical extended fingerprints (nonzero
+  seeded boot entropy and obtained bit-identical aggregate fingerprints (nonzero
   kernel text base and userspace ASLR bases confirmed enabled), demonstrating
   reproducibility does not depend on `nokaslr`/`norandmaps`. Bit-stability here
   required sealing not just the seeded-entropy *bytes* but its *delivery icount*
   (E7a): the `crucible-det-rng-delivery` and virtio-rng-scoped
-  `crucible-det-virtio-ioeventfd` patches deliver the virtio-rng completion
+  `crucible-det-virtio-ioeventfd` capabilities deliver the virtio-rng completion
   synchronously at the request icount rather than from a host-scheduled bottom
   half. See file 30 (RISK-13 / T-RISK-6) for the mechanism and the
   five-consecutive `--check` reproduction.
@@ -951,10 +952,8 @@ genuinely unresolved and is tracked as a spike in
     merge as replacing **`DagStore::put`/`get`/`has` + `InvalidationQuery::evaluate`**
     internals behind an unchanged interface, "a thin adapter behind that unchanged
     interface," with **"no RFC-0007 dependency exists"** until the merge
-    (`crates/crucible-cas/src/lib.rs:1`–`:24`), and encodes the seam as the
-    conformance constants `FUTURE_RATCHET_INTEGRATION_SEAM` (`:61`),
-    `FUTURE_RATCHET_MERGE_BAR` (`:64`), and `FUTURE_RATCHET_SEAM_INTERFACE`
-    (`:75`). The merge is therefore a contained refactor behind an unchanged
+    (`crates/crucible-cas/src/lib.rs:1`–`:24`). The merge is therefore a
+    contained refactor behind an unchanged
     trait — exactly the "cheap to integrate later" posture D-17 promised — and
     **choosing a separate remote backend now is unnecessary and would duplicate
     that seam.**
@@ -970,8 +969,8 @@ genuinely unresolved and is tracked as a spike in
     remote backend.* Rejected by D-17 / [NG-7]: `ratchet` is still in flight;
     depending on it couples two unstable schedules. The remote backend is
     satisfied *today* by a further `DagStore` impl behind the unchanged trait,
-    and ratchet slots in later as an internals swap behind the same seam
-    (`FUTURE_RATCHET_INTEGRATION_SEAM`), re-gated by `gate:content-address` /
+    and ratchet slots in later as an internals swap behind the same interface,
+    re-gated by `gate:content-address` /
     `gate:replay-oracle` / `gate:e2e-determinism`.
   - *Leave the decision Open (local-only, defer the backend choice).* Rejected:
     the spike shows there is no genuinely-unresolved backend *choice* left — the
@@ -981,8 +980,8 @@ genuinely unresolved and is tracked as a spike in
 - **Affects:** [INV-6], [G-6], [NG-7]; [TEMP-21], [TEMP-22], [TEMP-24]–[TEMP-26];
   [DCE-3], [DCE-4], [DCE-28], [DCE-29]; files 07 (§7, §8), 35 (§35.2.1, §35.6.2),
   26 (§26.9); crates `crucible-cas` (`DagStore`, `SharedDagStore`,
-  `SharedFrontier`, `SharedDedupIndex`, `SharedCampaignStore`, the
-  `FUTURE_RATCHET_*` seam constants). References D-17, D-28.
+  `SharedFrontier`, `SharedDedupIndex`, and `SharedCampaignStore`). References
+  D-17, D-28.
 - **Supersedes:** [D-20] (the Open provisional local-only default and its
   either/or backend question).
 - **Date:** 2026-07-09.
@@ -1005,7 +1004,7 @@ genuinely unresolved and is tracked as a spike in
   `checks.crucible.phase0.s10Aarch64Doorbell` has passed the production
   white-box activation gate. The black-box
   `checks.crucible.phase0.aarch64S1S6` gate also passes against a hermetically
-  AOS-built Linux/AArch64 guest, closing the extended-fingerprint and seeded
+  AOS-built Linux/AArch64 guest, closing the aggregate-fingerprint and seeded
   KASLR/ASLR legs. This
   supersedes D-19's "whether/which further architectures … is unresolved" with a
   committed aarch64 target, a derived seal map, and a named riscv64 verdict.
@@ -1047,7 +1046,7 @@ genuinely unresolved and is tracked as a spike in
     **empirical-gate** item confirmed by the aarch64 S6-style run, since the
     aarch64 kernel's randomization path differs in detail from x86's.
   - *Empirical-gate (correct-by-derivation, must run before claimed):* the whole
-    set becomes **gated** by (i) an aarch64 **S1** extended-fingerprint run
+    set becomes **gated** by (i) an aarch64 **S1** aggregate-fingerprint run
     (black-box determinism on an aarch64 image, per RISK-17's note that "aarch64
     black-box determinism is covered by S1 run on an aarch64 image") and (ii) an
     aarch64 **S6** KASLR/ASLR bit-stability run (E11/E12), plus (iii) the aarch64
@@ -1064,7 +1063,7 @@ genuinely unresolved and is tracked as a spike in
   with six configured 15 ms scheduler preemptions applied directly to QEMU in
   the second run after a live kernel progress marker and under a two-second
   resume watchdog, compares its exact-icount
-  extended fingerprints,
+  aggregate fingerprints,
   and records `aarch64_s1_complete=true`, `aarch64_s6_complete=true`,
   `randomized_kernel_offset_reproducible=true`,
   `randomized_pie_aslr_layout_reproducible=true`, and
@@ -1112,7 +1111,7 @@ genuinely unresolved and is tracked as a spike in
 - **Date:** 2026-07-25.
 - **Decided by:** T-D-1 architecture-matrix spike.
 
-### D-34 — S11-validated default-only `rr_switch_quantum` 4096 fallback
+### D-34 — S11-validated default `rr_switch_quantum` 4096
 
 - **Status:** Superseded by D-36
 - **Fallback choice:** Use `rr_switch_quantum = 4096` node-icount for the
@@ -1126,15 +1125,15 @@ genuinely unresolved and is tracked as a spike in
   quantum sweep. D-36 promotes `4096` into the final shipped default.
 - **Current evidence:**
   `checks.crucible.phase0.s11MultiVcpuFingerprint` reports a matching sim-mode
-  horizon fingerprint with `fallback=smp1_not_needed`;
+  horizon fingerprint on the exact four-vCPU path;
   `checks.crucible.phase0.s12PreemptionDecision` reports model discrimination;
-  and `checks.crucible.phase0.s13RrSwitchQuantumFallback` reports
+  and `checks.crucible.phase0.s13RrSwitchQuantum` reports
   `PASS`, `race_yield_tested=true`, `s11_sim_rerun_green=true`, and
   `s13_complete=true`. T-RISK-17, T-RISK-19, and T-D-4 are complete.
 - **Affects:** [SCHED-45], [PLUG-3], [G-9], [G-11], [DET-12], [SCHED-46]; files
   08, 22, 25, and 30; gates `checks.crucible.phase0.s11MultiVcpuFingerprint`,
   `checks.crucible.phase0.s12PreemptionDecision`, and
-  `checks.crucible.phase0.s13RrSwitchQuantumFallback`.
+  `checks.crucible.phase0.s13RrSwitchQuantum`.
 - **Superseded by:** D-36.
 - **Date:** 2026-07-10.
 - **Owner:** T-D-4.
@@ -1367,7 +1366,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
 - **Affects:** [SCHED-45], [PLUG-3], [G-9]; files 08, 22, 25. *Spike:*
   [`30-risks-spikes.md`](30-risks-spikes.md) §30.11c (S13, `rr_switch_quantum`
   granularity vs throughput).
-- **Phase-0 S13 outcome:** `checks.crucible.phase0.s13RrSwitchQuantumFallback`
+- **Phase-0 S13 outcome:** `checks.crucible.phase0.s13RrSwitchQuantum`
   selected `rr_switch_quantum=4096` after the five-candidate live
   commanded-preemption/throughput sweep. D-36 records the final rationale.
 
@@ -1388,12 +1387,12 @@ becomes a new `Decided` entry referencing the one it supersedes).
   at `4096` through its 4-billion-instruction horizon.
 - **Evidence:** `checks.crucible.phase0.s12PreemptionDecision` reports
   `decision_preemption_exploration_enabled=true`, live command application, and
-  `fallback_adopted=none`.
-  `checks.crucible.phase0.s13RrSwitchQuantumFallback` reports
+  `exact_preemption_proof=true`.
+  `checks.crucible.phase0.s13RrSwitchQuantum` reports
   `race_yield_tested=true`,
   `selected_default_basis=live_race_yield_tie_smallest_quantum_above_throughput_floor`,
-  `d25_status=resolved_rr_switch_quantum_4096`, and `fallback_adopted=none`.
-- **Fallback:** Per-branch explorer overrides remain available if a future race
+  `d25_status=resolved_rr_switch_quantum_4096`.
+- **Override:** Per-branch explorer overrides remain available if a future race
   corpus demonstrates a sensitivity loss at the default.
 - **Affects:** [SCHED-45], [PLUG-3], [G-9], [G-11], [DET-12], [SCHED-46];
   files 08, 22, 25, and 30.
@@ -1424,7 +1423,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
 - **Status:** Amended
 - **Decision:** Supersede D-7's virtio-serial payload choice. White-box markers
   and every guest-introspection feature, command, stream, resize, exit, and close
-  record use the trapped-instruction `CRGX` exchange and ABI-v6 shared-memory
+  record use the trapped-instruction `CRGX` exchange and current shared-memory
   rings. A virtual device carries no payload. After an explicit whole-world
   non-canonical debugger fork commits, Crucible may send one fixed versioned
   token over a fixed activation-only virtio-serial endpoint. The empty controller,
@@ -1458,10 +1457,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
   fails closed. Guest, fixture, suite, release-manifest, and external-asset
   admission metadata all carry instruction ABI version 4; mixed versions are
   rejected before launch.
-- **Rationale:** The historical ABI-v3 `hlt #0x04c1` callback was observable
-  before execution but raised an architectural exception afterward, so a
-  one-shot test could pass while a sustained EL0 agent could not poll again.
-  The reserved HINT retires normally when Crucible is disabled. TB-entry state
+- **Rationale:** The reserved HINT retires normally when Crucible is disabled. TB-entry state
   is the QEMU-supported point for reading the entry icount, while the immutable
   instruction index supplies an allocation-free exact coordinate for adjacent
   markers.
@@ -1472,19 +1468,15 @@ becomes a new `Decided` entry referencing the one it supersedes).
   complete landed-coordinate replacement, stable GDB across replacement,
   scheduler run control, fork-time exec, PTY, SSH, and typed stream closure.
   A combined x86_64/AArch64 invocation repeated the complete workflow on both
-  architectures. This closes the sustained-agent qualification that ABI v3 did
-  not provide.
+  architectures. This closes the sustained-agent qualification.
 - **Affects:** [GHC-11], [GHC-13], [GHC-16], [GHC-17], [GHC-34], [RISK-17],
   [DBG-10], [DBG-14]; files 12, 16, 30, and 36.
-- **Supersedes:** the instruction-ABI-v3 portion of D-33 and the historical
-  RISK-17 / T-RISK-10 HLT result. D-38's fork-only activation and shared-memory
-  data-channel decision is unchanged.
 - **Date:** 2026-08-11.
 
 ### D-40 — Coverage warm restore resets one exact paused generation in shared memory
 
 - **Status:** Decided
-- **Decision:** ABI v21 makes the existing logical-time restore request and
+- **Decision:** The current ABI makes the logical-time restore request and
   acknowledgement the coverage-generation reset transaction. Before the plugin
   acknowledges, it retains but zeros every per-vCPU QEMU scoreboard entry,
   clears its process-local novelty map, and discards setup-era coverage by
@@ -1493,7 +1485,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
   and clears its consumer novelty and coordinate state. Any partial or
   conflicting reset kills and reaps the fresh realization before authority is
   installed. The run-phase control socket remains silent.
-- **Rationale:** Boot-barrier priming executes before `loadvm` and the QEMU
+- **Rationale:** Boot-barrier priming executes before descriptor restore and the QEMU
   conditional callback scoreboard is outside VMState. Draining the ring alone
   would suppress post-restore blocks whose novelty bits were consumed during
   priming. Replacing the scoreboard would dangle translated callback metadata;
@@ -1501,7 +1493,8 @@ becomes a new `Decided` entry referencing the one it supersedes).
   eligible again. The existing generation already binds the restored logical
   time and provides the required release/acquire commit point without a second
   runtime protocol.
-- **Evidence:** `gate:abi-conformance` pins ABI v21; plugin regressions reset
+- **Evidence:** `gate:abi-conformance` preserves this transaction under the
+  current ABI v25; plugin regressions reset
   every `(vcpu, map_index)` entry and re-emit the same translated block after
   restore; mapped-host regressions require exact acknowledgement, an empty
   ring, and duplicate novelty acceptance only after reset; the realization
@@ -1509,6 +1502,42 @@ becomes a new `Decided` entry referencing the one it supersedes).
 - **Affects:** [SHM-30], [SHM-39], [SHM-40], [SHM-40A], campaign T-CAM-4.9;
   files 13, 31, and RFC-0020 files 04a and 11.
 - **Date:** 2026-08-30.
+
+### D-41 — Simulated RR idle waits release the BQL once and force a fresh rescan
+
+- **Status:** Decided
+- **Decision:** The exact simulated RR idle callback may release the BQL around
+  one raw non-private shared futex wait. Every admitted wait return forces the
+  RR loop to restart its all-idle scan before any guest execution, device work,
+  receive injection, fingerprint capture, or virtual-time advance.
+- **Rationale:** holding the BQL while the plugin waits prevents BQL-dependent
+  producers from publishing the state that wakes it. Releasing the BQL changes
+  the callback's authorization basis, so the operation pins the explicit
+  callback CPU, publishes a mutable wake word under a dedicated mutex, and
+  validates every QEMU work predicate before releasing either the mutex or BQL.
+  Producers publish their state before `qemu_cpu_kick()` atomically increments
+  and wakes the armed word. QEMU keeps the pointer armed through BQL
+  reacquisition, then disarms it and validates topology and identity. An
+  explicit disposition propagated through every RR caller prevents the raw
+  wait return from reaching a later condition wait or consuming work under the
+  stale callback. Hot-unplug waits for the departing CPU's destruction signal
+  when a live sibling proves the RR thread is shared; joining remains reserved
+  for dedicated vCPU threads.
+- **Evidence:** executable tests for the single atomic Crucible integration
+  patch exercise the dependency-injected idle-wait core for pre-publish
+  predicate rejection,
+  post-check/pre-syscall `EAGAIN`, a parked wake, `EINTR`, second-call, and
+  topology invalidation results without mutating QEMU's global CPU state. A live
+  sim-RR test performs QMP stop, other-CPU work, real CPU unplug, and a
+  post-unplug progress query while the callback waits. Source checks pin the
+  one-shot futex, BQL, CPU, shared-thread removal wait, and RR rescan contract.
+  Rust typed-status tests require one call and no postwait work for wake,
+  value-change, interruption, topology change, QEMU work, contract rejection,
+  unsupported hosts, syscall failure, and unknown status. Three
+  production two-node live-world flights cover QMP control, shared-memory
+  network delivery, checkpoint capture, and exact restore.
+- **Affects:** [DET-1], [DET-13], [QEMU-43]; files 11, 30, and 31.
+- **Date:** 2026-09-10.
 
 ---
 
@@ -1519,11 +1548,10 @@ Two further questions are *already* carried as spikes in the determinism contrac
 here only as pointers, not as separate `D-n` entries, because they are entropy-set
 questions rather than architecture decisions:
 
-- **Snapshot/restore completeness** ([DET-32], E20): whether `loadvm` reproduces
-  icount, bias, full TCG/device/timer and plugin time-control state so a restored
-  fat checkpoint passes the replay oracle. The unified execution model (D-8) and
-  the temporal graph (D-9) *assume* this holds; until verified, snapshot-based
-  fast-resume is gated behind the spike.
+- **Snapshot/restore completeness** ([DET-32], E20): the historical `loadvm`
+  experiment did not establish a production restore contract. Current runtime
+  construction requires authenticated version-nine device and direct-plus-delta
+  RAM descriptors and validates the result with the replay oracle.
 - **KASLR/ASLR reproducibility** ([DET-33], E11/E12): S6/T-RISK-6 established
   that `nokaslr`/`norandmaps` are *not required* — KASLR/ASLR are bit-stable
   given fully-seeded boot entropy. This is now settled forward-looking policy in
@@ -1542,74 +1570,24 @@ These entries record risk-spike outcomes required by
 decisions; they retire, reclassify, or adopt fallbacks for rows in the risk
 register.
 
-- **RISK-4 / RISK-5 / T-RISK-1 — S1 single-VM fingerprint**
-  - **Status:** PASS; the fatal single-VM deterministic-execution risk is
-    retired for the stock Linux diskless proof path.
-  - **Check:** `checks.crucible.phase0.s1Fingerprint`.
-  - **Result:** `scenario=stock-linux-diskless-initramfs-workload`,
-    `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
-    `cadence=100000000`, `horizon_icount=3600000000`,
+- **RISK-4 / RISK-5 / T-RISK-1 — production fingerprint stream**
+  - **Status:** PASS for the current diskless production boundary stream and
+    instruction-exact refinement; T-DET-8 and T-QEMU-11 are complete.
+  - **Check:** `checks.crucible.phase7.productionRustPluginFlight`, paired with
+    `checks.crucible.phase2.qemuFingerprintProjectionManifest`.
+  - **Result:** `scenario=production-diskless-smp4`, `vcpus=4`,
+    `sample_target_icounts=2000000,2000001,4000000,8000000`,
     `host_adversary=bounded-scheduler-preemption`,
-    `stop_request=plugin-requested-icount-pause`,
-    `extended_fingerprint_match=true`,
-    `aggregate_icount_stream_match=true`,
-    `cadence_fingerprint_match=true`,
-    `horizon_fingerprint_match=true`,
-    `plugin_exit_fingerprint_compared=true`,
-    `plugin_exit_device_state_comparison=diagnostic_not_gated`,
-    `paused_migration_state_match=not_asserted`, `samples=36`,
-    `horizon_retired=3600000146`,
-    `horizon_extended_hash=cde79d9a6d387e58`,
-    `horizon_register_hash=6fb1dcde1169f1e0ad76a60474a90f4ec97e7b0f7fe306d3ee82053efe14c36e`,
-    `horizon_ram_hash=632b9b4182975e72ed1925ed8f560ef0edfb57cf86c0ec2d427967a2cb5eba10`,
-    `horizon_ram_bytes=268435456`,
-    `pause_retired=3600000146`, `pause_overshoot=146`,
-    `pause_extended_hash=0116a7960d1ef1ab`,
-    `pause_register_hash=6fb1dcde1169f1e0ad76a60474a90f4ec97e7b0f7fe306d3ee82053efe14c36e`,
-    `pause_ram_hash=632b9b4182975e72ed1925ed8f560ef0edfb57cf86c0ec2d427967a2cb5eba10`,
-    `device_event_capture=true`,
-    `device_event_scope=io_event_multiset`,
-    `device_event_device_name_scope=excluded`,
-    `device_event_value_scope=stores_only`,
-    `device_state_scope=io_event_multiset`,
-    `horizon_device_event_hash=e73e4b1867434634`,
-    `pause_device_event_hash=e73e4b1867434634`,
-    `migration_state_hash_a=not_recorded`,
-    `migration_state_hash_b=not_recorded`,
-    `migration_state_comparison=diagnostic_not_gated`,
-    `migration_state_scope=diagnostic_qemu_migration_stream_at_plugin_pause`,
-    `migration_state_retired=3600000146`,
-    `migration_normalization=icount_host_timer_offsets_zeroed_by_qemu_patch`,
-    `register_read_failures=0`,
-    `register_count_assertion=nonempty_single_vcpu`,
-    `block_device_assertion=launch_argv_scan`,
-    `mismatch_localization=component`, `first_differing_line=none`,
-    `first_differing_component=none`, `rr_as_diagnostic=not_used`,
-    `det29_phase0_device_state_scope=io_event_multiset`,
-    `det29_full_device_cadence_complete=false`, `s1_complete=true`,
-    `open_gap=paused_qemu_migration_state_timer_icount_hpet`.
-  - **Scope:** validates one stock Linux kernel plus diskless initramfs workload
-    launched twice with `-smp 1`, `-accel sim,thread=single`,
-    `-icount shift=0,sleep=off,align=off`, no block devices, fixed RTC, fixed
-    seed material through `fw_cfg`, `virtio-rng`, and conservative boot entropy
-    controls. The second run applies six configured 15 ms SIGSTOP/SIGCONT
-    preemptions to QEMU itself after the first positive trace coordinate and
-    under a two-second resume watchdog. The proof compares the
-    aggregate instruction stream, one nonempty vCPU register hash, RAM hash, and
-    IO-event multiset digest at each cadence point including the requested
-    `3600000000` horizon. It also compares the stable projection of the
-    plugin-exit fingerprint at the deterministic `3600000146`
-    retired-instruction pause point. The post-horizon device-state digest and
-    raw QEMU migration streams at that pause point are diagnostic-only because
-    repeated runs exposed nondeterministic serialized `timer/icount` bias and
-    HPET/local timer state after the exact-horizon fingerprint had already
-    matched. This
-    does not claim the full production DET-29 device-state digest at every
-    cadence point; that remains owned by the later QEMU-device fingerprint gates.
-    The QEMU RR-TCG icount idle-warp fix is load-bearing for this result.
-  - **Fallback:** raw paused migration byte identity is not adopted as the S1
-    pass signal; S1 is green for the scoped Phase-0 execution-fingerprint proof
-    path.
+    `rust_plugin_loaded=true`, `sample_stream_restart_identical=true`,
+    `on_demand_boundary_stream_bit_identical=true`,
+    `per_vcpu_register_files_present=true`,
+    `aggregate_icount_equals_target=true`,
+    `instruction_exact_localization=one-instruction-window`,
+    `instruction_exact_rr_successor=true`,
+    `instruction_exact_state_projection_changed=true`, and
+    `component_failures=0`.
+  - **Scope:** validates the loaded production Rust plugin and current
+    schema-v4 provider projection.
 
 - **RISK-6 / RISK-7 / T-RISK-2 — S2 block/9p HLT-vs-busy-poll**
   - **Status:** PASS; delayed synchronous virtio-block and virtio-9p reads idle
@@ -1654,72 +1632,17 @@ register.
     the exactness-preserving busy-poll fast-forward of [IO-30] remains the
     specified fallback if a future target path commonly busy-polls.
 
-- **RISK-8 / RISK-9 / T-RISK-4 — S3 savevm/loadvm completeness fallback**
-  - **Status:** HISTORICAL SPIKE, SUPERSEDED; the thin/replay checkpoint realization was
-    adopted as the Phase-0 default, so unverified fat snapshots are not used.
-  - **Check:** `checks.crucible.phase0.s3SavevmLoadvm`.
-  - **Result:** `qmp_snapshot_save_available=true`,
-    `qmp_snapshot_load_available=true`, `qmp_migrate_available=true`,
-    `qmp_migrate_incoming_available=true`,
-    `qmp_human_monitor_command_available=true`,
-    `qmp_legacy_savevm_loadvm_available=false`, `hmp_savevm_used=false`,
-    `restore_transport=snapshot_save_load`,
-    `vmstate_node=qcow2_internal_snapshot`, `snapshot_points=3`,
-    `snapshot_point_0=diskless_boot_window`,
-    `snapshot_point_1=cpu_timer_window`,
-    `snapshot_point_2=block_pending_io`,
-    `snapshot_icount=110601147`,
-    `cpu_timer_snapshot_icount=165526548`,
-    `mid_io_snapshot_icount=5789834836`,
-    `mid_io_active_medium=block`, `mid_io_pause_medium=block`,
-    `mid_io_pause_io_events=1`, `mid_io_operation_io_events=1`,
-    `mid_io_pause_hlt_events=0`, `mid_io_operation_hlt_events=0`,
-    `mid_io_guest_block_direct=true`,
-    `suffix_segment_icount=50000000`,
-    `suffix_logical_horizon=160601147`,
-    `all_suffix_fingerprints_match=false`,
-    `boot_window_suffix_fingerprint_match=true`,
-    `cpu_timer_suffix_fingerprint_match=true`,
-    `mid_io_suffix_fingerprint_match=false`,
-    `suffix_fingerprint_match=true`,
-    `suffix_stream_hash=e2630ef2353d1e30`, `register_hash_match=true`,
-    `suffix_register_hash=a2571e16a6d8d547`, `ram_hash_match=true`,
-    `suffix_ram_hash=cb1af0eb48c320c9`, `suffix_ram_bytes=1074274304`,
-    `suffix_state_hash=f6350011aedebc94`,
-    `device_event_hash_match=false`,
-    `current_vmstate_snapshot_smoke=true`,
-    `current_vmstate_snapshot_scope=diskless_and_cpu_timer_single_vcpu_qemu_vmstate_plus_block_pending_negative_control`,
-    `mid_io_burst_snapshot_exercised=true`,
-    `mid_io_burst_snapshot_covered=false`,
-    `plugin_time_control_snapshot_covered=true`,
-    `device_timer_snapshot_covered=true`,
-    `replay_oracle_fat_thin_match=false`,
-    `full_fat_checkpoint_complete=false`,
-    `crucible_owned_state_roundtrip=true`,
-    `ring_snapshot_restore=pass`, `ring_live_hash=a3e895964e3c9a45`,
-    `overlay_delta_roundtrip=pass`, `overlay_hash=e1215fa76fa5ab16`,
-    `rng_position_roundtrip=pass`, `rng_next=7f0e17493d165353`,
-    `thin_checkpoint_default=true`, `fat_snapshot_default=false`,
-    `loadvm_branch_enabled=false`,
-    `fallback_adopted=thin_replay_until_full_s3`,
-    `risk8_status=mitigated_by_fallback_not_retired_for_fat_snapshot`,
-    `risk9_status=retired_thin_replay_default`,
-    `s3_fallback_adopted=true`.
-  - **Scope:** validates the currently available QMP
-    `snapshot-save`/`snapshot-load` path for diskless and CPU-timer
-    single-vCPU VMState snapshots under plugin time control, plus a host-side
-    Crucible-owned ring/overlay/RNG round-trip. It also exercises a marked block
-    pending-I/O snapshot as a negative control and records the restored suffix
-    divergence, so it deliberately does not claim the full S3 pass criterion for
-    fat checkpoints.
-  - **Current decision:** no fallback. `QemuNode::capture_exact_snapshot`
-    captures the Apache-side host-I/O continuation and QEMU VMState as one
-    identity-bound pair, removes only QEMU artifacts known to have been created
-    by a transaction that later fails, preserves pre-existing artifacts after
-    ambiguous or duplicate saves, and rejects incomplete or mismatched pairs
-    before publishing a child.
-    `QemuExactSnapshotPolicy` additionally requires replay-oracle admission.
-    The Phase-0 result fields above remain solely as historical evidence.
+- **RISK-8 / RISK-9 / T-RISK-4 — exact checkpoint completeness**
+  - **Status:** RETIRED by the production exact-checkpoint realization.
+  - **Current checks:** `checks.crucible.phase2.qemuExactSnapshotRestore` and the
+    replay-oracle gates.
+  - **Result:** `QemuNode::capture_exact_snapshot` captures the Apache-side
+    host-I/O continuation and QEMU VMState as one identity-bound pair, removes
+    only artifacts created by a transaction that later fails, preserves
+    pre-existing artifacts after ambiguous or duplicate saves, and rejects
+    incomplete or mismatched pairs before publishing a child.
+    `QemuExactCheckpointCaptureAdmission` additionally requires the authorized
+    scheduler boundary and immutable descriptor basis before capture.
 
 - **RISK-12 / T-RISK-5 — S5 guest virtual-memory payload reads**
   - **Status:** PASS; the virtual pointer+length payload form is retained for
@@ -1748,7 +1671,7 @@ register.
     resident, page-spanning, and normal anonymous-`mmap` payloads at that marker,
     then compares read-enabled and read-disabled final fingerprints. This does
     not implement the production white-box doorbell, binary decoder, disabled
-    inertness behavior, app-random write-back, or white-box on/off gate.
+    inertness behavior, RNG-draw write-back, or white-box on/off gate.
   - **Fallback:** none adopted for the measured virtual-address read path; the
     physical / pinned identity-mapped page remains a specified fallback if a later
     production channel path invalidates this spike.
@@ -1792,7 +1715,6 @@ register.
     `randomized_mmap=00007f9f1b1b8000`,
     `control_vdso=00007ffff7fc6000`,
     `randomized_vdso=00007f9f1b3b1000`,
-    `final_extended_hash=e870395413c66341`,
     `final_register_hash=46cc2a780110c1fc`,
     `final_ram_hash=76c52fb94c593648`, `final_ram_bytes=268967936`,
     `register_read_failures=0`, `device_event_capture=false`,
@@ -1800,13 +1722,13 @@ register.
     `first_differing_line=none`, `first_differing_component=none`,
     `randomization_reenabled_capability=true`,
     `default_decision=randomization_may_be_enabled_per_image`,
-    `fallback_adopted=none`, `s6_complete=true`.
+    `s6_complete=true`.
   - **Scope:** validates the Phase-0 S6 opportunity spike for one stock Linux
     kernel plus diskless initramfs under deterministic QEMU seeding. The control
     keeps `nokaslr norandmaps`; the randomized run removes them, confirms
     userspace ASLR is enabled through `/proc/sys/kernel/randomize_va_space`,
     reads a nonzero kernel text base from `/proc/kallsyms`, samples user address
-    bases, and compares two randomized extended fingerprints plus explicit base
+    bases, and compares two randomized aggregate fingerprints plus explicit base
     reports under bounded scheduler preemption. The proof uses QMP only to stop at a fixed icount
     after the guest reports PASS; it does not flip the global launch default.
   - **Delivery-icount seal:** reproducibility here required sealing the *icount*
@@ -1830,113 +1752,58 @@ register.
     requires them.
 
 - **RISK-14 / T-RISK-7 — S7 exact deadline and ceiling**
-  - **Status:** PASS WITH FALLBACK; the exact deadline export has since landed
-    in the patch series (`deadline_api_available=true` on rerun) but the current
-    plugin pause surface still overshoots, so scheduler fast-forward/lookahead
-    through this path stays disabled until an exact-stop ceiling mechanism is
-    proven.
-  - **Check:** `checks.crucible.phase0.s7DeadlineCeiling`.
-  - **Result:** `scenario=stock-linux-diskless-initramfs-ceiling-probe`,
-    `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
-    `qemu_internal_seed=0x0010c007`,
-    `deadline_symbol=qemu_plugin_clock_deadline_ns`,
-    `deadline_api_available=true`,
-    `idle_wake_icount_reported=unavailable`,
-    `actual_timer_fire_icount=not_measured_spike_probe_predates_export_use`,
-    `exact_deadline_match=false`, `request_exact_all=true`,
-    `zero_overshoot_all=false`, `max_pause_overshoot=9`,
-    `fixed_a_target=180000000`, `fixed_a_exit_retired=180000001`,
-    `fixed_a_pause_overshoot=1`, `fixed_b_target=180000037`,
-    `fixed_b_exit_retired=180000046`, `fixed_b_pause_overshoot=9`,
-    `interior_target=180000004`, `interior_exit_retired=180000013`,
-    `interior_pause_overshoot=9`, `interior_target_tb_index=2`,
-    `interior_target_tb_insns=12`, `interior_target_inside_tb=true`,
-    `exact_next_deadline_capability=false`,
-    `max_advance_exact_capability=false`,
-    `layer1_scheduler_fast_forward_enabled=false`,
-    `fallback_adopted=tb_split_exact_pause_deadline_export_landed`,
-    `s7_complete=true`.
-  - **Scope:** validates the Phase-0 S7 decision for the current QEMU/plugin
-    surface. The probe checks for the exact deadline export as a runtime
-    capability and records that it is unavailable, which is enough to reject
-    production exact-deadline use in this build. It also runs two fixed ceilings
-    and one dynamically selected interior-TB ceiling, proving the plugin can
-    request a pause at the requested instruction but the VM-visible stop still
-    occurs after that instruction. This does not measure a real timer-fire
-    `idle_wake_icount` because the required deadline API is missing.
-  - **Fallback:** require the `qemu_plugin_clock_deadline_ns` export and a
-    TB-split/max-advance implementation that stops exactly at the authorized
-    ceiling before enabling Layer-1 scheduler fast-forward or conservative
-    lookahead through this surface.
+  - **Status:** implementation complete; identity-bound live timer-witness result pending.
+  - **Check:** `checks.crucible.phase2.gates.patchMicrotests` consumes the
+    packaged QEMU exact-TB test.
+  - **Result:** `exact_tb_exit_test_passed=true`,
+    `exact_tb_exit_trap_icount=3`, `exact_tb_exit_boundary_icount=4`.
+  - **Scope:** the QEMU qtest and TCG plugin force a callback from a chained
+    translation block and prove that the atomic integration exits directly to
+    the main loop at the commanded boundary. This is the current ceiling
+    exactness proof.
+  - **Timer witness:** patched QEMU captures one armed deadline and raw icount,
+    marks it complete only after the matching `QEMU_CLOCK_VIRTUAL` callback
+    returns, and reports the saved expiry, callback virtual time, and raw icount.
+    The plugin rejects post-wake publication unless arm/fire raw icounts match,
+    the expiry matches the armed deadline, the callback virtual time equals the
+    ceil-converted scheduler target, and the post-wake logical icount equals the
+    published `idle_wake_icount`.
+  - **Open evidence:** `gate:production-rust-plugin-flight` must pass against the
+    final folded QEMU identity and retain all numeric witness fields. RISK-14 is
+    not retired before that result.
 
 - **RISK-16 / T-RISK-9 — S9 QEMU build identity and inertness**
   - **Status:** PASS; Phase-2 now ties the active AOS `qemu-crucible` build to a
-    manifest-derived build identity, proves the committed patch bytes regenerate
-    from the tracked stack, consumes that evidence in `gate:patch-microtests`, and
-    keeps the separate `gate:qemu-inert` upstream-vs-patched sim-off proof green.
-    The Phase-0 S9 result below remains historical fallback evidence only.
+    manifest-derived build identity, proves the DCO-signed atomic patch regenerates
+    from the retained atomic bundle, consumes that evidence in `gate:patch-microtests`, and
+    keeps the `gate:qemu-inert` upstream-vs-patched sim-off proof green.
   - **Current checks:** `checks.crucible.phase2.qemuPatchRegeneration`,
     `checks.crucible.phase2.gates.patchMicrotests`, and
     `checks.crucible.phase2.gates.qemuInert`.
-  - **Current result:** `qemu_package=qemu-crucible`, `qemu_version=10.0.0`,
-    `qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=`,
-    `patch_count=27`,
-    `patch_series_hash=afc0283ef33aa43421e4f1d9aec5523b4226d2044232dc10f1805840ac305a46`,
-    `patch_branch_ref=crucible/qemu-10.0.0`,
-    `patch_branch_bundle_hash=c427d5a6353d4f99455aaeebe2fb81a847372cac2a20fb0fdf84cf99f56ba94d`,
-    `patch_branch_head_commit=b5ca497e6ce46d85328bb1dfac989cd8fef8463c`,
-    `patch_branch_material_hash=539257b708cd802379202b4e8afcdff68c8fde47d5da263a09688e66f7c3d451`,
-    `qemu_build_id=79f90962f7df7740377ef21cd2eab07c03552c0d1f024caea96fddcff21bdd48`,
-    `qemu_nix_hash=35aad46df419155f4ce336d66dd4eac329348b333b1d202937ad05a0d94add09`,
-    `qemu_configure_flags_hash=716c3de64e42d5fee65c1b0ebb4dc213f282aba1d916820e1896ee36bc0db5f8`,
-    `regenerated_patch_bytes_match_committed=true`,
-    `apply_clean_regenerated_series=true`, `apply_clean_patch_fuzz=0`,
-    `patch_branch_bundle_verified=true`,
-    `patch_branch_commit_hashes_match_manifest=true`,
-    `qemu_package_patch_phase_generated_from_manifest=true`,
+  - **Current result:** `qemu_package=qemu-crucible`, `qemu_version=11.1.1`,
+    `qemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=`,
+    the atomic-patch artifact hash, plus bundle,
+    package-expression, configure-flag, and build-identity hashes. It verifies
+    that regenerated bytes match the committed atomic patch, application uses
+    zero fuzz, the bundle and DCO-signed commit match the manifest, and the
+    package applies the manifest-selected atomic patch. It also reports
     `artifact_build_id_match=true`, `artifact_validator_rejects_mismatch=true`,
     `artifact_mismatch_regates=true`, and `qemu_version_bump_regate_enforced=true`.
-  - **Historical S9 result:** `qemu_package=qemu-crucible`, `qemu_version=9.2.4`,
-    `qemu_derivation_path=/nix/store/lf1mn770yyh83j3lif4dmvzjk820grdk-qemu-crucible-9.2.4.drv`,
-    `qemu_output_path=/nix/store/dvv5iv1qz2hp6a90i5nffb7ja5avlch5-qemu-crucible-9.2.4`,
-    `qemu_build_id=729b568e369aac8b090a2b743ef14f1e8338fcbfa8d6e0412d5ba2dc973a5ba4`,
-    `qemu_nix_hash=bbdaae2e7c1a5ac000ae311c840e659db2925b1e43f3af877c54a00f456caa5c`,
-    `patch_count=1`,
-    `patch_0001_name=<first-carried-patch>`,
-    `patch_0001_hash=<sha256>`,
-    `patch_series_hash=f2b409e1639b9616d6daa321774131028b6e7ef35185a2d49950ec187aab2653`,
-    `plugins_enabled=true`, `patch_apply_list_matches=true`,
-    `plugin_exports_present=true`, `rr_switch_quantum_default_zero=true`,
-    `non_sim_icount_patch_present=true`, `s1_result_consumed=true`,
-    `s1_result_status=PASS`,
-    `s1_source=checks.crucible.phase0.s1Fingerprint`,
-    `s1_horizon_extended_hash=9d1e61606ac54920`,
-    `s1_horizon_register_hash=a732f3acdae34c85`,
-    `s1_horizon_ram_hash=110f5442638e18ba`,
-    `s1_pause_retired=3200000005`, `s1_pause_overshoot=5`,
-    `artifact_build_id_match=true`,
-    `changed_build_id=0ef981435eda56587842ef79aa7e665ffc03e7798e6e72a9135cf19b4b5c856e`,
-    `artifact_mismatch_regates=true`,
-    `changed_build_negative_control=mutated_build_id_material`,
-    `full_upstream_inertness_comparison=false`,
-    `qemu_inert_gate_status=fallback_pending_upstream_comparison`,
-    `fallback_adopted=pin_build_id_and_regate_on_change`,
-    `s9_complete=true`.
-  - **Current source pin:** T-PATCH-1 advances the carried QEMU source pin to
-    `qemu_version=10.0.0` with
-    `qemu_source_hash=sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=`,
-    enforced by `checks.crucible.phase2.qemuPatchSeries` and consumed by
+  - **Current source pin:** T-PATCH-1 advances the QEMU source pin to
+    `qemu_version=11.1.1` with
+    `qemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=`,
+    enforced and consumed by
     `checks.crucible.phase2.qemuPatchRegeneration`.
   - **Scope:** validates the active no-silent-drift decision for the current AOS
     QEMU package. The Phase-2 regeneration gate records the QEMU version/source
-    hash, package-file hash, configure flag hash, manifest patch count,
-    patch-series hash, tracked-branch bundle hash, tracked-branch material hash,
+    hash, package-file hash, configure flag hash, atomic-patch hash,
+    retained atomic-bundle hash,
     and sim capability flags as build-id material; emits a
     reproduction-artifact-shaped JSON carrying `qemu_build_id`; mutates the build
     material as a negative control; and verifies that the artifact re-gates rather
     than reproduces against the changed identity.
-  - **Fallback:** retired for the active 10.0.0 package. The historical Phase-0 S9
-    fallback remains useful only as provenance for the older 9.2.4 spike.
+  - **Identity rule:** artifacts must match the current 11.1.1 atomic
+    integration identity exactly.
 
 - **RISK-17 / T-RISK-10 — S10 aarch64 doorbell**
   - **Status:** PASS for instruction ABI v4; the AOS-built AArch64 QEMU target,
@@ -1958,11 +1825,6 @@ register.
     virtual payload, admits the marker at the live callback boundary, reaches
     the exact host-published ceiling, and tears down normally.
   - **Fallback:** none.
-  - **Superseded:** this is historical instruction-ABI-v3 evidence only. The
-    pre-execution plugin callback observed HLT before the guest took its
-    architectural exception, so the one-shot result did not prove a sustained
-    EL0 agent. D-39 records the passing HINT-based v4 result; this block remains
-    unchanged evidence of why v3 was replaced.
 
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
@@ -2033,16 +1895,10 @@ register.
     repeated block executions update no Rust/C callback path.
 
 - **RISK-18 / T-RISK-11 — shmem ABI drift fails closed**
-  - **Status:** PASS; risk retired for the Phase-0 ABI-drift defense proof in
-    [SHM-31].
-  - **Check:** `checks.crucible.phase0.abiDrift`.
-  - **Result:** `generated_header_diff_detected=1`,
-    `c_static_assert_drift_failed=1`,
-    `c_static_assert_specific_offset_failed=1`,
-    `rust_static_assert_drift_failed=1`,
-    `rust_static_assert_specific_offset_failed=1`,
-    `golden_vector_drift_mismatch=1`,
-    `golden_vector_good_c_matches_rust=1`,
+  - **Status:** PASS; the current ABI-conformance proof satisfies [SHM-31].
+  - **Check:** `checks.crucible.phase2.shmemAbiConformance`.
+  - **Result:** generated headers, bilateral layout assertions, and current
+    golden-vector round trips agree exactly,
     `golden_vector_good_c_roundtrip=1`,
     `golden_vector_good_rust_roundtrip=1`,
     `golden_vector_drifted_c_matches_generated=1`,
@@ -2170,14 +2026,14 @@ register.
     `retired_decision_entries=20`, `phase0_foundational_blockers_open=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
     has a retirement or fallback-adoption record and a decision-register check
-    name, S11 is green under sim mode, and S13 has an S11-validated fallback.
+    name, S11 is green under sim mode, and S13 has an S11-validated selection.
     The full RFC coverage/gate catalog lint remains owned by `T-PLAN-1`; this
     check is the narrower RISK-23/RISK-24 guard.
   - **Fallback:** none adopted.
 
 - **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**
   - **Status:** PASS; the normative `-accel sim,thread=single` S11 run is green
-    with no `-smp 1` fallback.
+    on the exact four-vCPU path.
   - **Check:** `checks.crucible.phase0.s11MultiVcpuFingerprint`.
   - **Result:** `accelerator=sim,thread=single`, `vcpus=4`,
     `rr_switch_quantum=4096`, `cadence=100000000`,
@@ -2185,21 +2041,21 @@ register.
     `periodic_samples_observed=40`, `samples=41`,
     `rr_switch_events=731765`, `workload_affinity_active=true`,
     `workload_affinity_vcpus=0,1,2,3`, `sustained_workload_active=true`,
-    `extended_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
+    `aggregate_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
     `rr_switch_trace_match=true`, `per_vcpu_delta_trace_match=true`,
     `horizon_sample_observed_icount=4000000000`,
     `authoritative_trace_scope=through-exact-horizon`,
-    `plugin_exit_pause_overshoot=11`,
-    `plugin_exit_pause_overshoot_run_b=4`,
-    `plugin_exit_pause_overshoot_bound=4096`,
-    `plugin_exit_pause_overshoot_bounded=true`,
-    `plugin_exit_fingerprint_compared=diagnostic-only`,
+    `final_sample_observed_icount=4000000000`,
+    `final_sample_semantics=exact-observer-aggregate-before-native-vmstop`,
+    `final_sample_exact_horizon=true`,
+    `final_sample_fingerprint_compared=authoritative`,
     `horizon_register_hash=a5a4baaca7c3b908461b60b63afb626cae16e2915738719ff09b0549f7b80d0c`,
     `horizon_ram_hash=3446f725b3550c2cc6b7a1501bfd0b12fc4a2771d0a04f537e33a53788a653ee`,
     `horizon_ram_bytes=268435456`,
-    `register_read_failures=0`, and `fallback=smp1_not_needed`.
+    `register_read_failures=0`. The exact four-vCPU sim path is the only S11
+    execution path.
   - **Scope:** validates a stock Linux kernel with a diskless initramfs running an
-    SMP pthread spinlock workload across four guest vCPUs. The extended samples
+    SMP pthread spinlock workload across four guest vCPUs. The aggregate samples
     compare the aggregate instruction stream, per-vCPU register hashes, RAM
     hash, RR cursor, RR quantum, and final horizon fingerprint across an
     clean run and a run with six configured 15 ms preemptions of QEMU itself
@@ -2214,17 +2070,18 @@ register.
     device-completion timing leak; production device-state hashing and
     block-device determinism remain owned by the later [DET-29] / QEMU-device
     gates.
-  - **Fallback:** none; the `-smp 1` fallback was not needed.
+  - **Execution policy:** the exact four-vCPU sim path is required and fails
+    closed on any mismatch.
 
 - **RISK-26 / T-RISK-18 — S12 `Decision::Preemption`**
   - **Status:** PASS; the commanded-preemption QEMU/plugin capability is covered
-    by both the phase2 patch microtest and the production loaded-QEMU gate.
+    by both the focused Phase-2 capability test and the production loaded-QEMU gate.
   - **Check:** `checks.crucible.phase0.s12PreemptionDecision`.
   - **Result:**
     `preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates`,
     `known_preemption_injection_surface_found=true`,
     `preemption_injection_api_available=qemu_plugin_inject_preemption`,
-    `preemption_patch_present=0030-crucible-preemption-inject.patch`,
+    `preemption_patch_present=crucible-qemu-11.1.1.patch`,
     `plugin_preemption_surface_present=true`,
     `vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
     `interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
@@ -2235,19 +2092,19 @@ register.
     `known_race_absent_under_another_choice=modeled`,
     `single_vcpu_interrupt_variation_distinct=modeled`,
     `default_determinism_prereqs_green=true`,
-    `default_determinism_prereqs_source=decision_register_s1_s11`,
-    `s1_decision_entry_consumed=true`, `s1_result_status=PASS`,
-    `s1_horizon_extended_hash=9d1e61606ac54920`,
-    `s1_pause_retired=3200000005`, `s11_decision_entry_consumed=true`,
+    `default_determinism_prereqs_source=production-fingerprint-and-s11`,
+    `production_fingerprint_prerequisite=checks.crucible.phase7.productionRustPluginFlight`,
+    `s11_decision_entry_consumed=true`,
     `s11_result_status=PASS`, `s11_rr_switch_quantum=4096`,
-    `s11_horizon_icount=4000000000`, `s11_extended_fingerprint_match=true`,
+    `s11_horizon_icount=4000000000`, `s11_aggregate_fingerprint_match=true`,
     `live_preemption_rr_switch_quantum=4096`,
     `live_preemption_deterministic_under_scheduler_preemption=true`,
     `live_preemption_sim_double_schedule_matches=true`,
-    `decision_preemption_exploration_enabled=true`, `fallback_adopted=none`,
+    `decision_preemption_exploration_enabled=true`,
+    `exact_preemption_proof=true`,
     `s12_complete=true`.
   - **Scope:** validates the Phase-0 S12 decision for the current repository
-    surface. The check proves the active QEMU patch series now carries
+    surface. The check proves the active atomic QEMU integration carries
     `qemu_plugin_inject_preemption`, the Rust plugin resolves the capability, and
     `checks.crucible.phase2.qemuPreemptionInject` covers command validation and
     `gate:single-vm-fingerprint` covers acknowledged vCPU-switch and interrupt
@@ -2261,11 +2118,10 @@ register.
     different commanded `Decision::Preemption` values, and single-vCPU
     interrupt-timing variation is distinct. The live gate proves that those
     decision kinds map to exact production QEMU commands and reproduce.
-  - **Fallback:** none.
 
 - **RISK-27 / T-RISK-19 — S13 `rr_switch_quantum` default**
   - **Status:** PASS; D-36 resolves the shipped default at `4096`.
-  - **Check:** `checks.crucible.phase0.s13RrSwitchQuantumFallback`.
+  - **Check:** `checks.crucible.phase0.s13RrSwitchQuantum`.
   - **Result:** `candidate_quantums=1024,2048,4096,8192,16384`,
     `throughput_metric=modeled_retired_instruction_efficiency_x1000`,
     `throughput_measurement_scope=modeled_rr_switch_overhead_default_only`,
@@ -2280,55 +2136,31 @@ register.
     `race_yield_source=production_loaded_qemu_commanded_preemption_sweep`,
     `s12_decision_entry_consumed=true`, `s11_result_consumed=true`,
     `s11_sim_rerun_green=true`, `s11_rr_switch_quantum=4096`,
-    `s11_workload_affinity_active=true`, `s11_extended_fingerprint_match=true`,
+    `s11_workload_affinity_active=true`, `s11_aggregate_fingerprint_match=true`,
     `decision_preemption_exploration_enabled=true`,
-    `d25_status=resolved_rr_switch_quantum_4096`, `fallback_adopted=none`,
+    `d25_status=resolved_rr_switch_quantum_4096`,
     `s13_complete=true`.
   - **Scope:** composes the known-race model witness with exact live command
     application at all five candidate quantums and the S11 four-vCPU horizon
     proof at the selected value.
-  - **Fallback:** per-branch explorer quantum overrides remain available.
+  - **Override:** per-branch explorer quantum overrides remain available.
 
 - **RISK-28 / T-RISK-20 — S14 gdbstub attach/step**
-  - **Status:** PASS WITH FALLBACK; the live gdbstub attach/step measurement is
-    remains pending because the current repository has no live AOS QEMU gdbstub
-    mediation gate. The hermetic GDB client and CLI live attach command now exist. The
-    session/backend `open_gdbstub` surface is implemented by
-    `checks.crucible.phase5.sessionDebugTimeTravel`, but that is not a live S14
-    neutrality measurement.
-  - **Check:** `checks.crucible.phase0.s14GdbstubFallback`.
-  - **Result:** `scan_scope=pkgs_emulation_crates_rfc_debug_specs`,
-    `hermetic_gdb_client_available=true`,
-    `qemu_gdbstub_mediation_scan_scope=aos_qemu_nix_patches_plugin`,
-    `known_aos_qemu_gdbstub_step_hook_detected=false`,
-    `aos_qemu_gdbstub_mediation_patch_implemented=false`,
-    `session_open_gdbstub_implemented=true`,
-    `cli_debug_command_implemented=true`,
-    `read_only_gdbstub_ops_tested=false`,
-    `read_only_fingerprint_neutral=not_tested`,
-    `read_only_icount_neutral=not_tested`, `gdb_single_step_tested=false`,
-    `gdb_single_step_routed_through_scheduler=not_tested`,
-    `gdb_single_step_policy=disabled_until_s14_green`,
-    `raw_gdb_single_step_allowed_by_crucible_policy=false`,
-    `policy_enforcement_runtime=implemented`,
-    `default_debug_policy=read_only_attach_crucible_driven_step_reverse_step`,
-    `live_gdbstub_attach_gate_status=fallback_pending_live_mediation_gate`,
-    `s1_decision_entry_consumed=true`, `s1_result_status=PASS`,
-    `s1_horizon_extended_hash=9d1e61606ac54920`,
-    `s1_pause_retired=3200000005`,
-    `fallback_adopted=read_only_attach_crucible_driven_step_until_gdbstub_gate`,
-    `s14_complete=true`.
-  - **Scope:** validates only the Phase-0 fallback decision for the current
-    source surface. The check proves the debug specs define the conservative
-    read-only/Crucible-driven-step posture and that the scanned AOS integration
-    files do not currently add a Crucible-owned gdb single-step hook. It does not
-    inspect upstream QEMU internals, attach gdb, read registers or memory through
-    a live gdbstub, set breakpoints, or prove scheduler-routed single-step.
-  - **Fallback:** keep raw gdb single-step disabled by Crucible policy and require
-    future debug advancement to use Crucible-driven step/reverse-step until a
-    packaged debug client and backend/CLI gdbstub path to pass the live mediation
-    gate; rerun S14 before treating [DBG-1] or [SCHED-46] as satisfied for live
-    debugging.
+  - **Status:** PASS; live packaged x86_64 and aarch64 evidence completes S14.
+  - **Check:** `checks.crucible.phase7.debuggerLiveArchitectures`.
+  - **Result:** `execution=live-packaged-qemu-tcg`,
+    `architectures=x86_64,aarch64`, `rsp_negotiation=true`,
+    `repeated_register_reads_neutral=true`,
+    `hardware_breakpoint_packets=true`, `model_double=false`,
+    `raw_single_step=false`.
+  - **Scope:** boots both packaged emulators stopped under TCG, connects packaged
+    GDB over RSP, compares repeated architecture register reads, and inserts and
+    removes a hardware breakpoint. The captured T-DBG-14 production runs extend
+    that automated parity slice through the gateway and session actor, including
+    scheduler continue and single-step, stable GDB across runtime replacement,
+    and guest exec/PTY/SSH introspection.
+  - **Resolution:** RISK-28 is retired. Run control remains scheduler-mediated;
+    no raw out-of-band QEMU single-step is exposed.
 
 ## Implementation checklist
 
@@ -2375,12 +2207,12 @@ register.
   (`LinkLatencyBelowFloor`), a dynamic sub-floor latency **fault** is **clamped**
   to the floor (`subfloor_latency_is_clamped_to_floor`). Already implemented and
   gated (`checks.crucible.phase3.schedulerLinkLatencyFloor`).
-- [x] **T-D-4** After S12 passes without fallback, rerun the
+- [x] **T-D-4** After the exact S12 proof passes, rerun the
   `rr_switch_quantum`-granularity spike (S13): sweep the
   round-robin switch quantum, measure multi-vCPU throughput against the perf budget
   and race-surfacing yield via the S12 explorer, choose the default value, and
-  record the resolution superseding D-25 (the per-branch explorer override is the
-  fallback). — resolves [D-25]; satisfies [SCHED-45], [G-9]; spec
+  record the resolution superseding D-25; the per-branch explorer override
+  remains available. — resolves [D-25]; satisfies [SCHED-45], [G-9]; spec
   [`30-risks-spikes.md`](30-risks-spikes.md), §30.11c, §22, §25. Resolved by
   [D-36]: the known-race model witness
   `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
@@ -2388,6 +2220,5 @@ register.
   application at every candidate quantum. All five candidates reproduce with
   bounded scheduler preemption and preserve race yield, while `4096` is the smallest candidate over
   the throughput floor and is independently S11-green with four vCPUs.
-  `checks.crucible.phase0.s13RrSwitchQuantumFallback` reports
-  `race_yield_tested=true`, `d25_status=resolved_rr_switch_quantum_4096`, and
-  `fallback_adopted=none`.
+  `checks.crucible.phase0.s13RrSwitchQuantum` reports
+  `race_yield_tested=true` and `d25_status=resolved_rr_switch_quantum_4096`.

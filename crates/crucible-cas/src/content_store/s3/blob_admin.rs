@@ -10,13 +10,13 @@ use std::sync::{
 
 use super::*;
 use crate::content_store::admin::{
-    InventoryCounter, persistent_inventory_generation, physical_storage_identity,
+    InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
+    physical_storage_identity,
 };
 use crate::content_store::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
-    InventoryGeneration, MAX_S3_OBJECT_LIST_ITEMS, PlannedDeleteDisposition,
-    StoreS3ConditionalWriteOutcome, StoreS3ObjectVersion, StoreS3StrongCasClient,
-    StoreS3VersionedObjectMetadata,
+    MAX_S3_OBJECT_LIST_ITEMS, PlannedDeleteDisposition, StoreS3ConditionalWriteOutcome,
+    StoreS3ObjectVersion, StoreS3StrongCasClient, StoreS3VersionedObjectMetadata,
 };
 
 const INVENTORY_STATE_MAGIC: &[u8] = b"crucible.content-store.s3-object-inventory-state.v1\0";
@@ -92,20 +92,6 @@ static BLOB_NAMESPACE_LIFECYCLES: OnceLock<
 
 pub(super) struct S3BlobAdministration {
     client: Arc<dyn StoreS3BlobAdminClient>,
-}
-
-pub(super) struct S3BlobRepairFence<'a> {
-    backend: &'a S3BlobBackend,
-    administration: &'a S3BlobAdministration,
-    _publication: RwLockWriteGuard<'a, ()>,
-    _state: MutexGuard<'a, ()>,
-}
-
-impl S3BlobRepairFence<'_> {
-    pub(super) fn advance_generation(&mut self) -> Result<(), StoreError> {
-        self.administration.advance_state(self.backend)?;
-        Ok(())
-    }
 }
 
 pub(super) fn admit_blob_namespace(
@@ -265,54 +251,12 @@ impl S3BlobBackend {
     ///
     /// Returns [`StoreError`] when ordinary configuration, endpoint binding,
     /// or process-wide administrative namespace admission fails.
-    // crucible-lint: allow rust-allow -- the constructor keeps every independently authenticated S3 namespace and bound explicit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_admin(
-        name: impl Into<String>,
-        endpoint: StoreS3EndpointId,
-        bucket: impl Into<String>,
-        prefix: impl Into<String>,
-        maximum_logical_object_bytes: u64,
-        multipart_part_bytes: u64,
+        config: S3BlobBackendConfig,
         client: Arc<dyn StoreS3Client>,
         admin_client: Arc<dyn StoreS3BlobAdminClient>,
     ) -> Result<Self, StoreError> {
-        Self::new_inner(
-            name,
-            endpoint,
-            bucket,
-            prefix,
-            maximum_logical_object_bytes,
-            multipart_part_bytes,
-            client,
-            Some(admin_client),
-        )
-    }
-
-    // crucible-lint: allow rust-allow -- the observational constructor keeps every independently authenticated S3 namespace and bound explicit.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_observational_with_admin(
-        name: impl Into<String>,
-        endpoint: StoreS3EndpointId,
-        bucket: impl Into<String>,
-        prefix: impl Into<String>,
-        maximum_logical_object_bytes: u64,
-        multipart_part_bytes: u64,
-        client: Arc<dyn StoreS3Client>,
-        admin_client: Arc<dyn StoreS3BlobAdminClient>,
-    ) -> Result<Self, StoreError> {
-        let mut backend = Self::new_with_admin(
-            name,
-            endpoint,
-            bucket,
-            prefix,
-            maximum_logical_object_bytes,
-            multipart_part_bytes,
-            client,
-            admin_client,
-        )?;
-        backend.observational = true;
-        Ok(backend)
+        Self::new_inner(config, client, Some(admin_client))
     }
 
     pub(super) fn acquire_admin_publication_guard(
@@ -345,46 +289,6 @@ impl S3BlobBackend {
         administration.advance_state(self)?;
         Ok(())
     }
-
-    pub(super) fn acquire_admin_repair_fence(
-        &self,
-        expected_generation: InventoryGeneration,
-    ) -> Result<S3BlobRepairFence<'_>, StoreError> {
-        let administration =
-            self.administration
-                .as_ref()
-                .ok_or(StoreError::InvalidComposition {
-                    reason: "S3 blob backend has no committed-object administration capability",
-                })?;
-        let publication = self
-            .lifecycle
-            .publication
-            .write()
-            .map_err(|_| StoreError::Poisoned {
-                operation: "acquire-S3-blob-repair-publication-fence",
-            })?;
-        let state = self
-            .lifecycle
-            .state
-            .lock()
-            .map_err(|_| StoreError::Poisoned {
-                operation: "acquire-S3-blob-repair-state-fence",
-            })?;
-        let inventory = administration
-            .load_state(self)?
-            .ok_or(StoreError::Incompatible)?;
-        let observed_generation =
-            persistent_inventory_generation(&self.name, inventory.instance, inventory.generation)?;
-        if observed_generation != expected_generation {
-            return Err(StoreError::Incompatible);
-        }
-        Ok(S3BlobRepairFence {
-            backend: self,
-            administration,
-            _publication: publication,
-            _state: state,
-        })
-    }
 }
 
 impl BlobStoreAdmin for S3BlobBackend {
@@ -409,13 +313,7 @@ impl BlobStoreAdmin for S3BlobBackend {
             .map_err(|_| StoreError::Poisoned {
                 operation: "acquire-S3-blob-inventory-state-fence",
             })?;
-        let inventory = if self.observational {
-            administration
-                .load_state(self)?
-                .ok_or(StoreError::Incompatible)?
-        } else {
-            administration.load_or_create_state(self)?
-        };
+        let inventory = administration.load_or_create_state(self)?;
         Ok(Box::new(S3BlobInventoryFence {
             backend: self,
             administration,
@@ -544,6 +442,38 @@ impl BlobInventoryFence for S3BlobInventoryFence<'_> {
                 Ok(PlannedDeleteDisposition::Deleted)
             }
             StoreS3ConditionalDeleteOutcome::PreconditionFailed => Err(StoreError::Incompatible),
+        }
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        let logical_length = source.logical_length();
+        if logical_length > self.backend.maximum_logical_object_bytes {
+            return Err(StoreError::Quota);
+        }
+        validate_source(id, source)?;
+        if self.backend.contains(id)? {
+            return self.backend.authenticate_existing(id);
+        }
+
+        self.inventory = self.administration.advance_state(self.backend)?;
+        let outcome = if logical_length == 0 {
+            self.backend
+                .client
+                .put_empty_if_absent(&self.backend.bucket, &self.backend.key(id))?
+        } else {
+            self.backend.upload_multipart(id, source)?
+        };
+        match outcome {
+            StoreS3ConditionalPutOutcome::Created => {
+                self.backend.authenticate_existing(id)?;
+                Ok(self.backend.receipt(id, logical_length))
+            }
+            StoreS3ConditionalPutOutcome::AlreadyExists => self.backend.authenticate_existing(id),
         }
     }
 }

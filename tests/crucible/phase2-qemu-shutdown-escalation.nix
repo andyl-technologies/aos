@@ -9,6 +9,11 @@
     attrPath = "${attrPath}.protocol";
     taskIds = ["T-QEMU-8" "T-PROTO-7"];
   };
+  setupFailure = import ./phase2-qemu-production-setup-failure.nix {
+    inherit pkgs lib;
+    attrPath = "checks.crucible.phase2.qemuProductionSetupFailure";
+    taskIds = ["T-PROTO-8"];
+  };
   lifecycle = import ./phase0-lifecycle.nix {inherit pkgs lib;};
 
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -101,6 +106,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
+        setupFailure
       ];
 
       phases = [
@@ -111,12 +117,22 @@ in
 
             mkdir -p "$out"
             protocol_result="${protocolShutdown}/result"
+            setup_failure_result="${setupFailure}/result"
             lifecycle_result="${lifecycle}/result"
 
             grep -q '^PASS$' "$protocol_result"
             grep -q '^gate=gate:control-responsive$' "$protocol_result"
             grep -q '^order=Quit,QMP-quit,SIGTERM,SIGKILL,reap$' "$protocol_result"
             grep -q '^no_leak=real-qemu-child-reaped$' "$protocol_result"
+
+            grep -q '^PASS$' "$setup_failure_result"
+            grep -q '^descriptor_handoff=fail-closed$' "$setup_failure_result"
+            grep -q '^setup_ack=non-ready-rejected$' "$setup_failure_result"
+            grep -q '^real_region_validation=corruption-rejected$' "$setup_failure_result"
+            grep -q '^invalid_region_child=reaped-before-scheduler-admission$' \
+              "$setup_failure_result"
+            grep -q '^nonready_ack_child=reaped-before-scheduler-admission$' \
+              "$setup_failure_result"
 
             grep -q '^PASS$' "$lifecycle_result"
             grep -q '^spike=no-leak-lifecycle$' "$lifecycle_result"
@@ -130,6 +146,7 @@ in
             grep -q '^survivors=0$' "$lifecycle_result"
 
             cp "$protocol_result" "$out/protocol-shutdown.result"
+            cp "$setup_failure_result" "$out/production-setup-failure.result"
             cp "$lifecycle_result" "$out/no-leak-lifecycle.result"
             cat > "$out/result" <<'RESULT'
             PASS
@@ -141,6 +158,7 @@ in
             no_leak_paths=clean-stop,control-stop,guest-crash,plugin-hang,setup-failure,host-sigkill,parent-death
             real_qemu_lifecycle=checks.crucible.phase0.lifecycle
             protocol_shutdown=checks.crucible.phase2.protocolShutdownEscalation
+            production_setup_failure=checks.crucible.phase2.qemuProductionSetupFailure
             RESULT
           '';
         }

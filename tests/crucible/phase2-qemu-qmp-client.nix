@@ -9,10 +9,10 @@
 
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  qmpLib = builtins.readFile ../../crates/crucible-qemu/src/qmp.rs;
-  qmpSnapshotTag = builtins.readFile ../../crates/crucible-qemu/src/qmp/snapshot_tag.rs;
-  qmpVmstateControl = builtins.readFile ../../crates/crucible-qemu/src/qmp/vmstate_control.rs;
-  qmpSurface = qmpLib + qmpSnapshotTag + qmpVmstateControl;
+  qmpSurface = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/qmp.rs;
+  };
   qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -28,8 +28,8 @@
         needle = "**[QEMU-19]** The host MUST provide a typed QMP client";
       }
       {
-        label = "QEMU-20 snapshot tag requirement";
-        needle = "QMP snapshot tag MUST be derived from the checkpoint's content address";
+        label = "QEMU-20 version-nine checkpoint requirement";
+        needle = "Production checkpoints MUST capture and restore complete\n  version-nine state";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
@@ -51,10 +51,6 @@
         label = "qmp job poll policy export";
         needle = "QmpJobPollPolicy";
       }
-      {
-        label = "snapshot tag export";
-        needle = "QmpSnapshotTag";
-      }
     ]
     ++ failuresFor "crates/crucible-qemu/src/qmp*.rs" qmpSurface [
       {
@@ -70,16 +66,16 @@
         needle = "pub fn connect";
       }
       {
-        label = "savevm API";
-        needle = "pub fn savevm";
+        label = "contained savevm primitive";
+        needle = "pub(crate) fn savevm";
       }
       {
-        label = "loadvm API";
-        needle = "pub fn loadvm";
+        label = "contained exact restore primitive";
+        needle = "pub(crate) fn restore_exact_checkpoint";
       }
       {
         label = "snapshot delete API";
-        needle = "pub fn delete_snapshot";
+        needle = "pub(crate) fn delete_snapshot";
       }
       {
         label = "quit API";
@@ -104,10 +100,6 @@
       {
         label = "snapshot-save wire command";
         needle = "QMP_SNAPSHOT_SAVE_COMMAND";
-      }
-      {
-        label = "snapshot-load wire command";
-        needle = "QMP_SNAPSHOT_LOAD_COMMAND";
       }
       {
         label = "snapshot-delete wire command";
@@ -135,7 +127,7 @@
       }
       {
         label = "connect with job poll policy";
-        needle = "connect_with_job_poll_policy";
+        needle = "connect_with_policies";
       }
       {
         label = "real job poll interval";
@@ -171,47 +163,19 @@
         label = "stringly checkpoint address conversion";
         needle = "address." + "as_ref()";
       }
+      {
+        label = "public monolithic VMState load API";
+        needle = "pub fn " + "loadvm";
+      }
+      {
+        label = "monolithic VMState load wire command";
+        needle = "QMP_SNAPSHOT_" + "LOAD_COMMAND";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/tests/qmp.rs" qmpTest [
       {
         label = "connect negotiation test";
         needle = "qmp_connect_reads_greeting_and_negotiates_capabilities";
-      }
-      {
-        label = "snapshot command tag test";
-        needle = "savevm_uses_snapshot_save_with_checkpoint_derived_tag";
-      }
-      {
-        label = "content hash tag derivation test";
-        needle = "snapshot_tags_are_derived_from_checkpoint_content_hash";
-      }
-      {
-        label = "loadvm quit test";
-        needle = "loadvm_and_quit_are_typed_qmp_commands";
-      }
-      {
-        label = "snapshot delete test";
-        needle = "snapshot_delete_uses_the_same_tag_and_vmstate_device";
-      }
-      {
-        label = "event skipping test";
-        needle = "qmp_client_skips_async_events_until_command_return";
-      }
-      {
-        label = "snapshot job error test";
-        needle = "qmp_snapshot_job_error_is_typed_result_error";
-      }
-      {
-        label = "snapshot job polling test";
-        needle = "qmp_snapshot_job_polling_waits_until_concluded";
-      }
-      {
-        label = "snapshot job timeout test";
-        needle = "qmp_snapshot_job_timeout_is_typed_result_error";
-      }
-      {
-        label = "typed error test";
-        needle = "qmp_error_response_is_typed_result_error";
       }
       {
         label = "hot-fork plugin barrier command test";
@@ -297,8 +261,8 @@ in
             check_scope=task-level
             related_gates=gate:control-responsive,gate:replay-oracle,gate:content-address
             rust_test=crucible-qemu::qmp
-            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,crucible-hot-fork-plugin-barrier,crucible-hot-fork-rcu-barrier,crucible-hot-fork-bh-timer-barrier,crucible-hot-fork-block-barrier,crucible-hot-fork-template,crucible-hot-fork-private-rings,query-crucible-hot-fork-readiness,query-crucible-hot-fork-thread-inventory,query-crucible-hot-fork-rcu-inventory,query-crucible-hot-fork-aio-inventory,query-crucible-hot-fork-aio-handler-inventory,query-crucible-hot-fork-block-backend-inventory,query-crucible-hot-fork-plugin-resource-inventory,query-crucible-hot-fork-bottom-half-inventory,query-crucible-hot-fork-mutex-inventory,query-crucible-hot-fork-timer-inventory,quit
-            public_api=connect,savevm,loadvm,delete_snapshot,hold_hot_fork_plugin_barrier,query_hot_fork_plugin_barrier,release_hot_fork_plugin_barrier,hold_hot_fork_rcu_barrier,query_hot_fork_rcu_barrier,release_hot_fork_rcu_barrier,hold_hot_fork_bh_timer_barrier,query_hot_fork_bh_timer_barrier,release_hot_fork_bh_timer_barrier,hold_hot_fork_block_barrier,query_hot_fork_block_barrier,release_hot_fork_block_barrier,prepare_hot_fork_template,query_hot_fork_template,abort_hot_fork_template,stage_hot_fork_private_rings,query_hot_fork_private_rings,release_hot_fork_private_rings,query_hot_fork_readiness,query_hot_fork_thread_inventory,query_hot_fork_rcu_inventory,query_hot_fork_aio_inventory,query_hot_fork_aio_handler_inventory,query_hot_fork_block_backend_inventory,query_hot_fork_bottom_half_inventory,query_hot_fork_mutex_inventory,query_hot_fork_timer_inventory,quit
+            commands=qmp_capabilities,snapshot-save,crucible-checkpoint-restore,snapshot-delete,query-jobs,crucible-hot-fork-plugin-barrier,crucible-hot-fork-rcu-barrier,crucible-hot-fork-async-worker-barrier,crucible-hot-fork-block-barrier,crucible-hot-fork-template,crucible-hot-fork-private-rings,query-crucible-hot-fork-plugin-resource-inventory,quit
+            client_api=connect-with-policies-and-typed-bounded-commands
             capabilities=oob-required
             aio_handler_transport=exec-oob
             block_backend_transport=exec-oob

@@ -21,11 +21,8 @@ use rustix::process::{
 };
 use thiserror::Error;
 
+use crate::QemuNodeChannelError;
 use crate::async_driver::QemuAsyncNodeStepTarget;
-use crate::{
-    QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuNodePendingQuantum,
-    QemuShmemHotPathChannel,
-};
 
 pub(crate) const BOUNDED_PREEMPTION_COUNT: u32 = 6;
 pub(crate) const BOUNDED_PREEMPTION_PAUSE_MILLISECONDS: u64 = 15;
@@ -439,36 +436,11 @@ impl BoundedSchedulerPreemption {
         adversary.observe_first_stop().map(Some)
     }
 
-    /// Certifies that the first pidfd stop overlapped a mapped pending quantum.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed preemption or shared-memory inspection error, and rejects
-    /// a quantum that completed before the first stop was observed.
-    pub(crate) fn certify_mapped_quantum_pending(
-        adversary: &mut Option<Self>,
-        hot_path: &mut QemuMappedQuantumShmemHotPath,
-        pending: &mut QemuNodePendingQuantum,
-    ) -> Result<bool, BoundedSchedulerPreemptionError> {
-        let Some(observation) = Self::observe_first_stop_if_present(adversary)? else {
-            return Ok(false);
-        };
-        let pending_at_stop = match QemuShmemHotPathChannel::poll_quantum(hot_path, pending) {
-            Err(source) if source.retryable => true,
-            Ok(completion) => return Err(completed_quantum_at_first_stop(&completion)),
-            Err(source) => {
-                return Err(BoundedSchedulerPreemptionError::QuantumInspection { source });
-            }
-        };
-        observation.confirm_pending(pending_at_stop)?;
-        Ok(true)
-    }
-
     /// Certifies the first pidfd stop through an async-driver quantum target.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::certify_mapped_quantum_pending`].
+    /// Returns a typed preemption or target-inspection error.
     pub(crate) fn certify_async_quantum_pending<T>(
         adversary: &mut Option<Self>,
         target: &mut T,
@@ -704,7 +676,7 @@ struct PreemptionStartBarrier {
     prepared: mpsc::Sender<()>,
 }
 
-// crucible-lint: allow clippy-disallowed-method -- wall time bounds only this noncanonical test adversary.
+// crucible-lint: allow clippy-disallowed-method -- wall time bounds only this noncanonical host adversary.
 #[allow(clippy::disallowed_methods)]
 fn apply_bounded_scheduler_preemption_with_cancel(
     pidfd: Arc<std::os::fd::OwnedFd>,

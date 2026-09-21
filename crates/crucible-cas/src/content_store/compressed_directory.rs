@@ -23,7 +23,10 @@ use std::sync::Arc;
 
 use rustix::fs::{Mode, OFlags, open};
 
-use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
+use super::admin::{
+    InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
+    physical_storage_identity,
+};
 use super::directory::{
     DirectoryBlobBackend, DirectoryInventoryState, create_dir_all_durable, directory_receipt,
     inventory_directory_entry, is_lower_hex, path_name, read_directory_entries, require_directory,
@@ -57,34 +60,13 @@ impl CompressedDirectoryBlobBackend {
         root: impl Into<PathBuf>,
         maximum_logical_object_bytes: u64,
     ) -> Result<Self, StoreError> {
-        Self::new_with_mode(name, root, maximum_logical_object_bytes, false)
-    }
-
-    pub(crate) fn new_observational(
-        name: impl Into<String>,
-        root: impl Into<PathBuf>,
-        maximum_logical_object_bytes: u64,
-    ) -> Result<Self, StoreError> {
-        Self::new_with_mode(name, root, maximum_logical_object_bytes, true)
-    }
-
-    fn new_with_mode(
-        name: impl Into<String>,
-        root: impl Into<PathBuf>,
-        maximum_logical_object_bytes: u64,
-        observational: bool,
-    ) -> Result<Self, StoreError> {
         if maximum_logical_object_bytes == 0 {
             return Err(StoreError::InvalidComposition {
                 reason: "compressed directory requires a nonzero logical-object byte limit",
             });
         }
         Ok(Self {
-            directory: if observational {
-                DirectoryBlobBackend::new_observational(name, root)
-            } else {
-                DirectoryBlobBackend::new(name, root)
-            },
+            directory: DirectoryBlobBackend::new(name, root),
             maximum_logical_object_bytes,
         })
     }
@@ -127,47 +109,17 @@ impl CompressedDirectoryBlobBackend {
     }
 }
 
-impl ImmutableBlobBackend for CompressedDirectoryBlobBackend {
-    fn name(&self) -> &str {
-        self.directory.name()
-    }
-
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities {
-            durable: true,
-            deferred_write: false,
-            range_read: true,
-            streaming_read: true,
-            conditional_create: true,
-            streaming_put: true,
-            repair_inventory: false,
-            planned_delete: false,
-        }
-    }
-
-    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-        match self.read_handle(id, None) {
-            Ok(handle) => {
-                validate_source(id, &handle)?;
-                Ok(true)
-            }
-            Err(StoreError::NotFound { .. }) => Ok(false),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
-        self.read_handle(id, range)
-    }
-
-    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+impl CompressedDirectoryBlobBackend {
+    fn put_if_absent_fenced(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+        inventory_state: &mut DirectoryInventoryState,
+    ) -> Result<PutReceipt, StoreError> {
         if source.logical_length() > self.maximum_logical_object_bytes {
             return Err(StoreError::Quota);
         }
-        let _inventory_lock = self.directory.acquire_inventory_lock()?;
-        let mut inventory_state = self.directory.load_or_create_inventory_state()?;
-        self.directory
-            .advance_inventory_state(&mut inventory_state)?;
+        self.directory.advance_inventory_state(inventory_state)?;
 
         let path = self.directory.object_path(id);
         let directory = path.parent().ok_or(StoreError::InvalidComposition {
@@ -298,19 +250,50 @@ impl ImmutableBlobBackend for CompressedDirectoryBlobBackend {
     }
 }
 
+impl ImmutableBlobBackend for CompressedDirectoryBlobBackend {
+    fn name(&self) -> &str {
+        self.directory.name()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            durable: true,
+            deferred_write: false,
+            range_read: true,
+            streaming_read: true,
+            conditional_create: true,
+            streaming_put: true,
+            repair_inventory: false,
+            planned_delete: false,
+        }
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        match self.read_handle(id, None) {
+            Ok(handle) => {
+                validate_source(id, &handle)?;
+                Ok(true)
+            }
+            Err(StoreError::NotFound { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.read_handle(id, range)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let _inventory_lock = self.directory.acquire_inventory_lock()?;
+        let mut inventory_state = self.directory.load_or_create_inventory_state()?;
+        self.put_if_absent_fenced(id, source, &mut inventory_state)
+    }
+}
+
 impl BlobStoreAdmin for CompressedDirectoryBlobBackend {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
-        let (lock, state) = if self.directory.observational() {
-            (
-                self.directory.acquire_existing_inventory_lock()?,
-                self.directory.load_existing_inventory_state()?,
-            )
-        } else {
-            (
-                self.directory.acquire_inventory_lock()?,
-                self.directory.load_or_create_inventory_state()?,
-            )
-        };
+        let lock = self.directory.acquire_inventory_lock()?;
+        let state = self.directory.load_or_create_inventory_state()?;
         Ok(Box::new(CompressedDirectoryInventoryFence {
             backend: self,
             _lock: lock,
@@ -636,6 +619,16 @@ impl BlobInventoryFence for CompressedDirectoryInventoryFence<'_> {
         })?;
         sync_directory(directory)?;
         Ok(PlannedDeleteDisposition::Deleted)
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        self.backend
+            .put_if_absent_fenced(id, source, &mut self.state)
     }
 }
 

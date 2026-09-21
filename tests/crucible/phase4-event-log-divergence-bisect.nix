@@ -122,7 +122,7 @@
       }
       {
         label = "test asserts node";
-        needle = "expected_location.at.node.as_ref()";
+        needle = "expected_location.at.node, None";
       }
       {
         label = "test asserts icount";

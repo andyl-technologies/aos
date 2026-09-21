@@ -20,7 +20,7 @@ const EXPECTED_INJECTIONS: &[&str] = &[
     "kill-coordinator-before-observation-commit",
     "kill-local-executor",
     "kill-daemon-during-snapshot-publication",
-    "reboot-paused-or-hibernating",
+    "reboot-exact-paused-and-archived",
     "enospc-during-exact-capture",
     "remove-archival-leaf-during-multipart",
     "expire-store-credentials",
@@ -78,6 +78,7 @@ struct CommandJournalContract {
     records_exit_status: bool,
     records_structured_output: bool,
     redacts_secrets: bool,
+    required_operations: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +152,18 @@ fn checked_in_contract_covers_every_destructive_recovery_class() -> Result<(), B
 
 #[test]
 fn contract_validation_rejects_omitted_rows_and_production_fault_hooks() {
+    let duplicate_operation = CONTRACT_SOURCE.replacen(
+        "\"cancel-during-child-creation\",",
+        "\"kill-running-child\",",
+        1,
+    );
+    let failures = validation_failures(&duplicate_operation, NIX_SOURCE, &workspace_root());
+    assert!(
+        failures
+            .iter()
+            .any(|failure| { failure.contains("command journal operation set must be exactly") })
+    );
+
     let missing_row = CONTRACT_SOURCE.replacen(
         "id = \"cancel-during-child-creation\"",
         "id = \"kill-running-child\"",
@@ -357,6 +370,21 @@ fn validate_evidence_contract(contract: &Contract, failures: &mut Vec<String>) {
     {
         failures.push(String::from(
             "command journal must retain exit status and structured output while redacting secrets",
+        ));
+    }
+
+    let operations = contract
+        .command_journal
+        .required_operations
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let expected_operations = EXPECTED_INJECTIONS.iter().copied().collect::<BTreeSet<_>>();
+    if operations != expected_operations
+        || operations.len() != contract.command_journal.required_operations.len()
+    {
+        failures.push(format!(
+            "command journal operation set must be exactly {expected_operations:?}, got {operations:?}"
         ));
     }
 
@@ -596,12 +624,11 @@ fn is_public_recovery_command(command: &str) -> bool {
         || command.starts_with("crucible --format jsonl store verify {store_deployment}")
         || command.starts_with("crucible --format jsonl store verify {destination_store}")
         || command.starts_with("crucible --format jsonl store ensure {content_id} --in ")
-        || command.starts_with(
-            "crucible --format jsonl store repair placement {content_id} --in {store_deployment} ",
-        )
-        || command.starts_with(
-            "crucible --format jsonl store repack --store {store_deployment} --node {packed_node} --plan {repack_plan} ",
-        )
+        || command
+            .starts_with("crucible --format jsonl store credentials refresh {store_deployment}")
+        || command.starts_with("crucible --format jsonl store repair --state ")
+        || command.starts_with("crucible --format jsonl store cleanup incomplete-packs --state ")
+        || command.starts_with("crucible --format jsonl store transform packed --store ")
 }
 
 fn command_placeholders(action: &str) -> BTreeSet<&str> {

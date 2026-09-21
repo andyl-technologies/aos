@@ -161,7 +161,16 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
     let producer = scheduler_node("a");
     // A peer frame a -> b delivered at vt 12.
     let pending = vec![ScheduledEvent {
-        key: ScheduledEventKey::from_parts(VirtualTime { ticks: 12 }, consumer, producer, 0),
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime { ticks: 12 }).ticks,
+                },
+                node: consumer,
+                sequence: 0,
+            },
+            producer,
+        ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: node_id("b"),
             payload: b"a-to-b".to_vec(),
@@ -383,7 +392,16 @@ fn gate_layer1_injection_late_delivery_fails_loud() {
     let consumer = scheduler_node("b");
     let producer = scheduler_node("a");
     let late = vec![ScheduledEvent {
-        key: ScheduledEventKey::from_parts(VirtualTime { ticks: 1 }, consumer, producer, 0),
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime { ticks: 1 }).ticks,
+                },
+                node: consumer,
+                sequence: 0,
+            },
+            producer,
+        ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: node_id("b"),
             payload: b"late".to_vec(),

@@ -52,10 +52,10 @@ fn command_round_trip_authenticates_payload_and_reserved_bytes() {
         FaultCommandHeaderV1::decode(&nonzero_reserved, &arena),
         Err(FaultAbiError::ReservedNonzero)
     );
-    let mut obsolete_minor = value;
-    obsolete_minor.abi_minor = FAULT_COMMAND_ABI_MINOR - 1;
+    let mut unsupported_minor = value;
+    unsupported_minor.abi_minor = u16::MAX;
     assert_eq!(
-        FaultCommandHeaderV1::decode(&obsolete_minor.encode(), &arena),
+        FaultCommandHeaderV1::decode(&unsupported_minor.encode(), &arena),
         Err(FaultAbiError::Version)
     );
 }

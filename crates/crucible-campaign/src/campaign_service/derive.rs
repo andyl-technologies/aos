@@ -18,10 +18,9 @@ impl DeriveCampaignRequest {
     /// Builds one bounded derivation request.
     ///
     /// A supplied policy is activated only for the new ref and must reference
-    /// an already imported transitive generator closure. It may explicitly
-    /// migrate between strict and streaming modes; statistical mode cannot be
-    /// entered or left through derivation. Omitting the policy preserves the
-    /// policy active at the source snapshot.
+    /// an already imported transitive generator closure with the same campaign
+    /// mode. Statistical campaigns must preserve the exact active policy.
+    /// Omitting the policy preserves the policy active at the source snapshot.
     ///
     /// # Errors
     ///
@@ -282,7 +281,7 @@ mod tests {
     fn policy(label: &str) -> CampaignPolicyId {
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             label.as_bytes(),
         ))
         .expect("policy")
@@ -340,7 +339,7 @@ mod tests {
             ],
             [
                 String::from("9f2affae5cc034f5e6ae2710d00e708e91d7000c1758cd520f7830aeb031995e"),
-                String::from("9fa04d81a1711a0652af10ea9951c344ade6bef252fb5d4f98d5c11b03c63e41"),
+                String::from("c4b0ad8b0b3e673b1c60ae23ced92b67ac343bcba5333af01f68b213d47e0e4e"),
             ]
         );
     }

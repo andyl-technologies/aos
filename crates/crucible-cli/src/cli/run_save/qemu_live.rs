@@ -2,12 +2,13 @@
 
 use super::*;
 
+use std::sync::Arc;
+
 use crucible_campaign::{
     ObservationCondition, ObservationStopSatisfaction, StopCondition, StopOutcome,
 };
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignFindingExport, GuardedCampaignReplayClosure, GuardedDefaultCampaignRun,
-    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
 
 #[path = "finding_frames.rs"]
@@ -74,8 +75,19 @@ pub(crate) fn is_packaged_backend(backend_plan: &BackendSelectionPlan) -> bool {
     )
 }
 
+#[cfg(not(any(test, feature = "test-double")))]
 pub(crate) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
-    run_selftest_with_probe(cli, args, &mut ProductionLiveQemuProbeRunner)
+    #[cfg(target_os = "linux")]
+    let mut probe = ProductionLiveQemuProbeRunner::new(cli.campaign_deployment.clone());
+    #[cfg(not(target_os = "linux"))]
+    let mut probe = ProductionLiveQemuProbeRunner;
+
+    run_selftest_with_probe(cli, args, &mut probe)
+}
+
+#[cfg(any(test, feature = "test-double"))]
+pub(crate) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
+    run_selftest_with_probe(cli, args, &mut TestDoubleSelftestProbeRunner)
 }
 
 pub(crate) fn run_selftest_with_probe(
@@ -206,13 +218,16 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
     let family = load_fuzz_family(plan)?;
     let lifecycle_artifacts =
         std::sync::Arc::new(crucible::LocalDagStore::new(plan.store_root.clone()));
-    let config = production_qemu_lifecycle_config(backend)?
-        .with_run_ceiling_icount(LIVE_FUZZ_RUN_CEILING_ICOUNT)
-        .with_quantum_budget(LIVE_FUZZ_QUANTUM_LIMIT)
-        .with_coverage(production_api::ProductionPluginSwitch::On)
-        .with_world_artifacts(lifecycle_artifacts.clone())
-        .with_signal_artifacts(lifecycle_artifacts);
+    let config = crucible_daemon::with_production_qemu_coverage(
+        production_qemu_lifecycle_config(backend)?,
+        true,
+    )
+    .with_run_ceiling_icount(LIVE_FUZZ_RUN_CEILING_ICOUNT)
+    .with_quantum_budget(LIVE_FUZZ_QUANTUM_LIMIT)
+    .with_world_artifacts(lifecycle_artifacts.clone())
+    .with_signal_artifacts(lifecycle_artifacts);
     let deployment = load_guarded_campaign_deployment(plan.campaign_deployment.as_deref())?;
+    let verify_determinism_findings = deployment.verify_determinism_findings;
     if deployment.resources.maximum_execution_quanta() < LIVE_FUZZ_QUANTUM_LIMIT {
         return Err(backend_error(format!(
             "campaign deployment admits {} execution quanta, below the fuzz requirement of {}",
@@ -220,11 +235,18 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
             LIVE_FUZZ_QUANTUM_LIMIT,
         )));
     }
+    let execution_context = QemuFuzzExecutionContext {
+        config: &config,
+        host: &deployment.host,
+        resources: deployment.resources,
+        verify_determinism_findings,
+        plan,
+        backend_plan,
+    };
     let warmup = family
         .fuzz_coverage_guided(plan.config, &[])
         .map_err(|error| backend_error(format!("QEMU fuzz warm-up policy failed: {error}")))?;
-    let mut execution =
-        execute_qemu_fuzz_iterations(&config, &deployment, &warmup, "warm-up", plan, backend_plan)?;
+    let mut execution = execute_qemu_fuzz_iterations(&execution_context, &warmup, "warm-up")?;
     let (run, mut report) = if let Some(corpus) = &plan.corpus {
         fs::create_dir_all(corpus).map_err(|error| {
             backend_error(format!(
@@ -243,20 +265,20 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
             .map_err(|error| backend_error(format!("QEMU fuzz corpus policy failed: {error}")))?;
         (
             corpus_run.fuzz.clone(),
-            local_double_fuzz_report_from_corpus_run(plan, corpus, &corpus_run),
+            fuzz_execution_report_from_corpus_run(plan, corpus, &corpus_run),
         )
     } else {
         let run = family
             .fuzz_coverage_guided(plan.config, &execution.feedback)
             .map_err(|error| backend_error(format!("QEMU fuzz policy failed: {error}")))?;
-        let report = local_double_fuzz_report_from_run(plan, &run);
+        let report = fuzz_execution_report_from_run(plan, &run);
         (run, report)
     };
     let guided_execution =
         if plan.on_violation == SearchOnViolationArg::Stop && !execution.findings.is_empty() {
             QemuFuzzExecution::default()
         } else {
-            execute_qemu_fuzz_iterations(&config, &deployment, &run, "guided", plan, backend_plan)?
+            execute_qemu_fuzz_iterations(&execution_context, &run, "guided")?
         };
     merge_qemu_fuzz_execution(&mut execution, guided_execution)?;
     report.property_findings = execution
@@ -280,7 +302,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         })
         .count();
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
-    apply_local_double_fuzz_report(&mut outcome, plan, &report);
+    apply_fuzz_execution_report(&mut outcome, plan, &report);
     for (index, feedback) in execution.feedback.iter().enumerate() {
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
@@ -321,7 +343,6 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         plan.findings_out.as_deref(),
         execution.findings,
         execution.reproduction_artifacts,
-        execution.finding_exports,
     )?;
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "fuzz-live-campaign");
     Ok(outcome)
@@ -333,7 +354,6 @@ struct QemuFuzzExecution {
     campaigns: Vec<QemuFuzzCampaignRecord>,
     findings: Vec<TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
-    finding_exports: Vec<GuardedCampaignFindingExport>,
 }
 
 struct QemuFuzzCampaignRecord {
@@ -432,13 +452,19 @@ fn qemu_fuzz_campaign_stop_label(stop: &StopOutcome) -> String {
     }
 }
 
+struct QemuFuzzExecutionContext<'a> {
+    config: &'a production_api::ProductionVmLifecycleConfig,
+    host: &'a crucible_daemon::LinuxQemuAttemptHostConfig,
+    resources: crucible_campaign::AttemptResourceLimits,
+    verify_determinism_findings: bool,
+    plan: &'a FuzzDriverPlan,
+    backend_plan: &'a BackendSelectionPlan,
+}
+
 fn execute_qemu_fuzz_iterations(
-    config: &production_api::ProductionVmLifecycleConfig,
-    deployment: &crate::cli_verify_serve::GuardedCampaignRunDeployment,
+    context: &QemuFuzzExecutionContext<'_>,
     run: &crucible::CoverageGuidedFuzzRun,
     phase: &str,
-    plan: &FuzzDriverPlan,
-    backend_plan: &BackendSelectionPlan,
 ) -> Result<QemuFuzzExecution, CliError> {
     let mut execution = QemuFuzzExecution {
         feedback: Vec::with_capacity(run.iterations.len()),
@@ -449,33 +475,23 @@ fn execute_qemu_fuzz_iterations(
         let form = iteration.scenario.form().clone();
         let run_plan = qemu_fuzz_iteration_plan(iteration.sequence, form.clone());
         let schedule = iteration.schedule().clone();
-        let replay_closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(
-            &schedule,
-        )
-        .map_err(|error| {
-            backend_error(format!(
-                "QEMU fuzz {phase} iteration {} replay closure: {error}",
-                iteration.sequence,
-            ))
-        })?;
-        let mut request = GuardedDefaultCampaignRunRequest::new(
+        let request = GuardedDefaultCampaignRunRequest::new(
             form.clone(),
             form.scenario_def().seed(),
             env!("CARGO_PKG_VERSION"),
-            qemu_build_id(backend_plan)?,
-            config.clone(),
-            deployment.host.clone(),
-            deployment.resources,
+            qemu_build_id(context.backend_plan)?,
+            context.config.clone(),
+            context.host.clone(),
+            context.resources,
         )
-        .with_initial_replay(schedule, replay_closure)
+        .with_initial_replay(schedule, None)
         .with_discovery_stop(StopCondition::Observation(
             ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
                 execution_quanta: LIVE_FUZZ_QUANTUM_LIMIT,
             },
         ));
-        if deployment.verify_determinism_findings {
-            request = request.with_determinism_finding_verification();
-        }
+        let request =
+            apply_guarded_campaign_determinism_policy(request, context.verify_determinism_findings);
         let campaign = run_guarded_default_campaign(request).map_err(|error| {
             backend_error(format!(
                 "execute QEMU fuzz {phase} iteration {} through campaign owner: {error}",
@@ -483,15 +499,12 @@ fn execute_qemu_fuzz_iterations(
             ))
         })?;
         let (status, terminal_outcome, campaign_completion) = qemu_fuzz_campaign_status(&campaign)?;
-        let report = crate::cli_verify_serve::campaign_run_report(
+        let report = crate::cli_verify_serve::campaign_run::campaign_run_report(
             &run_plan,
             &campaign,
             terminal_outcome,
             status,
         )?;
-        execution
-            .finding_exports
-            .push(campaign.finding_export().clone());
         let terminal = campaign.terminal();
         execution.campaigns.push(QemuFuzzCampaignRecord {
             phase: phase.to_owned(),
@@ -567,12 +580,12 @@ fn execute_qemu_fuzz_iterations(
             phase,
             iteration.sequence,
             iteration.schedule().len(),
-            backend_plan,
+            context.backend_plan,
             campaign_completion,
         )?;
         execution.feedback.push(report.coverage_feedback);
         if let Some((evidence, reproduction)) = finding {
-            let store = crucible::LocalDagStore::new(plan.store_root.clone());
+            let store = crucible::LocalDagStore::new(context.plan.store_root.clone());
             let stored = evidence
                 .finding
                 .store_artifact(&store)
@@ -583,7 +596,7 @@ fn execute_qemu_fuzz_iterations(
                 ));
             }
             push_qemu_fuzz_finding(&mut execution, evidence, reproduction)?;
-            if plan.on_violation == SearchOnViolationArg::Stop {
+            if context.plan.on_violation == SearchOnViolationArg::Stop {
                 break;
             }
         }
@@ -680,42 +693,16 @@ fn qemu_fuzz_finding_evidence(
     Ok(Some((evidence, reproduction)))
 }
 
-/// Identifies one failure because a reproduction may expose distinct failures.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct QemuFuzzFindingIdentity<'a> {
-    reproduction_artifact: crucible::ContentHash,
-    configuration: crucible::ContentHash,
-    fingerprint: crucible::ContentHash,
-    kind: crucible_model::FailureKind,
-    property: Option<&'a str>,
-}
-
-impl<'a> QemuFuzzFindingIdentity<'a> {
-    fn from_evidence(evidence: &'a TriageFindingEvidence) -> Self {
-        Self {
-            reproduction_artifact: evidence.finding.artifact.id(),
-            configuration: evidence.finding.configuration,
-            fingerprint: evidence.finding.finding_fingerprint,
-            kind: evidence.discovery_signature.failure_kind,
-            property: evidence
-                .discovery_signature
-                .property
-                .as_ref()
-                .map(|property| property.id.name.as_str()),
-        }
-    }
-}
-
 fn push_qemu_fuzz_finding(
     execution: &mut QemuFuzzExecution,
     evidence: TriageFindingEvidence,
     reproduction: Vec<u8>,
 ) -> Result<(), CliError> {
-    let identity = QemuFuzzFindingIdentity::from_evidence(&evidence);
+    let artifact = evidence.finding.artifact.id();
     if let Some(index) = execution
         .findings
         .iter()
-        .position(|existing| QemuFuzzFindingIdentity::from_evidence(existing) == identity)
+        .position(|existing| existing.finding.artifact.id() == artifact)
     {
         if execution.findings[index] != evidence
             || execution.reproduction_artifacts.get(index) != Some(&reproduction)
@@ -742,7 +729,6 @@ fn merge_qemu_fuzz_execution(
     }
     target.feedback.extend(source.feedback);
     target.campaigns.extend(source.campaigns);
-    target.finding_exports.extend(source.finding_exports);
     for (evidence, reproduction) in source
         .findings
         .into_iter()
@@ -760,34 +746,15 @@ fn attach_qemu_findings_outputs(
     findings_out: Option<&Path>,
     findings: Vec<crate::cli_report::TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
-    finding_exports: Vec<GuardedCampaignFindingExport>,
 ) -> Result<(), CliError> {
-    if findings.is_empty() && findings_out.is_none() && finding_exports.is_empty() {
+    if findings.is_empty() && findings_out.is_none() {
         return Ok(());
     }
-    let serialized_finding_count = if finding_exports.is_empty() {
-        findings.len()
-    } else {
-        finding_exports.iter().try_fold(0_usize, |count, export| {
-            count.checked_add(export.findings().len()).ok_or_else(|| {
-                artifact_error("guarded campaign finding export count exceeds platform limits")
-            })
-        })?
-    };
-    let (path, digest, ledger_bytes) = if finding_exports.is_empty() {
-        crate::cli_triage_debug::write_failure_findings_ledger_v3(
-            artifact_dir,
-            findings_out,
-            &findings,
-        )?
-    } else {
-        crate::cli_triage_debug::campaign_evidence::write_guarded_campaign_finding_exports_v4(
-            artifact_dir,
-            findings_out,
-            &finding_exports,
-            &findings,
-        )?
-    };
+    let (path, digest, ledger_bytes) = crate::cli_triage_debug::write_reproduction_findings_ledger(
+        artifact_dir,
+        findings_out,
+        &findings,
+    )?;
     let store = crucible::LocalDagStore::new(store_root.to_path_buf());
     let stored = store.put(&ledger_bytes).map_err(CliError::Store)?;
     if stored != digest {
@@ -799,7 +766,7 @@ fn attach_qemu_findings_outputs(
         "findings-ledger\tpath={}\tdigest={}\tfindings={}",
         path.display(),
         format_content_hash_ref(digest),
-        serialized_finding_count
+        findings.len()
     ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
@@ -809,7 +776,7 @@ fn attach_qemu_findings_outputs(
         summary: format!(
             "digest={} findings={}",
             format_content_hash_ref(digest),
-            serialized_finding_count
+            findings.len()
         ),
     });
     match reproduction_artifacts.as_slice() {
@@ -830,15 +797,14 @@ fn attach_qemu_findings_outputs(
 mod finding_tests {
     use super::*;
 
-    fn qemu_fuzz_timeout_evidence(
-        finding_fingerprint: &[u8],
-        coverage_fingerprint: &[u8],
-    ) -> Result<TriageFindingEvidence, Box<dyn std::error::Error>> {
+    #[test]
+    fn collect_fuzz_deduplicates_identical_phase_reproductions()
+    -> Result<(), Box<dyn std::error::Error>> {
         let scenario = crucible::happy_path_scenario()?.scenario;
         let configuration = crucible::Configuration::genesis(scenario.scenario_def());
         let finding = crucible::FindingReproductionArtifact::capture(
             crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
-            crucible::ContentHash::from_bytes(finding_fingerprint),
+            crucible::ContentHash::from_bytes(b"repeated-fuzz-timeout"),
             &scenario,
             &configuration,
         )?;
@@ -847,56 +813,16 @@ mod finding_tests {
             Some(10),
             10,
             crucible::VirtualTime { ticks: 4 },
-            None,
+            Some(crucible::Icount { retired: 10 }),
             None,
             finding.artifact.id(),
         );
-        Ok(crate::cli_triage_debug::triage_timeout_evidence(
+        let evidence = crate::cli_triage_debug::triage_timeout_evidence(
             finding,
             timeout,
-            crucible::ContentHash::from_bytes(coverage_fingerprint),
+            crucible::ContentHash::from_bytes(b"repeated-fuzz-coverage"),
             Vec::new(),
-        )?)
-    }
-
-    fn qemu_fuzz_property_evidence(
-        finding_fingerprint: &[u8],
-        property: &str,
-    ) -> Result<TriageFindingEvidence, Box<dyn std::error::Error>> {
-        let scenario = crucible::happy_path_scenario()?.scenario;
-        let configuration = crucible::Configuration::genesis(scenario.scenario_def());
-        let finding = crucible::FindingReproductionArtifact::capture(
-            crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
-            crucible::ContentHash::from_bytes(finding_fingerprint),
-            &scenario,
-            &configuration,
         )?;
-        let violation = crucible_model::HostAssertionViolation {
-            assertion: crucible::AssertionId::from_name(property),
-            message: format!("{property} failed"),
-            quantifier: crucible_model::AssertionQuantifierKind::Always,
-            event_kind: String::from("assertion_state_changed"),
-            at_icount: Some(crucible::Icount { retired: 4 }),
-            at_virtual_time: crucible::VirtualTime { ticks: 4 },
-            node: None,
-            detail: String::from("test property violation"),
-            reproduction_artifact: finding.artifact.id(),
-        };
-        Ok(
-            crate::cli_triage_debug::triage_property_evidence_for_violation_with_recording(
-                finding,
-                violation,
-                crucible::ContentHash::from_bytes(b"shared-property-coverage"),
-                Vec::new(),
-            )?,
-        )
-    }
-
-    #[test]
-    fn collect_fuzz_deduplicates_identical_phase_reproductions()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let evidence =
-            qemu_fuzz_timeout_evidence(b"repeated-fuzz-timeout", b"repeated-fuzz-coverage")?;
         let mut execution = QemuFuzzExecution::default();
         push_qemu_fuzz_finding(&mut execution, evidence.clone(), vec![1, 2, 3])?;
         let mut guided = QemuFuzzExecution::default();
@@ -904,45 +830,7 @@ mod finding_tests {
         merge_qemu_fuzz_execution(&mut execution, guided)?;
         assert_eq!(execution.findings.len(), 1);
         assert_eq!(execution.reproduction_artifacts.len(), 1);
-        assert!(push_qemu_fuzz_finding(&mut execution, evidence.clone(), vec![4, 5, 6]).is_err());
-
-        let conflicting_evidence =
-            qemu_fuzz_timeout_evidence(b"repeated-fuzz-timeout", b"other-fuzz-coverage")?;
-        assert!(
-            push_qemu_fuzz_finding(&mut execution, conflicting_evidence, vec![1, 2, 3]).is_err()
-        );
-        assert_eq!(execution.findings, vec![evidence]);
-        assert_eq!(execution.reproduction_artifacts, vec![vec![1, 2, 3]]);
-        Ok(())
-    }
-
-    #[test]
-    fn collect_fuzz_preserves_distinct_findings_sharing_an_artifact()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let shared_fingerprint = b"shared-finding-fingerprint";
-        let findings = [
-            qemu_fuzz_timeout_evidence(shared_fingerprint, b"timeout-coverage")?,
-            qemu_fuzz_timeout_evidence(b"other-finding-fingerprint", b"timeout-coverage")?,
-            qemu_fuzz_property_evidence(shared_fingerprint, "property-a")?,
-            qemu_fuzz_property_evidence(shared_fingerprint, "property-b")?,
-        ];
-        let shared_artifact = findings[0].finding.artifact.id();
-        assert!(
-            findings
-                .iter()
-                .all(|evidence| evidence.finding.artifact.id() == shared_artifact)
-        );
-
-        let mut execution = QemuFuzzExecution::default();
-        for (index, evidence) in findings.iter().cloned().enumerate() {
-            push_qemu_fuzz_finding(&mut execution, evidence, vec![index as u8])?;
-        }
-
-        assert_eq!(execution.findings, findings);
-        assert_eq!(
-            execution.reproduction_artifacts,
-            vec![vec![0], vec![1], vec![2], vec![3]]
-        );
+        assert!(push_qemu_fuzz_finding(&mut execution, evidence, vec![4, 5, 6]).is_err());
         Ok(())
     }
 
@@ -1001,7 +889,7 @@ fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> R
         startup_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
         initial_control_commands: vec![SessionCommandKind::Query],
         accepted_interactive_commands: Vec::new(),
-        observer_profile: VERIFY_BASELINE_PROFILE,
+        host_profile: VERIFY_BASELINE_PROFILE,
         collect_execution_fingerprints: true,
         bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
         outcome_exit_codes: vec![
@@ -1023,11 +911,6 @@ pub(crate) use search::*;
 mod replay;
 pub(crate) use replay::*;
 
-const VERIFY_BOUNDED_SCHEDULER_PREEMPTION_ENV: &str =
-    "CRUCIBLE_VERIFY_BOUNDED_SCHEDULER_PREEMPTION";
-pub(crate) const REPLAY_BOUNDED_SCHEDULER_PREEMPTION_ENV: &str =
-    "CRUCIBLE_REPLAY_BOUNDED_SCHEDULER_PREEMPTION";
-
 /// Verifies every reduction through an independent packaged-QEMU session.
 pub(crate) fn run_local_qemu_verify_workflow(
     thin_plan: &CliThinWrapperPlan,
@@ -1038,33 +921,63 @@ pub(crate) fn run_local_qemu_verify_workflow(
     let backend = backend_plan
         .resolved_backend
         .as_ref()
-        .ok_or_else(|| backend_error("local QEMU verify requires a resolved backend"))?;
-    let scenario = verify_plan.scenario().ok_or_else(|| {
-        backend_error("QEMU verify compare mode must use the artifact comparison path")
-    })?;
-    let lifecycle_artifacts =
-        std::sync::Arc::new(crucible::LocalDagStore::new(verify_plan.store_root.clone()));
-    let mut config = production_qemu_lifecycle_config(backend)?
-        .with_world_artifacts(lifecycle_artifacts.clone())
-        .with_signal_artifacts(lifecycle_artifacts);
-    let preemption_evidence = bounded_scheduler_preemption_evidence_from_env(
-        VERIFY_BOUNDED_SCHEDULER_PREEMPTION_ENV,
-        verify_plan.reductions.len(),
-    )?;
-    if let Some(evidence) = &preemption_evidence {
-        config = config.with_bounded_scheduler_preemption_flights(evidence.clone());
+        .ok_or_else(|| backend_error("local QEMU verify requires a resolved production backend"))?;
+    if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
+        return Err(backend_error(
+            "local QEMU verify requires the packaged QEMU backend",
+        ));
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane = production_qemu_control_plane(config, scenario.scenario_form());
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_verify_workflow_async(
-        &client,
-        verify_plan,
-        Some(backend),
-        ergonomics_plan,
-    ))?;
+    let scenario = verify_plan.scenario().ok_or_else(|| {
+        backend_error("artifact comparison must not enter local QEMU verification")
+    })?;
+    let request_seed = ergonomics_plan
+        .map(|plan| crucible::Seed::from_u64(plan.seed.value))
+        .unwrap_or_else(|| scenario.scenario_def().seed());
+    let seeded_scenario = reseed_run_scenario_ref(scenario, request_seed)?;
+    let mut witnesses = Vec::with_capacity(verify_plan.reductions.len());
+    for reduction in &verify_plan.reductions {
+        let mut run_plan =
+            verify_run_invocation_plan(seeded_scenario.clone(), request_seed, reduction.clone());
+        run_plan.startup_commands = vec![SessionCommandKind::Start, SessionCommandKind::Continue];
+        run_plan.initial_control_commands = vec![SessionCommandKind::Query];
+        run_plan.collect_execution_fingerprints = false;
+        let (lifecycle, preemption_evidence) =
+            verify_qemu_lifecycle_config(backend, reduction.host_profile)?;
+        let host_pressure = VerifyQemuHostPressure::start(reduction.host_profile)?;
+        let report = run_local_qemu_campaign_with_hostile_deadlines(
+            backend,
+            &run_plan,
+            lifecycle,
+            reduction.host_profile,
+        );
+        host_pressure.finish()?;
+        let report = report?;
+        let mut witness = verify_witness_from_run_report(
+            reduction.clone(),
+            &run_plan,
+            &report,
+            Some(backend),
+            ergonomics_plan,
+            &verify_plan.store_root,
+        )?;
+        witness.host_scheduler_preemption = preemption_evidence
+            .map(|evidence| {
+                required_scheduler_preemption_snapshot(
+                    &evidence,
+                    &format!(
+                        "verify hostile profile `{}`",
+                        reduction.host_profile.label()
+                    ),
+                    reduction.host_profile.host_io_stall_ms,
+                )
+            })
+            .transpose()?;
+        witnesses.push(witness);
+    }
+    let report = VerifyWorkflowReport {
+        divergence: compare_verify_witnesses(&witnesses),
+        witnesses,
+    };
     let mut outcome = finish_verify_workflow_outcome(
         thin_plan,
         backend_plan,
@@ -1072,144 +985,255 @@ pub(crate) fn run_local_qemu_verify_workflow(
         verify_plan,
         report,
     )?;
-    if let Some(evidence) = preemption_evidence {
-        append_verify_bounded_scheduler_preemption_evidence(&mut outcome, verify_plan, &evidence)?;
-    }
+    append_qemu_control_plane_execution_proof(
+        &mut outcome,
+        backend,
+        "verify-campaign-default-path",
+    );
     Ok(outcome)
 }
 
-pub(crate) fn bounded_scheduler_preemption_evidence_from_env(
-    variable: &str,
-    flights: usize,
-) -> Result<Option<Vec<crucible_api::BoundedSchedulerPreemptionEvidence>>, CliError> {
-    let Some(value) = std::env::var_os(variable) else {
-        return Ok(None);
-    };
-    if value == "0" {
-        return Ok(None);
-    }
-    if value != "1" {
+fn verify_qemu_lifecycle_config(
+    backend: &ResolvedLocalBackend,
+    profile: VerifyHostProfile,
+) -> Result<
+    (
+        production_api::ProductionVmLifecycleConfig,
+        Option<crucible_api::BoundedSchedulerPreemptionEvidence>,
+    ),
+    CliError,
+> {
+    if !profile.is_valid() {
         return Err(backend_error(format!(
-            "{variable} must be 0 or 1, got `{}`",
-            value.to_string_lossy()
+            "verify hostile host profile `{}` is invalid",
+            profile.label()
         )));
     }
 
-    Ok(Some(
-        (0..flights)
-            .map(|_| crucible_api::BoundedSchedulerPreemptionEvidence::default())
-            .collect(),
-    ))
+    let mut config = production_qemu_lifecycle_config(backend)?
+        .with_maximum_host_workers(profile.executor_workers);
+    let preemption_evidence = profile
+        .requires_scheduler_preemption()
+        .then(crucible_api::BoundedSchedulerPreemptionEvidence::default);
+    if let Some(evidence) = preemption_evidence.as_ref() {
+        config = config.with_bounded_scheduler_preemption(evidence.clone());
+    }
+    Ok((config, preemption_evidence))
 }
 
-fn append_verify_bounded_scheduler_preemption_evidence(
-    outcome: &mut BackendCommandOutcome,
-    verify_plan: &VerifyInvocationPlan,
-    evidence: &[crucible_api::BoundedSchedulerPreemptionEvidence],
+fn run_local_qemu_campaign_with_hostile_deadlines(
+    backend: &ResolvedLocalBackend,
+    run_plan: &RunInvocationPlan,
+    lifecycle: production_api::ProductionVmLifecycleConfig,
+    profile: VerifyHostProfile,
+) -> Result<RunWorkflowReport, CliError> {
+    let completion_timeout = lifecycle.completion_timeout();
+    std::thread::scope(|scope| {
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (report_tx, report_rx) = std::sync::mpsc::sync_channel(1);
+        scope.spawn(move || {
+            if started_tx.send(()).is_err() {
+                return;
+            }
+            let report = crate::cli_verify_serve::campaign_run::run_local_qemu_campaign_report(
+                backend, run_plan, lifecycle,
+            );
+            let _ = report_tx.send(report);
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| {
+                backend_error("local QEMU verify worker did not enter its live lifecycle operation")
+            })?;
+
+        if profile.applies_deadline_backstep() {
+            let forward_timeout_ms = profile.jittered_timeout_ms(10, 1);
+            let backstep_timeout_ms =
+                profile.jittered_timeout_ms(10, u64::from(profile.wall_clock_backstep_every));
+            if backstep_timeout_ms >= forward_timeout_ms {
+                return Err(backend_error(format!(
+                    "verify hostile profile `{}` did not configure a decreasing deadline sequence",
+                    profile.label()
+                )));
+            }
+            require_live_qemu_observer_timeout(
+                &report_rx,
+                Duration::from_millis(forward_timeout_ms),
+                profile,
+                "forward",
+            )?;
+            require_live_qemu_observer_timeout(
+                &report_rx,
+                Duration::from_millis(backstep_timeout_ms),
+                profile,
+                "backstep",
+            )?;
+        }
+
+        report_rx
+            .recv_timeout(completion_timeout.saturating_add(Duration::from_secs(5)))
+            .map_err(|error| match error {
+                std::sync::mpsc::RecvTimeoutError::Timeout => backend_error(format!(
+                    "local QEMU verify exceeded its bounded lifecycle observation deadline for profile `{}`",
+                    profile.label()
+                )),
+                std::sync::mpsc::RecvTimeoutError::Disconnected => backend_error(format!(
+                    "local QEMU verify worker exited without a report for profile `{}`",
+                    profile.label()
+                )),
+            })?
+    })
+}
+
+fn require_live_qemu_observer_timeout(
+    report_rx: &std::sync::mpsc::Receiver<Result<RunWorkflowReport, CliError>>,
+    timeout: Duration,
+    profile: VerifyHostProfile,
+    phase: &str,
 ) -> Result<(), CliError> {
-    if evidence.len() != verify_plan.reductions.len() {
-        return Err(backend_error(format!(
-            "bounded scheduler-preemption evidence count {} did not match {} verification reductions",
-            evidence.len(),
-            verify_plan.reductions.len()
-        )));
+    match report_rx.recv_timeout(timeout) {
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(()),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(backend_error(format!(
+            "local QEMU verify worker exited during the {phase} deadline for profile `{}`",
+            profile.label()
+        ))),
+        Ok(_) => Err(backend_error(format!(
+            "local QEMU verify completed before applying the {phase} deadline for hostile profile `{}`",
+            profile.label()
+        ))),
     }
-    for (reduction, evidence) in verify_plan.reductions.iter().zip(evidence) {
-        let context = format!("verification reduction {}", reduction.index);
-        let snapshot = required_bounded_scheduler_preemption_snapshot(evidence, &context)?;
-        append_verify_bounded_scheduler_preemption_snapshot(outcome, reduction, snapshot)?;
-    }
-    Ok(())
 }
 
-pub(crate) fn append_verify_bounded_scheduler_preemption_snapshot(
-    outcome: &mut BackendCommandOutcome,
-    reduction: &VerifyReductionPlan,
-    snapshot: crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot,
-) -> Result<(), CliError> {
-    if !snapshot.applied
-        || !snapshot.pending_quantum_certified
-        || snapshot.perturbations == 0
-        || snapshot.requested_stopped_milliseconds == 0
-    {
-        return Err(backend_error(format!(
-            "verification reduction {} published incomplete bounded scheduler-preemption evidence",
-            reduction.index
-        )));
-    }
-    let host_evidence = HostSchedulerPreemptionEvidence {
-        reduction_index: reduction.index,
-        run_index: reduction.run_index,
-        host_profile: reduction.host_profile.label().to_owned(),
-        applied: snapshot.applied,
-        pending_quantum_certified: snapshot.pending_quantum_certified,
-        perturbations: snapshot.perturbations,
-        requested_stopped_milliseconds: snapshot.requested_stopped_milliseconds,
-    };
-    outcome.stdout.push(format!(
-        "verify-host-preemption\t{}",
-        host_evidence.summary()
-    ));
-    outcome.host_scheduler_preemption.push(host_evidence);
-    Ok(())
+struct VerifyQemuHostPressure {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    wake: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
+    workers: Vec<std::thread::JoinHandle<()>>,
 }
 
-pub(crate) fn required_bounded_scheduler_preemption_snapshot(
+impl VerifyQemuHostPressure {
+    fn start(profile: VerifyHostProfile) -> Result<Self, CliError> {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wake = Arc::new((std::sync::Mutex::new(()), std::sync::Condvar::new()));
+        let pressure_workers = if profile.priority_pressure_iterations == 0 {
+            0
+        } else {
+            profile.logical_cores
+        };
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(pressure_workers);
+        let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::with_capacity(pressure_workers);
+        let mut worker_round = 0_u64;
+        for worker_index in 0..pressure_workers {
+            let worker_stop = Arc::clone(&stop);
+            let worker_wake = Arc::clone(&wake);
+            let name = format!("crucible-verify-host-pressure-{worker_index}");
+            let initial_round = worker_round;
+            worker_round = worker_round.saturating_add(1);
+            let worker_ready = ready_tx.clone();
+            let worker = std::thread::Builder::new().name(name).spawn(move || {
+                let mut round = initial_round;
+                let mut ready = Some(worker_ready);
+                while !worker_stop.load(std::sync::atomic::Ordering::Acquire) {
+                    let mut accumulator = profile.scheduling_seed ^ round.rotate_left(19);
+                    for iteration in 0..profile.priority_pressure_iterations {
+                        accumulator = accumulator.rotate_left(7)
+                            ^ iteration.wrapping_mul(0x517c_c1b7_2722_0a95);
+                        std::hint::spin_loop();
+                        if iteration.is_multiple_of(profile.priority_yield_every) {
+                            std::thread::yield_now();
+                        }
+                    }
+                    std::hint::black_box(accumulator);
+                    if profile.host_io_stall_ms > 0 {
+                        let (lock, event) = &*worker_wake;
+                        let guard = lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        drop(
+                            event
+                                .wait_timeout_while(
+                                    guard,
+                                    Duration::from_millis(profile.host_io_stall_ms),
+                                    |_| !worker_stop.load(std::sync::atomic::Ordering::Acquire),
+                                )
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        );
+                    }
+                    if let Some(ready) = ready.take() {
+                        let _ = ready.send(());
+                    }
+                    round = round.saturating_add(1);
+                }
+            });
+            let worker = match worker {
+                Ok(worker) => worker,
+                Err(error) => {
+                    stop.store(true, std::sync::atomic::Ordering::Release);
+                    wake.1.notify_all();
+                    for started in workers {
+                        let _ = started.join();
+                    }
+                    return Err(backend_error(format!(
+                        "start verify host pressure worker {worker_index}: {error}"
+                    )));
+                }
+            };
+            workers.push(worker);
+        }
+        drop(ready_tx);
+        for worker_index in 0..pressure_workers {
+            if ready_rx.recv_timeout(Duration::from_secs(5)).is_err() {
+                stop.store(true, std::sync::atomic::Ordering::Release);
+                wake.1.notify_all();
+                for started in workers {
+                    let _ = started.join();
+                }
+                return Err(backend_error(format!(
+                    "verify host pressure worker {worker_index} did not complete its first perturbation"
+                )));
+            }
+        }
+        Ok(Self {
+            stop,
+            wake,
+            workers,
+        })
+    }
+
+    fn finish(self) -> Result<(), CliError> {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.wake.1.notify_all();
+        for (worker_index, worker) in self.workers.into_iter().enumerate() {
+            worker.join().map_err(|_| {
+                backend_error(format!(
+                    "verify host pressure worker {worker_index} panicked"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn required_scheduler_preemption_snapshot(
     evidence: &crucible_api::BoundedSchedulerPreemptionEvidence,
-    context: &str,
+    operation: &str,
+    minimum_requested_stopped_milliseconds: u64,
 ) -> Result<crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot, CliError> {
     let snapshot = evidence.snapshot().ok_or_else(|| {
         backend_error(format!(
-            "{context} did not publish bounded scheduler-preemption evidence"
+            "{operation} did not publish authenticated scheduler-preemption evidence"
         ))
     })?;
     if !snapshot.applied
         || !snapshot.pending_quantum_certified
         || snapshot.perturbations == 0
         || snapshot.requested_stopped_milliseconds == 0
+        || snapshot.requested_stopped_milliseconds < minimum_requested_stopped_milliseconds
     {
         return Err(backend_error(format!(
-            "{context} published incomplete bounded scheduler-preemption evidence"
+            "{operation} published incomplete scheduler-preemption evidence"
         )));
     }
     Ok(snapshot)
-}
-
-pub(crate) fn production_qemu_control_plane(
-    config: production_api::ProductionVmLifecycleConfig,
-    source: &crucible::ScenarioDefForm,
-) -> LifecycleControlPlane<
-    production_api::ProductionVmLifecycleLoop,
-    production_api::LifecycleLoopFactory<production_api::ProductionVmLifecycleLoop>,
-> {
-    let resume_config = config.clone();
-    let white_box_policies = source
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| (node.id.clone(), node.white_box))
-        .collect::<BTreeMap<_, _>>();
-    LifecycleControlPlane::new_with_fallible_source_factory(
-        "crucible-cli-qemu",
-        Vec::new(),
-        move |scenario, source, _seed| {
-            let source = source.ok_or_else(|| production_api::LifecycleApiError::LoopFactory {
-                message: String::from(
-                    "production QEMU lifecycle requires an inline scenario definition",
-                ),
-            })?;
-            production_api::build_production_vm_lifecycle_loop(scenario, source, &config)
-        },
-    )
-    .with_fat_checkpoint_resume_factory(move |scenario, source, _seed, checkpoint| {
-        production_api::build_production_vm_lifecycle_loop_from_checkpoint(
-            scenario,
-            source,
-            &resume_config,
-            checkpoint,
-        )
-    })
-    .with_white_box_policy_provider(move |_scenario| white_box_policies.clone())
 }
 
 pub(crate) fn production_qemu_lifecycle_config(
@@ -1242,23 +1266,21 @@ pub(crate) fn production_qemu_lifecycle_config(
             )
         })?;
     let native_guest_architecture = live_qemu_native_guest_architecture()?;
-    let mut config = production_api::ProductionVmLifecycleConfig::new_for_guest_architecture(
-        qemu,
-        plugin,
-        native_guest_architecture,
-        kernel,
-        root_image,
-        run_state_root,
+    let mut config = crucible_daemon::with_production_qemu_raw_root_image(
+        production_api::ProductionVmLifecycleConfig::new_for_guest_architecture(
+            qemu,
+            plugin,
+            native_guest_architecture,
+            kernel,
+            root_image,
+            run_state_root,
+        ),
     )
-    .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
     .with_run_ceiling_icount(PRODUCTION_CLI_RUN_CEILING_ICOUNT)
     .with_quantum_budget(PRODUCTION_CLI_QUANTUM_BUDGET)
     .with_completion_timeout(PRODUCTION_CLI_COMPLETION_TIMEOUT);
     if let Some(kernel_cmdline) = live_qemu_kernel_cmdline() {
         config = config.with_kernel_cmdline_prefix(kernel_cmdline);
-    }
-    if live_qemu_validate_guest_asset_references()? {
-        config = config.with_guest_asset_reference_validation();
     }
     if let Some((kernel, root_image, kernel_cmdline)) = live_qemu_aarch64_assets()? {
         config = config.with_guest_assets(

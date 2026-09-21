@@ -144,6 +144,8 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
 pub struct QemuAdvanceCompletionFence {
     /// Plugin publish generation observed before scheduler input was released.
     pub initial_publish_generation: u32,
+    /// Boundary semantics selected for this advance.
+    pub stop_condition: crate::QemuQuantumStopCondition,
 }
 
 /// Quantum completion observed from the shared-memory hot path.

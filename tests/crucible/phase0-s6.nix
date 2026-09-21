@@ -395,7 +395,7 @@ in
               -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
               -serial chardev:serial0 \
               -qmp "unix:$qmp_socket,server=on,wait=off" \
-              -plugin "$PLUGIN",out="$TMPDIR/trace-$label.jsonl",cadence="$CADENCE",stop_at="$HORIZON",extended=on,mem_events=off,vcpus=1 \
+              -plugin "$PLUGIN",out="$TMPDIR/trace-$label.jsonl",cadence="$CADENCE",stop_at="$HORIZON",mem_events=off,vcpus=1 \
               -no-shutdown \
               -no-reboot
 
@@ -557,7 +557,7 @@ in
                     elif $left[0].register_digests != $right[0].register_digests then "register_digests[0]"
                     elif $left[0].ram_digest != $right[0].ram_digest then "ram_digest"
                     elif $left[0].device_event_hash != $right[0].device_event_hash then "device_event_hash"
-                    elif $left[0].diagnostic_extended_fnv != $right[0].diagnostic_extended_fnv then "diagnostic_extended_fnv"
+                    elif $left[0].aggregate_fingerprint_fnv != $right[0].aggregate_fingerprint_fnv then "aggregate_fingerprint_fnv"
                     else "unknown"
                     end;
                   component
@@ -609,7 +609,7 @@ in
               --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" '
               length >= 2
               and all(.[]; (
-                .schema == "crucible.qemu.trace-fingerprint.v6"
+                .schema == "crucible.qemu.trace-fingerprint.v7"
                 and .tracked_vcpus == 1
                 and .stop_at == $horizon
                 and .sample_register_failures == 0
@@ -722,7 +722,7 @@ in
           mmap_base_differs_from_control=$(bool_ne "$kaslr_mmap_a" "$control_mmap")
           vdso_base_differs_from_control=$(bool_ne "$kaslr_vdso_a" "$control_vdso")
 
-          if [ "$control_randomize_va_space" = 0 ] \
+          [ "$control_randomize_va_space" = 0 ] \
             && [ "$kaslr_randomize_va_space" = 2 ] \
             && [ "$kaslr_trace_match" = true ] \
             && [ "$kaslr_sample_count_match" = true ] \
@@ -739,20 +739,15 @@ in
             && [ "$heap_base_differs_from_control" = true ] \
             && [ "$brk_base_differs_from_control" = true ] \
             && [ "$mmap_base_differs_from_control" = true ] \
-            && [ "$vdso_base_differs_from_control" = true ]; then
-            randomization_reenabled_capability=true
-            fallback_adopted=none
-            default_decision=randomization_may_be_enabled_per_image
-            result_status=PASS
-          else
-            randomization_reenabled_capability=false
-            fallback_adopted=keep_nokaslr_norandmaps
-            default_decision=keep_conservative_randomization_flags
-            result_status=PASS_WITH_FALLBACK
-          fi
+            && [ "$vdso_base_differs_from_control" = true ] \
+            || fail "randomized KASLR/ASLR proof did not satisfy the shipped host-sealed contract"
+
+          randomization_reenabled_capability=true
+          default_decision=randomization_may_be_enabled_per_image
+          result_status=PASS
 
           final_line=$(grep '"final":true' "$TMPDIR/trace-kaslr-a.jsonl" | tail -1)
-          final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.diagnostic_extended_fnv')
+          final_aggregate_hash=$(printf '%s\n' "$final_line" | jq -r '.aggregate_fingerprint_fnv')
           final_register_hash=$(printf '%s\n' "$final_line" | jq -r '.register_digests[0]')
           final_ram_hash=$(printf '%s\n' "$final_line" | jq -r '.ram_digest')
           final_ram_bytes=$(printf '%s\n' "$final_line" | jq -r '.ram_bytes')
@@ -849,7 +844,7 @@ in
             echo randomized_mmap="$kaslr_mmap_a"
             echo control_vdso="$control_vdso"
             echo randomized_vdso="$kaslr_vdso_a"
-            echo final_extended_hash="$final_extended_hash"
+            echo final_aggregate_hash="$final_aggregate_hash"
             echo final_register_hash="$final_register_hash"
             echo final_ram_hash="$final_ram_hash"
             echo final_ram_bytes="$final_ram_bytes"
@@ -864,7 +859,6 @@ in
             echo first_differing_component=$(cat "$TMPDIR/first-differing-component-kaslr")
             echo randomization_reenabled_capability="$randomization_reenabled_capability"
             echo default_decision="$default_decision"
-            echo fallback_adopted="$fallback_adopted"
             echo s6_complete=true
           } > "$out/result"
         '';

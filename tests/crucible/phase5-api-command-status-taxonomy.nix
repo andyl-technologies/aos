@@ -164,8 +164,8 @@
         needle = "rpc_status_code_from_wire_name";
       }
       {
-        label = "RPC major cut over";
-        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 6;";
+        label = "current RPC minor version";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
       }
       {
         label = "rejected command golden vector";

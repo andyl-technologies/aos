@@ -125,7 +125,7 @@ impl Proposal {
             });
         }
         Ok(Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+            schema_version: PROPOSAL_SCHEMA_VERSION,
             branch_point,
             request,
             domain,
@@ -140,8 +140,8 @@ impl Proposal {
 
     /// Builds a proposal and attaches exact evidence when its request is statistical.
     ///
-    /// Established non-statistical requests keep proposal schema version 1 and
-    /// therefore retain their exact canonical bytes and identities.
+    /// The current schema carries explicit optional statistical evidence for
+    /// both statistical and non-statistical requests.
     ///
     /// # Errors
     ///
@@ -190,7 +190,6 @@ impl Proposal {
                 .ok_or(CampaignCodecError::InvalidValue {
                     reason: "statistical proposal value is outside request support",
                 })?;
-            proposal.schema_version = PROPOSAL_SCHEMA_VERSION;
             proposal.statistical_evidence = Some(StatisticalProposalEvidence::new(
                 target_mass,
                 distribution.target_total,
@@ -232,7 +231,6 @@ impl Proposal {
             ordinal,
             guidance_basis,
         )?;
-        proposal.schema_version = PROPOSAL_SCHEMA_VERSION;
         proposal.statistical_evidence = Some(statistical_evidence);
         Ok(proposal)
     }
@@ -277,9 +275,6 @@ impl Proposal {
             || self.ordinal > request.budget().maximum_proposals()
             || (expected_statistical_evidence.is_some() && self.ordinal != 1)
             || self.statistical_evidence != expected_statistical_evidence
-            || (self.statistical_evidence.is_some()
-                && self.schema_version != PROPOSAL_SCHEMA_VERSION)
-            || (self.statistical_evidence.is_none() && self.schema_version != RECORD_SCHEMA_VERSION)
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "proposal disagrees with its request, source, domain, or budget",
@@ -403,17 +398,12 @@ impl Canonical for Proposal {
         self.planner_invocation.encode(encoder);
         self.ordinal.encode(encoder);
         self.guidance_basis.encode(encoder);
-        if self.schema_version == PROPOSAL_SCHEMA_VERSION {
-            self.statistical_evidence.encode(encoder);
-        }
+        self.statistical_evidence.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            RECORD_SCHEMA_VERSION | PROPOSAL_SCHEMA_VERSION
-        ) {
+        if schema_version != PROPOSAL_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported exploration record schema version",
             });
@@ -428,15 +418,7 @@ impl Canonical for Proposal {
             u64::decode(decoder)?,
             CampaignViewId::decode(decoder)?,
         )?;
-        proposal.schema_version = schema_version;
-        if schema_version == PROPOSAL_SCHEMA_VERSION {
-            proposal.statistical_evidence = Option::decode(decoder)?;
-            if proposal.statistical_evidence.is_none() {
-                return Err(CampaignCodecError::InvalidValue {
-                    reason: "statistical proposal schema lacks evidence",
-                });
-            }
-        }
+        proposal.statistical_evidence = Option::decode(decoder)?;
         Ok(proposal)
     }
 }

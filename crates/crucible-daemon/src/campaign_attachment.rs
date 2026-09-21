@@ -576,9 +576,6 @@ pub enum CanonicalCampaignRuntimeError {
     /// Requested worker slots exceed the executor's immutable slot ceiling.
     #[error("canonical campaign worker slots exceed the executor ceiling")]
     ExecutorSlotsExceedCeiling,
-    /// The active policy selects an explorer without a packaged planner.
-    #[error("canonical campaign explorer policy is not supported by the packaged planner")]
-    UnsupportedExplorerPolicy,
     /// The canonical planner driver could not be configured.
     #[error("canonical campaign planner driver configuration failed")]
     PlannerDriver(#[source] CampaignPlannerDriverConfigError),

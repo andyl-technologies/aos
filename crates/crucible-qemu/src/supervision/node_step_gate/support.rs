@@ -1,10 +1,8 @@
 //! Busy-window driving, launch, priming, and scheduler-preemption support.
 
-use std::os::unix::net::UnixStream;
-
 use super::*;
+use crate::QemuLaunchCommand;
 use crate::supervision::HostSupervisionDeadline;
-pub(super) use crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 
 #[path = "support/priming.rs"]
 mod priming;
@@ -16,6 +14,12 @@ const X86_64_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet";
 const AARCH64_MACHINE_TYPE: &str = "virt-9.2";
 const AARCH64_CPU_MODEL: &str = "cortex-a57";
 const AARCH64_KERNEL_CMDLINE: &str = "console=ttyAMA0 reboot=k panic=1 quiet";
+/// Bound on retries before a stalled step is classified as a wake defect.
+const MAX_REISSUES_PER_CEILING: u32 = 64;
+/// Nonzero boot-barrier ceiling below the first modeled busy window.
+const PRIME_CEILING_ICOUNT: u64 = 1_000_000;
+/// Host-liveness polling interval for the priming quantum.
+const PRIME_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Returns the architecture-specific deterministic launch baseline.
 pub(super) fn launch_profile_candidate(
@@ -33,38 +37,18 @@ pub(super) fn launch_profile_candidate(
     }
 }
 
-/// Advances the node through each busy-window ceiling with a caller re-issue loop.
-///
-/// [`QemuNode::advance_to_ceiling`] drives a single bounded quantum, so a step
-/// interrupted by queued work (the patch-0025 reset/advance drain interaction)
-/// returns [`AdvanceOutcome::Paused`] before the ceiling. The re-issue loop
-/// republishes the same ceiling until the node reaches it, treating a step that
-/// makes no progress across the re-issue bound as a stall rather than looping
-/// forever.
-pub(super) fn drive_busy_window_steps(
-    node: &mut QemuNode,
-    ceilings: &[u64],
-    host_adversary: &mut Option<HostAdversary>,
-) -> Result<Vec<QemuLiveNodeStepQuantum>, QemuLiveNodeStepGateError> {
-    let mut quanta = Vec::with_capacity(ceilings.len());
-    for &ceiling in ceilings {
-        let quantum = advance_to_busy_ceiling_with_adversary(node, ceiling, host_adversary)?;
-        quanta.push(quantum);
-    }
-    Ok(quanta)
+pub(super) struct QemuLiveNodeStepQuantum {
+    pub(super) completion_icount: u64,
+}
+
+struct PrimeDeviceServicers<'a> {
+    block: Option<&'a mut QemuLiveBlockIoServicer>,
+    ninep: Option<&'a mut QemuLive9pIoServicer>,
 }
 
 pub(super) fn advance_to_busy_ceiling(
     node: &mut QemuNode,
     ceiling: u64,
-) -> Result<QemuLiveNodeStepQuantum, QemuLiveNodeStepGateError> {
-    advance_to_busy_ceiling_with_adversary(node, ceiling, &mut None)
-}
-
-fn advance_to_busy_ceiling_with_adversary(
-    node: &mut QemuNode,
-    ceiling: u64,
-    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<QemuLiveNodeStepQuantum, QemuLiveNodeStepGateError> {
     let mut reissue_count = 0;
     let mut last_icount = node
@@ -72,31 +56,16 @@ fn advance_to_busy_ceiling_with_adversary(
         .map_err(|source| QemuLiveNodeStepGateError::node_op("read pre-advance icount", source))?
         .retired;
     loop {
-        let outcome = node
-            .advance_to_ceiling_after_publish(Icount { retired: ceiling }, |target, pending| {
-                HostAdversary::certify_async_quantum_pending(host_adversary, target, pending)
-                    .map_err(|source| {
-                        QemuNodeChannelError::new(
-                            "certify scheduler preemption over pending quantum",
-                            source.to_string(),
-                        )
-                    })?;
-                Ok(())
-            })
+        node.advance_to_ceiling(Icount { retired: ceiling })
             .map_err(|source| QemuLiveNodeStepGateError::node_op("advance to ceiling", source))?;
         let idle = node.idle_state().map_err(|source| {
             QemuLiveNodeStepGateError::node_op("read post-advance idle state", source)
         })?;
         let current = idle.current_icount.retired;
 
-        let reached_horizon = matches!(outcome, AdvanceOutcome::ReachedHorizon);
         if current >= ceiling {
             return Ok(QemuLiveNodeStepQuantum {
-                target_icount: ceiling,
                 completion_icount: current,
-                logical_offset: current - ceiling,
-                reissue_count,
-                reached_horizon,
             });
         }
 
@@ -118,38 +87,13 @@ fn advance_to_busy_ceiling_with_adversary(
     }
 }
 
-/// Requires the scheduler-preempted run to reproduce the reference byte for byte.
-pub(super) fn assert_runs_match(
-    reference: &NodeStepOutcome,
-    second: &NodeStepOutcome,
-) -> Result<(), QemuLiveNodeStepGateError> {
-    if reference.quanta != second.quanta {
-        return Err(QemuLiveNodeStepGateError::SecondRunDiverged {
-            reason: format!(
-                "per-step accounting differed: {:?} vs {:?}",
-                reference.quanta, second.quanta
-            ),
-        });
-    }
-    if reference.fingerprint != second.fingerprint {
-        return Err(QemuLiveNodeStepGateError::SecondRunDiverged {
-            reason: format!(
-                "execution fingerprint differed: {} vs {}",
-                reference.fingerprint.hash.to_hex(),
-                second.fingerprint.hash.to_hex()
-            ),
-        });
-    }
-    Ok(())
-}
-
 fn drive_mapped_prime_chain(
     setup: &crate::QemuHostPluginSetup,
     timeout: Duration,
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     prime_ceiling: u64,
-    mut block: Option<&mut QemuLiveBlockIoServicer>,
-    mut ninep: Option<&mut QemuLive9pIoServicer>,
+    block: Option<&mut QemuLiveBlockIoServicer>,
+    ninep: Option<&mut QemuLive9pIoServicer>,
     report_progress: bool,
 ) -> Result<Vec<crate::QemuNodeEmittedFrame>, QemuLiveNodeStepGateError> {
     let horizon = crucible::ExecutionHorizon {
@@ -157,10 +101,38 @@ fn drive_mapped_prime_chain(
             retired: prime_ceiling,
         },
     };
-    let mut pending = Some(
-        QemuShmemHotPathChannel::start_quantum(hot_path, horizon)
-            .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?,
-    );
+    let pending = QemuShmemHotPathChannel::start_quantum(
+        hot_path,
+        horizon,
+        crate::QemuQuantumStopCondition::Ceiling,
+    )
+    .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?;
+    poll_mapped_prime_chain(
+        setup,
+        timeout,
+        hot_path,
+        pending,
+        prime_ceiling,
+        PrimeDeviceServicers { block, ninep },
+        report_progress,
+    )
+}
+
+fn poll_mapped_prime_chain(
+    setup: &crate::QemuHostPluginSetup,
+    timeout: Duration,
+    hot_path: &mut QemuMappedQuantumShmemHotPath,
+    initial_pending: crate::QemuNodePendingQuantum,
+    prime_ceiling: u64,
+    mut servicers: PrimeDeviceServicers<'_>,
+    report_progress: bool,
+) -> Result<Vec<crate::QemuNodeEmittedFrame>, QemuLiveNodeStepGateError> {
+    let horizon = crucible::ExecutionHorizon {
+        icount: Icount {
+            retired: prime_ceiling,
+        },
+    };
+    let mut pending = Some(initial_pending);
     let deadline = HostSupervisionDeadline::start(timeout);
     let mut emitted_frames = Vec::new();
     let mut next_progress_icount = 250_000_000_u64;
@@ -171,12 +143,12 @@ fn drive_mapped_prime_chain(
         let current = QemuShmemHotPathChannel::current_icount(hot_path)
             .map_err(|source| QemuLiveNodeStepGateError::prime("poll priming icount", source))?
             .retired;
-        if let Some(servicer) = block.as_deref_mut() {
+        if let Some(servicer) = servicers.block.as_deref_mut() {
             servicer
                 .service_fault_free_initialization(current)
                 .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
         }
-        if let Some(servicer) = ninep.as_deref_mut() {
+        if let Some(servicer) = servicers.ninep.as_deref_mut() {
             servicer
                 .service(current)
                 .map_err(|source| QemuLiveNodeStepGateError::NinepServicer { source })?;
@@ -219,7 +191,12 @@ fn drive_mapped_prime_chain(
                 return Ok(emitted_frames);
             }
             pending = Some(
-                QemuShmemHotPathChannel::start_quantum(hot_path, horizon).map_err(|source| {
+                QemuShmemHotPathChannel::start_quantum(
+                    hot_path,
+                    horizon,
+                    crate::QemuQuantumStopCondition::Ceiling,
+                )
+                .map_err(|source| {
                     QemuLiveNodeStepGateError::prime("reissue priming quantum", source)
                 })?,
             );
@@ -260,46 +237,6 @@ fn retained_network_at_capture(
         });
     }
     Ok(checkpoint)
-}
-
-/// Connects the typed QMP VMState channel while pulsing the plugin wake eventfd.
-///
-/// Right after the setup handshake the QEMU main loop parks with no host timeout
-/// (the plugin holds time control and no ceiling is published), so it never
-/// services the QMP `qmp_capabilities` command and a plain connect times out. A
-/// short-lived primer thread pulses the plugin wake -- the same eventfd signal
-/// the M1 scheduler raises each quantum -- to cycle the main loop until the
-/// capabilities handshake completes. No ceiling is published, so the guest never
-/// advances past the boot barrier while priming.
-///
-/// # Errors
-///
-/// Returns [`QmpError`] when the QMP capabilities handshake still cannot complete
-/// (for example if QEMU never opens the socket or exits during priming).
-pub(super) fn connect_qmp_priming_main_loop(
-    setup: &crate::QemuHostPluginSetup,
-    socket_path: &Path,
-    command_timeout: Duration,
-) -> Result<crate::QemuQmpVmStateControlChannel<UnixStream>, QmpError> {
-    let stop = AtomicBool::new(false);
-    thread::scope(|scope| {
-        let primer = scope.spawn(|| {
-            while !stop.load(Ordering::Relaxed) {
-                // Transient wake failures are ignored: the QMP connect result is
-                // the authority on whether the main loop became reachable.
-                let _ = setup.signal_plugin_wake();
-                thread::sleep(QMP_PRIMER_WAKE_INTERVAL);
-            }
-        });
-        let result = crate::QemuQmpVmStateControlChannel::connect_unix_socket_with_policies(
-            socket_path,
-            crate::QmpJobPollPolicy::default(),
-            crate::QmpIoTimeoutPolicy::from_command_timeout(command_timeout),
-        );
-        stop.store(true, Ordering::Relaxed);
-        let _ = primer.join();
-        result
-    })
 }
 
 /// Builds the configured root-image or diskless-firmware VM launch config.
@@ -359,31 +296,27 @@ pub(super) fn live_node_plugin_config(
     config: &QemuLiveNodeStepGateConfig,
     profile: &crate::DeterministicLaunchProfile,
     vm: &QemuVmLaunchConfig,
-    run_directory: &Path,
     node_name: &str,
     guarded_probe: Option<(&QemuPreparedRunDirectory, &QemuChildProcessContract)>,
 ) -> Result<QemuLaunchPluginConfig, QemuLiveNodeStepGateError> {
     let plugin_base = live_node_plugin_base(config).with_fault_target_node(node_name);
     let mut plugin = if config.whitebox == QemuLaunchPluginSwitch::On {
-        let probe_command = profile
-            .qemu_launch_command_for_live_gate(
-                vm.clone(),
-                path_text(&config.qemu_executable),
-                plugin_base.clone(),
-                crate::LivePluginGuestArchitecture::X86_64,
-            )
-            .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
+        let probe_command = whitebox_probe_command(config, profile, vm, plugin_base.clone())?;
         let validation = match config.architecture {
-            LivePluginGuestArchitecture::X86_64 => match guarded_probe {
-                Some((run_directory, process_contract)) => {
-                    crate::launch::probe_x86_whitebox_setup_guarded(
-                        &probe_command,
-                        run_directory,
-                        process_contract,
-                    )
-                }
-                None => crate::probe_x86_whitebox_setup(&probe_command, run_directory),
-            },
+            LivePluginGuestArchitecture::X86_64 => {
+                let (run_directory, process_contract) = guarded_probe.ok_or_else(|| {
+                    QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                        reason: String::from(
+                            "x86 white-box setup requires guarded process and storage authority",
+                        ),
+                    }
+                })?;
+                crate::launch::probe_x86_whitebox_setup_guarded(
+                    &probe_command,
+                    run_directory,
+                    process_contract,
+                )
+            }
             LivePluginGuestArchitecture::Aarch64 => {
                 crate::validate_aarch64_whitebox_setup(config.doorbell_instruction_abi_version)
             }
@@ -404,6 +337,25 @@ pub(super) fn live_node_plugin_config(
     Ok(plugin)
 }
 
+fn whitebox_probe_command(
+    config: &QemuLiveNodeStepGateConfig,
+    profile: &crate::DeterministicLaunchProfile,
+    vm: &QemuVmLaunchConfig,
+    plugin: QemuLaunchPluginConfig,
+) -> Result<QemuLaunchCommand, QemuLiveNodeStepGateError> {
+    let command = QemuLaunchCommandBuilder::new_for_live_gate(
+        profile.clone(),
+        vm.clone(),
+        path_text(&config.qemu_executable),
+        plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
+    );
+    config
+        .apply_diagnostic_trace(command)
+        .build()
+        .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })
+}
+
 fn live_node_plugin_base(config: &QemuLiveNodeStepGateConfig) -> QemuLaunchPluginConfig {
     QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
         .with_process_generation(config.process_generation)
@@ -414,7 +366,6 @@ fn live_node_plugin_base(config: &QemuLiveNodeStepGateConfig) -> QemuLaunchPlugi
         )
         .with_coverage(config.coverage)
         .with_fingerprint(config.fingerprint)
-        .with_fingerprint_mode(config.fingerprint_mode)
 }
 
 /// Returns a shutdown policy with real bounded waits for a gate teardown.

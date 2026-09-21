@@ -1,45 +1,129 @@
 //! Private construction and event-log helpers for production VM lifecycles.
 
 use super::*;
+use std::fmt::Write as _;
 use std::io::Read;
 
 pub(super) struct ExactCheckpointTargetManifestBasis<'a> {
     pub(super) configuration: ContentHash,
-    pub(super) immutable_backing: Option<ContentHash>,
+    pub(super) immutable_backing: ContentHash,
     pub(super) node: &'a NodeId,
     pub(super) counter: u64,
     pub(super) scheduler_time: VirtualTime,
     pub(super) snapshot: ContentHash,
     pub(super) fault_identity: ContentHash,
     pub(super) overlay: ContentHash,
-    pub(super) vmstate: ContentHash,
+    pub(super) device_state: ContentHash,
+}
+
+pub(super) fn exact_checkpoint_fault_object_identity(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+    limits: FaultResourceLimits,
+) -> Result<ContentHash, LifecycleApiError> {
+    let bytes = checkpoint
+        .to_canonical_bytes_with_limit(limits.fat_checkpoint_bytes)
+        .map_err(|error| loop_factory_error(format!("encode fault continuation: {error}")))?;
+    Ok(ContentHash::from_bytes(&bytes))
+}
+
+pub(super) fn exact_checkpoint_snapshot_object_identity(
+    snapshot: &ExactSnapshotHandle,
+    limits: FaultResourceLimits,
+) -> Result<ContentHash, LifecycleApiError> {
+    let bytes = snapshot
+        .to_canonical_bytes_with_limit(limits.fat_checkpoint_bytes)
+        .map_err(|error| loop_factory_error(format!("encode QEMU snapshot: {error}")))?;
+    Ok(ContentHash::from_bytes(&bytes))
 }
 
 pub(super) fn validate_exact_checkpoint_target(
     node: &NodeId,
     target: &ProductionVmExactCheckpointTarget,
     fault_identity: ContentHash,
+    snapshot_identity: ContentHash,
 ) -> Result<(), LifecycleApiError> {
-    validate_exact_checkpoint_artifact(&target.overlay_artifact, "root overlay")?;
-    validate_exact_checkpoint_artifact(&target.vmstate_artifact, "VMState")?;
-    let observed = exact_checkpoint_target_manifest_identity(ExactCheckpointTargetManifestBasis {
+    let Some((overlay_artifact, exact_ram, manifest_identity)) = target.native_materialization()
+    else {
+        // Repository-backed targets were already authenticated as one relation
+        // by the lower exact-checkpoint verifier. Repeating only part of that
+        // relation here would recreate a second canonical implementation.
+        return Ok(());
+    };
+    validate_exact_checkpoint_artifact(overlay_artifact, "root overlay")?;
+    let basis = ExactCheckpointTargetManifestBasis {
         configuration: target.configuration.id(),
         immutable_backing: target.immutable_backing,
         node,
         counter: target.counter,
         scheduler_time: target.scheduler_time,
-        snapshot: target.snapshot.id(),
+        snapshot: snapshot_identity,
         fault_identity,
-        overlay: target.overlay_artifact.identity,
-        vmstate: target.vmstate_artifact.identity,
-    });
-    if observed != target.manifest_identity {
+        overlay: overlay_artifact.identity,
+        device_state: exact_ram.device_artifact.identity,
+    };
+    exact_ram
+        .validate()
+        .map_err(|error| loop_factory_error(error.to_string()))?;
+    validate_exact_checkpoint_artifact(&exact_ram.device_artifact, "device state")?;
+    for layer in &exact_ram.layers {
+        validate_exact_checkpoint_artifact(&layer.artifact, "RAM checkpoint layer")?;
+    }
+    let observed = exact_ram_checkpoint_target_manifest_identity(basis, exact_ram);
+    if observed != manifest_identity {
         return Err(loop_factory_error(format!(
             "exact checkpoint target for `{}` failed manifest authentication",
             node.name
         )));
     }
     Ok(())
+}
+
+pub(super) fn exact_ram_checkpoint_target_manifest_identity(
+    basis: ExactCheckpointTargetManifestBasis<'_>,
+    checkpoint: &ProductionExactRamCheckpoint,
+) -> ContentHash {
+    let target = exact_checkpoint_target_manifest_identity(basis);
+    let mut material = format!(
+        "target={}\nparent_closure={}\ndevice_sha256={}",
+        target.to_hex(),
+        checkpoint
+            .parent_closure
+            .map_or_else(String::new, ContentHash::to_hex),
+        checkpoint.device_content_sha256.to_hex(),
+    );
+    for (index, layer) in checkpoint.layers.iter().enumerate() {
+        let parent = layer
+            .parent
+            .map_or_else(String::new, exact_checkpoint_identity_material);
+        let _ = write!(
+            material,
+            "\nlayer.{index}.kind={}\nlayer.{index}.checkpoint={}\nlayer.{index}.target={}\nlayer.{index}.frontier={}\nlayer.{index}.parent={}\nlayer.{index}.topology={}\nlayer.{index}.regions={}\nlayer.{index}.records={}\nlayer.{index}.sha256={}\nlayer.{index}.artifact={}\nlayer.{index}.length={}",
+            match layer.kind {
+                ProductionExactRamKind::Direct => "direct",
+                ProductionExactRamKind::Delta => "delta",
+            },
+            layer.identity.checkpoint.to_hex(),
+            layer.identity.target.to_hex(),
+            layer.identity.frontier.to_hex(),
+            parent,
+            layer.topology.to_hex(),
+            layer.ram_regions,
+            layer.ram_records,
+            layer.content_sha256.to_hex(),
+            layer.artifact.identity.to_hex(),
+            layer.artifact.length,
+        );
+    }
+    ContentHash::from_canonical_material("crucible.production-vm-exact-checkpoint.v2", &material)
+}
+
+fn exact_checkpoint_identity_material(identity: ProductionExactCheckpointIdentity) -> String {
+    format!(
+        "{}/{}/{}",
+        identity.checkpoint.to_hex(),
+        identity.target.to_hex(),
+        identity.frontier.to_hex(),
+    )
 }
 
 pub(super) fn exact_checkpoint_target_manifest_identity(
@@ -54,34 +138,142 @@ pub(super) fn exact_checkpoint_target_manifest_identity(
         snapshot,
         fault_identity,
         overlay,
-        vmstate,
+        device_state,
     } = basis;
-    let backing = immutable_backing.map_or_else(String::new, |identity| {
-        format!("\nimmutable_backing={}", identity.to_hex())
-    });
     ContentHash::from_canonical_material(
-        "crucible.production-vm-exact-checkpoint.v1",
+        "crucible.production-vm-exact-checkpoint.v3",
         &format!(
-            "configuration={}{}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+            "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\ndevice_state={}",
             configuration.to_hex(),
-            backing,
+            immutable_backing.to_hex(),
             node.name,
             counter,
             scheduler_time.ticks,
             snapshot.to_hex(),
             fault_identity.to_hex(),
             overlay.to_hex(),
-            vmstate.to_hex(),
+            device_state.to_hex(),
         ),
     )
 }
 
+pub(super) struct ExactRamCheckpointQmpIdentityBasis<'a> {
+    pub(super) configuration: &'a Configuration,
+    pub(super) immutable_backing: ContentHash,
+    pub(super) node: &'a NodeId,
+    pub(super) counter: u64,
+    pub(super) scheduler_time: VirtualTime,
+    pub(super) checkpoint: &'a Checkpoint,
+    pub(super) fault_identity: ContentHash,
+    pub(super) scheduler: &'a SingleSchedulerCheckpoint,
+}
+
+pub(super) fn exact_ram_checkpoint_qmp_identity(
+    basis: ExactRamCheckpointQmpIdentityBasis<'_>,
+) -> Result<QmpCheckpointIdentity, SchedulerError> {
+    let node_counter = basis
+        .checkpoint
+        .node_icounts
+        .get(basis.node)
+        .map(|icount| icount.retired);
+    if basis.checkpoint.configuration != basis.configuration.id()
+        || basis.checkpoint.scenario_ref != basis.configuration.def.id()
+        || basis.checkpoint.virtual_time != basis.scheduler_time
+        || node_counter != Some(basis.counter)
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "exact checkpoint RAM identity does not match the modeled boundary",
+            ),
+        });
+    }
+    let scheduler_configuration = basis
+        .scheduler
+        .configuration_for(&basis.configuration.def)
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("authenticate exact RAM scheduler continuation: {error}"),
+        })?;
+    if scheduler_configuration.id() != basis.configuration.id()
+        || basis.scheduler.frontier() != basis.scheduler_time
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "exact checkpoint RAM scheduler continuation does not match the modeled boundary",
+            ),
+        });
+    }
+
+    let target = ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-ram-target.v1",
+        &format!(
+            "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nfault={}",
+            basis.configuration.id().to_hex(),
+            basis.immutable_backing.to_hex(),
+            basis.node.name,
+            basis.counter,
+            basis.scheduler_time.ticks,
+            basis.fault_identity.to_hex(),
+        ),
+    );
+    let scheduler_bytes =
+        basis
+            .scheduler
+            .canonical_bytes()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("encode exact RAM scheduler frontier: {error}"),
+            })?;
+    let scheduler_hex = scheduler_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let frontier = ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-ram-frontier.v1",
+        &scheduler_hex,
+    );
+    Ok(QmpCheckpointIdentity::new(
+        basis.checkpoint.id,
+        target,
+        frontier,
+    ))
+}
+
+/// Re-derives the final QMP identity from authenticated host-side state.
+pub(super) fn validate_exact_ram_checkpoint_qmp_identity(
+    node: &NodeId,
+    target: &ProductionVmExactCheckpointTarget,
+    fault_identity: ContentHash,
+    scheduler: &SingleSchedulerCheckpoint,
+) -> Result<(), SchedulerError> {
+    let Some(exact_ram) = target.native_exact_ram() else {
+        return Ok(());
+    };
+    let expected = exact_ram_checkpoint_qmp_identity(ExactRamCheckpointQmpIdentityBasis {
+        configuration: &target.configuration,
+        immutable_backing: target.immutable_backing,
+        node,
+        counter: target.counter,
+        scheduler_time: target.scheduler_time,
+        checkpoint: target.snapshot.checkpoint(),
+        fault_identity,
+        scheduler,
+    })?;
+    if exact_ram.identity != expected.into() {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "exact RAM checkpoint target for `{}` failed QMP identity authentication",
+                node.name
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub(super) const fn production_guest_architecture(
     architecture: crucible::VmArchitecture,
-) -> ProductionGuestArchitecture {
+) -> LivePluginGuestArchitecture {
     match architecture {
-        crucible::VmArchitecture::X86_64 => ProductionGuestArchitecture::X86_64,
-        crucible::VmArchitecture::Aarch64 => ProductionGuestArchitecture::Aarch64,
+        crucible::VmArchitecture::X86_64 => LivePluginGuestArchitecture::X86_64,
+        crucible::VmArchitecture::Aarch64 => LivePluginGuestArchitecture::Aarch64,
     }
 }
 
@@ -98,10 +290,10 @@ pub(super) fn production_qemu_executable(
 
 pub(super) const fn production_whitebox_switch(
     policy: crucible::WhiteBoxPolicy,
-) -> ProductionPluginSwitch {
+) -> QemuLaunchPluginSwitch {
     match policy {
-        crucible::WhiteBoxPolicy::Disabled => ProductionPluginSwitch::Off,
-        crucible::WhiteBoxPolicy::Enabled => ProductionPluginSwitch::On,
+        crucible::WhiteBoxPolicy::Disabled => QemuLaunchPluginSwitch::Off,
+        crucible::WhiteBoxPolicy::Enabled => QemuLaunchPluginSwitch::On,
     }
 }
 
@@ -109,8 +301,8 @@ pub(super) fn production_app_random_launch_config(
     scenario: &ScenarioDef,
     branches: &[ProductionVmBranchConfig],
     node: &NodeId,
-) -> ProductionAppRandomConfig {
-    let mut config = ProductionAppRandomConfig::from_seed(
+) -> QemuLaunchAppRandomConfig {
+    let mut config = QemuLaunchAppRandomConfig::from_seed(
         scenario.seed(),
         scenario.app_random_draw_cap(),
         node.name.clone(),
@@ -134,7 +326,7 @@ pub(super) fn production_app_random_checkpoint_config(
     scenario: &ScenarioDef,
     branches: &[ProductionVmBranchConfig],
     node: &NodeId,
-) -> Result<ProductionAppRandomConfig, SchedulerError> {
+) -> Result<QemuLaunchAppRandomConfig, SchedulerError> {
     let branches = if scheduler.branch_frontier_cap().is_some() {
         branches
     } else {
@@ -159,7 +351,7 @@ pub(super) fn production_app_random_checkpoint_config(
         .map(|(stream, position)| (stream.name.clone(), position.draws))
         .collect::<BTreeMap<_, _>>();
     let draw_offset = app_random_request_count(&configuration, node);
-    let mut config = ProductionAppRandomConfig::from_seed(
+    let mut config = QemuLaunchAppRandomConfig::from_seed(
         scheduler.future_decision_seed(),
         scenario.app_random_draw_cap(),
         node.name.clone(),
@@ -194,7 +386,6 @@ fn app_random_request_stream<'a>(
     node: &NodeId,
 ) -> Option<&'a crucible::RngStreamId> {
     match decisions.get(index)? {
-        Decision::AppRandom(random) if random.node == *node => Some(&random.stream),
         Decision::Selection(selection)
             if selection.is_app_random_model_sample() || selection.is_campaign_branch() =>
         {
@@ -315,39 +506,6 @@ pub(super) fn collect_terminal_actions(
     }
 }
 
-pub(super) fn prepare_root_overlay(
-    executable: &Path,
-    root_image: &Path,
-    run_directory: &Path,
-) -> Result<(), LifecycleApiError> {
-    let image_tool = executable.with_file_name("qemu-img");
-    let overlay = run_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME);
-    let virtual_size = fs::metadata(root_image)
-        .map_err(|error| loop_factory_error(format!("read root image metadata: {error}")))?
-        .len();
-    let virtual_size = format!("{virtual_size}B");
-    let output = Command::new(&image_tool)
-        .arg("create")
-        .arg("-q")
-        .arg("-f")
-        .arg("qcow2")
-        .arg(&overlay)
-        .arg(&virtual_size)
-        .output()
-        .map_err(|error| {
-            loop_factory_error(format!("execute {}: {error}", image_tool.display()))
-        })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(loop_factory_error(format!(
-        "{} rejected root overlay creation with {}: {}",
-        image_tool.display(),
-        output.status,
-        String::from_utf8_lossy(&output.stderr).trim()
-    )))
-}
-
 pub(super) fn hash_file(path: &Path) -> Result<crucible::ContentHash, std::io::Error> {
     let mut file = fs::File::open(path)?;
     let mut hasher = blake3::Hasher::new();
@@ -407,21 +565,12 @@ mod tests {
             Ok(())
         }
 
-        fn launch(
+        fn launch_fresh(
             &mut self,
             request: ProductionVmNodeLaunchRequest<'_>,
+            _qemu_executable: &Path,
+            _root_image: &Path,
         ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-            let preparation = match request.preparation() {
-                ProductionVmNodePreparationKind::Fresh { .. } => "fresh",
-                ProductionVmNodePreparationKind::Exact { .. } => "exact",
-                ProductionVmNodePreparationKind::Replacement { .. } => "replacement",
-            };
-            let exact = match request.kind() {
-                ProductionVmNodeLaunchKind::Fresh => None,
-                ProductionVmNodeLaunchKind::Exact { snapshot, paused } => {
-                    Some((snapshot.id(), paused))
-                }
-            };
             self.calls
                 .lock()
                 .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy"))
@@ -430,8 +579,29 @@ mod tests {
                     generation: request.generation(),
                     router: request.router_name().to_owned(),
                     crash_detector: request.crash_detector().to_owned(),
-                    preparation,
-                    exact,
+                    preparation: "fresh",
+                    exact: None,
+                });
+            Err(loop_factory_error(
+                "recording launcher rejects process spawn",
+            ))
+        }
+
+        fn launch_restored(
+            &mut self,
+            request: ProductionVmNodeLaunchRequest<'_>,
+            exact: ProductionVmExactNodeRestoreAdmission,
+        ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy"))
+                .push(RecordedLaunch {
+                    node: request.node_name().to_owned(),
+                    generation: request.generation(),
+                    router: request.router_name().to_owned(),
+                    crash_detector: request.crash_detector().to_owned(),
+                    preparation: "exact",
+                    exact: Some((exact.basis.snapshot.id(), exact.basis.paused)),
                 });
             Err(loop_factory_error(
                 "recording launcher rejects process spawn",
@@ -449,93 +619,36 @@ mod tests {
         }
     }
 
-    fn launch_snapshot(label: &str) -> ExactSnapshotHandle {
-        let scenario = ScenarioDef::from_canonical_material(
-            "crucible.test.production-launch-authority",
-            label,
-        );
-        let configuration = Configuration::genesis(scenario);
-        let checkpoint = Checkpoint::from_recorded_configuration(
-            &configuration,
-            None,
-            VirtualTime::default(),
-            BTreeMap::new(),
-            CheckpointKind::Fat,
-            BTreeMap::new(),
-        )
-        .unwrap_or_else(|error| panic!("launch checkpoint should build: {error}"));
-        ExactSnapshotHandle::diskless(
-            checkpoint,
-            crucible_qemu::QemuReplayOracleValidation::NotRun,
-        )
-        .unwrap_or_else(|error| panic!("launch snapshot should build: {error}"))
-    }
-
     #[test]
-    fn production_vm_loop_can_move_to_the_session_actor() {
-        fn assert_send<T: Send>() {}
-        assert_send::<ProductionVmLifecycleLoop>();
-    }
-
-    #[test]
-    fn production_lifecycle_routes_every_launch_mode_through_one_authority() {
+    fn production_lifecycle_routes_fresh_launch_through_one_authority() {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut launcher = RecordingRejectingLauncher {
             calls: Arc::clone(&calls),
         };
-        let profile = ProductionLiveNodeStepGateConfig::new_with_root_image(
+        let profile = QemuLiveNodeStepGateConfig::new_with_root_image(
             "qemu",
             "plugin",
             "kernel",
             "root",
             "run-directory",
         );
-        let snapshot = launch_snapshot("exact");
         let node = NodeId {
             name: String::from("node-a"),
         };
 
-        for (crash_detector, preparation, kind) in [
-            (
-                "fresh",
-                ProductionVmNodePreparationKind::Fresh {
-                    qemu_executable: Path::new("qemu"),
-                    root_image: Path::new("root"),
-                },
-                ProductionVmNodeLaunchKind::Fresh,
-            ),
-            (
-                "exact-running",
-                ProductionVmNodePreparationKind::Replacement {
-                    source_run_directory: Path::new("prior-run-directory"),
-                },
-                ProductionVmNodeLaunchKind::Exact {
-                    snapshot: &snapshot,
-                    paused: false,
-                },
-            ),
-            (
-                "exact-paused",
-                ProductionVmNodePreparationKind::Replacement {
-                    source_run_directory: Path::new("prior-run-directory"),
-                },
-                ProductionVmNodeLaunchKind::Exact {
-                    snapshot: &snapshot,
-                    paused: true,
-                },
-            ),
-        ] {
-            let error = launch_production_node_generation(
-                &mut launcher,
-                ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 7),
-                crash_detector,
-                preparation,
-                kind,
-            )
-            .err()
-            .unwrap_or_else(|| panic!("recording launcher should reject process spawn"));
-            assert!(error.to_string().contains("recording launcher rejects"));
-        }
+        let error = launch_production_node_generation(
+            &mut launcher,
+            ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 7),
+            "fresh",
+            ProductionVmNodePreparationKind::Fresh {
+                qemu_executable: Path::new("qemu"),
+                root_image: Path::new("root"),
+            },
+            ProductionVmNodeLaunchKind::Fresh,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("recording launcher should reject process spawn"));
+        assert!(error.to_string().contains("recording launcher rejects"));
 
         let zero_generation = launch_production_node_generation(
             &mut launcher,
@@ -551,54 +664,19 @@ mod tests {
         .unwrap_or_else(|| panic!("zero process generation should fail before launch"));
         assert!(zero_generation.to_string().contains("must be positive"));
 
-        let mismatched_preparation = launch_production_node_generation(
-            &mut launcher,
-            ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 8),
-            "mismatched-preparation",
-            ProductionVmNodePreparationKind::Replacement {
-                source_run_directory: Path::new("prior-run-directory"),
-            },
-            ProductionVmNodeLaunchKind::Fresh,
-        )
-        .err()
-        .unwrap_or_else(|| panic!("mismatched preparation should fail before launch"));
-        assert!(
-            mismatched_preparation
-                .to_string()
-                .contains("preparation does not match")
-        );
-
         assert!(launcher.replay_candidate().is_err());
         assert_eq!(
             *calls
                 .lock()
                 .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy")),
-            vec![
-                RecordedLaunch {
-                    node: String::from("node-a"),
-                    generation: 7,
-                    router: String::from("crucible-router"),
-                    crash_detector: String::from("fresh"),
-                    preparation: "fresh",
-                    exact: None,
-                },
-                RecordedLaunch {
-                    node: String::from("node-a"),
-                    generation: 7,
-                    router: String::from("crucible-router"),
-                    crash_detector: String::from("exact-running"),
-                    preparation: "replacement",
-                    exact: Some((snapshot.id(), false)),
-                },
-                RecordedLaunch {
-                    node: String::from("node-a"),
-                    generation: 7,
-                    router: String::from("crucible-router"),
-                    crash_detector: String::from("exact-paused"),
-                    preparation: "replacement",
-                    exact: Some((snapshot.id(), true)),
-                },
-            ]
+            vec![RecordedLaunch {
+                node: String::from("node-a"),
+                generation: 7,
+                router: String::from("crucible-router"),
+                crash_detector: String::from("fresh"),
+                preparation: "fresh",
+                exact: None,
+            }]
         );
     }
 
@@ -616,11 +694,11 @@ mod tests {
     fn production_whitebox_switch_follows_the_authored_node_policy() {
         assert_eq!(
             production_whitebox_switch(crucible::WhiteBoxPolicy::Disabled),
-            ProductionPluginSwitch::Off
+            QemuLaunchPluginSwitch::Off
         );
         assert_eq!(
             production_whitebox_switch(crucible::WhiteBoxPolicy::Enabled),
-            ProductionPluginSwitch::On
+            QemuLaunchPluginSwitch::On
         );
     }
 
@@ -628,11 +706,11 @@ mod tests {
     fn production_guest_architecture_follows_the_authored_node_architecture() {
         assert_eq!(
             production_guest_architecture(crucible::VmArchitecture::X86_64),
-            ProductionGuestArchitecture::X86_64
+            LivePluginGuestArchitecture::X86_64
         );
         assert_eq!(
             production_guest_architecture(crucible::VmArchitecture::Aarch64),
-            ProductionGuestArchitecture::Aarch64
+            LivePluginGuestArchitecture::Aarch64
         );
     }
 
@@ -684,18 +762,18 @@ mod tests {
         let raw = expected.next_u64();
 
         let Ok((recorded, discoveries, _configuration, _append)) =
-            QuantumLoop::append_backend_causal_decisions(
+            QuantumLoop::append_backend_rng_evidence(
                 &mut scheduler,
-                vec![Decision::AppRandom(crucible::AppRandomDecision {
+                vec![crucible::BackendRngEvidence {
                     node: node.clone(),
                     stream: stream.clone(),
                     request_id: 7,
                     width: 8,
                     value: raw & 0xff,
-                })],
+                }],
             )
         else {
-            panic!("live app-random decision should normalize");
+            panic!("live backend RNG evidence should be admitted");
         };
         assert_eq!(discoveries.len(), 1);
 
@@ -715,7 +793,7 @@ mod tests {
             Decision::Selection(recorded_selection),
         ] = recorded.as_slice()
         else {
-            panic!("live normalization should return one draw and one selection");
+            panic!("live evidence admission should return one draw and one selection");
         };
         let Ok(selection) = recorded_selection.selection() else {
             panic!("recorded selection should decode");
@@ -733,7 +811,7 @@ mod tests {
             &Configuration::genesis(scenario.clone()),
             Decision::RngDraw(recorded_draw.clone()),
         )
-        .expect("recorded test draw should be valid");
+        .unwrap_or_else(|error| panic!("test raw draw should be accepted: {error}"));
         let Ok(branch_selection) = selectable.branch_selection(&parent, (raw & 0xff) ^ 1) else {
             panic!("typed app-random branch should build");
         };
@@ -741,7 +819,7 @@ mod tests {
             &parent,
             Decision::Selection(crucible::SelectionDecision::new(&branch_selection)),
         )
-        .expect("typed test branch should be valid");
+        .unwrap_or_else(|error| panic!("test typed branch should be accepted: {error}"));
         assert_eq!(app_random_request_count(&typed_branch, &node), 1);
 
         let branch = ProductionVmBranchConfig {
@@ -752,7 +830,10 @@ mod tests {
         };
         let relaunched =
             production_app_random_launch_config(&scenario, std::slice::from_ref(&branch), &node);
-        assert_eq!(relaunched.branch_after_draws, Some(1));
+        assert_eq!(
+            relaunched.branch_seed_sequence(),
+            &[(Seed::from_u64(0x00b1_2ac4), 1)]
+        );
     }
 
     #[test]
@@ -788,17 +869,17 @@ mod tests {
             .decision_rng()
             .fork_in_domain(&stream.domain, &stream.name);
         let first = scenario_rng.next_u64();
-        let Ok(_) = QuantumLoop::append_backend_causal_decisions(
+        let Ok(_) = QuantumLoop::append_backend_rng_evidence(
             &mut scheduler,
-            vec![Decision::AppRandom(crucible::AppRandomDecision {
+            vec![crucible::BackendRngEvidence {
                 node: node.clone(),
                 stream: stream.clone(),
                 request_id: 1,
                 width: 8,
                 value: first & 0xff,
-            })],
+            }],
         ) else {
-            panic!("scenario-seed app-random decision should normalize");
+            panic!("scenario-seed backend RNG evidence should be admitted");
         };
 
         let active_seed = Seed::from_u64(29);
@@ -809,17 +890,17 @@ mod tests {
             .decision_rng()
             .fork_in_domain(&stream.domain, &stream.name);
         let second = active_rng.next_u64();
-        let Ok(_) = QuantumLoop::append_backend_causal_decisions(
+        let Ok(_) = QuantumLoop::append_backend_rng_evidence(
             &mut scheduler,
-            vec![Decision::AppRandom(crucible::AppRandomDecision {
+            vec![crucible::BackendRngEvidence {
                 node: node.clone(),
                 stream: stream.clone(),
                 request_id: 2,
                 width: 8,
                 value: second & 0xff,
-            })],
+            }],
         ) else {
-            panic!("active-seed app-random decision should normalize");
+            panic!("active-seed backend RNG evidence should be admitted");
         };
 
         let remaining = ProductionVmBranchConfig {
@@ -850,7 +931,7 @@ mod tests {
         );
         assert_eq!(resumed.draw_offset, 2);
         assert_eq!(resumed.stream_positions.get(&stream.name), Some(&1));
-        assert_eq!(resumed.branch_after_draws, Some(2));
+        assert_eq!(resumed.branch_seed_sequence(), &[(Seed::from_u64(47), 2)]);
     }
 
     #[test]

@@ -51,7 +51,7 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_node_slot, status)",
         "offsetof(crucible_shmem_node_slot, kind)",
         "offsetof(crucible_shmem_node_slot, device_io_active)",
-        "offsetof(crucible_shmem_node_slot, pad0)",
+        "offsetof(crucible_shmem_node_slot, advance_stop_condition)",
         "offsetof(crucible_shmem_node_slot, publish_gen)",
         "offsetof(crucible_shmem_node_slot, control_boundary_ack)",
         "offsetof(crucible_shmem_node_slot, preemption_at_icount)",
@@ -66,6 +66,17 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_node_slot, logical_time_restore_target)",
         "offsetof(crucible_shmem_node_slot, logical_time_restore_request)",
         "offsetof(crucible_shmem_node_slot, logical_time_restore_ack)",
+        "offsetof(crucible_shmem_node_slot, control_boundary_fault_command_frontier)",
+        "offsetof(crucible_shmem_node_slot, control_boundary_capture_request)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_generation)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_deadline_ns)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_deadline_icount)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_armed_raw_icount)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ns)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ns)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_fired_raw_icount)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_completed)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_reserved)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_ring_header)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_ring_header)",
         "offsetof(crucible_shmem_ring_header, read_idx)",
@@ -93,7 +104,6 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_coverage_entry, block_len)",
         "offsetof(crucible_shmem_coverage_entry, reserved)",
         "#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET 4u",
-        "#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET 4u",
         "_Atomic uint32_t capture_request;",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_fingerprint_sample_slot)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_fingerprint_sample_slot)",
@@ -253,6 +263,17 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.node.logical_time_restore_target, 128);
     assert_eq!(decoded.node.logical_time_restore_request, 13);
     assert_eq!(decoded.node.logical_time_restore_ack, 13);
+    assert_eq!(decoded.node.control_boundary_fault_command_frontier, 9);
+    assert_eq!(decoded.node.control_boundary_capture_request, 3);
+    assert_eq!(decoded.node.timer_witness_generation, 17);
+    assert_eq!(decoded.node.timer_witness_deadline_ns, 989);
+    assert_eq!(decoded.node.timer_witness_deadline_icount, 62);
+    assert_eq!(decoded.node.timer_witness_armed_raw_icount, 60);
+    assert_eq!(decoded.node.timer_witness_fired_expire_ns, 989);
+    assert_eq!(decoded.node.timer_witness_fired_virtual_ns, 992);
+    assert_eq!(decoded.node.timer_witness_fired_raw_icount, 60);
+    assert_eq!(decoded.node.timer_witness_completed, 1);
+    assert_eq!(decoded.node.timer_witness_reserved, 0);
     assert_eq!(decoded.frame.payload, b"PING");
     assert_eq!(decoded.frame.delivery_state, FRAME_DELIVERY_RETAINED);
     assert_eq!(decoded.frame.delivery_attempts, 3);

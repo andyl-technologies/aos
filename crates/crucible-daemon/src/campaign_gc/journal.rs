@@ -11,10 +11,8 @@
 //! <journal>/state-v1
 //! ```
 //!
-//! The v1 state phase tag is extensible: tags 1 through 3 retain their original
-//! encodings, while tag 4 records an operator cancellation. Older decoders
-//! reject that tag as invalid state and therefore cannot apply a cancelled
-//! plan.
+//! State-v1 tags encode Planned=1, Applying=2, Complete=3, and Cancelled=4.
+//! Every other tag is rejected.
 //!
 //! State replacement is write-fsync-rename-directory-fsync. Opening a journal
 //! reacquires its exclusive process lock and re-fsyncs both the journal and its
@@ -262,13 +260,13 @@ impl DirectoryCampaignGcJournal {
 
     /// Durably cancels a plan before candidate deletion begins.
     ///
-    /// Cancellation is monotonic and idempotent. A cancelled journal remains
-    /// durable evidence and can never return to [`CampaignGcJournalPhase::Planned`].
+    /// Cancellation is monotonic and idempotent. A cancelled journal cannot
+    /// return to the planned phase.
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignGcJournalError::InvalidTransition`] if apply has begun
-    /// or completed, or an I/O error if state replacement is indeterminate.
+    /// Returns [`CampaignGcJournalError::InvalidTransition`] after apply has
+    /// begun, or an I/O error when state replacement is indeterminate.
     pub fn cancel(&mut self) -> Result<CampaignGcJournalTransition, CampaignGcJournalError> {
         match self.phase {
             CampaignGcJournalPhase::Planned => {
@@ -597,7 +595,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn journal_v1_phase_tags_preserve_existing_encodings_and_extend_fail_closed() {
+    fn journal_phase_tags_are_stable_and_unknown_tags_fail_closed() {
         let plan = CampaignGcPlanId::from_hash(CampaignHash::from_bytes([0x5a; 32]));
         let phase_index = JOURNAL_STATE_MAGIC.len() + 32;
 

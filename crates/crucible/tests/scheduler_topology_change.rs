@@ -6,11 +6,11 @@
 
 use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
-    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerActor,
-    SchedulerActorHandle, SchedulerError, SchedulerLivenessScenario, SchedulerLookaheadEdge,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal,
-    SchedulerTopologyChange, SchedulerTopologyChangeTrigger, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime, check_scheduler_liveness,
+    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
+    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId,
+    SchedulerScenarioNode, SchedulerTerminal, SchedulerTopologyChange,
+    SchedulerTopologyChangeTrigger, SchedulingNodeKind, Shift, SimDuration, SimInstant,
+    SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 
 #[test]
@@ -438,39 +438,6 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
 }
 
 #[test]
-fn actor_topology_change_message_recomputes_before_next_pick() {
-    let producer = scheduler_node("producer");
-    let consumer = scheduler_node("consumer");
-    let scenario = base_scenario(
-        "topology-change-actor-queue",
-        vec![scenario_node(
-            "consumer",
-            0,
-            SchedulerNodeActivity::Runnable,
-            finite_lookahead(20),
-        )],
-        Vec::new(),
-    )
-    .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)]);
-    let (handle, mut actor) = SchedulerActor::new(scenario).expect("scenario should build");
-
-    handle
-        .queue_topology_change(SchedulerTopologyChange::new(
-            4,
-            SchedulerTopologyChangeTrigger::LatencyChange,
-            vec![edge(&producer, &consumer, 7)],
-        ))
-        .expect("topology change message should enqueue");
-    actor
-        .run_once()
-        .expect("actor should accept topology change");
-    let outcome = actor_drive_one_quantum(&handle, &mut actor);
-
-    assert_eq!(outcome.advanced_node, Some(consumer));
-    assert_eq!(outcome.frontier, VirtualTime { ticks: 7 });
-}
-
-#[test]
 fn pending_topology_change_freezes_cross_node_sends_until_boundary() {
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
@@ -696,29 +663,6 @@ fn drive_one_quantum(scheduler: &mut SingleScheduler) -> crucible::QuantumOutcom
         .expect("scheduler should drive one quantum")
 }
 
-fn actor_drive_one_quantum(
-    handle: &SchedulerActorHandle,
-    actor: &mut SchedulerActor,
-) -> crucible::QuantumOutcome {
-    let snapshot = handle.snapshot().expect("snapshot should enqueue");
-    actor.run_once().expect("actor should process snapshot");
-    let configuration = snapshot
-        .recv()
-        .expect("actor should reply with snapshot")
-        .configuration;
-    let reply = handle
-        .drive_quantum(QuantumRequest {
-            configuration,
-            control: Vec::new(),
-        })
-        .expect("drive quantum should enqueue");
-    actor.run_once().expect("actor should drive quantum");
-    reply
-        .recv()
-        .expect("actor should reply")
-        .expect("scheduler should drive quantum")
-}
-
 fn only_topology_application(
     scheduler: &SingleScheduler,
 ) -> &crucible::SchedulerTopologyChangeApplication {
@@ -762,13 +706,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),

@@ -321,7 +321,6 @@ async fn recv_watch_state_update(
     tokio::time::timeout(Duration::from_millis(100), watch.recv_state_update())
         .await
         .unwrap_or_else(|_| panic!("Watch state update should arrive before timeout"))
-        .unwrap_or_else(|error| panic!("Watch state update should decode: {error}"))
         .unwrap_or_else(|| panic!("Watch state update stream should remain open"))
 }
 

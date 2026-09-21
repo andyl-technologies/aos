@@ -43,8 +43,6 @@ pub(crate) enum FaultSignalAuthoringError {
     ExpectedTable(&'static str),
     /// Flattening would overwrite a common field.
     DuplicateProjectedField(String),
-    /// `signal` and `signals` were both supplied.
-    ConflictingSignalFields,
     /// A selector did not reconstruct a valid homogeneous target set.
     InvalidSelector,
     /// A closed enum did not serialize as its canonical string.
@@ -190,9 +188,6 @@ impl fmt::Display for FaultSignalAuthoringError {
                     formatter,
                     "projected field `{field}` conflicts with a common field"
                 )
-            }
-            Self::ConflictingSignalFields => {
-                formatter.write_str("`signal` and `signals` are mutually exclusive")
             }
             Self::InvalidSelector => formatter.write_str("selector target set is invalid"),
             Self::InvalidEnum => formatter.write_str("closed enum is not a canonical string"),

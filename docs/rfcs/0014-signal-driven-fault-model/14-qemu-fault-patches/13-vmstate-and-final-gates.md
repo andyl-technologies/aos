@@ -1,21 +1,22 @@
-# Patch 0070 — `crucible-fault-vmstate`
+# Capability task 0070 — `crucible-fault-vmstate`
 
 ## Purpose
 
-Completes VMState, process identity, capability/evidence export, snapshot barriers,
-and aggregate conformance for every fault patch. No earlier mutation capability
-may ship without this patch.
+Completes VMState, process identity, capability/evidence export, snapshot
+barriers, and aggregate conformance for every fault capability. The atomic
+patch ships only when this closure is complete.
 
 ## Capability and dependencies
 
 - Provides `qemu.fault-vmstate.v1` and the final
   `qemu.fault-system.complete.v1` marker.
-- Depends on 0047–0069 and the existing QMP snapshot/restore, raw-state export,
-  process attestation, and fingerprint facilities.
+- Requires the capabilities specified by capability tasks 0047–0069 and the
+  existing native QMP checkpoint VMState,
+  process attestation, and fingerprint projection facilities.
 
 ## VMState sections
 
-Each preceding patch registers one versioned subsection:
+The atomic patch registers one versioned subsection for each state domain:
 
 | Section | State |
 | --- | --- |
@@ -49,7 +50,7 @@ Before QMP save:
 6. VMState serialization occurs;
 7. plugin resumes only after QMP confirms completion.
 
-Restore validates patch-series identity, machine/CPU/device manifests, fault ABI,
+Restore validates atomic-patch identity, machine/CPU/device manifests, fault ABI,
 capability set, every subsection version/bound, and pre-save digest before guest
 execution. It rebuilds indexes deterministically from serialized sorted rules and
 verifies their digest. No host pointer/index cache is serialized.
@@ -64,10 +65,10 @@ fingerprint.
 
 ## Capability/system marker
 
-The final marker hashes pinned QEMU tag, ordered complete patch bytes, QEMU
+The final marker hashes the pinned QEMU tag, complete atomic-patch bytes, QEMU
 configuration/machine/CPU manifests, fault ABI, registered capabilities and
 bounds, plugin identity, shmem ABI, VMState section versions, and license/source
-artifact identity. Discovery rejects any missing patch capability or extra
+artifact identity. Discovery rejects any missing required capability or extra
 unrecognized mutation handler.
 
 The marker is emitted in package metadata and queried live through the existing
@@ -77,16 +78,16 @@ GPL-side discovery surface. Host admission compares both and fails on mismatch.
 
 Every applied command result references content-addressed full evidence when it
 cannot fit inline. The reproduction artifact retains QEMU VMState, command/result
-streams, manifests, patch/system marker, raw/fingerprint state, and corresponding
+streams, manifests, atomic-patch/system marker, aggregate fingerprints, and corresponding
 source identity as declared dependencies. GC cannot remove them while a
 savepoint/reproduction artifact is retained.
 
 ## Aggregate live gates
 
-1. **Per-patch resume matrix:** snapshot before arm, armed, immediately before
-   opportunity, immediately after apply, delayed/pending, and recovered states
-   for every patch; compare uninterrupted and resumed runs.
-2. **Cross-patch overlap:** combine register/instruction/memory/interrupt/error/
+1. **Per-capability resume matrix:** snapshot before arm, armed, immediately
+   before opportunity, immediately after apply, delayed/pending, and recovered
+   states for every capability; compare uninterrupted and resumed runs.
+2. **Cross-capability overlap:** combine register/instruction/memory/interrupt/error/
    clock/service/lifecycle/accelerator effects at one boundary and prove declared
    total order, evidence, and replay.
 3. **Multi-vCPU:** apply commands across all vCPUs near RR switches/IPIs and
@@ -95,9 +96,9 @@ savepoint/reproduction artifact is retained.
    AArch64; architecture-specific manifests cover their complete corresponding
    error/register/clock/interrupt contracts.
 5. **Locked replay corruption:** independently corrupt command target, phase,
-   opportunity, precondition, capability, patch identity, VMState subsection,
+   opportunity, precondition, capability, atomic-patch identity, VMState subsection,
    result, and fingerprint; fail at the first mismatch.
-6. **Inertness:** run full unpatched-versus-patched non-sim corpus including
+6. **Inertness:** run the full pristine-QEMU and atomic-patch non-sim corpus, including
    machine enumeration, boot, device I/O, migration, snapshot, QMP schema, and
    instruction traces.
 7. **Performance:** disabled, enabled-empty, sparse non-match, and active-match
@@ -118,8 +119,9 @@ The system never drops pending faults to make an old checkpoint load.
 
 VMState and QEMU discovery changes remain in applicable GPL scope. Public
 capability/evidence/identity formats remain in dual-licensed boundary crates.
-Release packaging includes all patch/plugin/generated build sources and notices.
-The DCO-signed commit updates `_series.nix`, patch catalog/count, `LICENSES.md`,
+Release packaging includes the atomic patch, plugin/generated build sources, and
+notices. The DCO-signed commit updates the integration manifest, capability
+catalog and count, `LICENSES.md`,
 ABI vectors, source closure, and release gates.
 
 - **[QFP-STATE-1]** `qemu.fault-system.complete.v1` MUST NOT be emitted unless
@@ -127,4 +129,4 @@ ABI vectors, source closure, and release gates.
 - **[QFP-STATE-2]** Restore MUST never omit, default, or translate fault state
   from another semantic version.
 - **[QFP-STATE-3]** The implementation PR cannot leave draft until the aggregate
-  patch matrix, inertness, license, and corresponding-source gates all pass.
+  capability matrix, inertness, license, and corresponding-source gates all pass.

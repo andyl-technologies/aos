@@ -76,14 +76,6 @@ impl ProductionVmHotForkSourceWorld {
         self.continuation.initial_lifecycle_observations_pending = false;
     }
 
-    /// Returns the canonically ordered prepared retained-source nodes.
-    #[must_use]
-    pub fn prepared_nodes(&self) -> impl ExactSizeIterator<Item = &NodeId> {
-        self.prepared
-            .iter()
-            .map(QemuNodeSetPreparedHotForkTemplate::node)
-    }
-
     /// Mints a process-neutral continuation for one child world.
     ///
     /// The retained sources and their enclosing production lifecycle remain
@@ -315,7 +307,7 @@ impl ProductionVmHotForkSourceWorld {
             let expected_resources = lifecycle
                 .launch_configs
                 .get(node)
-                .map(ProductionLiveNodeStepGateConfig::resource_requirements)
+                .map(QemuLiveNodeStepGateConfig::resource_requirements)
                 .ok_or_else(|| {
                     hot_fork_boundary_error(format!(
                         "prepared source `{}` has no exact launch profile",
@@ -479,265 +471,13 @@ fn quarantine_unreconciled_hot_fork_lifecycle(lifecycle: Box<ProductionVmLifecyc
     let _retained_for_process_lifetime = Box::leak(lifecycle);
 }
 
-/// Modeled service state of one node in a hot-fork world continuation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProductionVmHotForkNodeServiceState {
-    /// The node has one paused source QEMU that must participate in the fork.
-    Running,
-    /// The node is powered off but retains a paused source for a later Boot.
-    PoweredOff,
-    /// The node is permanently failed and cannot acquire a child process.
-    PermanentlyFailed,
-}
+mod boundary;
 
-impl From<ProductionNodeServiceState> for ProductionVmHotForkNodeServiceState {
-    fn from(state: ProductionNodeServiceState) -> Self {
-        match state {
-            ProductionNodeServiceState::Running => Self::Running,
-            ProductionNodeServiceState::PoweredOff => Self::PoweredOff,
-            ProductionNodeServiceState::PermanentlyFailed => Self::PermanentlyFailed,
-        }
-    }
-}
-
-/// Exact process and scheduler boundary for one World node.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionVmHotForkNodeBoundary {
-    node: NodeId,
-    generation: u64,
-    service_state: ProductionVmHotForkNodeServiceState,
-    scheduler_time: VirtualTime,
-    physical_time: Option<VirtualTime>,
-    process: Option<QemuProcessIdentity>,
-}
-
-impl ProductionVmHotForkNodeBoundary {
-    /// Returns the canonical World node identity.
-    #[must_use]
-    pub const fn node(&self) -> &NodeId {
-        &self.node
-    }
-
-    /// Returns the positive source process generation.
-    #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the modeled node service state.
-    #[must_use]
-    pub const fn service_state(&self) -> ProductionVmHotForkNodeServiceState {
-        self.service_state
-    }
-
-    /// Returns the scheduler time paired with the paused source boundary.
-    #[must_use]
-    pub const fn scheduler_time(&self) -> VirtualTime {
-        self.scheduler_time
-    }
-
-    /// Returns the physical QEMU time for a running or powered-off source node.
-    #[must_use]
-    pub const fn physical_time(&self) -> Option<VirtualTime> {
-        self.physical_time
-    }
-
-    /// Returns the exact Linux incarnation of a retained source process.
-    #[must_use]
-    pub const fn process(&self) -> Option<&QemuProcessIdentity> {
-        self.process.as_ref()
-    }
-}
-
-/// Device family of one explicit host-I/O continuation boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProductionVmHotForkIoNodeKind {
-    /// A block device whose immutable base image remains shared.
-    Block,
-    /// A 9p device whose immutable filesystem tree remains shared.
-    NineP,
-}
-
-/// Exact host continuation identity for one first-class World I/O node.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionVmHotForkIoNodeBoundary {
-    node: NodeId,
-    owner: NodeId,
-    kind: ProductionVmHotForkIoNodeKind,
-    immutable_artifact: ContentHash,
-    owner_service_state: ProductionVmHotForkNodeServiceState,
-    owner_checkpoint_binding: ContentHash,
-    owner_checkpoint_identity: ContentHash,
-}
-
-impl ProductionVmHotForkIoNodeBoundary {
-    /// Returns the canonical World I/O node identity.
-    #[must_use]
-    pub const fn node(&self) -> &NodeId {
-        &self.node
-    }
-
-    /// Returns the VM node that owns this I/O continuation.
-    #[must_use]
-    pub const fn owner(&self) -> &NodeId {
-        &self.owner
-    }
-
-    /// Returns the declared I/O device family.
-    #[must_use]
-    pub const fn kind(&self) -> ProductionVmHotForkIoNodeKind {
-        self.kind
-    }
-
-    /// Returns the immutable base-image or filesystem-tree identity.
-    #[must_use]
-    pub const fn immutable_artifact(&self) -> ContentHash {
-        self.immutable_artifact
-    }
-
-    /// Returns the owner VM's service state at the captured world boundary.
-    #[must_use]
-    pub const fn owner_service_state(&self) -> ProductionVmHotForkNodeServiceState {
-        self.owner_service_state
-    }
-
-    /// Returns the original execution binding carried by the owner checkpoint.
-    #[must_use]
-    pub const fn owner_checkpoint_binding(&self) -> ContentHash {
-        self.owner_checkpoint_binding
-    }
-
-    /// Returns the canonical identity of the complete owner host checkpoint.
-    #[must_use]
-    pub const fn owner_checkpoint_identity(&self) -> ContentHash {
-        self.owner_checkpoint_identity
-    }
-}
-
-/// Authenticated scheduler and device boundary of one exact-checkpoint source.
-///
-/// This opaque value is derived directly from a completely authenticated
-/// native exact closure. It lets source admission prove that preparing a live
-/// QEMU world preserved the restored scheduler, event-log, node, fault, and
-/// host-device cursors.
-pub struct ProductionVmExactHotForkSourceBoundary {
-    configuration: Configuration,
-    scheduler: SingleSchedulerCheckpoint,
-    event_log_objects: BTreeMap<ContentHash, Vec<u8>>,
-    signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
-    node_generations: BTreeMap<NodeId, u64>,
-    node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
-    host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
-    fault_checkpoint: ContentHash,
-}
-
-impl ProductionVmExactHotForkSourceBoundary {
-    pub(super) fn from_exact_checkpoint(
-        checkpoint: &ProductionVmExactCheckpointSet,
-    ) -> Result<Self, SchedulerError> {
-        let mut host_io = BTreeMap::new();
-        for (node, target) in &checkpoint.targets {
-            if host_io
-                .insert(node.clone(), target.snapshot.host_io().clone())
-                .is_some()
-            {
-                return Err(hot_fork_boundary_error(
-                    "exact hot-fork boundary repeats a live host-I/O owner",
-                ));
-            }
-        }
-        for (node, failed) in &checkpoint.failed_host_io {
-            if host_io
-                .insert(node.clone(), failed.host_io.clone())
-                .is_some()
-            {
-                return Err(hot_fork_boundary_error(
-                    "exact hot-fork boundary repeats a failed host-I/O owner",
-                ));
-            }
-        }
-        if host_io.keys().ne(checkpoint.node_service_states.keys()) {
-            return Err(hot_fork_boundary_error(
-                "exact hot-fork boundary has an incomplete host-I/O owner set",
-            ));
-        }
-        let fault_checkpoint = checkpoint
-            .fault_checkpoint
-            .as_ref()
-            .ok_or_else(|| hot_fork_boundary_error("exact hot-fork boundary lost fault state"))?
-            .id();
-
-        Ok(Self {
-            configuration: checkpoint.configuration.clone(),
-            scheduler: checkpoint.scheduler.clone(),
-            event_log_objects: checkpoint.event_log_objects.clone(),
-            signal_artifact_objects: checkpoint.signal_artifact_objects.clone(),
-            node_generations: checkpoint.node_generations.clone(),
-            node_service_states: checkpoint.node_service_states.clone(),
-            host_io,
-            fault_checkpoint,
-        })
-    }
-
-    /// Reports whether a prepared source preserves this authenticated boundary.
-    #[must_use]
-    pub fn matches(&self, continuation: &ProductionVmHotForkWorldContinuation) -> bool {
-        let expected_active_host_io = self
-            .node_service_states
-            .values()
-            .filter(|state| {
-                matches!(
-                    state,
-                    ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff
-                )
-            })
-            .count();
-        let expected_failed_host_io = self.node_service_states.len() - expected_active_host_io;
-
-        if self.configuration != continuation.configuration
-            || self.scheduler != continuation.scheduler
-            || self.event_log_objects != continuation.event_log_objects
-            || self.signal_artifact_objects != continuation.signal_artifact_objects
-            || self.node_generations != continuation.node_generations
-            || self.node_service_states != continuation.node_service_states
-            || self.fault_checkpoint != continuation.fault_checkpoint.id()
-            || self.host_io.len() != continuation.node_service_states.len()
-            || continuation.active_host_io.len() != expected_active_host_io
-            || continuation.failed_host_io.len() != expected_failed_host_io
-            || continuation.nodes.len() != self.node_generations.len()
-        {
-            return false;
-        }
-
-        let mut matched_nodes = BTreeSet::new();
-        for boundary in &continuation.nodes {
-            if !matched_nodes.insert(boundary.node.clone())
-                || !self.node_generations.contains_key(&boundary.node)
-            {
-                return false;
-            }
-        }
-        if matched_nodes.iter().ne(self.node_generations.keys()) {
-            return false;
-        }
-
-        self.host_io.iter().all(|(node, expected)| {
-            let Some(service_state) = self.node_service_states.get(node) else {
-                return false;
-            };
-            let actual = match service_state {
-                ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
-                    continuation.active_host_io.get(node)
-                }
-                ProductionNodeServiceState::PermanentlyFailed => continuation
-                    .failed_host_io
-                    .get(node)
-                    .map(|failed| &failed.host_io),
-            };
-            actual.is_some_and(|actual| expected.same_device_continuation(actual))
-        })
-    }
-}
+pub use boundary::{
+    ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkIoNodeBoundary,
+    ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeBoundary,
+    ProductionVmHotForkNodeServiceState,
+};
 
 /// Complete process-neutral host continuation captured for one world hot fork.
 ///
@@ -1053,6 +793,7 @@ impl ProductionVmHotForkWorldContinuation {
             failed_host_io: self.failed_host_io,
             node_generations,
             node_service_states: self.node_service_states,
+            repository_restore: None,
         };
         ProductionVmHotForkRestoreParts {
             config,

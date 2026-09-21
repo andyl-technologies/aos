@@ -10,6 +10,11 @@ pub(super) fn savepoint_handle_text(
     let scenario = form.scenario_def();
     let scenario_payload = form.to_compact_binary();
     let schedule_payload = schedule.to_compact_binary();
+    let replay_closure = crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+        b"CCRC\0\0\0\x01\0\0\0\0",
+    )?;
+    replay_closure.validate_for_schedule(form, schedule)?;
+    let replay_closure = replay_closure.to_canonical_bytes()?;
     let boundary_predicate = crucible::Predicate::quiescent().to_compact_binary();
     let mut text = String::new();
     artifact_line(&mut text, &["schema", "crucible.savepoint-handle.v6"]);
@@ -19,6 +24,14 @@ pub(super) fn savepoint_handle_text(
         &[
             "checkpoint",
             &crucible::ContentAddressedBlobRef::from_hash(checkpoint.id).to_uri(),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "campaign-replay-closure",
+            &content_address_bytes(&replay_closure),
+            &hex_bytes(&replay_closure),
         ],
     );
     artifact_line(
@@ -77,29 +90,4 @@ pub(super) fn savepoint_handle_text(
         ],
     );
     Ok(text)
-}
-
-pub(super) fn single_savepoint_handle(dir: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let prefix = format!("savepoint-{label}-");
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| invalid_data(format!("non-UTF-8 entry in `{}`", dir.display())))?;
-        if file_name.starts_with(&prefix) && file_name.ends_with(".crucible-savepoint") {
-            paths.push(path);
-        }
-    }
-    paths.sort();
-    match paths.as_slice() {
-        [path] => Ok(path.clone()),
-        _ => Err(invalid_data(format!(
-            "expected one savepoint handle with prefix `{prefix}` in `{}`, found {}",
-            dir.display(),
-            paths.len()
-        ))
-        .into()),
-    }
 }

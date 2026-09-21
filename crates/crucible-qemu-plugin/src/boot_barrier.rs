@@ -100,7 +100,8 @@ impl PluginBootBarrier {
     ) -> Result<BootBarrierRelease, BootBarrierError> {
         let mut wait = request.futex_wait;
         loop {
-            let ceiling = PluginShmemOrdering::load_scheduler_ceiling(slot);
+            let (ceiling, _) = PluginShmemOrdering::load_scheduler_advance(slot)
+                .map_err(|source| BootBarrierError::AdvanceStopCondition { source })?;
             if ceiling >= request.first_guest_icount {
                 PluginShmemOrdering::mark_running_after_wake(slot);
                 return Ok(BootBarrierRelease {
@@ -113,9 +114,11 @@ impl PluginBootBarrier {
                 .map_err(|source| BootBarrierError::FutexWait { source })?
             {
                 FutexWaitOutcome::Noop => {
+                    let (ceiling_icount, _) = PluginShmemOrdering::load_scheduler_advance(slot)
+                        .map_err(|source| BootBarrierError::AdvanceStopCondition { source })?;
                     return Err(BootBarrierError::InitialCeilingStillBlocked {
                         first_guest_icount: request.first_guest_icount,
-                        ceiling_icount: PluginShmemOrdering::load_scheduler_ceiling(slot),
+                        ceiling_icount,
                     });
                 }
                 FutexWaitOutcome::Runnable
@@ -147,6 +150,12 @@ impl PluginBootBarrier {
 /// An error produced while waiting for the initial scheduler ceiling.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum BootBarrierError {
+    /// The scheduler's current advance-stop condition was not valid.
+    #[error("reading scheduler advance-stop condition failed: {source}")]
+    AdvanceStopCondition {
+        /// The shared-memory slot validation error.
+        source: NodeSlotError,
+    },
     /// Publishing the initial idle precondition failed.
     #[error("publishing boot-barrier idle precondition failed: {source}")]
     PublishIdle {
@@ -258,7 +267,7 @@ mod tests {
     fn publish_initial_ceiling(slot: &NodeSlot, max_advance_icount: u64) {
         let ceiling = authorize_advance_ceiling(0, max_advance_icount, None)
             .unwrap_or_else(|error| panic!("initial ceiling should authorize: {error}"));
-        slot.publish_scheduler_ceiling(ceiling)
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
             .unwrap_or_else(|error| panic!("initial ceiling should publish: {error}"));
     }
 

@@ -31,12 +31,11 @@ use std::time::Instant;
 use crucible_harness::perf::{
     BenchLink, BenchNode, BenchScenario, COVERAGE_ON_MIN_PCT, CoverageMode, DEVICE_WORK_OVERLAP,
     FINGERPRINT_DIGEST_OFFLOAD, HOST_WORKER_POOL, HostParallelismClass, PerfBenchError,
-    RealizationConfig, SEGMENT_PARALLEL_REPLAY, SYNC_OVERHEAD_FAIL_PCT, TRANSLATION_PREFETCH,
-    canonical_bench_corpus, canonical_host_parallelism_admissions, canonical_host_profile,
-    canonical_perf_bench_input, core_count_speedup_sweep, evaluate_cost_model, fleet_host_sweep,
-    latency_parallelism_sweep, perf_corpus_digest, realized_parallelism,
-    rendezvous_frequency_sweep, run_perf_bench_gate, scenario_result_fingerprint,
-    snapshot_latency_series,
+    RealizationConfig, SEGMENT_PARALLEL_REPLAY, SYNC_OVERHEAD_FAIL_PCT, canonical_bench_corpus,
+    canonical_host_parallelism_admissions, canonical_host_profile, canonical_perf_bench_input,
+    core_count_speedup_sweep, evaluate_cost_model, fleet_host_sweep, latency_parallelism_sweep,
+    perf_corpus_digest, realized_parallelism, rendezvous_frequency_sweep, run_perf_bench_gate,
+    scenario_result_fingerprint, snapshot_latency_series,
 };
 
 /// [PERF-1], [PERF-19] — the full gate passes over the canonical corpus, and the
@@ -483,13 +482,6 @@ fn gate_perf_bench_requires_complete_host_parallelism_admission_register() {
                 && admission.class == HostParallelismClass::CommitPinnedToVirtualTime
         }),
         "device host-work overlap must be admitted as Class B"
-    );
-    assert!(
-        admissions.iter().any(|admission| {
-            admission.mechanism == TRANSLATION_PREFETCH
-                && admission.class == HostParallelismClass::OutsideObservableBoundary
-        }),
-        "translation prefetch must be admitted as Class A"
     );
     assert!(
         admissions.iter().any(|admission| {

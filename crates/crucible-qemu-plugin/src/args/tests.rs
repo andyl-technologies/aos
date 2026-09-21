@@ -1,7 +1,5 @@
 //! Unit tests for the complete plugin argument grammar.
 
-use std::path::Path;
-
 use super::*;
 
 #[test]
@@ -23,49 +21,7 @@ fn plugin_args_parse_required_simfd_and_slot() {
     assert_eq!(args.app_random(), None);
     assert_eq!(args.coverage(), PluginSwitch::Off);
     assert_eq!(args.fingerprint(), PluginSwitch::Off);
-    assert_eq!(
-        args.fingerprint_mode(),
-        PluginFingerprintSamplingMode::EveryQuantum
-    );
-    assert_eq!(args.fingerprint_oracle(), PluginSwitch::Off);
-    assert_eq!(args.state_dump(), None);
     assert_eq!(args.validate_slot_index(3), Ok(()));
-}
-
-#[test]
-fn plugin_args_parse_on_demand_fingerprint_mode() {
-    let args = PluginArgs::parse(
-        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint=on,fingerprint_mode=on-demand-v1",
-    )
-    .unwrap_or_else(|error| panic!("on-demand fingerprint args should parse: {error}"));
-
-    assert_eq!(
-        args.fingerprint_mode(),
-        PluginFingerprintSamplingMode::OnDemand
-    );
-}
-
-#[test]
-fn plugin_args_reject_invalid_on_demand_fingerprint_combinations() {
-    let prefix = "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576";
-    assert_eq!(
-        PluginArgs::parse(&format!("{prefix},fingerprint_mode=on-demand-v1")),
-        Err(PluginArgsParseError::FingerprintModeWithoutFingerprint)
-    );
-    assert_eq!(
-        PluginArgs::parse(&format!(
-            "{prefix},fingerprint=on,fingerprint_mode=periodic"
-        )),
-        Err(PluginArgsParseError::InvalidFingerprintMode {
-            value: String::from("periodic"),
-        })
-    );
-    assert_eq!(
-        PluginArgs::parse(&format!(
-            "{prefix},fingerprint=on,fingerprint_mode=on-demand-v1,state_dump_target=1,state_dump_path=/tmp/dump.bin"
-        )),
-        Err(PluginArgsParseError::StateDumpWithOnDemandFingerprint)
-    );
 }
 
 #[test]
@@ -102,7 +58,7 @@ fn plugin_args_require_and_validate_authored_storage_history_limits() {
 #[test]
 fn plugin_args_parse_optional_fds_and_switches() {
     let args = PluginArgs::parse(
-        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=8,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on,fingerprint_oracle=on",
+        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=8,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on",
     )
     .unwrap_or_else(|error| panic!("complete args should parse: {error}"));
 
@@ -122,53 +78,6 @@ fn plugin_args_parse_optional_fds_and_switches() {
     );
     assert!(!args.coverage().is_on());
     assert!(args.fingerprint().is_on());
-    assert!(args.fingerprint_oracle().is_on());
-    assert_eq!(args.state_dump(), None);
-}
-
-#[test]
-fn plugin_args_require_fingerprint_for_synchronous_oracle() {
-    assert_eq!(
-        PluginArgs::parse(
-            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint_oracle=on"
-        ),
-        Err(PluginArgsParseError::FingerprintOracleWithoutFingerprint)
-    );
-}
-
-#[test]
-fn plugin_args_parse_terminal_state_dump_as_complete_group() {
-    let args = PluginArgs::parse(
-        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint=on,state_dump_target=4000001,state_dump_path=/tmp/dump.bin",
-    )
-    .unwrap_or_else(|error| panic!("state-dump args should parse: {error}"));
-    let dump = args
-        .state_dump()
-        .unwrap_or_else(|| panic!("state-dump config should be present"));
-    assert_eq!(dump.target_icount(), 4_000_001);
-    assert_eq!(dump.output_path(), Path::new("/tmp/dump.bin"));
-}
-
-#[test]
-fn plugin_args_reject_incomplete_or_unscoped_state_dump() {
-    assert_eq!(
-        PluginArgs::parse(
-            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint=on,state_dump_target=1"
-        ),
-        Err(PluginArgsParseError::IncompleteStateDump)
-    );
-    assert_eq!(
-        PluginArgs::parse(
-            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,state_dump_target=1,state_dump_path=/tmp/dump.bin"
-        ),
-        Err(PluginArgsParseError::StateDumpWithoutFingerprint)
-    );
-    assert!(matches!(
-        PluginArgs::parse(
-            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint=on,state_dump_target=1,state_dump_path=relative"
-        ),
-        Err(PluginArgsParseError::InvalidStateDumpPath { .. })
-    ));
 }
 
 #[test]

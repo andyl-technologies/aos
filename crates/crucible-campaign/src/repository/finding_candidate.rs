@@ -2,673 +2,30 @@
 
 use super::*;
 use crate::{
-    CampaignName, ConfigurationId, ExecutionId, FindingCandidateBundle, FindingCandidateBundleId,
+    CampaignName, ConfigurationId, FindingCandidateBundle, FindingCandidateBundleId,
     FindingExactPins, FindingExactRetentionDisposition, FindingId, FindingTarget,
     FindingTriageReplayStorageDescription, FindingTriageReplayStorageObject,
     FindingTriageReplayStorageObjectRole, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
     ScenarioArtifactId, ScenarioDefId,
 };
-use ed25519_dalek::Signature;
 
 const MAX_FINDING_EXACT_PIN_ROOT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL: u64 = 64 * 1024 * 1024;
 
-/// Strict authentication result for one production finding checkpoint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AuthenticatedFindingExactCheckpoint {
-    scenario: ScenarioDefId,
-    configuration: ConfigurationId,
-    event_count: u64,
-    metadata_bytes: u64,
-}
+mod recovery;
+mod replay_evidence;
 
-impl AuthenticatedFindingExactCheckpoint {
-    /// Builds one result after typed production-checkpoint validation succeeds.
-    #[must_use]
-    pub const fn new(
-        scenario: ScenarioDefId,
-        configuration: ConfigurationId,
-        event_count: u64,
-        metadata_bytes: u64,
-    ) -> Self {
-        Self {
-            scenario,
-            configuration,
-            event_count,
-            metadata_bytes,
-        }
-    }
-
-    /// Returns the authenticated scenario identity.
-    #[must_use]
-    pub const fn scenario(self) -> ScenarioDefId {
-        self.scenario
-    }
-
-    /// Returns the authenticated configuration identity.
-    #[must_use]
-    pub const fn configuration(self) -> ConfigurationId {
-        self.configuration
-    }
-
-    /// Returns the authenticated scheduler event boundary.
-    #[must_use]
-    pub const fn event_count(self) -> u64 {
-        self.event_count
-    }
-
-    /// Returns the root, manifest, and index bytes consumed by authentication.
-    #[must_use]
-    pub const fn metadata_bytes(self) -> u64 {
-        self.metadata_bytes
-    }
-}
-
-/// Stable failure class returned by a production-checkpoint authenticator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FindingExactCheckpointAuthenticationError {
-    /// The checkpoint metadata exceeds the caller's remaining byte budget.
-    LimitExceeded,
-    /// Typed structure, identity, or execution-model validation failed.
-    AuthenticationFailed,
-}
-
-/// Authenticates production checkpoints through their owning typed codecs.
-pub trait FindingExactCheckpointAuthenticator: Send + Sync {
-    /// Authenticates one checkpoint against the exact finding basis.
-    ///
-    /// Implementations must reject before allocation when root, manifest,
-    /// index, scheduler, or scenario-derived object limits are exceeded.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable limit or authentication failure without accepting a
-    /// partial, unknown-field, or merely structurally plausible checkpoint.
-    fn authenticate_finding_exact_checkpoint(
-        &self,
-        checkpoint: crate::ExactCheckpointId,
-        scenario: ScenarioDefId,
-        scenario_artifact: ScenarioArtifactId,
-        configuration: ConfigurationId,
-        maximum_metadata_bytes: u64,
-    ) -> Result<AuthenticatedFindingExactCheckpoint, FindingExactCheckpointAuthenticationError>;
-
-    /// Opens one authenticated object named by a selected checkpoint closure.
-    ///
-    /// The repository calls this only for the selected root or for a child
-    /// discovered from an authenticated exact-manifest envelope. Implementors
-    /// may defer content authentication until the returned stream reaches EOF.
-    ///
-    /// # Errors
-    ///
-    /// Returns an authentication failure when the object is absent, corrupt,
-    /// or unavailable from the owning checkpoint store.
-    fn read_finding_exact_checkpoint_object(
-        &self,
-        _object: ContentId,
-    ) -> Result<BlobHandle, FindingExactCheckpointAuthenticationError> {
-        Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed)
-    }
-}
-
-/// Exact completed-execution context authenticated before restart incorporation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FindingCandidateRecoveryContext {
-    campaign: CampaignName,
-    expected_snapshot: CampaignSnapshotId,
-    lineage: CampaignLineageId,
-    attempt: AttemptId,
-    execution_basis: CampaignHash,
-    execution: ExecutionId,
-    observation: ObservationId,
-    bundle: FindingCandidateBundleId,
-    prepared_result_digest: CampaignHash,
-}
-
-impl FindingCandidateRecoveryContext {
-    /// Builds the full durable context covered by a recovery seal.
-    #[must_use]
-    // crucible-lint: allow rust-allow -- the durable authorization tuple is explicit.
-    #[allow(clippy::too_many_arguments)]
-    pub const fn new(
-        campaign: CampaignName,
-        expected_snapshot: CampaignSnapshotId,
-        lineage: CampaignLineageId,
-        attempt: AttemptId,
-        execution_basis: CampaignHash,
-        execution: ExecutionId,
-        observation: ObservationId,
-        bundle: FindingCandidateBundleId,
-        prepared_result_digest: CampaignHash,
-    ) -> Self {
-        Self {
-            campaign,
-            expected_snapshot,
-            lineage,
-            attempt,
-            execution_basis,
-            execution,
-            observation,
-            bundle,
-            prepared_result_digest,
-        }
-    }
-
-    /// Returns the exact campaign authorized for incorporation.
-    #[must_use]
-    pub const fn campaign(&self) -> &CampaignName {
-        &self.campaign
-    }
-
-    /// Returns the exact post-observation head authorized for incorporation.
-    #[must_use]
-    pub const fn expected_snapshot(&self) -> CampaignSnapshotId {
-        self.expected_snapshot
-    }
-
-    /// Returns the completed campaign lineage.
-    #[must_use]
-    pub const fn lineage(&self) -> CampaignLineageId {
-        self.lineage
-    }
-
-    /// Returns the completed semantic attempt.
-    #[must_use]
-    pub const fn attempt(&self) -> AttemptId {
-        self.attempt
-    }
-
-    /// Returns the exact admitted execution-contract digest.
-    #[must_use]
-    pub const fn execution_basis(&self) -> CampaignHash {
-        self.execution_basis
-    }
-
-    /// Returns the local execution incarnation that published the result.
-    #[must_use]
-    pub const fn execution(&self) -> ExecutionId {
-        self.execution
-    }
-
-    /// Returns the immutable completed observation.
-    #[must_use]
-    pub const fn observation(&self) -> ObservationId {
-        self.observation
-    }
-
-    /// Returns the immutable finding-candidate bundle.
-    #[must_use]
-    pub const fn bundle(&self) -> FindingCandidateBundleId {
-        self.bundle
-    }
-
-    /// Returns the digest of the complete prepared-result payload.
-    #[must_use]
-    pub const fn prepared_result_digest(&self) -> CampaignHash {
-        self.prepared_result_digest
-    }
-
-    /// Encodes the domain-separated message covered by the process seal.
-    #[must_use]
-    pub fn seal_message(&self) -> Vec<u8> {
-        let mut material = Vec::with_capacity(512);
-        material
-            .extend_from_slice(b"crucible.campaign.finding-candidate-recovery-process-seal.v1\0");
-        for bytes in [
-            self.campaign.as_str().as_bytes().to_vec(),
-            self.expected_snapshot.to_text().into_bytes(),
-            self.lineage.to_text().into_bytes(),
-            self.attempt.to_text().into_bytes(),
-            self.observation.to_text().into_bytes(),
-            self.bundle.to_text().into_bytes(),
-        ] {
-            material.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-            material.extend_from_slice(&bytes);
-        }
-        material.extend_from_slice(&self.execution_basis.as_bytes());
-        material.extend_from_slice(&self.execution.as_bytes());
-        material.extend_from_slice(&self.prepared_result_digest.as_bytes());
-        material
-    }
-}
-
-/// Process-ephemeral signature over one authenticated recovery context.
-///
-/// The daemon creates this value only after reopening and comparing the V15
-/// assignment state, prepared-result journal, and immutable candidate bundle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FindingCandidateRecoverySeal {
-    signature: [u8; 64],
-}
-
-impl FindingCandidateRecoverySeal {
-    /// Wraps one Ed25519 signature produced by the current recovery owner.
-    #[must_use]
-    pub const fn from_bytes(signature: [u8; 64]) -> Self {
-        Self { signature }
-    }
-
-    pub(super) fn signature(self) -> Signature {
-        Signature::from_bytes(&self.signature)
-    }
-}
-
-/// Single-use authority for one exact finding-candidate incorporation.
-///
-/// The campaign repository creates this capability only after authenticated
-/// recovery of a V15 completed ledger record and its full prepared-result
-/// journal. It is bound to that recovery context and cannot be cloned or
-/// constructed from public IDs. Checked live completion uses a separate
-/// crate-private bound operation derived directly from the typed response.
-pub struct FindingCandidateIncorporationAuthorization {
-    bundle: FindingCandidateBundleId,
-    observation: ObservationId,
-    context_digest: CampaignHash,
-    recovery_context: FindingCandidateRecoveryContext,
-}
-
-pub(super) struct BoundFindingCandidateIncorporationAuthorization {
-    context_digest: CampaignHash,
-    operation_digest: CampaignHash,
-}
-
-impl FindingCandidateIncorporationAuthorization {
-    pub(super) fn for_authenticated_recovery(
-        context_digest: CampaignHash,
-        recovery_context: FindingCandidateRecoveryContext,
-    ) -> Self {
-        Self {
-            bundle: recovery_context.bundle(),
-            observation: recovery_context.observation(),
-            context_digest,
-            recovery_context,
-        }
-    }
-
-    /// Returns the exact bundle authorized for incorporation.
-    #[must_use]
-    pub const fn bundle(&self) -> FindingCandidateBundleId {
-        self.bundle
-    }
-
-    /// Returns the observation that the authorized bundle must name.
-    #[must_use]
-    pub const fn observation(&self) -> ObservationId {
-        self.observation
-    }
-
-    pub(super) fn bind(
-        self,
-        campaign: &str,
-        expected_snapshot: CampaignSnapshotId,
-        bundle: FindingCandidateBundleId,
-        observation: ObservationId,
-    ) -> Option<BoundFindingCandidateIncorporationAuthorization> {
-        if self.bundle != bundle || self.observation != observation {
-            return None;
-        }
-        if self.recovery_context.campaign().as_str() != campaign
-            || self.recovery_context.expected_snapshot() != expected_snapshot
-        {
-            return None;
-        }
-        let expected_context_digest = CampaignHash::derive(
-            "crucible.campaign.finding-candidate-recovery-authorization.v1",
-            &self.recovery_context.seal_message(),
-        );
-        if self.context_digest != expected_context_digest {
-            return None;
-        }
-        Some(BoundFindingCandidateIncorporationAuthorization {
-            context_digest: self.context_digest,
-            operation_digest: finding_candidate_incorporation_operation_digest(
-                campaign,
-                expected_snapshot,
-                bundle,
-                observation,
-                self.context_digest,
-            ),
-        })
-    }
-}
-
-fn finding_candidate_incorporation_operation_digest(
-    campaign: &str,
-    expected_snapshot: CampaignSnapshotId,
-    bundle: FindingCandidateBundleId,
-    observation: ObservationId,
-    context_digest: CampaignHash,
-) -> CampaignHash {
-    let mut material = Vec::with_capacity(768);
-    for bytes in [
-        campaign.as_bytes(),
-        expected_snapshot.to_text().as_bytes(),
-        bundle.to_text().as_bytes(),
-        observation.to_text().as_bytes(),
-    ] {
-        material.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-        material.extend_from_slice(bytes);
-    }
-    material.extend_from_slice(&context_digest.as_bytes());
-    CampaignHash::derive(
-        "crucible.campaign.finding-candidate-incorporation-operation.v1",
-        &material,
-    )
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum FindingCandidateValidation<'a> {
-    Publication(Option<&'a dyn FindingExactCheckpointAuthenticator>),
-    Load,
-}
-
-/// Opaque proof that one snapshot directly retains a finding candidate bundle.
-///
-/// Values can be obtained only through
-/// [`CampaignRepository::authenticate_current_finding_candidate_incorporation`],
-/// which authenticates the named campaign's current authoritative head and the
-/// finding's direct bundle reference before constructing the proof.
-///
-/// The proof records a point-in-time read. It does not pin the campaign head or
-/// any immutable object and does not authorize a later unfenced root release.
-/// A ledger owner must immediately reauthenticate the current head while
-/// holding the operational GC/ledger-generation fence that covers its release
-/// compare-and-swap.
-#[derive(Debug, PartialEq, Eq)]
-pub struct AuthenticatedFindingCandidateIncorporation {
-    campaign: CampaignName,
-    bundle: FindingCandidateBundleId,
-    snapshot: CampaignSnapshotId,
-    finding: FindingId,
-}
-
-impl AuthenticatedFindingCandidateIncorporation {
-    /// Returns the campaign whose authoritative head retains the finding.
-    #[must_use]
-    pub const fn campaign(&self) -> &CampaignName {
-        &self.campaign
-    }
-
-    /// Returns the exact candidate bundle retained by the finding.
-    #[must_use]
-    pub const fn bundle(&self) -> FindingCandidateBundleId {
-        self.bundle
-    }
-
-    /// Returns the authenticated snapshot containing the finding closure.
-    #[must_use]
-    pub const fn snapshot(&self) -> CampaignSnapshotId {
-        self.snapshot
-    }
-
-    /// Returns the finding that directly retains the candidate bundle.
-    #[must_use]
-    pub const fn finding(&self) -> FindingId {
-        self.finding
-    }
-}
+pub(super) use recovery::FindingCandidateValidation;
+pub use recovery::{
+    AuthenticatedFindingCandidateIncorporation, AuthenticatedFindingExactCheckpoint,
+    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
+};
+use recovery::{
+    BoundFindingCandidateIncorporationAuthorization,
+    finding_candidate_incorporation_operation_digest,
+};
 
 impl CampaignRepository {
-    /// Publishes one transport-neutral native triage replay record.
-    ///
-    /// The referenced reproduction and every observed-signature dependency
-    /// must already be durable. Repeating the operation returns the same ID.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store, codec, or integrity error when any referenced object
-    /// is absent, corrupt, or inconsistent with the observed signature.
-    pub fn publish_finding_triage_replay_evidence(
-        &self,
-        evidence: &FindingTriageReplayEvidence,
-    ) -> Result<FindingTriageReplayEvidenceId, CampaignRepositoryError> {
-        let plan = evidence.storage_plan()?;
-        let expected_content = plan.root.content_id();
-        self.validate_finding_triage_replay_evidence(evidence)?;
-
-        // Rebuild and authenticate the complete deterministic plan before the
-        // first durable write. The second pass publishes one bounded chunk at a
-        // time, so maximum evidence does not require another full payload copy.
-        for (index, descriptor) in plan.chunks.iter().copied().enumerate() {
-            evidence.chunk_envelope(index, descriptor)?;
-        }
-        for (index, descriptor) in plan.chunks.iter().copied().enumerate() {
-            let content = self.put_envelope(evidence.chunk_envelope(index, descriptor)?)?;
-            if content != descriptor.content() {
-                return Err(integrity(
-                    "finding-triage-replay-evidence-chunk-publication-id-mismatch",
-                ));
-            }
-        }
-        let content = self.put_envelope(plan.root)?;
-        if content != expected_content {
-            return Err(integrity(
-                "finding-triage-replay-evidence-publication-id-mismatch",
-            ));
-        }
-        self.verify_campaign_closure(content)?;
-        FindingTriageReplayEvidenceId::from_content_id(content).map_err(Into::into)
-    }
-
-    /// Loads and authenticates one native triage replay record.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store, codec, or integrity error when the record or one of its
-    /// referenced objects is absent, corrupt, or inconsistent.
-    pub fn load_finding_triage_replay_evidence(
-        &self,
-        id: FindingTriageReplayEvidenceId,
-    ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
-        let evidence = self.decode_finding_triage_replay_evidence(id.content_id())?;
-        self.validate_finding_triage_replay_evidence(&evidence)?;
-        Ok(evidence)
-    }
-
-    /// Describes the authenticated stored envelopes for one replay record.
-    ///
-    /// The returned order is always the root followed by payload chunks in
-    /// logical order. Repeated content IDs remain distinct positions.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store, codec, or integrity error when the root, a payload
-    /// chunk, or a referenced logical dependency is absent or inconsistent.
-    pub fn describe_finding_triage_replay_storage(
-        &self,
-        id: FindingTriageReplayEvidenceId,
-    ) -> Result<FindingTriageReplayStorageDescription, CampaignRepositoryError> {
-        let root = self.require_record_kind(
-            id.content_id(),
-            crate::CampaignRecordKind::FindingTriageReplayEvidence,
-        )?;
-        let root_schema_version = root.schema_version();
-        let mut objects = vec![FindingTriageReplayStorageObject::new(
-            0,
-            FindingTriageReplayStorageObjectRole::Root,
-            id.content_id(),
-            canonical_envelope_bytes(&root)?,
-        )];
-
-        let logical_payload_bytes = match root_schema_version {
-            1 => {
-                let evidence = FindingTriageReplayEvidence::from_canonical_bytes(root.body())?;
-                self.validate_finding_triage_replay_dependencies(
-                    evidence.reproduction(),
-                    evidence.observed_signature(),
-                )?;
-                u64::try_from(evidence.payload().len()).map_err(|_| {
-                    CampaignCodecError::LimitExceeded {
-                        limit: "finding-triage-replay-payload-bytes",
-                    }
-                })?
-            }
-            2 => {
-                let manifest =
-                    FindingTriageReplayEvidence::manifest_from_canonical_bytes(root.body())?;
-                self.validate_finding_triage_replay_dependencies(
-                    manifest.reproduction(),
-                    manifest.observed_signature(),
-                )?;
-                for (index, descriptor) in manifest.chunks().iter().copied().enumerate() {
-                    let chunk = self.require_record_kind(
-                        descriptor.content(),
-                        crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
-                    )?;
-                    let payload =
-                        FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
-                    if payload.len() != descriptor.logical_bytes() as usize {
-                        return Err(integrity(
-                            "finding-triage-replay-evidence-chunk-length-mismatch",
-                        ));
-                    }
-                    drop(payload);
-                    let ordinal = u32::try_from(index + 1).map_err(|_| {
-                        CampaignCodecError::LimitExceeded {
-                            limit: "finding-triage-replay-storage-object-ordinal",
-                        }
-                    })?;
-                    let chunk_index =
-                        u32::try_from(index).map_err(|_| CampaignCodecError::LimitExceeded {
-                            limit: "finding-triage-replay-storage-object-ordinal",
-                        })?;
-                    objects.push(FindingTriageReplayStorageObject::new(
-                        ordinal,
-                        FindingTriageReplayStorageObjectRole::PayloadChunk {
-                            index: chunk_index,
-                            logical_payload_bytes: descriptor.logical_bytes(),
-                        },
-                        descriptor.content(),
-                        canonical_envelope_bytes(&chunk)?,
-                    ));
-                }
-                u64::try_from(manifest.payload_bytes()?).map_err(|_| {
-                    CampaignCodecError::LimitExceeded {
-                        limit: "finding-triage-replay-payload-bytes",
-                    }
-                })?
-            }
-            _ => {
-                return Err(integrity("finding-triage-replay-evidence-envelope-version"));
-            }
-        };
-
-        FindingTriageReplayStorageDescription::new(
-            id,
-            root_schema_version,
-            logical_payload_bytes,
-            objects,
-        )
-        .map_err(Into::into)
-    }
-
-    /// Reads one authenticated bounded range from a described stored envelope.
-    ///
-    /// `object_ordinal` addresses the root-then-payload order returned by
-    /// [`Self::describe_finding_triage_replay_storage`]. The stored root layout
-    /// is reauthenticated before the range is read, binding the ordinal and
-    /// content identity to `id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an invalid-request error for a zero-length, oversized,
-    /// overflowing, out-of-bounds, or unknown range. Returns a store, codec, or
-    /// integrity error when the authenticated layout cannot be read.
-    pub fn read_finding_triage_replay_storage_range(
-        &self,
-        id: FindingTriageReplayEvidenceId,
-        object_ordinal: u32,
-        range: crucible_cas::content_store::ByteRange,
-    ) -> Result<Vec<u8>, CampaignRepositoryError> {
-        if range.length == 0 || range.length > MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES {
-            return Err(CampaignRepositoryError::InvalidRequest {
-                reason: "finding-triage-replay-storage-range-length",
-            });
-        }
-        let end = range.offset.checked_add(range.length).ok_or(
-            CampaignRepositoryError::InvalidRequest {
-                reason: "finding-triage-replay-storage-range-overflow",
-            },
-        )?;
-        let object = self.resolve_finding_triage_replay_storage_object(id, object_ordinal)?;
-        if end > object.stored_envelope_bytes() {
-            return Err(CampaignRepositoryError::InvalidRequest {
-                reason: "finding-triage-replay-storage-range-bounds",
-            });
-        }
-
-        let source = self.blobs.read(object.content(), Some(range))?;
-        if source.logical_length() != range.length {
-            return Err(integrity(
-                "finding-triage-replay-storage-range-length-mismatch",
-            ));
-        }
-        source.read_all(range.length).map_err(Into::into)
-    }
-
-    fn resolve_finding_triage_replay_storage_object(
-        &self,
-        id: FindingTriageReplayEvidenceId,
-        object_ordinal: u32,
-    ) -> Result<FindingTriageReplayStorageObject, CampaignRepositoryError> {
-        let root = self.require_record_kind(
-            id.content_id(),
-            crate::CampaignRecordKind::FindingTriageReplayEvidence,
-        )?;
-        if object_ordinal == 0 {
-            return Ok(FindingTriageReplayStorageObject::new(
-                0,
-                FindingTriageReplayStorageObjectRole::Root,
-                id.content_id(),
-                canonical_envelope_bytes(&root)?,
-            ));
-        }
-        if root.schema_version() != 2 {
-            return Err(CampaignRepositoryError::InvalidRequest {
-                reason: "finding-triage-replay-storage-object-ordinal",
-            });
-        }
-
-        let manifest = FindingTriageReplayEvidence::manifest_from_canonical_bytes(root.body())?;
-        let chunk_index =
-            object_ordinal
-                .checked_sub(1)
-                .ok_or(CampaignRepositoryError::InvalidRequest {
-                    reason: "finding-triage-replay-storage-object-ordinal",
-                })?;
-        let descriptor = manifest
-            .chunks()
-            .get(usize::try_from(chunk_index).map_err(|_| {
-                CampaignRepositoryError::InvalidRequest {
-                    reason: "finding-triage-replay-storage-object-ordinal",
-                }
-            })?)
-            .copied()
-            .ok_or(CampaignRepositoryError::InvalidRequest {
-                reason: "finding-triage-replay-storage-object-ordinal",
-            })?;
-        let chunk = self.require_record_kind(
-            descriptor.content(),
-            crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
-        )?;
-        let logical_bytes = FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
-        if logical_bytes.len() != descriptor.logical_bytes() as usize {
-            return Err(integrity(
-                "finding-triage-replay-evidence-chunk-length-mismatch",
-            ));
-        }
-
-        Ok(FindingTriageReplayStorageObject::new(
-            object_ordinal,
-            FindingTriageReplayStorageObjectRole::PayloadChunk {
-                index: chunk_index,
-                logical_payload_bytes: descriptor.logical_bytes(),
-            },
-            descriptor.content(),
-            canonical_envelope_bytes(&chunk)?,
-        ))
-    }
-
     /// Publishes one fully verified finding candidate handoff.
     ///
     /// The observation and both reproduction artifacts must already be durable.
@@ -690,7 +47,7 @@ impl CampaignRepository {
 
     /// Publishes one candidate after typed whole-inventory authentication.
     ///
-    /// Complete V5 retention is a daemon attestation: the trusted executor
+    /// Current V6 retention is a daemon attestation: the trusted executor
     /// enumerates candidates while holding its operational inventory fences,
     /// and this method authenticates every listed root before storing the
     /// immutable attestation. Later cold loads validate the attested selection
@@ -701,7 +58,7 @@ impl CampaignRepository {
     ///
     /// Returns a store, codec, limit, or integrity error when a dependency is
     /// absent or the typed authority rejects any checkpoint or basis binding.
-    pub fn publish_finding_candidate_bundle_with_authenticator(
+    pub(crate) fn publish_finding_candidate_bundle_with_authenticator(
         &self,
         bundle: &FindingCandidateBundle,
         authenticator: &dyn FindingExactCheckpointAuthenticator,
@@ -781,12 +138,8 @@ impl CampaignRepository {
             bundle,
             FindingCandidateValidation::Publication(authenticator),
         )?;
-        if matches!(
-            bundle
-                .exact_retention()
-                .map(|retention| retention.disposition()),
-            Some(FindingExactRetentionDisposition::Complete)
-        ) && let Some(authenticator) = authenticator
+        if bundle.exact_retention().disposition() == FindingExactRetentionDisposition::Complete
+            && let Some(authenticator) = authenticator
         {
             self.import_finding_exact_pin_closures(bundle.exact_pins(), authenticator)?;
         }
@@ -840,21 +193,6 @@ impl CampaignRepository {
         bundle: FindingCandidateBundleId,
     ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
         self.incorporate_finding_candidate_bundle_inner(name, expected_snapshot, bundle, None)
-    }
-
-    pub(in crate::repository) fn incorporate_executor_finding_candidate_bundle(
-        &self,
-        name: &str,
-        expected_snapshot: CampaignSnapshotId,
-        bundle: FindingCandidateBundleId,
-        authorization: BoundFindingCandidateIncorporationAuthorization,
-    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
-        self.incorporate_finding_candidate_bundle_inner(
-            name,
-            expected_snapshot,
-            bundle,
-            Some(authorization),
-        )
     }
 
     pub(in crate::repository) fn incorporate_checked_executor_finding_candidate_bundle(
@@ -911,12 +249,8 @@ impl CampaignRepository {
         if let Some(replayed) = self.replayed_finding_candidate(&head, &bundle)? {
             return Ok(replayed);
         }
-        if matches!(
-            bundle
-                .exact_retention()
-                .map(|retention| retention.disposition()),
-            Some(FindingExactRetentionDisposition::Complete)
-        ) && authorization.is_none()
+        if bundle.exact_retention().disposition() == FindingExactRetentionDisposition::Complete
+            && authorization.is_none()
         {
             return Err(integrity(
                 "complete-finding-exact-retention-requires-executor-attested-incorporation",
@@ -930,16 +264,16 @@ impl CampaignRepository {
             });
         }
 
-        self.publish_finding_with_candidate_bundle(
+        self.publish_finding_with_candidate_bundle(super::finding::FindingPublicationInput {
             name,
             expected_snapshot,
-            bundle.signature().clone(),
-            bundle.observation(),
-            bundle.reproduction(),
-            Some(bundle.minimized()),
-            bundle.exact_pins().clone(),
-            Some(bundle_id),
-        )
+            signature: bundle.signature().clone(),
+            observation: bundle.observation(),
+            reproduction: bundle.reproduction(),
+            minimized: Some(bundle.minimized()),
+            exact_pins: bundle.exact_pins().clone(),
+            candidate_bundle: bundle_id,
+        })
     }
 
     fn require_policy_bound_finding_candidate(
@@ -956,17 +290,7 @@ impl CampaignRepository {
                 attempt_execution_basis_key(observation.attempt()),
             )?
             .ok_or_else(|| integrity("finding-candidate-execution-basis-admission-is-missing"))?;
-        let admission = self.read_attempt_admission(admission)?;
-        if admission.schema_version()
-            < crate::exploration::ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION
-        {
-            return Ok(());
-        }
-        if bundle.schema_version() < 4 || bundle.exact_retention().is_none() {
-            return Err(integrity(
-                "policy-bound-finding-candidate-omits-exact-retention-evidence",
-            ));
-        }
+        let _admission = self.read_attempt_admission(admission)?;
         Ok(())
     }
 
@@ -976,9 +300,7 @@ impl CampaignRepository {
         expected_snapshot: CampaignSnapshotId,
         bundle: &FindingCandidateBundle,
     ) -> Result<(), CampaignRepositoryError> {
-        let Some(retention) = bundle.exact_retention() else {
-            return Ok(());
-        };
+        let retention = bundle.exact_retention();
         let expected = self.read_snapshot(expected_snapshot.content_id())?;
         if expected.snapshot.lineage() != head.snapshot().lineage() {
             return Err(integrity(
@@ -1094,38 +416,28 @@ impl CampaignRepository {
     ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
         let envelope =
             self.require_record_kind(id, crate::CampaignRecordKind::FindingTriageReplayEvidence)?;
-        let evidence = match envelope.schema_version() {
-            1 => FindingTriageReplayEvidence::from_canonical_bytes(envelope.body())?,
-            2 => {
-                let manifest =
-                    FindingTriageReplayEvidence::manifest_from_canonical_bytes(envelope.body())?;
-                let payload_bytes = manifest.payload_bytes()?;
-                let mut payload = Vec::new();
-                payload.try_reserve_exact(payload_bytes).map_err(|_| {
-                    CampaignCodecError::LimitExceeded {
-                        limit: "finding-triage-replay-payload-allocation",
-                    }
-                })?;
-                for descriptor in manifest.chunks().iter().copied() {
-                    let chunk = self.require_record_kind(
-                        descriptor.content(),
-                        crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
-                    )?;
-                    let bytes =
-                        FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
-                    if bytes.len() != descriptor.logical_bytes() as usize {
-                        return Err(integrity(
-                            "finding-triage-replay-evidence-chunk-length-mismatch",
-                        ));
-                    }
-                    payload.extend_from_slice(&bytes);
-                }
-                manifest.into_evidence(payload)?
+        let manifest = FindingTriageReplayEvidence::manifest_from_canonical_bytes(envelope.body())?;
+        let payload_bytes = manifest.payload_bytes()?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(payload_bytes).map_err(|_| {
+            CampaignCodecError::LimitExceeded {
+                limit: "finding-triage-replay-payload-allocation",
             }
-            _ => {
-                return Err(integrity("finding-triage-replay-evidence-envelope-version"));
+        })?;
+        for descriptor in manifest.chunks().iter().copied() {
+            let chunk = self.require_record_kind(
+                descriptor.content(),
+                crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
+            )?;
+            let bytes = FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
+            if bytes.len() != descriptor.logical_bytes() as usize {
+                return Err(integrity(
+                    "finding-triage-replay-evidence-chunk-length-mismatch",
+                ));
             }
-        };
+            payload.extend_from_slice(&bytes);
+        }
+        let evidence = manifest.into_evidence(payload)?;
         if evidence.id()?.content_id() != id {
             return Err(integrity("finding-triage-replay-evidence-envelope-shape"));
         }
@@ -1293,9 +605,7 @@ impl CampaignRepository {
         minimized: &ReproductionArtifact,
         validation: FindingCandidateValidation<'_>,
     ) -> Result<(), CampaignRepositoryError> {
-        let Some(retention) = bundle.exact_retention() else {
-            return Ok(());
-        };
+        let retention = bundle.exact_retention();
         let source = self.read_snapshot(retention.snapshot().content_id())?;
         let accounting = source.snapshot.roots().accounting;
         if self
@@ -1372,11 +682,6 @@ impl CampaignRepository {
         observation: &Observation,
         validation: FindingCandidateValidation<'_>,
     ) -> Result<(), CampaignRepositoryError> {
-        if bundle.schema_version() < 5 {
-            return Err(integrity(
-                "complete-finding-exact-retention-requires-authenticated-evidence",
-            ));
-        }
         let evidence = bundle
             .exact_retention_evidence()
             .ok_or_else(|| integrity("finding-exact-retention-evidence-is-missing"))?;
@@ -1555,15 +860,6 @@ impl CampaignRepository {
             .get(root, finding_candidate_occurrence_key(bundle))?
             == Some(bundle.content_id()))
     }
-}
-
-fn canonical_envelope_bytes(envelope: &ObjectEnvelope) -> Result<u64, CampaignRepositoryError> {
-    u64::try_from(envelope.canonical_bytes().len()).map_err(|_| {
-        CampaignCodecError::LimitExceeded {
-            limit: "finding-triage-replay-storage-envelope-bytes",
-        }
-        .into()
-    })
 }
 
 fn select_authenticated_finding_pins(

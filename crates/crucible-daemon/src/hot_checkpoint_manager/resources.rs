@@ -137,7 +137,7 @@ impl HotCheckpointLimits {
         if maximum_templates == 0 {
             return Err(HotCheckpointLimitsError::ZeroTemplates);
         }
-        if maximum_templates > MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS {
+        if maximum_templates > MAX_HOT_CHECKPOINT_POOL_SLOTS {
             return Err(HotCheckpointLimitsError::TooManyTemplates {
                 requested: maximum_templates,
             });
@@ -188,9 +188,7 @@ pub enum HotCheckpointLimitsError {
     #[error("hot-checkpoint template limit is zero")]
     ZeroTemplates,
     /// The requested ceiling exceeds the daemon's static worker bound.
-    #[error(
-        "hot-checkpoint template limit {requested} exceeds {MAX_QEMU_HOT_FORK_TEMPLATE_POOL_SLOTS}"
-    )]
+    #[error("hot-checkpoint template limit {requested} exceeds {MAX_HOT_CHECKPOINT_POOL_SLOTS}")]
     TooManyTemplates {
         /// Rejected requested template count.
         requested: usize,
@@ -258,7 +256,7 @@ impl HotCheckpointUsage {
         self.overlay_count
     }
 
-    pub(super) fn add(self, profile: HotCheckpointResourceProfile) -> Option<Self> {
+    pub(crate) fn add(self, profile: HotCheckpointResourceProfile) -> Option<Self> {
         Some(Self {
             templates: self.templates.checked_add(1)?,
             template_bytes: self.template_bytes.checked_add(profile.template_bytes)?,
@@ -276,7 +274,48 @@ impl HotCheckpointUsage {
         })
     }
 
-    pub(super) fn remove(self, profile: HotCheckpointResourceProfile) -> Option<Self> {
+    pub(crate) fn add_resource_reservation(
+        self,
+        profile: HotCheckpointResourceProfile,
+    ) -> Option<Self> {
+        Some(Self {
+            templates: self.templates,
+            template_bytes: self.template_bytes.checked_add(profile.template_bytes)?,
+            expected_private_dirty_bytes: self
+                .expected_private_dirty_bytes
+                .checked_add(profile.expected_private_dirty_bytes)?,
+            process_count: self.process_count.checked_add(profile.process_count)?,
+            virtual_cpu_count: self
+                .virtual_cpu_count
+                .checked_add(profile.virtual_cpu_count)?,
+            descriptor_count: self
+                .descriptor_count
+                .checked_add(profile.descriptor_count)?,
+            overlay_count: self.overlay_count.checked_add(profile.overlay_count)?,
+        })
+    }
+
+    pub(crate) fn add_reservations(self, reservations: Self) -> Option<Self> {
+        Some(Self {
+            templates: self.templates.checked_add(reservations.templates)?,
+            template_bytes: self
+                .template_bytes
+                .checked_add(reservations.template_bytes)?,
+            expected_private_dirty_bytes: self
+                .expected_private_dirty_bytes
+                .checked_add(reservations.expected_private_dirty_bytes)?,
+            process_count: self.process_count.checked_add(reservations.process_count)?,
+            virtual_cpu_count: self
+                .virtual_cpu_count
+                .checked_add(reservations.virtual_cpu_count)?,
+            descriptor_count: self
+                .descriptor_count
+                .checked_add(reservations.descriptor_count)?,
+            overlay_count: self.overlay_count.checked_add(reservations.overlay_count)?,
+        })
+    }
+
+    pub(crate) fn remove(self, profile: HotCheckpointResourceProfile) -> Option<Self> {
         Some(Self {
             templates: self.templates.checked_sub(1)?,
             template_bytes: self.template_bytes.checked_sub(profile.template_bytes)?,
@@ -294,7 +333,28 @@ impl HotCheckpointUsage {
         })
     }
 
-    pub(super) fn fits(self, limits: HotCheckpointLimits) -> bool {
+    pub(crate) fn remove_resource_reservation(
+        self,
+        profile: HotCheckpointResourceProfile,
+    ) -> Option<Self> {
+        Some(Self {
+            templates: self.templates,
+            template_bytes: self.template_bytes.checked_sub(profile.template_bytes)?,
+            expected_private_dirty_bytes: self
+                .expected_private_dirty_bytes
+                .checked_sub(profile.expected_private_dirty_bytes)?,
+            process_count: self.process_count.checked_sub(profile.process_count)?,
+            virtual_cpu_count: self
+                .virtual_cpu_count
+                .checked_sub(profile.virtual_cpu_count)?,
+            descriptor_count: self
+                .descriptor_count
+                .checked_sub(profile.descriptor_count)?,
+            overlay_count: self.overlay_count.checked_sub(profile.overlay_count)?,
+        })
+    }
+
+    pub(crate) fn fits(self, limits: HotCheckpointLimits) -> bool {
         let resources = limits.maximum_resources;
         self.templates <= limits.maximum_templates
             && self.template_bytes <= resources.template_bytes
@@ -319,7 +379,7 @@ pub struct HotCheckpointPressure {
 }
 
 impl HotCheckpointPressure {
-    pub(super) fn for_usage(usage: HotCheckpointUsage, limits: HotCheckpointLimits) -> Self {
+    pub(crate) fn for_usage(usage: HotCheckpointUsage, limits: HotCheckpointLimits) -> Self {
         let resources = limits.maximum_resources;
         Self {
             templates: usage.templates > limits.maximum_templates,

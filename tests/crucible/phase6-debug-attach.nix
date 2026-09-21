@@ -43,10 +43,15 @@
     inherit lib;
     entry = ../../crates/crucible/tests/gate_debug_attach.rs;
   };
-  qemuTest = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-qemu/tests/debug_gdbstub.rs;
-  };
+  qemuTest =
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/tests/debug_gdbstub.rs;
+    })
+    + (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/tests/qmp_launch_channel.rs;
+    });
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -257,7 +262,7 @@
     ++ failuresFor "crates/crucible-qemu/tests/debug_gdbstub.rs" qemuTest [
       {
         label = "QEMU debug gdbstub gate";
-        needle = "debug_gdbstub_is_fourth_out_of_band_launch_channel";
+        needle = "qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels";
       }
       {
         label = "QEMU proxy mediation gate";
@@ -386,6 +391,15 @@ in
               -p crucible-qemu \
               --test debug_gdbstub \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-debug-attach-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --test qmp_launch_channel \
+              qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels \
+              -- --exact --test-threads=1
             cargo test \
               --frozen \
               --offline \

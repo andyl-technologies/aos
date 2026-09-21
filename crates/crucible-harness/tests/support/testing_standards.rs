@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "testing_standards/source_inventory.rs"]
+mod source_inventory;
+pub(super) use source_inventory::*;
 pub(super) fn testing_standard_failures(
     targets: &[GateTargetSpec],
     source_overrides: &GateSourceOverrides,
@@ -163,9 +166,6 @@ pub(super) fn source_shape_failures(
     standard: &GateTestingStandard,
     content: &str,
 ) -> Vec<String> {
-    if target.placeholder {
-        return Vec::new();
-    }
     let code = scrub_comments_and_strings(content);
     let lower = code.to_ascii_lowercase();
     let mut failures = Vec::new();
@@ -227,12 +227,7 @@ pub(super) fn source_shape_failures(
         ));
     }
 
-    // The atomic world gate's scripted QEMU transport is its model backend;
-    // other SimDouble gates name the core scheduler double directly.
-    if standard.backend == TestBackend::SimDouble
-        && standard.shape != TestShape::WorldForkAtomicity
-        && !code.contains("SimDouble")
-    {
+    if standard.backend == TestBackend::SimDouble && !code.contains("SimDouble") {
         failures.push(format!(
             "{}:{} must exercise the SimDouble backend",
             target.package, target.test_target
@@ -380,17 +375,15 @@ pub(super) fn source_shape_failures(
     if standard.shape == TestShape::WorldForkAtomicity {
         for required in [
             "QemuProductionHotForkWorldLifecycleFactory",
-            "production_three_node_clean_rejection_is_atomic_at_every_launch_index",
-            "production_three_node_ambiguous_launch_is_fail_closed_at_every_index",
-            "production_three_node_adoption_failure_retains_the_complete_world",
-            "production_aggregate_release_failure_blocks_source_restore",
-            "production_source_identity_drift_blocks_restore_after_complete_rollback",
-            "rollback_retains_every_unfinished_owner_on_termination_failure",
-            "rollback_deadline_covers_reap_private_release_and_cancellation_progress",
+            "production_factory_forks_complete_live_world_atomically",
+            "production_factory_exposes_no_world_when_second_real_fork_fails",
+            "production_factory_exposes_no_world_when_second_real_adoption_fails",
+            "production_factory_keeps_source_private_until_target_cleanup_retries",
+            "production_factory_keeps_source_private_across_repository_publication_retry",
         ] {
             if !code.contains(required) {
                 failures.push(format!(
-                    "{}:{} must prove production three-node rollback, retry, fail-closed ownership, aggregate cleanup, and source reauthentication",
+                    "{}:{} must prove the production real-QEMU atomic-world success, rollback, cleanup-retry, and publication-retry matrix",
                     target.package, target.test_target,
                 ));
                 break;
@@ -400,7 +393,7 @@ pub(super) fn source_shape_failures(
 
     if standard.shape == TestShape::CampaignComponentContract {
         for required in [
-            "serve_loopback_campaign_once",
+            "CampaignLoopbackServer::new",
             "serve_loopback_executor_component_connection_with_limits",
             "CampaignClient",
             "ExecutorClient",
@@ -410,7 +403,7 @@ pub(super) fn source_shape_failures(
         ] {
             if !code.contains(required) {
                 failures.push(format!(
-                    "{}:{} must prove direct/loopback equivalence, independent component restart, idempotency, and authority refusal",
+                    "{}:{} is missing `{required}` required to prove direct/loopback equivalence, independent component restart, idempotency, and authority refusal",
                     target.package, target.test_target,
                 ));
                 break;
@@ -418,9 +411,9 @@ pub(super) fn source_shape_failures(
         }
     }
 
-    if standard.shape == TestShape::CampaignContinuityV2 {
+    if standard.shape == TestShape::CampaignColdContinuity {
         for required in [
-            "fn campaign_continuity_v2_survives_pause_restart_archive_restore_and_resume(",
+            "fn campaign_cold_continuity_survives_pause_restart_archive_restore_and_resume(",
             "fn continuity_process_helper()",
             "Command::new(std::env::current_exe()",
             ".arg(PROCESS_HELPER)",
@@ -577,21 +570,18 @@ pub(super) fn testing_standard_regression_failures() -> Vec<String> {
             package: "crucible-qemu",
             test_target: "gate_replay_oracle",
             required_features: &[],
-            placeholder: true,
         },
         GateTargetSpec {
             gate: "gate:unknown",
             package: "crucible-harness",
             test_target: "unknown_gate",
             required_features: &[],
-            placeholder: true,
         },
         GateTargetSpec {
             gate: "gate:replay-oracle",
             package: "crucible",
             test_target: "gate_replay_oracle",
             required_features: &["test-double"],
-            placeholder: false,
         },
     ];
     let source_overrides = BTreeMap::from([(
@@ -651,7 +641,7 @@ pub(super) fn testing_standard_regression_failures() -> Vec<String> {
     }
     if !findings
         .iter()
-        .any(|finding| finding.contains("crucible-assert missing crate-owned layer gate"))
+        .any(|finding| finding.contains("crucible-qemu missing crate-owned layer gate"))
     {
         failures.push(
             "testing-standard regression failed to reject missing per-crate ownership".to_string(),
@@ -718,326 +708,4 @@ pub(super) fn testing_source_regression_failures() -> Vec<String> {
     }
 
     failures
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct TestingStandardsBaselineKey {
-    package: String,
-    test_target: String,
-    pattern: String,
-}
-
-#[derive(Default)]
-pub(super) struct TestingStandardsBaseline {
-    caps: BTreeMap<TestingStandardsBaselineKey, usize>,
-}
-
-impl TestingStandardsBaseline {
-    pub(super) fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
-        let path = root.join("tests/crucible/testing-standards-baseline.txt");
-        let content = fs::read_to_string(path)?;
-        let mut caps = BTreeMap::new();
-
-        for (index, line) in content.lines().enumerate() {
-            let line = line.trim_end();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            let fields = line.split('\t').collect::<Vec<_>>();
-            if fields.len() != 4 {
-                return Err(format!(
-                    "invalid testing-standards baseline entry on line {}: {line}",
-                    index + 1
-                )
-                .into());
-            }
-
-            let count = fields[3].parse::<usize>().map_err(|error| {
-                format!(
-                    "invalid testing-standards baseline count on line {}: {error}",
-                    index + 1
-                )
-            })?;
-            caps.insert(
-                TestingStandardsBaselineKey {
-                    package: fields[0].to_string(),
-                    test_target: fields[1].to_string(),
-                    pattern: fields[2].to_string(),
-                },
-                count,
-            );
-        }
-
-        Ok(Self { caps })
-    }
-
-    pub(super) fn filter_flaky_findings(&self, findings: Vec<String>) -> Vec<String> {
-        let mut observed = BTreeMap::new();
-        let mut unbaselined = Vec::new();
-
-        for finding in findings {
-            let Some(key) = TestingStandardsBaselineKey::from_finding(&finding) else {
-                unbaselined.push(finding);
-                continue;
-            };
-            let observed_count = observed.entry(key.clone()).or_insert(0usize);
-            *observed_count += 1;
-
-            if self
-                .caps
-                .get(&key)
-                .is_some_and(|cap| *observed_count <= *cap)
-            {
-                continue;
-            }
-
-            unbaselined.push(finding);
-        }
-
-        for (key, cap) in &self.caps {
-            let actual = observed.get(key).copied().unwrap_or_default();
-            if actual < *cap {
-                unbaselined.push(format!(
-                    "tests/crucible/testing-standards-baseline.txt: stale flaky baseline `{}` expected {cap} observed {actual}",
-                    key.display()
-                ));
-            }
-        }
-
-        unbaselined
-    }
-}
-
-impl TestingStandardsBaselineKey {
-    fn from_finding(finding: &str) -> Option<Self> {
-        let (subject, pattern) = finding.split_once(" contains flaky-test escape pattern `")?;
-        let (package, test_target) = subject.split_once(':')?;
-        Some(Self {
-            package: package.to_string(),
-            test_target: test_target.to_string(),
-            pattern: pattern.strip_suffix('`')?.to_string(),
-        })
-    }
-
-    fn display(&self) -> String {
-        format!("{}\t{}\t{}", self.package, self.test_target, self.pattern)
-    }
-}
-
-pub(super) fn workspace_root() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    match manifest_dir.parent().and_then(|path| path.parent()) {
-        Some(root) => root.to_path_buf(),
-        None => panic!("crucible-harness manifest is not inside the workspace"),
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct TestSource {
-    pub(super) package: String,
-    pub(super) test_target: String,
-    pub(super) path: PathBuf,
-}
-
-pub(super) fn crucible_test_sources(root: &Path) -> Result<Vec<TestSource>, Box<dyn Error>> {
-    let crates_dir = root.join("crates");
-    let mut sources = Vec::new();
-
-    for entry in fs::read_dir(&crates_dir)? {
-        let entry = entry?;
-        let package = entry.file_name().to_string_lossy().into_owned();
-        if !package.starts_with("crucible") {
-            continue;
-        }
-
-        let mut paths = Vec::new();
-        collect_rust_sources(&entry.path().join("tests"), &mut paths)?;
-        collect_unit_test_sources(&entry.path().join("src"), &mut paths)?;
-
-        for path in paths {
-            let test_target = test_target_name(&entry.path(), &path);
-            if package == "crucible-harness"
-                && matches!(
-                    test_target.as_str(),
-                    "testing_standards"
-                        | "tests/testing_standards"
-                        | "tests/support/testing_standards"
-                )
-            {
-                continue;
-            }
-
-            sources.push(TestSource {
-                package: package.clone(),
-                test_target,
-                path,
-            });
-        }
-    }
-
-    sources.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(sources)
-}
-
-pub(super) fn gate_target_source_overrides(
-    root: &Path,
-) -> Result<GateSourceOverrides, Box<dyn Error>> {
-    let mut sources = BTreeMap::new();
-
-    for target in gate_targets() {
-        let path = root
-            .join("crates")
-            .join(target.package)
-            .join("tests")
-            .join(format!("{}.rs", target.test_target));
-        sources.insert(
-            (target.package, target.test_target),
-            fs::read_to_string(path)?,
-        );
-    }
-
-    Ok(sources)
-}
-
-pub(super) fn collect_rust_sources(
-    dir: &Path,
-    sources: &mut Vec<PathBuf>,
-) -> Result<(), Box<dyn Error>> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rust_sources(&path, sources)?;
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
-            sources.push(path);
-        }
-    }
-
-    Ok(())
-}
-
-pub(super) fn collect_unit_test_sources(
-    dir: &Path,
-    sources: &mut Vec<PathBuf>,
-) -> Result<(), Box<dyn Error>> {
-    let mut candidates = Vec::new();
-    collect_rust_sources(dir, &mut candidates)?;
-
-    let has_unit_test_module = candidates.iter().any(|path| {
-        fs::read_to_string(path)
-            .is_ok_and(|content| content.contains("#[cfg(test") || content.contains("mod tests"))
-    });
-
-    if has_unit_test_module {
-        sources.extend(candidates);
-    }
-
-    Ok(())
-}
-
-pub(super) fn test_target_name(package_dir: &Path, path: &Path) -> String {
-    match path.strip_prefix(package_dir) {
-        Ok(relative) => relative
-            .with_extension("")
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/"),
-        Err(_) => path
-            .file_stem()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    }
-}
-
-pub(super) fn scrub_comments_and_strings(content: &str) -> String {
-    let chars: Vec<char> = content.chars().collect();
-    let mut out = String::with_capacity(content.len());
-    let mut index = 0;
-    let mut state = ScannerState::Code;
-
-    while index < chars.len() {
-        let ch = chars[index];
-        let next = chars.get(index + 1).copied();
-        match state {
-            ScannerState::Code => {
-                if ch == '/' && next == Some('/') {
-                    out.push(' ');
-                    out.push(' ');
-                    index += 2;
-                    state = ScannerState::LineComment;
-                } else if ch == '/' && next == Some('*') {
-                    out.push(' ');
-                    out.push(' ');
-                    index += 2;
-                    state = ScannerState::BlockComment(1);
-                } else if ch == '"' {
-                    out.push(' ');
-                    index += 1;
-                    state = ScannerState::String;
-                } else {
-                    out.push(ch);
-                    index += 1;
-                }
-            }
-            ScannerState::LineComment => {
-                if ch == '\n' {
-                    out.push('\n');
-                    state = ScannerState::Code;
-                } else {
-                    out.push(' ');
-                }
-                index += 1;
-            }
-            ScannerState::BlockComment(depth) => {
-                if ch == '/' && next == Some('*') {
-                    out.push(' ');
-                    out.push(' ');
-                    index += 2;
-                    state = ScannerState::BlockComment(depth + 1);
-                } else if ch == '*' && next == Some('/') {
-                    out.push(' ');
-                    out.push(' ');
-                    index += 2;
-                    if depth == 1 {
-                        state = ScannerState::Code;
-                    } else {
-                        state = ScannerState::BlockComment(depth - 1);
-                    }
-                } else {
-                    out.push(if ch == '\n' { '\n' } else { ' ' });
-                    index += 1;
-                }
-            }
-            ScannerState::String => {
-                if ch == '\\' && next.is_some() {
-                    out.push(' ');
-                    out.push(if next == Some('\n') { '\n' } else { ' ' });
-                    index += 2;
-                } else if ch == '"' {
-                    out.push(' ');
-                    index += 1;
-                    state = ScannerState::Code;
-                } else {
-                    out.push(if ch == '\n' { '\n' } else { ' ' });
-                    index += 1;
-                }
-            }
-        }
-    }
-
-    out
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) enum ScannerState {
-    Code,
-    LineComment,
-    BlockComment(usize),
-    String,
 }

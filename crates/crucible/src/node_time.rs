@@ -114,36 +114,10 @@ impl NodeTimeMapping {
 
         Ok(counter)
     }
-
-    /// Projects the current counter into a typed scheduler observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError`] under the same conditions as
-    /// [`Self::logical_time`].
-    pub fn project(
-        self,
-        counter: NodeCounter,
-        shift: Shift,
-    ) -> Result<NodeTimeProjection, TimeConversionError> {
-        Ok(NodeTimeProjection {
-            counter,
-            logical_time: self.logical_time(counter, shift)?,
-        })
-    }
 }
 
 impl Default for NodeTimeMapping {
     fn default() -> Self {
         Self::IDENTITY
     }
-}
-
-/// Scheduler observation of one node counter and its logical-time projection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NodeTimeProjection {
-    /// Backend counter used for the observation.
-    pub counter: NodeCounter,
-    /// Scheduler logical time corresponding to `counter`.
-    pub logical_time: SimInstant,
 }

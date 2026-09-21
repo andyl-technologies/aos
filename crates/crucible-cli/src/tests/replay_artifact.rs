@@ -596,28 +596,35 @@ pub(super) fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dy
         "2",
     ]);
 
-    let Commands::Fuzz(args) = &cli.command else {
-        panic!("expected fuzz command");
-    };
-    let seed_plan = plan_determinism_ergonomics(
-        &cli,
-        &FakeSeedEnvironment::default(),
-        &mut FakeSeedEntropySource::new(0),
-    )?
-    .expect("built-in fuzz should resolve a seed");
-    let fuzz_plan = plan_fuzz_invocation(args, &seed_plan, &default_run_store_root(&cli))?;
     let backend_plan = plan_backend_selection(&cli)?.expect("built-in fuzz should route");
     assert_eq!(
-        fuzz_dispatch_route(&backend_plan, &fuzz_plan),
-        Some(FuzzDispatchRoute::BuiltInFaultCampaignProof)
+        fuzz_dispatch_route(&backend_plan),
+        Some(FuzzDispatchRoute::LocalDouble)
     );
 
-    dispatch(&cli).expect("built-in fault campaign fuzz should run on the local proof path");
+    let mut production_backend = backend_plan.clone();
+    production_backend.requested_backend = Backend::Qemu;
+    production_backend.resolved_backend = Some(ResolvedLocalBackend::Qemu {
+        qemu: PathBuf::from("/nix/store/test-qemu/bin/qemu-system-x86_64"),
+        plugin: PathBuf::from("/nix/store/test-plugin/lib/crucible-qemu-plugin.so"),
+        qemu_build_id: format!("blake3:{}", "1".repeat(64)),
+        qemu_atomic_patch_hash: String::from("current-atomic-patch"),
+        plugin_abi: required_qemu_plugin_abi(),
+        shmem_abi_version: crucible::SHMEM_ABI_VERSION.to_string(),
+        qemu_source: QemuDiscoverySource::AosPackageSet,
+        plugin_source: QemuDiscoverySource::AosPackageSet,
+    });
+    assert_eq!(
+        fuzz_dispatch_route(&production_backend),
+        Some(FuzzDispatchRoute::LocalPackagedBackend)
+    );
+
+    dispatch(&cli).expect("built-in fault campaign fuzz should use the selected backend route");
     Ok(())
 }
 
 #[test]
-pub(super) fn cli_fuzz_does_not_run_builtin_proof_for_remote_route() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_fuzz_rejects_remote_route() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -626,29 +633,19 @@ pub(super) fn cli_fuzz_does_not_run_builtin_proof_for_remote_route() -> Result<(
         "--seed",
         "0x33a4",
         "fuzz",
-        "builtin:fault-campaign",
+        crucible::FAULT_CAMPAIGN_FAMILY_NAME,
     ]);
-    let Commands::Fuzz(args) = &cli.command else {
-        panic!("expected fuzz command");
-    };
-    let seed_plan = plan_determinism_ergonomics(
-        &cli,
-        &FakeSeedEnvironment::default(),
-        &mut FakeSeedEntropySource::new(0),
-    )?
-    .expect("remote fuzz should resolve a seed");
-    let fuzz_plan = plan_fuzz_invocation(args, &seed_plan, &default_run_store_root(&cli))?;
     let backend_plan = plan_backend_selection(&cli)?.expect("remote fuzz should route");
 
     assert_eq!(backend_plan.target, BackendExecutionTarget::RemoteDaemon);
-    assert_eq!(fuzz_dispatch_route(&backend_plan, &fuzz_plan), None);
+    assert_eq!(fuzz_dispatch_route(&backend_plan), None);
 
     let error = dispatch(&cli).expect_err("remote fuzz must fail closed");
     assert!(matches!(error, CliError::Backend(_)));
     assert!(
         error
             .to_string()
-            .contains("requires the exploration-engine driver")
+            .contains("has no admitted local production backend route")
     );
     Ok(())
 }
@@ -1447,7 +1444,7 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
     let no_corpus_backend =
         plan_backend_selection(&no_corpus_cli)?.expect("no-corpus fuzz should route");
     assert_eq!(
-        fuzz_dispatch_route(&no_corpus_backend, &no_corpus_plan),
+        fuzz_dispatch_route(&no_corpus_backend),
         Some(FuzzDispatchRoute::LocalDouble)
     );
     let no_corpus_outcome = run_local_double_fuzz_workflow(
@@ -2004,8 +2001,9 @@ pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production
 
 #[test]
 pub(super) fn cli_run_workflow_parses_interactive_session_commands() -> Result<(), Box<dyn Error>> {
-    let commands =
-        parse_interactive_session_commands("\n# comment\nquery\nstep\nsave\nfork\nstop\n")?;
+    let commands = parse_interactive_session_commands(
+        "\n# comment\nquery\nstep-quantum\ncreate-savepoint\nfork\nstop\n",
+    )?;
 
     assert_eq!(
         commands,
@@ -2024,6 +2022,8 @@ pub(super) fn cli_run_workflow_parses_interactive_session_commands() -> Result<(
     };
     assert!(matches!(error, CliError::Usage(_)));
     assert_eq!(error.exit_code(), 64);
+    assert!(parse_interactive_session_commands("step\n").is_err());
+    assert!(parse_interactive_session_commands("save\n").is_err());
 
     Ok(())
 }
@@ -2114,22 +2114,6 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
     Ok(())
 }
 
-#[test]
-pub(super) fn retired_fault_commands_are_unknown() {
-    for command in ["inject", "inject-fault", "heal", "heal-fault"] {
-        let error = match parse_interactive_session_command(command) {
-            Ok(_) => panic!("retired fault command must be unknown"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, CliError::Usage(_)));
-        assert!(
-            error
-                .to_string()
-                .contains("unknown interactive session command")
-        );
-    }
-}
-
 #[tokio::test(flavor = "current_thread")]
 pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_cleanup()
 -> Result<(), Box<dyn Error>> {
@@ -2199,7 +2183,8 @@ pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_c
         "crucible-cli-interactive-stop-test",
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| InteractiveLoop::default(),
-    );
+    )
+    .with_terminal_session_retention(true);
     let client = InProcessLifecycleClient::new(control_plane);
     let report = run_control_client_workflow_async(
         &client,
@@ -2220,9 +2205,18 @@ pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_c
     assert!(report.terminal_savepoint.is_some());
     assert!(report.terminal_configuration.is_some());
     assert!(!report.streamed_events.is_empty());
+    assert!(
+        report
+            .acknowledged_commands
+            .windows(2)
+            .any(|commands| commands == [SessionCommandKind::Stop, SessionCommandKind::Query])
+    );
     assert_eq!(
-        report.acknowledged_commands.last(),
-        Some(&SessionCommandKind::Stop)
+        report
+            .reproduction_commands
+            .last()
+            .map(|record| record.payload.command),
+        Some(SessionCommandKind::Stop)
     );
     assert!(report.watch_statuses.iter().any(|status| {
         status.starts_with("state=stopped\tfrontier_ticks=1\tquanta=1\toutcome=stopped")
@@ -2360,8 +2354,8 @@ pub(super) fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection()
 
     assert!(matches!(plan.mode, VerifyMode::RunScenario { .. }));
     assert_eq!(plan.requested_runs, 3);
-    assert_eq!(plan.reductions.len(), 3 * VERIFY_OBSERVER_PROFILES.len());
-    assert!(plan.applies_observer_perturbation_matrix);
+    assert_eq!(plan.reductions.len(), 3 * VERIFY_HOSTILE_PROFILES.len());
+    assert!(plan.applies_hostile_condition_matrix);
     assert!(plan.bisection_on_divergence);
     assert!(plan.print_bisection_state_dump);
     assert!(plan.compare_canonical_logs);
@@ -2369,18 +2363,52 @@ pub(super) fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection()
     assert!(plan.pairwise_byte_identity);
     assert!(plan.writes_side_artifacts_on_divergence);
     assert!(plan.surface_shape_is_consistent());
+    assert!(
+        plan.reductions
+            .iter()
+            .all(|reduction| reduction.host_profile.is_valid())
+    );
+    let worker_counts = VERIFY_HOSTILE_PROFILES
+        .iter()
+        .map(|profile| profile.executor_workers)
+        .collect::<BTreeSet<_>>();
+    let logical_core_counts = VERIFY_HOSTILE_PROFILES
+        .iter()
+        .map(|profile| profile.logical_cores)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(worker_counts, BTreeSet::from([1, 2, 4]));
+    assert_eq!(logical_core_counts, BTreeSet::from([1, 2, 4]));
+    assert!(
+        VERIFY_HOSTILE_PROFILES
+            .iter()
+            .any(|profile| profile.priority_pressure_iterations > 0)
+    );
+    assert!(
+        VERIFY_HOSTILE_PROFILES
+            .iter()
+            .any(|profile| profile.host_io_stall_ms > 0)
+    );
+    assert!(VERIFY_HOSTILE_PROFILES.iter().any(|profile| {
+        profile.jittered_timeout_ms(10, u64::from(profile.wall_clock_backstep_every))
+            < profile.jittered_timeout_ms(10, 1)
+    }));
+    assert_ne!(
+        plan.reductions[0].host_profile.scheduling_seed,
+        plan.reductions[VERIFY_HOSTILE_PROFILES.len()]
+            .host_profile
+            .scheduling_seed
+    );
 
     Ok(())
 }
 
 #[test]
-pub(super) fn cli_verify_builtin_corpus_observer_profiles() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_builtin_corpus_host_profiles() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     for scenario_name in [
         crucible::HAPPY_PATH_SCENARIO_NAME,
         crucible::PARTITION_RECOVERY_SCENARIO_NAME,
         crucible::CRASH_RESTART_SCENARIO_NAME,
-        crucible::FAULT_CAMPAIGN_FAMILY_NAME,
     ] {
         let cli = Cli::parse_from([
             String::from("crucible"),
@@ -2389,7 +2417,7 @@ pub(super) fn cli_verify_builtin_corpus_observer_profiles() -> Result<(), Box<dy
             String::from("--seed"),
             String::from("31"),
             String::from("verify"),
-            scenario_name.to_owned(),
+            format!("builtin:{scenario_name}"),
             String::from("--runs"),
             String::from("2"),
             String::from("--adversarial"),
@@ -2408,9 +2436,9 @@ pub(super) fn cli_verify_builtin_corpus_observer_profiles() -> Result<(), Box<dy
         ));
         assert_eq!(
             verify_plan.reductions.len(),
-            2 * VERIFY_OBSERVER_PROFILES.len()
+            2 * VERIFY_HOSTILE_PROFILES.len()
         );
-        assert!(verify_plan.applies_observer_perturbation_matrix);
+        assert!(verify_plan.applies_hostile_condition_matrix);
         assert!(verify_plan.print_bisection_state_dump);
 
         let seed_plan = plan_determinism_ergonomics(
@@ -2436,18 +2464,24 @@ pub(super) fn cli_verify_builtin_corpus_observer_profiles() -> Result<(), Box<dy
                 .iter()
                 .filter(|line| line.starts_with("verify-run\t"))
                 .count(),
-            2 * VERIFY_OBSERVER_PROFILES.len()
+            2 * VERIFY_HOSTILE_PROFILES.len()
         );
-        for profile in VERIFY_OBSERVER_PROFILES {
+        for profile in VERIFY_HOSTILE_PROFILES {
             assert!(
                 outcome
                     .stdout
                     .iter()
                     .any(|line| line.contains(&format!("\tprofile={}", profile.label()))),
-                "missing verify output for observer profile {}",
+                "missing verify output for hostile profile {}",
                 profile.label()
             );
         }
+        assert!(outcome.stdout.iter().any(|line| {
+            line.starts_with("verify-run\t")
+                && line.contains("\tworkers=4\tcores=4\t")
+                && line.contains("\tclock_backstep_every=2\tdeadline_backstep_applied=true\t")
+                && line.contains("\thost_io_stall_ms=3\t")
+        }));
         assert!(
             outcome
                 .stdout
@@ -2551,19 +2585,28 @@ pub(super) fn cli_verify_workflow_collects_post_step_backend_fingerprint()
         "crucible-cli-double-test",
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| SimBackendLifecycleLoop::default(),
-    );
+    )
+    .with_terminal_session_retention(true);
     let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_verify_workflow_async(
+    let scenario = verify_plan
+        .scenario()
+        .ok_or_else(|| io::Error::other("missing verify scenario"))?;
+    let request_seed = crucible::Seed::from_u64(seed_plan.seed.value);
+    let seeded_scenario = reseed_run_scenario_ref(scenario, request_seed)?;
+    let reduction = verify_plan
+        .reductions
+        .first()
+        .ok_or_else(|| io::Error::other("missing verify reduction"))?
+        .clone();
+    let witness = runtime.block_on(run_control_client_verify_reduction_async(
         &client,
-        &verify_plan,
+        seeded_scenario,
+        request_seed,
+        reduction,
         Some(&ResolvedLocalBackend::Double),
         Some(&seed_plan),
+        &verify_plan.store_root,
     ))?;
-    assert_eq!(report.witnesses.len(), 2);
-    let witness = report
-        .witnesses
-        .first()
-        .ok_or_else(|| io::Error::other("missing verify witness"))?;
 
     assert!(witness.fingerprint_samples.len() >= 2);
     assert_eq!(witness.fingerprint_samples[0].instruction, 0);

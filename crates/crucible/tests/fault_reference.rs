@@ -29,7 +29,6 @@ const USER_GUIDES: &[&str] = &[
     "debugging.md",
     "examples.md",
     "exploration.md",
-    "fault-model-migration.md",
     "network-faults.md",
     "quickstart.md",
     "properties-and-evidence.md",

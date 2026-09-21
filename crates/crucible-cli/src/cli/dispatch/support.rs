@@ -14,7 +14,10 @@ pub(crate) fn default_run_store_root(cli: &Cli) -> PathBuf {
 }
 
 pub(crate) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
-    let qemu_enabled = args.with_qemu || !cfg!(any(test, feature = "test-double"));
+    #[cfg(any(test, feature = "test-double"))]
+    let qemu_enabled = args.with_qemu;
+    #[cfg(not(any(test, feature = "test-double")))]
+    let qemu_enabled = true;
     let requested = match args.gates.as_deref() {
         Some(raw) => raw.split(',').map(str::trim).collect::<Vec<_>>(),
         #[cfg(any(test, feature = "test-double"))]
@@ -139,7 +142,9 @@ pub(crate) fn verify_selftest_corpus_manifest(
 pub(crate) fn verify_selftest_fixture_by_name(
     raw_name: &str,
 ) -> Result<crucible::ExampleScenarioVerifyReport, String> {
-    let name = raw_name.strip_prefix("builtin:").unwrap_or(raw_name);
+    let name = raw_name
+        .strip_prefix("builtin:")
+        .ok_or_else(|| format!("unknown built-in scenario `{raw_name}`"))?;
     let fixture = match name {
         crucible::HAPPY_PATH_SCENARIO_NAME => {
             crucible::happy_path_scenario().map_err(|error| error.to_string())
@@ -151,7 +156,7 @@ pub(crate) fn verify_selftest_fixture_by_name(
             crucible::crash_restart_scenario().map_err(|error| error.to_string())
         }
         _ => Err(format!(
-            "unknown built-in scenario `{raw_name}`; expected {}, {}, or {}",
+            "unknown built-in scenario `{raw_name}`; expected builtin:{}, builtin:{}, or builtin:{}",
             crucible::HAPPY_PATH_SCENARIO_NAME,
             crucible::PARTITION_RECOVERY_SCENARIO_NAME,
             crucible::CRASH_RESTART_SCENARIO_NAME
@@ -220,11 +225,19 @@ pub(crate) fn export_savepoint_handle(
         .savepoint_oracle
         .as_ref()
         .ok_or_else(|| backend_error("save completed without replay-oracle proof"))?;
-    validate_savepoint_handle_export(
-        plan,
-        savepoint,
-        oracle,
+    if oracle.configuration != savepoint || oracle.fat_checkpoint != savepoint {
+        return Err(CliError::Identity(format!(
+            "savepoint checkpoint {} did not match oracle configuration {} and fat checkpoint {}",
+            format_content_hash_ref(savepoint),
+            format_content_hash_ref(oracle.configuration),
+            format_content_hash_ref(oracle.fat_checkpoint)
+        )));
+    }
+    authenticated_replay_closure(
+        plan.run_plan.scenario.scenario_form(),
+        &oracle.schedule,
         outcome.savepoint_replay_closure.as_deref(),
+        "savepoint export",
     )?;
     let checkpoint = format_content_hash_ref(savepoint);
     let handle = savepoint_handle_bytes(plan, &checkpoint, outcome, oracle);
@@ -347,48 +360,6 @@ fn push_save_failure_trace_entry(
     });
 }
 
-fn validate_savepoint_handle_export(
-    plan: &SaveInvocationPlan,
-    savepoint: crucible::ContentHash,
-    oracle: &SavepointOracleProof,
-    replay_closure: Option<&[u8]>,
-) -> Result<(), CliError> {
-    if oracle.configuration != savepoint || oracle.fat_checkpoint != savepoint {
-        return Err(CliError::Identity(format!(
-            "savepoint closure checkpoint {} did not match oracle configuration {} and fat checkpoint {}",
-            format_content_hash_ref(savepoint),
-            format_content_hash_ref(oracle.configuration),
-            format_content_hash_ref(oracle.fat_checkpoint)
-        )));
-    }
-    let configuration = crucible::Configuration {
-        def: plan.run_plan.scenario.scenario_def().clone(),
-        schedule: oracle.schedule.clone(),
-    };
-    let scenario_form = plan.run_plan.scenario.scenario_form();
-    if configuration.def.id() != scenario_form.scenario_def().id() {
-        return Err(CliError::Identity(format!(
-            "savepoint closure scenario {} did not match terminal configuration scenario {}",
-            scenario_form.scenario_def().id().to_hex(),
-            configuration.def.id().to_hex()
-        )));
-    }
-    if configuration.id() != savepoint {
-        return Err(CliError::Identity(format!(
-            "savepoint closure terminal configuration {} did not match checkpoint {}",
-            format_content_hash_ref(configuration.id()),
-            format_content_hash_ref(savepoint)
-        )));
-    }
-    authenticated_replay_closure(
-        scenario_form,
-        &configuration.schedule,
-        replay_closure,
-        "savepoint export",
-    )?;
-    Ok(())
-}
-
 pub(crate) fn authenticated_replay_closure(
     scenario: &crucible::ScenarioDefForm,
     // crucible-lint: allow host-nondeterminism-state -- this pure validator binds caller-supplied canonical schedule evidence to its replay closure before any execution.
@@ -397,12 +368,9 @@ pub(crate) fn authenticated_replay_closure(
     context: &str,
 ) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure, CliError> {
     let Some(bytes) = bytes else {
-        return crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty_for_selection_free_schedule(schedule)
-            .map_err(|error| {
-                artifact_error(format!(
-                    "{context} is missing the replay closure required by its typed selection schedule: {error}"
-                ))
-            });
+        return Err(artifact_error(format!(
+            "{context} is missing its authenticated replay closure"
+        )));
     };
     let closure = crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(bytes)
         .map_err(|error| artifact_error(format!("{context} replay closure is malformed: {error}")))?;
@@ -428,7 +396,10 @@ pub(crate) fn savepoint_handle_bytes(
         .save_boundary_evidence
         .as_ref()
         .map(|evidence| &evidence.proof);
-    artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
+    artifact_line(
+        &mut text,
+        &["schema", REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA],
+    );
     artifact_line(&mut text, &["label", &plan.label]);
     artifact_line(&mut text, &["checkpoint", checkpoint]);
     artifact_line(
@@ -607,19 +578,10 @@ pub(crate) fn savepoint_handle_bytes(
     text.into_bytes()
 }
 
-pub(crate) fn unsupported_resume_backend_error(plan: &ResumeInvocationPlan) -> CliError {
+pub(crate) fn resume_backend_unavailable_error(plan: &ResumeInvocationPlan) -> CliError {
     backend_error(format!(
-        "resume from checkpoint {} ({}) requires remaining resume runner coverage tracked by T-CLI-10",
+        "resume from checkpoint {} ({}) has no authenticated local backend or remote daemon route",
         format_content_hash_ref(plan.savepoint.checkpoint()),
         plan.savepoint.label()
-    ))
-}
-
-pub(crate) fn unsupported_fork_backend_error(plan: &ForkInvocationPlan) -> CliError {
-    backend_error(format!(
-        "fork from checkpoint {} ({}) as branch `{}` requires the independent child checkpoint-instantiation runner tracked by T-CLI-11",
-        format_content_hash_ref(plan.source.checkpoint()),
-        plan.source.label(),
-        plan.label
     ))
 }

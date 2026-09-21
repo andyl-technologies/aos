@@ -275,12 +275,17 @@ impl HexBytes {
         self.0.len() / 2
     }
 
-    /// Decodes the already-validated canonical hexadecimal bytes.
+    /// Decodes the canonical hexadecimal bytes established by [`Self::parse`].
+    ///
+    /// The validated representation always has even length, so exact chunks
+    /// cover the complete value without a remainder or partial-byte branch.
     #[must_use]
     pub fn decode(&self) -> Vec<u8> {
         self.0
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]))
             .collect()
     }
@@ -421,7 +426,10 @@ mod tests {
 
     #[test]
     fn hex_bytes_require_canonical_bounded_text() {
-        assert!(HexBytes::parse("00ff", 2).is_ok());
+        assert_eq!(
+            HexBytes::parse("00ff", 2).map(|value| value.decode()),
+            Ok(vec![0x00, 0xff]),
+        );
         assert!(HexBytes::parse("00FF", 2).is_err());
         assert!(HexBytes::parse("0", 2).is_err());
         assert!(HexBytes::parse("000000", 2).is_err());

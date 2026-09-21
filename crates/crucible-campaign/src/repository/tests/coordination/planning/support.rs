@@ -8,20 +8,24 @@ pub(super) fn exercise_beam_out_of_order_completion(
 ) {
     let (repository, lineage, base_policy) = fixture();
     let policy = CampaignPolicy::new(
-        base_policy.scenario(),
-        base_policy.campaign_seed(),
-        mode,
-        ExplorerPolicy::Beam {
-            width: 1,
-            novelty_reserve: 0,
-        },
-        base_policy.choice_policies().clone(),
-        base_policy.objectives().clone(),
-        base_policy.guidance().clone(),
-        base_policy.stop_conditions().clone(),
-        base_policy.fairness(),
-        base_policy.retention(),
-        base_policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            mode,
+            ExplorerPolicy::Beam {
+                width: 1,
+                novelty_reserve: 0,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
     )
     .expect("Beam closure policy");
     let policy = match intervention_learning {
@@ -140,25 +144,29 @@ pub(super) fn exercise_beam_out_of_order_completion(
         .expect("publish coverage");
     let first_observation = Observation::new(
         first_admitted.attempt,
-        first_configuration,
-        first_content,
-        first_path.id().expect("first path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties_id,
-        coverage,
+        Observation::outcome(
+            first_configuration,
+            first_content,
+            first_path.id().expect("first path"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties_id,
+            coverage,
+        ),
         BTreeSet::from([first_continuation.opportunity()]),
     )
     .expect("first observation");
     let second_observation = Observation::new(
         second_admitted.attempt,
-        second_configuration,
-        second_content,
-        second_path.id().expect("second path"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties_id,
-        coverage,
+        Observation::outcome(
+            second_configuration,
+            second_content,
+            second_path.id().expect("second path"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties_id,
+            coverage,
+        ),
         BTreeSet::from([second_continuation.opportunity()]),
     )
     .expect("second observation");

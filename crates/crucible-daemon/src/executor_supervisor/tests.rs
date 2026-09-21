@@ -9,13 +9,10 @@ use std::thread;
 use std::time::Duration;
 
 use crucible_campaign::{
-    AssignmentId, AttemptAdmissionId, AttemptId, AttemptResourceLimits,
-    AttemptRetentionPolicyBasis, CampaignFactId, CampaignLineageId, CampaignPolicyId,
+    AssignmentId, AttemptId, AttemptResourceLimits, CampaignFactId, CampaignLineageId,
     CampaignSnapshotId, ConfigurationArtifactId, ExecutionRetentionIntent, ExecutorClient,
-    FindingCandidateBundleId, FindingReplayCaptureEvidenceId, FindingReplayCaptureIncomplete,
-    FindingReplayCaptureReference, FindingReplayCaptureSet, SubmitAttemptDisposition,
+    FindingCandidateBundleId, SubmitAttemptDisposition,
 };
-use crucible_cas::content_store::{ContentId, ObjectKind};
 
 use super::*;
 use crate::{
@@ -26,30 +23,33 @@ use crate::{
 #[test]
 fn execution_cancellation_wakes_blocked_guards_and_times_out_cleanly() {
     let cancellation = ExecutionCancellation::default();
-    assert!(!cancellation.wait_for_cancellation(Duration::ZERO));
+    let observer = cancellation
+        .observer_for_test()
+        .expect("install cancellation observer");
+    assert!(!observer.wait_for_cancellation(Duration::ZERO));
 
-    let waiter_cancellation = cancellation.clone();
     let started = Arc::new(Barrier::new(2));
     let waiter_started = Arc::clone(&started);
     let waiter = thread::spawn(move || {
         waiter_started.wait();
-        waiter_cancellation.wait_for_cancellation(Duration::MAX)
+        let observed = observer.wait_for_cancellation(Duration::MAX);
+        (observed, observer)
     });
     started.wait();
     cancellation.cancel_for_test();
 
-    assert!(waiter.join().expect("cancellation waiter"));
-    assert!(cancellation.wait_for_cancellation(Duration::ZERO));
+    let (observed, observer) = waiter.join().expect("cancellation waiter");
+    assert!(observed);
+    assert!(observer.wait_for_cancellation(Duration::ZERO));
 }
 
 #[test]
-fn execution_cancellation_serializes_predicate_publication_with_wait_registration() {
+fn execution_cancellation_publishes_before_notifying_the_test_observer() {
     let cancellation = ExecutionCancellation::default();
-    let wait = cancellation
-        .state
-        .wait_lock
-        .lock()
-        .expect("hold cancellation wait registration");
+    let observer = cancellation
+        .observer_for_test()
+        .expect("install cancellation observer");
+    let observation = observer.hold_observation_for_test();
     let canceling = cancellation.clone();
     let (finished_sender, finished_receiver) = mpsc::sync_channel(1);
     let canceler = thread::spawn(move || {
@@ -62,27 +62,31 @@ fn execution_cancellation_serializes_predicate_publication_with_wait_registratio
             .recv_timeout(Duration::from_millis(25))
             .is_err()
     );
-    assert!(!cancellation.is_canceled());
-    drop(wait);
+    assert!(cancellation.is_canceled());
+    drop(observation);
 
     finished_receiver
         .recv_timeout(Duration::from_secs(1))
-        .expect("cancellation completed after wait registration");
-    assert!(cancellation.is_canceled());
+        .expect("cancellation completed after observer notification");
+    assert!(observer.wait_for_cancellation(Duration::ZERO));
     canceler.join().expect("canceler thread");
 }
 
 #[test]
 fn execution_cancellation_wait_fails_closed_after_poison() {
     let cancellation = ExecutionCancellation::default();
-    let state = Arc::clone(&cancellation.state);
+    let observer = Arc::new(
+        cancellation
+            .observer_for_test()
+            .expect("install cancellation observer"),
+    );
+    let poison_observer = Arc::clone(&observer);
     let poison = thread::spawn(move || {
-        let _wait = state.wait_lock.lock().expect("cancellation wait lock");
-        panic!("poison cancellation wait lock");
+        poison_observer.poison_observation_for_test();
     });
     assert!(poison.join().is_err());
 
-    assert!(cancellation.wait_for_cancellation(Duration::ZERO));
+    assert!(observer.wait_for_cancellation(Duration::ZERO));
     assert!(!cancellation.is_canceled());
 }
 
@@ -116,6 +120,7 @@ fn exact_replay_running_dedup_and_capacity_are_bounded() {
         first.attempt(),
         resources(2, 2048, 4096),
         first.retention(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("changed request");
     assert_eq!(
@@ -157,7 +162,7 @@ fn exact_replay_running_dedup_and_capacity_are_bounded() {
     let completed_observation = observation(0x71);
     assert_eq!(
         supervisor
-            .stage_observation_publication(&queued, completed_observation)
+            .stage_observation_publication(&queued, completed_observation, None)
             .expect("stage observation publication"),
         ObservationPublicationOutcome::Staged
     );
@@ -269,7 +274,7 @@ fn execution_status_is_read_only_and_requires_the_exact_runtime_basis() {
     let queued = supervisor.next_queued().expect("queued execution");
     let completed = observation(0x73);
     supervisor
-        .stage_observation_publication(&queued, completed)
+        .stage_observation_publication(&queued, completed, None)
         .expect("stage completion");
     supervisor
         .complete_execution(execution_key(&request), execution, completed)
@@ -466,43 +471,14 @@ fn materialized_start_capture_is_durable_and_prelatched_before_dispatch() {
         CheckpointCompletionOutcome::Paused
     );
 
-    let policy_basis = AttemptRetentionPolicyBasis::new(
-        CampaignSnapshotId::parse(&format!(
-            "crucible.campaign.snapshot@{}",
-            ContentId::for_bytes(
-                ObjectKind::CampaignSnapshot,
-                3,
-                b"materialized-resume-snapshot"
-            )
-            .encode()
-        ))
-        .expect("materialized resume snapshot"),
-        AttemptAdmissionId::parse(&format!(
-            "crucible.campaign.attempt-admission@{}",
-            ContentId::for_bytes(
-                ObjectKind::CampaignFact,
-                3,
-                b"materialized-resume-admission"
-            )
-            .encode()
-        ))
-        .expect("materialized resume admission"),
-        CampaignPolicyId::parse(&format!(
-            "crucible.campaign.policy@{}",
-            ContentId::for_bytes(ObjectKind::Policy, 1, b"materialized-resume-policy").encode()
-        ))
-        .expect("materialized resume policy"),
-    );
-    let resumed_assignment = request(0x64, 0x71, second_epoch, resources(1, 2048, 4096))
-        .with_retention_policy_basis(policy_basis)
-        .expect("policy-bound resumed assignment");
-    let legacy_resume =
+    let resumed_assignment = request(0x64, 0x71, second_epoch, resources(1, 2048, 4096));
+    let ordinary_resume =
         ResumeAttemptExecutionRequest::new(&resumed_assignment, recovery_execution, root)
-            .expect("legacy resume request");
+            .expect("ordinary resume request");
     assert_eq!(
         second
-            .resume_attempt_execution(&legacy_resume)
-            .expect("legacy resume response")
+            .resume_attempt_execution(&ordinary_resume)
+            .expect("ordinary resume response")
             .disposition(),
         ResumeAttemptExecutionDisposition::NotCurrent
     );
@@ -514,8 +490,6 @@ fn materialized_start_capture_is_durable_and_prelatched_before_dispatch() {
         start_configuration,
     )
     .expect("capture-aware resume request");
-    assert_eq!(resume.retention_policy_basis(), Some(policy_basis));
-    assert_eq!(resume.prior_retention_policy_basis(), None);
     let resumed_execution = match second
         .resume_attempt_execution(&resume)
         .expect("resume captured start")
@@ -1050,6 +1024,7 @@ fn cancellation_requires_the_exact_runtime_basis_before_signaling() {
         request.attempt(),
         resources(2, 2048, 4096),
         request.retention(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("changed execution basis");
     let foreign = CancelAttemptExecutionRequest::new(&changed_basis, execution)
@@ -1174,6 +1149,7 @@ fn execution_quanta_are_enforced_as_a_per_execution_capability() {
         attempt(0x39),
         AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("request");
     assert_eq!(
@@ -1207,7 +1183,7 @@ fn completion_and_cancellation_races_are_idempotent() {
     let completed_queued = supervisor.next_queued().expect("queued completion fixture");
     assert_eq!(
         supervisor
-            .stage_observation_publication(&completed_queued, completed_observation)
+            .stage_observation_publication(&completed_queued, completed_observation, None)
             .expect("stage completion fixture"),
         ObservationPublicationOutcome::Staged
     );
@@ -1317,14 +1293,14 @@ fn finding_candidate_root_is_staged_atomically_and_preserved_by_completion() {
 
     assert_eq!(
         supervisor
-            .stage_observation_and_finding_candidate_publication(&queued, observation, candidate,)
+            .stage_observation_publication(&queued, observation, Some(candidate))
             .expect("stage observation and finding candidate"),
         ObservationPublicationOutcome::Staged
     );
     assert_eq!(
         supervisor
-            .stage_observation_publication(&queued, observation)
-            .expect("legacy observation staging preserves stronger root"),
+            .stage_observation_publication(&queued, observation, None)
+            .expect("weaker observation staging preserves stronger root"),
         ObservationPublicationOutcome::AlreadyStaged
     );
     assert_eq!(
@@ -1387,99 +1363,6 @@ fn finding_candidate_root_is_staged_atomically_and_preserved_by_completion() {
         .expect("visit completed finding roots");
     assert_eq!(summary.finding_candidate_roots(), 1);
     assert!(roots.contains(&AssignmentRetentionRoot::FindingCandidate(candidate)));
-}
-
-#[test]
-fn capture_enrichment_rejects_a_different_existing_candidate_without_mutation() {
-    let epoch = daemon_epoch(0x71);
-    let request = request(0x72, 0x73, epoch, resources(1, 1024, 2048));
-    let mut supervisor = LocalExecutorSupervisor::new(
-        MemoryAssignmentLedger::default(),
-        AllowAllAttemptAdmission,
-        epoch,
-        ExecutorCapacity::new(1, 1, 2048, 4096, 64).expect("capacity"),
-    );
-    supervisor
-        .submit_attempt(&request)
-        .expect("capture attempt accepted");
-    let queued = supervisor.next_queued().expect("capture attempt queued");
-    let observation = observation(0x74);
-    let original_candidate = finding_candidate(0x75);
-    supervisor
-        .stage_observation_and_finding_candidate_publication(
-            &queued,
-            observation,
-            original_candidate,
-        )
-        .expect("stage original candidate");
-    let before = supervisor
-        .ledger()
-        .load_attempt(execution_key(&request))
-        .expect("load original staged state");
-
-    assert!(matches!(
-        supervisor.stage_observation_finding_and_replay_capture_publication(
-            &queued,
-            observation,
-            finding_candidate(0x76),
-            finding_replay_captures(0x77),
-        ),
-        Err(LocalExecutorError::ConflictingCompletion)
-    ));
-    assert_eq!(
-        supervisor
-            .ledger()
-            .load_attempt(execution_key(&request))
-            .expect("load state after rejected candidate enrichment"),
-        before
-    );
-}
-
-#[test]
-fn capture_enrichment_rejects_different_existing_capture_roots_without_mutation() {
-    let epoch = daemon_epoch(0x78);
-    let request = request(0x79, 0x7a, epoch, resources(1, 1024, 2048));
-    let mut supervisor = LocalExecutorSupervisor::new(
-        MemoryAssignmentLedger::default(),
-        AllowAllAttemptAdmission,
-        epoch,
-        ExecutorCapacity::new(1, 1, 2048, 4096, 64).expect("capacity"),
-    );
-    supervisor
-        .submit_attempt(&request)
-        .expect("capture attempt accepted");
-    let queued = supervisor.next_queued().expect("capture attempt queued");
-    let observation = observation(0x7b);
-    let candidate = finding_candidate(0x7c);
-    supervisor
-        .stage_observation_finding_and_replay_capture_publication(
-            &queued,
-            observation,
-            candidate,
-            finding_replay_captures(0x7d),
-        )
-        .expect("stage original capture roots");
-    let before = supervisor
-        .ledger()
-        .load_attempt(execution_key(&request))
-        .expect("load original staged state");
-
-    assert!(matches!(
-        supervisor.stage_observation_finding_and_replay_capture_publication(
-            &queued,
-            observation,
-            candidate,
-            finding_replay_captures(0x7e),
-        ),
-        Err(LocalExecutorError::ConflictingCompletion)
-    ));
-    assert_eq!(
-        supervisor
-            .ledger()
-            .load_attempt(execution_key(&request))
-            .expect("load state after rejected capture enrichment"),
-        before
-    );
 }
 
 #[test]
@@ -1643,7 +1526,7 @@ fn compare_exchange_failures_reconcile_running_completion_and_cancellation() {
         let queued = supervisor.next_queued().expect("queued completion fixture");
         assert_eq!(
             supervisor
-                .stage_observation_publication(&queued, observation)
+                .stage_observation_publication(&queued, observation, None)
                 .expect("stage completion fixture"),
             ObservationPublicationOutcome::Staged
         );
@@ -1766,7 +1649,7 @@ fn completion_validation_is_fail_closed_by_default() {
     let queued = supervisor.next_queued().expect("queued execution");
     assert_eq!(
         supervisor
-            .stage_observation_publication(&queued, observation(0x76))
+            .stage_observation_publication(&queued, observation(0x76), None)
             .expect("stage invalid completion"),
         ObservationPublicationOutcome::Staged
     );
@@ -1807,7 +1690,7 @@ fn durable_completions_are_reauthenticated_or_discarded_before_reuse() {
         let queued = supervisor.next_queued().expect("queued completion fixture");
         assert_eq!(
             supervisor
-                .stage_observation_publication(&queued, completed_observation)
+                .stage_observation_publication(&queued, completed_observation, None)
                 .expect("stage completion fixture"),
             ObservationPublicationOutcome::Staged
         );
@@ -1828,6 +1711,7 @@ fn durable_completions_are_reauthenticated_or_discarded_before_reuse() {
         completed_request.attempt(),
         completed_request.resources(),
         completed_request.retention(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("unavailable request");
     let mut unavailable = LocalExecutorSupervisor::new(
@@ -1860,6 +1744,7 @@ fn durable_completions_are_reauthenticated_or_discarded_before_reuse() {
         completed_request.attempt(),
         completed_request.resources(),
         completed_request.retention(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("unauthorized request");
     let mut unauthorized = LocalExecutorSupervisor::new(
@@ -1892,6 +1777,7 @@ fn durable_completions_are_reauthenticated_or_discarded_before_reuse() {
         completed_request.attempt(),
         completed_request.resources(),
         completed_request.retention(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("incompatible request");
     let mut incompatible = LocalExecutorSupervisor::new(
@@ -1955,7 +1841,7 @@ fn durable_restart_replaces_stale_running_and_preserves_completion() {
         let replacement_queued = supervisor.next_queued().expect("queued replacement");
         assert_eq!(
             supervisor
-                .stage_observation_publication(&replacement_queued, completed_observation)
+                .stage_observation_publication(&replacement_queued, completed_observation, None)
                 .expect("stage durable completion"),
             ObservationPublicationOutcome::Staged
         );
@@ -2010,7 +1896,7 @@ fn restart_recovers_publishing_without_losing_the_expected_observation() {
         assert_eq!(queued.execution(), execution);
         assert_eq!(
             supervisor
-                .stage_observation_publication(&queued, expected_observation)
+                .stage_observation_publication(&queued, expected_observation, None)
                 .expect("persist publication root"),
             ObservationPublicationOutcome::Staged
         );
@@ -2046,7 +1932,7 @@ fn restart_recovers_publishing_without_losing_the_expected_observation() {
             .expect("accept recovery fixture");
         let queued = supervisor.next_queued().expect("queued recovery fixture");
         supervisor
-            .stage_observation_publication(&queued, expected_observation)
+            .stage_observation_publication(&queued, expected_observation, None)
             .expect("persist incomplete publication root");
         supervisor.into_ledger()
     };
@@ -2065,7 +1951,7 @@ fn restart_recovers_publishing_without_losing_the_expected_observation() {
     ));
     let queued = recovery.next_queued().expect("queued recovery incarnation");
     assert!(matches!(
-        recovery.stage_observation_publication(&queued, observation(0x7a)),
+        recovery.stage_observation_publication(&queued, observation(0x7a), None),
         Err(LocalExecutorError::ConflictingCompletion)
     ));
     assert!(matches!(
@@ -2416,6 +2302,7 @@ fn request_in_lineage(
         attempt(attempt_byte),
         resources,
         retention,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("request")
 }
@@ -2427,15 +2314,18 @@ fn capture_request(
     resources: AttemptResourceLimits,
     configuration: ConfigurationArtifactId,
 ) -> SubmitAttemptRequest {
-    SubmitAttemptRequest::new_capture_materialized_start(
+    SubmitAttemptRequest::new(
         AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
         epoch,
         lineage(0x11),
         attempt(attempt_byte),
         resources,
         ExecutionRetentionIntent::RetainOnFailure,
-        configuration,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_capture_materialized_start(assignment, configuration)
+    })
     .expect("capture request")
 }
 
@@ -2447,16 +2337,18 @@ fn savepoint_capture_request(
     request: CampaignFactId,
     configuration: ConfigurationArtifactId,
 ) -> SubmitAttemptRequest {
-    SubmitAttemptRequest::new_savepoint_capture(
+    SubmitAttemptRequest::new(
         AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
         epoch,
         lineage(0x11),
         attempt(attempt_byte),
         resources,
         ExecutionRetentionIntent::RetainOnFailure,
-        request,
-        configuration,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(assignment, request, configuration)
+    })
     .expect("savepoint capture request")
 }
 
@@ -2476,42 +2368,46 @@ fn selected_savepoint_request(
         encode_hex(&[snapshot_byte; 32])
     ))
     .expect("campaign snapshot");
-    SubmitAttemptRequest::new_selected_savepoint(
+    SubmitAttemptRequest::new(
         AssignmentId::from_bytes([assignment_byte; 16]).expect("assignment"),
         epoch,
         lineage(0x11),
         attempt(attempt_byte),
         resources,
         ExecutionRetentionIntent::RetainOnFailure,
-        snapshot,
-        selection,
-        request,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_selected_savepoint(assignment, snapshot, selection, request)
+    })
     .expect("selected savepoint request")
 }
 
 fn lineage(byte: u8) -> CampaignLineageId {
-    CampaignLineageId::parse(&typed_id(
+    CampaignLineageId::parse(&typed_content_id(
         "crucible.campaign.lineage",
         "campaign-fact",
+        1,
         byte,
     ))
     .expect("lineage")
 }
 
 fn attempt(byte: u8) -> AttemptId {
-    AttemptId::parse(&typed_id(
+    AttemptId::parse(&typed_content_id(
         "crucible.campaign.attempt",
         "campaign-fact",
+        8,
         byte,
     ))
     .expect("attempt")
 }
 
 fn configuration(byte: u8) -> ConfigurationArtifactId {
-    ConfigurationArtifactId::parse(&typed_id(
+    ConfigurationArtifactId::parse(&typed_content_id(
         "crucible.campaign.configuration-artifact",
         "configuration",
+        1,
         byte,
     ))
     .expect("configuration")
@@ -2519,7 +2415,8 @@ fn configuration(byte: u8) -> ConfigurationArtifactId {
 
 fn campaign_fact(byte: u8) -> CampaignFactId {
     CampaignFactId::parse(&format!(
-        "crucible.campaign.fact@campaign-fact.10.{}",
+        "crucible.campaign.fact@campaign-fact.{}.{}",
+        crucible_campaign::CampaignRecordKind::Fact.schema_version(),
         encode_hex(&[byte; 32])
     ))
     .expect("campaign fact")
@@ -2534,54 +2431,33 @@ fn daemon_epoch(byte: u8) -> DaemonEpoch {
 }
 
 fn observation(byte: u8) -> ObservationId {
-    ObservationId::parse(&typed_id(
+    ObservationId::parse(&typed_content_id(
         "crucible.campaign.observation",
         "observation",
+        12,
         byte,
     ))
     .expect("observation")
 }
 
 fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
-    FindingCandidateBundleId::parse(&typed_id(
-        "crucible.campaign.finding-candidate-bundle",
-        "finding",
-        byte,
+    FindingCandidateBundleId::parse(&format!(
+        "crucible.campaign.finding-candidate-bundle@finding.6.{}",
+        encode_hex(&[byte; 32])
     ))
     .expect("finding candidate")
 }
 
-fn finding_replay_captures(byte: u8) -> FindingReplayCaptureSet {
-    let root = FindingReplayCaptureEvidenceId::parse(&typed_id(
-        "crucible.campaign.finding-replay-capture-evidence",
-        "exact-manifest",
-        byte,
-    ))
-    .expect("finding replay capture root");
-    FindingReplayCaptureSet::new(
-        FindingReplayCaptureReference::Complete(root),
-        FindingReplayCaptureReference::Incomplete(
-            FindingReplayCaptureIncomplete::MissingEventLogPrefix,
-        ),
-        FindingReplayCaptureReference::Incomplete(
-            FindingReplayCaptureIncomplete::MissingTerminalFingerprints,
-        ),
-        FindingReplayCaptureReference::Incomplete(
-            FindingReplayCaptureIncomplete::MissingSignalArtifactStore,
-        ),
-    )
-}
-
 fn checkpoint(byte: u8) -> ExactCheckpointId {
     ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.2.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("checkpoint")
 }
 
-fn typed_id(tag: &str, kind: &str, byte: u8) -> String {
-    format!("{tag}@{kind}.1.{}", encode_hex(&[byte; 32]))
+fn typed_content_id(tag: &str, kind: &str, schema_version: u32, byte: u8) -> String {
+    format!("{tag}@{kind}.{schema_version}.{}", encode_hex(&[byte; 32]))
 }
 
 fn encode_hex(bytes: &[u8]) -> String {

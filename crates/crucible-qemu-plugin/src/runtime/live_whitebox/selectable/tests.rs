@@ -380,9 +380,9 @@ fn native_handoff_rejects_any_instruction_drift_before_vmstop()
         ),
     )?;
 
-    let error = state
-        .rebind_pending_boundary(52)
-        .expect_err("a chained guest instruction must fail the selectable stop fence");
+    let Err(error) = state.rebind_pending_boundary(52) else {
+        panic!("a chained guest instruction must fail the selectable stop fence");
+    };
 
     assert!(error.to_string().contains("expected exactly 51"));
     assert_eq!(
@@ -489,17 +489,17 @@ fn rejected_tb_exit_releases_the_vmstop_handoff() -> Result<(), Box<dyn std::err
     state.freeze()?;
     let request = request(2)?;
 
-    let error = state
-        .serve_selection(
-            &request,
-            SelectableCallbackCoordinate::new(50, 1),
-            crate::GuestMemoryRange::new(
-                crate::GuestMemoryAddressSpace::Virtual,
-                0x4000,
-                request.reply_capacity(),
-            ),
-        )
-        .expect_err("QEMU must reject a selectable outside the native exit context");
+    let Err(error) = state.serve_selection(
+        &request,
+        SelectableCallbackCoordinate::new(50, 1),
+        crate::GuestMemoryRange::new(
+            crate::GuestMemoryAddressSpace::Virtual,
+            0x4000,
+            request.reply_capacity(),
+        ),
+    ) else {
+        panic!("QEMU must reject a selectable outside the native exit context");
+    };
 
     assert!(error.to_string().contains("status -22"));
     assert_eq!(FORCE_EXIT_CALLS.get(), 1);

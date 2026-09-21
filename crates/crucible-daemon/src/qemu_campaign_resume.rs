@@ -1,4 +1,4 @@
-//! Guarded version-four production-checkpoint resume for campaign attempts.
+//! Guarded version-nine production-checkpoint resume for campaign attempts.
 //!
 //! This module keeps durable-root installation, multi-node process launch,
 //! modeled driving, final drain, and result sealing in one linear owner. A
@@ -8,8 +8,8 @@
 //! any attempt process guard is installed.
 //!
 //! An ordinary `EventCount` resume also receives an independently replayed
-//! genesis-to-start event-prefix proof. Version-four exact-checkpoint envelopes
-//! do not retain an attempt-local event count, so the runner authenticates that
+//! genesis-to-start event-prefix proof. Exact-checkpoint envelopes do not
+//! retain an attempt-local event count, so the runner authenticates that
 //! prefix against the restored complete log and derives same-attempt progress by
 //! subtraction. Other stop modes do not consume this count and remain compatible
 //! with start decisions that the cold replay path cannot reconstruct.
@@ -44,7 +44,9 @@ use crate::{
 mod tests;
 
 /// Runner-owned lifecycle operations required after exact production restore.
-pub trait QemuProductionExactResumeLifecycleOwner: QemuFreshAttemptLifecycleOwner {
+pub(crate) trait QemuProductionExactResumeLifecycleOwner:
+    QemuFreshAttemptLifecycleOwner
+{
     /// Returns the exact scheduler/evidence boundary restored with this lifecycle.
     ///
     /// # Errors
@@ -69,8 +71,34 @@ where
     }
 }
 
+/// Scenario and configuration identities authenticated for an exact resume.
+#[derive(Clone, Copy)]
+pub(crate) struct QemuExactResumeBasis<'a> {
+    pub(crate) scenario: &'a ScenarioDef,
+    pub(crate) source: &'a ScenarioDefForm,
+    pub(crate) initial: &'a Configuration,
+    pub(crate) post_selection: Option<&'a Configuration>,
+}
+
+impl<'a> QemuExactResumeBasis<'a> {
+    /// Binds one scenario form to its exact resume configuration boundary.
+    pub(crate) const fn new(
+        scenario: &'a ScenarioDef,
+        source: &'a ScenarioDefForm,
+        initial: &'a Configuration,
+        post_selection: Option<&'a Configuration>,
+    ) -> Self {
+        Self {
+            scenario,
+            source,
+            initial,
+            post_selection,
+        }
+    }
+}
+
 /// Factory for one replay-validated, exact-root production lifecycle.
-pub trait QemuProductionExactResumeLifecycleFactory {
+pub(crate) trait QemuProductionExactResumeLifecycleFactory {
     /// Exact lifecycle owner created for one resumed attempt.
     type Lifecycle: QemuProductionExactResumeLifecycleOwner;
     /// Factory-specific installation or guarded-construction failure.
@@ -81,16 +109,11 @@ pub trait QemuProductionExactResumeLifecycleFactory {
     /// # Errors
     ///
     /// Returns a classified source, integrity, cancellation, or compatibility failure.
-    // crucible-lint: allow rust-allow -- the trait contract exposes every resume authority and binding explicitly.
-    #[allow(clippy::too_many_arguments)]
     fn authenticate_resume_boundary(
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<
         Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
@@ -106,16 +129,11 @@ pub trait QemuProductionExactResumeLifecycleFactory {
     ///
     /// Returns a classified failure for cancellation, temporary immutable-store
     /// unavailability, invalid resume basis, or guarded lifecycle construction.
-    // crucible-lint: allow rust-allow -- the resume factory binds every independent semantic and operational basis explicitly.
-    #[allow(clippy::too_many_arguments)]
     fn start_resume_lifecycle(
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>>;
 }
@@ -132,10 +150,7 @@ where
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<
         Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
@@ -145,10 +160,7 @@ where
             self,
             checkpoints,
             checkpoint,
-            scenario,
-            source,
-            initial,
-            post_selection,
+            basis,
             context,
         );
         match result {
@@ -164,22 +176,11 @@ where
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
-        self.begin_resume(
-            checkpoints,
-            checkpoint,
-            scenario,
-            source,
-            initial,
-            post_selection,
-            context,
-        )
-        .map_err(classify_production_lifecycle_failure)
+        self.begin_resume(checkpoints, checkpoint, basis, context)
+            .map_err(classify_production_lifecycle_failure)
     }
 }
 
@@ -194,25 +195,14 @@ where
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<
         Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
         AttemptWorkerFailure<Self::Error>,
     > {
         self.inner_mut()
-            .authenticate_resume_boundary(
-                checkpoints,
-                checkpoint,
-                scenario,
-                source,
-                initial,
-                post_selection,
-                context,
-            )
+            .authenticate_resume_boundary(checkpoints, checkpoint, basis, context)
             .map_err(map_observed_inner_failure)
     }
 
@@ -220,26 +210,15 @@ where
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         let fingerprint_nodes = self
-            .prepare_observation(source)
+            .prepare_observation(basis.source)
             .map_err(map_observed_evidence_failure::<F::Error>)?;
         let lifecycle = self
             .inner_mut()
-            .start_resume_lifecycle(
-                checkpoints,
-                checkpoint,
-                scenario,
-                source,
-                initial,
-                post_selection,
-                context,
-            )
+            .start_resume_lifecycle(checkpoints, checkpoint, basis, context)
             .map_err(map_observed_inner_failure)?;
 
         Ok(self.observe(lifecycle, fingerprint_nodes))
@@ -251,26 +230,32 @@ fn initial_selected_source_is_absent(
     checkpoint: ExactCheckpointId,
     context: &AttemptExecutionContext,
 ) -> bool {
-    matches!(
-        error,
-        crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(
-            crate::ProductionAttemptCheckpointRestoreError::Checkpoint(
-                crate::ExactCheckpointStoreError::Store(StoreError::NotFound { id }),
-            ),
-        ) if *id == checkpoint.content_id()
-    ) && matches!(
-        context.execution_origin(),
-        crate::AttemptExecutionOrigin::SelectedSavepoint { resume: None, .. }
-    )
+    let absent_selected_root = match error {
+        crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(source) => source
+            .downcast_ref::<crate::ProductionAttemptCheckpointRestoreError>()
+            .is_some_and(|source| {
+                matches!(
+                    source,
+                    crate::ProductionAttemptCheckpointRestoreError::Checkpoint(
+                        crate::ExactCheckpointStoreError::Store(StoreError::NotFound { id }),
+                    ) if *id == checkpoint.content_id()
+                )
+            }),
+        _ => false,
+    };
+
+    absent_selected_root
+        && matches!(
+            context.execution_origin(),
+            crate::AttemptExecutionOrigin::SelectedSavepoint { resume: None, .. }
+        )
 }
 
-/// Version-four exact-resume runner with runner-owned final drain and sealing.
-pub struct QemuProductionExactResumeExecutionRunner<F, D> {
+/// Version-nine exact-resume runner with runner-owned final drain and sealing.
+pub(crate) struct QemuProductionExactResumeExecutionRunner<F, D> {
     checkpoints: Arc<ExactCheckpointStore>,
     lifecycles: F,
     driver: D,
-    abandoned_native_checkpoint: Option<crate::NativeCheckpointCleanup>,
-    in_flight_native_checkpoint: Option<crucible_api::ProductionExactCheckpointRetirement>,
 }
 
 impl<F, D> QemuProductionExactResumeExecutionRunner<F, D> {
@@ -281,90 +266,13 @@ impl<F, D> QemuProductionExactResumeExecutionRunner<F, D> {
             checkpoints,
             lifecycles,
             driver,
-            abandoned_native_checkpoint: None,
-            in_flight_native_checkpoint: None,
-        }
-    }
-
-    /// Returns the immutable exact-checkpoint store.
-    #[must_use]
-    pub fn checkpoints(&self) -> &Arc<ExactCheckpointStore> {
-        &self.checkpoints
-    }
-
-    /// Returns the guarded lifecycle factory.
-    #[must_use]
-    pub const fn lifecycle_factory(&self) -> &F {
-        &self.lifecycles
-    }
-
-    /// Returns the modeled attempt driver.
-    #[must_use]
-    pub const fn driver(&self) -> &D {
-        &self.driver
-    }
-
-    fn retain_native_checkpoint_cleanup(&mut self, cleanup: crate::NativeCheckpointCleanup) {
-        crate::NativeCheckpointCleanup::retain(&mut self.abandoned_native_checkpoint, cleanup);
-    }
-
-    fn register_native_checkpoint_capture(
-        &mut self,
-        checkpoint: &crate::CapturedAttemptCheckpoint,
-    ) {
-        let Some(retirement) = checkpoint.native_retirement() else {
-            return;
-        };
-        if let Some(prior) = self.in_flight_native_checkpoint.replace(retirement) {
-            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
-                prior,
-            ));
-        }
-    }
-
-    fn resolve_native_checkpoint_capture(
-        &mut self,
-        shutdown_succeeded: bool,
-        result_succeeded: bool,
-    ) {
-        let Some(retirement) = self.in_flight_native_checkpoint.take() else {
-            return;
-        };
-        if !shutdown_succeeded {
-            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
-                retirement,
-            ));
-        } else if !result_succeeded {
-            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Retire(
-                retirement,
-            ));
-        }
-    }
-
-    fn take_abandoned_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
-        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
-            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
-                retirement,
-            ));
-        }
-        self.abandoned_native_checkpoint.take()
-    }
-}
-
-impl<F, D> Drop for QemuProductionExactResumeExecutionRunner<F, D> {
-    fn drop(&mut self) {
-        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
-            crate::NativeCheckpointCleanup::Quarantine(retirement).retain_for_process_lifetime();
-        }
-        if let Some(cleanup) = self.abandoned_native_checkpoint.take() {
-            cleanup.retain_for_process_lifetime();
         }
     }
 }
 
 /// Failure from one exact production-resume phase.
 #[derive(Debug)]
-pub enum QemuProductionExactResumeExecutionRunnerError<F, D> {
+pub(crate) enum QemuProductionExactResumeExecutionRunnerError<F, D> {
     /// The resume-only runner received an execution without a durable root.
     MissingCheckpoint,
     /// Exact closure installation or guarded lifecycle construction failed.
@@ -502,10 +410,6 @@ where
 {
     type Error = QemuProductionExactResumeExecutionRunnerError<F::Error, D::Error>;
 
-    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
-        self.take_abandoned_checkpoint()
-    }
-
     fn execute(
         &mut self,
         input: &CrucibleAttemptExecution,
@@ -561,10 +465,7 @@ where
             .authenticate_resume_boundary(
                 &self.checkpoints,
                 checkpoint,
-                &scenario,
-                input.scenario(),
-                initial,
-                post_selection,
+                QemuExactResumeBasis::new(&scenario, input.scenario(), initial, post_selection),
                 context,
             )
             .map_err(map_resume_lifecycle_failure)
@@ -645,10 +546,7 @@ where
             .start_resume_lifecycle(
                 &self.checkpoints,
                 checkpoint,
-                &scenario,
-                input.scenario(),
-                initial,
-                post_selection,
+                QemuExactResumeBasis::new(&scenario, input.scenario(), initial, post_selection),
                 context,
             )
             .map_err(map_resume_lifecycle_failure)?;
@@ -673,9 +571,8 @@ where
                             let capture = lifecycle
                                 .capture_attempt_checkpoint(context)
                                 .map_err(map_resume_checkpoint_capture_failure)?;
-                            self.register_native_checkpoint_capture(&capture);
                             context
-                                .prepare_and_stage_checkpoint(&capture)
+                                .prepare_and_stage_checkpoint(capture)
                                 .map(ResumeRunnerResult::Checkpoint)
                                 .map_err(map_resume_checkpoint_handoff_failure)
                         }
@@ -688,7 +585,6 @@ where
                 .map_err(map_resume_terminal_fingerprint_capture_failure)
         });
         let cleanup = lifecycle.shutdown();
-        self.resolve_native_checkpoint_capture(cleanup.is_ok(), driven.is_ok());
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
             (Err(failure), Ok(_)) => return Err(failure),
@@ -847,8 +743,7 @@ fn map_resume_checkpoint_capture_failure<F, D>(
 ) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::NotImplemented { .. }
-        | SchedulerError::Backend(_)
+        SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
@@ -869,9 +764,8 @@ fn map_resume_terminal_fingerprint_capture_failure<F, D>(
 ) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::NotImplemented { .. }
         // crucible-lint: allow host-nondeterminism-state -- this arm only classifies an already-produced scheduler failure as terminal and cannot feed an observation back into resumed execution.
-        | SchedulerError::Backend(_)
+        SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)

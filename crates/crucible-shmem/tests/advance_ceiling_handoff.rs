@@ -5,7 +5,7 @@
 #![allow(clippy::expect_used)]
 
 use crucible_shmem::{
-    FrameEntry, FutexWait, FutexWakeResult, KIND_VM, NODE_SLOT_ALIGN,
+    AdvanceStopCondition, FrameEntry, FutexWait, FutexWakeResult, KIND_VM, NODE_SLOT_ALIGN,
     NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET, NODE_SLOT_CURRENT_ICOUNT_OFFSET,
     NODE_SLOT_CURRENT_NS_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
     NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET, NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET,
@@ -36,7 +36,7 @@ use std::{
 
 #[test]
 fn node_slot_layout_matches_wire_contract() {
-    assert_eq!(NODE_SLOT_SIZE, 128);
+    assert_eq!(NODE_SLOT_SIZE, 256);
     assert_eq!(NODE_SLOT_ALIGN, 128);
     assert_eq!(NODE_SLOT_CURRENT_ICOUNT_OFFSET, 0);
     assert_eq!(NODE_SLOT_CURRENT_NS_OFFSET, 8);
@@ -57,10 +57,13 @@ fn scheduler_publishes_ceiling_and_node_publishes_reached_icount() {
 
     let ceiling = ceiling(0, 12);
     assert_eq!(
-        slot.publish_scheduler_ceiling(ceiling),
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling),
         Ok(wake_action(0, 1, 0))
     );
-    assert_eq!(slot.load_node_ceiling(), 12);
+    assert_eq!(
+        slot.load_scheduler_advance(),
+        Ok((12, AdvanceStopCondition::Ceiling))
+    );
 
     slot.mark_running();
     assert_eq!(slot.publish_reached_icount(12, 3), Ok(()));
@@ -83,7 +86,12 @@ fn scheduler_wake_enqueues_pending_inputs_before_ceiling_and_futex_wake() {
     let pending = [PendingInputPublication::new(src_slot, input.clone())];
 
     let publication = region
-        .publish_scheduler_inputs_and_ceiling(dst_slot, &pending, ceiling(0, 12))
+        .publish_scheduler_inputs_and_advance(
+            dst_slot,
+            &pending,
+            ceiling(0, 12),
+            AdvanceStopCondition::Ceiling,
+        )
         .expect("scheduler wake publication should succeed");
 
     assert_eq!(publication.dst_slot, dst_slot);
@@ -120,7 +128,12 @@ fn scheduler_wake_batches_pending_inputs_before_single_wake() {
     ];
 
     let publication = region
-        .publish_scheduler_inputs_and_ceiling(dst_slot, &pending, ceiling(0, 15))
+        .publish_scheduler_inputs_and_advance(
+            dst_slot,
+            &pending,
+            ceiling(0, 15),
+            AdvanceStopCondition::Ceiling,
+        )
         .expect("batched scheduler wake publication should succeed");
 
     assert_eq!(publication.pending_input_count, 2);
@@ -153,13 +166,14 @@ fn scheduler_wake_node_slot_borrowed_inbox_handoff_orders_input_ceiling_and_wake
     let input = frame(12, src_slot, 1, b"net");
 
     let publication = slot
-        .publish_scheduler_inbox_and_ceiling(
+        .publish_scheduler_inbox_and_advance(
             dst_slot,
             src_slot,
             &inbox,
             &mut entries,
             std::slice::from_ref(&input),
             ceiling(0, 12),
+            AdvanceStopCondition::Ceiling,
         )
         .expect("borrowed inbox handoff should succeed");
 
@@ -192,7 +206,12 @@ fn scheduler_wake_rejects_full_inbox_before_ceiling_or_wake() {
     )];
 
     let error = region
-        .publish_scheduler_inputs_and_ceiling(dst_slot, &pending, ceiling(0, 6))
+        .publish_scheduler_inputs_and_advance(
+            dst_slot,
+            &pending,
+            ceiling(0, 6),
+            AdvanceStopCondition::Ceiling,
+        )
         .expect_err("full inbox should reject before ceiling or wake");
 
     assert_eq!(
@@ -224,7 +243,12 @@ fn scheduler_wake_rejects_source_mismatch_before_inbox_write_or_wake() {
     let pending = [PendingInputPublication::new(src_slot, mismatched_frame)];
 
     let error = region
-        .publish_scheduler_inputs_and_ceiling(dst_slot, &pending, ceiling(0, 6))
+        .publish_scheduler_inputs_and_advance(
+            dst_slot,
+            &pending,
+            ceiling(0, 6),
+            AdvanceStopCondition::Ceiling,
+        )
         .expect_err("source mismatch should reject before inbox write or wake");
 
     assert_eq!(
@@ -251,8 +275,11 @@ fn scheduler_wake_rejects_stale_ceiling_before_inbox_write_or_wake() {
     let src_slot = SLOT_NET_ROUTER as u32;
     {
         let slot = region.node_slot(dst_slot).expect("VM slot should exist");
-        slot.publish_scheduler_ceiling(ceiling(0, 10))
-            .expect("initial ceiling should publish");
+        slot.publish_scheduler_advance(
+            ceiling(0, 10),
+            crucible_shmem::AdvanceStopCondition::Ceiling,
+        )
+        .expect("initial ceiling should publish");
         slot.mark_running();
         slot.publish_reached_icount(5, 0)
             .expect("fixture current icount should publish");
@@ -267,7 +294,12 @@ fn scheduler_wake_rejects_stale_ceiling_before_inbox_write_or_wake() {
     )];
 
     let error = region
-        .publish_scheduler_inputs_and_ceiling(dst_slot, &pending, ceiling(0, 4))
+        .publish_scheduler_inputs_and_advance(
+            dst_slot,
+            &pending,
+            ceiling(0, 4),
+            AdvanceStopCondition::Ceiling,
+        )
         .expect_err("stale ceiling should reject before inbox write or wake");
 
     assert_eq!(
@@ -290,33 +322,33 @@ fn scheduler_wake_rejects_stale_ceiling_before_inbox_write_or_wake() {
 
 #[test]
 fn scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake() {
-    let source = function_source("pub fn publish_scheduler_inputs_and_ceiling(");
+    let source = function_source("pub fn publish_scheduler_inputs_and_advance(");
     assert_source_order(
         source,
         &[
             "self.preflight_scheduler_wake_capacity(&enqueue_plans)?;",
             ".enqueue(&mut self.frame_entries[plan.entry_range], frame)",
-            "let wake = self.slots[dst_index].publish_prevalidated_scheduler_ceiling(ceiling)?;",
+            "publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;",
         ],
         "combined scheduler publication must enqueue inbox frames before the ceiling wake",
     );
-    let source = function_source("pub fn publish_scheduler_inbox_and_ceiling(");
+    let source = function_source("pub fn publish_scheduler_inbox_and_advance(");
     assert_source_order(
         source,
         &[
             "self.validate_scheduler_ceiling(ceiling)?;",
             "crate::region::helpers::preflight_ring_enqueue_capacity(",
             ".enqueue(inbox_entries, frame)",
-            "let wake = self.publish_prevalidated_scheduler_ceiling(ceiling)?;",
+            "publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;",
         ],
         "borrowed scheduler publication must enqueue inbox frames before the ceiling wake",
     );
-    let source = function_source("pub fn publish_scheduler_ceiling(");
+    let source = function_source("pub fn publish_scheduler_advance(");
     assert_source_order(
         source,
         &[
             "self.validate_scheduler_ceiling(ceiling)?;",
-            "self.publish_prevalidated_scheduler_ceiling(ceiling)",
+            "self.publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)",
         ],
         "node-slot direct publication must validate before the prevalidated publish path",
     );
@@ -324,10 +356,10 @@ fn scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake() {
     assert_source_order(
         source,
         &[
-            ".store(ceiling.max_advance_icount, Ordering::Release);",
+            "self.publish_scheduler_advance_fields(ceiling.max_advance_icount, stop_condition);",
             "self.wake_after_signal_increment()",
         ],
-        "prevalidated node-slot publication must store the ceiling before waking",
+        "prevalidated node-slot publication must commit the advance tuple before waking",
     );
     let source = function_source("fn wake_after_signal_increment(");
     assert_source_order(
@@ -361,7 +393,7 @@ fn control_boundary_request_release_acknowledges_publication() {
     let before = slot.snapshot();
 
     let request = slot
-        .request_control_boundary()
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("control boundary request should publish: {error}"));
 
     let requested = slot.snapshot();
@@ -382,23 +414,23 @@ fn control_boundary_request_release_acknowledges_publication() {
     assert_eq!(published.status, STATUS_IDLE);
     assert_eq!(published.idle_wake_icount, before.idle_wake_icount);
 
-    slot.publish_scheduler_ceiling(ceiling(0, 1))
+    slot.publish_scheduler_advance(ceiling(0, 1), crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("running ceiling should publish: {error}"));
     slot.mark_running();
     let running_before = slot.snapshot();
     let running_request = slot
-        .request_control_boundary()
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
     slot.publish_control_boundary(0, 0, 0)
         .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
     assert_eq!(slot.acknowledge_control_boundary(), running_request + 1);
     assert_eq!(slot.snapshot().status, running_before.status);
 
-    slot.publish_scheduler_ceiling(ceiling(0, 0))
+    slot.publish_scheduler_advance(ceiling(0, 0), crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("fenced ceiling should publish: {error}"));
     slot.mark_running();
     let fenced_request = slot
-        .request_control_boundary()
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
     slot.publish_control_boundary(0, 0, 0)
         .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
@@ -409,10 +441,28 @@ fn control_boundary_request_release_acknowledges_publication() {
 }
 
 #[test]
+fn next_idle_safety_ceiling_does_not_synthesize_an_idle_boundary() {
+    let slot = NodeSlot::new(KIND_VM);
+    slot.publish_scheduler_advance(ceiling(0, 9), AdvanceStopCondition::NextAuthenticatedIdle)
+        .unwrap_or_else(|error| panic!("next-idle advance should publish: {error}"));
+    slot.mark_running();
+
+    slot.publish_control_boundary(9, 9, 0)
+        .unwrap_or_else(|error| panic!("safety-horizon boundary should publish: {error}"));
+
+    let snapshot = slot.snapshot();
+    assert_eq!(snapshot.current_icount, 9);
+    assert_eq!(snapshot.status, STATUS_RUNNING);
+}
+
+#[test]
 fn node_cannot_self_extend_past_published_ceiling() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = ceiling(0, 9);
-    assert!(slot.publish_scheduler_ceiling(ceiling).is_ok());
+    assert!(
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+            .is_ok()
+    );
 
     assert_eq!(slot.check_node_may_advance_to(9), Ok(()));
     assert_eq!(
@@ -434,7 +484,13 @@ fn node_cannot_self_extend_past_published_ceiling() {
 #[test]
 fn external_restore_ceiling_does_not_wake_or_rewind_the_slot() {
     let slot = NodeSlot::new(KIND_VM);
-    assert!(slot.publish_scheduler_ceiling(ceiling(0, 10)).is_ok());
+    assert!(
+        slot.publish_scheduler_advance(
+            ceiling(0, 10),
+            crucible_shmem::AdvanceStopCondition::Ceiling
+        )
+        .is_ok()
+    );
     assert!(slot.publish_reached_icount(10, 0).is_ok());
     let before = slot.snapshot();
 
@@ -459,7 +515,13 @@ fn external_restore_ceiling_does_not_wake_or_rewind_the_slot() {
 fn idle_publish_uses_race_free_futex_wait_and_wake_counter() {
     let slot = NodeSlot::new(KIND_VM);
     let first_ceiling = ceiling(0, 10);
-    assert!(slot.publish_scheduler_ceiling(first_ceiling).is_ok());
+    assert!(
+        slot.publish_scheduler_advance(
+            first_ceiling,
+            crucible_shmem::AdvanceStopCondition::Ceiling
+        )
+        .is_ok()
+    );
     slot.mark_running();
 
     assert_eq!(slot.publish_reached_icount(10, 0), Ok(()));
@@ -473,7 +535,10 @@ fn idle_publish_uses_race_free_futex_wait_and_wake_counter() {
 
     assert!(slot.futex_wait_still_valid(1));
     assert_eq!(
-        slot.publish_scheduler_ceiling(ceiling(10, 20)),
+        slot.publish_scheduler_advance(
+            ceiling(10, 20),
+            crucible_shmem::AdvanceStopCondition::Ceiling
+        ),
         Ok(wake_action(1, 2, 0))
     );
     assert!(!slot.futex_wait_still_valid(1));
@@ -483,12 +548,21 @@ fn idle_publish_uses_race_free_futex_wait_and_wake_counter() {
 #[test]
 fn scheduler_raise_during_idle_publish_race_bumps_wake_counter() {
     let slot = NodeSlot::new(KIND_VM);
-    assert!(slot.publish_scheduler_ceiling(ceiling(0, 10)).is_ok());
+    assert!(
+        slot.publish_scheduler_advance(
+            ceiling(0, 10),
+            crucible_shmem::AdvanceStopCondition::Ceiling
+        )
+        .is_ok()
+    );
     slot.mark_running();
     assert_eq!(slot.publish_reached_icount(10, 0), Ok(()));
 
     assert_eq!(
-        slot.publish_scheduler_ceiling(ceiling(10, 20)),
+        slot.publish_scheduler_advance(
+            ceiling(10, 20),
+            crucible_shmem::AdvanceStopCondition::Ceiling
+        ),
         Ok(wake_action(1, 2, 0))
     );
     assert_eq!(slot.publish_idle(10, 20, 0), Ok(FutexWait::Runnable));
@@ -498,7 +572,13 @@ fn scheduler_raise_during_idle_publish_race_bumps_wake_counter() {
 #[test]
 fn node_reports_invalid_idle_and_time_conversion_loudly() {
     let slot = NodeSlot::new(KIND_VM);
-    assert!(slot.publish_scheduler_ceiling(ceiling(0, 50)).is_ok());
+    assert!(
+        slot.publish_scheduler_advance(
+            ceiling(0, 50),
+            crucible_shmem::AdvanceStopCondition::Ceiling
+        )
+        .is_ok()
+    );
     slot.mark_running();
 
     assert_eq!(
@@ -552,7 +632,9 @@ fn linux_non_private_futex_syscalls_are_available() {
 #[test]
 #[cfg(target_os = "linux")]
 fn linux_scheduler_trigger_wakes_parked_waiter() {
-    assert_linux_trigger_wakes_parked_waiter(|slot| slot.publish_scheduler_ceiling(ceiling(0, 1)));
+    assert_linux_trigger_wakes_parked_waiter(|slot| {
+        slot.publish_scheduler_advance(ceiling(0, 1), crucible_shmem::AdvanceStopCondition::Ceiling)
+    });
 }
 
 #[test]

@@ -10,36 +10,32 @@ use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, ExecutionFingerprint,
-    FingerprintSample, NodeId, Plan, Properties, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
-    Seed, VirtualTime, World,
+    Configuration, ContentHash, ExecutionFingerprint, FingerprintSample, NodeId, Plan, Properties,
+    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm,
+    SchedulerError, SchedulerEventLogEntry, Seed, VirtualTime, World,
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
-    AssignmentId, AttemptId, AuthenticatedFindingExactCheckpoint, BudgetGrant, CampaignCommandId,
-    CampaignControlAction, CampaignLineage, CampaignLineageId, CampaignMode,
-    CampaignOperationalStatus, CampaignPolicy, CampaignSeed, CampaignWorldStatus, ConfigurationId,
-    ControlRequest, CoverageProjection, ExactCheckpointId, ExactRational, ExecutionId,
-    ExecutionRetentionIntent, ExecutorClient, ExplorerPolicy, FairnessPolicy,
-    FindingCandidateBundle, FindingCandidateBundleId, FindingExactCheckpointAuthenticationError,
-    FindingExactCheckpointAuthenticator, FindingExactPins, FindingKind,
+    AssignmentId, AttemptId, BudgetGrant, CampaignCommandId, CampaignControlAction,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignOperationalStatus, CampaignPolicy,
+    CampaignSeed, CampaignWorldStatus, ConfigurationId, ControlRequest, CoverageProjection,
+    ExactCheckpointId, ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
+    ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId,
+    FindingCandidateCore, FindingExactPins, FindingExactRetention,
+    FindingExactRetentionDisposition, FindingExactRetentionIncomplete, FindingKind,
     FindingMinimizationEvidence, FindingSignature, FindingSignatureMinimizationEvidence,
-    FindingTarget, Observation, ObservationCandidate, PinChange, PinRequest, PinRetention,
-    ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy, RetentionPolicy, ScenarioDefId,
-    StopOutcome, SubmitAttemptRequest,
+    FindingTarget, MeasurementSet, Observation, ObservationCandidate, PinChange, PinRequest,
+    PinRetention, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy, RetentionPolicy,
+    ScenarioDefId, StopOutcome, SubmitAttemptRequest,
 };
-use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
-    BlobHandle, BlobStoreAdmin, ContentId, DirectoryBlobBackend, DirectoryRefBackend,
-    ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
-    PlannedDeleteDisposition,
+    ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
+    ObjectKind,
 };
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchArtifactIdentityError, QemuLaunchResourceRequirements,
     QemuNodeChild, QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory,
-    QemuReplayOracleValidation, QemuVmSnapshot,
 };
 
 use super::*;
@@ -47,10 +43,10 @@ use crate::{
     AssignmentLedger, AttemptExecutionContext, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptExecutionRuntimeBasis, AttemptStateCas, AttemptWorkResult, AttemptWorkerFailure,
     CompletedFindingCandidate, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
-    DirectoryPreparedResultJournal, EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore,
-    ExactPinMaterializationSelection, ExactPinRetentionAdmin, HotCheckpointResourceProfile,
-    LocalAttemptWorker, LoopbackExecutorService, QemuAttemptCancellationSignal,
-    QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner, QueuedAttempt,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, ExactPinMaterializationSelection,
+    HotCheckpointResourceProfile, LocalAttemptWorker, LoopbackExecutorService,
+    QemuAttemptCancellationSignal, QemuFreshAttemptLifecycleFactory,
+    QemuFreshAttemptLifecycleOwner, QueuedAttempt,
 };
 
 #[derive(Debug)]
@@ -79,6 +75,35 @@ impl QemuAttemptHostResourceFactory for UnusedHostFactory {
             operation: "begin unused packaged test host",
             message: String::from("test does not execute a guest"),
         })
+    }
+}
+
+impl crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory for UnusedHostFactory {
+    fn begin_selected(
+        &mut self,
+        resources: AttemptResourceLimits,
+        selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+    ) -> Result<
+        (
+            Self::Owner,
+            Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+        ),
+        crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure,
+    > {
+        if selected_checkpoint.is_some() {
+            return Err(
+                crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                    QemuVmRealizationError::Executor {
+                        operation: "begin unused packaged test host",
+                        message: String::from("test does not execute a guest"),
+                    },
+                    selected_checkpoint,
+                ),
+            );
+        }
+        self.begin(resources)
+            .map(|owner| (owner, None))
+            .map_err(Into::into)
     }
 }
 
@@ -124,7 +149,7 @@ impl LocalCheckpointPromotionWorker for UnusedPromotionWorker {
 
     fn prepare(
         &mut self,
-        _work: crate::CheckpointPromotionRestartWork,
+        _work: &mut crate::CheckpointPromotionRestartWork,
         _cancellation: crate::ExecutionCancellation,
     ) -> Result<crate::PreparedPausedCheckpointPromotionRestart, crate::AttemptWorkerFailure<()>>
     {
@@ -191,7 +216,13 @@ fn config(directory: &tempfile::TempDir, worker_count: usize) -> PackagedQemuExe
         "x86_64",
         "deterministic-tcg-v1",
         CampaignHash::derive("crucible.test.packaged-executor-store.v1", b"local"),
-        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+        ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            "kernel",
+            "root",
+            directory.path().join("run-state"),
+        ),
         host,
     )
     .expect("packaged executor config")
@@ -212,11 +243,13 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
     let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
     let status_repository = Arc::clone(&repository);
     let service = compose_packaged_qemu_executor(
-        repository,
-        Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
-            "packaged-executor-checkpoints",
-            directory.path().join("shared-store"),
-        )),
+        PackagedQemuExecutorStorage::new(
+            repository,
+            Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
+                "packaged-executor-checkpoints",
+                directory.path().join("shared-store"),
+            )),
+        ),
         profile(),
         scenario_artifact(),
         config,
@@ -276,11 +309,13 @@ fn packaged_startup_completes_pending_observation_and_finding_handoff() {
     let (key, candidate) = retain_packaged_pending_finding(&repository, config.ledger_root());
 
     let service = compose_packaged_qemu_executor(
-        Arc::clone(&repository),
-        Arc::new(DirectoryBlobBackend::new(
-            "packaged-restart-checkpoints",
-            directory.path().join("checkpoints"),
-        )),
+        PackagedQemuExecutorStorage::new(
+            Arc::clone(&repository),
+            Arc::new(DirectoryBlobBackend::new(
+                "packaged-restart-checkpoints",
+                directory.path().join("checkpoints"),
+            )),
+        ),
         profile(),
         scenario_artifact(),
         config.clone(),
@@ -320,388 +355,6 @@ fn packaged_startup_completes_pending_observation_and_finding_handoff() {
     ));
 }
 
-struct CompleteRecoveryCheckpointAuthenticator {
-    source: Arc<MemoryBlobBackend>,
-}
-
-impl FindingExactCheckpointAuthenticator for CompleteRecoveryCheckpointAuthenticator {
-    fn authenticate_finding_exact_checkpoint(
-        &self,
-        _checkpoint: ExactCheckpointId,
-        scenario: ScenarioDefId,
-        _scenario_artifact: crucible_campaign::ScenarioArtifactId,
-        configuration: ConfigurationId,
-        _maximum_metadata_bytes: u64,
-    ) -> Result<AuthenticatedFindingExactCheckpoint, FindingExactCheckpointAuthenticationError>
-    {
-        Ok(AuthenticatedFindingExactCheckpoint::new(
-            scenario,
-            configuration,
-            0,
-            1,
-        ))
-    }
-
-    fn read_finding_exact_checkpoint_object(
-        &self,
-        object: ContentId,
-    ) -> Result<BlobHandle, FindingExactCheckpointAuthenticationError> {
-        self.source
-            .read(object, None)
-            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)
-    }
-}
-
-fn complete_recovery_checkpoint_source() -> (Arc<MemoryBlobBackend>, ExactCheckpointId) {
-    let source = Arc::new(MemoryBlobBackend::new(
-        "packaged-complete-recovery-checkpoint",
-        64 * 1024 * 1024,
-    ));
-    let leaf_bytes = b"packaged complete recovery exact leaf".to_vec();
-    let leaf = ContentId::for_bytes(ObjectKind::DeviceState, 5, &leaf_bytes);
-    source
-        .put_if_absent(leaf, &BlobHandle::from_bytes(leaf_bytes))
-        .expect("publish recovery checkpoint leaf");
-    let root = ContentEnvelope::new(
-        "crucible.test.packaged-complete-recovery-root",
-        4,
-        BTreeSet::from([ContentChild::new("leaf", leaf).expect("root leaf")]),
-        b"packaged complete recovery exact root".to_vec(),
-    )
-    .expect("recovery checkpoint root");
-    let root_id = root.content_id(ObjectKind::ExactManifest);
-    source
-        .put_if_absent(root_id, &BlobHandle::from_bytes(root.canonical_bytes()))
-        .expect("publish recovery checkpoint root");
-
-    (
-        source,
-        ExactCheckpointId::parse(&format!(
-            "crucible.executor.exact-checkpoint-root@{root_id}"
-        ))
-        .expect("recovery checkpoint ID"),
-    )
-}
-
-#[derive(Clone, Copy)]
-enum CompleteRecoveryCorruption {
-    None,
-    MissingDigest,
-    MismatchedDigest,
-    MissingJournal,
-    MissingReplayCaptureChild,
-}
-
-fn seed_complete_packaged_recovery(
-    corruption: CompleteRecoveryCorruption,
-) -> (
-    tempfile::TempDir,
-    Arc<CampaignRepository>,
-    PackagedQemuExecutorConfig,
-    ExecutorCompatibilityProfile,
-    crucible_campaign::ScenarioArtifactId,
-    AttemptExecutionKey,
-    FindingCandidateBundleId,
-    std::path::PathBuf,
-) {
-    let directory = tempfile::tempdir().expect("complete recovery directory");
-    let mut config = config(&directory, 1);
-    config.lifecycle = ProductionVmLifecycleConfig::new(
-        "qemu",
-        "plugin",
-        "kernel",
-        "root",
-        directory.path().join("run-state"),
-    );
-    let campaign_blobs = Arc::new(DirectoryBlobBackend::new(
-        "packaged-complete-recovery-campaign",
-        directory.path().join("campaign-store"),
-    ));
-    let repository = Arc::new(CampaignRepository::new(
-        campaign_blobs.clone(),
-        Arc::new(DirectoryRefBackend::new(
-            directory.path().join("campaign-refs"),
-        )),
-    ));
-    let (checkpoint_source, checkpoint) = complete_recovery_checkpoint_source();
-    let fixture = crate::crucible_artifact::tests::prepared_finding_recovery_fixture(
-        &repository,
-        "packaged",
-        checkpoint,
-    );
-    let profile = ExecutorCompatibilityProfile::from_lineage(&fixture.lineage);
-    let scenario_artifact = fixture.lineage.scenario_content();
-    let store = CampaignExecutorStore::with_finding_exact_checkpoint_authenticator(
-        Arc::clone(&repository),
-        Arc::new(CompleteRecoveryCheckpointAuthenticator {
-            source: checkpoint_source,
-        }),
-    );
-    crate::executor_worker::publish_prepared_semantic_attempt_result(&store, &fixture.result)
-        .expect("publish complete V5 recovery result");
-    if matches!(
-        corruption,
-        CompleteRecoveryCorruption::MissingReplayCaptureChild
-    ) {
-        let mut inventory = campaign_blobs
-            .acquire_inventory_fence()
-            .expect("acquire campaign inventory for recovery corruption");
-        assert_eq!(
-            inventory
-                .delete_candidate(fixture.replay_capture_child)
-                .expect("remove recovery replay capture child"),
-            PlannedDeleteDisposition::Deleted
-        );
-    }
-
-    let observation = fixture
-        .observation
-        .observation()
-        .id()
-        .expect("complete recovery observation ID");
-    let candidate = fixture
-        .result
-        .finding()
-        .expect("complete recovery finding")
-        .id()
-        .expect("complete recovery candidate ID");
-    let retention_basis = repository
-        .attempt_retention_policy_basis_at(
-            repository
-                .head("packaged")
-                .expect("complete recovery source head")
-                .snapshot_id(),
-            fixture.attempt,
-        )
-        .expect("complete recovery request retention basis");
-    let request = SubmitAttemptRequest::new(
-        AssignmentId::from_bytes([0xb1; 16]).expect("assignment"),
-        DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
-        fixture.lineage.id().expect("recovery lineage ID"),
-        fixture.attempt,
-        resources(),
-        ExecutionRetentionIntent::RetainOnFailure,
-    )
-    .expect("complete recovery request")
-    .with_retention_policy_basis(retention_basis)
-    .expect("bind complete recovery request policy");
-    let key = AttemptExecutionKey::for_request(&request);
-    let execution = ExecutionId::from_bytes([0xb2; 16]).expect("recovery execution");
-    let journal_namespace = config
-        .lifecycle
-        .run_state_root()
-        .join(PACKAGED_PREPARED_RESULT_NAMESPACE);
-    std::fs::create_dir_all(&journal_namespace).expect("create recovery journal namespace");
-    let journal_authority = crate::PreparedResultJournalNamespace::open(&journal_namespace)
-        .expect("prepared-result namespace");
-    let (journal, _) = DirectoryPreparedResultJournal::create(
-        &journal_authority,
-        key,
-        execution,
-        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-        fixture.result,
-    )
-    .expect("create complete recovery journal");
-    let journal_root = journal.root().to_path_buf();
-    let journal_digest = journal.prepared_result_digest();
-    drop(journal);
-    drop(journal_authority);
-    if matches!(corruption, CompleteRecoveryCorruption::MissingJournal) {
-        std::fs::remove_dir_all(&journal_root).expect("remove recovery journal");
-    }
-    let prepared_result_digest = match corruption {
-        CompleteRecoveryCorruption::MissingDigest => None,
-        CompleteRecoveryCorruption::MismatchedDigest => Some(CampaignHash::derive(
-            "crucible.test.packaged-complete-recovery.wrong-digest.v1",
-            b"wrong",
-        )),
-        CompleteRecoveryCorruption::None
-        | CompleteRecoveryCorruption::MissingJournal
-        | CompleteRecoveryCorruption::MissingReplayCaptureChild => Some(journal_digest),
-    };
-    let completed = AttemptRuntimeState::Completed {
-        execution_basis: request.execution_basis_digest(),
-        origin: AttemptExecutionOrigin::Initial,
-        daemon_epoch: request.daemon_epoch(),
-        execution,
-        observation,
-        finding_candidate: CompletedFindingCandidate::Pending(candidate),
-        prepared_result_digest,
-    };
-    let mut ledger = DirectoryAssignmentLedger::open(config.ledger_root())
-        .expect("open complete recovery ledger");
-    assert_eq!(
-        ledger
-            .compare_exchange_attempt(key, None, Some(completed))
-            .expect("seed complete recovery ledger"),
-        AttemptStateCas::Advanced
-    );
-
-    (
-        directory,
-        repository,
-        config,
-        profile,
-        scenario_artifact,
-        key,
-        candidate,
-        journal_root,
-    )
-}
-
-#[test]
-fn packaged_startup_authenticates_complete_v5_recovery_before_ref_mutation() {
-    let (_directory, repository, config, profile, scenario_artifact, key, candidate, journal_root) =
-        seed_complete_packaged_recovery(CompleteRecoveryCorruption::None);
-    let checkpoint_backend = Arc::new(DirectoryBlobBackend::new(
-        "packaged-complete-recovery-checkpoints",
-        config.lifecycle.run_state_root().join("checkpoint-store"),
-    ));
-    let service = compose_packaged_qemu_executor(
-        Arc::clone(&repository),
-        checkpoint_backend,
-        profile,
-        scenario_artifact,
-        config.clone(),
-        UnusedHostFactory,
-    )
-    .expect("authenticate complete V5 packaged recovery");
-    let executor = AttachedPackagedQemuExecutor::start(service).expect("start recovered executor");
-    executor
-        .shutdown_and_join()
-        .expect("join recovered executor");
-
-    let ledger = DirectoryAssignmentLedger::open(config.ledger_root())
-        .expect("reopen recovered assignment ledger");
-    assert!(matches!(
-        ledger.load_attempt(key).expect("load recovered completion"),
-        Some(AttemptRuntimeState::Completed {
-            finding_candidate: CompletedFindingCandidate::Acknowledged(retained),
-            prepared_result_digest: Some(_),
-            ..
-        }) if retained == candidate
-    ));
-    assert!(!journal_root.exists());
-    let campaign = CampaignName::new("packaged").expect("campaign name");
-    let current = repository
-        .head(campaign.as_str())
-        .expect("recovered campaign head")
-        .snapshot_id();
-    let publication = repository
-        .incorporate_finding_candidate_bundle(campaign.as_str(), current, candidate)
-        .expect("cold replay complete recovered candidate");
-    assert!(publication.replayed);
-    repository
-        .authenticate_current_finding_candidate_incorporation(
-            &campaign,
-            publication.finding,
-            candidate,
-        )
-        .expect("complete recovered candidate remains authenticated");
-}
-
-#[test]
-fn packaged_complete_v5_recovery_rejects_missing_or_mismatched_journal_binding() {
-    for corruption in [
-        CompleteRecoveryCorruption::MissingDigest,
-        CompleteRecoveryCorruption::MismatchedDigest,
-        CompleteRecoveryCorruption::MissingJournal,
-    ] {
-        let (_directory, repository, config, profile, scenario_artifact, key, candidate, _) =
-            seed_complete_packaged_recovery(corruption);
-        let head_before = repository
-            .head("packaged")
-            .expect("head before rejected recovery")
-            .snapshot_id();
-        let checkpoint_backend = Arc::new(DirectoryBlobBackend::new(
-            "packaged-rejected-complete-recovery-checkpoints",
-            config.lifecycle.run_state_root().join("checkpoint-store"),
-        ));
-        let error = match compose_packaged_qemu_executor(
-            Arc::clone(&repository),
-            checkpoint_backend,
-            profile,
-            scenario_artifact,
-            config.clone(),
-            UnusedHostFactory,
-        ) {
-            Ok(_) => panic!("unauthenticated complete V5 recovery must fail"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error,
-            PackagedQemuExecutorError::FindingRestart(
-                crate::FindingCandidateRestartError::RecoveryAuthentication
-            )
-        ));
-        assert_eq!(
-            repository
-                .head("packaged")
-                .expect("head after rejected recovery")
-                .snapshot_id(),
-            head_before
-        );
-        let ledger = DirectoryAssignmentLedger::open(config.ledger_root())
-            .expect("reopen rejected recovery ledger");
-        assert!(matches!(
-            ledger.load_attempt(key).expect("load rejected completion"),
-            Some(AttemptRuntimeState::Completed {
-                finding_candidate: CompletedFindingCandidate::Pending(retained),
-                ..
-            }) if retained == candidate
-        ));
-    }
-}
-
-#[test]
-fn packaged_complete_v5_recovery_rejects_missing_capture_child_before_ref_mutation() {
-    let (_directory, repository, config, profile, scenario_artifact, key, candidate, _) =
-        seed_complete_packaged_recovery(CompleteRecoveryCorruption::MissingReplayCaptureChild);
-    let head_before = repository
-        .head("packaged")
-        .expect("head before rejected recovery")
-        .snapshot_id();
-    let checkpoint_backend = Arc::new(DirectoryBlobBackend::new(
-        "packaged-missing-capture-recovery-checkpoints",
-        config.lifecycle.run_state_root().join("checkpoint-store"),
-    ));
-
-    let error = match compose_packaged_qemu_executor(
-        Arc::clone(&repository),
-        checkpoint_backend,
-        profile,
-        scenario_artifact,
-        config.clone(),
-        UnusedHostFactory,
-    ) {
-        Ok(_) => panic!("recovery with a missing replay capture child must fail"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        PackagedQemuExecutorError::FindingRestart(
-            crate::FindingCandidateRestartError::RecoveryAuthentication
-        )
-    ));
-    assert_eq!(
-        repository
-            .head("packaged")
-            .expect("head after rejected recovery")
-            .snapshot_id(),
-        head_before
-    );
-    let ledger = DirectoryAssignmentLedger::open(config.ledger_root())
-        .expect("reopen rejected recovery ledger");
-    assert!(matches!(
-        ledger.load_attempt(key).expect("load rejected completion"),
-        Some(AttemptRuntimeState::Completed {
-            finding_candidate: CompletedFindingCandidate::Pending(retained),
-            ..
-        }) if retained == candidate
-    ));
-}
-
 #[test]
 fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
     let directory = tempfile::tempdir().expect("packaged executor directory");
@@ -709,11 +362,13 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
     let socket = config.endpoint().path().to_owned();
     let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
     let service = compose_packaged_qemu_executor_with_checkpoint_promotions(
-        repository,
-        Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
-            "packaged-executor-promoted-checkpoints",
-            directory.path().join("shared-store"),
-        )),
+        PackagedQemuExecutorStorage::new(
+            repository,
+            Arc::new(crucible_cas::content_store::DirectoryBlobBackend::new(
+                "packaged-executor-promoted-checkpoints",
+                directory.path().join("shared-store"),
+            )),
+        ),
         PackagedCampaignBasis {
             profile: profile(),
             scenarios: BTreeSet::from([scenario_artifact()]),
@@ -858,13 +513,6 @@ fn scenario_artifact() -> ScenarioArtifactId {
 }
 
 fn repository_with_campaigns(campaigns: &[(&str, &[u8], &str)]) -> Arc<CampaignRepository> {
-    repository_with_closure_schema(campaigns, crate::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION)
-}
-
-fn repository_with_closure_schema(
-    campaigns: &[(&str, &[u8], &str)],
-    closure_schema: u32,
-) -> Arc<CampaignRepository> {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new(
             "packaged-campaign-basis",
@@ -902,7 +550,7 @@ fn repository_with_closure_schema(
             *qemu_build,
             std::collections::BTreeMap::from([(String::from("control"), 1)]),
             1,
-            closure_schema,
+            crate::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
         )
         .expect("campaign lineage");
         let policy = packaged_policy(scenario);
@@ -923,20 +571,24 @@ fn packaged_policy(scenario: ScenarioDefId) -> CampaignPolicy {
     )
     .expect("widening policy");
     CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        std::collections::BTreeMap::new(),
-        std::collections::BTreeMap::new(),
-        std::collections::BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness policy"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness policy"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("campaign policy")
 }
@@ -985,18 +637,25 @@ fn retain_packaged_pending_finding(
         .admit_initial_discovery_if_ready(CAMPAIGN)
         .expect("admit packaged discovery")
         .expect("packaged discovery attempt");
-    let source_snapshot = repository
-        .head(CAMPAIGN)
-        .expect("head with packaged discovery")
-        .snapshot_id();
-    let retention_basis = repository
-        .attempt_retention_policy_basis_at(source_snapshot, attempt)
-        .expect("packaged finding retention basis");
     let attempt_record = repository
         .load_attempt(attempt)
         .expect("load packaged attempt");
+    let measurements = MeasurementSet::from_evaluation(
+        crucible_campaign::CampaignHash::derive(
+            "crucible.test.measurement-definitions.v1",
+            b"packaged executor",
+        ),
+        1,
+        crucible_campaign::CampaignHash::derive(
+            "crucible.test.measurement-evaluation.v1",
+            b"packaged executor",
+        ),
+        b"packaged executor".to_vec(),
+        std::collections::BTreeSet::new(),
+    )
+    .expect("measurements");
     let measurements = repository
-        .publish_measurement_set(&crate::crucible_measurement::empty_test_measurement_set())
+        .publish_measurement_set(&measurements)
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -1010,13 +669,15 @@ fn retain_packaged_pending_finding(
         .expect("publish coverage");
     let observation_record = Observation::new(
         attempt,
-        lineage.genesis(),
-        lineage.genesis_content(),
-        attempt_record.path(),
-        StopOutcome::TerminalSuccess,
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            lineage.genesis(),
+            lineage.genesis_content(),
+            attempt_record.path(),
+            StopOutcome::TerminalSuccess,
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::new(),
     )
     .expect("packaged pending observation");
@@ -1067,7 +728,7 @@ fn retain_packaged_pending_finding(
         CampaignHash::derive("crucible.test.packaged-pending-finding.state.v1", b"final");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        1,
+        3,
         b"packaged-pending-finding-policy".to_vec(),
         Vec::new(),
         final_state,
@@ -1101,24 +762,34 @@ fn retain_packaged_pending_finding(
         vec![Some(signature.clone())],
     )
     .expect("packaged signature minimization");
-    let exact_retention = crucible_campaign::FindingExactRetention::new(
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(
+            repository
+                .head(CAMPAIGN)
+                .expect("packaged finding campaign head")
+                .snapshot_id(),
+            attempt,
+        )
+        .expect("packaged finding retention basis");
+    let exact_retention = FindingExactRetention::new(
         retention_basis.snapshot(),
         retention_basis.policy(),
         retention_basis.admission(),
         0,
-        crucible_campaign::FindingExactRetentionDisposition::Incomplete(
-            crucible_campaign::FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
         ),
     )
-    .expect("incomplete packaged exact retention");
+    .expect("packaged incomplete finding retention");
     let bundle = FindingCandidateBundle::new_with_exact_retention(
-        observation,
-        signature,
-        original,
-        minimized,
-        signatures,
-        FindingExactPins::default(),
-        None,
+        FindingCandidateCore::new(
+            observation,
+            signature,
+            original,
+            minimized,
+            signatures,
+            FindingExactPins::default(),
+        ),
         None,
         exact_retention,
     )
@@ -1134,6 +805,7 @@ fn retain_packaged_pending_finding(
         attempt,
         resources(),
         ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("packaged pending request");
     let key = AttemptExecutionKey::for_request(&request);
@@ -1144,7 +816,6 @@ fn retain_packaged_pending_finding(
         execution: ExecutionId::from_bytes([0x68; 16]).expect("execution"),
         observation,
         finding_candidate: CompletedFindingCandidate::Pending(candidate),
-        prepared_result_digest: None,
     };
     let mut ledger = DirectoryAssignmentLedger::open(ledger_root).expect("open packaged ledger");
     assert_eq!(
@@ -1166,6 +837,10 @@ struct ExactPinMaterializerFixture {
 }
 
 fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMaterializerFixture {
+    let production_root = directory.path().join("production-checkpoint");
+    let production =
+        crucible_api::build_exact_ram_production_checkpoint_codec_fixture(&production_root)
+            .expect("build exact-RAM production checkpoint");
     let backend = Arc::new(DirectoryBlobBackend::new(
         "packaged-exact-pin-store",
         directory.path().join("objects"),
@@ -1174,11 +849,8 @@ fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMate
         backend.clone(),
         Arc::new(MemoryRefBackend::new()),
     ));
-    let scenario = ScenarioDef::from_canonical_material(
-        "crucible.test.packaged-exact-pin-materializer",
-        "scenario",
-    );
-    let configuration = Configuration::genesis(scenario.clone());
+    let scenario = production.source().scenario_def();
+    let configuration = production.configuration().clone();
     let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
     let configuration_id =
         ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
@@ -1216,27 +888,16 @@ fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMate
         )
         .expect("create campaign");
 
-    let checkpoint = Checkpoint::from_recorded_configuration(
-        &configuration,
-        None,
-        VirtualTime::default(),
-        std::collections::BTreeMap::new(),
-        CheckpointKind::Fat,
-        std::collections::BTreeMap::new(),
-    )
-    .expect("checkpoint");
-    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
-        .expect("QEMU snapshot");
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = backend;
     let checkpoints = Arc::new(
         ExactCheckpointStore::new(checkpoint_backend, 1024 * 1024).expect("exact checkpoint store"),
     );
     let prepared = checkpoints
-        .prepare(&snapshot, BlobHandle::from_bytes(vec![0x5a; 4096]))
-        .expect("prepare checkpoint");
+        .prepare_production_closure(production.closure().clone())
+        .expect("prepare production checkpoint");
     let checkpoint = checkpoints
-        .publish(&prepared)
-        .expect("publish checkpoint")
+        .publish_production_closure(&prepared)
+        .expect("publish production checkpoint")
         .root();
 
     ExactPinMaterializerFixture {
@@ -1315,84 +976,6 @@ fn materializer_status_rejects_a_selection_for_a_superseded_pin_fact() {
     .expect("read materialization status");
 
     assert!(status.selected_roots.is_empty());
-}
-
-#[test]
-fn packaged_materializer_tracks_a_late_pin_and_promoted_replacement() {
-    let directory = tempfile::tempdir().expect("packaged exact-pin directory");
-    let fixture = exact_pin_materializer_fixture(&directory);
-    let ledger = DirectoryAssignmentLedger::open(directory.path().join("ledger"))
-        .expect("assignment ledger");
-    let selection_root = directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
-    let (prepared, observer) = prepare_packaged_exact_pin_materializer(
-        Arc::clone(&fixture.repository),
-        Arc::clone(&fixture.checkpoints),
-        BTreeSet::from([fixture.campaign.clone()]),
-        &ledger,
-        &selection_root,
-    )
-    .expect("prepare exact-pin materializer");
-    let terminal = Arc::new(AtomicBool::new(false));
-    let terminal_signal = Arc::clone(&terminal);
-    let owner = prepared
-        .start(move || terminal_signal.store(true, Ordering::Release))
-        .expect("start exact-pin materializer");
-
-    observer
-        .checkpoint_paused(fixture.checkpoint)
-        .expect("publish paused checkpoint notification");
-    owner.reconcile_now().expect("reconcile checkpoint catalog");
-    apply_exact_pin(&fixture);
-    owner.reconcile_now().expect("reconcile later exact pin");
-    let snapshot = fixture
-        .repository
-        .head(fixture.campaign.as_str())
-        .expect("pinned campaign head")
-        .snapshot_id();
-    let selected = owner
-        .status_handle()
-        .status(&fixture.campaign, snapshot)
-        .expect("materializer status after pin");
-    assert_eq!(
-        selected.selected_roots,
-        BTreeSet::from([fixture.checkpoint])
-    );
-
-    let source = fixture
-        .checkpoints
-        .load(fixture.checkpoint)
-        .expect("load raw checkpoint");
-    let replacement = fixture
-        .checkpoints
-        .prepare(source.snapshot(), BlobHandle::from_bytes(vec![0xa5; 4096]))
-        .and_then(|prepared| fixture.checkpoints.publish(&prepared))
-        .expect("publish replacement checkpoint")
-        .root();
-    assert_ne!(replacement, fixture.checkpoint);
-    observer
-        .checkpoint_promoted(fixture.checkpoint, replacement)
-        .expect("publish promoted checkpoint notification");
-    owner
-        .reconcile_now()
-        .expect("reconcile promoted checkpoint catalog");
-    let selected = owner
-        .status_handle()
-        .status(&fixture.campaign, snapshot)
-        .expect("materializer status after promotion");
-    assert_eq!(selected.selected_roots, BTreeSet::from([replacement]));
-    owner.join().expect("join exact-pin materializer");
-    assert!(!terminal.load(Ordering::Acquire));
-
-    let mut selections = DirectoryExactPinMaterializationStore::open(&selection_root)
-        .expect("reopen exact-pin selections");
-    let mut fence = selections
-        .acquire_exact_pin_retention_fence()
-        .expect("exact-pin fence");
-    let selected = fence
-        .selection(&fixture.campaign, fixture.configuration)
-        .expect("read exact-pin selection")
-        .expect("selected exact checkpoint");
-    assert_eq!(selected.checkpoint(), replacement);
 }
 
 #[derive(Default)]
@@ -1485,6 +1068,15 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         panic!("controlled lifecycle does not drive a guest")
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        _cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("controlled lifecycle cannot retain a terminal checkpoint cause"),
+        })
+    }
+
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         panic!("controlled lifecycle does not capture a checkpoint")
     }
@@ -1554,6 +1146,10 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         })
     }
 
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
         if self.boundary.fail_effect_trace.load(Ordering::Acquire) {
             return Err(SchedulerError::BoundaryViolation {
@@ -1594,6 +1190,7 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
         ExecutionRetentionIntent::Discard,
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     );
     let mut factory = PackagedStatusLifecycleFactory {
         inner: ControlledLifecycleFactory {
@@ -1684,6 +1281,7 @@ impl LocalAttemptWorker for ControlledLifecycleWorker {
             queued.request().retention(),
             queued.cancellation().clone(),
             queued.checkpoint_request().clone(),
+            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
         )
         .with_runtime_basis(AttemptExecutionRuntimeBasis::new(
             AttemptExecutionKey::new(queued.request().lineage(), queued.request().attempt()),
@@ -1729,12 +1327,11 @@ struct DiagnosticInnerError(#[source] std::io::Error);
 #[test]
 fn packaged_attempt_failure_diagnostic_preserves_classification_and_bounded_source_chain() {
     let execution = ExecutionId::from_bytes([0x97; 16]).expect("execution");
-    let failure = AttemptWorkerFailure::Terminal(crate::RepositoryAttemptWorkerError::Model {
-        source: DiagnosticOuterError(DiagnosticInnerError(std::io::Error::other(
+    let failure = AttemptWorkerFailure::Terminal(crate::RepositoryAttemptWorkerError::Model(
+        DiagnosticOuterError(DiagnosticInnerError(std::io::Error::other(
             "leaf execution failure",
         ))),
-        checkpoint: None,
-    });
+    ));
 
     let diagnostic = packaged_attempt_failure_diagnostic(execution, &failure);
 
@@ -1751,12 +1348,11 @@ fn packaged_attempt_failure_diagnostic_preserves_classification_and_bounded_sour
         )
     );
 
-    let oversized = AttemptWorkerFailure::Terminal(crate::RepositoryAttemptWorkerError::Model {
-        source: DiagnosticOuterError(DiagnosticInnerError(std::io::Error::other(
+    let oversized = AttemptWorkerFailure::Terminal(crate::RepositoryAttemptWorkerError::Model(
+        DiagnosticOuterError(DiagnosticInnerError(std::io::Error::other(
             "x".repeat(MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES * 2),
         ))),
-        checkpoint: None,
-    });
+    ));
     let diagnostic = packaged_attempt_failure_diagnostic(execution, &oversized);
 
     assert_eq!(
@@ -1813,8 +1409,11 @@ fn packaged_attempt_failure_diagnostic_retains_prior_failure_after_cleanup_error
 }
 
 fn controlled_submit_request(epoch: DaemonEpoch) -> SubmitAttemptRequest {
-    let typed_id = |tag: &str, kind: &str, byte: u8| {
-        format!("{tag}@{kind}.1.{}", format!("{byte:02x}").repeat(32))
+    let typed_id = |tag: &str, kind: &str, schema_version: u32, byte: u8| {
+        format!(
+            "{tag}@{kind}.{schema_version}.{}",
+            format!("{byte:02x}").repeat(32)
+        )
     };
     SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x90; 16]).expect("assignment"),
@@ -1822,17 +1421,20 @@ fn controlled_submit_request(epoch: DaemonEpoch) -> SubmitAttemptRequest {
         CampaignLineageId::parse(&typed_id(
             "crucible.campaign.lineage",
             "campaign-fact",
+            1,
             0x91,
         ))
         .expect("lineage"),
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
+            8,
             0x92,
         ))
         .expect("attempt"),
         resources(),
         ExecutionRetentionIntent::Discard,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("submit request")
 }
@@ -2033,37 +1635,6 @@ fn invalid_campaign_fails_before_operational_owner_mutation() {
 }
 
 #[test]
-fn unsupported_closure_version_fails_before_catalog_or_host_acquisition() {
-    let directory = tempfile::tempdir().expect("packaged executor directory");
-    let mut config = config(&directory, 1);
-    config.campaigns = BTreeSet::from([CampaignName::new("legacy").expect("campaign name")]);
-    let ledger = config.ledger_root().to_owned();
-    let socket = config.endpoint().path().to_owned();
-    // Deliberately not a decodable Crucible scenario: compatibility rejection
-    // must precede even catalog decoding, let alone privileged host mutation.
-    let repository = repository_with_closure_schema(&[("legacy", b"scenario", "qemu-test")], 2);
-    let backend = Arc::new(MemoryBlobBackend::new("legacy-checkpoints", 1024 * 1024));
-    let error = match prepare_packaged_qemu_executor(
-        repository,
-        backend,
-        hot_fork_retention(&directory),
-        config,
-    ) {
-        Ok(_) => panic!("legacy closure version must not be advertised by a version-four writer"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        PackagedQemuExecutorError::UnsupportedExactClosureSchema {
-            actual: 2,
-            supported: 4
-        }
-    ));
-    assert!(!ledger.exists());
-    assert!(!socket.exists());
-}
-
-#[test]
 fn invalid_scenario_fails_before_operational_owner_mutation() {
     let directory = tempfile::tempdir().expect("packaged executor directory");
     let mut config = config(&directory, 1);
@@ -2113,254 +1684,4 @@ fn packaged_scenario_catalog_charges_an_exact_aggregate_byte_bound() {
     ));
 }
 
-#[test]
-fn packaged_executor_completion_is_sticky_across_owner_panic() {
-    let state = Arc::new((Mutex::new(false), Condvar::new()));
-    let completion = PackagedQemuExecutorCompletion {
-        state: Arc::clone(&state),
-    };
-    let owner = thread::spawn(move || {
-        let _completion = PackagedQemuExecutorCompletionGuard(state);
-        panic!("injected packaged executor owner panic");
-    });
-
-    assert!(owner.join().is_err());
-    completion.wait();
-}
-
-#[test]
-fn competing_packaged_startup_preserves_live_native_catalogs() {
-    let directory = tempfile::tempdir().expect("packaged competing-start directory");
-    let mut config = config(&directory, 1);
-    config.lifecycle = ProductionVmLifecycleConfig::new(
-        "qemu",
-        "plugin",
-        "kernel",
-        "root",
-        directory.path().join("run-state"),
-    );
-    let run_state_root = config.lifecycle.run_state_root();
-    let workers = run_state_root.join("campaign-workers");
-    let promotions = run_state_root.join("campaign-checkpoint-promotions");
-    std::fs::create_dir_all(&workers).expect("live worker catalog");
-    std::fs::write(workers.join("sentinel"), b"worker").expect("live worker sentinel");
-    std::fs::create_dir_all(&promotions).expect("live promotion catalog");
-    std::fs::write(promotions.join("sentinel"), b"promotion").expect("live promotion sentinel");
-    let _live_ledger =
-        DirectoryAssignmentLedger::open(&config.ledger_root).expect("live assignment ledger");
-
-    let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
-    let result = compose_packaged_qemu_executor(
-        repository,
-        Arc::new(DirectoryBlobBackend::new(
-            "packaged-competing-start-checkpoints",
-            directory.path().join("shared-store"),
-        )),
-        profile(),
-        scenario_artifact(),
-        config,
-        UnusedHostFactory,
-    );
-    let Err(PackagedQemuExecutorError::Ledger(_)) = result else {
-        panic!("competing packaged startup must fail at ledger ownership");
-    };
-
-    assert_eq!(
-        std::fs::read(workers.join("sentinel")).expect("retained worker sentinel"),
-        b"worker"
-    );
-    assert_eq!(
-        std::fs::read(promotions.join("sentinel")).expect("retained promotion sentinel"),
-        b"promotion"
-    );
-}
-
-#[test]
-fn packaged_native_catalog_recovery_is_crash_safe_and_idempotent() {
-    let directory = tempfile::tempdir().expect("packaged native catalog root");
-    let workers = directory.path().join("campaign-workers");
-    let promotions = directory.path().join("campaign-checkpoint-promotions");
-    std::fs::create_dir_all(workers.join("worker-0/scenario")).expect("active worker catalog");
-    std::fs::write(workers.join("worker-0/scenario/native"), b"worker")
-        .expect("worker catalog sentinel");
-    std::fs::create_dir_all(promotions.join("worker-0/scenario"))
-        .expect("active promotion catalog");
-    std::fs::write(promotions.join("worker-0/scenario/native"), b"promotion")
-        .expect("promotion catalog sentinel");
-
-    reconcile_packaged_native_catalogs(directory.path()).expect("retire active catalogs");
-    for namespace in PACKAGED_NATIVE_NAMESPACES {
-        assert!(!directory.path().join(namespace).exists());
-        assert!(
-            !directory
-                .path()
-                .join(format!(".retired-{namespace}"))
-                .exists()
-        );
-    }
-
-    reconcile_packaged_native_catalogs(directory.path()).expect("idempotent catalog recovery");
-}
-
-#[test]
-fn packaged_native_catalog_recovery_finishes_a_renamed_generation() {
-    let directory = tempfile::tempdir().expect("packaged native catalog root");
-    let retired_workers = directory.path().join(".retired-campaign-workers");
-    let promotions = directory.path().join("campaign-checkpoint-promotions");
-    std::fs::create_dir_all(retired_workers.join("worker-0/scenario"))
-        .expect("retired worker catalog");
-    std::fs::create_dir_all(promotions.join("worker-0/scenario"))
-        .expect("active promotion catalog");
-
-    reconcile_packaged_native_catalogs(directory.path()).expect("finish catalog recovery");
-    assert!(!retired_workers.exists());
-    assert!(!promotions.exists());
-}
-
-#[test]
-fn packaged_native_catalog_recovery_rejects_conflicting_generations() {
-    let directory = tempfile::tempdir().expect("packaged native catalog root");
-    let active = directory.path().join("campaign-workers");
-    let retired = directory.path().join(".retired-campaign-workers");
-    std::fs::create_dir(&active).expect("active worker catalog");
-    std::fs::create_dir(&retired).expect("retired worker catalog");
-
-    assert!(matches!(
-        reconcile_packaged_native_catalogs(directory.path()),
-        Err(PackagedNativeCatalogRecoveryError::ConflictingGeneration {
-            namespace: "campaign-workers"
-        })
-    ));
-    assert!(active.exists());
-    assert!(retired.exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn packaged_native_catalog_recovery_rejects_namespace_symlinks() {
-    use std::os::unix::fs::symlink;
-
-    let directory = tempfile::tempdir().expect("packaged native catalog root");
-    let target = directory.path().join("unrelated");
-    std::fs::create_dir(&target).expect("unrelated directory");
-    let workers = directory.path().join("campaign-workers");
-    symlink(&target, &workers).expect("worker namespace symlink");
-
-    assert!(matches!(
-        reconcile_packaged_native_catalogs(directory.path()),
-        Err(PackagedNativeCatalogRecoveryError::InvalidPath { path }) if path == workers
-    ));
-    assert!(target.exists());
-}
-
-#[test]
-fn operational_phase_uses_exact_actor_ownership_and_durable_phase() {
-    let epoch = DaemonEpoch::from_bytes([0x91; 16]).expect("daemon epoch");
-    let execution = ExecutionId::from_bytes([0x92; 16]).expect("execution");
-    let basis = CampaignHash::derive("packaged-status-test", b"basis");
-    let running = AttemptRuntimeState::Running {
-        execution_basis: basis,
-        origin: crate::AttemptExecutionOrigin::Initial,
-        daemon_epoch: epoch,
-        execution,
-    };
-    let activity = |worker_in_flight, cancellation_requested, completion_pending| {
-        BTreeMap::from([(
-            execution,
-            LocalExecutionActivity {
-                execution,
-                worker_in_flight,
-                cancellation_requested,
-                completion_pending,
-                cancellation_pending: false,
-            },
-        )])
-    };
-
-    assert_eq!(
-        operational_phase(
-            running,
-            epoch,
-            &activity(false, false, false),
-            &BTreeMap::new(),
-        ),
-        Ok(Some(OperationalPhase::Preparing))
-    );
-    let preparing = BTreeMap::from([(execution, PackagedWorldLifecyclePhase::Preparing)]);
-    assert_eq!(
-        operational_phase(running, epoch, &activity(true, false, false), &preparing),
-        Ok(Some(OperationalPhase::Preparing))
-    );
-    let active = BTreeMap::from([(execution, PackagedWorldLifecyclePhase::Running)]);
-    assert_eq!(
-        operational_phase(running, epoch, &activity(true, false, false), &active),
-        Ok(Some(OperationalPhase::Running))
-    );
-    assert_eq!(
-        operational_phase(running, epoch, &activity(true, true, false), &active),
-        Ok(Some(OperationalPhase::Canceling))
-    );
-    assert_eq!(
-        operational_phase(
-            running,
-            epoch,
-            &activity(false, false, true),
-            &BTreeMap::new(),
-        ),
-        Ok(Some(OperationalPhase::Publishing))
-    );
-    assert_eq!(
-        operational_phase(
-            running,
-            DaemonEpoch::from_bytes([0x93; 16]).expect("stale epoch"),
-            &activity(true, false, false),
-            &active,
-        ),
-        Ok(None)
-    );
-    assert_eq!(
-        operational_phase(
-            running,
-            epoch,
-            &activity(true, false, false),
-            &BTreeMap::new()
-        ),
-        Err(())
-    );
-
-    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
-        ObjectKind::ExactManifest,
-        4,
-        b"packaged-status-checkpoint",
-    ))
-    .expect("checkpoint");
-    let paused = AttemptRuntimeState::Paused {
-        execution_basis: basis,
-        origin: crate::AttemptExecutionOrigin::Initial,
-        daemon_epoch: epoch,
-        execution,
-        checkpoint,
-        promotion_basis: None,
-    };
-    assert_eq!(
-        operational_phase(paused, epoch, &BTreeMap::new(), &BTreeMap::new()),
-        Ok(Some(OperationalPhase::Paused))
-    );
-}
-
-#[test]
-fn actor_status_snapshots_reject_intervening_ownership_changes() {
-    let epoch = DaemonEpoch::from_bytes([0x94; 16]).expect("daemon epoch");
-    let stable = LocalExecutorOperationalSnapshot {
-        revision: 7,
-        daemon_epoch: epoch,
-        activities: Vec::new(),
-    };
-    assert!(successive_actor_snapshots(&stable, &stable));
-
-    let changed = LocalExecutorOperationalSnapshot {
-        revision: 8,
-        ..stable.clone()
-    };
-    assert!(!successive_actor_snapshots(&stable, &changed));
-}
+mod lifecycle_recovery;

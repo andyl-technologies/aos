@@ -67,17 +67,6 @@ pub enum QemuLaunchCommandError {
     /// The node name cannot be represented in QEMU's comma-separated plugin args.
     #[error("app-random node name must not contain `,` or `=`")]
     InvalidAppRandomNodeName,
-    /// A terminal state dump lacked fingerprint mode, a target, or a safe path.
-    #[error(
-        "terminal state dump requires fingerprint mode, a nonzero target, and an absolute comma-free path"
-    )]
-    InvalidStateDumpConfiguration,
-    /// A non-default fingerprint capture mode was configured without sampling.
-    #[error("QEMU fingerprint capture mode requires fingerprint sampling")]
-    FingerprintModeWithoutFingerprint,
-    /// A translation-prefetch experiment lacked a safe absolute report path.
-    #[error("translation-prefetch report path must be absolute and comma-free")]
-    InvalidTranslationPrefetchReportPath,
     /// The executable name did not identify an implemented fault architecture.
     #[error("QEMU executable does not identify an x86_64 or aarch64 fault backend: `{executable}`")]
     UnsupportedFaultCapabilityArchitecture {

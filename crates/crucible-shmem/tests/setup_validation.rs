@@ -73,13 +73,13 @@ fn setup_region_header_validation_rejects_invalid_abi_marker() {
     assert_eq!(
         validate_setup_region_header(
             RegionHeaderSnapshot {
-                abi_version: ABI_VERSION - 1,
+                abi_version: u32::MAX,
                 ..snapshot
             },
             layout.region_size,
         ),
         Err(RegionSetupValidationError::AbiVersionMismatch {
-            actual: ABI_VERSION - 1,
+            actual: u32::MAX,
             expected: ABI_VERSION,
         })
     );
@@ -451,6 +451,16 @@ fn hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping() {
     assert_eq!(decoded.digest(), image.digest());
     assert_eq!(decoded.abi_version(), ABI_VERSION);
     assert_eq!(decoded.region_size(), allocation.layout().region_size);
+
+    let mut unsupported_abi = canonical.clone();
+    unsupported_abi[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&unsupported_abi, unsupported_abi.len()),
+        Err(HotForkRingImageError::InvalidCanonicalImage {
+            reason: "hot-fork-ring-image-abi"
+        })
+    ));
+
     assert!(matches!(
         HotForkRingImage::from_canonical_bytes(&canonical, canonical.len() - 1),
         Err(HotForkRingImageError::ImageTooLarge { .. })

@@ -13,6 +13,8 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliProcessTest = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
+  campaignProcessTest = builtins.readFile ../../crates/crucible-cli/tests/campaign_process.rs;
+  packagedCampaignVm = builtins.readFile ./phase4-packaged-campaign-vm.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -25,7 +27,7 @@
       }
       {
         label = "T-CLI-15 replay process coverage note";
-        needle = "`fuzz`, marker-resolved QEMU `save`, `resume`, and `fork`, `replay --check`";
+        needle = "`fuzz`, marker-resolved QEMU `save` and `resume`, `replay --check`";
       }
       {
         label = "T-CLI-15 replay-to process coverage note";
@@ -33,7 +35,7 @@
       }
       {
         label = "T-CLI-15 live-QEMU route coverage";
-        needle = "including the live-QEMU run/save/resume/fork/search/";
+        needle = "including the live-QEMU run/save/resume/search/";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
@@ -57,7 +59,7 @@
       }
       {
         label = "phase5 T-CLI-15 qemu process coverage note";
-        needle = "marker-resolved QEMU `save`, `resume`, and\n  `fork`, `replay --check`";
+        needle = "marker-resolved QEMU `save` and `resume`,\n  `replay --check`";
       }
       {
         label = "phase5 T-CLI-15 replay-to process coverage note";
@@ -163,6 +165,22 @@
         label = "final outcome output regression";
         needle = "cli_exit_machine_readable_output_records_final_outcome";
       }
+      {
+        label = "batch local campaign eligibility";
+        needle = "batch_campaign_run_eligible";
+      }
+      {
+        label = "batch local route regression";
+        needle = "batch_campaign_route_accepts_exact_semantic_stops";
+      }
+      {
+        label = "fresh interactive QEMU route";
+        needle = "run_local_qemu_interactive_workflow";
+      }
+      {
+        label = "interactive stop terminal snapshot regression";
+        needle = "cli_interactive_stop_uses_terminal_snapshot_after_registry_cleanup";
+      }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliProcessTest [
       {
@@ -170,16 +188,8 @@
         needle = "cli_exit_machine_readable_process_stdout_is_pure_json";
       }
       {
-        label = "qemu save process rejection regression";
-        needle = "cli_save_qemu_process_requires_packaged_live_guest_assets";
-      }
-      {
-        label = "qemu resume process rejection regression";
-        needle = "cli_resume_qemu_process_requires_packaged_live_guest_assets";
-      }
-      {
-        label = "qemu fork process rejection regression";
-        needle = "cli_fork_qemu_process_requires_packaged_live_guest_assets";
+        label = "session-owned save rejection regression";
+        needle = "cli_save_machine_readable_jsonl_rejects_session_owned_export";
       }
       {
         label = "search fuzz process stdout regression";
@@ -210,20 +220,8 @@
         needle = "\"run_scenario\"";
       }
       {
-        label = "save canonical jsonl assertion";
-        needle = "\"save_export\"";
-      }
-      {
-        label = "qemu save live-asset admission assertion";
-        needle = "assert!(stderr.contains(\"requires the AOS kernel\"))";
-      }
-      {
-        label = "qemu resume and fork no-unwired assertion";
-        needle = "!stderr.contains(\"execution is unavailable\")";
-      }
-      {
-        label = "qemu live route no-double assertion";
-        needle = "!stderr.contains(\"double fallback\")";
+        label = "save export requires Campaign replay authority";
+        needle = "savepoint export requires Campaign-owned execution with an authenticated portable replay closure";
       }
       {
         label = "search canonical jsonl assertion";
@@ -280,6 +278,30 @@
       {
         label = "human text forbidden in process stdout";
         needle = "stdout must not contain human text";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
+      {
+        label = "packaged interactive capture and replay regression";
+        needle = "interactive_session_captures_and_replays_exact_live_artifact";
+      }
+      {
+        label = "packaged Campaign save and native resume regression";
+        needle = "campaign_virtual_time_save_feeds_native_resume";
+      }
+      {
+        label = "interactive replay uses session proof owner";
+        needle = "owner=session";
+      }
+      {
+        label = "interactive live replay contract v4";
+        needle = "crucible.live-qemu-replay-contract.v4";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase4-packaged-campaign-vm.nix" packagedCampaignVm [
+      {
+        label = "packaged interactive capture and replay wiring";
+        needle = "interactive_session_captures_and_replays_exact_live_artifact";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

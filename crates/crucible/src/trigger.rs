@@ -15,8 +15,8 @@ use std::ops::Deref;
 
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, CodePoint, ContentHash, Decision, DeviceId,
-    EngineError, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkDef, LinkId,
-    MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
+    EngineError, EventId, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkDef,
+    LinkId, MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
     Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
     ReproductionArtifact, ReproductionReplay, RngStreamId, Schedule, SchedulerNodeId,
     SchedulingNodeKind, Shift, SimDuration, TimeConversionError, TimerId, VirtualTime,
@@ -31,8 +31,6 @@ use crate::scheduler::{
     compare_event_log_determinism, scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
     scheduler_event_log_segment_bytes,
 };
-
-pub use crate::model::EventId;
 
 /// Shared predicate vocabulary used by both assertions and event triggers.
 ///

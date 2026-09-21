@@ -75,18 +75,137 @@ impl Error for FindingReproductionArtifactError {
 pub struct MinimizationConfig {
     /// Seed used to order candidate removals with content-address tie-breaks.
     pub seed: Seed,
+    interesting_window: Option<InterestingScheduleWindow>,
 }
 
 /// Maximum replay candidates considered by one deterministic minimization.
 pub const MAX_MINIMIZATION_CANDIDATES: usize = 4_096;
 /// Maximum conservative candidate-copy work admitted by one minimization.
 pub const MAX_MINIMIZATION_CANDIDATE_WORK_BYTES: usize = 128 * 1024 * 1024;
+/// Maximum terminal schedule decisions exposed by automatic finding minimization.
+pub const MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS: usize = 64;
+
+/// Reason an automatic minimization window starts at its retained boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InterestingScheduleWindowBasis {
+    /// The window begins at the latest campaign branch within the terminal bound.
+    LatestCampaignBranch,
+    /// No campaign branch lies in the terminal bound, so the bounded suffix is used.
+    TerminalSuffix,
+}
+
+/// Bounded terminal schedule window selected for automatic minimization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InterestingScheduleWindow {
+    original_schedule_len: usize,
+    start: usize,
+    end: usize,
+    basis: InterestingScheduleWindowBasis,
+}
+
+impl InterestingScheduleWindow {
+    /// Returns the original schedule length authenticated by this selection.
+    #[must_use]
+    pub const fn original_schedule_len(self) -> usize {
+        self.original_schedule_len
+    }
+
+    /// Returns the inclusive first decision eligible for removal.
+    #[must_use]
+    pub const fn start(self) -> usize {
+        self.start
+    }
+
+    /// Returns the exclusive end of the selected terminal window.
+    #[must_use]
+    pub const fn end(self) -> usize {
+        self.end
+    }
+
+    /// Returns the semantic basis for the selected start boundary.
+    #[must_use]
+    pub const fn basis(self) -> InterestingScheduleWindowBasis {
+        self.basis
+    }
+}
 
 impl MinimizationConfig {
     /// Builds a minimization configuration.
     #[must_use]
     pub const fn new(seed: Seed) -> Self {
-        Self { seed }
+        Self {
+            seed,
+            interesting_window: None,
+        }
+    }
+
+    /// Selects the bounded terminal schedule window used by automatic findings.
+    ///
+    /// The selection starts at the latest campaign branch within the compiled
+    /// terminal bound. If that suffix has no campaign branch, the full bounded
+    /// suffix is eligible. Decisions before the selected start remain an
+    /// authenticated prefix and cannot be removed by this minimization.
+    #[must_use]
+    pub fn automatic_interesting_suffix(seed: Seed, schedule: &Schedule) -> Self {
+        let end = schedule.len();
+        let bounded_start = end.saturating_sub(MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS);
+        let latest_branch = schedule.decisions()[bounded_start..]
+            .iter()
+            .rposition(|decision| {
+                matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
+            })
+            .map(|offset| bounded_start + offset);
+        let (start, basis) = latest_branch.map_or(
+            (
+                bounded_start,
+                InterestingScheduleWindowBasis::TerminalSuffix,
+            ),
+            |start| (start, InterestingScheduleWindowBasis::LatestCampaignBranch),
+        );
+
+        Self {
+            seed,
+            interesting_window: Some(InterestingScheduleWindow {
+                original_schedule_len: end,
+                start,
+                end,
+                basis,
+            }),
+        }
+    }
+
+    /// Returns the selected automatic window, when minimization is windowed.
+    #[must_use]
+    pub const fn interesting_window(self) -> Option<InterestingScheduleWindow> {
+        self.interesting_window
+    }
+
+    pub(super) fn validates_schedule(self, schedule: &Schedule) -> bool {
+        self.interesting_window.is_none_or(|window| {
+            window.original_schedule_len == schedule.len()
+                && window.end == schedule.len()
+                && window.start <= window.end
+                && window.end.saturating_sub(window.start)
+                    <= MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS
+                && match window.basis {
+                    InterestingScheduleWindowBasis::LatestCampaignBranch => schedule.decisions()
+                        [window.start..window.end]
+                        .iter()
+                        .rposition(|decision| {
+                            matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
+                        })
+                        == Some(0),
+                    InterestingScheduleWindowBasis::TerminalSuffix => {
+                        window.start
+                            == window
+                                .end
+                                .saturating_sub(MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS)
+                            && !schedule.decisions()[window.start..window.end].iter().any(
+                                |decision| matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch()),
+                            )
+                    }
+                }
+        })
     }
 }
 
@@ -116,6 +235,8 @@ pub struct MinimizationAttempt {
 pub struct MinimizationRun {
     /// Seed used for candidate ordering.
     pub seed: Seed,
+    /// Automatic interesting window retained by this run, when selected.
+    pub interesting_window: Option<InterestingScheduleWindow>,
     /// Failure fingerprint that every accepted candidate preserves.
     pub target_fingerprint: ContentHash,
     /// Original self-contained finding artifact.
@@ -127,6 +248,14 @@ pub struct MinimizationRun {
 }
 
 impl MinimizationRun {
+    /// Returns the exact configuration needed to reproduce this run.
+    #[must_use]
+    pub const fn config(&self) -> MinimizationConfig {
+        MinimizationConfig {
+            seed: self.seed,
+            interesting_window: self.interesting_window,
+        }
+    }
     /// Returns the number of accepted shrink candidates.
     #[must_use]
     pub fn accepted_attempts(&self) -> usize {

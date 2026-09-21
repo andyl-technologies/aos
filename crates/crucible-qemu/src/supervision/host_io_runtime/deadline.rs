@@ -2,6 +2,12 @@
 
 use std::time::{Duration, Instant};
 
+/// Default host poll interval while awaiting a plugin-published boundary.
+///
+/// The interval only bounds host liveness. It never contributes to the exact
+/// guest coordinate or canonical scheduler state.
+pub(super) const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
 /// Retains the original host deadline across shared-memory report retries.
 #[derive(Debug, Default)]
 pub(super) struct AdvanceWaitDeadline {

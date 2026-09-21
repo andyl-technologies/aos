@@ -11,8 +11,15 @@ use crucible::{
     ControlOperationKind as SchedulerControlOperationKind, Decision, DeliveryOrderDecision,
     EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
     SchedulerError, SchedulerEventLogEntry, SchedulerNodeId, SchedulingNodeKind, Seed, SimDouble,
-    SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime,
+    SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime, try_step,
 };
+
+fn accepted_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    match try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
 use crucible_api::{
     ControlAcknowledgementStatus, ControlOperationAcknowledgement, ControlOperationKind,
     ControlResponsivenessError, ControlSessionState,
@@ -202,8 +209,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             SimulationBackend::step_to(&mut self.backend, VirtualTime { ticks: self.quanta })?;
         assert_eq!(observation.reached, VirtualTime { ticks: self.quanta });
         let decision = generated_decision(self.quanta);
-        let configuration = crucible::try_step(&request.configuration, decision.clone())
-            .expect("test decision should be valid");
+        let configuration = accepted_step(&request.configuration, decision.clone());
         record_control_operations(&self.observed_control, &request.control);
         Ok(QuantumOutcome {
             configuration,

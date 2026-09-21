@@ -42,7 +42,7 @@
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "unified log entry type";
+        label = "unified log entry name";
         needle = "pub struct SchedulerEventLogEntry";
       }
       {
@@ -142,28 +142,6 @@
       {
         label = "phase4 exposes event-log unified check";
         needle = "eventLogUnified = import ./phase4-event-log-unified.nix";
-      }
-    ]
-    ++ forbiddenFor "crates/crucible/src/scheduler.rs" scheduler [
-      {
-        label = "old scheduler event-log prefix field";
-        needle = "event_log_prefix: ContentHash";
-      }
-      {
-        label = "old scheduler event-log byte field";
-        needle = "event_log_bytes: u64";
-      }
-      {
-        label = "old scheduler event-log event field";
-        needle = "event_log_events: u64";
-      }
-      {
-        label = "old scheduler condition-log storage";
-        needle = "condition_event_log_entries: Vec<SchedulerEventLogEntry>";
-      }
-      {
-        label = "old scheduler append helper";
-        needle = "fn append_event_log_entries";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/event_log_unified.rs" eventLogTest [

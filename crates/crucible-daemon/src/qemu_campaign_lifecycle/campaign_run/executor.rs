@@ -6,6 +6,9 @@ use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::automatic_finding_runner::{
+    CampaignRunFindingExactRetentionSource, FindingExactRetentionSource,
+};
 use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::executor_worker::{
     publish_prepared_semantic_attempt_result, validate_prepared_semantic_attempt_result,
@@ -13,19 +16,17 @@ use crate::executor_worker::{
 use crate::{
     AttemptAdmissionValidator, AttemptExecutionContext, AttemptExecutionDisposition,
     AttemptExecutionKey, AttemptExecutionModel, AttemptExecutionProduct,
-    AttemptExecutionReconciliationStep, AttemptFindingRetentionPolicy,
-    AttemptResultPreparationError, AttemptResultPreparationFailure,
-    AttemptResultPublicationFailure, AttemptWorkerFailure, CapturedAttemptCheckpoint,
-    CheckpointCompletionOutcome, CheckpointHandoffFailure, CheckpointPublicationOutcome,
-    CheckpointResultAbortError, CheckpointResultAbortToken, CheckpointResultStageOutcome,
-    CompletionValidationFailure, ExactCheckpointStore, ExactCheckpointStoreError,
-    ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, ExecutorCapacityError,
-    LocalExecutorError, LocalExecutorSupervisor, MemoryAssignmentLedger, PreparedAttemptCheckpoint,
-    PreparedAttemptWorkResult, PreparedFindingExactRetention, PreparedSemanticAttemptResult,
-    PreparedSemanticResultCodecError, RepositoryAttemptAdmission, RepositoryAttemptWorker,
-    RepositoryAttemptWorkerError, abort_checkpoint_result, prepare_attempt_result,
-    publish_staged_checkpoint_result, reconcile_published_checkpoint_result,
-    stage_prepared_checkpoint_result,
+    AttemptExecutionReconciliationStep, AttemptResultPreparationError,
+    AttemptResultPreparationFailure, AttemptResultPublicationFailure, AttemptWorkerFailure,
+    CapturedAttemptCheckpoint, CheckpointCompletionOutcome, CheckpointHandoffFailure,
+    CheckpointPublicationOutcome, CheckpointResultAbortError, CheckpointResultAbortToken,
+    CheckpointResultStageOutcome, CompletionValidationFailure, ExactCheckpointStore,
+    ExactCheckpointStoreError, ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity,
+    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor, MemoryAssignmentLedger,
+    PreparedAttemptCheckpoint, PreparedAttemptWorkResult, RepositoryAttemptAdmission,
+    RepositoryAttemptWorker, RepositoryAttemptWorkerError, abort_checkpoint_result,
+    prepare_attempt_result, publish_staged_checkpoint_result,
+    reconcile_published_checkpoint_result, stage_prepared_checkpoint_result,
 };
 use crucible_campaign::{
     AssignmentId, AttemptExecutionScope, AttemptResourceLimits, CampaignCodecError,
@@ -33,10 +34,9 @@ use crucible_campaign::{
     CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
     CheckpointAttemptExecutionResponse, DaemonEpoch, ExecutorControlService, ExecutorRejection,
-    ExecutorResumeService, ExecutorService, ExecutorStatusService, FindingExactPins,
-    FindingExactRetention, FindingExactRetentionDisposition, FindingExactRetentionIncomplete,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    ObservationId, PlannerExecutionSupervisor, PlannerRequest, PurePlannerEngine,
+    ExecutorResumeService, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ObservationId,
+    PlannerExecutionSupervisor, PlannerRequest, PurePlannerEngine,
     ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
     ResumeAttemptExecutionResponse, SubmitAttemptDisposition, SubmitAttemptRequest,
     SubmitAttemptResponse, SupervisedPlannerExecution,
@@ -155,6 +155,8 @@ impl PlannerExecutionSupervisor<crucible_campaign::CanonicalBeamPlanner> for Loc
 
 pub(super) struct SynchronousCampaignExecutor<M> {
     store: CampaignExecutorStore,
+    exact_retention: Arc<dyn FindingExactRetentionSource>,
+    exact_inventory: Arc<CampaignRunFindingExactRetentionSource>,
     worker: RepositoryAttemptWorker<M>,
     admission: RepositoryAttemptAdmission,
     daemon_epoch: DaemonEpoch,
@@ -196,10 +198,7 @@ impl AttemptCheckpointHandoff for SynchronousCheckpointHandoff {
     ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure> {
         let prepared = self
             .checkpoints
-            .prepare_attempt_checkpoint_with_cancellation(
-                capture.reopenable_copy(),
-                self.queued.cancellation(),
-            )
+            .prepare_attempt_checkpoint_with_cancellation(capture, self.queued.cancellation())
             .map_err(|error| match error {
                 ExactCheckpointStoreError::Canceled => CheckpointHandoffFailure::Canceled,
                 error if error.is_retryable() => CheckpointHandoffFailure::Retryable,
@@ -229,15 +228,19 @@ impl AttemptCheckpointHandoff for SynchronousCheckpointHandoff {
 impl<M> SynchronousCampaignExecutor<M> {
     pub(super) fn new(
         store: CampaignExecutorStore,
+        exact_retention: Arc<CampaignRunFindingExactRetentionSource>,
         model: M,
         admission: RepositoryAttemptAdmission,
         daemon_epoch: DaemonEpoch,
         resources: AttemptResourceLimits,
         cancellation: ExecutionCancellation,
     ) -> Self {
+        let exact_inventory = Arc::clone(&exact_retention);
         Self {
             worker: RepositoryAttemptWorker::new(store.clone(), model),
             store,
+            exact_retention,
+            exact_inventory,
             admission,
             daemon_epoch,
             resources,
@@ -277,7 +280,7 @@ impl<M> SynchronousCampaignExecutor<M> {
 pub(super) enum SynchronousCampaignExecutorError<E> {
     Protocol(crucible_campaign::CampaignCodecError),
     Repository(crucible_campaign::CampaignRepositoryError),
-    Preparation(AttemptResultPreparationFailure),
+    Preparation(Box<AttemptResultPreparationFailure>),
     Publication(AttemptResultPublicationFailure),
     Execution(crate::AttemptWorkerFailure<E>),
     Reconciliation(crate::AttemptWorkerFailure<E>),
@@ -286,26 +289,13 @@ pub(super) enum SynchronousCampaignExecutorError<E> {
     CaptureSupervisorPoisoned,
     CaptureSupervisor(LocalExecutorError<Infallible>),
     CaptureExecution(AttemptWorkerFailure<RepositoryAttemptWorkerError<E>>),
-    CaptureCandidate(AttemptResultPreparationFailure),
+    CaptureCandidate(Box<AttemptResultPreparationFailure>),
     CaptureCheckpoint(ExactCheckpointStoreError),
     CaptureUnexpectedSemanticResult,
     CaptureAbort(Box<CheckpointResultAbortError<LocalExecutorError<Infallible>>>),
-    CaptureNativeRetirement {
-        source: crucible_api::ProductionExactCheckpointRetirementError,
-        _retirement: crucible_api::ProductionExactCheckpointRetirement,
-    },
-    CaptureNativeCleanupRetained {
-        terminal: Vec<(
-            crucible_api::ProductionExactCheckpointRetirementError,
-            crucible_api::ProductionExactCheckpointRetirement,
-        )>,
-        quarantined: Vec<crucible_api::ProductionExactCheckpointRetirement>,
-    },
+    CaptureNativeRetirement(crucible_api::ProductionExactCheckpointRetirementError),
     CaptureNotPaused,
     UnexpectedCheckpoint,
-    FindingExactRetentionMismatch {
-        reason: &'static str,
-    },
     ReconciliationLimit,
 }
 
@@ -346,32 +336,17 @@ impl<E: fmt::Display> fmt::Display for SynchronousCampaignExecutorError<E> {
                 formatter.write_str("executor exact capture returned a semantic observation")
             }
             Self::CaptureAbort(error) => write!(formatter, "executor exact capture abort: {error}"),
-            Self::CaptureNativeRetirement { source, .. } => {
+            Self::CaptureNativeRetirement(error) => {
                 write!(
                     formatter,
-                    "executor exact capture source retirement: {source}"
+                    "executor exact capture source retirement: {error}"
                 )
             }
-            Self::CaptureNativeCleanupRetained {
-                terminal,
-                quarantined,
-            } => write!(
-                formatter,
-                "executor retained {} terminal and {} quarantined native checkpoint catalogs",
-                terminal.len(),
-                quarantined.len()
-            ),
             Self::CaptureNotPaused => {
                 formatter.write_str("executor exact capture did not reach durable paused state")
             }
             Self::UnexpectedCheckpoint => formatter
                 .write_str("standalone default run unexpectedly produced an exact checkpoint"),
-            Self::FindingExactRetentionMismatch { reason } => {
-                write!(
-                    formatter,
-                    "executor finding exact-retention mismatch: {reason}"
-                )
-            }
             Self::ReconciliationLimit => formatter
                 .write_str("execution owner reconciliation exceeded its bounded step count"),
         }
@@ -394,178 +369,16 @@ where
             Self::CaptureCandidate(error) => Some(error),
             Self::CaptureCheckpoint(error) => Some(error),
             Self::CaptureAbort(error) => Some(error),
-            Self::CaptureNativeRetirement { source, .. } => Some(source),
-            Self::CaptureNativeCleanupRetained { terminal, .. } => terminal
-                .first()
-                .map(|(source, _)| source as &(dyn Error + 'static)),
+            Self::CaptureNativeRetirement(error) => Some(error),
             Self::Completion(_)
             | Self::CaptureUnavailable
             | Self::CaptureSupervisorPoisoned
             | Self::CaptureUnexpectedSemanticResult
             | Self::CaptureNotPaused
             | Self::UnexpectedCheckpoint
-            | Self::FindingExactRetentionMismatch { .. }
             | Self::ReconciliationLimit => None,
         }
     }
-}
-
-enum SynchronousSemanticResultError {
-    Preparation(PreparedSemanticResultCodecError),
-    FindingExactRetentionMismatch(&'static str),
-}
-
-fn prepare_synchronous_finding_exact_retention(
-    context: &AttemptExecutionContext,
-    result: &mut PreparedSemanticAttemptResult,
-    retention: PreparedFindingExactRetention,
-    checkpoints: Option<&ExactCheckpointStore>,
-) -> Result<(), SynchronousSemanticResultError> {
-    validate_synchronous_finding_exact_retention(context, result, &retention)?;
-
-    let (basis, exact_pins, authenticated_candidates, disposition, evidence) = match retention {
-        PreparedFindingExactRetention::Disabled { basis } => (
-            basis,
-            FindingExactPins::default(),
-            0,
-            FindingExactRetentionDisposition::Disabled,
-            None,
-        ),
-        PreparedFindingExactRetention::Incomplete { basis, reason, .. } => (
-            basis,
-            FindingExactPins::default(),
-            0,
-            FindingExactRetentionDisposition::Incomplete(reason),
-            None,
-        ),
-        PreparedFindingExactRetention::Captured { basis, checkpoint } => {
-            let selected = checkpoints
-                .ok_or(FindingExactRetentionIncomplete::DurableStagingFailed)
-                .and_then(|checkpoints| {
-                    prepare_synchronous_finding_exact_capture(checkpoints, result, checkpoint)
-                });
-            match selected {
-                Ok((pins, candidates, evidence)) => (
-                    basis,
-                    pins,
-                    candidates,
-                    FindingExactRetentionDisposition::Complete,
-                    Some(evidence),
-                ),
-                Err(reason) => (
-                    basis,
-                    FindingExactPins::default(),
-                    0,
-                    FindingExactRetentionDisposition::Incomplete(reason),
-                    None,
-                ),
-            }
-        }
-    };
-    let exact_retention = FindingExactRetention::new(
-        basis.snapshot(),
-        basis.policy(),
-        basis.admission(),
-        authenticated_candidates,
-        disposition,
-    )
-    .map_err(|_| {
-        SynchronousSemanticResultError::Preparation(
-            PreparedSemanticResultCodecError::Inconsistent {
-                component: "synchronous finding exact retention evidence",
-            },
-        )
-    })?;
-    let finding = result
-        .prepare_bound_finding_exact_retention(exact_pins, exact_retention, evidence)
-        .map_err(SynchronousSemanticResultError::Preparation)?;
-    result.commit_bound_production_replay_finding(finding);
-    Ok(())
-}
-
-fn validate_synchronous_finding_exact_retention(
-    context: &AttemptExecutionContext,
-    result: &PreparedSemanticAttemptResult,
-    retention: &PreparedFindingExactRetention,
-) -> Result<(), SynchronousSemanticResultError> {
-    let policy = context.finding_retention_policy().ok_or(
-        SynchronousSemanticResultError::FindingExactRetentionMismatch(
-            "finding exact-retention handoff has no authenticated request policy",
-        ),
-    )?;
-    if policy.basis() != retention.basis() {
-        return Err(
-            SynchronousSemanticResultError::FindingExactRetentionMismatch(
-                "finding exact-retention handoff differs from authenticated request policy",
-            ),
-        );
-    }
-    let finding = result.finding().ok_or(
-        SynchronousSemanticResultError::FindingExactRetentionMismatch(
-            "finding exact-retention handoff has no finding",
-        ),
-    )?;
-    if finding.bundle().exact_retention().is_some() {
-        return Err(
-            SynchronousSemanticResultError::FindingExactRetentionMismatch(
-                "finding exact retention was already bound before executor handoff",
-            ),
-        );
-    }
-
-    let policy = policy.retention();
-    let disposition_matches = match retention {
-        PreparedFindingExactRetention::Disabled { .. } => !policy.exact_findings(),
-        PreparedFindingExactRetention::Captured { .. } => policy.exact_findings(),
-        PreparedFindingExactRetention::Incomplete { .. } => policy.exact_findings(),
-    };
-    if !disposition_matches {
-        return Err(
-            SynchronousSemanticResultError::FindingExactRetentionMismatch(
-                "finding exact-retention disposition differs from authenticated request policy",
-            ),
-        );
-    }
-    Ok(())
-}
-
-fn prepare_synchronous_finding_exact_capture(
-    checkpoints: &ExactCheckpointStore,
-    result: &PreparedSemanticAttemptResult,
-    checkpoint: CapturedAttemptCheckpoint,
-) -> Result<
-    (
-        FindingExactPins,
-        u32,
-        crucible_campaign::FindingExactRetentionEvidence,
-    ),
-    FindingExactRetentionIncomplete,
-> {
-    let prepared = checkpoints
-        .prepare_attempt_checkpoint(checkpoint)
-        .map_err(|_| FindingExactRetentionIncomplete::CandidateAuthenticationFailed)?;
-    let captured = checkpoints
-        .publish_attempt_checkpoint(&prepared)
-        .map_err(|_| FindingExactRetentionIncomplete::DurableStagingFailed)?
-        .root();
-    let finding = result
-        .finding()
-        .ok_or(FindingExactRetentionIncomplete::CandidateAuthenticationFailed)?;
-    let scenario = crate::decode_crucible_scenario_artifact(finding.scenario())
-        .map_err(|_| FindingExactRetentionIncomplete::CandidateAuthenticationFailed)?;
-    let configuration = finding.original_configuration().configuration();
-    let mut candidates = crate::executor_pool::FindingExactCandidateAccumulator::new(
-        checkpoints,
-        &scenario,
-        configuration,
-    );
-    candidates.consider(captured);
-    let candidates = candidates.finish()?;
-    crate::executor_pool::select_finding_exact_retention_from_candidates(
-        result,
-        captured,
-        &candidates,
-    )
 }
 
 impl<M> ExecutorService for SynchronousCampaignExecutor<M>
@@ -651,29 +464,14 @@ where
             request.resources(),
         )
         .map_err(SynchronousCampaignExecutorError::Repository)?;
-        let finding_retention = request
-            .retention_policy_basis()
-            .map(|basis| {
-                self.store
-                    .validate_attempt_retention_policy_basis(
-                        request.lineage(),
-                        request.attempt(),
-                        basis,
-                    )
-                    .map(|retention| AttemptFindingRetentionPolicy::new(basis, retention))
-            })
-            .transpose()
-            .map_err(SynchronousCampaignExecutorError::Repository)?;
         let context = AttemptExecutionContext::new(
             request.resources(),
             request.retention(),
             self.cancellation.clone(),
             ExecutionCheckpointRequest::default(),
-        )
-        .with_finding_retention_policy(finding_retention);
-        let execution = self.worker.model_mut().execute(&input, &context);
-        complete_checkpoint_cleanup(self.worker.model_mut().take_abandoned_native_checkpoint())?;
-        let product = match execution {
+            request.retention_policy(),
+        );
+        let product = match self.worker.model_mut().execute(&input, &context) {
             Ok(product) => product,
             Err(failure) => {
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
@@ -681,63 +479,32 @@ where
             }
         };
         let result = match product {
-            AttemptExecutionProduct::PreparedSemantic(result) => {
-                if context.finding_retention_policy().is_some() && result.finding().is_some() {
-                    Err(
-                        SynchronousSemanticResultError::FindingExactRetentionMismatch(
-                            "policy-bound finding omitted exact-retention handoff",
-                        ),
-                    )
-                } else {
-                    Ok(*result)
-                }
-            }
-            AttemptExecutionProduct::PreparedSemanticWithExactRetention {
-                mut result,
-                retention,
-            } => {
-                let retirement = retention
-                    .checkpoint()
-                    .and_then(CapturedAttemptCheckpoint::native_retirement);
-                let checkpoints = self
-                    .checkpoint_capture
-                    .as_ref()
-                    .map(|capture| capture.checkpoints.as_ref());
-                let prepared = prepare_synchronous_finding_exact_retention(
-                    &context,
-                    &mut result,
-                    *retention,
-                    checkpoints,
-                );
-                retire_checkpoint_source(retirement)?;
-                prepared.map(|()| *result)
-            }
-            AttemptExecutionProduct::ExactCheckpoint(checkpoint) => {
-                retire_checkpoint_source(checkpoint_result_retirement(*checkpoint))?;
+            AttemptExecutionProduct::PreparedSemantic(result) => Ok(*result),
+            AttemptExecutionProduct::ExactCheckpoint(_) => {
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 return Err(SynchronousCampaignExecutorError::UnexpectedCheckpoint);
             }
         };
         let result = match result {
             Ok(result) => result,
-            Err(SynchronousSemanticResultError::Preparation(error)) => {
+            Err(error) => {
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::Preparation(
+                return Err(SynchronousCampaignExecutorError::Preparation(Box::new(
                     AttemptResultPreparationFailure::Result(error),
-                ));
-            }
-            Err(SynchronousSemanticResultError::FindingExactRetentionMismatch(reason)) => {
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(
-                    SynchronousCampaignExecutorError::FindingExactRetentionMismatch { reason },
-                );
+                )));
             }
         };
         if let Err(error) = validate_prepared_semantic_attempt_result(&self.store, key, &result) {
             reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-            return Err(SynchronousCampaignExecutorError::Preparation(error));
+            return Err(SynchronousCampaignExecutorError::Preparation(Box::new(
+                error,
+            )));
         }
-        let observation = match publish_prepared_semantic_attempt_result(&self.store, &result) {
+        let observation = match publish_prepared_semantic_attempt_result(
+            &self.store,
+            self.exact_retention.as_ref(),
+            &result,
+        ) {
             Ok(observation) => observation,
             Err(error) => {
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
@@ -814,26 +581,14 @@ where
                 cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
                 return Err(SynchronousCampaignExecutorError::CaptureUnexpectedSemanticResult);
             }
-            Err(AttemptResultPreparationError::Worker {
-                queued,
-                failure,
-                retirement,
-            }) => {
+            Err(AttemptResultPreparationError::Worker { queued, failure }) => {
                 let cleanup = stop_capture_after_worker_failure(&supervisor, &queued, &failure);
-                let retirement = complete_checkpoint_cleanup(retirement);
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
-                retirement?;
                 return Err(SynchronousCampaignExecutorError::CaptureExecution(failure));
             }
             Err(AttemptResultPreparationError::Candidate { pending, source }) => {
-                let (queued, _candidate, retention) = pending.into_parts();
-                if let Some(checkpoint) = retention
-                    .as_ref()
-                    .and_then(crate::PreparedFindingExactRetention::checkpoint)
-                {
-                    retire_checkpoint_source(checkpoint.native_retirement())?;
-                }
+                let (queued, _) = pending.into_parts();
                 let cleanup = stop_capture_terminally(&supervisor, &queued);
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
@@ -847,7 +602,7 @@ where
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
                 cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
                 retirement?;
-                return Err(SynchronousCampaignExecutorError::CaptureCheckpoint(source));
+                return Err(SynchronousCampaignExecutorError::CaptureCheckpoint(*source));
             }
         };
 
@@ -874,6 +629,9 @@ where
                 ..
             }) => {
                 let retirement = retire_checkpoint_source(prepared.native_retirement());
+                self.exact_inventory
+                    .retain_checkpoint(checkpoint)
+                    .map_err(|_| SynchronousCampaignExecutorError::CaptureNotPaused)?;
                 reconcile_model(
                     self.worker.model_mut(),
                     AttemptExecutionDisposition::ExactCheckpoint(checkpoint),
@@ -932,6 +690,9 @@ where
             Ok(
                 CheckpointCompletionOutcome::Paused | CheckpointCompletionOutcome::AlreadyPaused,
             ) => {
+                self.exact_inventory
+                    .retain_checkpoint(checkpoint)
+                    .map_err(|_| SynchronousCampaignExecutorError::CaptureNotPaused)?;
                 reconcile_model(
                     self.worker.model_mut(),
                     AttemptExecutionDisposition::ExactCheckpoint(checkpoint),
@@ -1021,12 +782,9 @@ fn checkpoint_result_retirement(
     checkpoint: crate::AttemptCheckpointResult,
 ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
     match checkpoint.into_state() {
-        crate::exact_checkpoint_store::AttemptCheckpointResultState::Captured(
-            CapturedAttemptCheckpoint::SingleNode(_),
-        ) => None,
-        crate::exact_checkpoint_store::AttemptCheckpointResultState::Captured(
-            CapturedAttemptCheckpoint::Production(checkpoint),
-        ) => Some(checkpoint.native_retirement()),
+        crate::exact_checkpoint_store::AttemptCheckpointResultState::Captured(checkpoint) => {
+            Some((*checkpoint).into_closure().native_retirement())
+        }
         crate::exact_checkpoint_store::AttemptCheckpointResultState::Prepared(checkpoint) => {
             checkpoint.native_retirement()
         }
@@ -1039,74 +797,9 @@ fn retire_checkpoint_source<E>(
     let Some(retirement) = retirement else {
         return Ok(());
     };
-    match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
-        Ok(_) => Ok(()),
-        Err(source) => Err(SynchronousCampaignExecutorError::CaptureNativeRetirement {
-            source,
-            _retirement: retirement,
-        }),
-    }
-}
-
-fn complete_checkpoint_cleanup<E>(
-    cleanup: Option<crate::NativeCheckpointCleanup>,
-) -> Result<(), SynchronousCampaignExecutorError<E>> {
-    let Some(cleanup) = cleanup else {
-        return Ok(());
-    };
-    let (retirements, quarantined) = partition_checkpoint_cleanup(cleanup);
-    let mut terminal = Vec::new();
-    for retirement in retirements {
-        if let Err(retained) = retire_checkpoint_once(retirement) {
-            terminal.push(retained);
-        }
-    }
-    if terminal.is_empty() && quarantined.is_empty() {
-        Ok(())
-    } else {
-        Err(
-            SynchronousCampaignExecutorError::CaptureNativeCleanupRetained {
-                terminal,
-                quarantined,
-            },
-        )
-    }
-}
-
-fn partition_checkpoint_cleanup(
-    cleanup: crate::NativeCheckpointCleanup,
-) -> (
-    Vec<crucible_api::ProductionExactCheckpointRetirement>,
-    Vec<crucible_api::ProductionExactCheckpointRetirement>,
-) {
-    let mut retirements = Vec::new();
-    let mut quarantined = Vec::new();
-    let mut pending = vec![cleanup];
-    while let Some(cleanup) = pending.pop() {
-        match cleanup {
-            crate::NativeCheckpointCleanup::Retire(retirement) => retirements.push(retirement),
-            crate::NativeCheckpointCleanup::Quarantine(retirement) => {
-                quarantined.push(retirement);
-            }
-            crate::NativeCheckpointCleanup::Batch(cleanups) => pending.extend(cleanups),
-        }
-    }
-    (retirements, quarantined)
-}
-
-fn retire_checkpoint_once(
-    retirement: crucible_api::ProductionExactCheckpointRetirement,
-) -> Result<
-    (),
-    (
-        crucible_api::ProductionExactCheckpointRetirementError,
-        crucible_api::ProductionExactCheckpointRetirement,
-    ),
-> {
-    match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
-        Ok(_) => Ok(()),
-        Err(error) => Err((error, retirement)),
-    }
+    crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
+        .map(|_| ())
+        .map_err(SynchronousCampaignExecutorError::CaptureNativeRetirement)
 }
 
 fn reconcile_model<M: AttemptExecutionModel>(
@@ -1117,9 +810,7 @@ where
     M::Error: Error + 'static,
 {
     for _ in 0..DEFAULT_RUN_RECONCILIATION_STEPS {
-        let reconciliation = model.reconcile_execution(disposition);
-        complete_checkpoint_cleanup(model.take_abandoned_native_checkpoint())?;
-        match reconciliation {
+        match model.reconcile_execution(disposition) {
             Ok(AttemptExecutionReconciliationStep::Complete) => return Ok(()),
             Ok(AttemptExecutionReconciliationStep::Progressed) => {}
             Err(error) => {
@@ -1220,330 +911,12 @@ where
 mod lock_tests {
     use super::*;
 
-    use crate::AllowAllAttemptAdmission;
+    use crate::executor_supervisor::AllowAllAttemptAdmission;
     use crucible_campaign::{
-        AssignmentId, AttemptId, AttemptResourceLimits, CampaignExecutorStore, CampaignLineageId,
-        CampaignRepository, ExactCheckpointId, ExecutionRetentionIntent,
-        ExecutorCompatibilityProfile,
+        AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, CampaignRecordKind,
+        ExecutionRetentionIntent,
     };
-    use crucible_cas::content_store::{
-        ContentId, DirectoryBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
-    };
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct RetentionRecordingModel {
-        product: Option<AttemptExecutionProduct>,
-        observed: Arc<Mutex<Option<AttemptFindingRetentionPolicy>>>,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl AttemptExecutionModel for RetentionRecordingModel {
-        type Error = Infallible;
-
-        fn execute(
-            &mut self,
-            _input: &crate::AttemptExecutionInput,
-            context: &AttemptExecutionContext,
-        ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            *self.observed.lock().expect("recorded retention policy") =
-                context.finding_retention_policy();
-            Ok(self.product.take().expect("recording model executes once"))
-        }
-    }
-
-    #[test]
-    fn synchronous_executor_authenticates_and_carries_finding_retention_policy() {
-        let repository = Arc::new(CampaignRepository::new(
-            Arc::new(MemoryBlobBackend::new(
-                "synchronous-retention-positive",
-                64 * 1024 * 1024,
-            )),
-            Arc::new(MemoryRefBackend::new()),
-        ));
-        let (lineage, _policy, _branch, admitted, candidate) =
-            crate::executor_pool::tests::campaign_attempt_fixture(
-                &repository,
-                "synchronous-retention-positive",
-            );
-        let basis = repository
-            .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
-            .expect("retention policy basis");
-        let epoch = DaemonEpoch::from_bytes([0x71; 16]).expect("daemon epoch");
-        let resources = AttemptResourceLimits::new(1, 4096, 8192, 64).expect("resources");
-        let request = SubmitAttemptRequest::new(
-            AssignmentId::from_bytes([0x72; 16]).expect("assignment"),
-            epoch,
-            lineage.id().expect("lineage ID"),
-            admitted.attempt,
-            resources,
-            ExecutionRetentionIntent::Discard,
-        )
-        .expect("submit request")
-        .with_retention_policy_basis(basis)
-        .expect("policy-bound submit request");
-        let observed = Arc::new(Mutex::new(None));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let model = RetentionRecordingModel {
-            product: Some(AttemptExecutionProduct::prepared_semantic(
-                PreparedSemanticAttemptResult::new(candidate, None).expect("prepare test result"),
-            )),
-            observed: Arc::clone(&observed),
-            calls: Arc::clone(&calls),
-        };
-        let mut executor = SynchronousCampaignExecutor::new(
-            CampaignExecutorStore::new(Arc::clone(&repository)),
-            model,
-            RepositoryAttemptAdmission::new(
-                Arc::clone(&repository),
-                ExecutorCompatibilityProfile::from_lineage(&lineage),
-            ),
-            epoch,
-            resources,
-            ExecutionCancellation::default(),
-        );
-
-        let response = executor
-            .submit_attempt(&request)
-            .expect("policy-bound synchronous execution");
-
-        assert!(matches!(
-            response.disposition(),
-            SubmitAttemptDisposition::AlreadyCompleted { .. }
-        ));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let recorded = observed
-            .lock()
-            .expect("recorded retention policy")
-            .expect("model received retention policy");
-        assert_eq!(recorded.basis(), basis);
-        assert!(recorded.retention().exact_findings());
-    }
-
-    #[test]
-    fn synchronous_executor_binds_and_publishes_incomplete_exact_retention() {
-        let blob_root = tempfile::tempdir().expect("campaign blob root");
-        let repository = Arc::new(CampaignRepository::new(
-            Arc::new(DirectoryBlobBackend::new(
-                "synchronous-retention-publication",
-                blob_root.path(),
-            )),
-            Arc::new(MemoryRefBackend::new()),
-        ));
-        let checkpoint = exact_checkpoint_id(b"synchronous-retention-publication-checkpoint");
-        let fixture = crate::crucible_artifact::tests::prepared_finding_recovery_fixture(
-            &repository,
-            "synchronous-retention-publication",
-            checkpoint,
-        );
-        let basis = repository
-            .attempt_retention_policy_basis_at(
-                repository
-                    .head("synchronous-retention-publication")
-                    .expect("campaign head")
-                    .snapshot_id(),
-                fixture.attempt,
-            )
-            .expect("retention policy basis");
-        let reason = FindingExactRetentionIncomplete::MissingSafeBoundaryCapture;
-        let handoff = PreparedFindingExactRetention::Incomplete {
-            basis,
-            reason,
-            discarded_checkpoint: None,
-        };
-        let expected_result = fixture.unbound_result.clone();
-        let expected_retention = FindingExactRetention::new(
-            basis.snapshot(),
-            basis.policy(),
-            basis.admission(),
-            0,
-            FindingExactRetentionDisposition::Incomplete(reason),
-        )
-        .expect("expected exact retention");
-        let expected_finding = expected_result
-            .prepare_bound_finding_exact_retention(
-                FindingExactPins::default(),
-                expected_retention,
-                None,
-            )
-            .expect("expected bound finding");
-        let expected_finding_id = expected_finding.id().expect("expected finding ID");
-        let epoch = DaemonEpoch::from_bytes([0x75; 16]).expect("daemon epoch");
-        let resources = AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources");
-        let request = SubmitAttemptRequest::new(
-            AssignmentId::from_bytes([0x76; 16]).expect("assignment"),
-            epoch,
-            fixture.lineage.id().expect("lineage ID"),
-            fixture.attempt,
-            resources,
-            ExecutionRetentionIntent::Discard,
-        )
-        .expect("submit request")
-        .with_retention_policy_basis(basis)
-        .expect("policy-bound submit request");
-        let model = RetentionRecordingModel {
-            product: Some(
-                AttemptExecutionProduct::prepared_semantic_with_exact_retention(
-                    fixture.unbound_result,
-                    handoff,
-                ),
-            ),
-            observed: Arc::new(Mutex::new(None)),
-            calls: Arc::new(AtomicUsize::new(0)),
-        };
-        let mut executor = SynchronousCampaignExecutor::new(
-            CampaignExecutorStore::new(Arc::clone(&repository)),
-            model,
-            RepositoryAttemptAdmission::new(
-                Arc::clone(&repository),
-                ExecutorCompatibilityProfile::from_lineage(&fixture.lineage),
-            ),
-            epoch,
-            resources,
-            ExecutionCancellation::default(),
-        );
-
-        let response = executor
-            .submit_attempt(&request)
-            .expect("publish incomplete exact retention");
-
-        assert!(matches!(
-            response.disposition(),
-            SubmitAttemptDisposition::AlreadyCompleted { .. }
-        ));
-        let published = repository
-            .load_finding_candidate_bundle(expected_finding_id)
-            .expect("published finding candidate");
-        assert_eq!(
-            published
-                .exact_retention()
-                .expect("published exact retention")
-                .disposition(),
-            FindingExactRetentionDisposition::Incomplete(reason)
-        );
-    }
-
-    #[test]
-    fn synchronous_executor_rejects_a_handoff_that_disables_enabled_exact_retention() {
-        let blob_root = tempfile::tempdir().expect("campaign blob root");
-        let repository = Arc::new(CampaignRepository::new(
-            Arc::new(DirectoryBlobBackend::new(
-                "synchronous-retention-handoff-mismatch",
-                blob_root.path(),
-            )),
-            Arc::new(MemoryRefBackend::new()),
-        ));
-        let checkpoint = exact_checkpoint_id(b"synchronous-retention-handoff-mismatch-checkpoint");
-        let fixture = crate::crucible_artifact::tests::prepared_finding_recovery_fixture(
-            &repository,
-            "synchronous-retention-handoff-mismatch",
-            checkpoint,
-        );
-        let basis = repository
-            .attempt_retention_policy_basis_at(
-                repository
-                    .head("synchronous-retention-handoff-mismatch")
-                    .expect("campaign head")
-                    .snapshot_id(),
-                fixture.attempt,
-            )
-            .expect("retention policy basis");
-        let epoch = DaemonEpoch::from_bytes([0x77; 16]).expect("daemon epoch");
-        let resources = AttemptResourceLimits::new(1, 1024, 2048, 32).expect("resources");
-        let request = SubmitAttemptRequest::new(
-            AssignmentId::from_bytes([0x78; 16]).expect("assignment"),
-            epoch,
-            fixture.lineage.id().expect("lineage ID"),
-            fixture.attempt,
-            resources,
-            ExecutionRetentionIntent::Discard,
-        )
-        .expect("submit request")
-        .with_retention_policy_basis(basis)
-        .expect("policy-bound submit request");
-        let model = RetentionRecordingModel {
-            product: Some(
-                AttemptExecutionProduct::prepared_semantic_with_exact_retention(
-                    fixture.unbound_result,
-                    PreparedFindingExactRetention::Disabled { basis },
-                ),
-            ),
-            observed: Arc::new(Mutex::new(None)),
-            calls: Arc::new(AtomicUsize::new(0)),
-        };
-        let mut executor = SynchronousCampaignExecutor::new(
-            CampaignExecutorStore::new(Arc::clone(&repository)),
-            model,
-            RepositoryAttemptAdmission::new(
-                Arc::clone(&repository),
-                ExecutorCompatibilityProfile::from_lineage(&fixture.lineage),
-            ),
-            epoch,
-            resources,
-            ExecutionCancellation::default(),
-        );
-
-        let error = executor
-            .submit_attempt(&request)
-            .expect_err("disabled handoff must not satisfy enabled exact retention");
-
-        assert!(matches!(
-            error,
-            SynchronousCampaignExecutorError::FindingExactRetentionMismatch { .. }
-        ));
-    }
-
-    #[test]
-    fn standalone_mixed_cleanup_retires_safe_catalog_before_retaining_quarantines() {
-        let retired_state = tempfile::tempdir().expect("standalone retired state");
-        let retired_fixture =
-            crucible_api::build_authenticated_production_checkpoint_codec_fixture(
-                retired_state.path(),
-            )
-            .expect("standalone retired fixture");
-        let retired = retired_fixture.closure().native_retirement();
-        let first_state = tempfile::tempdir().expect("first standalone quarantine state");
-        let first_fixture = crucible_api::build_authenticated_production_checkpoint_codec_fixture(
-            first_state.path(),
-        )
-        .expect("first standalone quarantine fixture");
-        let first = first_fixture.closure().native_retirement();
-        let second_state = tempfile::tempdir().expect("second standalone quarantine state");
-        let second_fixture = crucible_api::build_authenticated_production_checkpoint_codec_fixture(
-            second_state.path(),
-        )
-        .expect("second standalone quarantine fixture");
-        let second = second_fixture.closure().native_retirement();
-        let cleanup = crate::NativeCheckpointCleanup::Batch(vec![
-            crate::NativeCheckpointCleanup::Quarantine(first.clone()),
-            crate::NativeCheckpointCleanup::Retire(retired.clone()),
-            crate::NativeCheckpointCleanup::Quarantine(second.clone()),
-        ]);
-
-        let error = complete_checkpoint_cleanup::<Infallible>(Some(cleanup))
-            .expect_err("standalone cleanup must surface quarantined catalogs");
-
-        assert!(matches!(
-            error,
-            SynchronousCampaignExecutorError::CaptureNativeCleanupRetained {
-                terminal,
-                quarantined,
-            } if terminal.is_empty() && quarantined.len() == 2
-        ));
-        let repeated = crucible_api::retire_production_exact_checkpoint_catalog(&retired)
-            .expect("repeat standalone safe retirement");
-        assert!(!repeated.retired());
-        assert!(
-            crucible_api::retire_production_exact_checkpoint_catalog(&first)
-                .expect("release first standalone quarantine")
-                .retired()
-        );
-        assert!(
-            crucible_api::retire_production_exact_checkpoint_catalog(&second)
-                .expect("release second standalone quarantine")
-                .retired()
-        );
-    }
+    use crucible_cas::content_store::{ContentId, ObjectKind};
 
     #[test]
     fn poisoned_capture_owner_rejects_new_work_but_allows_controlled_cleanup() {
@@ -1556,17 +929,20 @@ mod lock_tests {
             stored_id(
                 "crucible.campaign.lineage",
                 ObjectKind::CampaignFact,
+                CampaignRecordKind::Lineage.schema_version(),
                 b"poisoned-capture-lineage",
                 CampaignLineageId::parse,
             ),
             stored_id(
                 "crucible.campaign.attempt",
                 ObjectKind::CampaignFact,
+                CampaignRecordKind::Attempt.schema_version(),
                 b"poisoned-capture-attempt",
                 AttemptId::parse,
             ),
             resources,
             ExecutionRetentionIntent::RetainOnFailure,
+            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
         )
         .expect("submit request");
         let mut supervisor = LocalExecutorSupervisor::new(
@@ -1611,22 +987,11 @@ mod lock_tests {
     fn stored_id<T>(
         tag: &str,
         kind: ObjectKind,
+        schema_version: u32,
         bytes: &[u8],
         parse: impl FnOnce(&str) -> Result<T, CampaignCodecError>,
     ) -> T {
-        let content = ContentId::for_bytes(kind, 1, bytes);
+        let content = ContentId::for_bytes(kind, schema_version, bytes);
         parse(&format!("{tag}@{content}")).expect("typed stored ID")
-    }
-
-    fn exact_checkpoint_id(bytes: &[u8]) -> ExactCheckpointId {
-        let content = ContentId::for_bytes(
-            ObjectKind::ExactManifest,
-            crate::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
-            bytes,
-        );
-        ExactCheckpointId::parse(&format!(
-            "crucible.executor.exact-checkpoint-root@{content}"
-        ))
-        .expect("exact checkpoint ID")
     }
 }

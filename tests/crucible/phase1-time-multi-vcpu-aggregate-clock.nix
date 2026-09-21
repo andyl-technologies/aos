@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeMultiVcpuAggregateClock",
-  taskIds ? ["T-TIME-9"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -214,10 +214,6 @@
       {
         label = "phase1 exposes multi-vCPU aggregate clock check";
         needle = "timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix";
-      }
-      {
-        label = "layer0 gate lists T-TIME-9";
-        needle = "\"T-TIME-9\"";
       }
     ]
     ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [

@@ -591,7 +591,8 @@ fn registration_test_coverage_capabilities() -> CoverageCapabilities {
 
 extern "C" fn registration_test_register_tb_trans_cb(
     _plugin_id: crate::QemuPluginId,
-    _callback: Option<crate::QemuVcpuTbTransCbFn>,
+    _callback: Option<crate::coverage::QemuVcpuTbTransCbFn>,
+    _userdata: *mut std::os::raw::c_void,
 ) {
 }
 
@@ -658,7 +659,8 @@ extern "C" fn registration_test_icount_at_tb_entry(
 
 extern "C" fn registration_test_register_flush_cb(
     _plugin_id: crate::QemuPluginId,
-    _callback: crate::QemuPluginSimpleCbFn,
+    _callback: crate::coverage::QemuPluginSimpleCbFn,
+    _userdata: *mut std::os::raw::c_void,
 ) {
 }
 
@@ -670,7 +672,7 @@ fn boot_barrier_slot(max_advance_icount: u64) -> NodeSlot {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, max_advance_icount, None)
         .unwrap_or_else(|error| panic!("boot barrier ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("boot barrier ceiling should publish: {error}"));
     slot
 }

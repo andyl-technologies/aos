@@ -364,15 +364,6 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
                 }
             }
         }
-        Decision::AppRandom(random) => {
-            lines.push(format!("{prefix}.kind=app-random"));
-            lines.push(format!("{prefix}.node_len={}", random.node.name.len()));
-            lines.push(format!("{prefix}.node={}", random.node.name));
-            push_rng_stream_lines(&prefix, &random.stream, lines);
-            lines.push(format!("{prefix}.request_id={}", random.request_id));
-            lines.push(format!("{prefix}.width={}", random.width));
-            lines.push(format!("{prefix}.value={}", random.value));
-        }
         Decision::Selection(selection) => {
             lines.push(format!("{prefix}.kind=campaign-selection"));
             lines.push(format!(

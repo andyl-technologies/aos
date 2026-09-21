@@ -45,12 +45,10 @@ mod result_validation;
 mod transaction;
 use evidence::*;
 use memory_payload::{memory_batch, memory_batch_evidence_matches, prepare_memory_action_payload};
+pub(crate) use result_validation::typed_preparation_rejection_evidence;
 use result_validation::{
     map_preparation_result_error, reserve_fault_result_storage, stage_apply_commands,
     validate_typed_node_result_decoded,
-};
-pub(crate) use result_validation::{
-    typed_preparation_rejection_evidence, validate_typed_node_result,
 };
 
 #[derive(Clone)]

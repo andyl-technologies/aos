@@ -1,5 +1,6 @@
 //! Stable shared-memory boundary classification helpers.
 
+use super::control::PendingControlBoundary;
 use super::*;
 
 impl QemuLiveHostIoRuntime {
@@ -10,14 +11,21 @@ impl QemuLiveHostIoRuntime {
         let block = self
             .block
             .as_ref()
-            .map(|block| block.servicer.next_completion_icount())
-            .transpose()
-            .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new(
-                    "inspect block completion deadline",
-                    source.to_string(),
-                )
-            })?
+            .map(|block| {
+                if block.worker.work_in_flight() {
+                    return Ok(block.worker.published_completion_deadline());
+                }
+                block
+                    .lock_servicer("inspect block completion deadline")?
+                    .next_completion_icount()
+                    .map_err(|source| {
+                        QemuAsyncDriverRuntimeError::new(
+                            "inspect block completion deadline",
+                            source.to_string(),
+                        )
+                    })
+            })
+            .transpose()?
             .flatten();
         let ninep = self
             .ninep
@@ -55,9 +63,10 @@ pub(super) fn bounded_poll_attempts(timeout: Duration, poll_interval: Duration) 
 pub(super) fn classify_after_host_wake(
     idle: &crate::QemuNodeIdleState,
     ceiling: u64,
+    stop_condition: crate::QemuQuantumStopCondition,
     device_wake_unacknowledged: bool,
 ) -> QuantumBoundary {
-    let boundary = classify_quantum_boundary(idle, ceiling);
+    let boundary = classify_quantum_boundary(idle, ceiling, stop_condition);
     if device_wake_unacknowledged && matches!(boundary, QuantumBoundary::Paused { .. }) {
         return QuantumBoundary::Pending;
     }
@@ -71,13 +80,14 @@ pub(super) fn classify_after_host_wake(
 pub(super) fn classify_after_scheduler_and_host_wake(
     idle: &crate::QemuNodeIdleState,
     ceiling: u64,
+    stop_condition: crate::QemuQuantumStopCondition,
     scheduler_input_unobserved: bool,
     device_wake_unacknowledged: bool,
 ) -> QuantumBoundary {
     if scheduler_input_unobserved {
         QuantumBoundary::Pending
     } else {
-        classify_after_host_wake(idle, ceiling, device_wake_unacknowledged)
+        classify_after_host_wake(idle, ceiling, stop_condition, device_wake_unacknowledged)
     }
 }
 
@@ -127,15 +137,18 @@ pub(super) fn checkpoint_pause_requires_control_doorbell(
 /// wrapping serial-number order: an odd value less than half the `u32` space
 /// ahead of `request` acknowledges it, while the odd predecessor is stale.
 pub(super) fn control_boundary_request_is_acknowledged(
-    request: u32,
+    request: PendingControlBoundary,
     snapshot: &crucible_shmem::NodeSlotSnapshot,
 ) -> bool {
     let observed = snapshot.control_boundary_ack;
-    let forward_distance = observed.wrapping_sub(request);
-    request & 1 == 0
+    let forward_distance = observed.wrapping_sub(request.generation);
+    request.generation & 1 == 0
         && observed & 1 == 1
         && forward_distance != 0
         && forward_distance < (1_u32 << 31)
+        && snapshot.control_boundary_fault_command_frontier == request.fault_command_frontier
+        && snapshot.control_boundary_capture_request
+            == request.fingerprint_capture_request.unwrap_or(0)
 }
 
 /// Returns whether a post-device clamp publication is safe to expose.
@@ -149,10 +162,12 @@ pub(super) fn control_boundary_request_is_acknowledged(
 /// coordinate until the next quantum explicitly authorizes progress.
 /// A vCPU-resume edge may transiently republish `RUNNING` after the acknowledged
 /// callback. That edge is also settled when the exact clamp is still installed:
-/// it cannot dispatch guest time, and the retained deadline proves that it did
-/// not replace the acknowledged idle coordinate with a later publication.
+/// it cannot dispatch guest time, the canonical idle coordinate proves that it
+/// did not replace the acknowledged boundary with a later publication, and the
+/// control token must still be the request's exact odd successor.
 pub(super) fn completed_quantum_clamp_is_settled(
     boundary_acknowledged: bool,
+    boundary_exactly_acknowledged: bool,
     expected_current_icount: u64,
     expected_idle_wake_icount: u64,
     device_progress: bool,
@@ -167,8 +182,7 @@ pub(super) fn completed_quantum_clamp_is_settled(
 
     let dispatch_is_fenced = snapshot.max_advance_icount == expected_current_icount;
     let status_is_settled = snapshot.status == STATUS_IDLE
-        || (snapshot.status == crucible_shmem::STATUS_RUNNING
-            && snapshot.idle_wake_icount > expected_current_icount);
+        || (snapshot.status == crucible_shmem::STATUS_RUNNING && boundary_exactly_acknowledged);
 
     boundary_acknowledged
         && !device_progress

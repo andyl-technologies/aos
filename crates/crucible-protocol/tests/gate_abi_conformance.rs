@@ -256,7 +256,7 @@ fn assert_selectable_v1_golden_vectors() {
 }
 
 #[test]
-fn guest_selectable_v1_schemas_are_registered_exactly() {
+fn guest_selectable_current_schemas_are_registered_exactly() {
     let registry = include_str!("../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
     for schema in [
         "crucible.guest-selectable.register",
@@ -271,9 +271,11 @@ fn guest_selectable_v1_schemas_are_registered_exactly() {
             "missing exact selectable schema row {schema}"
         );
     }
-    let catalog_plan = "crucible.guest-selectable.catalog-plan\t2\tcrucible-protocol::selectable_catalog_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    let catalog_plan = format!(
+        "crucible.guest-selectable.catalog-plan\t{SELECTABLE_CATALOG_PLAN_VERSION}\tcrucible-protocol::selectable_catalog_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance"
+    );
     assert!(
-        registry.lines().any(|line| line == catalog_plan),
+        registry.lines().any(|line| line == catalog_plan.as_str()),
         "missing exact selectable catalog-plan schema row"
     );
     let pending_request = "crucible.guest-selectable.pending-request\t1\tcrucible-protocol::selectable_transport\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
@@ -448,13 +450,20 @@ fn protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned() {
 }
 
 #[test]
-fn protocol_v3_rejects_the_pre_measurement_v2_doorbell_frame() {
-    let frame = doorbell_frame_with_custom_header(WHITEBOX_DOORBELL_FRAME_MAGIC, 2, 1, 0, &[]);
+fn protocol_rejects_an_unsupported_doorbell_version() {
+    let unsupported_version = u16::MAX;
+    let frame = doorbell_frame_with_custom_header(
+        WHITEBOX_DOORBELL_FRAME_MAGIC,
+        unsupported_version,
+        1,
+        0,
+        &[],
+    );
     assert_eq!(
         WhiteboxDoorbellFrame::decode_bounded(&frame, WHITEBOX_MARKER_BODY_MAX_BYTES),
         Err(WhiteboxDoorbellFrameDecodeError::UnsupportedVersion {
             expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
-            actual: 2,
+            actual: unsupported_version,
         })
     );
 }

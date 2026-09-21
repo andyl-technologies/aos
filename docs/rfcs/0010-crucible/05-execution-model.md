@@ -182,18 +182,10 @@ pub enum Decision {
     /// *when* the periodic timer/external interrupt preempts the one vCPU.
     Preemption { node: NodeId, at: Icount, kind: PreemptionKind },
 
-    /// A served app-requested random draw (white-box, optional). Reproducible:
-    /// on canonical replay it is re-derived from the seeded `stream`; an
-    /// OVERRIDDEN `AppRandom` MUST be served from the recorded `value`, never
-    /// re-rolled (mirrors how `FaultFires` replays). Forkable per stream so
-    /// adding a node does not perturb unrelated streams. See EXEC-34.
-    AppRandom {
-        node: NodeId,
-        stream: RngStreamId,
-        request_id: u64,
-        width: u8,
-        value: u64,
-    },
+    /// A typed campaign selection whose producer evidence is validated at
+    /// admission. App-requested randomness records its seeded draw separately
+    /// as `RngDraw`, then records the modeled result in this variant.
+    Selection(SelectionDecision),
 }
 
 /// The kind of a `Decision::Preemption` point.
@@ -360,8 +352,8 @@ scheduler. It is the only function that materializes runtime, and it is
 
 ```text
 instantiate(config):
-    if cached_snapshot(config.id):                 # FAT checkpoint exists
-        loadvm(cached_snapshot(config.id))         #   warm resume / fork target
+    if cached_snapshot(config.id):                 # v9 checkpoint exists
+        restore_v9(cached_snapshot(config.id))     # descriptor-backed target
     elif (anc := nearest_cached_ancestor(config)): # some prefix is materialized
         rt = instantiate(anc)                       #   recurse to that ancestor
         replay(rt, schedule[anc.len .. config.len])#   partial replay forward
@@ -374,9 +366,10 @@ instantiate(config):
 In words: to make a configuration runnable, prefer a stored snapshot of *exactly
 it*; failing that, find the nearest stored ancestor on its path and replay forward
 the missing schedule suffix; failing even that, recurse toward genesis — and
-genesis's base case is the **baked** genesis checkpoint (§7), which is a `loadvm`
-of a snapshot, not a cold boot. The cold boot path is reached **only** inside
-`bake`, run once per `World`, never in the hot loop.
+genesis's base case is the **baked** genesis checkpoint (§7), restored through
+the same authenticated version-nine device and direct-plus-delta RAM descriptor
+protocol. The cold boot path is reached **only** inside `bake`, run once per
+`World`, never in the hot loop.
 
 ```rust,illustrative
 /// Materialize a configuration into a live, controllable runtime.
@@ -386,9 +379,9 @@ of a snapshot, not a cold boot. The cold boot path is reached **only** inside
 /// else recurses toward genesis. The replay oracle (INV-2) guarantees
 /// every branch yields the same `RuntimeState`.
 pub fn instantiate(graph: &TemporalGraph, config: &Configuration) -> Result<RuntimeState> {
-    // Base/warm case: an exact snapshot of this configuration exists.
+    // Base/warm case: a v9 descriptor checkpoint of this configuration exists.
     if let Some(snap) = graph.cached_snapshot(config.id()) {
-        return RuntimeState::loadvm(snap);          // warm resume / fork target
+        return RuntimeState::restore_exact_checkpoint(snap);
     }
     // Partial-replay case: the nearest materialized prefix on this path.
     if let Some(anc) = graph.nearest_cached_ancestor(config) {
@@ -397,12 +390,11 @@ pub fn instantiate(graph: &TemporalGraph, config: &Configuration) -> Result<Runt
         rt.replay(&config.def, suffix)?;            // step forward over the suffix
         return Ok(rt);
     }
-    // Cold case: only genesis can reach here, and its base case is the
-    // *baked* snapshot (§7) — a loadvm, not a boot. The single true boot
-    // in the whole system lives inside `bake`.
+    // Genesis case: restore the baked version-nine descriptor set. The single
+    // true boot in the whole system lives inside `bake`.
     debug_assert!(config.is_genesis());
     let genesis_snap = graph.genesis_snapshot(&config.def)?; // baked once, §7
-    RuntimeState::loadvm(genesis_snap)
+    RuntimeState::restore_baked_checkpoint(genesis_snap)
 }
 ```
 
@@ -425,11 +417,11 @@ distinguished only by which configuration it is handed:
   existing run (a non-tip node) — from which exploration appends *different*
   decisions.
 
-There is no `boot()` distinct from `loadvm()` distinct from `fork()`. There is
-`instantiate`, and the recursion picks the cheapest correct realization. This is
+There is one `instantiate` operation for start, resume, and fork; its recursion
+picks the cheapest correct realization. This is
 the elimination of the lifecycle-bug class the prior exploration suffered:
 separate boot/resume/fork paths inevitably drift (a field saved on resume but not
-on fork, a counter reset on boot but not on loadvm), and every such drift is a
+on fork, a counter reset on boot but not on restore), and every such drift is a
 silent determinism break. With one path, "it resumes correctly" and "it forks
 correctly" are *the same test* (§8).
 
@@ -441,19 +433,19 @@ correctly" are *the same test* (§8).
   `gate:replay-oracle`. *Spec:* §5, §6.
 
 - **[EXEC-15]** `instantiate` MUST be recursive with boot as its base case, and
-  MUST resolve in this priority order: (1) `loadvm` an exact cached snapshot of
-  `config.id()`; else (2) `instantiate` the nearest cached ancestor and replay the
+  MUST resolve in this priority order: (1) descriptor-restore a version-nine
+  exact checkpoint of `config.id()`; else (2) `instantiate` the nearest cached ancestor and replay the
   missing schedule suffix; else (3) recurse toward genesis. The recursion MUST
   terminate at the baked genesis snapshot (§7). *Gate:* `gate:replay-oracle`.
   *Spec:* §5, §7.
 
 - **[EXEC-16]** The *only* cold-boot of a guest in the entire system MUST occur
   inside `bake` (§7). The hot loop — every `start`, `resume`, `fork`, replay, and
-  search step — MUST reach a runtime via `loadvm` of a snapshot (genesis or a
-  descendant) plus zero-or-more replay steps, never via cold boot. *Gate:*
+  search step — MUST reach a runtime via the baked-genesis load or a version-nine
+  descriptor restore plus zero-or-more replay steps, never via cold boot. *Gate:*
   `gate:replay-oracle`. *Spec:* §5, §7.
 
-- **[EXEC-17]** Every branch of `instantiate` (exact-snapshot load, ancestor
+- **[EXEC-17]** Every branch of `instantiate` (version-nine descriptor restore, ancestor
   replay, genesis load) MUST yield a `RuntimeState` whose state is content-equal
   for the same `config` ([INV-2], the replay oracle). The choice of branch is a
   performance decision; it MUST NOT be observable in the resulting state.
@@ -466,8 +458,9 @@ to a steady state — is the single least-deterministic, slowest, and least
 interesting phase of a run. Crucible refuses to put it in the hot loop. Instead,
 `bake` runs it **once per `World`**: it boots each VM to a defined *ready point*,
 snapshots, and content-addresses the result as the **genesis checkpoint**. After
-`bake`, the genesis configuration `(def, [])` is realized by a `loadvm` of that
-snapshot — so even the *first* run is, mechanically, a resume.
+`bake`, the genesis configuration `(def, [])` is realized from that checkpoint's
+authenticated version-nine descriptors, so even the first run is mechanically a
+restore.
 
 ```rust,illustrative
 /// Boot each VM in `world` once to its defined ready point, snapshot, and
@@ -492,8 +485,9 @@ pub fn bake(world: &World) -> Result<GenesisCheckpoint> {
   *Gate:* `gate:content-address`. *Spec:* §6.
 
 - **[EXEC-19]** After `bake`, the genesis configuration `(def, [])` MUST be
-  realized by `loadvm` of the genesis checkpoint, never by a cold boot. The first
-  run of a scenario MUST therefore be, mechanically, a resume. *Gate:*
+  realized by version-nine descriptor restore of the genesis checkpoint, never
+  by a cold boot. The first run of a scenario MUST therefore be, mechanically,
+  a restore. *Gate:*
   `gate:replay-oracle`. *Spec:* §6.
 
 ### The one fuzzy bit: defining the deterministic "ready point"
@@ -560,7 +554,7 @@ pub enum NodeBlobRef {
 
 This homogeneity is what keeps `instantiate` uniform: it never has to ask "is this
 the special initial state or a real one?" — it always resolves a blob reference,
-whether by `loadvm` of a baked blob or by stacking CoW deltas. It is also what lets
+whether by loading a baked blob or by stacking CoW deltas. It is also what lets
 the replay oracle compare a fat checkpoint to its thin derivation by hash: both are
 just blob references, and equal content is equal identity ([INV-6]).
 
@@ -572,7 +566,7 @@ just blob references, and equal content is equal identity ([INV-6]).
 
 - **[EXEC-22]** Two configurations that denote content-equal VM state MUST have
   content-equal blob references for that VM, regardless of whether one was reached
-  by `loadvm` of a fat checkpoint and the other by replay producing a thin
+  by descriptor restore of a fat checkpoint and the other by replay producing a thin
   checkpoint ([INV-2], [INV-6]). *Gate:* `gate:replay-oracle`,
   `gate:content-address`. *Spec:* §7.
 
@@ -589,7 +583,7 @@ In execution-model terms, the oracle is the statement that **the two ways of
 realizing a configuration agree**:
 
 ```text
-  loadvm(snapshot(config))  ≡  replay(instantiate(ancestor), suffix)   (INV-2)
+  restore_v9(checkpoint(config))  ≡  replay(instantiate(ancestor), suffix)   (INV-2)
 ```
 
 This is checked by re-instantiating the same configuration via different
@@ -599,7 +593,7 @@ operation in §6 is a call to `instantiate`, the oracle simultaneously validates
 save, resume, fork, and snapshot completeness — they are the same operation, so a
 single equality check covers all four (§9).
 
-- **[EXEC-23]** For every configuration, `loadvm` of its stored snapshot MUST
+- **[EXEC-23]** For every configuration, descriptor restore of its version-nine checkpoint MUST
   produce a `RuntimeState` content-equal to replay-from-ancestor of the same
   configuration ([INV-2], the replay oracle). A fat checkpoint MUST hash-equal its
   thin derivation. This MUST be enforced as a CI gate, not left to convention.
@@ -782,15 +776,15 @@ async fn run_engine(mut engine: Engine, mut commands: CommandRx) -> Result<()> {
 
 ## 11. Determinism testing of the model itself
 
-Because start, resume, fork, and snapshot-load are *the same operation*
+Because start, resume, fork, and checkpoint realization are *the same operation*
 (`instantiate`), one test validates all four: **instantiate the same configuration
 twice and assert identical execution fingerprints** (24). If the two realizations
 agree, then — since the second realization may have come through a *different*
-`instantiate` branch (exact snapshot vs. ancestor-replay vs. genesis) — the test
+`instantiate` branch (exact checkpoint vs. ancestor-replay vs. genesis) — the test
 has simultaneously shown that:
 
 - **start** is deterministic (genesis → fingerprint is stable),
-- **resume** is faithful (load-from-snapshot ≡ run-through),
+- **resume** is faithful (descriptor restore ≡ run-through),
 - **fork** is faithful (prefix-instantiate ≡ run-to-prefix), and
 - **snapshot completeness** holds (nothing live-only was lost on save).
 
@@ -813,13 +807,14 @@ operations, *precisely because the model collapsed them into one*.
 
 ## 12. Preemption and app-requested randomness as decisions
 
-The two `Decision` variants added in §3 — `Preemption` and `AppRandom` —
-extend the closed taxonomy to cover *when a vCPU is preempted* and *which
-random value an in-guest workload is served*, while preserving the
-default-recomputable / override-stored discipline of [EXEC-8]. Trigger and
-default preemptions are deterministic engine behavior (file 08), not a search
-`Decision`, until an explorer overrides them; only the override carries
-information that cannot be recomputed.
+The `Preemption`, `RngDraw`, and `Selection` decisions in §3 cover *when a vCPU
+is preempted* and *which random value an in-guest workload is served*, while
+preserving the default-recomputable / override-stored discipline of [EXEC-8].
+Trigger and default preemptions are deterministic engine behavior (file 08),
+not a search `Decision`, until an explorer overrides them; only the override
+carries information that cannot be recomputed. App-random transport evidence
+is authenticated as `BackendRngEvidence`, then represented by the seeded
+`RngDraw` and its typed modeled `Selection`.
 
 - **[EXEC-33]** A `Decision::Preemption { node, at, kind }` MUST follow the
   default-recomputable / override-stored discipline ([EXEC-8]): the DEFAULT
@@ -835,14 +830,13 @@ information that cannot be recomputed.
   recorded as search decisions. *Gate:* `gate:scheduler-liveness`,
   `gate:single-vm-fingerprint`. *Spec:* §3, §12; forward-ref file 08, file 22.
 
-- **[EXEC-34]** A `Decision::AppRandom { node, stream, request_id, width, value }`
+- **[EXEC-34]** A `BackendRngEvidence { node, stream, request_id, width, value }`
   MUST record the serving `RngStreamId`, the per-stream `request_id`, the draw
   `width`, and the served `value` for every app-requested random draw served
-  through the optional white-box path. On canonical replay an `AppRandom` that
-  was *not* overridden MUST be re-derived from the seeded `stream` (so adding a
-  node does not perturb unrelated streams, per [EXEC-9]); an OVERRIDDEN
-  `AppRandom` MUST be served from the recorded `value`, never re-rolled
-  (mirroring `FaultFires`, [INV-2]). *Gate:* `gate:replay-oracle`,
+  through the optional white-box path. Canonical replay MUST validate the
+  evidence against the seeded `RngDraw` and typed `Selection`; it MUST serve the
+  recorded value without re-rolling, and adding a node MUST NOT perturb
+  unrelated streams ([EXEC-9], [INV-2]). *Gate:* `gate:replay-oracle`,
   `gate:single-vm-fingerprint`. *Spec:* §3, §12; cross-ref file 04 (Decision RNG).
 
 ## Implementation checklist
@@ -861,7 +855,7 @@ information that cannot be recomputed.
   (prefix/appended) with per-stream RNG draw recording; test that unrelated
   `World` edits don't perturb other streams' draws. — satisfies [EXEC-6],
   [EXEC-7], [EXEC-8], [EXEC-9]; spec §3.
-- [x] **T-EXEC-3** Implement `step` as the pure temporal-graph edge constructor
+- [x] **T-EXEC-3** Implement `try_step` as the pure temporal-graph edge constructor
   and prove (test) it performs no I/O, boot, or materialization. — satisfies
   [EXEC-10]; spec §3.
 - [x] **T-EXEC-4** Implement `reduce` as the pure reduction and the prefix-closure
@@ -871,24 +865,25 @@ information that cannot be recomputed.
   representative scenario (scheduler/RNG state lives in the configuration). —
   satisfies [EXEC-13]; spec §4.
 - [x] **T-EXEC-6** Implement recursive `instantiate` with the three-branch
-  resolution (exact snapshot / ancestor-replay / genesis) and termination at the
+  resolution (version-nine descriptor restore / ancestor-replay / genesis) and termination at the
   baked snapshot. — satisfies [EXEC-15], [EXEC-16], [EXEC-17]; spec §5.
   - Completed by `crates/crucible/src/model.rs`: `instantiate` now resolves exact
     cached snapshots, recursively materializes the nearest cached ancestor and
     explicitly replays the suffix, and terminates at a registered baked genesis
     checkpoint.
-    `crates/crucible/src/lib.rs` covers exact-snapshot, ancestor-replay,
+    `crates/crucible/src/lib.rs` covers exact-checkpoint, ancestor-replay,
     baked-genesis, missing-genesis, cached-checkpoint, and baked-genesis
     checkpoint validation cases;
     `checks.crucible.phase1.executionInstantiate` gates the surface.
-- [x] **T-EXEC-7** Wire `start`, `resume`, and `fork` as call sites of
-  `instantiate` (genesis / tip / prefix) and delete any separate
-  boot/resume/fork realization paths. — satisfies [EXEC-14], [G-4]; spec §5, §6.
-  - Completed by the single `crucible_qemu::instantiate_qemu_vm` coordinator.
-    Lifecycle owners select the genesis, tip, or schedule-prefix configuration
-    before realization; `crates/crucible-daemon/src/crucible_qemu_runner.rs`
-    passes that exact configuration to the coordinator. There are no separate
-    QEMU boot, resume, or fork realization entry points.
+- [x] **T-EXEC-7** Route fresh execution, exact resume, and semantic campaign
+  branching through their operation-specific authenticated lifecycle boundaries.
+  — satisfies [EXEC-14], [G-4]; spec §5, §6.
+  - Completed by `build_production_vm_exact_resume_lifecycle` and the production
+    baked-genesis replay catalog. Exact resume consumes one atomic restore request;
+    baked replay consumes a replay-only admission; fresh execution owns its baked
+    ready boundary. No public generic QEMU realization or top-level fork wrapper
+    remains. `checks.crucible.phase1.executionLifecycleRoutes` runs the exact and
+    baked route regressions.
 - [x] **T-EXEC-8** Implement `bake`: cold-boot each node once to its ready point,
   snapshot, content-address as the shared genesis checkpoint; assert it is the
   only cold-boot in the codebase (lint). — satisfies [EXEC-18], [EXEC-19];
@@ -934,16 +929,15 @@ information that cannot be recomputed.
     content comparison; `checks.crucible.phase1.executionNodeBlobRef` gates the
     task.
 - [x] **T-EXEC-11** Implement the replay-oracle equality check
-  (`loadvm(snapshot) ≡ replay-from-ancestor`) and wire it as `gate:replay-oracle`
+  (`restore_v9(checkpoint) ≡ replay-from-ancestor`) and wire it as `gate:replay-oracle`
   in CI. — satisfies [EXEC-23]; spec §8.
-  - Completed by `crates/crucible-qemu/src/realization.rs`:
-    `check_qemu_replay_oracle` restores the exact fat snapshot with
-    snapshot-completeness probe authorization, independently realizes the same
-    configuration through the ancestor/genesis replay path, and records
-    `QemuReplayOracleValidation::{Match, Mismatch}` from the resulting runtime
-    fingerprints. `checks.crucible.phase1.gates.replayOracle` now runs both the
-    existing materialized model oracle and the QEMU `loadvm(snapshot) ≡
-    replay-from-ancestor` checker tests.
+  - Completed by the guarded QEMU replay-oracle coordinator: it restores
+    the exact fat snapshot with snapshot-completeness probe authorization,
+    independently realizes the same configuration through the ancestor/genesis
+    replay path, and retains opaque source-bound comparison evidence.
+    `checks.crucible.phase1.gates.replayOracle` now runs both the
+    existing materialized model oracle and the QEMU exact-checkpoint probe versus
+    replay-from-ancestor checker tests.
 - [x] **T-EXEC-12** Implement divergence bisection on oracle failure (localize to
   first differing decision/instruction) and the `gate:divergence-bisect` check;
   assert no silent-repair path exists. — satisfies [EXEC-24]; spec §8.
@@ -1003,29 +997,12 @@ information that cannot be recomputed.
     guards, and refresh failure atomicity, and
     `checks.crucible.phase1.executionCacheEviction` gates the API, no-observable
     change assertions, RFC linkage, and replay-oracle cache semantics.
-- [x] **T-EXEC-17** Implement the same-configuration-twice fingerprint test as the
+- [ ] **T-EXEC-17** Implement the same-configuration-twice fingerprint test as the
   unified validator of start/resume/fork/snapshot-completeness and wire it to
   `gate:single-vm-fingerprint`. — satisfies [EXEC-31]; spec §11.
-  - Completed by `crates/crucible/tests/gate_single_vm_fingerprint.rs`: the
-    model-side `gate:single-vm-fingerprint` target instantiates the same
-    `Configuration` twice through start/genesis, resume exact-snapshot vs
-    no-fallback ancestor-replay, fork prefix, and saved-checkpoint
-    snapshot-completeness paths, then compares the resulting execution
-    fingerprints while replay-checking the saved checkpoint's fat/thin identity.
-    The canonical gate target map now includes the `crucible` model target, and
-    `checks.crucible.phase1.gates.singleVmFingerprint` runs it alongside the
-    existing QEMU run-twice evidence.
-- [x] **T-EXEC-18** Run the model determinism tests under adversarial host
+- [ ] **T-EXEC-18** Run the model determinism tests under adversarial host
   conditions (load, task reordering, varied core counts) and assert identical
   fingerprints. — satisfies [EXEC-32]; spec §11.
-  - Completed by `crates/crucible/tests/gate_single_vm_fingerprint.rs`:
-    `gate_single_vm_fingerprint_model_determinism_survives_adversarial_host_profiles`
-    runs the same representative model configurations under quiet single-core,
-    loaded single-core, reordered two-worker, and loaded many-worker profiles,
-    injecting deterministic host load/yields and reordering task execution while
-    asserting identical canonical execution fingerprints.
-    `checks.crucible.phase1.gates.singleVmFingerprint` runs this matrix with
-    the model same-configuration validator.
 - [x] **T-EXEC-19** Implement the `Decision::Preemption` variant
   (`VcpuSwitch` / `InterruptAt`, `PreemptionKind`) with the
   default-recomputable / override-stored discipline: prove the default RR/timer
@@ -1038,13 +1015,13 @@ information that cannot be recomputed.
     `VcpuSwitch` and single-vCPU `InterruptAt` choices as
     `Decision::Preemption`. The coverage floor now requires default derivation,
     invalid-boundary/overflow coverage, and override-recording markers.
-- [x] **T-EXEC-20** Implement the `Decision::AppRandom` variant: record
+- [x] **T-EXEC-20** Implement the `BackendRngEvidence` variant: record
   `stream`/`request_id`/`width`/`value` for each served app draw; on replay
   re-derive a non-overridden draw from the seeded stream and serve an overridden
   draw from the recorded value (never re-roll); test stream isolation under
   unrelated `World` edits. — satisfies [EXEC-34]; spec §12.
   - Completed by `crates/crucible/src/decision.rs`: `serve_app_random` records
-    the seeded `RngDraw` plus `Decision::AppRandom`, `serve_app_random_request`
+    the seeded `RngDraw` plus `BackendRngEvidence`, `serve_app_random_request`
     preserves a caller-supplied request id for doorbell/protocol requests,
     hydrated replay resumes stream positions from the recorded schedule, and
     `serve_app_random_override` serves recorded values without advancing or

@@ -146,7 +146,7 @@ fn coverage_feedback_fixture() -> Result<CoverageFeedbackFixture, EngineError> {
             &format!("child-{index}"),
         );
         let fingerprint = coverage_fingerprint_from_event_log(&event_log);
-        graph.cache_snapshot_with_event_log_coverage(&child, checkpoint, &event_log)?;
+        graph.cache_snapshot(&child, checkpoint.with_coverage_from_event_log(&event_log))?;
         coverage_fingerprints.insert(child.id(), fingerprint);
         children.push(child);
     }

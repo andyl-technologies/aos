@@ -9,6 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  planTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
+  propertiesTest = builtins.readFile ../../crates/crucible/tests/property_fingerprint_neutrality.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -32,7 +34,7 @@
       }
       {
         label = "world content address domain";
-        needle = "\"crucible.model.world.v1\"";
+        needle = "\"crucible.model.world.v4\"";
       }
       {
         label = "world canonical bytes";
@@ -44,11 +46,11 @@
       }
       {
         label = "plan content address domain";
-        needle = "\"crucible.model.plan.v1\"";
+        needle = "\"crucible.model.plan.v5\"";
       }
       {
-        label = "plan entries accessor";
-        needle = "pub fn entries(&self) -> &[PlanEntry]";
+        label = "plan event graph accessor";
+        needle = "pub const fn event_graph(&self) -> &EventGraph";
       }
       {
         label = "properties content hash accessor";
@@ -75,46 +77,44 @@
         needle = "properties_ref={}";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" planTest [
       {
-        label = "focused component addressing test";
-        needle = "fn spatial_components_have_independent_content_addresses_and_cross_reuse()";
+        label = "focused plan component addressing test";
+        needle = "fn graph_plan_is_the_scenario_plan_component()";
       }
       {
         label = "test checks world BLAKE3 domain";
-        needle = "\"crucible.model.world.v1\"";
+        needle = "compatible_changed_world()";
       }
       {
         label = "test checks plan BLAKE3 domain";
-        needle = "\"crucible.model.plan.v1\"";
+        needle = "\"crucible.model.plan.v5\"";
       }
       {
-        label = "test checks properties BLAKE3 domain";
-        needle = "\"crucible.model.properties.v1\"";
+        label = "test reuses plan across compatible worlds";
+        needle = "compatible_changed_world";
       }
       {
-        label = "test reuses plan across worlds";
-        needle = "plan_reused";
+        label = "test preserves plan address across compatible worlds";
+        needle = "assert_eq!(changed_world_plan.content_hash(), plan.content_hash())";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/property_fingerprint_neutrality.rs" propertiesTest [
+      {
+        label = "focused properties component addressing test";
+        needle = "fn property_changes_move_scenario_identity_without_moving_run_material()";
       }
       {
-        label = "test reuses properties across worlds";
-        needle = "properties_reused";
+        label = "properties change moves only scenario identity";
+        needle = "assert_same_run_components(&removed, &declared);";
       }
       {
-        label = "test reuses one world across many defs";
-        needle = "reused_world_form";
+        label = "properties hash changes independently";
+        needle = "removed.properties().content_hash(),";
       }
       {
-        label = "test checks component identity isolation";
-        needle = "reused_plan_properties_form";
-      }
-      {
-        label = "test checks changed plan changes scenario";
-        needle = "changed_plan_form";
-      }
-      {
-        label = "test checks changed properties changes scenario";
-        needle = "changed_properties_form";
+        label = "scenario material commits to properties ref";
+        needle = "assert_scenario_material_points_at_properties(&declared);";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -177,8 +177,18 @@ in
               --target-dir "$TMPDIR/crucible-spatial-component-addressing-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --lib \
-              spatial_components_have_independent_content_addresses_and_cross_reuse \
+              --test event_graph_serialization \
+              graph_plan_is_the_scenario_plan_component \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-component-addressing-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --features test-double \
+              --test property_fingerprint_neutrality \
+              property_changes_move_scenario_identity_without_moving_run_material \
               -- --test-threads=1
           '';
         }

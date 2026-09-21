@@ -482,7 +482,8 @@
       braces = 0;
       sawBracedBody = false;
       mask = [];
-    } (sourceLines scrubbed)).mask;
+    } (sourceLines scrubbed))
+    .mask;
 
   isTestOnlyPath = relative: let
     components = lib.splitString "/" relative;

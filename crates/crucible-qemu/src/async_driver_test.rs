@@ -68,6 +68,7 @@ fn async_driver_arms_the_pending_scheduler_input_fence_before_waiting() {
     let mut target = ScriptedTarget::completed();
     target.completion_fence = Some(QemuAdvanceCompletionFence {
         initial_publish_generation: 17,
+        stop_condition: crate::QemuQuantumStopCondition::Ceiling,
     });
     let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::Completed]);
     let crash_detector = QemuCrashDetector::new("vm-a");

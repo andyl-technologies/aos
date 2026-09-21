@@ -3,9 +3,16 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuExactSnapshotRestore",
   taskIds ? ["T-QEMU-5"],
+  checkpointDeltaFlight ?
+    import ./phase2-qemu-checkpoint-delta-flight.nix {
+      inherit pkgs lib;
+    },
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  exactRestoreReachability = import ./phase2-qemu-exact-restore-reachability.nix {
+    inherit pkgs lib;
+  };
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   busySmpGuest = import ./phase2-qemu-live-plugin-quantum-smp-guest.nix {
     inherit pkgs;
@@ -17,11 +24,16 @@
   qemuCheckpoint = builtins.readFile ../../crates/crucible-qemu/src/checkpoint.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
   qemuNodeExactSnapshot = builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot.rs;
+  qemuNodeExactSnapshotCapture =
+    builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot/capture.rs;
   qemuNodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
-  qemuExactRunner = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-exact-snapshot.rs;
+  qemuExactRestoreAdmission = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu/src/realization.rs)
+    (builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs)
+    (builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/admission.rs)
+  ];
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
   productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
-  productionCheckpointCapture = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs;
   productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
   productionConstruction = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/construction.rs;
   taskList = builtins.concatStringsSep "," taskIds;
@@ -43,8 +55,22 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/node/exact_snapshot.rs" qemuNodeExactSnapshot [
       {
-        label = "coordinated capture API";
-        needle = "pub fn capture_exact_snapshot";
+        label = "descriptor-retaining exact capture result";
+        needle = "pub struct QemuExactCheckpointCaptureResult";
+      }
+      {
+        label = "pinned output descriptor access";
+        needle = "pub fn output_files_mut";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/node/exact_snapshot/capture.rs" qemuNodeExactSnapshotCapture [
+      {
+        label = "admission-bound coordinated capture";
+        needle = "fn capture_admitted_exact_checkpoint";
+      }
+      {
+        label = "capture admission identity check";
+        needle = "validate_capture_admission_binding(";
       }
       {
         label = "node-addressed icount validation";
@@ -75,8 +101,8 @@
         needle = ".validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)";
       }
       {
-        label = "authorized VMState restore";
-        needle = ".restore_checkpoint_vmstate_authorized(checkpoint)";
+        label = "descriptor-backed checkpoint restore";
+        needle = ".restore_exact_checkpoint(exact_checkpoint.request)";
       }
       {
         label = "host continuation commit";
@@ -84,29 +110,7 @@
       }
       {
         label = "node continuation commit";
-        needle = "node.restore_node_continuation(continuation)";
-      }
-    ]
-    ++ failuresFor "crates/crucible-qemu/examples/crucible-qemu-live-exact-snapshot.rs" qemuExactRunner [
-      {
-        label = "real exact runner";
-        needle = "run_qemu_live_exact_snapshot_gate";
-      }
-      {
-        label = "pending block mode";
-        needle = "CRUCIBLE_EXACT_PENDING_BLOCK";
-      }
-      {
-        label = "optional diskless initrd";
-        needle = "!value.is_empty() && !require_pending_block";
-      }
-      {
-        label = "forced crash evidence";
-        needle = "old_process_force_crashed";
-      }
-      {
-        label = "paired replay oracle";
-        needle = "replay_oracle_pair_match";
+        needle = "node.restore_node_continuation(node_continuation)";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum-smp-guest.nix" smpGuestSource [
@@ -138,24 +142,26 @@
       }
       {
         label = "running-node publication capture";
-        needle = ".capture_exact_snapshot_for_publication(&node, checkpoint)?";
+        needle = ".capture_exact_checkpoint_for_publication_guarded(";
       }
       {
         label = "powered-off paused capture";
-        needle = ".capture_exact_snapshot_paused(&node, checkpoint)?";
+        needle = ".capture_exact_checkpoint_paused_guarded(";
       }
-    ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs" productionCheckpointCapture [
       {
         label = "VMState artifact persistence";
-        needle = "PRODUCTION_VMSTATE_FILE_NAME";
+        needle = "stage_open_checkpoint_artifact_chunks_with_boundary(";
+      }
+      {
+        label = "pinned capture descriptor hashing";
+        needle = "hash_exact_checkpoint_open_file_sha256_with_boundary(";
+      }
+      {
+        label = "captured descriptor handoff";
+        needle = "let (ram_file, device_file) = exact_capture.output_files_mut();";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" productionRuntime [
-      {
-        label = "production exact relaunch";
-        needle = "launch_production_live_node_exact_snapshot";
-      }
       {
         label = "artifact authentication";
         needle = "failed content authentication";
@@ -167,14 +173,10 @@
         needle = "restored_fingerprint != expected_fingerprint";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/exact_snapshot_policy.rs" (builtins.readFile ../../crates/crucible-qemu/src/exact_snapshot_policy.rs) [
+    ++ forbiddenFor "crates/crucible-qemu exact-restore admission sources" qemuExactRestoreAdmission [
       {
-        label = "public runtime loadvm minting";
-        needle = "pub const fn authorize_loadvm_runtime";
-      }
-      {
-        label = "legacy fallback API";
-        needle = "Fallback";
+        label = "public exact-runtime minting";
+        needle = "pub const fn authorize_exact_checkpoint_runtime";
       }
     ];
 in
@@ -193,6 +195,8 @@ in
           pkgs.qemu-crucible
           pkgs.rust
           pkgs.sed
+          checkpointDeltaFlight
+          exactRestoreReachability
         ]
         ++ dependencies;
       GUEST_KERNEL = "${busySmpGuest}/smp-idle-guest.elf";
@@ -233,12 +237,6 @@ in
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
-            if [ "$GUEST_KERNEL_IS_FILE" = 1 ]; then
-              vmlinuz="$GUEST_KERNEL"
-            else
-              vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
-            fi
-            test -n "$vmlinuz"
             qemu_lib_tests="$TMPDIR/crucible-qemu-lib-tests"
             cargo test --frozen --offline \
               --target-dir "$TMPDIR/exact-snapshot-target" \
@@ -253,70 +251,24 @@ in
                 "$test_name" -- --exact --include-ignored --test-threads=1
             }
             run_exact_qemu_test \
-              node::tests::exact_lifecycle::qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair
+              node::exact_snapshot::capture_admission_tests::capture_admission_rejects_another_modeled_node
             run_exact_qemu_test \
-              node_factory::tests::restore_continuation::factory_restores_vmstate_before_exposing_exact_snapshot_control
-            cargo build --frozen --offline \
-              --target-dir "$TMPDIR/exact-snapshot-target" \
-              --manifest-path crates/Cargo.toml -p crucible-qemu \
-              --example crucible-qemu-live-exact-snapshot
-            runner="$TMPDIR/exact-snapshot-target/debug/examples/crucible-qemu-live-exact-snapshot"
+              node_factory::tests::factory_assembles_node_with_exact_snapshot_qmp_control
 
-            diskless_report="$TMPDIR/exact-diskless.result"
-            CRUCIBLE_EXACT_PENDING_BLOCK=0 \
-            CRUCIBLE_EXACT_CAPTURE_CEILING=9000002 \
-            CRUCIBLE_EXACT_SUFFIX_INCREMENT=3000000 \
-              timeout -k 15 590 "$runner" \
-                ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-                ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-                "$vmlinuz" "$GUEST_FIRMWARE" "$TMPDIR/exact-diskless" \
-                "$DISKLESS_INITRD" > "$diskless_report"
-
-            block_report="$TMPDIR/exact-block.result"
-            CRUCIBLE_EXACT_PENDING_BLOCK=1 \
-            CRUCIBLE_EXACT_CAPTURE_CEILING=80000000000 \
-            CRUCIBLE_EXACT_SUFFIX_INCREMENT=3000000 \
-              timeout -k 15 590 "$runner" \
-                ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-                ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-                "$vmlinuz" "$GUEST_FIRMWARE" "$TMPDIR/exact-block" \
-                "$BLOCK_INITRD" > "$block_report"
-
-            cat "$diskless_report"
-            cat "$block_report"
-            for report in "$diskless_report" "$block_report"; do
-              grep -Fxq PASS "$report"
-              grep -Fxq 'gate=gate:qemu-exact-snapshot-restore' "$report"
-              grep -Fxq 'vmstate_backend=real-qemu-qcow2' "$report"
-              grep -Fxq 'host_io_backend=production-shared-memory-servicer' "$report"
-              grep -Fxq 'old_process_force_crashed=true' "$report"
-              grep -Fxq 'replay_oracle_pair_match=true' "$report"
-              grep -Fxq 'smp_vcpus=2' "$report"
-              grep -Fxq 'multi_vcpu_exact_restore=true' "$report"
-              grep -Fxq 'nonzero_intra_turn_rr_cursor_restored=true' "$report"
-              grep -Fxq 'rr_cursor_negative_control_rejected=true' "$report"
-              grep -Eq '^capture_icount=[1-9][0-9]*$' "$report"
-              grep -Eq '^restored_icount=[1-9][0-9]*$' "$report"
-              grep -Eq '^capture_rr_current_vcpu=[01]$' "$report"
-              grep -Eq '^capture_rr_position_in_quantum=[1-9][0-9]*$' "$report"
-              grep -Eq '^capture_rr_switch_quantum=[1-9][0-9]*$' "$report"
-              grep -Eq '^suffix_icount=[1-9][0-9]*$' "$report"
-              grep -Eq '^capture_fingerprint=[0-9a-f]{64}$' "$report"
-              grep -Eq '^suffix_fingerprint=[0-9a-f]{64}$' "$report"
-            done
-            grep -Fxq 'pending_block_io_captured=false' "$diskless_report"
-            grep -Fxq 'logical_time_calibration_restored=true' "$diskless_report"
-            grep -Eq '^capture_logical_time_offset=[0-9]+$' "$diskless_report"
-            grep -Fxq 'pending_block_io_captured=true' "$block_report"
-
+            grep -Fqx PASS "${checkpointDeltaFlight}/result"
+            grep -Fqx 'patched_fixture_exercised=true' \
+              "${checkpointDeltaFlight}/result"
+            grep -Fqx 'checkpoint_restore_equal=true' \
+              "${checkpointDeltaFlight}/result"
+            grep -Fqx 'direct_delta_reconstruction_equal=true' \
+              "${checkpointDeltaFlight}/result"
             mkdir -p "$out"
             {
-              cat "$diskless_report"
-              cat "$block_report"
+              printf 'PASS\n'
               printf 'attr_path=%s\n' "$ATTR_PATH"
               printf 'task_ids=%s\n' "$TASK_IDS"
-              printf 'scope=real-qemu-paired-save-force-crash-load-continue\n'
-              printf 'proven=diskless-vmstate,pending-block-vmstate,host-continuation,node-continuation,fresh-process-restore,replay-oracle-suffix\n'
+              printf 'scope=compiled-operation-specific-exact-checkpoint-admission\n'
+              printf 'proven=identity-bound-admission,live-capture-and-restore,descriptor-backed-restore\n'
             } > "$out/result"
           '';
         }

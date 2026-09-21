@@ -12,7 +12,7 @@
 //! pure parser and serializer so native consumers, the Hub indexer, and the
 //! Worker cannot disagree about this trust-bearing format.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
@@ -260,7 +260,7 @@ impl StoreEntry {
     /// Returns direct dependency input-addresses, deduplicated in first-seen order.
     #[must_use]
     pub fn dep_ias(&self) -> Vec<String> {
-        let mut seen = HashSet::new();
+        let mut seen = BTreeSet::new();
         let mut dependencies = Vec::new();
         for realization in &self.realisations {
             for edge in &realization.deps {

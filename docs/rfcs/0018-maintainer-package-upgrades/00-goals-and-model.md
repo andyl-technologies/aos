@@ -135,7 +135,7 @@ The contract and fixture corpus must cover at least these repository shapes:
 | Platform-specific | Different source or dependency inputs by target | Explicit target-conditioned slots and all-target validation |
 | Bootstrap ladder | Intentionally retained compiler/tool versions | Explicit supported/frozen/cohort policy, never global-latest comparison |
 | Curated source collection | SDK or package with many independently pinned revisions | Manual or assisted components with a closed plan |
-| QEMU/Crucible | Patch series, source bundle, ABI/license boundary, corresponding source | Exceptional human-led update with mandatory gates |
+| QEMU/Crucible | Atomic patch, source bundle, ABI/license boundary, corresponding source | Exceptional human-led update with mandatory gates |
 | Alias/wrapper | Default name points at a maintained versioned package | Non-schedulable member owned by another unit |
 
 The evaluated source graph, not this table, is the final authority. The initial

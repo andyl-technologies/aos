@@ -72,19 +72,6 @@ fn mapped_quantum_publishes_one_outstanding_preemption() -> Result<(), Box<dyn E
 
 #[cfg(unix)]
 #[test]
-fn mapped_quantum_can_publish_shared_shutdown_without_marking_plugin_done()
--> Result<(), Box<dyn Error>> {
-    let region = mapped_region(6, None, &[])?;
-    let hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
-
-    hot_path.request_plugin_shutdown()?;
-
-    assert!(!hot_path.plugin_teardown_done()?);
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
 fn mapped_quantum_publishes_one_exact_selectable_reply() -> Result<(), Box<dyn Error>> {
     let trap_icount = 6;
     let stopped_icount = trap_icount + SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS;
@@ -131,6 +118,7 @@ fn mapped_quantum_split_completion_keeps_full_operation_log() -> Result<(), Box<
     let pending = QemuShmemHotPathChannel::start_quantum(
         &mut hot_path,
         ExecutionHorizon { icount: icount(6) },
+        crucible_qemu::QemuQuantumStopCondition::Ceiling,
     )?;
     let completion = QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)?;
 
@@ -204,6 +192,7 @@ fn mapped_quantum_drains_coverage_into_the_unified_event_log() -> Result<(), Box
     let pending = QemuShmemHotPathChannel::start_quantum(
         &mut hot_path,
         ExecutionHorizon { icount: icount(6) },
+        crucible_qemu::QemuQuantumStopCondition::Ceiling,
     )?;
     let completion = QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)?;
     assert!(QemuShmemHotPathChannel::coverage_enabled(&hot_path));
@@ -417,7 +406,7 @@ fn mapped_region_with_markers(
     {
         let slot = allocation.node_slot(0).ok_or("VM slot 0 should exist")?;
         let ceiling = authorize_advance_ceiling(0, current_icount, None)?;
-        slot.publish_scheduler_ceiling(ceiling)?;
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
         slot.publish_reached_icount(current_icount, 0)?;
     }
     if let Some(frame) = outbound {

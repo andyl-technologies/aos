@@ -11,10 +11,10 @@ multi-host executor fanout. A campaign repository has one authoritative local
 reference owner, while immutable objects may use a composed local store.
 
 Release qualification uses the checked
-[operator and dogfood flight runbook](campaign-manual-flights.md). Its manual
-sessions require a separately supplied product workload and independent human
-roles; the executable fixtures and VM checks below are prerequisites rather
-than substitutes.
+[manual validation and dogfooding workflow](../../rfcs/0020-crucible-campaigns/14-manual-validation-and-dogfooding.md).
+Its manual sessions require a separately supplied product workload and
+independent human roles; the executable fixtures and VM checks below are
+prerequisites rather than substitutes.
 
 ## What is implemented
 
@@ -57,24 +57,25 @@ three configuration methods. Standard local production-QEMU
 resolution order and campaign owner. Marker saves, standard unattended resume,
 and unchanged forks targeting virtual time or stopped completion also use
 campaign ownership. Quiescence and property saves, interactive control,
-quiescence/property forks, and divergent fork recipes remain on their compatible
-session paths.
+quiescence/property continuations and divergent recipes use their explicit current
+session owner.
 
 A campaign-backed virtual-time save executes the semantic attempt and then
 replays that attempt once to capture and authenticate the exact reached
 boundary. Its temporary physical checkpoint closure is removed before the CLI
-reports success. The durable output is a current savepoint handle containing
-the authenticated campaign replay closure needed by standard resume and
-unchanged fork, including typed guest selections. The extra capture replay has
-real QEMU execution and I/O cost, and the emitted handle does not provide
-native exact-resume acceleration.
+reports success. The durable output is a version-6 savepoint handle and a
+version-3 logical `LocalDagStore` closure index. Both retain the authenticated
+campaign replay closure needed by standard resume, including
+typed guest selections. The extra capture replay has real QEMU execution and
+I/O cost, and the emitted handle does not provide native exact-resume
+acceleration.
 
 A failure artifact produced by this path records `campaign-run` as its typed
 producer. Replaying that artifact resolves the deployment capability again and
-re-materializes its authenticated schedule through the campaign owner. Current
-campaign-run artifacts and unchanged campaign-fork artifacts carry their
-authenticated replay closure. Artifacts without current campaign ownership and
-closure evidence fail admission instead of being downgraded to Session replay.
+re-materializes its authenticated schedule through the campaign owner. Every
+campaign-owned artifact carries its authenticated replay closure; a missing
+closure fails closed. Distinct current `verify`, `search`, and `fuzz` producers
+retain their declared execution owner.
 
 ## Build and validate inputs
 
@@ -214,7 +215,7 @@ the manifest contains 1 through 65,536 decisions, each delivery order contains
 1 through 65,536 events, and authored strings are bounded to 4,096 bytes without
 NUL or line breaks. The compiler rejects unknown fields and variants, re-decodes
 and byte-compares the canonical Schedule V2, and never replaces an existing
-output. It does not author direct guest `AppRandom` or campaign `Selection` decisions.
+output. It does not author raw app-random or campaign `Selection` decisions.
 Selections require authenticated opportunity/domain/origin resolution, and
 runtime replay remains the final authority that an authored scheduling point is
 valid for the scenario.
@@ -249,29 +250,30 @@ scenario_schema = 3
 exact_closure_schema = 4
 
 [protocol_versions]
-control = 2
+control = 3
 shared-memory = 5
 ```
 
-`exact_closure_schema` names the executor's exact-checkpoint format, not the
-genesis configuration payload format. The current packaged executor requires
-closure version 4; imported Crucible configuration payloads use version 2 and
-are independently authenticated by `genesis_content`. A different requested
-closure version is rejected before the packaged executor acquires host
-resources. Existing immutable lineage records are not rewritten at startup.
+`exact_closure_schema` names the CAS production-root envelope schema, distinct
+from the version-9 exact checkpoint manifest and the genesis configuration
+payload format. The current packaged executor requires root-envelope version 4;
+imported Crucible configuration payloads use version 2 and are independently
+authenticated by `genesis_content`. A different requested root-envelope version
+is rejected before the packaged executor acquires host resources. Existing
+immutable lineage records are not rewritten at startup.
 
 The lineage and policy compilers reject unknown fields, noncanonical
 identities, and invalid typed values before creating output. They write new
 owner-only files durably and never replace existing paths. Each report contains
 the exact canonical record ID and encoded byte count. The policy compiler reads
 at most 16 MiB and also rejects duplicate semantic keys, invalid exact
-arithmetic, and unsupported explorer parameters. A version-one policy manifest
-has the following field shape; replace the example scenario and
+arithmetic, and unsupported explorer parameters. A current version-two policy
+manifest has the following field shape; replace the example scenario and
 artifact/generator identities with exact values derived from your verified
 import closure:
 
 ```toml
-schema_version = 1
+schema_version = 2
 scenario = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 campaign_seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 mode = "strict"
@@ -319,10 +321,11 @@ exact_findings = true
 exact_user_pins = true
 ```
 
-Version two adds finite statistical sampling and optional sequential Monte
-Carlo stages. The ordinary policy fields remain required; statistical policies
-normally use an exhaustive explorer whose cardinality covers the declared
-support. This excerpt shows the added fields:
+The current format supports finite statistical sampling and optional sequential
+Monte Carlo stages. The ordinary policy fields remain required; statistical
+policies normally use an exhaustive explorer whose cardinality covers the
+declared support. The following optional fields belong to the same version-two
+manifest:
 
 ```toml
 schema_version = 2
@@ -390,15 +393,15 @@ Statistical fields represented by unsigned 64-bit integers accept ordinary
 TOML integers. To author a value above TOML's signed 64-bit integer ceiling,
 use an unpadded quoted decimal string as shown above. This form applies to
 unsigned choice values, masses, draw coordinates and parents, estimand
-endpoints, and exact-rational numerators and denominators. Schema version one
-rejects either statistical section.
+endpoints, and exact-rational numerators and denominators. Both statistical
+sections require the current schema version two.
 
 `intervention_learning` defaults to `exclude`, which retains operator- and
 debugger-derived observations while keeping them out of adaptive guidance and
 Beam survivor ranking. Set it to `include-in-guidance` only when that feedback
-is intended; the opt-in is recorded in the version-two policy identity and in
-planner proposal explanations. The opt-in does not make interventions eligible
-for statistical estimators.
+is intended; the opt-in is recorded in the canonical version-four policy
+identity and in planner proposal explanations. The opt-in does not make
+interventions eligible for statistical estimators.
 
 A choice `selector` may remain a plain stable declaration name, which preserves
 the original offline format and needs no scenario file. With `--scenario`, it
@@ -858,25 +861,18 @@ the source policy or an explicitly supplied compiled policy:
 
 ```sh
 crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
-  derive network-recovery --snapshot "$SNAPSHOT" network-recovery-streaming \
-  --policy ./streaming-policy.bin --format json
+  derive network-recovery --snapshot "$SNAPSHOT" network-recovery-revised \
+  --policy ./revised-policy.bin --format json
 ```
 
-The current implementation lets the supplied policy retain the source mode or
-migrate `strict` to `streaming` and `streaming` to `strict`. It rejects
-derivations that enter or leave statistical mode. `steer policy` on an existing
-campaign name remains a same-mode operation; derive a new name to change
-between strict and streaming. Broader cross-mode statistical derivation remains
-open design and implementation work.
+The supplied policy must have the same campaign mode as the source policy, and
+a statistical campaign must preserve the exact active policy. Derivation never
+converts between strict, streaming, and statistical modes. `steer policy` on an
+existing campaign name has the same exact-mode rule.
 
 Derivation shares the exact immutable history reachable from the selected
-source snapshot and leaves the source name unchanged. A streaming-to-strict
-derivation reconstructs the authenticated contiguous completion prefix. Any
-inherited attempts completed beyond an open lower admission ordinal remain
-recorded, but strict publication waits for the hole; after it closes, ordering
-advances across those already-completed ordinals. This behavior also applies
-when streaming inherited a nonzero strict sequence position. Retry the exact
-same source snapshot, target name, and policy after an indeterminate result.
+source snapshot and leaves the source name unchanged. Retry the exact same
+source snapshot, target name, and policy after an indeterminate result.
 
 ## Run, pause, and resume
 
@@ -1064,20 +1060,20 @@ Reclaim sparse physical bytes from one configured packed leaf with a separate,
 durable plan file:
 
 ```sh
-crucible --format json store repack \
+crucible --format json store transform packed \
   --store "$STORE" \
   --node "$PACKED_NODE" \
-  --plan "$REPACK_PLAN" \
+  --journal "$REPACK_JOURNAL" \
   plan
 
-crucible --format json store repack \
+crucible --format json store transform packed \
   --store "$STORE" \
   --node "$PACKED_NODE" \
-  --plan "$REPACK_PLAN" \
+  --journal "$REPACK_JOURNAL" \
   apply
 ```
 
-Keep the deployment and plan file unchanged between commands. Apply rejects a
+Keep the deployment and journal directory unchanged between commands. Apply rejects a
 stale generation before changing pack files. Retrying the same applied plan is
 idempotent, and readers that already opened an old pack remain valid through
 the generation switch.

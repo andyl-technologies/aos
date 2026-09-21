@@ -145,12 +145,14 @@ impl Canonical for MerkleMapLookupProof {
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let nodes = decode_proof_nodes(
             decoder,
-            MAX_LOOKUP_PROOF_NODES,
-            MAX_LOOKUP_PROOF_BYTES,
-            "merkle-lookup-proof-node-count",
-            "merkle-lookup-proof-node-bytes",
-            "merkle-lookup-proof-total-bytes",
-            "merkle lookup proof contains duplicate nodes",
+            ProofDecodeLimits {
+                maximum_nodes: MAX_LOOKUP_PROOF_NODES,
+                maximum_bytes: MAX_LOOKUP_PROOF_BYTES,
+                count_limit: "merkle-lookup-proof-node-count",
+                node_bytes_limit: "merkle-lookup-proof-node-bytes",
+                total_bytes_limit: "merkle-lookup-proof-total-bytes",
+                duplicate_reason: "merkle lookup proof contains duplicate nodes",
+            },
         )?;
         let proof = Self { nodes };
         validate_proof_nodes(
@@ -172,17 +174,6 @@ impl MerkleMapMultiLookupProof {
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
-    }
-
-    fn new(
-        keys: BTreeSet<CampaignHash>,
-        nodes: BTreeMap<ContentId, Vec<u8>>,
-    ) -> Result<Self, CampaignStoreError> {
-        if keys.is_empty() || keys.len() > MAX_PROVEN_LOOKUP_KEYS {
-            return Err(CampaignStoreError::InvalidPageSize);
-        }
-        validate_page_proof_nodes(&nodes)?;
-        Ok(Self { keys, nodes })
     }
 
     fn read_node(
@@ -220,12 +211,14 @@ impl Canonical for MerkleMapMultiLookupProof {
         }
         let nodes = decode_proof_nodes(
             decoder,
-            MAX_PAGE_PROOF_NODES,
-            MAX_PAGE_PROOF_BYTES,
-            "merkle-multi-lookup-proof-node-count",
-            "merkle-multi-lookup-proof-node-bytes",
-            "merkle-multi-lookup-proof-total-bytes",
-            "merkle multi-lookup proof contains duplicate nodes",
+            ProofDecodeLimits {
+                maximum_nodes: MAX_PAGE_PROOF_NODES,
+                maximum_bytes: MAX_PAGE_PROOF_BYTES,
+                count_limit: "merkle-multi-lookup-proof-node-count",
+                node_bytes_limit: "merkle-multi-lookup-proof-node-bytes",
+                total_bytes_limit: "merkle-multi-lookup-proof-total-bytes",
+                duplicate_reason: "merkle multi-lookup proof contains duplicate nodes",
+            },
         )?;
         let proof = Self { keys, nodes };
         validate_page_proof_nodes(&proof.nodes).map_err(|_| CampaignCodecError::InvalidValue {
@@ -272,12 +265,14 @@ impl Canonical for MerkleMapPageProof {
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let nodes = decode_proof_nodes(
             decoder,
-            MAX_PAGE_PROOF_NODES,
-            MAX_PAGE_PROOF_BYTES,
-            "merkle-page-proof-node-count",
-            "merkle-page-proof-node-bytes",
-            "merkle-page-proof-total-bytes",
-            "merkle page proof contains duplicate nodes",
+            ProofDecodeLimits {
+                maximum_nodes: MAX_PAGE_PROOF_NODES,
+                maximum_bytes: MAX_PAGE_PROOF_BYTES,
+                count_limit: "merkle-page-proof-node-count",
+                node_bytes_limit: "merkle-page-proof-node-bytes",
+                total_bytes_limit: "merkle-page-proof-total-bytes",
+                duplicate_reason: "merkle page proof contains duplicate nodes",
+            },
         )?;
         let proof = Self { nodes };
         validate_page_proof_nodes(&proof.nodes).map_err(|_| CampaignCodecError::InvalidValue {
@@ -547,46 +542,6 @@ impl MerkleMap {
             self.read_node_recorded(id, depth, &mut proof_nodes, &mut proof_bytes)
         })?;
         Ok((value, MerkleMapLookupProof::new(proof_nodes)?))
-    }
-
-    /// Returns several exact lookup results with one de-duplicated node proof.
-    ///
-    /// `keys` is a sorted unique set. Sharing trie nodes keeps a bounded page
-    /// substantially smaller than carrying one independent proof per lookup.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the key set is empty or exceeds
-    /// [`MAX_PROVEN_LOOKUP_KEYS`], or when any lookup path is incomplete,
-    /// corrupt, wrongly typed, or exceeds the aggregate proof bound.
-    pub fn get_many_with_proof(
-        &self,
-        root: ContentId,
-        keys: &BTreeSet<CampaignHash>,
-    ) -> Result<
-        (
-            BTreeMap<CampaignHash, Option<ContentId>>,
-            MerkleMapMultiLookupProof,
-        ),
-        CampaignStoreError,
-    > {
-        if keys.is_empty() || keys.len() > MAX_PROVEN_LOOKUP_KEYS {
-            return Err(CampaignStoreError::InvalidPageSize);
-        }
-        let mut proof_nodes = BTreeMap::new();
-        let mut proof_bytes = 0;
-        let mut values = BTreeMap::new();
-        for key in keys {
-            let root_node = self.read_node_recorded(root, 0, &mut proof_nodes, &mut proof_bytes)?;
-            let value = Self::get_from_node(root_node, *key, &mut |id, depth| {
-                self.read_node_recorded(id, depth, &mut proof_nodes, &mut proof_bytes)
-            })?;
-            values.insert(*key, value);
-        }
-        Ok((
-            values,
-            MerkleMapMultiLookupProof::new(keys.clone(), proof_nodes)?,
-        ))
     }
 
     /// Authenticates and exactly replays one proof-bearing lookup.
@@ -1276,128 +1231,8 @@ impl MerkleMap {
     }
 }
 
-fn finish_scan_page(mut entries: Vec<(CampaignHash, ContentId)>, limit: usize) -> MerkleMapPage {
-    let has_more = entries.len() > limit;
-    if has_more {
-        entries.truncate(limit);
-    }
-    let next_after = has_more.then(|| entries[entries.len() - 1].0);
-    MerkleMapPage {
-        entries,
-        next_after,
-    }
-}
-
-fn decode_node_bytes(
-    content_id: ContentId,
-    expected_depth: u8,
-    bytes: &[u8],
-) -> Result<MerkleNode, CampaignStoreError> {
-    if content_id.kind() != ObjectKind::MerkleNode {
-        return Err(invalid("root-or-child-kind"));
-    }
-    if bytes.len() > MAX_MERKLE_NODE_ENVELOPE_BYTES {
-        return Err(invalid("merkle-node-envelope-byte-limit"));
-    }
-    let envelope = ObjectEnvelope::from_canonical_bytes_for_owner(bytes)?;
-    if envelope.record_kind() != CampaignRecordKind::MerkleNode
-        || envelope.content_id() != content_id
-    {
-        return Err(invalid("node-envelope-kind-or-identity"));
-    }
-    let node = codec::decode::<MerkleNode>(envelope.body())?;
-    node.validate()?;
-    if node.depth != expected_depth {
-        return Err(invalid("node-depth-mismatch"));
-    }
-    if node.child_references()? != *envelope.children() {
-        return Err(invalid("node-child-table-mismatch"));
-    }
-    Ok(node)
-}
-
-fn validate_page_proof_nodes(
-    nodes: &BTreeMap<ContentId, Vec<u8>>,
-) -> Result<(), CampaignStoreError> {
-    validate_proof_nodes(
-        nodes,
-        MAX_PAGE_PROOF_NODES,
-        MAX_PAGE_PROOF_BYTES,
-        "page-proof-node-limit",
-        "page-proof-byte-limit",
-    )
-}
-
-fn validate_proof_nodes(
-    nodes: &BTreeMap<ContentId, Vec<u8>>,
-    maximum_nodes: usize,
-    maximum_bytes: usize,
-    node_limit_reason: &'static str,
-    byte_limit_reason: &'static str,
-) -> Result<(), CampaignStoreError> {
-    if nodes.len() > maximum_nodes {
-        return Err(invalid(node_limit_reason));
-    }
-    let mut bytes = 0_usize;
-    for (id, node) in nodes {
-        bytes = bytes
-            .checked_add(node.len())
-            .ok_or_else(|| invalid(byte_limit_reason))?;
-        if bytes > maximum_bytes || node.len() > MAX_MERKLE_NODE_ENVELOPE_BYTES {
-            return Err(invalid(byte_limit_reason));
-        }
-        let envelope = ObjectEnvelope::from_canonical_bytes_for_owner(node)?;
-        if envelope.record_kind() != CampaignRecordKind::MerkleNode || envelope.content_id() != *id
-        {
-            return Err(invalid("page-proof-node-identity"));
-        }
-    }
-    Ok(())
-}
-
-// crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-#[allow(clippy::too_many_arguments)]
-fn decode_proof_nodes(
-    decoder: &mut Decoder<'_>,
-    maximum_nodes: usize,
-    maximum_bytes: usize,
-    count_limit: &'static str,
-    node_bytes_limit: &'static str,
-    total_bytes_limit: &'static str,
-    duplicate_reason: &'static str,
-) -> Result<BTreeMap<ContentId, Vec<u8>>, CampaignCodecError> {
-    let mut aggregate_bytes = 0_usize;
-    let entries = decoder.sequence_bounded(maximum_nodes, count_limit, |decoder| {
-        let id = ContentId::decode(decoder)?;
-        let bytes = decoder.byte_sequence_bounded_charged(
-            MAX_MERKLE_NODE_ENVELOPE_BYTES,
-            node_bytes_limit,
-            &mut aggregate_bytes,
-            maximum_bytes,
-            total_bytes_limit,
-        )?;
-        Ok((id, bytes))
-    })?;
-    let mut nodes = BTreeMap::new();
-    for (id, node) in entries {
-        if nodes.insert(id, node).is_some() {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: duplicate_reason,
-            });
-        }
-    }
-    Ok(nodes)
-}
-
-fn calculate_node_id(node: &MerkleNode) -> Result<ContentId, CampaignStoreError> {
-    node.validate()?;
-    let envelope = ObjectEnvelope::for_record(
-        CampaignRecordKind::MerkleNode,
-        node.child_references()?,
-        codec::encode(node),
-    )?;
-    Ok(envelope.content_id())
-}
+mod proof_validation;
+use proof_validation::*;
 
 /// Authenticated leaf values discovered while validating one complete map.
 pub(crate) struct VerifiedMerkleClosure {
@@ -1936,9 +1771,19 @@ mod tests {
                 .expect("insert");
         }
         let keys = BTreeSet::from([hash(0x10), hash(0x11), hash(0x12)]);
-        let (values, proof) = map
-            .get_many_with_proof(root.content_id(), &keys)
-            .expect("multi-lookup proof");
+        let mut values = BTreeMap::new();
+        let mut proof_nodes = BTreeMap::new();
+        for key in &keys {
+            let (value, lookup_proof) = map
+                .get_with_proof(root.content_id(), *key)
+                .expect("lookup proof");
+            values.insert(*key, value);
+            proof_nodes.extend(lookup_proof.nodes);
+        }
+        let proof = MerkleMapMultiLookupProof {
+            keys: keys.clone(),
+            nodes: proof_nodes,
+        };
 
         assert_eq!(
             MerkleMap::verify_many_lookup_proof(root.content_id(), &keys, &proof)
@@ -1994,12 +1839,14 @@ mod tests {
         assert_eq!(
             decode_proof_nodes(
                 &mut decoder,
-                2,
-                10,
-                "test-node-count",
-                "test-node-bytes",
-                "test-total-bytes",
-                "test duplicate",
+                ProofDecodeLimits {
+                    maximum_nodes: 2,
+                    maximum_bytes: 10,
+                    count_limit: "test-node-count",
+                    node_bytes_limit: "test-node-bytes",
+                    total_bytes_limit: "test-total-bytes",
+                    duplicate_reason: "test duplicate",
+                },
             ),
             Err(CampaignCodecError::LimitExceeded {
                 limit: "test-total-bytes"

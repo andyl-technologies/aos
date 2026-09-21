@@ -182,10 +182,16 @@ fn published_ceiling_converts_to_and_publishes_through_shmem_abi() {
         .expect("publication should authorize as a shmem ceiling");
     let slot = NodeSlot::new(KIND_VM);
 
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .expect("slot should accept the scheduler ceiling");
 
-    assert_eq!(slot.load_node_ceiling(), publication.max_advance_icount);
+    assert_eq!(
+        slot.load_scheduler_advance(),
+        Ok((
+            publication.max_advance_icount,
+            crucible_shmem::AdvanceStopCondition::Ceiling
+        ))
+    );
 }
 
 #[test]

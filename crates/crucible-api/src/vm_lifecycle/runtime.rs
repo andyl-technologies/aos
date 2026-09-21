@@ -11,139 +11,12 @@ mod observation;
 use debug_evidence::*;
 use observation::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RecordedControlBoundary {
-    Pending,
-    Ready,
-    Bypassed,
-}
+#[path = "runtime/control_boundary.rs"]
+mod control_boundary;
 
-fn classify_recorded_control_boundary(
-    expected: &BTreeMap<NodeId, VirtualTime>,
-    observed: &BTreeMap<NodeId, VirtualTime>,
-) -> RecordedControlBoundary {
-    let mut pending = false;
-    for (node, expected_at) in expected {
-        let Some(observed_at) = observed.get(node) else {
-            return RecordedControlBoundary::Bypassed;
-        };
-        if observed_at > expected_at {
-            return RecordedControlBoundary::Bypassed;
-        }
-        pending |= observed_at < expected_at;
-    }
-    if pending {
-        RecordedControlBoundary::Pending
-    } else {
-        RecordedControlBoundary::Ready
-    }
-}
-
-fn selectable_catalogs_checkpoint_ready(
-    configuration: &Configuration,
-    initial_lifecycle_observations_pending: bool,
-    event_log_events: u64,
-    live_nodes: &[NodeId],
-    plans: &BTreeMap<NodeId, crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
-) -> bool {
-    live_nodes.iter().all(|node| {
-        plans.get(node).is_none_or(|plan| {
-            selectable_catalog_checkpoint_ready(
-                configuration,
-                initial_lifecycle_observations_pending,
-                event_log_events,
-                plan,
-            )
-        })
-    })
-}
-
-fn validate_selectable_reply_pairing(
-    decision: &SelectionDecision,
-    pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
-    reply: &crucible_protocol::SelectionReply,
-) -> Result<(), SchedulerError> {
-    let selection = decision
-        .selection()
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("external selection decision is invalid: {error}"),
-        })?;
-    let opportunity = selection.opportunity().content_id().digest();
-    let domain = selection.domain().content_id().digest();
-    let value = selection.value().canonical_bytes();
-    if reply.sequence() != pending.request().sequence()
-        || reply.status() != crucible_protocol::SelectionReplyStatus::Selected
-        || reply.opportunity_id() != &opportunity
-        || reply.domain_id() != &domain
-        || reply.selected_value() != Some(value.as_slice())
-    {
-        return Err(SchedulerError::BoundaryViolation {
-            message: String::from(
-                "external selection decision does not match its pending guest reply",
-            ),
-        });
-    }
-    Ok(())
-}
+use control_boundary::*;
 
 impl ProductionVmLifecycleLoop {
-    // Returns true only when this call authenticates and consumes the boundary.
-    pub(super) fn settle_logical_replay_boundary(
-        &mut self,
-        control_present: bool,
-    ) -> Result<bool, SchedulerError> {
-        let Some(boundary) = self.logical_replay_boundary.as_ref() else {
-            return Ok(false);
-        };
-        let configuration = self.inner.loop_impl().configuration();
-        let frontier = self.inner.loop_impl().frontier();
-        if frontier > boundary.frontier {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "logical replay frontier {} was passed at {}",
-                    boundary.frontier.ticks, frontier.ticks
-                ),
-            });
-        }
-        let prefix_len = configuration.schedule.len();
-        let expected_prefix =
-            boundary
-                .configuration
-                .schedule
-                .prefix(prefix_len)
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("derive logical replay target prefix: {error}"),
-                })?;
-        let expected_configuration = Configuration {
-            def: boundary.configuration.def.clone(),
-            schedule: expected_prefix,
-        };
-        if configuration != &expected_configuration {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "logical replay diverged at frontier {} with configuration {}; expected target prefix {}",
-                    frontier.ticks,
-                    configuration.id().to_hex(),
-                    expected_configuration.id().to_hex(),
-                ),
-            });
-        }
-        if frontier == boundary.frontier && configuration == &boundary.configuration {
-            if control_present {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "logical replay boundary cannot discard simultaneous control",
-                    ),
-                });
-            }
-            self.inner.loop_impl_mut().set_attempt_stop_frontier(None)?;
-            self.logical_replay_boundary = None;
-            self.config.logical_replay_boundary = None;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
     /// The returned requests remain untrusted guest input. Callers must bind
@@ -239,10 +112,9 @@ impl ProductionVmLifecycleLoop {
 
     /// Captures the exact modeled evidence boundary restored with this lifecycle.
     ///
-    /// The returned entries are read-only copies of the scheduler-owned retained
-    /// log. Callers that require complete run evidence must reject a nonzero
-    /// base event count rather than silently treating a suffix as the whole
-    /// attempt history.
+    /// The returned entries copy the scheduler-owned log. Complete-evidence callers
+    /// must reject a nonzero base event count instead of treating a suffix as the
+    /// whole attempt history.
     ///
     /// # Errors
     ///
@@ -259,6 +131,60 @@ impl ProductionVmLifecycleLoop {
             scheduler.quiescence()?,
             self.terminal_verdict.clone(),
         ))
+    }
+
+    /// Returns operational evidence from the latest host-concurrent QEMU round.
+    #[must_use]
+    pub fn host_parallelism_evidence(&self) -> Option<&crucible_qemu::QemuHostParallelismEvidence> {
+        self.inner.backend().last_host_parallelism()
+    }
+
+    /// Quarantines one live node and synchronously reaps its QEMU process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node is absent or cannot be killed
+    /// and synchronously reaped.
+    pub fn quarantine_node(&mut self, node: &NodeId) -> Result<(), SchedulerError> {
+        let mut backend = self.inner.backend_mut().take(node).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: format!("production lifecycle node `{}` is absent", node.name),
+            }
+        })?;
+        let result = backend.force_quarantine_and_reap().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "force-quarantine production lifecycle node `{}`: {error}",
+                    node.name
+                ),
+            }
+        });
+        self.inner.backend_mut().insert(node.clone(), backend);
+        result
+    }
+
+    /// Returns canonical scheduler bytes and ordered log-segment identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the scheduler is at a transient boundary
+    /// or cannot encode a retained device or network continuation.
+    pub fn canonical_scheduler_evidence(
+        &self,
+    ) -> Result<(Vec<u8>, Vec<ContentHash>), SchedulerError> {
+        let checkpoint = self.inner.loop_impl().checkpoint().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("encode production scheduler checkpoint evidence: {error}"),
+            }
+        })?;
+        let segments = checkpoint.event_log_segment_dependencies().to_vec();
+        let bytes =
+            checkpoint
+                .canonical_bytes()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("encode production scheduler checkpoint bytes: {error}"),
+                })?;
+        Ok((bytes, segments))
     }
 
     /// Returns the absolute scheduler-quantum coordinate at the current boundary.
@@ -280,9 +206,7 @@ impl ProductionVmLifecycleLoop {
     /// Returns [`SchedulerError`] when a live node is missing from the backend
     /// set or its shared device-I/O state cannot be inspected consistently.
     pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
-        self.settle_logical_replay_boundary(false)?;
-        if self.logical_replay_boundary.is_some()
-            || self.inner.loop_impl().pending_branch_effect_choice_count() != 0
+        if self.inner.loop_impl().pending_branch_effect_choice_count() != 0
             || !self.signal_fault_branches.is_empty()
         {
             return Ok(false);
@@ -332,26 +256,6 @@ impl ProductionVmLifecycleLoop {
         Ok(true)
     }
 
-    /// Captures the current complete production state as a portable closure.
-    ///
-    /// The transaction snapshots every live World node at the same
-    /// authenticated scheduler boundary, retains trigger, assertion, fault,
-    /// network, event-log, lifecycle, overlay, and VMState continuation, then
-    /// resumes the formerly running nodes before returning a read-only closure
-    /// capability. Large artifacts remain chunked and streamable.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the current boundary is not checkpoint
-    /// ready, any node or continuation cannot be captured, publication or
-    /// cleanup is indeterminate, or the published portable closure cannot be
-    /// reopened under the exact scenario bounds.
-    pub fn capture_portable_exact_checkpoint(
-        &mut self,
-    ) -> Result<ProductionExactCheckpointClosure, SchedulerError> {
-        self.capture_portable_exact_checkpoint_with_boundary(&mut || Ok(()))
-    }
-
     /// Captures a portable exact checkpoint under an operational boundary.
     ///
     /// The callback is observed between bounded file-hash and persistence
@@ -360,8 +264,10 @@ impl ProductionVmLifecycleLoop {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::capture_portable_exact_checkpoint`],
-    /// including the exact scheduler error returned by `boundary`.
+    /// Returns [`SchedulerError`] when the current boundary is not checkpoint
+    /// ready, a node or continuation cannot be captured, publication or cleanup
+    /// is indeterminate, reopening the closure fails, or `boundary` rejects an
+    /// operational chunk boundary.
     pub fn capture_portable_exact_checkpoint_with_boundary(
         &mut self,
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
@@ -613,12 +519,6 @@ impl ProductionVmLifecycleLoop {
             block_devices,
             nodes,
         })
-    }
-
-    /// Returns the number of QEMU processes currently owned by this lifecycle.
-    #[must_use]
-    pub fn live_node_count(&self) -> usize {
-        self.inner.backend().len()
     }
 
     /// Returns the number of guest-emitted frames not yet globally committed.

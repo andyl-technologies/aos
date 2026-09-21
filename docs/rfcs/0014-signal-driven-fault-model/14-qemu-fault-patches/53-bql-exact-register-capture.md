@@ -1,8 +1,8 @@
-# 0102 - BQL-held exact register capture
+# Capability task 0102 — BQL-held exact register capture
 
 ## Purpose
 
-Patch `0102` admits architectural register observation from an exact callback
+Capability task `0102` admits architectural register observation from an exact callback
 that holds QEMU's big lock even when post-snapshot RR reselection temporarily
 leaves the serialized owner invalid. At that boundary, `current_cpu` may retain
 the preceding vCPU, but the BQL proves every vCPU register file is quiescent.
@@ -21,7 +21,7 @@ closed and emit diagnostics.
 
 ## Files and license scope
 
-The patch modifies GPL-side `plugins/api-system.c` and `plugins/api.c`. It
+The atomic patch modifies GPL-side `plugins/api-system.c` and `plugins/api.c`. It
 changes no shared-memory or control wire format and adds no QEMU file.
 
 ## Required gates
@@ -30,8 +30,8 @@ changes no shared-memory or control wire format and adds no QEMU file.
    registers after an exact snapshot.
 2. Register reads outside an exact BQL-held or serialized-owner boundary must
    remain rejected.
-3. Patch-prefix provenance, regeneration, ABI, and license-boundary gates must
-   pass.
+3. Atomic-patch source attribution, regeneration, pristine-QEMU negative, ABI,
+   and license-boundary gates must pass.
 
 - **[QFP-BQL-REG-1]** A BQL-held exact callback MAY read all quiescent vCPU
   registers while serialized RR owner reselection is pending.

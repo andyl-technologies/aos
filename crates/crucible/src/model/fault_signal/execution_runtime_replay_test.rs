@@ -204,14 +204,14 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
         bytes
     );
 
-    let mut retired_version = checkpoint.clone();
-    retired_version.semantic_version = 3;
-    retired_version.binding_runtime.semantic_version = 3;
-    let retired_bytes = retired_version
+    let mut noncurrent = checkpoint.clone();
+    noncurrent.semantic_version = 0;
+    noncurrent.binding_runtime.semantic_version = 0;
+    let noncurrent_bytes = noncurrent
         .canonical_bytes()
-        .unwrap_or_else(|error| panic!("retired checkpoint fixture: {error}"));
+        .unwrap_or_else(|error| panic!("noncurrent checkpoint fixture: {error}"));
     assert_eq!(
-        FaultRuntimeCheckpoint::from_canonical_bytes(&retired_bytes, &plan, seed),
+        FaultRuntimeCheckpoint::from_canonical_bytes(&noncurrent_bytes, &plan, seed),
         Err(FaultRuntimeError::VersionOrIdentityMismatch)
     );
 

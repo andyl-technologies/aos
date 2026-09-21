@@ -211,16 +211,8 @@
         needle = "pub fn ordering_facts(self) -> &'log [ObservedOrderingFact]";
       }
       {
-        label = "fault facts view";
-        needle = "pub fn fault_facts(self) -> &'log [ObservedFaultFact]";
-      }
-      {
         label = "ordering fact enum";
         needle = "pub enum ObservedOrderingFact";
-      }
-      {
-        label = "fault fact enum";
-        needle = "pub enum ObservedFaultFact";
       }
       {
         label = "checked prefix constructor";
@@ -267,10 +259,6 @@
         needle = "Decision::Preemption(_)";
       }
       {
-        label = "ignored app-random decision";
-        needle = "Decision::AppRandom(_)";
-      }
-      {
         label = "evaluation pass exposes observed state";
         needle = "pub fn observed_state(&self) -> ObservedState<'_>";
       }
@@ -289,10 +277,6 @@
       {
         label = "observed ordering fact export";
         needle = "ObservedOrderingFact";
-      }
-      {
-        label = "observed fault fact export";
-        needle = "ObservedFaultFact";
       }
       {
         label = "test typed payload constructor";
@@ -323,10 +307,6 @@
       {
         label = "preemption ignored by observed state";
         needle = "Decision::Preemption";
-      }
-      {
-        label = "app random ignored by observed state";
-        needle = "Decision::AppRandom";
       }
       {
         label = "checked future rejection";

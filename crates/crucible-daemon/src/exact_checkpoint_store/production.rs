@@ -1,30 +1,61 @@
 //! Complete production-checkpoint roots over the campaign immutable store.
 
 use super::*;
+use std::collections::BTreeSet;
 use std::io::{self, Read};
 
 use crucible::SchedulerOperationalFailureClass;
 use crucible_api::{
-    LifecycleApiError, PreparedProductionReplayOraclePromotion, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointRetirement,
-    ProductionExactCheckpointSource, retire_production_exact_checkpoint_catalog,
+    DecodedProductionExactCheckpoint, LifecycleApiError, PreparedProductionReplayOraclePromotion,
+    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
+    ProductionExactCheckpointRetirement, decode_authenticated_production_exact_checkpoint,
+    retire_production_exact_checkpoint_catalog,
 };
 use crucible_cas::content_store::BlobSource;
 
 const PRODUCTION_MANIFEST_ROLE: &str = "production-manifest";
+const PRODUCTION_PROMOTION_SOURCE_ROLE: &str = "replay-oracle-source";
+const PRODUCTION_PROMOTION_EVIDENCE_ROLE: &str = "replay-oracle-evidence";
 const PRODUCTION_INDEX_ROLE_PREFIX: &str = "production-object-index-";
 const PRODUCTION_OBJECT_ROLE_PREFIX: &str = "object-";
 const PRODUCTION_INDEX_SCHEMA: &str = "crucible.executor.production-checkpoint-index";
 const PRODUCTION_INDEX_SCHEMA_VERSION: u32 = 1;
 const PRODUCTION_MANIFEST_SCHEMA_VERSION: u32 = 4;
 const PRODUCTION_OBJECT_SCHEMA_VERSION: u32 = 5;
+const PRODUCTION_PROMOTION_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 const PRODUCTION_ROOT_BODY_BYTES: usize = 124;
 const PRODUCTION_INDEX_MAGIC: &[u8; 8] = b"CRUCPIDX";
 const PRODUCTION_INDEX_PAGE_OBJECTS: usize = 4_096;
 const MAX_PRODUCTION_INDEX_BYTES: u64 = 4 * 1024 * 1024;
 pub(super) const MAX_PRODUCTION_ROOT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PRODUCTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PRODUCTION_PROMOTION_EVIDENCE_BYTES: u64 = 4 * 1024 * 1024;
 const PRODUCTION_OBJECT_IDENTITY_BYTES: u64 = 32;
+const REPLAY_ORACLE_EVIDENCE_MAGIC: &[u8] = b"crucible.production-replay-oracle.v1\0";
+
+trait ProductionExactCheckpointPublicationSource: Send + Sync {
+    fn manifest(&self) -> &[u8];
+    fn objects(&self) -> &[ProductionExactCheckpointObject];
+    fn open_object(&self, identity: ContentHash)
+    -> Result<Box<dyn Read + Send>, LifecycleApiError>;
+}
+
+impl ProductionExactCheckpointPublicationSource for ProductionExactCheckpointClosure {
+    fn manifest(&self) -> &[u8] {
+        self.manifest()
+    }
+
+    fn objects(&self) -> &[ProductionExactCheckpointObject] {
+        self.objects()
+    }
+
+    fn open_object(
+        &self,
+        identity: ContentHash,
+    ) -> Result<Box<dyn Read + Send>, LifecycleApiError> {
+        self.open_object(identity)
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ProductionObjectPlacement {
@@ -38,10 +69,12 @@ pub struct PreparedProductionExactCheckpoint {
     root_source: BlobHandle,
     manifest_id: ContentId,
     manifest_source: BlobHandle,
-    source: Arc<dyn ProductionExactCheckpointSource>,
+    source: Arc<dyn ProductionExactCheckpointPublicationSource>,
     objects: Vec<ProductionObjectPlacement>,
     indexes: Vec<(ContentId, BlobHandle)>,
     production_identity: ContentHash,
+    promotion_source: Option<ExactCheckpointId>,
+    promotion_evidence: Option<(ContentId, BlobHandle)>,
     scenario: ContentHash,
     configuration: ContentHash,
     object_bytes: u64,
@@ -55,6 +88,7 @@ impl fmt::Debug for PreparedProductionExactCheckpoint {
             .debug_struct("PreparedProductionExactCheckpoint")
             .field("root", &self.root)
             .field("production_identity", &self.production_identity)
+            .field("promotion_source", &self.promotion_source)
             .field("scenario", &self.scenario)
             .field("configuration", &self.configuration)
             .field("objects", &self.objects.len())
@@ -86,6 +120,12 @@ impl PreparedProductionExactCheckpoint {
     #[must_use]
     pub const fn configuration(&self) -> ContentHash {
         self.configuration
+    }
+
+    pub(crate) fn promotion_evidence_id(&self) -> Option<ContentId> {
+        self.promotion_evidence
+            .as_ref()
+            .map(|(identity, _)| *identity)
     }
 
     /// Returns the number of deduplicated production objects.
@@ -164,7 +204,12 @@ impl ProductionExactCheckpointPublication {
 /// exact scenario-aware semantic validator before launching QEMU.
 pub struct LoadedProductionExactCheckpoint {
     root: ExactCheckpointId,
+    root_envelope: Vec<u8>,
+    index_pages: Vec<Vec<u8>>,
     production_identity: ContentHash,
+    promotion_source: Option<ExactCheckpointId>,
+    promotion_evidence_id: Option<ContentId>,
+    promotion_evidence: Option<Vec<u8>>,
     scenario: ContentHash,
     configuration: ContentHash,
     manifest: Vec<u8>,
@@ -187,6 +232,20 @@ impl LoadedProductionExactCheckpoint {
         self.production_identity
     }
 
+    /// Returns the raw root authenticated by this replay-oracle replacement.
+    #[must_use]
+    pub const fn promotion_source(&self) -> Option<ExactCheckpointId> {
+        self.promotion_source
+    }
+
+    pub(crate) fn promotion_evidence(&self) -> Option<&[u8]> {
+        self.promotion_evidence.as_deref()
+    }
+
+    pub(crate) const fn promotion_evidence_id(&self) -> Option<ContentId> {
+        self.promotion_evidence_id
+    }
+
     /// Returns the exact scenario declared by the production closure.
     #[must_use]
     pub const fn scenario(&self) -> ContentHash {
@@ -198,21 +257,236 @@ impl LoadedProductionExactCheckpoint {
     pub const fn configuration(&self) -> ContentHash {
         self.configuration
     }
+
+    pub(crate) fn metadata_bytes(&self) -> Result<u64, ExactCheckpointStoreError> {
+        self.index_pages.iter().try_fold(
+            u64::try_from(self.root_envelope.len())
+                .ok()
+                .and_then(|bytes| {
+                    u64::try_from(self.manifest.len())
+                        .ok()
+                        .and_then(|manifest| bytes.checked_add(manifest))
+                })
+                .ok_or_else(|| invalid_root("production metadata byte count overflow"))?,
+            |total, page| {
+                u64::try_from(page.len())
+                    .ok()
+                    .and_then(|bytes| total.checked_add(bytes))
+                    .ok_or_else(|| invalid_root("production metadata byte count overflow"))
+            },
+        )
+    }
+
+    /// Returns the complete authenticated byte cost needed to restore this root.
+    ///
+    /// This cost includes the root envelope, manifest, index pages, and every
+    /// authenticated object in the restore closure. Campaign debug admission
+    /// uses it to choose the cheapest retained exact state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the complete byte count overflows.
+    pub fn authenticated_restore_bytes(&self) -> Result<u64, ExactCheckpointStoreError> {
+        self.objects
+            .iter()
+            .try_fold(self.metadata_bytes()?, |total, object| {
+                total
+                    .checked_add(object.length())
+                    .ok_or_else(|| invalid_root("production restore byte count overflow"))
+            })
+    }
+
+    fn authenticate_repository(
+        &self,
+    ) -> Result<
+        crucible::exact_checkpoint::ExactCheckpointRepositoryBinding,
+        ExactCheckpointStoreError,
+    > {
+        let observed_objects = self
+            .objects
+            .iter()
+            .zip(&self.placements)
+            .map(|(object, content)| (*content, object.length()))
+            .collect::<Vec<_>>();
+        crucible::exact_checkpoint::authenticate_exact_checkpoint_repository(
+            self.root,
+            &self.root_envelope,
+            &self.index_pages,
+            &observed_objects,
+        )
+        .map_err(|_| invalid_root("production repository relation authentication failed"))
+    }
+
+    fn authenticate_closure(
+        &self,
+        owned_byte_limit: u64,
+    ) -> Result<crucible::exact_checkpoint::ExactCheckpointClosureBinding, ExactCheckpointStoreError>
+    {
+        let repository = self.authenticate_repository()?;
+        crucible::exact_checkpoint::authenticate_exact_checkpoint_closure(
+            repository,
+            &self.manifest,
+            owned_byte_limit,
+        )
+        .map_err(|error| {
+            use crucible::exact_checkpoint::ExactCheckpointRelationError;
+
+            let reason = match error {
+                ExactCheckpointRelationError::InvalidStructure => {
+                    "production closure has invalid canonical structure"
+                }
+                ExactCheckpointRelationError::ManifestTooLarge => {
+                    "production closure exceeds its canonical byte bound"
+                }
+                ExactCheckpointRelationError::RootMismatch => {
+                    "production closure root authentication failed"
+                }
+                ExactCheckpointRelationError::RepositoryRootMismatch => {
+                    "production closure repository root authentication failed"
+                }
+                ExactCheckpointRelationError::TargetMembership => {
+                    "production closure target membership authentication failed"
+                }
+                ExactCheckpointRelationError::TargetManifestMismatch => {
+                    "production closure target manifest authentication failed"
+                }
+                ExactCheckpointRelationError::CanonicalEncoding => {
+                    "production closure canonical serialization failed"
+                }
+                ExactCheckpointRelationError::ResourceExhausted => {
+                    "production closure verification resource bound exceeded"
+                }
+            };
+            invalid_root(reason)
+        })
+    }
+
+    pub(crate) fn decode_semantic_checkpoint(
+        self: &Arc<Self>,
+        source: &crucible::ScenarioDefForm,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<DecodedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        let byte_limit = source
+            .plan()
+            .fault_signals()
+            .resource_limits()
+            .fat_checkpoint_bytes;
+        check_cancellation(Some(cancellation))?;
+        let closure = self.authenticate_closure(byte_limit)?;
+        let loaded = Arc::clone(self);
+        let open_cancellation = cancellation.clone();
+        let boundary_cancellation = cancellation.clone();
+        let open = Arc::new(move |identity| {
+            check_cancellation(Some(&open_cancellation))
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            loaded
+                .open_object(identity)
+                .map_err(|error| io::Error::other(error.to_string()))
+        });
+        let scenario = source.scenario_def();
+        let decoded = decode_authenticated_production_exact_checkpoint(
+            closure,
+            self.production_identity,
+            &scenario,
+            source,
+            byte_limit,
+            move || {
+                check_cancellation(Some(&boundary_cancellation))
+                    .map_err(|error| io::Error::other(error.to_string()))
+            },
+            open,
+        )
+        .map_err(|_| invalid_root("production semantic checkpoint authentication failed"))?;
+        check_cancellation(Some(cancellation))?;
+        Ok(decoded)
+    }
+
+    pub(crate) fn authenticate_replay_oracle_promotion(
+        &self,
+        raw: &Self,
+    ) -> Result<(), ExactCheckpointStoreError> {
+        if self.promotion_source != Some(raw.root)
+            || self.production_identity != raw.production_identity
+            || self.scenario != raw.scenario
+            || self.configuration != raw.configuration
+            || self.manifest != raw.manifest
+            || self.objects != raw.objects
+        {
+            return Err(invalid_root(
+                "replay-oracle replacement changed its production closure",
+            ));
+        }
+        let evidence = self
+            .promotion_evidence
+            .as_deref()
+            .ok_or_else(|| invalid_root("replay-oracle replacement has no evidence"))?;
+        authenticate_replay_oracle_evidence(evidence, raw.production_identity)
+    }
 }
 
-impl ProductionExactCheckpointSource for LoadedProductionExactCheckpoint {
-    fn identity(&self) -> ContentHash {
-        self.production_identity
+fn authenticate_replay_oracle_evidence(
+    evidence: &[u8],
+    source: ContentHash,
+) -> Result<(), ExactCheckpointStoreError> {
+    let mut remaining = evidence
+        .strip_prefix(REPLAY_ORACLE_EVIDENCE_MAGIC)
+        .ok_or_else(|| invalid_root("replay-oracle evidence has another schema"))?;
+    let source_bytes = take_evidence_bytes(&mut remaining, 32)?;
+    if source_bytes != source.bytes {
+        return Err(invalid_root("replay-oracle evidence names another closure"));
     }
-
-    fn scenario(&self) -> ContentHash {
-        self.scenario
+    let count_bytes = take_evidence_bytes(&mut remaining, 4)?;
+    let count = u32::from_be_bytes(
+        count_bytes
+            .try_into()
+            .map_err(|_| invalid_root("replay-oracle evidence count is malformed"))?,
+    );
+    if count == 0 {
+        return Err(invalid_root("replay-oracle evidence has no targets"));
     }
-
-    fn configuration(&self) -> ContentHash {
-        self.configuration
+    let mut previous_node: Option<Vec<u8>> = None;
+    for _ in 0..count {
+        let node_bytes = take_evidence_bytes(&mut remaining, 4)?;
+        let node_length = usize::try_from(u32::from_be_bytes(
+            node_bytes
+                .try_into()
+                .map_err(|_| invalid_root("replay-oracle node length is malformed"))?,
+        ))
+        .map_err(|_| invalid_root("replay-oracle node length is not representable"))?;
+        let node = take_evidence_bytes(&mut remaining, node_length)?;
+        if node.is_empty()
+            || std::str::from_utf8(node).is_err()
+            || previous_node
+                .as_deref()
+                .is_some_and(|previous| previous >= node)
+        {
+            return Err(invalid_root(
+                "replay-oracle evidence node inventory is not canonical",
+            ));
+        }
+        previous_node = Some(node.to_vec());
+        let _snapshot = take_evidence_bytes(&mut remaining, 32)?;
+        let _target_manifest = take_evidence_bytes(&mut remaining, 32)?;
+        let _runtime = take_evidence_bytes(&mut remaining, 32)?;
     }
+    if !remaining.is_empty() {
+        return Err(invalid_root("replay-oracle evidence has trailing bytes"));
+    }
+    Ok(())
+}
 
+fn take_evidence_bytes<'a>(
+    remaining: &mut &'a [u8],
+    count: usize,
+) -> Result<&'a [u8], ExactCheckpointStoreError> {
+    let (taken, rest) = remaining
+        .split_at_checked(count)
+        .ok_or_else(|| invalid_root("replay-oracle evidence is truncated"))?;
+    *remaining = rest;
+    Ok(taken)
+}
+
+impl ProductionExactCheckpointPublicationSource for LoadedProductionExactCheckpoint {
     fn manifest(&self) -> &[u8] {
         &self.manifest
     }
@@ -321,16 +595,18 @@ impl ExactCheckpointStore {
         let scenario = closure.scenario();
         let configuration = closure.configuration();
         let native_retirement = Some(closure.native_retirement());
-        let source: Arc<dyn ProductionExactCheckpointSource> = Arc::new(closure);
-        prepare_production_source_with_cancellation(
+        let source: Arc<dyn ProductionExactCheckpointPublicationSource> = Arc::new(closure);
+        prepare_production_source_with_cancellation(ProductionSourcePreparation {
             source,
             production_identity,
             scenario,
             configuration,
-            self.maximum_checkpoint_bytes,
+            maximum_checkpoint_bytes: self.maximum_checkpoint_bytes,
             cancellation,
             native_retirement,
-        )
+            promotion_source: None,
+            promotion_evidence: None,
+        })
     }
 
     /// Wraps one no-write replay-oracle replacement as a campaign exact root.
@@ -346,40 +622,50 @@ impl ExactCheckpointStore {
     /// Returns an error when a regenerated snapshot changes, an object identity
     /// or length is inconsistent, aggregate arithmetic overflows, an index or
     /// root exceeds its bound, or the source cannot be reopened.
-    pub fn prepare_production_replay_oracle_promotion(
-        &self,
-        promotion: PreparedProductionReplayOraclePromotion,
-    ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        self.prepare_production_replay_oracle_promotion_inner(promotion, None)
-    }
-
     pub(crate) fn prepare_production_replay_oracle_promotion_with_cancellation(
         &self,
+        raw: ExactCheckpointId,
+        source: ProductionExactCheckpointClosure,
         promotion: PreparedProductionReplayOraclePromotion,
         cancellation: &ExecutionCancellation,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        self.prepare_production_replay_oracle_promotion_inner(promotion, Some(cancellation.clone()))
+        self.prepare_production_replay_oracle_promotion_inner(
+            raw,
+            source,
+            promotion,
+            Some(cancellation.clone()),
+        )
     }
 
     fn prepare_production_replay_oracle_promotion_inner(
         &self,
+        raw: ExactCheckpointId,
+        source: ProductionExactCheckpointClosure,
         promotion: PreparedProductionReplayOraclePromotion,
         cancellation: Option<ExecutionCancellation>,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
         let production_identity = promotion.promoted();
-        let scenario = promotion.scenario();
-        let configuration = promotion.configuration();
-        let native_retirement = Some(promotion.native_retirement());
-        let source: Arc<dyn ProductionExactCheckpointSource> = Arc::new(promotion);
-        prepare_production_source_with_cancellation(
+        if promotion.source() != source.identity() {
+            return Err(invalid_root(
+                "replay-oracle promotion names another native source",
+            ));
+        }
+        let scenario = source.scenario();
+        let configuration = source.configuration();
+        let native_retirement = Some(source.native_retirement());
+        let promotion_evidence = promotion.evidence().to_vec();
+        let source: Arc<dyn ProductionExactCheckpointPublicationSource> = Arc::new(source);
+        prepare_production_source_with_cancellation(ProductionSourcePreparation {
             source,
             production_identity,
             scenario,
             configuration,
-            self.maximum_checkpoint_bytes,
+            maximum_checkpoint_bytes: self.maximum_checkpoint_bytes,
             cancellation,
             native_retirement,
-        )
+            promotion_source: Some(raw),
+            promotion_evidence: Some(promotion_evidence),
+        })
     }
 
     /// Publishes all production objects, index pages, manifest, and root.
@@ -434,6 +720,15 @@ impl ExactCheckpointStore {
                 source.logical_length(),
             )?;
         }
+        if let Some((identity, source)) = &prepared.promotion_evidence {
+            require_durable_receipt(
+                self.backend
+                    .put_if_absent(*identity, source)
+                    .map_err(map_checkpoint_store_error)?,
+                *identity,
+                source.logical_length(),
+            )?;
+        }
         require_durable_receipt(
             {
                 check_cancellation(prepared.cancellation.as_ref())?;
@@ -444,6 +739,9 @@ impl ExactCheckpointStore {
             prepared.root.content_id(),
             prepared.root_source.logical_length(),
         )?;
+        if let Some((evidence, _)) = &prepared.promotion_evidence {
+            self.retain_live_replay_promotion(prepared.root, *evidence)?;
+        }
         Ok(ProductionExactCheckpointPublication {
             root: prepared.root,
             manifest: prepared.manifest_id,
@@ -529,8 +827,32 @@ impl ExactCheckpointStore {
         )?;
         validate_production_object_inventory_bound(body.manifest_bytes, body.object_count)?;
         validate_production_index_geometry(body.object_count, body.index_count)?;
-        let (manifest_id, index_ids) =
+        let (manifest_id, index_ids, promotion_source, promotion_evidence_id) =
             decode_production_root_children(&envelope, body.index_count)?;
+
+        let promotion_evidence = if let Some(identity) = promotion_evidence_id {
+            let mut handle = self.backend.read(identity, None)?;
+            if let Some(cancellation) = cancellation.as_ref() {
+                handle = cancellation_blob_handle(handle, cancellation.clone());
+            }
+            if handle.logical_length() == 0
+                || handle.logical_length() > MAX_PRODUCTION_PROMOTION_EVIDENCE_BYTES
+            {
+                return Err(invalid_root("replay-oracle evidence length is invalid"));
+            }
+            Some(
+                handle
+                    .read_all(MAX_PRODUCTION_PROMOTION_EVIDENCE_BYTES)
+                    .map_err(map_checkpoint_store_error)?,
+            )
+        } else {
+            None
+        };
+        if promotion_source.is_some() != promotion_evidence.is_some() {
+            return Err(invalid_root(
+                "replay-oracle source and evidence children must appear together",
+            ));
+        }
 
         check_cancellation(cancellation.as_ref())?;
         let mut manifest_handle = self.backend.read(manifest_id, None)?;
@@ -551,11 +873,15 @@ impl ExactCheckpointStore {
             .map_err(|_| invalid_root("production object count is not representable"))?;
         let mut objects = Vec::new();
         let mut placements = Vec::new();
+        let mut index_pages = Vec::new();
         objects
             .try_reserve_exact(expected_objects)
             .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
         placements
             .try_reserve_exact(expected_objects)
+            .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
+        index_pages
+            .try_reserve_exact(index_ids.len())
             .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
         let mut object_bytes = 0_u64;
         let mut previous = None;
@@ -585,6 +911,7 @@ impl ExactCheckpointStore {
                 return Err(invalid_root("production index schema or identity mismatch"));
             }
             let page = decode_index_page(&index)?;
+            index_pages.push(bytes);
             if index_ordinal + 1 != index_total && page.len() != PRODUCTION_INDEX_PAGE_OBJECTS {
                 return Err(invalid_root("non-final production index page is not full"));
             }
@@ -614,7 +941,12 @@ impl ExactCheckpointStore {
 
         Ok(LoadedProductionExactCheckpoint {
             root,
+            root_envelope: root_bytes,
+            index_pages,
             production_identity: body.production_identity,
+            promotion_source,
+            promotion_evidence_id,
+            promotion_evidence,
             scenario: body.scenario,
             configuration: body.configuration,
             manifest,
@@ -626,623 +958,9 @@ impl ExactCheckpointStore {
     }
 }
 
-#[cfg(test)]
-fn prepare_production_source(
-    source: Arc<dyn ProductionExactCheckpointSource>,
-    production_identity: ContentHash,
-    scenario: ContentHash,
-    configuration: ContentHash,
-    maximum_checkpoint_bytes: u64,
-) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-    prepare_production_source_with_cancellation(
-        source,
-        production_identity,
-        scenario,
-        configuration,
-        maximum_checkpoint_bytes,
-        None,
-        None,
-    )
-}
+mod publication_format;
 
-fn prepare_production_source_with_cancellation(
-    source: Arc<dyn ProductionExactCheckpointSource>,
-    production_identity: ContentHash,
-    scenario: ContentHash,
-    configuration: ContentHash,
-    maximum_checkpoint_bytes: u64,
-    cancellation: Option<ExecutionCancellation>,
-    native_retirement: Option<ProductionExactCheckpointRetirement>,
-) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-    check_cancellation(cancellation.as_ref())?;
-    let manifest_bytes = source.manifest();
-    if manifest_bytes.len() as u64 > MAX_PRODUCTION_MANIFEST_BYTES {
-        return Err(ExactCheckpointStoreError::ArtifactLimit {
-            artifact: "production-manifest",
-            length: manifest_bytes.len() as u64,
-            maximum: MAX_PRODUCTION_MANIFEST_BYTES,
-        });
-    }
-    let mut owned_manifest = Vec::new();
-    owned_manifest
-        .try_reserve_exact(manifest_bytes.len())
-        .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
-    owned_manifest.extend_from_slice(manifest_bytes);
-    check_cancellation(cancellation.as_ref())?;
-    let mut manifest_source = BlobHandle::from_bytes(owned_manifest);
-    if let Some(cancellation) = cancellation.as_ref() {
-        manifest_source = cancellation_blob_handle(manifest_source, cancellation.clone());
-    }
-    let manifest_id = ContentId::for_source(
-        ObjectKind::DeviceState,
-        PRODUCTION_MANIFEST_SCHEMA_VERSION,
-        &manifest_source,
-    )
-    .map_err(map_checkpoint_store_error)?;
-
-    let mut objects = Vec::new();
-    objects
-        .try_reserve_exact(source.objects().len())
-        .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
-    let mut object_bytes = 0_u64;
-    for object in source.objects() {
-        check_cancellation(cancellation.as_ref())?;
-        object_bytes = object_bytes
-            .checked_add(object.length())
-            .ok_or_else(|| invalid_root("production object byte count overflow"))?;
-        let handle = portable_object_handle(Arc::clone(&source), *object, cancellation.clone());
-        let content = production_object_content_id(&handle)?;
-        objects.push(ProductionObjectPlacement {
-            object: *object,
-            content,
-        });
-    }
-    validate_production_checkpoint_bytes(
-        manifest_source.logical_length(),
-        object_bytes,
-        maximum_checkpoint_bytes,
-    )?;
-    validate_production_object_inventory_bound(
-        manifest_source.logical_length(),
-        u64::try_from(objects.len())
-            .map_err(|_| invalid_root("production object count is not representable"))?,
-    )?;
-
-    let mut indexes = Vec::new();
-    let index_capacity = objects.len().div_ceil(PRODUCTION_INDEX_PAGE_OBJECTS);
-    indexes
-        .try_reserve_exact(index_capacity)
-        .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
-    for page in objects.chunks(PRODUCTION_INDEX_PAGE_OBJECTS) {
-        check_cancellation(cancellation.as_ref())?;
-        let envelope = encode_index_page(page)?;
-        let bytes = envelope.canonical_bytes();
-        let id = envelope.content_id(ObjectKind::ExactManifest);
-        let mut source = BlobHandle::from_bytes(bytes);
-        if let Some(cancellation) = cancellation.as_ref() {
-            source = cancellation_blob_handle(source, cancellation.clone());
-        }
-        indexes.push((id, source));
-    }
-    let index_count = u32::try_from(indexes.len())
-        .map_err(|_| invalid_root("production index count exceeds root representation"))?;
-    let body = encode_production_root_body(ProductionRootBody {
-        production_identity,
-        scenario,
-        configuration,
-        manifest_bytes: manifest_source.logical_length(),
-        object_count: u64::try_from(objects.len())
-            .map_err(|_| invalid_root("production object count is not representable"))?,
-        object_bytes,
-        index_count,
-    });
-    let mut children = BTreeSet::new();
-    children.insert(ContentChild::new(PRODUCTION_MANIFEST_ROLE, manifest_id)?);
-    for (index, (identity, _)) in indexes.iter().enumerate() {
-        children.insert(ContentChild::new(index_role(index)?, *identity)?);
-    }
-    let root_envelope = ContentEnvelope::new(
-        EXACT_CHECKPOINT_ROOT_SCHEMA,
-        EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
-        children,
-        body,
-    )?;
-    let root = ExactCheckpointId::try_from(root_envelope.content_id(ObjectKind::ExactManifest))
-        .map_err(|_| invalid_root("production root identity"))?;
-    let mut root_source = BlobHandle::from_bytes(root_envelope.canonical_bytes());
-    if let Some(cancellation) = cancellation.as_ref() {
-        root_source = cancellation_blob_handle(root_source, cancellation.clone());
-    }
-    Ok(PreparedProductionExactCheckpoint {
-        root,
-        root_source,
-        manifest_id,
-        manifest_source,
-        source,
-        objects,
-        indexes,
-        production_identity,
-        scenario,
-        configuration,
-        object_bytes,
-        cancellation,
-        native_retirement,
-    })
-}
-
-fn encode_index_page(
-    placements: &[ProductionObjectPlacement],
-) -> Result<ContentEnvelope, ExactCheckpointStoreError> {
-    if placements.is_empty() || placements.len() > PRODUCTION_INDEX_PAGE_OBJECTS {
-        return Err(invalid_root(
-            "production index page has an invalid object count",
-        ));
-    }
-    let mut body =
-        Vec::with_capacity(PRODUCTION_INDEX_MAGIC.len() + 4 + placements.len().saturating_mul(40));
-    body.extend_from_slice(PRODUCTION_INDEX_MAGIC);
-    body.extend_from_slice(
-        &u32::try_from(placements.len())
-            .map_err(|_| invalid_root("production index page count is not representable"))?
-            .to_be_bytes(),
-    );
-    let mut children = BTreeSet::new();
-    let mut previous = None;
-    for placement in placements {
-        if previous.is_some_and(|prior| prior >= placement.object.identity()) {
-            return Err(invalid_root(
-                "production index input is not strictly sorted",
-            ));
-        }
-        previous = Some(placement.object.identity());
-        body.extend_from_slice(&placement.object.identity().bytes);
-        body.extend_from_slice(&placement.object.length().to_be_bytes());
-        children.insert(ContentChild::new(
-            object_role(placement.object.identity()),
-            placement.content,
-        )?);
-    }
-    ContentEnvelope::new(
-        PRODUCTION_INDEX_SCHEMA,
-        PRODUCTION_INDEX_SCHEMA_VERSION,
-        children,
-        body,
-    )
-    .map_err(Into::into)
-}
-
-fn decode_index_page(
-    envelope: &ContentEnvelope,
-) -> Result<Vec<ProductionObjectPlacement>, ExactCheckpointStoreError> {
-    let bytes = envelope.body();
-    if bytes.len() < 12 || &bytes[..8] != PRODUCTION_INDEX_MAGIC {
-        return Err(invalid_root("production index body framing is invalid"));
-    }
-    let count = u32::from_be_bytes(
-        bytes[8..12]
-            .try_into()
-            .map_err(|_| invalid_root("production index count is invalid"))?,
-    ) as usize;
-    if count == 0 || count > PRODUCTION_INDEX_PAGE_OBJECTS {
-        return Err(invalid_root("production index object count is invalid"));
-    }
-    let expected = 12_usize
-        .checked_add(
-            count
-                .checked_mul(40)
-                .ok_or_else(|| invalid_root("production index body length overflow"))?,
-        )
-        .ok_or_else(|| invalid_root("production index body length overflow"))?;
-    if bytes.len() != expected || envelope.children().len() != count {
-        return Err(invalid_root(
-            "production index body or child count mismatch",
-        ));
-    }
-    let mut placements = Vec::new();
-    placements
-        .try_reserve_exact(count)
-        .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
-    let mut children = envelope.children().iter();
-    let mut previous = None;
-    for record in bytes[12..].chunks_exact(40) {
-        let mut raw = [0_u8; 32];
-        raw.copy_from_slice(&record[..32]);
-        let identity = ContentHash { bytes: raw };
-        let length = u64::from_be_bytes(
-            record[32..40]
-                .try_into()
-                .map_err(|_| invalid_root("production object length is invalid"))?,
-        );
-        if previous.is_some_and(|prior| prior >= identity) {
-            return Err(invalid_root("production index records are not sorted"));
-        }
-        previous = Some(identity);
-        let child = children
-            .next()
-            .ok_or_else(|| invalid_root("production index child is missing"))?;
-        if child.role() != object_role(identity)
-            || child.id().kind() != ObjectKind::DeviceState
-            || child.id().schema_version() != PRODUCTION_OBJECT_SCHEMA_VERSION
-        {
-            return Err(invalid_root("production index child binding is invalid"));
-        }
-        placements.push(ProductionObjectPlacement {
-            object: ProductionExactCheckpointObject::new(identity, length),
-            content: child.id(),
-        });
-    }
-    if children.next().is_some() {
-        return Err(invalid_root("production index contains an extra child"));
-    }
-    Ok(placements)
-}
-
-#[derive(Clone, Copy)]
-struct ProductionRootBody {
-    production_identity: ContentHash,
-    scenario: ContentHash,
-    configuration: ContentHash,
-    manifest_bytes: u64,
-    object_count: u64,
-    object_bytes: u64,
-    index_count: u32,
-}
-
-fn encode_production_root_body(body: ProductionRootBody) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(PRODUCTION_ROOT_BODY_BYTES);
-    bytes.extend_from_slice(&body.production_identity.bytes);
-    bytes.extend_from_slice(&body.scenario.bytes);
-    bytes.extend_from_slice(&body.configuration.bytes);
-    bytes.extend_from_slice(&body.manifest_bytes.to_be_bytes());
-    bytes.extend_from_slice(&body.object_count.to_be_bytes());
-    bytes.extend_from_slice(&body.object_bytes.to_be_bytes());
-    bytes.extend_from_slice(&body.index_count.to_be_bytes());
-    bytes
-}
-
-fn decode_production_root_body(
-    bytes: &[u8],
-) -> Result<ProductionRootBody, ExactCheckpointStoreError> {
-    if bytes.len() != PRODUCTION_ROOT_BODY_BYTES {
-        return Err(invalid_root("production root body length mismatch"));
-    }
-    let hash = |range: std::ops::Range<usize>| {
-        let mut value = [0_u8; 32];
-        value.copy_from_slice(&bytes[range]);
-        ContentHash { bytes: value }
-    };
-    Ok(ProductionRootBody {
-        production_identity: hash(0..32),
-        scenario: hash(32..64),
-        configuration: hash(64..96),
-        manifest_bytes: u64::from_be_bytes(
-            bytes[96..104]
-                .try_into()
-                .map_err(|_| invalid_root("production manifest length is invalid"))?,
-        ),
-        object_count: u64::from_be_bytes(
-            bytes[104..112]
-                .try_into()
-                .map_err(|_| invalid_root("production object count is invalid"))?,
-        ),
-        object_bytes: u64::from_be_bytes(
-            bytes[112..120]
-                .try_into()
-                .map_err(|_| invalid_root("production object bytes are invalid"))?,
-        ),
-        index_count: u32::from_be_bytes(
-            bytes[120..124]
-                .try_into()
-                .map_err(|_| invalid_root("production index count is invalid"))?,
-        ),
-    })
-}
-
-fn decode_production_root_children(
-    envelope: &ContentEnvelope,
-    index_count: u32,
-) -> Result<(ContentId, Vec<ContentId>), ExactCheckpointStoreError> {
-    let expected = usize::try_from(index_count)
-        .map_err(|_| invalid_root("production index count is not representable"))?;
-    if envelope.children().len() != expected.saturating_add(1) {
-        return Err(invalid_root("production root child count mismatch"));
-    }
-    let mut manifest = None;
-    let mut indexes = vec![None; expected];
-    for child in envelope.children() {
-        if child.role() == PRODUCTION_MANIFEST_ROLE {
-            if manifest.replace(child.id()).is_some()
-                || child.id().kind() != ObjectKind::DeviceState
-                || child.id().schema_version() != PRODUCTION_MANIFEST_SCHEMA_VERSION
-            {
-                return Err(invalid_root("production manifest child is invalid"));
-            }
-            continue;
-        }
-        let suffix = child
-            .role()
-            .strip_prefix(PRODUCTION_INDEX_ROLE_PREFIX)
-            .ok_or_else(|| invalid_root("production root contains an unknown child role"))?;
-        let index = usize::from_str_radix(suffix, 16)
-            .map_err(|_| invalid_root("production index child role is invalid"))?;
-        if suffix.len() != 8
-            || !suffix
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-            || index >= indexes.len()
-            || index_role(index)? != child.role()
-            || indexes[index].replace(child.id()).is_some()
-            || child.id().kind() != ObjectKind::ExactManifest
-            || child.id().schema_version() != PRODUCTION_INDEX_SCHEMA_VERSION
-        {
-            return Err(invalid_root("production index child binding is invalid"));
-        }
-    }
-    let manifest = manifest.ok_or_else(|| invalid_root("production manifest child is missing"))?;
-    let indexes = indexes
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| invalid_root("production index child sequence is incomplete"))?;
-    Ok((manifest, indexes))
-}
-
-fn validate_production_checkpoint_bytes(
-    manifest_bytes: u64,
-    object_bytes: u64,
-    maximum: u64,
-) -> Result<(), ExactCheckpointStoreError> {
-    let length = manifest_bytes
-        .checked_add(object_bytes)
-        .ok_or_else(|| invalid_root("production checkpoint byte count overflow"))?;
-    if length == 0 || length > maximum {
-        return Err(ExactCheckpointStoreError::ArtifactLimit {
-            artifact: "production-closure",
-            length,
-            maximum,
-        });
-    }
-    Ok(())
-}
-
-fn validate_production_index_geometry(
-    object_count: u64,
-    index_count: u32,
-) -> Result<(), ExactCheckpointStoreError> {
-    let page = u64::try_from(PRODUCTION_INDEX_PAGE_OBJECTS)
-        .map_err(|_| invalid_root("production index page size is not representable"))?;
-    let expected = if object_count == 0 {
-        0
-    } else {
-        object_count
-            .checked_add(page - 1)
-            .ok_or_else(|| invalid_root("production index count overflow"))?
-            / page
-    };
-    if expected != u64::from(index_count) {
-        return Err(invalid_root(
-            "production index page geometry is not canonical",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_production_object_inventory_bound(
-    manifest_bytes: u64,
-    object_count: u64,
-) -> Result<(), ExactCheckpointStoreError> {
-    let minimum_manifest_bytes = object_count
-        .checked_mul(PRODUCTION_OBJECT_IDENTITY_BYTES)
-        .ok_or_else(|| invalid_root("production object inventory byte count overflow"))?;
-    if minimum_manifest_bytes > manifest_bytes {
-        return Err(invalid_root(
-            "production object count exceeds the manifest-derived bound",
-        ));
-    }
-    Ok(())
-}
-
-fn index_role(index: usize) -> Result<String, ExactCheckpointStoreError> {
-    let index = u32::try_from(index)
-        .map_err(|_| invalid_root("production index ordinal is not representable"))?;
-    Ok(format!("{PRODUCTION_INDEX_ROLE_PREFIX}{index:08x}"))
-}
-
-fn object_role(identity: ContentHash) -> String {
-    format!("{PRODUCTION_OBJECT_ROLE_PREFIX}{}", identity.to_hex())
-}
-
-fn portable_object_handle(
-    source: Arc<dyn ProductionExactCheckpointSource>,
-    object: ProductionExactCheckpointObject,
-    cancellation: Option<ExecutionCancellation>,
-) -> BlobHandle {
-    BlobHandle::new(Arc::new(PortableObjectBlobSource {
-        source,
-        object,
-        cancellation,
-    }))
-}
-
-fn production_object_content_id(
-    source: &BlobHandle,
-) -> Result<ContentId, ExactCheckpointStoreError> {
-    match ContentId::for_source(
-        ObjectKind::DeviceState,
-        PRODUCTION_OBJECT_SCHEMA_VERSION,
-        source,
-    ) {
-        Ok(identity) => Ok(identity),
-        Err(StoreError::StreamIo { source, .. }) if is_checkpoint_cancellation_io(&source) => {
-            Err(ExactCheckpointStoreError::Canceled)
-        }
-        Err(StoreError::StreamIo { source, .. }) if source.kind() == io::ErrorKind::InvalidData => {
-            Err(invalid_root(
-                "production object failed native identity authentication",
-            ))
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn production_object_put_error(error: StoreError) -> ExactCheckpointStoreError {
-    match error {
-        StoreError::StreamIo { source, .. } if is_checkpoint_cancellation_io(&source) => {
-            ExactCheckpointStoreError::Canceled
-        }
-        StoreError::StreamIo { source, .. } if source.kind() == io::ErrorKind::InvalidData => {
-            invalid_root("production object changed after preparation")
-        }
-        error => error.into(),
-    }
-}
-
-struct PortableObjectBlobSource {
-    source: Arc<dyn ProductionExactCheckpointSource>,
-    object: ProductionExactCheckpointObject,
-    cancellation: Option<ExecutionCancellation>,
-}
-
-impl BlobSource for PortableObjectBlobSource {
-    fn logical_length(&self) -> u64 {
-        self.object.length()
-    }
-
-    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
-        check_cancellation_store(self.cancellation.as_ref())?;
-        let source = self
-            .source
-            .open_object(self.object.identity())
-            .map_err(|error| StoreError::StreamIo {
-                operation: "open-production-checkpoint-object",
-                source: io::Error::other(error.to_string()),
-            })?;
-        Ok(Box::new(NativeIdentityReader {
-            source,
-            expected: self.object.identity(),
-            length: self.object.length(),
-            observed: 0,
-            hasher: blake3::Hasher::new(),
-            finished: false,
-            cancellation: self.cancellation.clone(),
-        }))
-    }
-}
-
-struct NativeIdentityReader {
-    source: Box<dyn Read + Send>,
-    expected: ContentHash,
-    length: u64,
-    observed: u64,
-    hasher: blake3::Hasher,
-    finished: bool,
-    cancellation: Option<ExecutionCancellation>,
-}
-
-impl Read for NativeIdentityReader {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if buffer.is_empty() {
-            return Ok(0);
-        }
-        if self.finished {
-            return Ok(0);
-        }
-        if self
-            .cancellation
-            .as_ref()
-            .is_some_and(ExecutionCancellation::is_canceled)
-        {
-            return Err(io::Error::other(CheckpointCancellationIo));
-        }
-        let limit = buffer.len().min(CHECKPOINT_CANCELLATION_READ_CHUNK_BYTES);
-        let count = self.source.read(&mut buffer[..limit])?;
-        if self
-            .cancellation
-            .as_ref()
-            .is_some_and(ExecutionCancellation::is_canceled)
-        {
-            return Err(io::Error::other(CheckpointCancellationIo));
-        }
-        if count == 0 {
-            self.finished = true;
-            let observed = ContentHash {
-                bytes: *self.hasher.finalize().as_bytes(),
-            };
-            if self.observed != self.length || observed != self.expected {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "production checkpoint object failed native identity authentication",
-                ));
-            }
-            return Ok(0);
-        }
-        self.observed = self
-            .observed
-            .checked_add(u64::try_from(count).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "object length is not representable",
-                )
-            })?)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "object length overflow"))?;
-        if self.observed > self.length {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "production checkpoint object exceeded its declared length",
-            ));
-        }
-        self.hasher.update(&buffer[..count]);
-        Ok(count)
-    }
-}
-
-fn check_cancellation(
-    cancellation: Option<&ExecutionCancellation>,
-) -> Result<(), ExactCheckpointStoreError> {
-    if cancellation.is_some_and(ExecutionCancellation::is_canceled) {
-        return Err(ExactCheckpointStoreError::Canceled);
-    }
-    Ok(())
-}
-
-fn check_cancellation_store(
-    cancellation: Option<&ExecutionCancellation>,
-) -> Result<(), StoreError> {
-    if cancellation.is_some_and(ExecutionCancellation::is_canceled) {
-        return Err(StoreError::StreamIo {
-            operation: "open-canceled-production-checkpoint-object",
-            source: checkpoint_cancellation_io(),
-        });
-    }
-    Ok(())
-}
-
-fn map_production_lifecycle_error(error: LifecycleApiError) -> ExactCheckpointStoreError {
-    match error {
-        LifecycleApiError::AttemptOperational {
-            class: SchedulerOperationalFailureClass::Canceled,
-            ..
-        } => ExactCheckpointStoreError::Canceled,
-        error => ExactCheckpointStoreError::Production(error),
-    }
-}
-
-fn lifecycle_store_error(error: StoreError) -> LifecycleApiError {
-    LifecycleApiError::LoopFactory {
-        message: format!("read production checkpoint CAS object: {error}"),
-    }
-}
-
-fn production_lifecycle_error(error: StoreError) -> LifecycleApiError {
-    match map_checkpoint_store_error(error) {
-        ExactCheckpointStoreError::Canceled => LifecycleApiError::AttemptOperational {
-            class: SchedulerOperationalFailureClass::Canceled,
-            message: String::from("production checkpoint installation canceled"),
-        },
-        error => LifecycleApiError::LoopFactory {
-            message: format!("read production checkpoint CAS object: {error}"),
-        },
-    }
-}
+use publication_format::*;
 
 #[cfg(test)]
 mod tests {
@@ -1253,7 +971,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::Cursor;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
     use crucible_cas::content_store::{
         BackendCapabilities, ByteRange, MemoryBlobBackend, PlacementReceipt,
     };
@@ -1264,19 +984,7 @@ mod tests {
         bytes: BTreeMap<ContentHash, Arc<[u8]>>,
     }
 
-    impl ProductionExactCheckpointSource for MemoryProductionSource {
-        fn identity(&self) -> ContentHash {
-            ContentHash::from_bytes(b"memory production closure")
-        }
-
-        fn scenario(&self) -> ContentHash {
-            ContentHash::from_bytes(b"memory production scenario")
-        }
-
-        fn configuration(&self) -> ContentHash {
-            ContentHash::from_bytes(b"memory production configuration")
-        }
-
+    impl ProductionExactCheckpointPublicationSource for MemoryProductionSource {
         fn manifest(&self) -> &[u8] {
             &self.manifest
         }
@@ -1303,25 +1011,19 @@ mod tests {
         memory: MemoryBlobBackend,
     }
 
+    struct FailOnceDurableMemoryBackend {
+        memory: MemoryBlobBackend,
+        fail_on_put: AtomicUsize,
+        put_count: AtomicUsize,
+    }
+
     struct ChangingProductionSource {
         manifest: Vec<u8>,
         objects: Vec<ProductionExactCheckpointObject>,
         bytes: Arc<Mutex<Vec<u8>>>,
     }
 
-    impl ProductionExactCheckpointSource for ChangingProductionSource {
-        fn identity(&self) -> ContentHash {
-            ContentHash::from_bytes(b"changing production closure")
-        }
-
-        fn scenario(&self) -> ContentHash {
-            ContentHash::from_bytes(b"changing production scenario")
-        }
-
-        fn configuration(&self) -> ContentHash {
-            ContentHash::from_bytes(b"changing production configuration")
-        }
-
+    impl ProductionExactCheckpointPublicationSource for ChangingProductionSource {
         fn manifest(&self) -> &[u8] {
             &self.manifest
         }
@@ -1356,6 +1058,16 @@ mod tests {
             self.memory
                 .object_count()
                 .expect("count production objects")
+        }
+    }
+
+    impl FailOnceDurableMemoryBackend {
+        fn new(fail_on_put: usize) -> Self {
+            Self {
+                memory: MemoryBlobBackend::new("faulting-production-root-test", 64 * 1024 * 1024),
+                fail_on_put: AtomicUsize::new(fail_on_put),
+                put_count: AtomicUsize::new(0),
+            }
         }
     }
 
@@ -1402,18 +1114,66 @@ mod tests {
         }
     }
 
+    impl ImmutableBlobBackend for FailOnceDurableMemoryBackend {
+        fn name(&self) -> &str {
+            "faulting-durable-production-root-test"
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities {
+                durable: true,
+                deferred_write: false,
+                range_read: true,
+                streaming_read: true,
+                conditional_create: true,
+                streaming_put: true,
+                repair_inventory: false,
+                planned_delete: false,
+            }
+        }
+
+        fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+            self.memory.contains(id)
+        }
+
+        fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+            self.memory.read(id, range)
+        }
+
+        fn put_if_absent(
+            &self,
+            id: ContentId,
+            source: &BlobHandle,
+        ) -> Result<PutReceipt, StoreError> {
+            let put = self.put_count.fetch_add(1, Ordering::SeqCst) + 1;
+            if self
+                .fail_on_put
+                .compare_exchange(put, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Err(StoreError::Io {
+                    operation: "faulting-production-put",
+                    path: std::path::PathBuf::from("<faulting-production-store>"),
+                    source: io::Error::from_raw_os_error(rustix::io::Errno::NOSPC.raw_os_error()),
+                });
+            }
+
+            let receipt = self.memory.put_if_absent(id, source)?;
+            Ok(PutReceipt {
+                id: receipt.id,
+                placements: vec![PlacementReceipt {
+                    backend: String::from(self.name()),
+                    durable: true,
+                    logical_length: source.logical_length(),
+                }],
+            })
+        }
+    }
+
     #[test]
     fn production_root_round_trips_more_than_one_index_page() {
         let source = memory_source(PRODUCTION_INDEX_PAGE_OBJECTS + 1);
-        let first = source.objects[0].identity();
-        let last = source
-            .objects
-            .last()
-            .expect("source has objects")
-            .identity();
-        let expected_first = source.bytes[&first].to_vec();
-        let expected_last = source.bytes[&last].to_vec();
-        let source: Arc<dyn ProductionExactCheckpointSource> = Arc::new(source);
+        let source: Arc<dyn ProductionExactCheckpointPublicationSource> = Arc::new(source);
         let production_identity = ContentHash::from_bytes(b"production-closure");
         let scenario = ContentHash::from_bytes(b"production-scenario");
         let configuration = ContentHash::from_bytes(b"production-configuration");
@@ -1434,13 +1194,9 @@ mod tests {
         assert_eq!(prepared.indexes.len(), 2);
         assert_eq!(backend.object_count(), 0);
         let root = prepared.root();
-        let prepared = PreparedAttemptCheckpoint::Production(Box::new(prepared));
         let publication = store
-            .publish_attempt_checkpoint(&prepared)
+            .publish_production_closure(&prepared)
             .expect("publish production closure");
-        let AttemptCheckpointPublication::Production(publication) = publication else {
-            panic!("production preparation must return a production receipt")
-        };
         assert_eq!(publication.root(), root);
         assert_eq!(publication.index_count(), 2);
         assert_eq!(
@@ -1455,16 +1211,6 @@ mod tests {
         assert_eq!(loaded.scenario(), scenario);
         assert_eq!(loaded.configuration(), configuration);
         assert_eq!(loaded.objects().len(), PRODUCTION_INDEX_PAGE_OBJECTS + 1);
-        let mut observed = Vec::new();
-        loaded
-            .copy_object_to(first, &mut observed)
-            .expect("copy first indexed object");
-        assert_eq!(observed, expected_first);
-        observed.clear();
-        loaded
-            .copy_object_to(last, &mut observed)
-            .expect("copy last indexed object");
-        assert_eq!(observed, expected_last);
 
         let loaded = store
             .load_attempt_checkpoint(root)
@@ -1472,14 +1218,11 @@ mod tests {
         assert_eq!(loaded.root(), root);
         assert_eq!(loaded.scenario(), scenario);
         assert_eq!(loaded.configuration(), configuration);
-        assert!(loaded.as_single_node().is_none());
-        assert!(loaded.as_production().is_some());
     }
 
     #[test]
-    fn production_load_and_lazy_objects_retain_execution_cancellation() {
+    fn production_load_rejects_execution_cancellation() {
         let source = memory_source(1);
-        let object = source.objects[0].identity();
         let backend = Arc::new(DurableMemoryBackend::new());
         let store =
             ExactCheckpointStore::new(backend, 64 * 1024 * 1024).expect("admit production store");
@@ -1496,26 +1239,93 @@ mod tests {
             .publish_production_closure(&prepared)
             .expect("publish cancellable production closure");
         let cancellation = ExecutionCancellation::default();
-        let loaded = store
+        store
             .load_production_closure_with_cancellation(root, &cancellation)
             .expect("load production root before cancellation");
 
         cancellation.cancel_for_test();
-        let error = loaded
-            .copy_object_to(object, &mut Vec::new())
-            .expect_err("lazy object copy must retain the load cancellation signal");
-
-        assert!(matches!(
-            error,
-            LifecycleApiError::AttemptOperational {
-                class: SchedulerOperationalFailureClass::Canceled,
-                ..
-            }
-        ));
         assert!(matches!(
             store.load_production_closure_with_cancellation(root, &cancellation),
             Err(ExactCheckpointStoreError::Canceled)
         ));
+    }
+
+    #[test]
+    fn production_exact_capture_enospc_restart_retries_root_last_publication() {
+        let source = memory_source(2);
+        let production_identity = ContentHash::from_bytes(b"enospc production closure");
+        let scenario = ContentHash::from_bytes(b"enospc production scenario");
+        let configuration = ContentHash::from_bytes(b"enospc production configuration");
+        let backend = Arc::new(FailOnceDurableMemoryBackend::new(2));
+        let store = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
+            .expect("admit faulting production store");
+        let prepared = prepare_production_source(
+            Arc::new(source),
+            production_identity,
+            scenario,
+            configuration,
+            64 * 1024 * 1024,
+        )
+        .expect("prepare production closure before injected ENOSPC");
+
+        let error = store
+            .publish_production_closure(&prepared)
+            .expect_err("the configured durable put must fail with ENOSPC");
+        let ExactCheckpointStoreError::Store(StoreError::Io { source, .. }) = error else {
+            panic!("faulting store must preserve the ENOSPC I/O classification");
+        };
+        assert_eq!(
+            source.raw_os_error(),
+            Some(rustix::io::Errno::NOSPC.raw_os_error())
+        );
+        assert!(
+            !backend
+                .contains(prepared.root().content_id())
+                .expect("inspect unpublished production root")
+        );
+
+        drop(store);
+        let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
+            .expect("reopen production store after capacity recovery");
+        let publication = reopened
+            .publish_production_closure(&prepared)
+            .expect("retry identical root-last publication after capacity recovery");
+        let loaded = reopened
+            .load_production_closure(publication.root())
+            .expect("authenticate production closure after retry");
+
+        assert_eq!(loaded.production_identity(), production_identity);
+        assert_eq!(loaded.scenario(), scenario);
+        assert_eq!(loaded.configuration(), configuration);
+    }
+
+    #[test]
+    fn production_exact_capture_cancellation_after_preparation_stops_before_first_write() {
+        let source: Arc<dyn ProductionExactCheckpointPublicationSource> =
+            Arc::new(memory_source(2));
+        let backend = Arc::new(DurableMemoryBackend::new());
+        let store = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
+            .expect("admit cancellable production store");
+        let cancellation = ExecutionCancellation::default();
+        let prepared = prepare_production_source_with_cancellation(ProductionSourcePreparation {
+            source,
+            production_identity: ContentHash::from_bytes(b"canceled production closure"),
+            scenario: ContentHash::from_bytes(b"canceled production scenario"),
+            configuration: ContentHash::from_bytes(b"canceled production configuration"),
+            maximum_checkpoint_bytes: 64 * 1024 * 1024,
+            cancellation: Some(cancellation.clone()),
+            native_retirement: None,
+            promotion_source: None,
+            promotion_evidence: None,
+        })
+        .expect("prepare production closure before cancellation");
+
+        cancellation.cancel_for_test();
+        assert!(matches!(
+            store.publish_production_closure(&prepared),
+            Err(ExactCheckpointStoreError::Canceled)
+        ));
+        assert_eq!(backend.object_count(), 0);
     }
 
     #[test]
@@ -1685,6 +1495,97 @@ mod tests {
             !backend
                 .contains(prepared.root().content_id())
                 .expect("inspect root absence")
+        );
+    }
+
+    #[test]
+    fn raw_root_without_authenticated_source_pair_cannot_resume() {
+        let temporary = tempfile::tempdir().expect("create raw fixture root");
+        let fixture = build_authenticated_production_checkpoint_codec_fixture(
+            &temporary.path().join("native-source"),
+        )
+        .expect("build self-consistent raw closure");
+        let backend = Arc::new(DurableMemoryBackend::new());
+        let store =
+            ExactCheckpointStore::new(backend, 1024 * 1024 * 1024).expect("admit production store");
+        let prepared = store
+            .prepare_production_closure(fixture.closure().clone())
+            .expect("prepare raw root");
+        let checkpoint = prepared.root();
+        store
+            .publish_production_closure(&prepared)
+            .expect("publish raw root");
+
+        let result = crate::exact_checkpoint_restore::install_attempt_production_resume_checkpoint(
+            &store,
+            checkpoint,
+            fixture.source(),
+            fixture.configuration(),
+            None,
+            &crate::ExecutionCancellation::default(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+                checkpoint: rejected,
+            }) if rejected == checkpoint
+        ));
+        assert!(!temporary.path().join("resume-install").exists());
+    }
+
+    #[test]
+    fn live_replay_promotion_claim_is_retryable_once_and_not_reopened() {
+        let backend = Arc::new(DurableMemoryBackend::new());
+        let store = ExactCheckpointStore::new(backend.clone(), 1024 * 1024)
+            .expect("admit production store");
+        let root = ExactCheckpointId::try_from(ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
+            b"live replay promotion root",
+        ))
+        .expect("type replay promotion root");
+        let evidence = ContentId::for_bytes(
+            ObjectKind::Observation,
+            PRODUCTION_PROMOTION_EVIDENCE_SCHEMA_VERSION,
+            b"live replay comparison evidence",
+        );
+        store
+            .retain_live_replay_promotion(root, evidence)
+            .expect("retain live replay result");
+
+        let first = store
+            .acquire_live_replay_promotion(root, evidence)
+            .expect("acquire first replay claim")
+            .expect("first replay claim is available");
+        assert!(
+            store
+                .acquire_live_replay_promotion(root, evidence)
+                .expect("inspect concurrent replay claim")
+                .is_none()
+        );
+        drop(first);
+
+        let retry = store
+            .acquire_live_replay_promotion(root, evidence)
+            .expect("retry replay claim after transient failure")
+            .expect("dropped replay claim is restored");
+        retry.commit().expect("commit replay claim");
+        assert!(
+            store
+                .acquire_live_replay_promotion(root, evidence)
+                .expect("inspect spent replay claim")
+                .is_none()
+        );
+        assert!(store.retain_live_replay_promotion(root, evidence).is_err());
+
+        let reopened =
+            ExactCheckpointStore::new(backend, 1024 * 1024).expect("reopen production store");
+        assert!(
+            reopened
+                .acquire_live_replay_promotion(root, evidence)
+                .expect("inspect reopened replay claim")
+                .is_none()
         );
     }
 

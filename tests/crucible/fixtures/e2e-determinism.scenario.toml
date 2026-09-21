@@ -1,7 +1,7 @@
 schema = "crucible.scenario.v7"
 
 [scenario]
-id = "blake3:0c02b73f03b4705aec03a2989bfeb13dc7be67730f7c79994dd44a2b6265da69"
+id = "blake3:206701ab688f75e9feae6d47d3f3a0a3e0178435bde24444d75f926d7fa4d3b5"
 seed = "0x2e0e000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 0
 selectable_declarations_per_node = 4096
@@ -10,7 +10,7 @@ selectable_requests_per_selectable = 1000000
 selectable_requests_per_node = 1000000
 
 [world]
-id = "blake3:cb637fc90c30ad86d73e506ce3bd8596be8087c90f5cad8d03223ae6414096c6"
+id = "blake3:bfd42d876dcf9f24b4a6f0d4a9cedd7ac22948573941241f59c0aca1820e495e"
 
 [[world.node]]
 id = "curl"
@@ -19,8 +19,8 @@ memory_mib = 256
 cmdline = "console=ttyS0 address=10.0.0.3 target=10.0.0.2:8080 count=1 continue=1 probe-block=1 crucible.workload=httpget"
 smp_vcpus = 1
 icount_shift = 7
-kernel = "blake3:a4194441ab98bbe9a34b7ac6ff4d31f8e6351bad1553371ebccfa3f15e951148"
-root_image = "blake3:149d73e22b5d2ccde85ab13fa448b295711d2fc6e88f9c3117e481c2c08a3fed"
+kernel = "blake3:9dca341b9dfaf03f4b6e74ddd542ff0b5a00175f3e81285fae60e4b35004727a"
+root_image = "blake3:f5d140c665d7360e5d2144d0aeca2d3ce5c1ec776a47f3053fd41088853a9760"
 white_box = "enabled"
 
 [world.node.ready_point]
@@ -34,8 +34,8 @@ memory_mib = 256
 cmdline = "console=ttyS0 role=io-probe crucible.workload=bench"
 smp_vcpus = 1
 icount_shift = 7
-kernel = "blake3:a4194441ab98bbe9a34b7ac6ff4d31f8e6351bad1553371ebccfa3f15e951148"
-root_image = "blake3:149d73e22b5d2ccde85ab13fa448b295711d2fc6e88f9c3117e481c2c08a3fed"
+kernel = "blake3:9dca341b9dfaf03f4b6e74ddd542ff0b5a00175f3e81285fae60e4b35004727a"
+root_image = "blake3:f5d140c665d7360e5d2144d0aeca2d3ce5c1ec776a47f3053fd41088853a9760"
 white_box = "enabled"
 
 [world.node.ready_point]
@@ -49,8 +49,8 @@ memory_mib = 256
 cmdline = "console=ttyS0 address=10.0.0.2 port=8080 crucible.workload=httpd"
 smp_vcpus = 1
 icount_shift = 7
-kernel = "blake3:a4194441ab98bbe9a34b7ac6ff4d31f8e6351bad1553371ebccfa3f15e951148"
-root_image = "blake3:149d73e22b5d2ccde85ab13fa448b295711d2fc6e88f9c3117e481c2c08a3fed"
+kernel = "blake3:9dca341b9dfaf03f4b6e74ddd542ff0b5a00175f3e81285fae60e4b35004727a"
+root_image = "blake3:f5d140c665d7360e5d2144d0aeca2d3ce5c1ec776a47f3053fd41088853a9760"
 white_box = "disabled"
 
 [world.node.ready_point]

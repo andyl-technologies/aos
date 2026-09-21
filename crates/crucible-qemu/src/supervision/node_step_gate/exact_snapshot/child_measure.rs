@@ -8,7 +8,8 @@
 //! Crucible's state paths depends on them.
 
 use std::fs;
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
 use super::child_files::invariant;
 use super::*;
@@ -24,6 +25,8 @@ pub(super) struct ProcessFootprint {
     pub(super) rss_anon_kib: u64,
     /// Private dirty memory in KiB across every mapping.
     pub(super) private_dirty_kib: u64,
+    /// Private clean memory in KiB across every mapping.
+    pub(super) private_clean_kib: u64,
 }
 
 impl ProcessFootprint {
@@ -38,7 +41,8 @@ impl ProcessFootprint {
         })?;
         let threads = status_field(&status, "Threads:")
             .ok_or_else(|| invariant("process status lacks a thread count"))?;
-        let rss_anon_kib = status_field(&status, "RssAnon:").unwrap_or(0);
+        let rss_anon_kib = status_field(&status, "RssAnon:")
+            .ok_or_else(|| invariant("process status lacks an anonymous RSS measurement"))?;
         let descriptors = fs::read_dir(process.join("fd"))
             .map_err(|source| QemuLiveNodeStepGateError::PrepareRunDirectory {
                 path: process.join("fd"),
@@ -47,15 +51,58 @@ impl ProcessFootprint {
             .count();
         let descriptors = u64::try_from(descriptors)
             .map_err(|_error| invariant("descriptor count overflowed"))?;
-        let rollup = fs::read_to_string(process.join("smaps_rollup")).unwrap_or_default();
-        let private_dirty_kib = status_field(&rollup, "Private_Dirty:").unwrap_or(0);
+        let rollup = fs::read_to_string(process.join("smaps_rollup")).map_err(|source| {
+            QemuLiveNodeStepGateError::PrepareRunDirectory {
+                path: process.join("smaps_rollup"),
+                source,
+            }
+        })?;
+        let private_dirty_kib = status_field(&rollup, "Private_Dirty:")
+            .ok_or_else(|| invariant("process smaps rollup lacks private-dirty memory"))?;
+        let private_clean_kib = status_field(&rollup, "Private_Clean:")
+            .ok_or_else(|| invariant("process smaps rollup lacks private-clean memory"))?;
         Ok(Self {
             threads,
             descriptors,
             rss_anon_kib,
             private_dirty_kib,
+            private_clean_kib,
         })
     }
+
+    /// Returns clean and dirty private resident memory in KiB.
+    pub(super) const fn private_rss_kib(self) -> u64 {
+        self.private_clean_kib
+            .saturating_add(self.private_dirty_kib)
+    }
+}
+
+/// Returns physical bytes allocated below `root` without following symlinks.
+pub(super) fn allocated_tree_bytes(root: &Path) -> Result<u64, QemuLiveNodeStepGateError> {
+    let metadata = fs::symlink_metadata(root).map_err(|source| {
+        QemuLiveNodeStepGateError::PrepareRunDirectory {
+            path: root.to_path_buf(),
+            source,
+        }
+    })?;
+    let mut allocated = metadata.blocks().saturating_mul(512);
+    if !metadata.is_dir() {
+        return Ok(allocated);
+    }
+
+    let entries =
+        fs::read_dir(root).map_err(|source| QemuLiveNodeStepGateError::PrepareRunDirectory {
+            path: root.to_path_buf(),
+            source,
+        })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| QemuLiveNodeStepGateError::PrepareRunDirectory {
+            path: root.to_path_buf(),
+            source,
+        })?;
+        allocated = allocated.saturating_add(allocated_tree_bytes(&entry.path())?);
+    }
+    Ok(allocated)
 }
 
 /// Parses the first numeric field of the line starting with `key`.

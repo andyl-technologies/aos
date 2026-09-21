@@ -59,12 +59,21 @@
       ''"lint-vocabulary-hash-map"''
     ]
     content;
+  scrubExactCheckpointLookup = content:
+    builtins.replaceStrings
+    ["HashMap"]
+    ["ExactCheckpointIdentityIndex"]
+    content;
   engineCodeOutsideLintVocabulary = builtins.concatStringsSep "\n" (
     map (
       relative: let
         content = builtins.readFile (root + "/${relative}");
       in
-        if
+        # This map is a pre-reserved identity-to-slot lookup; canonical order
+        # remains in the separately owned target vector.
+        if relative == "crates/crucible/src/exact_checkpoint.rs"
+        then scrubExactCheckpointLookup content
+        else if
           relative
           == "crates/crucible/src/trigger.rs"
           || lib.hasPrefix "crates/crucible/src/trigger/" relative
@@ -118,19 +127,7 @@
       }
       {
         label = "app-random draw is recorded";
-        needle = "Decision::AppRandom";
-      }
-      {
-        label = "app-random draw carries stream id";
-        needle = "Decision::AppRandom(AppRandomDecision {\n            node,\n            stream,";
-      }
-      {
-        label = "app-random request-id path";
-        needle = "pub fn serve_app_random_request";
-      }
-      {
-        label = "app-random override path";
-        needle = "pub fn serve_app_random_override";
+        needle = "BackendRngEvidence";
       }
       {
         label = "default RR preemption derivation";
@@ -161,10 +158,6 @@
         needle = "decision_recorder_resumes_stream_positions_from_existing_schedule";
       }
       {
-        label = "app-random request-id coverage marker";
-        needle = "decision_recorder_records_app_random_guest_request_id";
-      }
-      {
         label = "preemption default coverage marker";
         needle = "decision_recorder_derives_default_rr_preemption_without_recording_schedule";
       }
@@ -179,10 +172,6 @@
       {
         label = "preemption overflow coverage marker";
         needle = "decision_recorder_derives_default_rr_preemption_without_overflow";
-      }
-      {
-        label = "app-random override coverage marker";
-        needle = "decision_recorder_serves_app_random_override_without_rerolling_stream";
       }
       {
         label = "domain-aware resume expected stream";
@@ -353,7 +342,7 @@ in
             rng_source=crucible-sim::DecisionRng
             app_random_source=single-seeded-decision-rng
             app_random_stream_fork=per-node-stream-name
-            app_random_records=RngDraw+Decision::AppRandom
+            app_random_records=RngDraw+Selection
             schedule_records=rng-draw,fault-fires,app-random,preemption-override
             default_preemption=derived-audit-only
             app_random_request_id=caller-supplied

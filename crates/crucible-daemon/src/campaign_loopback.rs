@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV20 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV21 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -57,8 +57,10 @@
 //!       50 (QueryCampaignReportRequestV1) |
 //!       51 (QueryCampaignReportResponseV1) |
 //!       52 (GetCampaignFindingTriageReplaySegmentRequestV1) |
-//!       53 (GetCampaignFindingTriageReplaySegmentResponseV1)
-//! magic = "CRUCCS20"
+//!       53 (GetCampaignFindingTriageReplaySegmentResponseV1) |
+//!       54 (OpenCampaignDebugSessionRequestV1) |
+//!       55 (OpenCampaignDebugSessionResponseV1)
+//! magic = "CRUCCS21"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -73,12 +75,11 @@
 //! one operational principal, and requires every request on that connection to
 //! claim exactly that principal before applying the ordinary service policy.
 
-use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, TryLockError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crucible_campaign::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
@@ -96,9 +97,8 @@ use crucible_campaign::{
     GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
     GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
     GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, GetCampaignStatusRequest,
-    GetCampaignStatusResponse, ListCampaignsRequest, ListCampaignsResponse,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinCampaignResponse,
-    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    GetCampaignStatusResponse, ListCampaignsRequest, ListCampaignsResponse, PinCampaignRequest,
+    PinCampaignResponse, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
     QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
     QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
@@ -108,11 +108,26 @@ use crucible_campaign::{
 };
 
 use crate::{
-    AttachCampaignRuntimeRequest, AttachCampaignRuntimeResponse, CampaignRuntimeControlCodecError,
-    CampaignRuntimeControlService,
+    AttachCampaignRuntimeRequest, AttachCampaignRuntimeResponse, CampaignDebugControlService,
+    CampaignRuntimeControlService, OpenCampaignDebugSessionRequest,
+    OpenCampaignDebugSessionResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS20";
+mod server;
+pub(crate) use server::{
+    CampaignConnectionControls,
+    serve_authenticated_repository_campaign_connection_with_controls_limits,
+};
+
+mod transport;
+#[cfg(test)]
+use transport::read_frame;
+pub use transport::{
+    LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignServiceError,
+};
+use transport::{configure_stream, read_frame_any, validate_timeouts, write_frame};
+
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS21";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -121,6 +136,8 @@ const APPLY_COMMAND_RESPONSE_KIND: u8 = 4;
 const SUBMIT_BRANCH_REQUEST_KIND: u8 = 5;
 const SUBMIT_BRANCH_RESPONSE_KIND: u8 = 6;
 const SERVICE_ERROR_RESPONSE_KIND: u8 = 7;
+const OPEN_CAMPAIGN_DEBUG_SESSION_REQUEST_KIND: u8 = 54;
+const OPEN_CAMPAIGN_DEBUG_SESSION_RESPONSE_KIND: u8 = 55;
 const CREATE_CAMPAIGN_REQUEST_KIND: u8 = 8;
 const CREATE_CAMPAIGN_RESPONSE_KIND: u8 = 9;
 const DERIVE_CAMPAIGN_REQUEST_KIND: u8 = 10;
@@ -287,6 +304,30 @@ impl LoopbackCampaignService {
                 Ok(response)
             },
             CampaignServiceFailure::validate_for_attach_campaign_runtime,
+        )
+    }
+
+    /// Opens one authenticated exclusive read-only campaign debug session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoopbackCampaignServiceError`] for a stable remote failure or
+    /// any framing, codec, request-binding, deadline, or connection failure.
+    pub fn open_campaign_debug_session(
+        &self,
+        request: &OpenCampaignDebugSessionRequest,
+    ) -> Result<OpenCampaignDebugSessionResponse, LoopbackCampaignServiceError> {
+        self.exchange(
+            OPEN_CAMPAIGN_DEBUG_SESSION_REQUEST_KIND,
+            OPEN_CAMPAIGN_DEBUG_SESSION_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = OpenCampaignDebugSessionResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            CampaignServiceFailure::validate_for_debug_campaign,
         )
     }
 
@@ -926,6 +967,51 @@ trait RuntimeControlDispatch {
     ) -> Result<AttachCampaignRuntimeResponse, CampaignServiceFailure>;
 }
 
+trait DebugControlDispatch {
+    fn open_campaign_debug_session(
+        &self,
+        request: &OpenCampaignDebugSessionRequest,
+        finding: GetCampaignFindingObjectResponse,
+    ) -> Result<OpenCampaignDebugSessionResponse, CampaignServiceFailure>;
+}
+
+struct AuthorizedDebugControlDispatch<'a, A: ?Sized> {
+    principal: &'a CampaignPrincipal,
+    authorizer: &'a A,
+    service: Option<&'a dyn CampaignDebugControlService>,
+}
+
+impl<A> DebugControlDispatch for AuthorizedDebugControlDispatch<'_, A>
+where
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
+    fn open_campaign_debug_session(
+        &self,
+        request: &OpenCampaignDebugSessionRequest,
+        finding: GetCampaignFindingObjectResponse,
+    ) -> Result<OpenCampaignDebugSessionResponse, CampaignServiceFailure> {
+        if request.principal() != self.principal {
+            return Err(CampaignServiceFailure::Unauthorized);
+        }
+        self.authorizer
+            .authorize(
+                request.principal(),
+                CampaignServiceOperation::DebugCampaign,
+                request.campaign(),
+                request.request_digest(),
+            )
+            .map_err(|error| match error {
+                CampaignAuthorizationError::Unauthorized => CampaignServiceFailure::Unauthorized,
+                CampaignAuthorizationError::Unavailable => {
+                    CampaignServiceFailure::AuthorizationUnavailable
+                }
+            })?;
+        self.service
+            .ok_or(CampaignServiceFailure::Unavailable)?
+            .open_campaign_debug_session(request, finding)
+    }
+}
+
 struct AuthorizedRuntimeControlDispatch<'a, A: ?Sized> {
     principal: &'a CampaignPrincipal,
     authorizer: &'a A,
@@ -962,302 +1048,8 @@ where
     }
 }
 
-/// Serves one repository request after binding Linux peer credentials.
-///
-/// This is the production connected-stream authorization boundary. It reads
-/// `SO_PEERCRED` before decoding the request, resolves the credential through
-/// `principal_resolver`, and rejects a request whose self-described principal
-/// differs from that authenticated result before repository access.
-///
-/// # Errors
-///
-/// Returns [`LoopbackCampaignServerError`] when peer authentication,
-/// authorization resolution, framing, canonical validation, response binding,
-/// or bounded socket I/O fails.
-pub fn serve_authenticated_repository_campaign_once<R, A>(
-    stream: &mut UnixStream,
-    repository: &CampaignRepository,
-    principal_resolver: &R,
-    authorizer: &A,
-) -> Result<(), LoopbackCampaignServerError>
-where
-    R: UnixPeerCampaignPrincipalResolver + ?Sized,
-    A: CampaignPrincipalAuthorizer + ?Sized,
-{
-    serve_authenticated_repository_campaign_once_with_timeouts(
-        stream,
-        repository,
-        principal_resolver,
-        authorizer,
-        LoopbackCampaignTimeouts::default(),
-    )
-}
-
-/// Serves one peer-bound repository request with explicit finite deadlines.
-///
-/// # Errors
-///
-/// Returns the same failures as
-/// [`serve_authenticated_repository_campaign_once`].
-pub fn serve_authenticated_repository_campaign_once_with_timeouts<R, A>(
-    stream: &mut UnixStream,
-    repository: &CampaignRepository,
-    principal_resolver: &R,
-    authorizer: &A,
-    timeouts: LoopbackCampaignTimeouts,
-) -> Result<(), LoopbackCampaignServerError>
-where
-    R: UnixPeerCampaignPrincipalResolver + ?Sized,
-    A: CampaignPrincipalAuthorizer + ?Sized,
-{
-    let result = (|| {
-        let peer = rustix::net::sockopt::socket_peercred(&*stream)
-            .map_err(|error| LoopbackCampaignProtocolError::Io(std::io::Error::from(error)))?;
-        let credentials = UnixPeerCampaignCredentials {
-            process_id: peer.pid.as_raw_pid(),
-            user_id: peer.uid.as_raw(),
-            group_id: peer.gid.as_raw(),
-        };
-        let principal = principal_resolver.resolve_campaign_principal(credentials)?;
-        let peer_authorizer = PeerBoundCampaignAuthorizer {
-            principal,
-            inner: authorizer,
-        };
-        let service = RepositoryCampaignService::new(repository, peer_authorizer);
-        serve_loopback_campaign_inner(stream, &service, timeouts)
-    })();
-    if result.is_err() {
-        let _ = stream.shutdown(Shutdown::Both);
-    }
-    result
-}
-
-/// Serves one authenticated repository connection until clean peer shutdown.
-///
-/// Linux peer credentials are captured and resolved exactly once, before the
-/// first request is decoded. Every request on the connection is then checked
-/// against that immutable principal and the supplied operation authorizer.
-/// Semantic service failures remain on the connection; framing, canonical,
-/// response-contract, or I/O failures close it.
-///
-/// # Errors
-///
-/// Returns [`LoopbackCampaignServerError`] when peer authentication,
-/// authorization resolution, framing, canonical validation, response binding,
-/// or bounded socket I/O fails. A clean peer close between frames returns
-/// success.
-pub fn serve_authenticated_repository_campaign_connection<R, A>(
-    stream: &mut UnixStream,
-    repository: &CampaignRepository,
-    principal_resolver: &R,
-    authorizer: &A,
-) -> Result<(), LoopbackCampaignServerError>
-where
-    R: UnixPeerCampaignPrincipalResolver + ?Sized,
-    A: CampaignPrincipalAuthorizer + ?Sized,
-{
-    serve_authenticated_repository_campaign_connection_with_timeouts(
-        stream,
-        repository,
-        principal_resolver,
-        authorizer,
-        LoopbackCampaignTimeouts::default(),
-    )
-}
-
-/// Serves one authenticated repository connection with finite deadlines.
-///
-/// # Errors
-///
-/// Returns the same failures as
-/// [`serve_authenticated_repository_campaign_connection`].
-pub fn serve_authenticated_repository_campaign_connection_with_timeouts<R, A>(
-    stream: &mut UnixStream,
-    repository: &CampaignRepository,
-    principal_resolver: &R,
-    authorizer: &A,
-    timeouts: LoopbackCampaignTimeouts,
-) -> Result<(), LoopbackCampaignServerError>
-where
-    R: UnixPeerCampaignPrincipalResolver + ?Sized,
-    A: CampaignPrincipalAuthorizer + ?Sized,
-{
-    serve_authenticated_repository_campaign_connection_with_limits(
-        stream,
-        repository,
-        principal_resolver,
-        authorizer,
-        timeouts,
-        DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION,
-    )
-}
-
-/// Serves one authenticated repository connection with exact operation bounds.
-///
-/// The request ceiling is a connection-fairness boundary. Reaching it closes
-/// the stream cleanly after the last complete response so a client reconnects
-/// and re-enters bounded listener admission.
-///
-/// # Errors
-///
-/// Returns the same failures as
-/// [`serve_authenticated_repository_campaign_connection`], plus
-/// [`LoopbackCampaignProtocolError::InvalidRequestLimit`] when
-/// `maximum_requests` is zero or exceeds
-/// [`MAX_CAMPAIGN_REQUESTS_PER_CONNECTION`].
-pub fn serve_authenticated_repository_campaign_connection_with_limits<R, A>(
-    stream: &mut UnixStream,
-    repository: &CampaignRepository,
-    principal_resolver: &R,
-    authorizer: &A,
-    timeouts: LoopbackCampaignTimeouts,
-    maximum_requests: usize,
-) -> Result<(), LoopbackCampaignServerError>
-where
-    R: UnixPeerCampaignPrincipalResolver + ?Sized,
-    A: CampaignPrincipalAuthorizer + ?Sized,
-{
-    serve_authenticated_repository_campaign_connection_with_runtime_control_limits(
-        stream,
-        repository,
-        principal_resolver,
-        authorizer,
-        None,
-        timeouts,
-        maximum_requests,
-    )
-}
-
-/// Serves one authenticated connection with optional runtime control.
-///
-/// The runtime capability is invoked only after exact peer-principal binding
-/// and the ordinary per-campaign authorization policy grant the distinct
-/// [`CampaignServiceOperation::AttachCampaignRuntime`] operation. `None`
-/// preserves the same protocol vocabulary but returns a request-bound
-/// unavailable failure without exposing repository or component authority.
-///
-/// # Errors
-///
-/// Returns the same failures as
-/// [`serve_authenticated_repository_campaign_connection_with_limits`].
-// crucible-lint: allow rust-allow -- the explicit arguments expose every security boundary.
-#[allow(clippy::too_many_arguments)]
-pub fn serve_authenticated_repository_campaign_connection_with_runtime_control_limits<R, A>(
-    stream: &mut UnixStream,
-    repository: &CampaignRepository,
-    principal_resolver: &R,
-    authorizer: &A,
-    runtime_control: Option<&dyn CampaignRuntimeControlService>,
-    timeouts: LoopbackCampaignTimeouts,
-    maximum_requests: usize,
-) -> Result<(), LoopbackCampaignServerError>
-where
-    R: UnixPeerCampaignPrincipalResolver + ?Sized,
-    A: CampaignPrincipalAuthorizer + ?Sized,
-{
-    serve_authenticated_repository_campaign_connection_with_controls_limits(
-        stream,
-        repository,
-        principal_resolver,
-        authorizer,
-        runtime_control,
-        None,
-        timeouts,
-        maximum_requests,
-    )
-}
-
-/// Serves one authenticated connection with optional runtime and status capabilities.
-///
-/// The status provider is consulted only after the ordinary request principal,
-/// campaign, and current snapshot have been authenticated by the repository
-/// service. `None` returns explicit unavailable operational evidence.
-///
-/// # Errors
-///
-/// Returns the same failures as
-/// [`serve_authenticated_repository_campaign_connection_with_limits`].
-// crucible-lint: allow rust-allow -- the explicit arguments expose every security boundary.
-#[allow(clippy::too_many_arguments)]
-pub fn serve_authenticated_repository_campaign_connection_with_controls_limits<R, A>(
-    stream: &mut UnixStream,
-    repository: &CampaignRepository,
-    principal_resolver: &R,
-    authorizer: &A,
-    runtime_control: Option<&dyn CampaignRuntimeControlService>,
-    operational_status: Option<&dyn CampaignOperationalStatusProvider>,
-    timeouts: LoopbackCampaignTimeouts,
-    maximum_requests: usize,
-) -> Result<(), LoopbackCampaignServerError>
-where
-    R: UnixPeerCampaignPrincipalResolver + ?Sized,
-    A: CampaignPrincipalAuthorizer + ?Sized,
-{
-    if maximum_requests == 0 || maximum_requests > MAX_CAMPAIGN_REQUESTS_PER_CONNECTION {
-        let _ = stream.shutdown(Shutdown::Both);
-        return Err(LoopbackCampaignProtocolError::InvalidRequestLimit.into());
-    }
-    let result = (|| {
-        let peer = rustix::net::sockopt::socket_peercred(&*stream)
-            .map_err(|error| LoopbackCampaignProtocolError::Io(std::io::Error::from(error)))?;
-        let credentials = UnixPeerCampaignCredentials {
-            process_id: peer.pid.as_raw_pid(),
-            user_id: peer.uid.as_raw(),
-            group_id: peer.gid.as_raw(),
-        };
-        let principal = principal_resolver.resolve_campaign_principal(credentials)?;
-        let peer_authorizer = PeerBoundCampaignAuthorizer {
-            principal: principal.clone(),
-            inner: authorizer,
-        };
-        let service = RepositoryCampaignService::new(repository, peer_authorizer);
-        let service = match operational_status {
-            Some(provider) => service.with_operational_status(provider),
-            None => service,
-        };
-        let runtime_dispatch = AuthorizedRuntimeControlDispatch {
-            principal: &principal,
-            authorizer,
-            service: runtime_control,
-        };
-
-        for _ in 0..maximum_requests {
-            match serve_loopback_campaign_inner_with_runtime_control(
-                stream,
-                &service,
-                Some(&runtime_dispatch),
-                timeouts,
-            ) {
-                Ok(()) => {}
-                Err(LoopbackCampaignServerError::Protocol(
-                    LoopbackCampaignProtocolError::ConnectionClosed,
-                )) => return Ok(()),
-                Err(error) => return Err(error),
-            }
-        }
-        let _ = stream.shutdown(Shutdown::Both);
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = stream.shutdown(Shutdown::Both);
-    }
-    result
-}
-
-/// Serves one strict campaign-service request/response exchange.
-///
-/// The stream is shut down in both directions before any protocol error is
-/// returned. Service failures become exact request-bound error responses and
-/// leave the connection reusable.
-/// The caller remains responsible for authenticating the connected peer and
-/// binding that evidence into the supplied service's principal authorizer.
-///
-/// # Errors
-///
-/// Returns [`LoopbackCampaignServerError::Protocol`] for malformed framing,
-/// canonical input, invalid response binding, or bounded socket I/O.
-// crucible-lint: allow host-nondeterminism-state -- This public transport boundary applies finite socket deadlines but never exposes their values or feeds them into campaign state.
-pub fn serve_loopback_campaign_once<S>(
+#[cfg(test)]
+fn serve_loopback_campaign_once<S>(
     stream: &mut UnixStream,
     service: &S,
 ) -> Result<(), LoopbackCampaignServerError>
@@ -1268,12 +1060,8 @@ where
     serve_loopback_campaign_once_with_timeouts(stream, service, LoopbackCampaignTimeouts::default())
 }
 
-/// Serves one strict exchange with explicit finite operation deadlines.
-///
-/// # Errors
-///
-/// Returns the same failures as [`serve_loopback_campaign_once`].
-pub fn serve_loopback_campaign_once_with_timeouts<S>(
+#[cfg(test)]
+fn serve_loopback_campaign_once_with_timeouts<S>(
     stream: &mut UnixStream,
     service: &S,
     timeouts: LoopbackCampaignTimeouts,
@@ -1282,29 +1070,18 @@ where
     S: CampaignService + CampaignFindingOccurrenceService,
     S::Error: CampaignServiceFailureSource,
 {
-    let result = serve_loopback_campaign_inner(stream, service, timeouts);
+    let result = serve_loopback_campaign_inner_with_controls(stream, service, None, None, timeouts);
     if result.is_err() {
         let _ = stream.shutdown(Shutdown::Both);
     }
     result
 }
 
-fn serve_loopback_campaign_inner<S>(
-    stream: &mut UnixStream,
-    service: &S,
-    timeouts: LoopbackCampaignTimeouts,
-) -> Result<(), LoopbackCampaignServerError>
-where
-    S: CampaignService + CampaignFindingOccurrenceService,
-    S::Error: CampaignServiceFailureSource,
-{
-    serve_loopback_campaign_inner_with_runtime_control(stream, service, None, timeouts)
-}
-
-fn serve_loopback_campaign_inner_with_runtime_control<S>(
+fn serve_loopback_campaign_inner_with_controls<S>(
     stream: &mut UnixStream,
     service: &S,
     runtime_control: Option<&dyn RuntimeControlDispatch>,
+    debug_control: Option<&dyn DebugControlDispatch>,
     timeouts: LoopbackCampaignTimeouts,
 ) -> Result<(), LoopbackCampaignServerError>
 where
@@ -1314,6 +1091,43 @@ where
     configure_stream(stream, timeouts)?;
     let (kind, body) = read_frame_any(stream, timeouts.read)?;
     let (response_kind, response) = match kind {
+        OPEN_CAMPAIGN_DEBUG_SESSION_REQUEST_KIND => {
+            let request = OpenCampaignDebugSessionRequest::from_canonical_bytes(&body)?;
+            let debug_control =
+                debug_control.ok_or(LoopbackCampaignProtocolError::InvalidFrame {
+                    reason: "debug-control-unavailable",
+                })?;
+            let finding_request = GetCampaignFindingObjectRequest::new(
+                request.principal().clone(),
+                request.campaign().clone(),
+                request.snapshot(),
+                request.finding(),
+                crucible_campaign::CampaignFindingObjectKind::Reproduction,
+            )?;
+            match service.get_campaign_finding_object(&finding_request) {
+                Ok(finding) => {
+                    finding.validate_for(&finding_request)?;
+                    match debug_control.open_campaign_debug_session(&request, finding) {
+                        Ok(response) => {
+                            response.validate_for(&request)?;
+                            (
+                                OPEN_CAMPAIGN_DEBUG_SESSION_RESPONSE_KIND,
+                                response.canonical_bytes(),
+                            )
+                        }
+                        Err(failure) => {
+                            failure.validate_for_debug_campaign()?;
+                            service_error_response(request.request_digest(), &failure)?
+                        }
+                    }
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    failure.validate_for_get_campaign_finding_object(request.snapshot())?;
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
         ATTACH_CAMPAIGN_RUNTIME_REQUEST_KIND => {
             let request = AttachCampaignRuntimeRequest::from_canonical_bytes(&body)?;
             let runtime_control =
@@ -2173,285 +1987,6 @@ fn reject_invalid_service_response(
         write_timeout,
     )?;
     Err(source.into())
-}
-
-/// Failure observed by a loopback campaign-service caller.
-#[derive(Debug, thiserror::Error)]
-pub enum LoopbackCampaignServiceError {
-    /// Framing, canonical validation, connection state, or socket I/O failed.
-    #[error(transparent)]
-    Protocol(#[from] LoopbackCampaignProtocolError),
-    /// The remote service returned one authenticated stable failure.
-    #[error(transparent)]
-    Remote(CampaignServiceFailure),
-}
-
-impl From<CampaignCodecError> for LoopbackCampaignServiceError {
-    fn from(error: CampaignCodecError) -> Self {
-        Self::Protocol(LoopbackCampaignProtocolError::Codec(error))
-    }
-}
-
-impl From<CampaignRuntimeControlCodecError> for LoopbackCampaignServiceError {
-    fn from(error: CampaignRuntimeControlCodecError) -> Self {
-        Self::Protocol(LoopbackCampaignProtocolError::RuntimeControlCodec(error))
-    }
-}
-
-impl CampaignServiceFailureSource for LoopbackCampaignServiceError {
-    fn campaign_service_failure(&self) -> CampaignServiceFailure {
-        match self {
-            Self::Remote(failure) => *failure,
-            Self::Protocol(LoopbackCampaignProtocolError::InvalidTimeout) => {
-                CampaignServiceFailure::InvalidRequest
-            }
-            Self::Protocol(LoopbackCampaignProtocolError::InvalidRequestLimit) => {
-                CampaignServiceFailure::InvalidRequest
-            }
-            Self::Protocol(
-                LoopbackCampaignProtocolError::Codec(_)
-                | LoopbackCampaignProtocolError::RuntimeControlCodec(_)
-                | LoopbackCampaignProtocolError::InvalidFrame { .. },
-            ) => CampaignServiceFailure::ProtocolViolation,
-            Self::Protocol(
-                LoopbackCampaignProtocolError::Io(_)
-                | LoopbackCampaignProtocolError::ConnectionBusy
-                | LoopbackCampaignProtocolError::ConnectionClosed,
-            ) => CampaignServiceFailure::Unavailable,
-            Self::Protocol(LoopbackCampaignProtocolError::ConnectionPoisoned) => {
-                CampaignServiceFailure::ProtocolViolation
-            }
-        }
-    }
-}
-
-/// Malformed, oversized, or unavailable campaign loopback transport data.
-#[derive(Debug, thiserror::Error)]
-pub enum LoopbackCampaignProtocolError {
-    /// The Unix stream could not complete one bounded frame operation.
-    #[error("campaign loopback I/O failed")]
-    Io(#[from] std::io::Error),
-    /// Canonical request or response bytes failed strict validation.
-    #[error(transparent)]
-    Codec(#[from] CampaignCodecError),
-    /// Canonical runtime-control bytes failed strict validation.
-    #[error(transparent)]
-    RuntimeControlCodec(#[from] CampaignRuntimeControlCodecError),
-    /// A caller attempted to disable the required finite deadlines.
-    #[error("campaign loopback read/write timeout must be between 1ns and 1h")]
-    InvalidTimeout,
-    /// The server-side per-connection request ceiling was invalid.
-    #[error("campaign loopback request limit must be between 1 and 65,536")]
-    InvalidRequestLimit,
-    /// A caller panicked while owning the serialized connection exchange.
-    #[error("campaign loopback connection is poisoned")]
-    ConnectionPoisoned,
-    /// Another complete request/response exchange owns this connection.
-    #[error("campaign loopback connection is busy")]
-    ConnectionBusy,
-    /// The peer closed cleanly between complete frames.
-    #[error("campaign loopback peer closed the connection")]
-    ConnectionClosed,
-    /// The fixed frame header violated the versioned protocol.
-    #[error("campaign loopback frame is invalid: {reason}")]
-    InvalidFrame {
-        /// Stable framing failure category.
-        reason: &'static str,
-    },
-}
-
-/// Failure while serving one loopback campaign-service exchange.
-#[derive(Debug, thiserror::Error)]
-pub enum LoopbackCampaignServerError {
-    /// Framing, canonical validation, or bounded socket I/O failed.
-    #[error(transparent)]
-    Protocol(#[from] LoopbackCampaignProtocolError),
-    /// Kernel peer credentials were denied or could not be resolved.
-    #[error(transparent)]
-    PeerAuthentication(#[from] CampaignAuthorizationError),
-}
-
-impl From<CampaignCodecError> for LoopbackCampaignServerError {
-    fn from(error: CampaignCodecError) -> Self {
-        Self::Protocol(LoopbackCampaignProtocolError::Codec(error))
-    }
-}
-
-impl From<CampaignRuntimeControlCodecError> for LoopbackCampaignServerError {
-    fn from(error: CampaignRuntimeControlCodecError) -> Self {
-        Self::Protocol(LoopbackCampaignProtocolError::RuntimeControlCodec(error))
-    }
-}
-
-fn configure_stream(
-    stream: &UnixStream,
-    timeouts: LoopbackCampaignTimeouts,
-) -> Result<(), LoopbackCampaignProtocolError> {
-    validate_timeouts(timeouts.read, timeouts.write)?;
-    stream.set_read_timeout(Some(timeouts.read))?;
-    stream.set_write_timeout(Some(timeouts.write))?;
-    Ok(())
-}
-
-fn validate_timeouts(read: Duration, write: Duration) -> Result<(), LoopbackCampaignProtocolError> {
-    if read.is_zero()
-        || write.is_zero()
-        || read > MAX_LOOPBACK_TIMEOUT
-        || write > MAX_LOOPBACK_TIMEOUT
-    {
-        Err(LoopbackCampaignProtocolError::InvalidTimeout)
-    } else {
-        Ok(())
-    }
-}
-
-fn write_frame(
-    stream: &mut UnixStream,
-    kind: u8,
-    body: &[u8],
-    timeout: Duration,
-) -> Result<(), LoopbackCampaignProtocolError> {
-    if body.len() > MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES {
-        return Err(LoopbackCampaignProtocolError::InvalidFrame {
-            reason: "component-message-too-large",
-        });
-    }
-    let length =
-        u32::try_from(body.len()).map_err(|_| LoopbackCampaignProtocolError::InvalidFrame {
-            reason: "component-message-length-overflow",
-        })?;
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
-    header[..FRAME_MAGIC.len()].copy_from_slice(FRAME_MAGIC);
-    header[8] = kind;
-    header[12..].copy_from_slice(&length.to_be_bytes());
-    let deadline = operation_deadline(timeout)?;
-    write_all_until(stream, &header, deadline)?;
-    write_all_until(stream, body, deadline)?;
-    Ok(())
-}
-
-#[cfg(test)]
-fn read_frame(
-    stream: &mut UnixStream,
-    expected_kind: u8,
-    timeout: Duration,
-) -> Result<Vec<u8>, LoopbackCampaignProtocolError> {
-    let (kind, body) = read_frame_any(stream, timeout)?;
-    if kind != expected_kind {
-        return Err(LoopbackCampaignProtocolError::InvalidFrame {
-            reason: "unexpected-message-kind",
-        });
-    }
-    Ok(body)
-}
-
-fn read_frame_any(
-    stream: &mut UnixStream,
-    timeout: Duration,
-) -> Result<(u8, Vec<u8>), LoopbackCampaignProtocolError> {
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
-    let deadline = operation_deadline(timeout)?;
-    read_exact_until(stream, &mut header, deadline, true)?;
-    if &header[..FRAME_MAGIC.len()] != FRAME_MAGIC {
-        return Err(LoopbackCampaignProtocolError::InvalidFrame {
-            reason: "unsupported-frame-version",
-        });
-    }
-    if header[9..12] != [0; 3] {
-        return Err(LoopbackCampaignProtocolError::InvalidFrame {
-            reason: "nonzero-reserved-bits",
-        });
-    }
-    let length = u32::from_be_bytes(header[12..].try_into().map_err(|_| {
-        LoopbackCampaignProtocolError::InvalidFrame {
-            reason: "invalid-length-field",
-        }
-    })?) as usize;
-    if length > MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES {
-        return Err(LoopbackCampaignProtocolError::InvalidFrame {
-            reason: "component-message-too-large",
-        });
-    }
-    let mut body = vec![0; length];
-    read_exact_until(stream, &mut body, deadline, false)?;
-    Ok((header[8], body))
-}
-
-fn operation_deadline(timeout: Duration) -> Result<Instant, LoopbackCampaignProtocolError> {
-    if timeout.is_zero() || timeout > MAX_LOOPBACK_TIMEOUT {
-        return Err(LoopbackCampaignProtocolError::InvalidTimeout);
-    }
-    transport_now()
-        .checked_add(timeout)
-        .ok_or(LoopbackCampaignProtocolError::InvalidTimeout)
-}
-
-fn read_exact_until(
-    stream: &mut UnixStream,
-    buffer: &mut [u8],
-    deadline: Instant,
-    clean_eof: bool,
-) -> Result<(), LoopbackCampaignProtocolError> {
-    let mut offset = 0;
-    while offset < buffer.len() {
-        let remaining = deadline
-            .checked_duration_since(transport_now())
-            .ok_or_else(timeout_io_error)?;
-        stream.set_read_timeout(Some(remaining))?;
-        match stream.read(&mut buffer[offset..]) {
-            Ok(0) if clean_eof && offset == 0 => {
-                return Err(LoopbackCampaignProtocolError::ConnectionClosed);
-            }
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "campaign loopback peer closed a partial frame",
-                )
-                .into());
-            }
-            Ok(count) => offset += count,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
-fn write_all_until(
-    stream: &mut UnixStream,
-    buffer: &[u8],
-    deadline: Instant,
-) -> Result<(), LoopbackCampaignProtocolError> {
-    let mut offset = 0;
-    while offset < buffer.len() {
-        let remaining = deadline
-            .checked_duration_since(transport_now())
-            .ok_or_else(timeout_io_error)?;
-        stream.set_write_timeout(Some(remaining))?;
-        match stream.write(&buffer[offset..]) {
-            Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into()),
-            Ok(count) => offset += count,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
-fn timeout_io_error() -> LoopbackCampaignProtocolError {
-    std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        "campaign loopback absolute operation deadline elapsed",
-    )
-    .into()
-}
-
-// Monotonic transport time bounds only operational socket blocking and never
-// enters campaign semantic state or content identity.
-// crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
-#[allow(clippy::disallowed_methods)]
-fn transport_now() -> Instant {
-    Instant::now()
 }
 
 #[cfg(test)]

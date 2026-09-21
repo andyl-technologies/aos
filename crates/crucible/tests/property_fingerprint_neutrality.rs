@@ -12,6 +12,19 @@ use crucible::{
 };
 
 #[cfg(feature = "test-double")]
+trait DecisionRecorderTestExt {
+    fn draw_u64_accepted(&mut self, stream: RngStreamId) -> u64;
+}
+
+#[cfg(feature = "test-double")]
+impl DecisionRecorderTestExt for DecisionRecorder {
+    fn draw_u64_accepted(&mut self, stream: RngStreamId) -> u64 {
+        self.draw_u64(stream)
+            .unwrap_or_else(|error| panic!("test RNG draw should be accepted: {error}"))
+    }
+}
+
+#[cfg(feature = "test-double")]
 #[test]
 fn property_changes_move_scenario_identity_without_moving_run_material() {
     let world = World::from_nodes(Vec::new()).expect("empty world should build");
@@ -132,19 +145,9 @@ struct LaunchMaterial {
 #[cfg(feature = "test-double")]
 fn deterministic_run_material(form: &ScenarioDefForm) -> RunMaterial {
     let mut recorder = DecisionRecorder::new(Configuration::genesis(form.scenario_def()));
-    let _node_draw = recorder
-        .draw_u64(RngStreamId::for_node("node-a/faults/0"))
-        .expect("record node draw");
-    let _network_draw = recorder
-        .draw_u64(RngStreamId::for_node("node-a/network/1"))
-        .expect("record network draw");
-    recorder
-        .serve_app_random(
-            node_id("node-a"),
-            RngStreamId::for_node("node-a/app-random"),
-            16,
-        )
-        .expect("test app-random width should be valid");
+    let _node_draw = recorder.draw_u64_accepted(RngStreamId::for_node("node-a/faults/0"));
+    let _network_draw = recorder.draw_u64_accepted(RngStreamId::for_node("node-a/network/1"));
+    let _app_draw = recorder.draw_u64_accepted(RngStreamId::for_node("node-a/app-random"));
     let configuration = recorder.into_configuration();
 
     RunMaterial {

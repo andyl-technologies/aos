@@ -205,16 +205,16 @@
     ]
     ++ failuresFor "tests/crucible/phase4-e2e-determinism.nix" e2eGate [
       {
-        label = "real scheduler-backed e2e target";
-        needle = "gate_e2e_determinism_concurrency";
+        label = "native QEMU e2e target";
+        needle = "component=gate:e2e-determinism/native-qemu-acceptance";
       }
       {
-        label = "e2e target runs with test-double";
-        needle = "--features test-double";
+        label = "e2e target runs packaged QEMU";
+        needle = "native_qemu_execution=true";
       }
       {
         label = "e2e target scenario metadata";
-        needle = "scenario=serial-vs-concurrent-authoritative-drive";
+        needle = "scenario=representative-three-vm-fault-injected";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [

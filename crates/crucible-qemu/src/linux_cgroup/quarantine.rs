@@ -15,13 +15,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
 use super::{
     CGROUP_KILL_INTERVAL, LinuxQemuCgroup, LinuxQemuCgroupError, LinuxQemuCgroupWatcher,
-    LinuxQemuDirectChild, QemuNodeChild, WATCHER_TERMINAL,
+    QemuNodeChild, WATCHER_TERMINAL,
 };
 
 const QUARANTINE_RUNNING: u8 = 0;
@@ -58,13 +57,10 @@ struct LinuxQemuAttemptProcessQuarantineState {
 }
 
 #[derive(Debug)]
-enum LinuxQemuQuarantineChild {
-    Authenticated(LinuxQemuDirectChild),
-    Retained {
-        child: QemuNodeChild,
-        cgroup_path: PathBuf,
-        attempt_lifecycle: Arc<AtomicU8>,
-    },
+struct LinuxQemuQuarantineChild {
+    child: QemuNodeChild,
+    cgroup_path: PathBuf,
+    attempt_lifecycle: Arc<AtomicU8>,
 }
 
 /// Failed process-quarantine startup with every untransferred authority retained.
@@ -77,40 +73,6 @@ pub(crate) struct LinuxQemuAttemptProcessQuarantineStartError {
 }
 
 impl LinuxQemuAttemptProcessQuarantineStartError {
-    /// Returns the startup failure without consuming retained authority.
-    #[must_use]
-    pub(crate) const fn source_error(&self) -> &LinuxQemuCgroupError {
-        &self.source
-    }
-
-    /// Recovers the exact group, watcher, and direct-child authorities.
-    ///
-    /// `None` is returned only after an impossible shared-state ownership
-    /// failure forced startup to leak the authority cell directly.
-    #[must_use]
-    pub(crate) fn into_parts(
-        mut self,
-    ) -> Option<(
-        LinuxQemuCgroup,
-        LinuxQemuCgroupWatcher,
-        LinuxQemuDirectChild,
-    )> {
-        let mut state = *self.authority.take()?;
-        let group = state.group.take()?;
-        let watcher = state.watcher.take()?;
-        let child = match state.children.pop_front()? {
-            LinuxQemuQuarantineChild::Authenticated(child) if state.children.is_empty() => child,
-            child => {
-                state.group = Some(group);
-                state.watcher = Some(watcher);
-                state.children.push_front(child);
-                let _leaked = Box::leak(Box::new(state));
-                return None;
-            }
-        };
-        Some((group, watcher, child))
-    }
-
     pub(super) fn into_owner_parts(
         mut self,
     ) -> Option<(
@@ -148,29 +110,6 @@ trait QuarantineWork: Send + 'static {
 }
 
 impl LinuxQemuAttemptProcessQuarantine {
-    /// Transfers one lifecycle-matched child, watcher, and cgroup to quarantine.
-    ///
-    /// The exact watcher lifecycle token must be shared by all three inputs.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxQemuAttemptProcessQuarantineStartError`] with all three
-    /// authorities when they do not belong to one cgroup incarnation or the
-    /// dedicated worker cannot be started.
-    pub(crate) fn start(
-        group: LinuxQemuCgroup,
-        watcher: LinuxQemuCgroupWatcher,
-        child: LinuxQemuDirectChild,
-    ) -> Result<Self, LinuxQemuAttemptProcessQuarantineStartError> {
-        let path = group.path.clone();
-        let state = LinuxQemuAttemptProcessQuarantineState {
-            group: Some(group),
-            watcher: Some(watcher),
-            children: VecDeque::from([LinuxQemuQuarantineChild::Authenticated(child)]),
-        };
-        Self::start_state(path, state)
-    }
-
     pub(super) fn start_retained(
         group: LinuxQemuCgroup,
         watcher: Option<LinuxQemuCgroupWatcher>,
@@ -180,7 +119,7 @@ impl LinuxQemuAttemptProcessQuarantine {
         let attempt_lifecycle = Arc::clone(&group.control.watcher_state);
         let children = children
             .into_iter()
-            .map(|child| LinuxQemuQuarantineChild::Retained {
+            .map(|child| LinuxQemuQuarantineChild {
                 child,
                 cgroup_path: path.clone(),
                 attempt_lifecycle: Arc::clone(&attempt_lifecycle),
@@ -224,31 +163,6 @@ impl LinuxQemuAttemptProcessQuarantine {
     pub(crate) fn status(&self) -> LinuxQemuAttemptProcessQuarantineStatus {
         decode_status(self.status.load(Ordering::Acquire))
     }
-
-    /// Waits up to `timeout` for cleanup or parked-quarantine completion.
-    ///
-    /// A running result means the detached worker still owns the exact
-    /// authority and continues after this method returns.
-    // This clock bounds host-only observation and never enters modeled state.
-    // crucible-lint: allow clippy-disallowed-method -- the bounded host operation is operational only and cannot enter modeled state.
-    #[allow(clippy::disallowed_methods)]
-    #[must_use]
-    pub(crate) fn wait(&self, timeout: Duration) -> LinuxQemuAttemptProcessQuarantineStatus {
-        let Some(deadline) = Instant::now().checked_add(timeout) else {
-            return self.status();
-        };
-        loop {
-            let status = self.status();
-            if status != LinuxQemuAttemptProcessQuarantineStatus::Running {
-                return status;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return status;
-            }
-            thread::sleep(CGROUP_KILL_INTERVAL.min(deadline.duration_since(now)));
-        }
-    }
 }
 
 impl LinuxQemuAttemptProcessQuarantineState {
@@ -273,39 +187,22 @@ impl LinuxQemuAttemptProcessQuarantineState {
 
 impl LinuxQemuQuarantineChild {
     fn authority_matches(&self, group: &LinuxQemuCgroup) -> bool {
-        match self {
-            Self::Authenticated(child) => group.owns_child_authority(child),
-            Self::Retained {
-                cgroup_path,
-                attempt_lifecycle,
-                ..
-            } => {
-                group.path == *cgroup_path
-                    && Arc::ptr_eq(&group.control.watcher_state, attempt_lifecycle)
-            }
-        }
+        group.path == self.cgroup_path
+            && Arc::ptr_eq(&group.control.watcher_state, &self.attempt_lifecycle)
     }
 
     fn kill_and_reap_blocking(&mut self) -> Result<(), LinuxQemuCgroupError> {
-        match self {
-            Self::Authenticated(child) => child.kill_and_reap_blocking(),
-            Self::Retained {
-                child, cgroup_path, ..
-            } => child
-                .force_kill_and_reap_failed_realization()
-                .map_err(|source| LinuxQemuCgroupError::Io {
-                    operation: "kill and reap retained unverified QEMU direct child",
-                    path: cgroup_path.clone(),
-                    source: io::Error::other(source),
-                }),
-        }
+        self.child
+            .force_kill_and_reap_failed_realization()
+            .map_err(|source| LinuxQemuCgroupError::Io {
+                operation: "kill and reap retained unverified QEMU direct child",
+                path: self.cgroup_path.clone(),
+                source: io::Error::other(source),
+            })
     }
 
     fn into_child(self) -> QemuNodeChild {
-        match self {
-            Self::Authenticated(child) => child.child,
-            Self::Retained { child, .. } => child,
-        }
+        self.child
     }
 }
 
@@ -423,8 +320,37 @@ fn decode_status(status: u8) -> LinuxQemuAttemptProcessQuarantineStatus {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::time::Duration;
+
+    use rustix::time::{ClockId, clock_gettime};
 
     use super::*;
+
+    fn wait_for_status(
+        quarantine: &LinuxQemuAttemptProcessQuarantine,
+        timeout: Duration,
+    ) -> LinuxQemuAttemptProcessQuarantineStatus {
+        let Some(started) = Duration::try_from(clock_gettime(ClockId::Monotonic)).ok() else {
+            return quarantine.status();
+        };
+        let Some(deadline) = started.checked_add(timeout) else {
+            return quarantine.status();
+        };
+
+        loop {
+            let status = quarantine.status();
+            if status != LinuxQemuAttemptProcessQuarantineStatus::Running {
+                return status;
+            }
+            let Some(now) = Duration::try_from(clock_gettime(ClockId::Monotonic)).ok() else {
+                return status;
+            };
+            if now >= deadline {
+                return status;
+            }
+            thread::sleep(CGROUP_KILL_INTERVAL.min(deadline.saturating_sub(now)));
+        }
+    }
 
     struct FakeWork {
         attempts: Arc<AtomicUsize>,
@@ -496,7 +422,7 @@ mod tests {
         .map_err(|(source, _)| source)?;
 
         assert_eq!(
-            quarantine.wait(Duration::from_secs(1)),
+            wait_for_status(&quarantine, Duration::from_secs(1)),
             LinuxQemuAttemptProcessQuarantineStatus::ParkedWithAuthority
         );
         drop(quarantine);

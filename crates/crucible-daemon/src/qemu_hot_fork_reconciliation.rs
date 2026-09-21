@@ -31,29 +31,25 @@ use crucible_api::{
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildWait, QemuCrashDetector,
-    QemuHotForkChildDiagnosticConsumer, QemuHotForkChildDiagnosticDrain, QemuHotForkChildLaunch,
-    QemuHotForkChildProcessBasis, QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError,
-    QemuHotForkHostContinuation, QemuHotForkLaunchError, QemuHotForkSchedulerNodeContinuation,
-    QemuHotForkTemplateIdentity, QemuNode, QemuNodeChannelError, QemuNodeExternalProcessControl,
-    QemuNodeSetPreparedHotForkSource, QemuPreparedHotForkTemplate, QemuProcessIdentity, QemuReap,
-    QemuShutdownPolicy, QemuShutdownRung, QemuShutdownTargetError, QemuVmRealizationError,
-    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    QemuHotForkChildDiagnosticConsumer, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
+    QemuHotForkChildProcessOwner, QemuHotForkChildQmpHandshakeError,
+    QemuHotForkDetachedChildResources, QemuHotForkHostContinuation, QemuHotForkLaunchError,
+    QemuHotForkSchedulerNodeContinuation, QemuNode, QemuNodeChannelError,
+    QemuNodeExternalProcessControl, QemuNodeSetPreparedHotForkSource, QemuProcessIdentity,
+    QemuReap, QemuShutdownPolicy, QemuShutdownRung, QemuShutdownTargetError,
+    QemuVmRealizationError, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
 };
 use thiserror::Error;
 
-use crate::CrucibleAttemptExecution;
 use crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken;
 use crate::qemu_hot_fork_world_resource::{
     QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner,
 };
 use crate::supervision::ProcessDeadline;
 
-/// Exact supervisor reservation owning one hot-fork realization.
-pub type QemuHotForkAttemptBasis = crate::AttemptExecutionRuntimeBasis;
-
 /// Authenticated installed-node and source-template basis retained by one child.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuHotForkWorldChildSourceBasis {
+pub(crate) struct QemuHotForkWorldChildSourceBasis {
     node: NodeId,
     configuration: ContentHash,
     event_log_offset: EventLogOffset,
@@ -103,7 +99,7 @@ impl QemuHotForkWorldChildSourceBasis {
 
 /// Parent-observed lifecycle of one exact hot-fork child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuHotForkChildDisposition {
+pub(crate) enum QemuHotForkChildDisposition {
     /// The source QEMU has not reaped the child.
     Running,
     /// The source QEMU reaped a normal exit with this code.
@@ -114,7 +110,7 @@ pub enum QemuHotForkChildDisposition {
 
 /// Exact source-parent observation used by the reconciliation machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct QemuHotForkChildObservation {
+pub(crate) struct QemuHotForkChildObservation {
     generation: u64,
     process_id: u32,
     disposition: QemuHotForkChildDisposition,
@@ -169,7 +165,7 @@ impl QemuHotForkChildObservation {
 
 /// Invalid source-parent child-status observation.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum QemuHotForkChildObservationError {
+pub(crate) enum QemuHotForkChildObservationError {
     /// The child-status generation is reserved and cannot identify a record.
     #[error("hot-fork child-status generation is zero")]
     ZeroGeneration,
@@ -183,7 +179,7 @@ pub enum QemuHotForkChildObservationError {
 
 /// Minimal exact child basis projected from the unforgeable launch authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct QemuHotForkReconciliationChildBasis {
+pub(crate) struct QemuHotForkReconciliationChildBasis {
     generation: u64,
     process_id: u32,
 }
@@ -213,7 +209,7 @@ impl QemuHotForkReconciliationChildBasis {
 
 /// Semantic disposition that permits operational hot-fork records to retire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuHotForkPublicationDisposition {
+pub(crate) enum QemuHotForkPublicationDisposition {
     /// The exact observation was reconciled with the executor supervisor.
     Observation(ObservationId),
     /// The exact paused checkpoint became the execution's durable origin.
@@ -226,7 +222,7 @@ pub enum QemuHotForkPublicationDisposition {
 
 /// Monotonic phase of one hot-fork reconciliation owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuHotForkReconciliationPhase {
+pub(crate) enum QemuHotForkReconciliationPhase {
     /// The child exists but its private QMP endpoint is not authenticated.
     AwaitingChildAdmission,
     /// The private child channel is authenticated and modeled work may run.
@@ -253,7 +249,7 @@ pub enum QemuHotForkReconciliationPhase {
 
 /// Result of one bounded reconciliation step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuHotForkReconciliationStep {
+pub(crate) enum QemuHotForkReconciliationStep {
     /// One nonblocking diagnostics drain completed before the next status poll.
     ChildDiagnosticsDrained,
     /// The source parent still reports the exact child running.
@@ -275,7 +271,7 @@ pub enum QemuHotForkReconciliationStep {
 /// releasing child resources may make partial monotonic progress internally,
 /// but a retry must resume at the first unreleased resource rather than replay
 /// an acknowledged destructive operation.
-pub trait QemuHotForkReconciliationBackend {
+pub(crate) trait QemuHotForkReconciliationBackend {
     /// Typed backend failure that preserves its owned authorities.
     type Error: Error + Send + Sync + 'static;
 
@@ -357,7 +353,7 @@ pub trait QemuHotForkReconciliationBackend {
 
 /// Failure while advancing a hot-fork reconciliation state.
 #[derive(Debug, Error)]
-pub enum QemuHotForkAttemptReconciliationError<E>
+pub(crate) enum QemuHotForkAttemptReconciliationError<E>
 where
     E: Error + 'static,
 {
@@ -391,11 +387,10 @@ where
 
 /// Linear owner for one hot-fork child's complete operational lifecycle.
 #[must_use = "drive the hot-fork child to reconciliation or quarantine"]
-pub struct QemuHotForkAttemptReconciliation<B>
+pub(crate) struct QemuHotForkAttemptReconciliation<B>
 where
     B: QemuHotForkReconciliationBackend,
 {
-    attempt: QemuHotForkAttemptBasis,
     backend: Option<B>,
     phase: QemuHotForkReconciliationPhase,
     child_admitted: bool,
@@ -409,15 +404,10 @@ mod linux;
 mod state;
 
 pub use launch::{
-    LinuxQemuHotForkAttemptLaunchError, LinuxQemuHotForkSourceWorldAttemptLaunchError,
-    LinuxQemuHotForkSourceWorldFailureOwner, LinuxQemuHotForkWorldAttemptLaunchError,
-    LinuxQemuHotForkWorldAttemptLaunchFailure,
+    LinuxQemuHotForkSourceWorldAttemptLaunchError, LinuxQemuHotForkWorldAttemptLaunchFailure,
 };
 pub(crate) use linux::LinuxQemuHotForkWorldReconciliationSet;
-pub use linux::{
-    LinuxQemuHotForkLiveChild, LinuxQemuHotForkNodeProcessControl,
-    LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkReconciliationError,
-};
+pub use linux::{LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkReconciliationError};
 
 #[cfg(test)]
 mod tests;

@@ -42,28 +42,28 @@
         needle = "crucible::FAULT_CAMPAIGN_FAMILY_NAME";
       }
       {
-        label = "state-first extra-yield observer profile";
-        needle = "\"state-first-extra-yields\"";
+        label = "loaded single-core hostile profile";
+        needle = "\"loaded-single-core\"";
       }
       {
-        label = "event-first varied-timeout observer profile";
-        needle = "\"event-first-varied-timeouts\"";
+        label = "reordered two-core hostile profile";
+        needle = "\"reordered-two-core\"";
       }
       {
-        label = "state-first pre-poll-yield observer profile";
-        needle = "\"state-first-prepoll-yields\"";
+        label = "loaded many-core hostile profile";
+        needle = "\"loaded-many-core\"";
       }
       {
-        label = "observer profile applied to run plan";
-        needle = "observer_profile: reduction.host_profile";
+        label = "host profile applied to run plan";
+        needle = "host_profile: reduction.host_profile";
       }
       {
-        label = "observer perturbation reduction expansion";
-        needle = "VERIFY_OBSERVER_PROFILES";
+        label = "hostile condition reduction expansion";
+        needle = "VERIFY_HOSTILE_PROFILES";
       }
       {
-        label = "built-in observer-perturbation verify test";
-        needle = "cli_verify_builtin_corpus_observer_profiles";
+        label = "built-in hostile-profile verify test";
+        needle = "cli_verify_builtin_corpus_host_profiles";
       }
       {
         label = "divergence report line";
@@ -145,7 +145,7 @@ in
               --target-dir "$TMPDIR/crucible-adversarial-example-verify-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-cli \
-              cli_verify_builtin_corpus_observer_profiles \
+              cli_verify_builtin_corpus_host_profiles \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -165,9 +165,10 @@ in
             attr=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             adversarial_profiles=${builtins.concatStringsSep "," [
-              "state-first-extra-yields"
-              "event-first-varied-timeouts"
-              "state-first-prepoll-yields"
+              "quiet-single-core"
+              "loaded-single-core"
+              "reordered-two-core"
+              "loaded-many-core"
             ]}
             built_in_verify=true
             divergence_report_shape=golden-tested

@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::admin::{
-    InventoryCounter, persistent_inventory_generation, persistent_ref_inventory_generation,
-    physical_storage_identity,
+    InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
+    persistent_ref_inventory_generation, physical_storage_identity,
 };
 use super::*;
 
@@ -160,6 +160,7 @@ impl BlobStoreAdmin for MemoryBlobBackend {
         Ok(Box::new(MemoryBlobInventoryFence {
             backend: &self.name,
             instance: self.inventory_instance,
+            max_logical_bytes: self.max_logical_bytes,
             state,
         }))
     }
@@ -168,6 +169,7 @@ impl BlobStoreAdmin for MemoryBlobBackend {
 struct MemoryBlobInventoryFence<'a> {
     backend: &'a str,
     instance: [u8; 32],
+    max_logical_bytes: u64,
     state: MutexGuard<'a, MemoryBlobState>,
 }
 
@@ -211,6 +213,44 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
                 })?;
         self.state.generation = next_generation;
         Ok(PlannedDeleteDisposition::Deleted)
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        let logical_length = source.logical_length();
+        let bytes = read_handle_all(source, self.max_logical_bytes)?;
+        validate_bytes(id, &bytes)?;
+        if let Some(existing) = self.state.objects.get(&id) {
+            validate_bytes(id, existing)?;
+        } else {
+            let next_logical_bytes = self
+                .state
+                .logical_bytes
+                .checked_add(logical_length)
+                .ok_or(StoreError::Quota)?;
+            if next_logical_bytes > self.max_logical_bytes {
+                return Err(StoreError::Quota);
+            }
+            self.state.generation = self
+                .state
+                .generation
+                .checked_add(1)
+                .ok_or(StoreError::Quota)?;
+            self.state.objects.insert(id, Arc::from(bytes));
+            self.state.logical_bytes = next_logical_bytes;
+        }
+        Ok(PutReceipt::one(
+            id,
+            PlacementReceipt {
+                backend: self.backend.to_owned(),
+                durable: false,
+                logical_length,
+            },
+        ))
     }
 }
 

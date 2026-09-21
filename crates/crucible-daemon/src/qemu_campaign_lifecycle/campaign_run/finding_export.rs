@@ -15,9 +15,9 @@ use crucible_campaign::{
     QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::ExecutionCancellation;
+use crate::{ExecutionCancellation, supervision::ProcessDeadline};
 
 use super::GuardedDefaultCampaignRunError;
 
@@ -26,7 +26,7 @@ const MAX_FINDING_EXPORT_EXCHANGES: usize = 1_000_000;
 const FINDING_EXPORT_DEADLINE: Duration = Duration::from_secs(300);
 
 struct FindingExportBudget {
-    deadline: Instant,
+    deadline: ProcessDeadline,
     bytes: usize,
     exchanges: usize,
 }
@@ -109,8 +109,7 @@ where
 
 impl FindingExportBudget {
     fn new() -> Result<Self, super::GuardedDefaultCampaignInvariantError> {
-        let deadline = finding_export_now()
-            .checked_add(FINDING_EXPORT_DEADLINE)
+        let deadline = ProcessDeadline::after(FINDING_EXPORT_DEADLINE)
             .ok_or(super::GuardedDefaultCampaignInvariantError::FindingExportDeadline)?;
         Ok(Self {
             deadline,
@@ -120,7 +119,7 @@ impl FindingExportBudget {
     }
 
     fn check(&self) -> Result<(), super::GuardedDefaultCampaignInvariantError> {
-        if finding_export_now() >= self.deadline {
+        if self.deadline.expired() {
             return Err(super::GuardedDefaultCampaignInvariantError::FindingExportDeadline);
         }
         Ok(())
@@ -146,14 +145,6 @@ impl FindingExportBudget {
         }
         Ok(())
     }
-}
-
-// Monotonic time bounds only the operational proof transfer. It can reject an
-// incomplete export, but never enters campaign state or modeled evidence.
-// crucible-lint: allow clippy-disallowed-method -- this host-boundary deadline cannot influence modeled execution.
-#[allow(clippy::disallowed_methods)]
-fn finding_export_now() -> Instant {
-    Instant::now()
 }
 
 /// One checked request and response for a representative finding dependency.
@@ -386,12 +377,6 @@ impl GuardedCampaignFindingExport {
     #[must_use]
     pub const fn snapshot(&self) -> CampaignSnapshotId {
         self.snapshot
-    }
-
-    /// Returns every checked page, including the sole page for an empty snapshot.
-    #[must_use]
-    pub fn query_pages(&self) -> &[GuardedCampaignFindingQueryProof] {
-        &self.query_pages
     }
 
     /// Returns all incorporated final finding identities and their proof material.
@@ -691,7 +676,7 @@ where
     C: FindingExportClient,
     E: std::error::Error + 'static,
 {
-    let first_request = GetCampaignFindingTriageReplaySegmentRequest::new(
+    let selection = crucible_campaign::CampaignFindingTriageReplaySelection::new(
         context.principal.clone(),
         context.campaign.clone(),
         context.snapshot,
@@ -699,9 +684,10 @@ where
         bundle,
         role,
         evidence,
-        0,
-        evidence.content_id(),
-        0,
+    );
+    let first_request = GetCampaignFindingTriageReplaySegmentRequest::new(
+        selection,
+        crucible_campaign::CampaignFindingTriageReplaySegment::new(0, evidence.content_id(), 0),
     )
     .map_err(GuardedDefaultCampaignRunError::Codec)?;
     let first = capture_triage_replay_segment(context, first_request, budget)?;
@@ -784,7 +770,7 @@ where
         )
     })?;
     for segment_index in first_segment_index..segment_count {
-        let request = GetCampaignFindingTriageReplaySegmentRequest::new(
+        let selection = crucible_campaign::CampaignFindingTriageReplaySelection::new(
             context.principal.clone(),
             context.campaign.clone(),
             context.snapshot,
@@ -792,9 +778,14 @@ where
             identity.bundle,
             identity.role,
             identity.evidence,
-            object.ordinal(),
-            object.content(),
-            segment_index,
+        );
+        let request = GetCampaignFindingTriageReplaySegmentRequest::new(
+            selection,
+            crucible_campaign::CampaignFindingTriageReplaySegment::new(
+                object.ordinal(),
+                object.content(),
+                segment_index,
+            ),
         )
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
         segments.push(capture_triage_replay_segment(context, request, budget)?);
@@ -938,8 +929,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible_campaign::{
-        CampaignHash, CampaignLineageId, CampaignPolicyId, CampaignRoots, CampaignSnapshot,
-        Finding, FindingExactPins, FindingKind, FindingOccurrenceSet, FindingSignature, MerkleMap,
+        CampaignHash, CampaignLineageId, CampaignPolicyId, CampaignRecordKind, CampaignRoots,
+        CampaignSnapshot, Finding, FindingCandidateBundleId, FindingCandidateOccurrenceSet,
+        FindingExactPins, FindingKind, FindingOccurrenceSet, FindingSignature, MerkleMap,
         ObservationId, ReproductionArtifactId,
     };
     use crucible_cas::content_store::{ContentId, MemoryBlobBackend, ObjectKind};
@@ -1067,13 +1059,22 @@ mod tests {
         let snapshot = CampaignSnapshot::genesis(
             CampaignLineageId::parse(&format!(
                 "crucible.campaign.lineage@{}",
-                ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"finding-export-lineage")
-                    .encode()
+                ContentId::for_bytes(
+                    ObjectKind::CampaignFact,
+                    CampaignRecordKind::Lineage.schema_version(),
+                    b"finding-export-lineage",
+                )
+                .encode()
             ))
             .expect("campaign lineage"),
             CampaignPolicyId::parse(&format!(
                 "crucible.campaign.policy@{}",
-                ContentId::for_bytes(ObjectKind::Policy, 1, b"finding-export-policy").encode()
+                ContentId::for_bytes(
+                    ObjectKind::Policy,
+                    CampaignRecordKind::Policy.schema_version(),
+                    b"finding-export-policy",
+                )
+                .encode()
             ))
             .expect("campaign policy"),
             roots,
@@ -1116,8 +1117,12 @@ mod tests {
     fn finding_for_test(occurrence_root: ContentId) -> Finding {
         let observation = ObservationId::parse(&format!(
             "crucible.campaign.observation@{}",
-            ContentId::for_bytes(ObjectKind::Observation, 1, b"finding-export-observation")
-                .encode()
+            ContentId::for_bytes(
+                ObjectKind::Observation,
+                CampaignRecordKind::Observation.schema_version(),
+                b"finding-export-observation",
+            )
+            .encode()
         ))
         .expect("observation ID");
         let first_seen = CampaignSnapshotId::parse(&format!(
@@ -1130,28 +1135,43 @@ mod tests {
             .encode()
         ))
         .expect("first-seen snapshot");
-        Finding::new_with_retention(
-            FindingSignature::new(
-                FindingKind::Timeout,
-                CampaignHash::derive("finding-export-fingerprint", b"timeout"),
-                None,
-                String::from("finding-export.timeout"),
-                None,
-                BTreeSet::new(),
+        let candidate_bundle = FindingCandidateBundleId::parse(&format!(
+            "crucible.campaign.finding-candidate-bundle@{}",
+            ContentId::for_bytes(
+                ObjectKind::Finding,
+                CampaignRecordKind::FindingCandidateBundle.schema_version(),
+                b"finding-export-candidate",
             )
-            .expect("finding signature"),
-            observation,
-            ReproductionArtifactId::parse(&format!(
-                "crucible.campaign.reproduction-artifact@{}",
-                ContentId::for_bytes(ObjectKind::Finding, 1, b"finding-export-reproduction")
-                    .encode()
-            ))
-            .expect("reproduction ID"),
-            first_seen,
-            FindingOccurrenceSet::new(occurrence_root, 1, observation)
-                .expect("finding occurrence set"),
+            .encode()
+        ))
+        .expect("finding candidate bundle ID");
+        Finding::new_with_candidate_occurrences(
+            Finding::basis(
+                FindingSignature::new(
+                    FindingKind::Timeout,
+                    CampaignHash::derive("finding-export-fingerprint", b"timeout"),
+                    None,
+                    String::from("finding-export.timeout"),
+                    None,
+                    BTreeSet::new(),
+                )
+                .expect("finding signature"),
+                observation,
+                ReproductionArtifactId::parse(&format!(
+                    "crucible.campaign.reproduction-artifact@{}",
+                    ContentId::for_bytes(ObjectKind::Finding, 2, b"finding-export-reproduction")
+                        .encode()
+                ))
+                .expect("reproduction ID"),
+                first_seen,
+                FindingOccurrenceSet::new(occurrence_root, 1, observation)
+                    .expect("finding occurrence set"),
+            ),
             None,
             FindingExactPins::default(),
+            candidate_bundle,
+            FindingCandidateOccurrenceSet::new(occurrence_root, 1, candidate_bundle)
+                .expect("finding candidate occurrences"),
         )
         .expect("finding")
     }
@@ -1204,9 +1224,9 @@ mod tests {
 
         assert_eq!(export.campaign(), &campaign);
         assert_eq!(export.snapshot(), snapshot);
-        assert_eq!(export.query_pages().len(), 1);
-        assert!(export.query_pages()[0].response().entries().is_empty());
-        assert_eq!(export.query_pages()[0].response().next_after(), None);
+        assert_eq!(export.query_pages.len(), 1);
+        assert!(export.query_pages[0].response().entries().is_empty());
+        assert_eq!(export.query_pages[0].response().next_after(), None);
         assert!(export.findings().is_empty());
         assert_eq!(client.query_transfers.load(Ordering::SeqCst), 1);
     }

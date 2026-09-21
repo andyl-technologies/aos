@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- integration-test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::error::Error;
 
 use crucible::{
@@ -17,8 +24,8 @@ fn gate_checkpoint_materialization_persists_exact_fat_checkpoint_by_configuratio
     let world = checkpoint_world();
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let target = valid_step(
-        &valid_step(&genesis, rng_decision("checkpoint/seed-a", 41)),
+    let target = accepted_step!(
+        &accepted_step!(&genesis, rng_decision("checkpoint/seed-a", 41)),
         rng_decision("checkpoint/seed-b", 42),
     );
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
@@ -74,11 +81,4 @@ fn rng_decision(stream: &str, value: u64) -> Decision {
         stream: RngStreamId::from_name(stream),
         value,
     })
-}
-
-fn valid_step(
-    configuration: &crucible::Configuration,
-    decision: crucible::Decision,
-) -> crucible::Configuration {
-    crucible::try_step(configuration, decision).expect("test configuration step")
 }

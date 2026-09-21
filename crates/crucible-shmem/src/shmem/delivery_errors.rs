@@ -441,6 +441,32 @@ pub(super) fn live_count(
 /// An error produced by the per-node advance-ceiling slot.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum NodeSlotError {
+    /// A peer published an unknown current-ABI advance-stop condition.
+    #[error("invalid scheduler advance-stop condition encoding {encoded}")]
+    InvalidAdvanceStopCondition {
+        /// Rejected one-byte shared-memory encoding.
+        encoded: u8,
+    },
+    /// A control boundary tried to bind a nonzero even capture generation.
+    #[error("control-boundary fingerprint request {request} is not an odd request generation")]
+    InvalidControlBoundaryCaptureRequest {
+        /// Rejected fingerprint request generation.
+        request: u32,
+    },
+    /// A second host request tried to change an outstanding boundary binding.
+    #[error(
+        "outstanding control boundary binds fault frontier {expected_frontier} and capture request {expected_capture_request}, not frontier {observed_frontier} and capture request {observed_capture_request}"
+    )]
+    ControlBoundaryRequestChanged {
+        /// Fault frontier already bound to the outstanding request.
+        expected_frontier: u64,
+        /// Fault frontier supplied by the competing request.
+        observed_frontier: u64,
+        /// Capture generation already bound to the outstanding request.
+        expected_capture_request: u32,
+        /// Capture generation supplied by the competing request.
+        observed_capture_request: u32,
+    },
     /// A process requested an invalid fixed icount shift.
     #[error("icount shift {shift_bits} cannot be represented as u64")]
     InvalidShift {

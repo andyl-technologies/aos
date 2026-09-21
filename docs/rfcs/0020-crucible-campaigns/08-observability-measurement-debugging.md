@@ -62,10 +62,10 @@ profile `[A-Za-z0-9._\-/:]+`. Constructors sort measurement IDs, metric IDs,
 cohort nodes, enumeration alternatives, and histogram boundaries before
 content addressing and reject duplicates.
 
-Scenario TOML and compact scenario forms write and admit schema v7. Earlier
-scenario forms fail closed in normal runtime admission. The measurement
-component contributes its exact content hash to scenario identity.
-Reproduction artifacts likewise write and admit outer v7 only.
+Scenario TOML and compact scenario forms use schema v7. A nonempty measurement
+component contributes its exact component content hash to scenario identity.
+Noncurrent scenario or outer reproduction schemas are rejected by ordinary
+runtime admission.
 
 The measurement component's canonical body is whitespace-free UTF-8 JSON over
 the field order shown above; the repeated `metrics` Rust field has wire key
@@ -80,7 +80,9 @@ identity is
 the execution model's canonical-material hash function. Scenario compact v7
 stores that body as one length-prefixed blob and readers must re-encode and
 compare it exactly after semantic validation. Campaign `ScenarioArtifact`
-payload v3 carries the current scenario-form-v7 encoding.
+record body v1 carries exact scenario-form-v7 bytes under execution-model
+payload schema v3. Ordinary runtime admission rejects every other execution-
+model payload schema.
 
 The closed v1 tags are:
 
@@ -198,7 +200,7 @@ canonical body exactly.
 The evaluator accepts only normalized typed samples already attached to an
 authenticated scheduler sequence. T-CAM-3.2 owns conversion of bounded guest
 messages, including marker instance keys; an instance-bearing selector cannot
-match the legacy instance-free marker payload. T-CAM-3.3 owns projection of
+match a noncurrent instance-free marker payload. T-CAM-3.3 owns projection of
 model-derived sources. Those producers cannot alter window or aggregation
 semantics.
 
@@ -366,17 +368,10 @@ plus canonical framing fits one generic envelope. `definitions` and
 `evaluation` are the exact raw execution-model identities; the payload schema
 selects the model-specific verifier. The campaign layer retains those bytes and
 generic evidence children but never treats a caller-asserted hash as semantic
-proof. For Crucible payload schema 1, the daemon recomputes
-`crucible.model.measurement-evaluation.v1`, exact-compares the payload, and
-checks both hashes before the value can be consumed as verified measurement
-input. This compatibility verifier receives the authenticated scheduler log,
-normalized samples, and terminal state separately; payload schema 1 does not
-claim ownership of a replay leaf.
-
-Crucible payload schema 2 retains the same canonical
+proof. Current Crucible payload schema 2 retains the canonical
 `crucible.model.measurement-evaluation.v1` body and adds an exact raw-input
 contract. Its `evidence` set contains exactly one `Trace` content ID using
-`crucible.executor.measurement-replay-evidence.v1`. The strict canonical CBOR
+`crucible.executor.measurement-replay-evidence.v2`. The strict canonical CBOR
 leaf binds the scenario-definition ID, configuration ID, measurement-definition
 hash, complete authenticated scheduler-event sequence, and terminal ready,
 frontier, per-node icount, and quiescence state. The leaf is bounded at 64 MiB;
@@ -389,10 +384,8 @@ missing or additional evidence edge, stale binding, forged or non-dense log,
 invalid guest message, noncanonical leaf, or replay disagreement fails closed.
 Immutable storage alone does not confer semantic status on either payload.
 
-Measurement-set schema v1 is recognized only by the bounded repository
-migration and rejected because its claimed aggregate lacks the raw evidence
-needed for a verified evaluation. Normal runtime admission accepts schema v2
-only. `PropertyVerdictSet` and
+The current measurement-set schema is v2 and contains replay-verified
+evaluations. `PropertyVerdictSet` and
 `CoverageProjection` remain bounded name/identity maps or sets with generic
 child-bearing envelopes. Model-owned sample production is implemented by
 T-CAM-3.3. Payload schema 2 provides the codec and replay foundation for
@@ -405,56 +398,12 @@ The daemon's local prepared-publication formats use this closed registry:
 
 | Schema name | Current version | Contract |
 |---|---:|---|
-| `crucible.executor.prepared-semantic-attempt-result` | 6 | Contains the observation, content-ordered raw measurement replay leaves, optional finding closure, and manifest-rooted production replay outcomes. |
-| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, hash, and the current version-6 payload. |
-| `crucible.executor.attempt-state-record` | 15 | Retains publication roots and the full prepared-result digest through Publishing and Completed; Publishing also carries bounded exact-checkpoint roots. |
-| `crucible.executor.finding-replay-capture-manifest` | 1 | Commits one capture hash, logical length, and ordered set of at-most-64-MiB trace chunks. |
+| `crucible.executor.prepared-semantic-attempt-result` | 6 | Contains the observation, content-ordered raw measurement replay leaves, and optional finding closure. |
+| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, and hash. |
 
-Normal prepared-result readers accept only version 6, and journal-state version
-2 admits only that current payload. Version 6 carries the current optional
-native triage records and finding closure; raw capture bytes never enter the
-bounded result journal. Historical result versions 1 through 5 and
-journal-state version 1 are parsed only by the stopped-daemon, bounded,
-authenticated one-way `store repair operational-state` migration. It records
-source provenance and writes a version-6 result with version-2 journal state
-before normal runtime may reopen the namespace. Other state/payload
-combinations fail closed.
-
-Attempt-state v15 is the sole normal schema. It persists all four capture
-outcomes, at most three sorted complete exact-checkpoint roots, and the full
-prepared-result digest in `Publishing`, and preserves the digest in
-`Completed`, so finding handoff recovery cannot authorize an ID-only candidate.
-Historical versions 1 through 14 are parsed only by the explicit stopped-daemon
-migration, which writes authenticated version-15 records before runtime restart.
-
-
-Under GC exclusion, writers publish replay-capture and exact-checkpoint
-children and bind the complete prepared payload. For Complete v5 retention they
-authenticate the full bounded candidate inventory, stream only selected
-checkpoint closures from the checkpoint store into campaign CAS, and publish
-the semantic candidate and observation while the original guard still excludes
-GC. They then fsync the payload into a hidden staging directory, commit the
-matching v15 `Publishing` roots and digest, and promote the
-
-journal name into the visible recovery namespace before releasing that guard.
-Later publication is idempotent and cold-validates the already-published
-candidate through selected roots only. The Completed v15 CAS preserves the same
-digest until candidate incorporation is acknowledged; stable journal cleanup
-runs only after pending candidates have been reconciled. Before any recovery
-ref mutation, the daemon authenticates the visible journal, every retained
-capture object, selected production checkpoint closure, original/minimized
-reproduction, and finding signature against Completed v15.
-
-Complete finding-retention bundle v5 is an immutable executor inventory
-attestation. The daemon admits at most 4,096 candidates and at most 64 MiB in
-aggregate across every candidate root envelope, production manifest, and child
-index examined during typed authentication. It checks scenario artifact,
-configuration, scheduler event count, policy basis, deterministic selection,
-and every listed candidate before publication. Cold loads trust that immutable
-inventory attestation, recompute its selected pins from declared event counts,
-and reopen only the selected retained roots; unselected roots remain eligible
-for ordinary GC. Generic ID-only publication or first incorporation cannot
-claim Complete retention.
+Readers accept only prepared-result version 6 and journal-state version 2. A
+state file and its result payload must use those exact current versions;
+mismatches fail closed.
 
 The prepared-result codec validates raw-leaf closure ownership without claiming
 measurement semantics. It checks each singleton edge and its trace ID, scenario,
@@ -463,10 +412,9 @@ retained evaluation payload with `replay(raw, definitions)` because the journal
 does not own authenticated scenario definitions. Production preparation and
 recovery must resolve those definitions from the admitted semantic closure and
 invoke `verify_crucible_measurement_publication` for the observation and every
-finding replay before publishing any leaf or parent. The version-2 journal and
-version-6 prepared-result codec validate the durable representation; production
-preparation and recovery resolve and verify its semantic inputs before
-publication.
+finding replay before publishing any leaf or parent. The current codecs
+establish the durable representation; they do not by themselves claim
+production recovery or publication wiring.
 
 The observation stores both `ConfigurationId` and
 `ConfigurationArtifactId`. The former is semantic graph identity; the latter is
@@ -474,11 +422,12 @@ the exact replayable child evidence. Coverage storage adds immutable projection
 records and derives their identity union, so a new projector can rebuild the
 same union without mutating an old bitmap in place.
 
-Objective evaluation produces three strict canonical record schemas. Their
-established schema-version field is `1`, and fields occur in the order shown:
+Objective evaluation produces three strict canonical record schemas.
+Objective evaluation and ranking explanation use current schema v2; survivor
+selection uses current schema v1. Fields occur in the order shown:
 
 ```text
-ObjectiveEvaluationV1:
+ObjectiveEvaluationV2:
   schema-version: u32
   observation: ObservationId
   configuration: ConfigurationId
@@ -510,27 +459,26 @@ Failed or inconclusive properties, guest crashes, assertion failures, and
 scenario failures are also retained as closed rejection variants. A scenario
 failure rejection binds the ordered failure-reason vector by a domain-separated
 digest rather than duplicating its potentially large text. Objective evaluation
-and ranking explanation schema v2 are written only when this rejection is
-present; all other records retain their exact v1 body and envelope identities.
-A v1 body carrying the new rejection tag or a v2 body without it is invalid.
+and ranking explanation are always written as current schema v2. Every other
+version is rejected.
 `scalar-reward` exists only for a
 nonempty, rejection-free vector and is the reduced arbitrary-precision sum of
 direction-adjusted weighted values. Objective values and rewards never use
 floating point.
 
 The execution-model adapter owns the semantic projection from a verified model
-measurement payload to objective values. For Crucible measurement payload
-schemas 1 and 2, objective names are `measurement-id.metric-id`; the adapter
+measurement payload to objective values. For current Crucible measurement
+payload schema 2, objective names are `measurement-id.metric-id`; the adapter
 verifies the definition hash, evaluation hash, payload bytes, and observation's
 exact measurement-set identity, accepts only scalar numeric aggregates, and
-rejects ambiguous qualified names or nonnumeric aggregates. A caller accepting
-schema 2 for projection must first perform the singleton raw-leaf replay above;
+rejects ambiguous qualified names or nonnumeric aggregates. A caller must first
+perform the singleton raw-leaf replay above;
 the objective adapter cannot infer that provenance from a supplied typed
 evaluation. The generic campaign layer then applies the immutable policy and
 filtering rules.
 
 ```text
-RankingExplanationV1:
+RankingExplanationV2:
   schema-version: u32
   evaluation: ObjectiveEvaluationId
   disposition: selected-objective | selected-novelty |
@@ -619,7 +567,7 @@ pub struct Finding {
 }
 ```
 
-The canonical schema-v2 record represents `occurrences` as an authenticated
+The canonical finding record represents `occurrences` as an authenticated
 Merkle-set root plus a checked count of at most 1,000,000 observations. It also
 retains the exact latest occurrence so the owner can prove one set insertion
 without rescanning history. `exact_pins` contains four sorted sets:
@@ -632,26 +580,26 @@ the greatest event count strictly before the causal failure, the greatest count
 at or before the last successful measurement boundary, and the least count at
 or after failure; equal-count candidates choose the content-address-least root.
 Missing eligible roles remain empty and never prevent thin reproduction.
-Schema v4 extends schema v2 with the first verified candidate bundle and an
-authenticated occurrence set retaining every verified bundle. Finding schemas
-v1 and v3 are rejected by normal admission.
+The current schema v4 retains the first verified candidate bundle and an
+authenticated occurrence set containing every verified bundle. Every
+noncurrent finding schema is rejected by normal admission.
 The signature retains at most 4,096 canonical evidence object IDs. Every
 referenced identity or root is an exact envelope child. `first_seen_snapshot`
 is the authenticated parent snapshot at which the first observation was already
 visible; using the successor that publishes the finding would create a
 content-address cycle.
 
-`ReproductionArtifact` schema v1 binds the semantic scenario and configuration,
+The sole current `ReproductionArtifact` schema v2 binds the semantic scenario and configuration,
 their exact `ScenarioArtifactId` and `ConfigurationArtifactId`, the stable
 failure fingerprint, and at most 32 MiB of self-contained execution-model
 bytes. The campaign layer does not trust those opaque bytes by inspection. A
 typed execution-model adapter replays them, re-derives all identities and the
 failure fingerprint, and only then publishes the immutable record.
 
-Schema v2 represents only a minimized reproduction. In addition to the v1
-basis it names the exact original v1 reproduction and retains a nonzero
-execution-model policy schema with at most 64 KiB of policy bytes, at most 4,096
-dense candidate outcomes, and the final replayed state. Each candidate retains
+When the reproduction is minimized, the same schema names the exact original
+reproduction and retains a nonzero execution-model policy schema with at most
+64 KiB of policy bytes, at most 4,096 dense candidate outcomes, and the final
+replayed state. Each candidate retains
 its sequence, self-contained artifact identity, schedule identity, replayed
 state, optional observed failure fingerprint, and accepted bit. At most one
 candidate is accepted; it is last and its observed fingerprint equals the
@@ -660,8 +608,7 @@ state. Crucible policy v1 contains the deterministic seed, the
 4,096-candidate hard bound, and the 128 MiB conservative candidate-copy work
 bound. The adapter reruns the bounded minimization before publication and the
 repository requires the trace's original to be the finding's original
-reproduction. Schema-v1 bodies remain readable and reproduce their original
-schema-v1 content IDs; they are not silently rewritten as v2.
+reproduction. Every noncurrent reproduction body is rejected by ordinary runtime.
 
 The signature includes property/assertion identity, stable guest or QEMU failure
 class, relevant target/opportunity, and canonical causal evidence. It excludes
@@ -701,13 +648,12 @@ body reads.
 
 A rich candidate may additionally name four closed triage replay roles:
 minimization-original, minimization-selected, verification-original, and
-verification-selected. `FindingTriageReplayEvidence` schema v1 retains an
-opaque execution-model payload of at most 80 MiB when its complete canonical
-envelope fits the generic 64 MiB object ceiling. Larger values use schema v2: a
-small manifest root commits the reproduction, observed campaign signature,
-payload schema, total payload length, and one to three ordered schema-v1 chunk
-children of at most 32 MiB each. The evidence ID is always the stored root ID;
-schema-v1 IDs and bytes remain unchanged.
+verification-selected. The current `FindingTriageReplayEvidence` storage
+contract uses a small schema-v2 manifest root that commits the reproduction,
+observed campaign signature, payload schema, total payload length, and one to
+three ordered schema-v1 chunk children of at most 32 MiB each. The opaque
+execution-model payload is bounded at 80 MiB, and the evidence ID is always
+the stored manifest root ID.
 
 `GetCampaignFindingTriageReplaySegment` is the only checked service operation
 that transfers these stored envelopes. Its request binds the principal,
@@ -721,8 +667,7 @@ or requests manifest children. It then fetches all child envelopes in declared
 order and authenticates the complete physical layout and logical evidence ID
 before decoding or exposing the replay. Missing, reordered, substituted,
 mixed-snapshot, wrong-role, stale-description, or corrupt segments fail closed.
-This root-first rule also applies to schema v1: a partial inline envelope
-reveals no replay bytes.
+A partial manifest or chunk sequence reveals no replay bytes.
 
 Failure-findings ledger v4 retains the exact ordered request/response transcript
 for every replay role. Offline import revalidates each request binding, proof,

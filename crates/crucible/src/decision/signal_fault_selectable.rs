@@ -9,6 +9,14 @@
 
 mod semantics;
 
+#[cfg(test)]
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crate::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::BTreeSet;
 
 use crucible_campaign::{
@@ -249,12 +257,6 @@ impl SignalFaultSelectable {
     #[must_use]
     pub const fn frontier(&self) -> VirtualTime {
         self.frontier
-    }
-
-    /// Returns the stable finite search-choice identity.
-    #[must_use]
-    pub const fn search_choice(&self) -> SearchChoiceId {
-        self.choice
     }
 
     /// Returns the exact finite candidate-set digest.
@@ -624,7 +626,7 @@ pub enum SignalFaultSelectableError {
     /// Candidate tags did not preserve one homogeneous typed RFC-0014 domain.
     #[error("signal-fault search frontier mixes typed candidate semantics")]
     MixedCandidateSemantics,
-    /// An index-only legacy candidate cannot be promoted as a typed choice.
+    /// An index-only untyped candidate cannot be promoted as a typed choice.
     #[error("signal-fault search frontier candidate lacks typed semantics")]
     UntypedCandidate,
     /// The decision parent differs from the promoted exact configuration.
@@ -820,7 +822,7 @@ mod tests {
     #[test]
     fn index_only_frontier_is_rejected_at_the_campaign_boundary() {
         let (mut frontier, _) = fixture(2);
-        let legacy = frontier
+        let untyped_candidates = frontier
             .choices
             .choices()
             .iter()
@@ -833,7 +835,7 @@ mod tests {
                 Decision::Override(decision)
             })
             .collect::<Vec<_>>();
-        frontier.choices = SearchFrontierChoices::from_decisions(legacy);
+        frontier.choices = SearchFrontierChoices::from_decisions(untyped_candidates);
 
         assert_eq!(
             SignalFaultSelectable::from_frontier(&frontier),
@@ -971,14 +973,13 @@ mod tests {
             .resolve_branch(&first_selection)
             .expect("first branch");
 
-        let between = try_step(
+        let between = accepted_step!(
             first.selected(),
             Decision::RngDraw(crate::RngDecision {
                 stream: crate::RngStreamId::from_name("between-promoted-frontiers"),
                 value: 7,
             }),
-        )
-        .expect("test configuration step");
+        );
         let second_choice = BindingSearchChoice {
             id: SearchChoiceId::from_content_hash(crate::ContentHash::from_bytes(b"second-choice")),
             candidates_digest: crate::ContentHash::from_bytes(b"second-candidates"),

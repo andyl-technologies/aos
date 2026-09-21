@@ -1,4 +1,4 @@
-//! Ordered frontier pages, mixed request schemas, and forged index rejection.
+//! Ordered current-request frontier pages and forged index rejection.
 
 use super::*;
 
@@ -17,29 +17,27 @@ fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
             lineage.genesis(),
             &format!("scan-branch-{branch}"),
         );
-        // Insert versions and causes in reverse order, not in scan order.
-        for schema in (2_u32..=4).rev() {
+        // Insert distinct causes in reverse order, not in scan order.
+        for variant in (2_u32..=4).rev() {
             for cause in (0..3).rev() {
                 let request = BranchRequest::new(
-                    template.branch_point(),
-                    template.parent(),
-                    template.opportunity(),
-                    template.domain(),
+                    BranchRequest::identity(
+                        template.branch_point(),
+                        template.parent(),
+                        template.opportunity(),
+                        template.domain(),
+                    ),
                     template.source().clone(),
                     BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
                         CampaignHash::derive(
                             "scan-order",
-                            format!("{branch}-{schema}-{cause}").as_bytes(),
+                            format!("{branch}-{variant}-{cause}").as_bytes(),
                         ),
                     )),
                     template.budget(),
                     template.stop().clone(),
                 )
                 .expect("request");
-                let mut bytes = request.canonical_bytes();
-                bytes[..4].copy_from_slice(&schema.to_be_bytes());
-                let request =
-                    BranchRequest::from_canonical_bytes(&bytes).expect("retained request schema");
                 let head = repository.head("scan-order").expect("head");
                 repository
                     .submit_known_branch_request("scan-order", head.snapshot_id(), &request)
@@ -54,10 +52,12 @@ fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
             .load_choice_opportunity(template.opportunity())
             .expect("scenario-default opportunity");
         let scenario_default = BranchRequest::new(
-            template.branch_point(),
-            template.parent(),
-            template.opportunity(),
-            template.domain(),
+            BranchRequest::identity(
+                template.branch_point(),
+                template.parent(),
+                template.opportunity(),
+                template.domain(),
+            ),
             CandidateSource::finite(BTreeSet::from([opportunity.default().clone()]))
                 .expect("scenario-default source"),
             BranchRequestCause::ScenarioDefault(policy.id().expect("policy id")),
@@ -71,7 +71,7 @@ fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
                 .expect("scenario-default request id")
                 .content_id()
                 .schema_version(),
-            crate::exploration::SCENARIO_DEFAULT_BRANCH_REQUEST_SCHEMA_VERSION
+            crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION
         );
         let head = repository.head("scan-order").expect("head");
         repository
@@ -85,6 +85,26 @@ fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
     let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     let head = cold.head("scan-order").expect("cold indexed head");
     let view = head.snapshot().planning_view();
+    let index = cold
+        .merkle
+        .get(view.exploration(), planner_scan_index_anchor_key())
+        .expect("planner index lookup")
+        .expect("planner index anchor");
+    for position in &expected {
+        let request = position.source().content_id();
+        let branch = cold
+            .merkle
+            .get(index, position.branch_point().as_hash())
+            .expect("branch lookup")
+            .expect("indexed branch");
+        assert_eq!(
+            cold.merkle
+                .get(branch, CampaignHash::from_bytes(request.digest()))
+                .expect("request lookup"),
+            Some(request)
+        );
+    }
+
     for limit in [1, 3, 7] {
         let mut after = None;
         let mut seen = Vec::new();

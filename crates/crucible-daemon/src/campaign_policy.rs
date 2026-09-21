@@ -385,6 +385,7 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         "submit-discovery-request" => Some(CampaignServiceOperation::SubmitDiscoveryRequest),
         "submit-branch-request" => Some(CampaignServiceOperation::SubmitBranchRequest),
         "attach-campaign-runtime" => Some(CampaignServiceOperation::AttachCampaignRuntime),
+        "debug-campaign" => Some(CampaignServiceOperation::DebugCampaign),
         _ => None,
     }
 }

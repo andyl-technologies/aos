@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
+use rustix::fs::{FlockOperation, flock};
 
 use super::directory::create_dir_all_durable;
 use super::{
@@ -175,7 +175,6 @@ pub(crate) struct WriteBackJournal {
     maximum_pending_objects: u64,
     maximum_pending_bytes: u64,
     binding: [u8; 32],
-    repair_torn_tail: bool,
     cache: Mutex<JournalCache>,
 }
 
@@ -202,50 +201,9 @@ impl WriteBackJournal {
             maximum_pending_objects,
             maximum_pending_bytes,
             binding,
-            repair_torn_tail: true,
             cache: Mutex::new(JournalCache::default()),
         });
         journal.initialize()?;
-        Ok(journal)
-    }
-
-    fn authenticate_existing(
-        node: impl Into<String>,
-        root: PathBuf,
-        maximum_pending_objects: u64,
-        maximum_pending_bytes: u64,
-        binding: [u8; 32],
-    ) -> Result<Arc<Self>, StoreError> {
-        if maximum_pending_objects == 0
-            || maximum_pending_objects > MAX_PENDING_OBJECTS
-            || maximum_pending_bytes == 0
-        {
-            return Err(StoreError::InvalidComposition {
-                reason: "write-back journal bounds are invalid",
-            });
-        }
-        let metadata = fs::symlink_metadata(&root)
-            .map_err(|source| io_error("inspect existing write-back journal", &root, source))?;
-        if !metadata.file_type().is_dir() {
-            return Err(StoreError::InvalidComposition {
-                reason: "write-back journal root is not a directory",
-            });
-        }
-        let journal = Arc::new(Self {
-            node: node.into(),
-            root,
-            maximum_pending_objects,
-            maximum_pending_bytes,
-            binding,
-            repair_torn_tail: false,
-            cache: Mutex::new(JournalCache::default()),
-        });
-        let _lifecycle =
-            journal.lock_file_existing(LIFECYCLE_LOCK_FILE, FlockOperation::LockShared)?;
-        let _state = journal.lock_file_existing(STATE_LOCK_FILE, FlockOperation::LockExclusive)?;
-        let mut cache = JournalCache::default();
-        journal.synchronize_cache_inner(&mut cache, false)?;
-        drop(cache);
         Ok(journal)
     }
 
@@ -281,23 +239,15 @@ impl WriteBackJournal {
     }
 
     pub(crate) fn acquire_shared_lifecycle(&self) -> Result<File, StoreError> {
-        self.lock_for_mode(LIFECYCLE_LOCK_FILE, FlockOperation::LockShared)
+        self.lock_file(LIFECYCLE_LOCK_FILE, FlockOperation::LockShared)
     }
 
     pub(crate) fn acquire_exclusive_lifecycle(&self) -> Result<File, StoreError> {
-        self.lock_for_mode(LIFECYCLE_LOCK_FILE, FlockOperation::LockExclusive)
+        self.lock_file(LIFECYCLE_LOCK_FILE, FlockOperation::LockExclusive)
     }
 
     fn lock_state(&self) -> Result<File, StoreError> {
-        self.lock_for_mode(STATE_LOCK_FILE, FlockOperation::LockExclusive)
-    }
-
-    fn lock_for_mode(&self, name: &str, operation: FlockOperation) -> Result<File, StoreError> {
-        if self.repair_torn_tail {
-            self.lock_file(name, operation)
-        } else {
-            self.lock_file_existing(name, operation)
-        }
+        self.lock_file(STATE_LOCK_FILE, FlockOperation::LockExclusive)
     }
 
     fn lock_file(&self, name: &str, operation: FlockOperation) -> Result<File, StoreError> {
@@ -311,18 +261,6 @@ impl WriteBackJournal {
             .map_err(|source| io_error("open write-back journal lock", &path, source))?;
         flock(&file, operation)
             .map_err(|source| io_error("lock write-back journal", &path, source.into()))?;
-        Ok(file)
-    }
-
-    fn lock_file_existing(
-        &self,
-        name: &str,
-        operation: FlockOperation,
-    ) -> Result<File, StoreError> {
-        let path = self.root.join(name);
-        let file = open_existing_regular_file(&path, "open existing write-back journal lock")?;
-        flock(&file, operation)
-            .map_err(|source| io_error("lock existing write-back journal", &path, source.into()))?;
         Ok(file)
     }
 
@@ -486,24 +424,12 @@ impl WriteBackJournal {
     }
 
     fn synchronize_cache(&self, cache: &mut JournalCache) -> Result<(), StoreError> {
-        self.synchronize_cache_inner(cache, self.repair_torn_tail)
-    }
-
-    fn synchronize_cache_inner(
-        &self,
-        cache: &mut JournalCache,
-        repair_torn_tail: bool,
-    ) -> Result<(), StoreError> {
         let path = self.log_path();
-        let mut log = if repair_torn_tail {
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .map_err(|source| io_error("open write-back journal", &path, source))?
-        } else {
-            open_existing_regular_file(&path, "open existing write-back journal")?
-        };
+        let mut log = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|source| io_error("open write-back journal", &path, source))?;
         let metadata = log
             .metadata()
             .map_err(|source| io_error("stat write-back journal", &path, source))?;
@@ -546,11 +472,8 @@ impl WriteBackJournal {
             {
                 PrefixRead::Eof => break,
                 PrefixRead::Partial => {
-                    if repair_torn_tail {
-                        truncate_torn_tail(&mut log, &path, record_offset)?;
-                        break;
-                    }
-                    return Err(StoreError::Incompatible);
+                    truncate_torn_tail(&mut log, &path, record_offset)?;
+                    break;
                 }
                 PrefixRead::Complete => {}
             }
@@ -562,11 +485,8 @@ impl WriteBackJournal {
             let mut encoded = vec![0_u8; length];
             if let Err(source) = log.read_exact(&mut encoded) {
                 if source.kind() == io::ErrorKind::UnexpectedEof {
-                    if repair_torn_tail {
-                        truncate_torn_tail(&mut log, &path, record_offset)?;
-                        break;
-                    }
-                    return Err(StoreError::Incompatible);
+                    truncate_torn_tail(&mut log, &path, record_offset)?;
+                    break;
                 }
                 return Err(io_error("read write-back journal record", &path, source));
             }
@@ -634,14 +554,6 @@ pub(crate) struct WriteBackStore {
     journal: Arc<WriteBackJournal>,
 }
 
-/// Existing-state write-back view that exposes only ordinary reads.
-pub(crate) struct ObservationalWriteBackStore {
-    name: String,
-    staging: Arc<dyn ImmutableBlobBackend>,
-    destination: Arc<dyn ImmutableBlobBackend>,
-    journal: Arc<WriteBackJournal>,
-}
-
 impl WriteBackStore {
     pub(crate) fn new(
         name: impl Into<String>,
@@ -652,7 +564,22 @@ impl WriteBackStore {
         maximum_pending_bytes: u64,
     ) -> Result<Self, StoreError> {
         let name = name.into();
-        validate_write_back_children(&staging, &destination)?;
+        let staging_capabilities = staging.capabilities();
+        let destination_capabilities = destination.capabilities();
+        if !staging_capabilities.durable
+            || staging_capabilities.deferred_write
+            || !staging_capabilities.conditional_create
+            || !staging_capabilities.streaming_read
+            || !staging_capabilities.streaming_put
+            || !destination_capabilities.durable
+            || destination_capabilities.deferred_write
+            || !destination_capabilities.conditional_create
+            || !destination_capabilities.streaming_put
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "write-back children lack durable streaming capabilities",
+            });
+        }
         let binding = write_back_binding(
             &name,
             staging.name(),
@@ -707,125 +634,21 @@ impl WriteBackStore {
     }
 }
 
-impl ObservationalWriteBackStore {
-    pub(crate) fn open(
-        name: impl Into<String>,
-        staging: Arc<dyn ImmutableBlobBackend>,
-        destination: Arc<dyn ImmutableBlobBackend>,
-        journal_root: PathBuf,
-        maximum_pending_objects: u64,
-        maximum_pending_bytes: u64,
-    ) -> Result<Self, StoreError> {
-        let name = name.into();
-        validate_write_back_children(&staging, &destination)?;
-        let binding = write_back_binding(
-            &name,
-            staging.name(),
-            destination.name(),
-            maximum_pending_objects,
-            maximum_pending_bytes,
-        );
-        let journal = WriteBackJournal::authenticate_existing(
-            name.clone(),
-            journal_root,
-            maximum_pending_objects,
-            maximum_pending_bytes,
-            binding,
-        )?;
-        Ok(Self {
-            name,
-            staging,
-            destination,
-            journal,
-        })
-    }
-
-    pub(crate) fn journal(&self) -> Arc<WriteBackJournal> {
-        Arc::clone(&self.journal)
-    }
-}
-
-impl ImmutableBlobBackend for ObservationalWriteBackStore {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn capabilities(&self) -> BackendCapabilities {
-        write_back_capabilities(&self.staging, &self.destination)
-    }
-
-    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-        match self.staging.contains(id) {
-            Ok(true) => Ok(true),
-            Ok(false) | Err(StoreError::NotFound { .. }) => self.destination.contains(id),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
-        match self.staging.read(id, range) {
-            Ok(blob) => Ok(blob),
-            Err(StoreError::NotFound { .. }) => self.destination.read(id, range),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn put_if_absent(
-        &self,
-        _id: ContentId,
-        _source: &BlobHandle,
-    ) -> Result<PutReceipt, StoreError> {
-        Err(StoreError::Unsupported {
-            capability: "observational write-back mutation",
-        })
-    }
-}
-
-fn validate_write_back_children(
-    staging: &Arc<dyn ImmutableBlobBackend>,
-    destination: &Arc<dyn ImmutableBlobBackend>,
-) -> Result<(), StoreError> {
-    let staging_capabilities = staging.capabilities();
-    let destination_capabilities = destination.capabilities();
-    if !staging_capabilities.durable
-        || staging_capabilities.deferred_write
-        || !staging_capabilities.conditional_create
-        || !staging_capabilities.streaming_read
-        || !staging_capabilities.streaming_put
-        || !destination_capabilities.durable
-        || destination_capabilities.deferred_write
-        || !destination_capabilities.conditional_create
-        || !destination_capabilities.streaming_put
-    {
-        return Err(StoreError::InvalidComposition {
-            reason: "write-back children lack durable streaming capabilities",
-        });
-    }
-    Ok(())
-}
-
-fn write_back_capabilities(
-    staging: &Arc<dyn ImmutableBlobBackend>,
-    destination: &Arc<dyn ImmutableBlobBackend>,
-) -> BackendCapabilities {
-    let mut capabilities = staging.capabilities();
-    let destination = destination.capabilities();
-    capabilities.durable = true;
-    capabilities.deferred_write = true;
-    capabilities.range_read &= destination.range_read;
-    capabilities.streaming_read &= destination.streaming_read;
-    capabilities.repair_inventory = false;
-    capabilities.planned_delete = false;
-    capabilities
-}
-
 impl ImmutableBlobBackend for WriteBackStore {
     fn name(&self) -> &str {
         &self.name
     }
 
     fn capabilities(&self) -> BackendCapabilities {
-        write_back_capabilities(&self.staging, &self.destination)
+        let mut capabilities = self.staging.capabilities();
+        let destination = self.destination.capabilities();
+        capabilities.durable = true;
+        capabilities.deferred_write = true;
+        capabilities.range_read &= destination.range_read;
+        capabilities.streaming_read &= destination.streaming_read;
+        capabilities.repair_inventory = false;
+        capabilities.planned_delete = false;
+        capabilities
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -1062,26 +885,6 @@ fn read_prefix(reader: &mut File, output: &mut [u8; 4]) -> io::Result<PrefixRead
         }
     }
     Ok(PrefixRead::Complete)
-}
-
-fn open_existing_regular_file(path: &Path, operation: &'static str) -> Result<File, StoreError> {
-    let descriptor = open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|source| io_error(operation, path, source.into()))?;
-    let file = File::from(descriptor);
-    if !file
-        .metadata()
-        .map_err(|source| io_error(operation, path, source))?
-        .is_file()
-    {
-        return Err(StoreError::InvalidComposition {
-            reason: "existing write-back journal path is not a regular file",
-        });
-    }
-    Ok(file)
 }
 
 fn truncate_torn_tail(log: &mut File, path: &Path, offset: u64) -> Result<(), StoreError> {

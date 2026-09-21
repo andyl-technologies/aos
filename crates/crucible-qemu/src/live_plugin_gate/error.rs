@@ -8,9 +8,9 @@ use crucible_shmem::{RegionLayoutError, SetupRegionMapError};
 use thiserror::Error;
 
 use crate::{
-    LaunchProfileError, QemuHostPluginSetupError, QemuLaunchCommandError,
-    QemuMappedQuantumShmemHotPathError, QemuNodeChannelError, QemuSpawnError,
-    QemuWhiteboxSetupError,
+    LaunchProfileError, QemuAsyncDriverRuntimeError, QemuHostPluginSetupError,
+    QemuLaunchCommandError, QemuLiveHostIoRuntimeError, QemuMappedQuantumShmemHotPathError,
+    QemuNodeChannelError, QemuSpawnError, QemuWhiteboxSetupError,
 };
 
 /// Reports a failure in the production loaded-QEMU plugin install gate.
@@ -86,6 +86,18 @@ pub enum LivePluginInstallGateError {
         /// Underlying hot-path error.
         source: QemuMappedQuantumShmemHotPathError,
     },
+    /// Building the independent host runtime for an exact fingerprint request failed.
+    #[error("build install loaded-QEMU fingerprint host runtime failed: {source}")]
+    FingerprintRuntime {
+        /// Underlying live host-runtime construction error.
+        source: QemuLiveHostIoRuntimeError,
+    },
+    /// The exact-boundary fingerprint request was not published and acknowledged.
+    #[error("request install loaded-QEMU exact-boundary fingerprint failed: {source}")]
+    FingerprintCapture {
+        /// Underlying host-runtime control-boundary error.
+        source: QemuAsyncDriverRuntimeError,
+    },
     /// A live shared-memory or control-channel operation failed.
     #[error("install loaded-QEMU operation `{operation}` failed: {source}")]
     Channel {
@@ -103,25 +115,11 @@ pub enum LivePluginInstallGateError {
     /// A causal plugin result arrived without seeded host configuration.
     #[error("live app-random result arrived without host configuration")]
     AppRandomNotConfigured,
-    /// The plugin emitted a causal decision other than app-random.
-    #[error("live plugin emitted unsupported causal decision `{decision}`")]
-    UnsupportedCausalDecision {
-        /// Debug representation of the rejected decision.
-        decision: String,
-    },
     /// The host recorder rejected the live app-random request.
     #[error("host app-random recorder rejected live decision: {message}")]
     AppRandomRecorder {
         /// Recorder diagnostic.
         message: String,
-    },
-    /// The live reply differed from the host's seeded reconstruction.
-    #[error("live app-random value {actual} differs from seeded host value {expected}")]
-    AppRandomValueMismatch {
-        /// Value published by the production plugin.
-        actual: u64,
-        /// Value independently reconstructed by the host.
-        expected: u64,
     },
     /// QEMU did not publish the requested icount before the host bound expired.
     #[error(
@@ -143,32 +141,20 @@ pub enum LivePluginInstallGateError {
         /// Exact platform exit-status diagnostic.
         status: String,
     },
-    /// The digest worker did not publish the exact-boundary fingerprint in time.
-    #[error(
-        "install plugin did not publish the icount {icount} execution fingerprint within {timeout:?}: {last_error}"
-    )]
-    FingerprintTimeout {
-        /// Exact boundary whose fingerprint was requested.
-        icount: u64,
-        /// Host-side diagnostic timeout.
-        timeout: Duration,
-        /// Last retryable shared-memory diagnostic.
-        last_error: String,
-    },
-    /// QEMU exited before the digest worker published the boundary fingerprint.
-    #[error("install QEMU exited before publishing the icount {icount} fingerprint: {status}")]
-    ChildExitBeforeFingerprint {
-        /// Exact boundary whose fingerprint was requested.
-        icount: u64,
-        /// Exact platform exit-status diagnostic.
-        status: String,
-    },
     /// A run crossed rather than stopped at the requested exact boundary.
     #[error("install loaded QEMU completed at icount {actual}, expected {expected}")]
     InexactBoundary {
         /// Required exact boundary.
         expected: u64,
         /// Published boundary.
+        actual: u64,
+    },
+    /// The acknowledged fingerprint sample did not describe the stopped boundary.
+    #[error("install loaded QEMU fingerprint sampled icount {actual}, expected {expected}")]
+    InexactFingerprintBoundary {
+        /// Required exact boundary.
+        expected: u64,
+        /// Icount carried by the acknowledged sample.
         actual: u64,
     },
     /// The plugin did not publish `Done` after consuming control `Quit`.

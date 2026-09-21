@@ -569,12 +569,14 @@ fn validate_smc_request(
         return Err(invalid("SMC transition request cause is not a planner"));
     };
     let expected = BranchRequest::new(
-        selected
-            .opportunity()
-            .branch_point_id(execution.parent().configuration()),
-        execution.parent().id()?,
-        selected.opportunity().id()?,
-        selected.domain().id()?,
+        BranchRequest::identity(
+            selected
+                .opportunity()
+                .branch_point_id(execution.parent().configuration()),
+            execution.parent().id()?,
+            selected.opportunity().id()?,
+            selected.domain().id()?,
+        ),
         CandidateSource::statistical_smc(
             generation.id(),
             particle.id(),

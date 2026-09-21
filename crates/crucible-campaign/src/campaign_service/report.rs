@@ -1111,7 +1111,7 @@ mod tests {
             .expect("lineage ID"),
             CampaignPolicyId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Policy,
-                1,
+                4,
                 b"report-policy",
             ))
             .expect("policy ID"),

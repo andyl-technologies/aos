@@ -8,9 +8,8 @@
 use std::sync::Arc;
 
 use crucible_campaign::{
-    AttemptExecutionScope, AttemptId, CampaignExecutorStore, CampaignLineageId, CampaignRepository,
-    ExecutorCompatibilityProfile, ExecutorRejection, FindingCandidateBundleId, ObservationId,
-    SubmitAttemptRequest,
+    AttemptId, CampaignLineageId, CampaignRepository, ExecutorCompatibilityProfile,
+    ExecutorRejection, FindingCandidateBundleId, ObservationId, SubmitAttemptRequest,
 };
 
 use crate::{AttemptAdmissionValidator, CompletionValidationFailure};
@@ -34,36 +33,13 @@ impl RepositoryAttemptAdmission {
             profile,
         }
     }
-
-    fn validate_retention_policy_basis(
-        &self,
-        request: &SubmitAttemptRequest,
-    ) -> Result<(), ExecutorRejection> {
-        if request.execution_scope() != AttemptExecutionScope::Semantic
-            || matches!(
-                request.start_mode(),
-                crucible_campaign::AttemptStartMode::CaptureMaterializedStart { .. }
-                    | crucible_campaign::AttemptStartMode::SavepointCapture { .. }
-            )
-        {
-            return Ok(());
-        }
-        let basis = request
-            .retention_policy_basis()
-            .ok_or(ExecutorRejection::Incompatible)?;
-        CampaignExecutorStore::new(Arc::clone(&self.repository))
-            .validate_attempt_retention_policy_basis(request.lineage(), request.attempt(), basis)
-            .map(drop)
-            .map_err(|error| error.executor_rejection())
-    }
 }
 
 impl AttemptAdmissionValidator for RepositoryAttemptAdmission {
     fn validate(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
         self.repository
             .validate_executor_request_with_profile(request, &self.profile)
-            .map_err(|error| error.executor_rejection())?;
-        self.validate_retention_policy_basis(request)
+            .map_err(|error| error.executor_rejection())
     }
 
     fn validate_execution_scope(

@@ -12,12 +12,12 @@ use crucible_cas::content_store::ObjectKind;
 
 use super::*;
 
-fn key(label: &str) -> QemuHotForkTemplateKey {
+fn key(label: &str) -> HotCheckpointPoolKey {
     let digest = CampaignHash::derive(
         "crucible.test.hot-checkpoint-retention.v1",
         label.as_bytes(),
     );
-    QemuHotForkTemplateKey::new(
+    HotCheckpointPoolKey::new(
         CampaignLineageId::parse(&format!(
             "crucible.campaign.lineage@campaign-fact.1.{}",
             digest.to_hex()

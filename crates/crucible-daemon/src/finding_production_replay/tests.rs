@@ -116,11 +116,13 @@ fn campaign_binding(
         crate::encode_crucible_configuration_artifact(&scenario, finding.artifact.schedule())
             .expect("campaign configuration");
     let reproduction = crucible_campaign::ReproductionArtifact::new(
-        scenario.scenario(),
-        scenario.id().expect("scenario id"),
-        configuration.configuration(),
-        configuration.id().expect("configuration id"),
-        CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
+        crucible_campaign::ReproductionArtifactBasis::new(
+            scenario.scenario(),
+            scenario.id().expect("scenario id"),
+            configuration.configuration(),
+            configuration.id().expect("configuration id"),
+            CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
+        ),
         crate::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
         finding.artifact.to_compact_binary(),
     )
@@ -206,19 +208,10 @@ fn side(kind: &str) -> FindingProductionReplayExecutionSide {
 }
 
 #[test]
-fn continuation_event_suffix_requires_its_complete_prefix() {
+fn continuation_event_parts_require_dense_nonoverlapping_sequences() {
     let prefix = side_event(0, "prefix");
     let suffix = side_event(1, "suffix");
 
-    assert!(event_log_prefix_is_missing(
-        &[],
-        std::slice::from_ref(&suffix)
-    ));
-    assert!(!event_log_prefix_is_missing(
-        std::slice::from_ref(&prefix),
-        std::slice::from_ref(&suffix)
-    ));
-    assert!(!event_log_prefix_is_missing(&[], &[]));
     assert!(
         validate_event_log_parts(
             std::slice::from_ref(&prefix),
@@ -258,20 +251,20 @@ fn timeout_side() -> FindingProductionReplayExecutionSide {
 fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Divergence);
-    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(
-        finding.artifact.schedule(),
-    )
-    .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
+        .expect("empty choice closure");
     let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
     let material = FindingProductionReplayCaptureMaterial::new(
         &finding,
         FindingKind::Divergence,
-        FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-        deployment(),
-        vec![side("expected"), side("reproduced")],
         &closure,
-        BTreeMap::new(),
-        limits,
+        FindingProductionReplayCaptureInput::new(
+            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+            deployment(),
+            vec![side("expected"), side("reproduced")],
+            BTreeMap::new(),
+            limits,
+        ),
     )
     .expect("capture material");
     let cloned_material = material.clone();
@@ -309,19 +302,14 @@ fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
         decoded.content_hash(limits).expect("decoded content hash"),
         capture.content_hash(limits).expect("capture content hash")
     );
-    decoded
-        .validate_binding(reproduction, &signature)
-        .expect("campaign binding");
 }
 
 #[test]
 fn capture_rejects_missing_or_extraneous_lifecycle_objects() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(
-        finding.artifact.schedule(),
-    )
-    .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
+        .expect("empty choice closure");
     let mut objects = BTreeMap::new();
     let bytes = b"unreferenced".to_vec();
     objects.insert(ContentHash::from_bytes(&bytes), bytes);
@@ -329,12 +317,14 @@ fn capture_rejects_missing_or_extraneous_lifecycle_objects() {
         &finding,
         reproduction,
         signature,
-        FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-        deployment(),
-        vec![timeout_side()],
         &closure,
-        objects,
-        FindingProductionReplayCaptureLimits::for_finding(&finding),
+        FindingProductionReplayCaptureInput::new(
+            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+            deployment(),
+            vec![timeout_side()],
+            objects,
+            FindingProductionReplayCaptureLimits::for_finding(&finding),
+        ),
     )
     .err()
     .unwrap_or_else(|| panic!("extraneous object must fail"));
@@ -348,21 +338,21 @@ fn capture_rejects_missing_or_extraneous_lifecycle_objects() {
 fn paired_capture_rejects_equal_executions() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Divergence);
-    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(
-        finding.artifact.schedule(),
-    )
-    .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
+        .expect("empty choice closure");
     let observed = side("same");
     let error = FindingProductionReplayCapture::new(
         &finding,
         reproduction,
         signature,
-        FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-        deployment(),
-        vec![observed.clone(), observed],
         &closure,
-        BTreeMap::new(),
-        FindingProductionReplayCaptureLimits::for_finding(&finding),
+        FindingProductionReplayCaptureInput::new(
+            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+            deployment(),
+            vec![observed.clone(), observed],
+            BTreeMap::new(),
+            FindingProductionReplayCaptureLimits::for_finding(&finding),
+        ),
     )
     .err()
     .unwrap_or_else(|| panic!("equal paired sides must fail"));
@@ -401,22 +391,22 @@ fn referenced_world_object_must_exist_and_match_its_hash() {
     ));
 
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(
-        finding.artifact.schedule(),
-    )
-    .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
+        .expect("empty choice closure");
     let mut tampered = BTreeMap::new();
     tampered.insert(identity, b"tampered-world-block".to_vec());
     let error = FindingProductionReplayCapture::new(
         &finding,
         reproduction,
         signature,
-        FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-        deployment(),
-        vec![timeout_side()],
         &closure,
-        tampered,
-        FindingProductionReplayCaptureLimits::for_finding(&finding),
+        FindingProductionReplayCaptureInput::new(
+            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+            deployment(),
+            vec![timeout_side()],
+            tampered,
+            FindingProductionReplayCaptureLimits::for_finding(&finding),
+        ),
     )
     .err()
     .unwrap_or_else(|| panic!("hash-tampered referenced object must fail"));
@@ -488,10 +478,8 @@ fn signal_lifecycle_capture_requires_authenticates_and_bounds_its_store() {
 fn capture_enforces_small_asset_and_encoded_byte_caps() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(
-        finding.artifact.schedule(),
-    )
-    .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
+        .expect("empty choice closure");
     let mut asset_limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
     asset_limits.max_guest_asset_bytes = 1;
     assert!(matches!(
@@ -499,12 +487,14 @@ fn capture_enforces_small_asset_and_encoded_byte_caps() {
             &finding,
             reproduction,
             signature.clone(),
-            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-            deployment(),
-            vec![timeout_side()],
             &closure,
-            BTreeMap::new(),
-            asset_limits,
+            FindingProductionReplayCaptureInput::new(
+                FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+                deployment(),
+                vec![timeout_side()],
+                BTreeMap::new(),
+                asset_limits,
+            ),
         ),
         Err(FindingProductionReplayCaptureError::LimitExceeded {
             limit: "finding-production-replay-guest-asset-bytes"
@@ -516,12 +506,14 @@ fn capture_enforces_small_asset_and_encoded_byte_caps() {
         &finding,
         reproduction,
         signature,
-        FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-        deployment(),
-        vec![timeout_side()],
         &closure,
-        BTreeMap::new(),
-        limits,
+        FindingProductionReplayCaptureInput::new(
+            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+            deployment(),
+            vec![timeout_side()],
+            BTreeMap::new(),
+            limits,
+        ),
     )
     .expect("capture");
     let mut encoded_limits = limits;
@@ -582,7 +574,7 @@ fn deployment_capture_survives_removal_of_source_paths() {
     )
     .with_initrd(&initrd)
     .with_kernel_cmdline_prefix("console=ttyS0 replay=portable")
-    .with_root_image_format(crucible_api::ProductionRootImageFormat::Raw);
+    .with_root_image_format(crucible_qemu::QemuRootImageFormat::Raw);
     let selected = config
         .portable_replay_asset_paths(finding.artifact.scenario_form())
         .expect("select exact assets");
@@ -763,9 +755,11 @@ fn static_limit_counts_guest_and_world_roles_by_content_identity() {
         None,
         Some(&world_store),
         limits,
-        &captured.unique_identities,
-        captured.unique_bytes,
-        static_limit,
+        FindingProductionReplayBudget {
+            precharged_identities: &captured.unique_identities,
+            precharged_bytes: captured.unique_bytes,
+            total_byte_limit: static_limit,
+        },
     )
     .expect("capture shared-role lifecycle object");
 
@@ -779,10 +773,8 @@ fn static_limit_counts_guest_and_world_roles_by_content_identity() {
 fn capture_rejects_progress_beyond_recipe_or_terminal_frontier() {
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
-    let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(
-        finding.artifact.schedule(),
-    )
-    .expect("empty choice closure");
+    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
+        .expect("empty choice closure");
     let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
 
     let mut over_budget = timeout_side();
@@ -792,12 +784,14 @@ fn capture_rejects_progress_beyond_recipe_or_terminal_frontier() {
             &finding,
             reproduction,
             signature.clone(),
-            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-            deployment(),
-            vec![over_budget],
             &closure,
-            BTreeMap::new(),
-            limits,
+            FindingProductionReplayCaptureInput::new(
+                FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+                deployment(),
+                vec![over_budget],
+                BTreeMap::new(),
+                limits,
+            ),
         ),
         Err(FindingProductionReplayCaptureError::LimitExceeded {
             limit: "finding-production-replay-completed-quanta"
@@ -812,12 +806,14 @@ fn capture_rejects_progress_beyond_recipe_or_terminal_frontier() {
             &finding,
             reproduction,
             signature,
-            FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
-            deployment(),
-            vec![late_event],
             &closure,
-            BTreeMap::new(),
-            limits,
+            FindingProductionReplayCaptureInput::new(
+                FindingProductionReplayRecipe::new(10_000, 64, true).expect("recipe"),
+                deployment(),
+                vec![late_event],
+                BTreeMap::new(),
+                limits,
+            ),
         ),
         Err(FindingProductionReplayCaptureError::InvalidEventLog)
     ));

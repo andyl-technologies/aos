@@ -4,11 +4,10 @@
 //! physical-candidate manifests, the non-destructive single-host planner that
 //! binds them to every administrative generation, the durable external apply
 //! journal, and exact-generation physical-leaf logical deletion under
-//! publication/root fences. The current format records graph-derived
-//! read-through, non-write-tier, and completed write-back staging eviction
-//! backed by an independently authenticated required placement. Pending
-//! write-back journal ownership suppresses cache eviction through planning and
-//! apply.
+//! publication/root fences. The current format supports graph-derived
+//! read-through cache eviction backed by an independently authenticated
+//! required placement; broader transform administration remains a higher-level
+//! owner responsibility.
 //!
 //! The plan body is:
 //!
@@ -22,9 +21,11 @@
 //! physical_count:u16be
 //! repeated physical_count times:
 //!   backend_length:u16be | backend UTF-8
-//!   physical_storage_identity[32]
 //!   blob_generation[32] | objects:u64be | logical_bytes:u64be
 //! ```
+//!
+//! Every physical basis includes a 32-byte storage identity before its blob
+//! generation so apply can reject namespace substitution.
 
 mod apply;
 mod journal;
@@ -32,11 +33,14 @@ mod manifest;
 mod planner;
 mod roots;
 
-#[cfg(test)]
-pub(crate) use apply::apply_single_host_campaign_gc;
 #[cfg(target_os = "linux")]
-pub(crate) use apply::apply_single_host_campaign_gc_with_hot_checkpoints;
-pub use apply::{CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus};
+pub use apply::apply_single_host_campaign_gc_with_hot_checkpoints;
+#[cfg(test)]
+use apply::apply_single_host_campaign_gc_with_raw_physical as apply_single_host_campaign_gc_with_physical;
+pub use apply::{
+    CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,
+    apply_single_host_campaign_gc, apply_single_host_campaign_gc_with_transfers,
+};
 pub use journal::{
     CampaignGcJournalCreateDisposition, CampaignGcJournalError, CampaignGcJournalPhase,
     CampaignGcJournalTransition, DirectoryCampaignGcJournal,
@@ -45,12 +49,19 @@ pub use manifest::{
     CampaignGcCandidate, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcManifestError, CampaignGcRootManifest, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
 };
-pub(crate) use planner::CampaignGcPhysicalStore;
+use planner::CampaignGcPhysicalStore;
 #[cfg(test)]
-pub(crate) use planner::plan_single_host_campaign_gc;
+use planner::CampaignGcRawPhysicalStore;
 #[cfg(target_os = "linux")]
-pub(crate) use planner::plan_single_host_campaign_gc_with_hot_checkpoints;
-pub use planner::{CampaignGcPlanningError, CampaignGcPreparedPlan};
+pub use planner::plan_single_host_campaign_gc_with_hot_checkpoints;
+#[cfg(test)]
+use planner::plan_single_host_campaign_gc_with_physical;
+#[cfg(all(test, target_os = "linux"))]
+use planner::plan_single_host_campaign_gc_with_physical_and_hot_checkpoints;
+pub use planner::{
+    CampaignGcPlanningError, CampaignGcPreparedPlan, plan_single_host_campaign_gc,
+    plan_single_host_campaign_gc_with_transfers,
+};
 
 use crucible_campaign::CampaignHash;
 #[cfg(test)]
@@ -84,7 +95,7 @@ pub const MAX_CAMPAIGN_GC_BACKEND_ID_BYTES: usize = 64;
 /// Exact-pin selection remains optional only for stores with no current exact
 /// semantic pins.
 #[cfg(target_os = "linux")]
-pub(crate) struct CampaignGcHotCheckpointRoots<'a> {
+pub struct CampaignGcHotCheckpointRoots<'a> {
     sources: CampaignGcRetentionSources<'a>,
 }
 
@@ -92,8 +103,7 @@ pub(crate) struct CampaignGcHotCheckpointRoots<'a> {
 impl<'a> CampaignGcHotCheckpointRoots<'a> {
     /// Binds one mandatory hot-checkpoint catalog without exact-pin selections.
     #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn new(hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin) -> Self {
+    pub const fn new(hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin) -> Self {
         Self {
             sources: CampaignGcRetentionSources::with_hot_checkpoints(None, hot_fallbacks, None),
         }
@@ -101,7 +111,7 @@ impl<'a> CampaignGcHotCheckpointRoots<'a> {
 
     /// Binds hot-checkpoint fallbacks and incomplete archive-transfer roots.
     #[must_use]
-    pub(crate) const fn with_transfers(
+    pub const fn with_transfers(
         hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
         transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
     ) -> Self {
@@ -114,9 +124,24 @@ impl<'a> CampaignGcHotCheckpointRoots<'a> {
         }
     }
 
+    /// Binds the mandatory hot-checkpoint catalog and exact-pin selections.
+    #[must_use]
+    pub const fn with_exact_pins(
+        exact_pins: &'a mut dyn ExactPinRetentionAdmin,
+        hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
+    ) -> Self {
+        Self {
+            sources: CampaignGcRetentionSources::with_hot_checkpoints(
+                Some(exact_pins),
+                hot_fallbacks,
+                None,
+            ),
+        }
+    }
+
     /// Binds exact pins, hot fallbacks, and incomplete archive transfers.
     #[must_use]
-    pub(crate) const fn with_exact_pins_and_transfers(
+    pub const fn with_exact_pins_and_transfers(
         exact_pins: &'a mut dyn ExactPinRetentionAdmin,
         hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
         transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
@@ -143,7 +168,6 @@ pub(super) struct CampaignGcRetentionSources<'a> {
 }
 
 impl<'a> CampaignGcRetentionSources<'a> {
-    #[cfg(test)]
     pub(super) const fn without_hot_checkpoints(
         exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
     ) -> Self {
@@ -165,6 +189,18 @@ impl<'a> CampaignGcRetentionSources<'a> {
             exact_pins,
             transfers,
             hot_fallbacks: Some(hot_fallbacks),
+        }
+    }
+
+    pub(super) const fn with_transfers(
+        exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
+        transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
+    ) -> Self {
+        Self {
+            exact_pins,
+            transfers: Some(transfers),
+            #[cfg(target_os = "linux")]
+            hot_fallbacks: None,
         }
     }
 }
@@ -325,7 +361,7 @@ impl CampaignGcBlobInventoryBasis {
         &self.backend
     }
 
-    /// Returns the physical namespace identity.
+    /// Returns the exact physical namespace identity.
     #[must_use]
     pub const fn storage_identity(&self) -> PhysicalStorageIdentity {
         self.storage_identity
@@ -366,7 +402,7 @@ pub struct CampaignGcPlan {
 }
 
 impl CampaignGcPlan {
-    /// Builds a canonical plan from completed administrative inventories.
+    /// Builds a canonical current plan from completed administrative inventories.
     ///
     /// `physical` must be strictly ordered by backend identifier. The root and
     /// candidate IDs name separate immutable manifests; this bounded header
@@ -441,7 +477,7 @@ impl CampaignGcPlan {
             return Err(CampaignGcPlanError::PlanTooLarge);
         }
         let mut cursor = PlanCursor::new(bytes);
-        cursor.require_schema()?;
+        cursor.require_current_schema()?;
         let store_graph = CampaignHash::from_bytes(cursor.fixed()?);
         let root_set = CampaignGcRootSetId::from_hash(CampaignHash::from_bytes(cursor.fixed()?));
         let ref_generation = RefInventoryGeneration::from_bytes(cursor.fixed()?);
@@ -500,7 +536,7 @@ impl CampaignGcPlan {
     /// # Errors
     ///
     /// Returns [`CampaignGcPlanError::PlanTooLarge`] if an internal length
-    /// cannot be represented within the fixed format bounds.
+    /// cannot be represented within the canonical format bounds.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CampaignGcPlanError> {
         self.canonical_bytes_unchecked()
     }
@@ -510,7 +546,7 @@ impl CampaignGcPlan {
     /// # Errors
     ///
     /// Returns [`CampaignGcPlanError::PlanTooLarge`] if encoding unexpectedly
-    /// exceeds the fixed format bounds.
+    /// exceeds the canonical format bounds.
     pub fn id(&self) -> Result<CampaignGcPlanId, CampaignGcPlanError> {
         Ok(CampaignGcPlanId(CampaignHash::derive(
             GC_PLAN_ID_DOMAIN,
@@ -615,7 +651,7 @@ impl CampaignGcPlan {
 /// Failure to construct or decode one canonical generation-bound GC plan.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum CampaignGcPlanError {
-    /// A backend identifier violates the fixed grammar or bound.
+    /// A backend identifier violates the canonical grammar or bound.
     #[error("campaign GC plan backend identifier is invalid")]
     InvalidBackendId,
     /// Physical inventories are absent, excessive, duplicated, or unordered.
@@ -703,7 +739,7 @@ impl<'a> PlanCursor<'a> {
         Ok(u64::from_be_bytes(self.fixed()?))
     }
 
-    fn require_schema(&mut self) -> Result<(), CampaignGcPlanError> {
+    fn require_current_schema(&mut self) -> Result<(), CampaignGcPlanError> {
         let magic = self.take(GC_PLAN_MAGIC.len())?;
         if magic == GC_PLAN_MAGIC {
             Ok(())

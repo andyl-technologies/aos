@@ -66,7 +66,7 @@ pub(super) fn linux_thread_id() -> u32 {
 #[cfg(target_os = "linux")]
 pub(super) fn wait_until_linux_task_sleeps_in_futex(tid: u32) {
     for _ in 0..100_000 {
-        if linux_task_wait_channel_contains_futex(tid) || linux_task_is_sleeping(tid) {
+        if linux_task_wait_channel_contains_futex(tid) {
             return;
         }
         thread::yield_now();
@@ -79,18 +79,6 @@ pub(super) fn wait_until_linux_task_sleeps_in_futex(tid: u32) {
 pub(super) fn linux_task_wait_channel_contains_futex(tid: u32) -> bool {
     let path = format!("/proc/self/task/{tid}/wchan");
     fs::read_to_string(path).is_ok_and(|wait_channel| wait_channel.contains("futex"))
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn linux_task_is_sleeping(tid: u32) -> bool {
-    let path = format!("/proc/self/task/{tid}/status");
-    let Ok(status) = fs::read_to_string(path) else {
-        return false;
-    };
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("State:"))
-        .is_some_and(|state| state.contains("sleeping") || state.contains("disk sleep"))
 }
 
 pub(super) fn ceiling(

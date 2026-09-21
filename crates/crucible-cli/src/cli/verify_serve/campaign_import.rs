@@ -528,11 +528,14 @@ specification = "/tmp/generator.bin"
     #[test]
     fn offline_validation_authenticates_dependency_order_without_repository_state() {
         let directory = tempfile::tempdir().expect("campaign import validation directory");
-        let base = CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All)
-            .expect("base generator");
+        let base = CandidateGeneratorSpec::new(
+            crucible_campaign::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::All,
+        )
+        .expect("base generator");
         let base_id = base.id().expect("base generator ID");
         let mixture = CandidateGeneratorSpec::new(
-            1,
+            crucible_campaign::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
             CandidateGeneratorAlgorithm::OrderedMixture {
                 components: vec![WeightedGenerator::new(base_id, 1).expect("mixture component")],
             },

@@ -113,28 +113,6 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Resume(args) => Some(plan_resume_invocation(args, &run_store_root)?),
         _ => None,
     };
-    let fork_plan = match &cli.command {
-        Commands::Fork(args) => {
-            let fork_seed = if cli.seed.is_some() {
-                Some(
-                    ergonomics_plan
-                        .as_ref()
-                        .ok_or_else(|| backend_error("fork requires a resolved explicit seed"))?
-                        .seed
-                        .value,
-                )
-            } else {
-                None
-            };
-            Some(plan_fork_invocation(
-                args,
-                fork_seed,
-                &cli.artifact_dir,
-                &run_store_root,
-            )?)
-        }
-        _ => None,
-    };
     let search_plan = match &cli.command {
         Commands::Search(args) => {
             let mut plan =
@@ -163,9 +141,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         _ => None,
     };
-    if let Some(plan) = &fuzz_plan
-        && !plan.family.is_builtin_fault_campaign()
-    {
+    if let Some(plan) = &fuzz_plan {
         load_fuzz_family(plan)?;
     }
     let debug_plan = match &cli.command {
@@ -230,7 +206,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         ergonomics_plan.as_ref(),
                         resume_plan,
                     ),
-                    None => Err(unsupported_resume_backend_error(resume_plan)),
+                    None => Err(resume_backend_unavailable_error(resume_plan)),
                 }?;
                 let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
                     backend_error("local resume completed without a resolved backend")
@@ -262,41 +238,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 return Ok(());
             }
-            return Err(unsupported_resume_backend_error(resume_plan));
-        }
-        if let Some(fork_plan) = &fork_plan {
-            if backend_plan.target == BackendExecutionTarget::Local {
-                let outcome = match backend_plan.resolved_backend.as_ref() {
-                    #[cfg(any(test, feature = "test-double"))]
-                    Some(ResolvedLocalBackend::Double) => run_local_double_fork_workflow(
-                        &thin_plan,
-                        &backend_plan,
-                        ergonomics_plan.as_ref(),
-                        fork_plan,
-                    ),
-                    Some(ResolvedLocalBackend::Qemu { .. }) => run_local_qemu_fork_workflow(
-                        &thin_plan,
-                        &backend_plan,
-                        ergonomics_plan.as_ref(),
-                        fork_plan,
-                    ),
-                    None => Err(unsupported_fork_backend_error(fork_plan)),
-                }?;
-                let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
-                    backend_error("local fork completed without a resolved backend")
-                })?;
-                let evidence = observe_local_backend_execution(backend)?;
-                validate_backend_execution_evidence(&backend_plan, &evidence)?;
-                if emit_human && backend_plan.should_announce(cli.quiet) {
-                    println!("{}", backend_plan.announcement());
-                }
-                emit_backend_command_output(cli, &outcome)?;
-                if outcome.status.is_non_passing() {
-                    return Err(CliError::Outcome(outcome.status));
-                }
-                return Ok(());
-            }
-            return Err(unsupported_fork_backend_error(fork_plan));
+            return Err(resume_backend_unavailable_error(resume_plan));
         }
         if let Some(search_plan) = &search_plan {
             if backend_plan.target == BackendExecutionTarget::Local {
@@ -314,7 +256,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         ergonomics_plan.as_ref(),
                         search_plan,
                     ),
-                    None => Err(unsupported_search_backend_error(search_plan)),
+                    None => Err(search_backend_unavailable_error(search_plan)),
                 }?;
                 let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
                     backend_error("local search completed without a resolved backend")
@@ -330,14 +272,10 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 return Ok(());
             }
-            return Err(unsupported_search_backend_error(search_plan));
+            return Err(search_backend_unavailable_error(search_plan));
         }
         if let Some(fuzz_plan) = &fuzz_plan {
-            match fuzz_dispatch_route(&backend_plan, fuzz_plan) {
-                Some(FuzzDispatchRoute::BuiltInFaultCampaignProof) => {
-                    run_builtin_fault_campaign_fuzz(cli, fuzz_plan)?;
-                    return Ok(());
-                }
+            match fuzz_dispatch_route(&backend_plan) {
                 #[cfg(any(test, feature = "test-double"))]
                 Some(FuzzDispatchRoute::LocalDouble) => {
                     let outcome = run_local_double_fuzz_workflow(
@@ -381,7 +319,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     }
                     return Ok(());
                 }
-                None => return Err(unsupported_fuzz_backend_error(fuzz_plan)),
+                None => return Err(fuzz_backend_unavailable_error(fuzz_plan)),
             }
         }
         if !matches!(&cli.command, Commands::Replay(_)) {
@@ -474,7 +412,6 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Verify(_)
         | Commands::Save(_)
         | Commands::Resume(_)
-        | Commands::Fork(_)
         | Commands::Search(_)
         | Commands::Fuzz(_)
         | Commands::Debug(_)

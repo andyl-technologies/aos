@@ -339,7 +339,7 @@ pub const LAYER_GATE_PRECEDENCES: &[LayerGatePrecedence] = &[
         higher_layer: DeterminismLayer::L4,
         lower_attr_path: "checks.crucible.phase4.gates.e2eDeterminism",
         higher_attr_path: "checks.crucible.phase5.gates.controlResponsive",
-        rationale: "control-plane checks cannot stand in for mock e2e determinism",
+        rationale: "control-plane checks ride the native end-to-end determinism foundation",
     },
 ];
 
@@ -567,7 +567,7 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
         PhasePlanPhase::Phase1,
         "gate:layer0-determinism",
         "checks.crucible.phase1.gates.layer0Determinism",
-        "L0 core",
+        "production QEMU fingerprint determinism",
         false,
         false,
     ),
@@ -679,7 +679,7 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
         PhasePlanPhase::Phase3,
         "gate:scheduler-liveness",
         "checks.crucible.phase3.gates.schedulerLiveness",
-        "scheduler actor liveness",
+        "production QEMU bounded scheduler progress",
         false,
         false,
     ),
@@ -784,6 +784,14 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
         "gate:campaign-continuity",
         "checks.crucible.phase7.gates.campaignContinuity",
         "coverage ratchet",
+        false,
+        false,
+    ),
+    catalog_gate(
+        PhasePlanPhase::Phase7,
+        "gate:production-rust-plugin-flight",
+        "checks.crucible.phase7.productionRustPluginFlight",
+        "identity-bound live Rust and plugin boundary proof",
         false,
         false,
     ),
@@ -1179,10 +1187,7 @@ fn scheduled_advanced_feature_checks(default_checks: &str) -> Vec<ScheduledAdvan
 
         let advance_guard_block =
             enclosing_advance_guard_block(default_checks, task_ids_start).map(str::to_owned);
-        let fallback_start = task_ids_start.saturating_sub(1024);
-        let fallback_end = default_checks.len().min(search_from + 1024);
-        let fallback_block = &default_checks[fallback_start..fallback_end];
-        let block = advance_guard_block.as_deref().unwrap_or(fallback_block);
+        let block = advance_guard_block.as_deref().unwrap_or_default();
 
         checks.push(ScheduledAdvancedFeatureCheck {
             attr_path: attr_path_from_block(block),

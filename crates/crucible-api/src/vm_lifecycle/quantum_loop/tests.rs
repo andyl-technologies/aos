@@ -3,6 +3,66 @@
 use super::*;
 use crucible::SchedulerOperationalFailureClass;
 
+const CHECKPOINT_BOUNDARY_CHUNK_BYTES: usize = 1024 * 1024;
+
+fn checkpoint_artifact_from_stopped_file(
+    source: &Path,
+    role: &str,
+) -> Result<ProductionCheckpointArtifact, SchedulerError> {
+    checkpoint_artifact_from_stopped_file_with_boundary(source, role, &mut || Ok(()))
+}
+
+fn checkpoint_artifact_from_stopped_file_with_boundary(
+    source: &Path,
+    role: &str,
+    boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+) -> Result<ProductionCheckpointArtifact, SchedulerError> {
+    boundary()?;
+    let mut file = File::open(source).map_err(|error| SchedulerError::BoundaryViolation {
+        message: format!(
+            "open stopped exact-checkpoint {role} {}: {error}",
+            source.display()
+        ),
+    })?;
+    let mut buffer = vec![0_u8; CHECKPOINT_BOUNDARY_CHUNK_BYTES];
+    let mut hasher = blake3::Hasher::new();
+    loop {
+        boundary()?;
+        let read = std::io::Read::read(&mut file, &mut buffer).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "hash stopped exact-checkpoint {role} {}: {error}",
+                    source.display()
+                ),
+            }
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    boundary()?;
+    let identity = ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    };
+    let length = fs::metadata(source)
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!(
+                "inspect stopped exact-checkpoint {role} {}: {error}",
+                source.display()
+            ),
+        })?
+        .len();
+    Ok(ProductionCheckpointArtifact {
+        source: ProductionCheckpointArtifactSource::File(source.to_path_buf()),
+        identity,
+        length,
+        chunks: Vec::new(),
+        sparse: false,
+        extents: Vec::new(),
+    })
+}
+
 #[test]
 fn lifecycle_checkpoint_retains_failed_node_counter_origins_without_backends()
 -> Result<(), Box<dyn std::error::Error>> {

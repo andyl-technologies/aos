@@ -11,27 +11,58 @@ impl QemuLiveHostIoRuntime {
         let Some(block) = &mut self.block else {
             return Ok(false);
         };
-        if block.coordinator_required && block.coordinator.is_none() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "service block io",
-                "branch-private block continuation requires a fresh signal coordinator",
-            ));
-        }
-        let serviced = match &mut block.coordinator {
-            Some(coordinator) => {
-                coordinator.service_block_io(&mut block.servicer, snapshot.current_icount)?
-            }
-            None => block
-                .servicer
-                .service(snapshot.current_icount)
+        block.diagnostics.observe_slot(
+            snapshot.current_icount,
+            snapshot.device_io_active != 0,
+            snapshot.idle_wake_icount,
+            snapshot.control_boundary_ack,
+        );
+        if !block.worker.work_in_flight() {
+            let pin = block
+                .worker
+                .pin_next_request_completion()
                 .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new("service block io", source.to_string())
-                })?,
+                    QemuAsyncDriverRuntimeError::new("pin block host work", source.to_string())
+                })?;
+            if !block.coordinator_required {
+                block
+                    .worker
+                    .dispatch(
+                        snapshot.current_icount,
+                        crate::QemuDeviceHostWorkDelay::None,
+                    )
+                    .map_err(|source| {
+                        QemuAsyncDriverRuntimeError::new(
+                            "dispatch block host work",
+                            source.to_string(),
+                        )
+                    })?;
+                if pin.observed.is_none() {
+                    return Ok(false);
+                }
+            } else {
+                block
+                    .worker
+                    .dispatch_coordinated(snapshot.current_icount)
+                    .map_err(|source| {
+                        QemuAsyncDriverRuntimeError::new(
+                            "dispatch coordinated block host work",
+                            source.to_string(),
+                        )
+                    })?;
+            }
+        }
+        let Some(serviced) = block.worker.try_complete().map_err(|source| {
+            QemuAsyncDriverRuntimeError::new("complete block host work", source.to_string())
+        })?
+        else {
+            return Ok(false);
         };
         block.diagnostics.record(
             snapshot.current_icount,
             snapshot.device_io_active != 0,
             snapshot.idle_wake_icount,
+            snapshot.control_boundary_ack,
             &serviced,
         );
         let made_progress = serviced.processed > 0 || serviced.delivered > 0;

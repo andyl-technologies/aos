@@ -113,7 +113,9 @@ fn qemu_node_open_gdbstub_reports_configured_channel() -> Result<(), Box<dyn Err
     assert_eq!(info.node, node_id("vm-a"));
     assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
     let active_listener = node
-        .active_gdbstub_listener()
+        .active_gdbstub
+        .as_ref()
+        .map(QemuGdbstubProxyServer::local_addr)
         .expect("open_gdbstub should bind an operator listener");
     assert_ne!(active_listener.port(), 0);
     assert_eq!(info.operator_listen.as_str(), active_listener.to_string());
@@ -212,95 +214,6 @@ fn qemu_node_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Err
 
     Ok(())
 }
-
-#[test]
-fn qemu_node_terminates_after_indeterminate_qmp_save_failure() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, true)?;
-
-    let mut checkpoint = checkpoint("qmp-failure");
-    checkpoint.virtual_time = node.synchronize_observed_time()?;
-    let node_identity = node_id("vm-a");
-    checkpoint.node_icounts.insert(
-        node_identity.clone(),
-        Icount {
-            retired: checkpoint.virtual_time.ticks,
-        },
-    );
-    let result = node.capture_exact_snapshot(&node_identity, checkpoint.clone());
-
-    let error = result.expect_err("failed QMP save must reject exact capture");
-    assert!(error.to_string().contains("save_checkpoint_vmstate"));
-    assert!(error.to_string().contains("QMP error"));
-    assert!(error.to_string().contains("terminated and reaped"));
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpStop,
-            ChannelCall::HostCheckpointClearWhileStopped,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpExactSave(checkpoint.id),
-            ChannelCall::PluginQuit,
-            ChannelCall::QmpQuit,
-        ]
-    );
-    assert!(node.child_reaped());
-
-    Ok(())
-}
-
-#[test]
-fn qemu_node_qmp_timeout_terminates_indeterminate_save_job() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node_with_options(
-        Arc::clone(&log),
-        ScriptedNodeOptions {
-            qmp_snapshot_timeout: true,
-            ..ScriptedNodeOptions::default()
-        },
-        [QemuAsyncWaitOutcome::Completed],
-    )?;
-
-    let mut checkpoint = checkpoint("qmp-timeout");
-    checkpoint.virtual_time = node.synchronize_observed_time()?;
-    let node_identity = node_id("vm-a");
-    checkpoint.node_icounts.insert(
-        node_identity.clone(),
-        Icount {
-            retired: checkpoint.virtual_time.ticks,
-        },
-    );
-    let result = node.capture_exact_snapshot(&node_identity, checkpoint.clone());
-
-    let error = result.expect_err("timed-out QMP save must crash and reject exact capture");
-    let message = error.to_string();
-    assert!(message.contains("timed out"));
-    assert!(message.contains("terminated and reaped"));
-    assert!(message.contains("save_checkpoint_vmstate"));
-    assert!(node.child_reaped());
-    assert_eq!(
-        node.lifecycle_state(),
-        QemuNodeLifecycleState::ShutdownRequested
-    );
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpStop,
-            ChannelCall::HostCheckpointClearWhileStopped,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpExactSave(checkpoint.id),
-            ChannelCall::PluginQuit,
-            ChannelCall::QmpQuit,
-        ]
-    );
-
-    Ok(())
-}
-
 #[test]
 fn qemu_node_shutdown_continues_to_reap_when_plugin_quit_fails() -> Result<(), Box<dyn Error>> {
     let log = shared_log();

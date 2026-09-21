@@ -3,9 +3,7 @@
 //! The shared semantic core advances only through [`QemuModeledAttemptLifecycle`],
 //! stops on the attempt's exact semantic boundary or a modeled terminal verdict,
 //! and retains a bounded dense event log. Fresh and exact execution seal after
-//! runner-owned shutdown contributes its final observational suffix. Hot-fork
-//! execution seals the already-paused branch-private child before runner-owned
-//! termination, which is forbidden from resuming guest execution. Both paths
+//! runner-owned shutdown contributes its final observational suffix. Both paths
 //! reconstruct the exact child artifact, evaluate scenario properties offline,
 //! derive grow-only coverage identities, and produce one self-contained
 //! campaign observation candidate.
@@ -58,8 +56,6 @@ use crate::{
     evaluate_crucible_measurement_publication,
     evaluate_crucible_observation_measurement_publication,
 };
-#[cfg(target_os = "linux")]
-use crate::{QemuHotForkAttemptDriver, QemuHotForkLiveExecution};
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
 pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES: usize = 1_000_000;
@@ -69,9 +65,6 @@ pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES: usize = 64 * 1024 * 1024;
 
 /// Maximum property-by-event evaluations admitted by one fresh-attempt seal.
 pub const MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS: usize = 1_000_000;
-
-/// Maximum simultaneously open guest measurement instances in one attempt.
-pub const MAX_QEMU_CAMPAIGN_OPEN_MEASUREMENT_INSTANCES: usize = 65_536;
 
 /// Failure while driving or projecting one fresh modeled campaign attempt.
 #[derive(Debug, Error)]
@@ -87,19 +80,19 @@ pub enum QemuFreshModeledDriverError {
     Scheduler(#[source] SchedulerError),
     /// Strict Crucible artifact reconstruction failed.
     #[error("fresh campaign artifact projection failed: {0}")]
-    Artifact(#[source] CrucibleArtifactError),
+    Artifact(#[source] Box<CrucibleArtifactError>),
     /// Campaign canonical construction failed.
     #[error("fresh campaign observation projection failed: {0}")]
     Campaign(#[source] CampaignCodecError),
     /// Offline property evaluation rejected the complete retained event log.
     #[error("fresh campaign property evaluation failed: {0}")]
-    Assertions(#[source] OfflineAssertionCheckError),
+    Assertions(#[source] Box<OfflineAssertionCheckError>),
     /// Measurement evaluation or campaign binding rejected the retained run.
     #[error("fresh campaign measurement evaluation failed: {0}")]
     Measurements(#[source] CrucibleMeasurementError),
     /// Prepared semantic result construction rejected the complete closure.
     #[error("fresh campaign prepared-result projection failed: {0}")]
-    PreparedResult(#[source] PreparedSemanticResultCodecError),
+    PreparedResult(#[source] Box<PreparedSemanticResultCodecError>),
     /// A bound supplemental property oracle could not evaluate the child configuration.
     #[error("fresh campaign supplemental property evaluation failed: {0}")]
     SupplementalFinding(#[source] GuardedCampaignFindingOracleError),
@@ -185,7 +178,7 @@ pub enum QemuFreshModeledDriverError {
 
 impl From<CrucibleArtifactError> for QemuFreshModeledDriverError {
     fn from(error: CrucibleArtifactError) -> Self {
-        Self::Artifact(error)
+        Self::Artifact(Box::new(error))
     }
 }
 
@@ -197,13 +190,13 @@ impl From<CampaignCodecError> for QemuFreshModeledDriverError {
 
 impl From<OfflineAssertionCheckError> for QemuFreshModeledDriverError {
     fn from(error: OfflineAssertionCheckError) -> Self {
-        Self::Assertions(error)
+        Self::Assertions(Box::new(error))
     }
 }
 
 impl From<PreparedSemanticResultCodecError> for QemuFreshModeledDriverError {
     fn from(error: PreparedSemanticResultCodecError) -> Self {
-        Self::PreparedResult(error)
+        Self::PreparedResult(Box::new(error))
     }
 }
 
@@ -248,31 +241,6 @@ impl QemuFreshSupplementalModeledDriver {
     }
 }
 
-/// Concrete semantic driver for one already-materialized hot-fork child.
-///
-/// This driver reuses the same bounded scheduler and observation projection as
-/// fresh and exact execution. The live-child owner must first assemble a
-/// process-owner-neutral [`QemuModeledAttemptLifecycle`]; raw QMP, shared-memory,
-/// and host-I/O capabilities alone are rejected before guest progress.
-#[derive(Clone, Copy, Debug, Default)]
-#[cfg(target_os = "linux")]
-pub struct QemuHotForkModeledDriver;
-
-/// Failure while driving or sealing one modeled hot-fork child.
-#[derive(Debug, Error)]
-#[cfg(target_os = "linux")]
-pub enum QemuHotForkModeledDriverError {
-    /// The live child has not installed its process-owner-neutral scheduler view.
-    #[error("hot-fork child has no assembled modeled-execution lifecycle: {0}")]
-    LifecycleUnavailable(#[source] crucible_qemu::QemuVmRealizationError),
-    /// The modeled core requested an exact checkpoint unsupported by this phase contract.
-    #[error("hot-fork modeled execution requested an exact checkpoint handoff")]
-    CheckpointRequested,
-    /// Shared semantic driving or observation projection failed.
-    #[error(transparent)]
-    Modeled(#[from] QemuFreshModeledDriverError),
-}
-
 /// Bounded modeled state retained until runner-owned final drain completes.
 #[derive(Debug)]
 pub struct QemuFreshPendingObservation {
@@ -290,8 +258,6 @@ pub struct QemuFreshPendingObservation {
 
 /// Private evidence evaluated at one exact finding-candidate boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct QemuFindingCandidateBoundaryEvidence {
     replay: CrucibleFindingReplayEvidence,
     measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
@@ -399,15 +365,11 @@ fn divergence_entry_summary(entry: Option<&SchedulerEventLogEntry>) -> String {
     )
 }
 
-// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
-#[cfg_attr(not(test), allow(dead_code))]
 impl QemuFindingCandidateBoundaryEvidence {
-    /// Returns the complete causal scheduler log for this observed boundary.
     pub(crate) fn causal_entries(&self) -> &[SchedulerEventLogEntry] {
         &self.triage.causal_entries
     }
 
-    /// Returns expected and reproduced causal logs for a divergent pair.
     pub(crate) fn paired_divergence_logs(
         &self,
     ) -> Option<(&[SchedulerEventLogEntry], &[SchedulerEventLogEntry])> {
@@ -425,18 +387,6 @@ impl QemuFindingCandidateBoundaryEvidence {
                 FailureClusterReportFailure::Property(_) | FailureClusterReportFailure::Timeout(_)
             )
         })
-    }
-
-    pub(crate) const fn replay(&self) -> &CrucibleFindingReplayEvidence {
-        &self.replay
-    }
-
-    pub(crate) fn measurement_replay_evidence(&self) -> &[CrucibleMeasurementReplayEvidence] {
-        &self.measurement_replay_evidence
-    }
-
-    pub(crate) fn final_events(&self) -> &[SchedulerEventLogEntry] {
-        &self.final_events
     }
 
     pub(crate) fn into_parts(
@@ -1080,94 +1030,6 @@ fn savepoint_event_prefix_digest_iter<'a>(
     *hasher.finalize().as_bytes()
 }
 
-#[cfg(target_os = "linux")]
-impl QemuHotForkAttemptDriver for QemuHotForkModeledDriver {
-    type Pending = QemuFreshPendingObservation;
-    type Error = QemuHotForkModeledDriverError;
-
-    fn drive<L>(
-        &mut self,
-        live: &mut L,
-        input: &CrucibleAttemptExecution,
-        context: &AttemptExecutionContext,
-    ) -> Result<Self::Pending, AttemptWorkerFailure<Self::Error>>
-    where
-        L: QemuHotForkLiveExecution,
-    {
-        let materialization = live
-            .take_start_materialization()
-            .map_err(classify_hot_lifecycle_failure)?;
-        let lifecycle = live
-            .modeled_lifecycle()
-            .map_err(classify_hot_lifecycle_failure)?;
-        match drive_modeled_attempt(lifecycle, input, context, materialization)
-            .map_err(map_hot_modeled_failure)?
-        {
-            QemuFreshDriveOutcome::Observation(pending) => Ok(pending),
-            QemuFreshDriveOutcome::CheckpointRequested => Err(AttemptWorkerFailure::Terminal(
-                QemuHotForkModeledDriverError::CheckpointRequested,
-            )),
-        }
-    }
-
-    fn seal<L>(
-        &mut self,
-        pending: Self::Pending,
-        live: &mut L,
-        _input: &CrucibleAttemptExecution,
-        _context: &AttemptExecutionContext,
-    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>
-    where
-        L: QemuHotForkLiveExecution,
-    {
-        live.check_operational_boundary()
-            .map_err(classify_hot_lifecycle_failure)?;
-        build_observation_candidate(pending)
-            .map_err(QemuHotForkModeledDriverError::Modeled)
-            .map_err(AttemptWorkerFailure::Terminal)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn classify_hot_lifecycle_failure(
-    error: crucible_qemu::QemuVmRealizationError,
-) -> AttemptWorkerFailure<QemuHotForkModeledDriverError> {
-    let retryable = matches!(
-        error,
-        crucible_qemu::QemuVmRealizationError::StoreUnavailable { .. }
-            | crucible_qemu::QemuVmRealizationError::ExecutorUnavailable { .. }
-    );
-    let canceled = matches!(
-        error,
-        crucible_qemu::QemuVmRealizationError::Canceled { .. }
-    );
-    let error = QemuHotForkModeledDriverError::LifecycleUnavailable(error);
-    if retryable {
-        AttemptWorkerFailure::Retryable(error)
-    } else if canceled {
-        AttemptWorkerFailure::Canceled(error)
-    } else {
-        AttemptWorkerFailure::Terminal(error)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn map_hot_modeled_failure(
-    failure: AttemptWorkerFailure<QemuFreshModeledDriverError>,
-) -> AttemptWorkerFailure<QemuHotForkModeledDriverError> {
-    match failure {
-        AttemptWorkerFailure::Retryable(error) => {
-            AttemptWorkerFailure::Retryable(QemuHotForkModeledDriverError::Modeled(error))
-        }
-        AttemptWorkerFailure::Canceled(error) => {
-            AttemptWorkerFailure::Canceled(QemuHotForkModeledDriverError::Modeled(error))
-        }
-        AttemptWorkerFailure::Terminal(error) => {
-            AttemptWorkerFailure::Terminal(QemuHotForkModeledDriverError::Modeled(error))
-        }
-    }
-}
-
 /// Drives one already-materialized attempt through its declared modeled stop.
 pub(crate) fn drive_modeled_attempt(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
@@ -1182,22 +1044,19 @@ pub(crate) fn drive_modeled_attempt(
 }
 
 /// Seals the exact materialized start as a private replay boundary.
-// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn finding_candidate_boundary_pending(
     input: &CrucibleAttemptExecution,
     configuration: Configuration,
     materialization: QemuFreshStartMaterialization,
 ) -> Result<QemuFreshPendingObservation, QemuFreshModeledDriverError> {
-    let (
+    let crate::qemu_campaign_lifecycle::QemuFreshCandidateMaterializationParts {
         event_log,
         event_log_bytes,
         completed_quanta,
-        terminal_at,
+        frontier: terminal_at,
         terminal_quiescence,
-        _,
         replayed_discoveries,
-    ) = materialization.into_candidate_parts();
+    } = materialization.into_candidate_parts();
     let discoveries = RetainedChoiceDiscoveries::from_replayed(replayed_discoveries)?;
     Ok(QemuFreshPendingObservation {
         input: input.clone(),
@@ -1777,8 +1636,10 @@ fn resolve_pending_guest_choices_at_configuration(
     for (pending, reply, decision) in continuations {
         let parent = configuration.clone();
         let selected =
-            try_step(&parent, Decision::Selection(decision.clone())).map_err(|error| {
-                AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Configuration(error))
+            try_step(&parent, Decision::Selection(decision.clone())).map_err(|source| {
+                classify_scheduler_error(SchedulerError::BoundaryViolation {
+                    message: format!("guest selection violated the scenario model: {source}"),
+                })
             })?;
         let reply_entries = lifecycle
             .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
@@ -1844,8 +1705,7 @@ fn classify_scheduler_error(
 ) -> AttemptWorkerFailure<QemuFreshModeledDriverError> {
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::NotImplemented { .. }
-        | SchedulerError::Backend(_)
+        SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
@@ -1947,8 +1807,6 @@ struct RetainedChoiceDiscoveries {
 }
 
 impl RetainedChoiceDiscoveries {
-    // crucible-lint: allow rust-allow -- consumed only by private finding-candidate replay.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn from_replayed(
         replayed: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
     ) -> Result<Self, QemuFreshModeledDriverError> {
@@ -2033,22 +1891,6 @@ fn reached_requested_stop(
     requested: &StopCondition,
     evidence: &QuantumStopEvidence<'_>,
 ) -> Result<Option<ModeledStop>, QemuFreshModeledDriverError> {
-    if let StopCondition::Observation(condition) = requested {
-        return observation_stop_proof(
-            condition,
-            evidence.properties,
-            evidence.outcome,
-            evidence.quantum_start_completed_quanta,
-            evidence.completed_quanta,
-            evidence.prior_entries,
-        )
-        .map(|reached| {
-            reached.map(|(proof, evidence)| ModeledStop::ObservationReached {
-                proof: Box::new(proof),
-                evidence,
-            })
-        });
-    }
     let QuantumStopEvidence {
         outcome,
         observed_event_count,
@@ -2090,7 +1932,22 @@ fn reached_requested_stop(
             outcome.frontier.ticks >= *virtual_time_nanoseconds
                 || completed_quanta >= execution_quanta
         }
-        StopCondition::Observation(_) => unreachable!("observation stops return above"),
+        StopCondition::Observation(condition) => {
+            return observation_stop_proof(
+                condition,
+                evidence.properties,
+                evidence.outcome,
+                evidence.quantum_start_completed_quanta,
+                evidence.completed_quanta,
+                evidence.prior_entries,
+            )
+            .map(|reached| {
+                reached.map(|(proof, evidence)| ModeledStop::ObservationReached {
+                    proof: Box::new(proof),
+                    evidence,
+                })
+            });
+        }
     };
     Ok(reached.then(|| ModeledStop::Reached(requested.clone())))
 }
@@ -2298,15 +2155,17 @@ fn build_observation_candidate_inner(
     let projection = project_boundary(pending, true, supplemental_oracle)?;
     let observation = Observation::new(
         projection.input.attempt().id()?,
-        projection.child.configuration(),
-        projection.child.id()?,
-        projection.input.path().id()?,
-        projection
-            .stop
-            .ok_or(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch)?,
-        projection.measurements.id()?,
-        projection.properties.id()?,
-        projection.coverage.id()?,
+        Observation::outcome(
+            projection.child.configuration(),
+            projection.child.id()?,
+            projection.input.path().id()?,
+            projection
+                .stop
+                .ok_or(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch)?,
+            projection.measurements.id()?,
+            projection.properties.id()?,
+            projection.coverage.id()?,
+        ),
         projection.discovered_ids,
     )?;
     let candidate = ObservationCandidate::new(
@@ -2318,11 +2177,8 @@ fn build_observation_candidate_inner(
         observation,
     )
     .and_then(|candidate| candidate.with_produced_selections(projection.produced_selections))?;
-    let result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
-        candidate,
-        vec![projection.measurement_evidence],
-        None,
-    )?;
+    let result =
+        PreparedSemanticAttemptResult::new(candidate, vec![projection.measurement_evidence], None)?;
     Ok(AttemptExecutionProduct::prepared_semantic(result))
 }
 
@@ -2571,8 +2427,6 @@ fn configured_execution_quanta_limit(stop: &StopCondition) -> Option<u64> {
     }
 }
 
-// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_finding_candidate_boundary_evidence(
     mut pending: QemuFreshPendingObservation,
     candidate: &ConfigurationArtifact,
@@ -2586,11 +2440,11 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
     )?;
     let projection = project_boundary(pending, false, supplemental_oracle)?;
     if projection.child != *candidate {
-        return Err(QemuFreshModeledDriverError::Artifact(
+        return Err(QemuFreshModeledDriverError::Artifact(Box::new(
             CrucibleArtifactError::SemanticIdentityMismatch {
                 artifact: "finding replay candidate configuration",
             },
-        ));
+        )));
     }
     let replay = CrucibleFindingReplayEvidence::new(
         None,
@@ -2719,24 +2573,28 @@ fn stop_outcome(
     stop: ModeledStop,
     report: &crucible::HostAssertionReport,
 ) -> Result<StopOutcome, QemuFreshModeledDriverError> {
-    if let ModeledStop::ObservationReached { proof, .. } = stop {
-        return Ok(StopOutcome::ObservationReached(proof));
-    }
-    if let Some(failure) = report.verdict().failures().first() {
-        return Ok(StopOutcome::AssertionFailure(
-            failure.assertion.name.clone(),
-        ));
-    }
-    Ok(match stop {
-        ModeledStop::Reached(stop) => StopOutcome::Reached(stop),
-        ModeledStop::ObservationReached { .. } => unreachable!("observation stop returned above"),
-        ModeledStop::ModeledTimeout(name) => StopOutcome::ModeledTimeout(name),
-        ModeledStop::TerminalPassed => StopOutcome::TerminalSuccess,
-        ModeledStop::TerminalFailed(reasons) => StopOutcome::ScenarioFailure(reasons),
-        ModeledStop::ReplayBoundary => {
-            return Err(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch);
+    let assertion_failure = report
+        .verdict()
+        .failures()
+        .first()
+        .map(|failure| StopOutcome::AssertionFailure(failure.assertion.name.clone()));
+    match stop {
+        ModeledStop::ObservationReached { proof, .. } => Ok(StopOutcome::ObservationReached(proof)),
+        ModeledStop::Reached(stop) => Ok(assertion_failure.unwrap_or(StopOutcome::Reached(stop))),
+        ModeledStop::ModeledTimeout(name) => {
+            Ok(assertion_failure.unwrap_or(StopOutcome::ModeledTimeout(name)))
         }
-    })
+        ModeledStop::TerminalPassed => {
+            Ok(assertion_failure.unwrap_or(StopOutcome::TerminalSuccess))
+        }
+        ModeledStop::TerminalFailed(reasons) => {
+            Ok(assertion_failure.unwrap_or(StopOutcome::ScenarioFailure(reasons)))
+        }
+        ModeledStop::ReplayBoundary => assertion_failure.map_or_else(
+            || Err(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch),
+            Ok,
+        ),
+    }
 }
 
 fn modeled_terminal_stop(

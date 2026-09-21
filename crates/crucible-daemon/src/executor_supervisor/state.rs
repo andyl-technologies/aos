@@ -126,6 +126,7 @@ where
         request: &SubmitAttemptRequest,
         execution: ExecutionId,
         origin: AttemptExecutionOrigin,
+        selected_checkpoint: Option<SelectedExactCheckpointRoot>,
     ) -> Result<(), LocalExecutorError<L::Error>> {
         let resources = request.resources();
         let used = UsedCapacity {
@@ -164,6 +165,7 @@ where
                 cancellation: ExecutionCancellation::default(),
                 checkpoint_request: ExecutionCheckpointRequest::default(),
                 worker_in_flight: false,
+                selected_checkpoint,
             },
         );
         self.queued.push_back(execution);
@@ -177,7 +179,8 @@ where
         execution: ExecutionId,
         origin: AttemptExecutionOrigin,
     ) -> Result<(), LocalExecutorError<L::Error>> {
-        self.reserve(request, execution, origin)?;
+        let selected_checkpoint = SelectedExactCheckpointRoot::after_durable_admission(origin);
+        self.reserve(request, execution, origin, selected_checkpoint)?;
         let active = self
             .active
             .get(&execution)

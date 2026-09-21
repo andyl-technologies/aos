@@ -7,10 +7,8 @@ use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use crucible_campaign::{AttemptId, CampaignLineageId, ExecutionId};
-
 use super::*;
-use crate::{AttemptExecutionDisposition, AttemptExecutionKey, AttemptExecutionReconciliationStep};
+use crate::{AttemptExecutionDisposition, AttemptExecutionReconciliationStep};
 
 #[derive(Debug, Error)]
 #[error("injected reconciliation failure")]
@@ -96,28 +94,8 @@ fn basis() -> QemuHotForkReconciliationChildBasis {
     QemuHotForkReconciliationChildBasis::new(41, 4242)
 }
 
-fn attempt_basis() -> QemuHotForkAttemptBasis {
-    QemuHotForkAttemptBasis::new(
-        AttemptExecutionKey::new(
-            CampaignLineageId::parse(&typed_id(
-                "crucible.campaign.lineage",
-                "campaign-fact",
-                0x31,
-            ))
-            .expect("lineage"),
-            AttemptId::parse(&typed_id(
-                "crucible.campaign.attempt",
-                "campaign-fact",
-                0x32,
-            ))
-            .expect("attempt"),
-        ),
-        ExecutionId::from_bytes([0x33; 16]).expect("execution"),
-    )
-}
-
-fn typed_id(tag: &str, kind: &str, byte: u8) -> String {
-    format!("{tag}@{kind}.1.{}", encode_hex(&[byte; 32]))
+fn typed_id(tag: &str, kind: &str, schema_version: u32, byte: u8) -> String {
+    format!("{tag}@{kind}.{schema_version}.{}", encode_hex(&[byte; 32]))
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -173,17 +151,14 @@ fn scripted_with_resource_substeps(
         .map(|disposition| observed(basis, disposition))
         .collect();
     (
-        QemuHotForkAttemptReconciliation::new(
-            attempt_basis(),
-            ScriptedBackend {
-                basis,
-                observations,
-                calls: Arc::clone(&calls),
-                fail_drain_once: false,
-                fail_release_resources_once,
-                resource_substeps_before_complete,
-            },
-        ),
+        QemuHotForkAttemptReconciliation::new(ScriptedBackend {
+            basis,
+            observations,
+            calls: Arc::clone(&calls),
+            fail_drain_once: false,
+            fail_release_resources_once,
+            resource_substeps_before_complete,
+        }),
         calls,
     )
 }
@@ -237,6 +212,7 @@ fn exact_terminal_cleanup_waits_for_semantic_publication() {
     let observation = ObservationId::parse(&typed_id(
         "crucible.campaign.observation",
         "observation",
+        crucible_campaign::CampaignRecordKind::Observation.schema_version(),
         0x44,
     ))
     .expect("observation");
@@ -268,11 +244,7 @@ fn exact_terminal_cleanup_waits_for_semantic_publication() {
             "contract",
         ]
     );
-    let backend = match owner.into_reconciled_backend() {
-        Ok(backend) => backend,
-        Err(_owner) => panic!("expected a reconciled backend"),
-    };
-    drop(backend);
+    drop(owner);
     assert!(!calls.lock().expect("calls").contains(&"quarantine"));
 }
 
@@ -295,20 +267,14 @@ fn retry_resumes_at_the_first_unreleased_phase_without_rerunning_guest() {
 fn diagnostic_drain_failure_quarantines_before_status_observation() {
     let child_basis = basis();
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let mut owner = QemuHotForkAttemptReconciliation::new(
-        attempt_basis(),
-        ScriptedBackend {
-            basis: child_basis,
-            observations: VecDeque::from([observed(
-                child_basis,
-                QemuHotForkChildDisposition::Running,
-            )]),
-            calls: Arc::clone(&calls),
-            fail_drain_once: true,
-            fail_release_resources_once: false,
-            resource_substeps_before_complete: 0,
-        },
-    );
+    let mut owner = QemuHotForkAttemptReconciliation::new(ScriptedBackend {
+        basis: child_basis,
+        observations: VecDeque::from([observed(child_basis, QemuHotForkChildDisposition::Running)]),
+        calls: Arc::clone(&calls),
+        fail_drain_once: true,
+        fail_release_resources_once: false,
+        resource_substeps_before_complete: 0,
+    });
 
     assert!(matches!(
         owner.reconcile_step(),
@@ -328,17 +294,14 @@ fn diagnostic_drain_failure_quarantines_before_status_observation() {
 fn diagnostic_drain_failure_quarantines_before_child_admission() {
     let child_basis = basis();
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let mut owner = QemuHotForkAttemptReconciliation::new(
-        attempt_basis(),
-        ScriptedBackend {
-            basis: child_basis,
-            observations: VecDeque::new(),
-            calls: Arc::clone(&calls),
-            fail_drain_once: true,
-            fail_release_resources_once: false,
-            resource_substeps_before_complete: 0,
-        },
-    );
+    let mut owner = QemuHotForkAttemptReconciliation::new(ScriptedBackend {
+        basis: child_basis,
+        observations: VecDeque::new(),
+        calls: Arc::clone(&calls),
+        fail_drain_once: true,
+        fail_release_resources_once: false,
+        resource_substeps_before_complete: 0,
+    });
 
     assert!(matches!(
         owner.admit_child(),
@@ -405,6 +368,7 @@ fn unadmitted_child_cannot_publish_a_modeled_observation() {
     let observation = ObservationId::parse(&typed_id(
         "crucible.campaign.observation",
         "observation",
+        crucible_campaign::CampaignRecordKind::Observation.schema_version(),
         0x45,
     ))
     .expect("observation");
@@ -457,32 +421,26 @@ fn worker_disposition_drives_the_retained_owner_to_completion() {
             "contract"
         ]
     );
-    let Ok(backend) = owner.into_reconciled_backend() else {
-        panic!("owner should be fully reconciled")
-    };
-    drop(backend);
+    drop(owner);
 }
 
 #[test]
 fn a_foreign_parent_observation_fails_before_any_release() {
     let basis = basis();
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let mut owner = QemuHotForkAttemptReconciliation::new(
-        attempt_basis(),
-        ScriptedBackend {
-            basis,
-            observations: VecDeque::from([QemuHotForkChildObservation::new(
-                basis.generation(),
-                basis.process_id() + 1,
-                QemuHotForkChildDisposition::Exited(0),
-            )
-            .expect("foreign observation")]),
-            calls: Arc::clone(&calls),
-            fail_drain_once: false,
-            fail_release_resources_once: false,
-            resource_substeps_before_complete: 0,
-        },
-    );
+    let mut owner = QemuHotForkAttemptReconciliation::new(ScriptedBackend {
+        basis,
+        observations: VecDeque::from([QemuHotForkChildObservation::new(
+            basis.generation(),
+            basis.process_id() + 1,
+            QemuHotForkChildDisposition::Exited(0),
+        )
+        .expect("foreign observation")]),
+        calls: Arc::clone(&calls),
+        fail_drain_once: false,
+        fail_release_resources_once: false,
+        resource_substeps_before_complete: 0,
+    });
     assert_eq!(
         owner.reconcile_step().expect("service child diagnostics"),
         QemuHotForkReconciliationStep::ChildDiagnosticsDrained
@@ -509,6 +467,7 @@ fn observation_id(byte: u8) -> ObservationId {
     ObservationId::parse(&typed_id(
         "crucible.campaign.observation",
         "observation",
+        crucible_campaign::CampaignRecordKind::Observation.schema_version(),
         byte,
     ))
     .expect("observation")

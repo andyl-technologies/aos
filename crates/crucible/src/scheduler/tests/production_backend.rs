@@ -1,10 +1,80 @@
 //! Production-backend scheduler binding, observation, and branch-frontier tests.
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crate::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use super::*;
 use crate::{
-    AppRandomDecision, AppRandomSelectable, BackendEffect, BackendSnapshot, MockSimulationBackend,
+    AppRandomSelectable, BackendEffect, BackendRngEvidence, BackendSnapshot, MockSimulationBackend,
     SelectionDecision, StepObservation,
 };
+
+#[test]
+fn backend_quantum_loop_applies_resolved_preemption_before_run() {
+    struct PreemptionLoop {
+        decision: PreemptionDecision,
+    }
+
+    impl QuantumLoop for PreemptionLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 10 },
+                advanced_node: Some(scheduler_node("vm-a", SchedulingNodeKind::Vm)),
+                resolved_events: Vec::new(),
+                decisions: vec![Decision::Preemption(self.decision.clone())],
+                discovered_choices: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+    }
+
+    let decision = PreemptionDecision {
+        node: NodeId {
+            name: String::from("vm-a"),
+        },
+        at: Icount { retired: 7 },
+        kind: PreemptionKind::VcpuSwitch {
+            from_vcpu: VcpuId { index: 0 },
+            to_vcpu: VcpuId { index: 1 },
+        },
+    };
+    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.scheduler.backend-preemption",
+        "scenario=backend-preemption",
+    ));
+    let mut adapter = BackendQuantumLoop::new(
+        PreemptionLoop {
+            decision: decision.clone(),
+        },
+        MockSimulationBackend::default(),
+    );
+
+    adapter
+        .drive_quantum(QuantumRequest {
+            configuration: config,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("preemption-backed quantum should run: {error}"));
+
+    assert_eq!(adapter.backend().now(), VirtualTime { ticks: 10 });
+    assert_eq!(
+        adapter.backend().state().applied_effects,
+        vec![BackendEffect::Preemption(decision)]
+    );
+}
 
 #[test]
 fn quantum_loop_trait_is_object_safe() {
@@ -89,14 +159,14 @@ fn live_app_random_consumes_an_exact_parent_campaign_selection() {
         .fork_in_domain(&stream.domain, &stream.name);
     let raw = seeded.next_u64();
     let selected = raw ^ 1;
-    let live = AppRandomDecision {
+    let live = BackendRngEvidence {
         node,
         stream: stream.clone(),
         request_id: 9,
         width: 64,
         value: selected,
     };
-    let parent = valid_scheduler_step(
+    let parent = accepted_step!(
         &configuration,
         Decision::RngDraw(RngDecision { stream, value: raw }),
     );
@@ -113,16 +183,14 @@ fn live_app_random_consumes_an_exact_parent_campaign_selection() {
         Err(SingleSchedulerCheckpointError::Transient)
     ));
 
-    let (recorded, discoveries, advanced, _append) = QuantumLoop::append_backend_causal_decisions(
-        &mut scheduler,
-        vec![Decision::AppRandom(live)],
-    )
-    .expect("live selected value should authenticate");
+    let (recorded, discoveries, advanced, _append) =
+        QuantumLoop::append_backend_rng_evidence(&mut scheduler, vec![live])
+            .expect("live selected value should authenticate");
 
     assert_eq!(scheduler.pending_branch_effect_choice_count(), 0);
     assert_eq!(
         advanced.id(),
-        valid_scheduler_step(&parent, recorded[1].clone()).id()
+        accepted_step!(&parent, recorded[1].clone()).id()
     );
     assert_eq!(discoveries.len(), 1);
     assert!(matches!(
@@ -352,7 +420,7 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
 fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
     struct ShutdownDecisionBackend {
         inner: MockSimulationBackend,
-        decisions: Vec<Decision>,
+        evidence: Vec<BackendRngEvidence>,
     }
 
     impl SimulationBackend for ShutdownDecisionBackend {
@@ -360,8 +428,8 @@ fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
             self.inner.step_to(ceiling)
         }
 
-        fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, BackendError> {
-            Ok(std::mem::take(&mut self.decisions))
+        fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
+            Ok(std::mem::take(&mut self.evidence))
         }
 
         fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
@@ -394,7 +462,7 @@ fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
         scheduler,
         ShutdownDecisionBackend {
             inner: MockSimulationBackend::new(),
-            decisions: vec![Decision::AppRandom(AppRandomDecision {
+            evidence: vec![BackendRngEvidence {
                 node: NodeId {
                     name: String::from("node-a"),
                 },
@@ -402,7 +470,7 @@ fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
                 request_id: 1,
                 width: 8,
                 value: 7,
-            })],
+            }],
         },
     );
 
@@ -527,7 +595,7 @@ fn external_selection_advances_the_authoritative_scheduler_frontier() {
         .expect("a prior event ahead of the conservative frontier should append");
     let parent = scheduler.configuration().clone();
     let quanta = scheduler.quanta();
-    let live = AppRandomDecision {
+    let live = BackendRngEvidence {
         node: NodeId {
             name: String::from("node-a"),
         },
@@ -542,7 +610,7 @@ fn external_selection_advances_the_authoritative_scheduler_frontier() {
         .branch_selection(&parent, live.value)
         .expect("selection should bind to the exact parent");
     let decision = SelectionDecision::new(&selection);
-    let selected = valid_scheduler_step(&parent, Decision::Selection(decision.clone()));
+    let selected = accepted_step!(&parent, Decision::Selection(decision.clone()));
     let configuration_before_failure = scheduler.configuration().clone();
     let quanta_before_failure = scheduler.quanta();
     let offset_before_failure = scheduler.event_log_offset();
@@ -619,15 +687,15 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
             .reseed_future_decisions(seed)
             .expect("an idle scheduler should admit a branch re-seed");
         let (decisions, discovered, _configuration, _append) =
-            QuantumLoop::append_backend_causal_decisions(
+            QuantumLoop::append_backend_rng_evidence(
                 &mut scheduler,
-                vec![Decision::AppRandom(AppRandomDecision {
+                vec![BackendRngEvidence {
                     node,
                     stream,
                     request_id: 0,
                     width: 64,
                     value: expected_value,
-                })],
+                }],
             )
             .expect("the live app-random value should match the branch seed");
         assert!(matches!(
@@ -691,5 +759,114 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
             .configuration_for(&scenario)
             .expect("reseeded checkpoint configuration"),
         *checkpoint_scheduler.configuration()
+    );
+}
+#[test]
+fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
+    struct StubLoop;
+
+    impl QuantumLoop for StubLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 0 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                discovered_choices: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct GdbBackend {
+        opened: Vec<(NodeId, String)>,
+    }
+
+    impl SimulationBackend for GdbBackend {
+        fn step_to(
+            &mut self,
+            _ceiling: VirtualTime,
+        ) -> Result<crate::StepObservation, BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "step_to",
+            })
+        }
+
+        fn apply(
+            &mut self,
+            _effect: &crate::BackendEffect,
+            _at: VirtualTime,
+        ) -> Result<(), BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "apply",
+            })
+        }
+
+        fn snapshot(&mut self) -> Result<crate::BackendSnapshot, BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "snapshot",
+            })
+        }
+
+        fn restore(&mut self, _snapshot: &crate::BackendSnapshot) -> Result<(), BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "restore",
+            })
+        }
+
+        fn now(&self) -> VirtualTime {
+            VirtualTime::default()
+        }
+
+        fn fingerprint(&mut self, _node: NodeId) -> Result<crate::FingerprintSample, BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "fingerprint",
+            })
+        }
+
+        fn open_gdbstub(
+            &mut self,
+            node: NodeId,
+            listen: GdbListen,
+        ) -> Result<GdbAttachInfo, BackendError> {
+            self.opened.push((node.clone(), listen.as_str().to_owned()));
+            GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen)
+        }
+
+        fn shutdown(&mut self) -> Result<(), BackendError> {
+            Ok(())
+        }
+    }
+
+    let mut adapter = BackendQuantumLoop::new(StubLoop, GdbBackend::default());
+    let info = adapter
+        .open_gdbstub(
+            NodeId {
+                name: String::from("vm-a"),
+            },
+            GdbListen::new("127.0.0.1:9000")
+                .unwrap_or_else(|error| panic!("test listen should be stable: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("backend adapter should route gdbstub attach: {error}"));
+
+    assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
+    assert_eq!(
+        adapter.backend().opened,
+        vec![(
+            NodeId {
+                name: String::from("vm-a"),
+            },
+            String::from("127.0.0.1:9000"),
+        )]
     );
 }

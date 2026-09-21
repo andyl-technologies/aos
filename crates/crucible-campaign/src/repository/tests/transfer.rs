@@ -12,8 +12,8 @@ use super::*;
 use crate::{
     ArchiveInventoryDisposition, CampaignArchiveCheckpointResolver,
     CampaignArchiveCheckpointSelection, CampaignArchiveInventoryPage, CampaignArchiveManifest,
-    CampaignArchivePolicy, CampaignFactId, ExactCheckpointId, FindingExactPins, FindingKind,
-    FindingSignature, FindingTarget, ObjectEnvelope, PinChange, PinRequest, PinRetention,
+    CampaignArchivePolicy, CampaignFactId, ExactCheckpointId, FindingKind, FindingSignature,
+    FindingTarget, ObjectEnvelope, PinChange, PinRequest, PinRetention,
 };
 
 struct FixedCheckpoint(ExactCheckpointId);
@@ -33,17 +33,17 @@ fn archive_manifest_rejects_duplicate_configuration_pin_pairs() {
     let (_repository, lineage, _policy) = fixture();
     let configuration = lineage.genesis();
     let pin_fact =
-        CampaignFactId::from_content_id(ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"pin"))
+        CampaignFactId::from_content_id(ContentId::for_bytes(ObjectKind::CampaignFact, 14, b"pin"))
             .expect("pin fact");
     let first = ExactCheckpointId::from_content_id(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         b"first checkpoint",
     ))
     .expect("first checkpoint");
     let second = ExactCheckpointId::from_content_id(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         b"second checkpoint",
     ))
     .expect("second checkpoint");
@@ -60,16 +60,16 @@ fn archive_manifest_rejects_duplicate_configuration_pin_pairs() {
     .expect("snapshot");
 
     assert!(matches!(
-        CampaignArchiveManifest::new(
-            snapshot,
-            CampaignArchivePolicy::Executable,
-            selections,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            &[],
-            &[],
-        ),
+        CampaignArchiveManifest::new(crate::archive::CampaignArchiveManifestBasis {
+            source_snapshot: snapshot,
+            policy: CampaignArchivePolicy::Executable,
+            checkpoint_selections: selections,
+            retained_roots: Vec::new(),
+            selected_pages: Vec::new(),
+            omitted_pages: Vec::new(),
+            selected: &[],
+            omitted: &[],
+        }),
         Err(crate::CampaignCodecError::InvalidValue {
             reason: "archive checkpoint selection pair is duplicated"
         })
@@ -173,20 +173,12 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
     )
     .expect("representative finding signature");
     let found = source
-        .publish_finding_with_retention(
+        .publish_incomplete_test_finding(
             "policy-source",
             observed.new_snapshot,
             signature,
             observed.observation,
             reproduction,
-            None,
-            FindingExactPins::new(
-                BTreeSet::new(),
-                BTreeSet::new(),
-                BTreeSet::new(),
-                BTreeSet::from([checkpoint]),
-            )
-            .expect("exact pins"),
         )
         .expect("publish representative finding");
     source
@@ -285,9 +277,7 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
                 .any(|entry| entry.id() == checkpoint.content_id()),
             matches!(
                 archive_policy,
-                CampaignArchivePolicy::Debug
-                    | CampaignArchivePolicy::Executable
-                    | CampaignArchivePolicy::Mirror
+                CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
             )
         );
         assert_eq!(
@@ -427,16 +417,17 @@ fn archive_with_undeclared_snapshot_children_fails_closed() {
     repository
         .put_envelope(page_envelope)
         .expect("publish forged page");
-    let manifest = CampaignArchiveManifest::new(
-        head.snapshot_id(),
-        CampaignArchivePolicy::Metadata,
-        Vec::new(),
-        Vec::new(),
-        vec![page.id().expect("page ID")],
-        Vec::new(),
-        &[snapshot_entry],
-        &[],
-    )
+    let selected = [snapshot_entry];
+    let manifest = CampaignArchiveManifest::new(crate::archive::CampaignArchiveManifestBasis {
+        source_snapshot: head.snapshot_id(),
+        policy: CampaignArchivePolicy::Metadata,
+        checkpoint_selections: Vec::new(),
+        retained_roots: Vec::new(),
+        selected_pages: vec![page.id().expect("page ID")],
+        omitted_pages: Vec::new(),
+        selected: &selected,
+        omitted: &[],
+    })
     .expect("forged manifest");
     let envelope = ObjectEnvelope::for_archive_manifest(&manifest).expect("manifest envelope");
     let id = crate::CampaignArchiveManifestId::from_content_id(envelope.content_id())

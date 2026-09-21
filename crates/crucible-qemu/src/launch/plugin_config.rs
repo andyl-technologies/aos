@@ -16,18 +16,12 @@ const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
 const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
 const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
 const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
-const PLUGIN_ARG_APP_RANDOM_BRANCH_SEED: &str = "app_random_branch_seed";
-const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER: &str = "app_random_branch_after";
 const PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS: &str = "app_random_branch_seeds";
 const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS: &str = "app_random_branch_afters";
 const PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET: &str = "app_random_draw_offset";
 const PLUGIN_ARG_APP_RANDOM_POSITIONS: &str = "app_random_positions";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
-const PLUGIN_ARG_FINGERPRINT_MODE: &str = "fingerprint_mode";
-const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
-const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
-const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
 
 /// Plugin descriptors inherited at fixed child fd numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,30 +49,9 @@ pub enum QemuLaunchPluginSwitch {
     On,
 }
 
-/// Controls when an enabled fingerprint sampler captures guest state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum QemuFingerprintSamplingMode {
-    /// Captures at every exact scheduler quantum and explicit control boundary.
-    #[default]
-    EveryQuantum,
-    /// Captures only at an explicitly requested control boundary.
-    OnDemand,
-}
-
-impl fmt::Display for QemuFingerprintSamplingMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EveryQuantum => f.write_str("every-quantum"),
-            Self::OnDemand => f.write_str("on-demand-v1"),
-        }
-    }
-}
-
 /// Seed and bound passed to the production plugin's app-random doorbell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLaunchAppRandomConfig {
-    /// Low 64-bit compatibility projection of the complete scenario seed.
-    pub scenario_seed: u64,
     authoritative_seed: Seed,
     /// Derived L0 decision-RNG root consumed by the synchronous plugin adapter.
     pub decision_rng_root_seed: u64,
@@ -86,11 +59,6 @@ pub struct QemuLaunchAppRandomConfig {
     pub draw_cap: u64,
     /// Canonical scheduler node name used in the name-hashed stream identity.
     pub node_name: String,
-    /// Optional derived decision-RNG root for a forked future.
-    pub branch_decision_rng_root_seed: Option<u64>,
-    branch_seed: Option<Seed>,
-    /// Number of this node's prefix draws served before the branch seed applies.
-    pub branch_after_draws: Option<u64>,
     branch_reseeds: Vec<(Seed, u64)>,
     /// Node-local draws already consumed before this process launches.
     pub draw_offset: u64,
@@ -101,27 +69,14 @@ pub struct QemuLaunchAppRandomConfig {
 }
 
 impl QemuLaunchAppRandomConfig {
-    /// Builds a complete live app-random launch configuration.
-    #[must_use]
-    pub fn new(root_seed: u64, draw_cap: u64, node_name: impl Into<String>) -> Self {
-        Self::from_seed(Seed::from_u64(root_seed), draw_cap, node_name)
-    }
-
     /// Builds a live app-random launch configuration from the complete scenario seed.
     #[must_use]
     pub fn from_seed(seed: Seed, draw_cap: u64, node_name: impl Into<String>) -> Self {
-        let seed_bytes = seed.bytes();
-        let mut scenario_seed = [0_u8; 8];
-        scenario_seed.copy_from_slice(&seed_bytes[..8]);
         Self {
-            scenario_seed: u64::from_le_bytes(scenario_seed),
             authoritative_seed: seed,
             decision_rng_root_seed: seed.decision_rng_root_seed(),
             draw_cap,
             node_name: node_name.into(),
-            branch_decision_rng_root_seed: None,
-            branch_seed: None,
-            branch_after_draws: None,
             branch_reseeds: Vec::new(),
             draw_offset: 0,
             stream_positions: BTreeMap::new(),
@@ -129,40 +84,10 @@ impl QemuLaunchAppRandomConfig {
         }
     }
 
-    /// Returns this configuration with an exact app-random branch boundary.
-    ///
-    /// The plugin serves `prefix_draws` requests from the scenario seed, then
-    /// clears every node-local stream and serves all later requests from
-    /// `branch_seed` at cursor zero.
-    #[must_use]
-    pub fn with_branch_reseed(mut self, branch_seed: u64, prefix_draws: u64) -> Self {
-        self = self.with_branch_seed(Seed::from_u64(branch_seed), prefix_draws);
-        self
-    }
-
-    /// Returns this configuration with a complete branch seed at an exact boundary.
-    #[must_use]
-    pub fn with_branch_seed(mut self, branch_seed: Seed, prefix_draws: u64) -> Self {
-        self.branch_decision_rng_root_seed = Some(branch_seed.decision_rng_root_seed());
-        self.branch_seed = Some(branch_seed);
-        self.branch_after_draws = Some(prefix_draws);
-        self.branch_reseeds = vec![(branch_seed, prefix_draws)];
-        self
-    }
-
     /// Returns this configuration with ordered branch seeds and exact draw boundaries.
     #[must_use]
     pub fn with_branch_seed_sequence(mut self, reseeds: Vec<(Seed, u64)>) -> Self {
         self.branch_reseeds = reseeds;
-        if let [(seed, after)] = self.branch_reseeds.as_slice() {
-            self.branch_decision_rng_root_seed = Some(seed.decision_rng_root_seed());
-            self.branch_seed = Some(*seed);
-            self.branch_after_draws = Some(*after);
-        } else {
-            self.branch_decision_rng_root_seed = None;
-            self.branch_seed = None;
-            self.branch_after_draws = None;
-        }
         self
     }
 
@@ -172,14 +97,9 @@ impl QemuLaunchAppRandomConfig {
         self.authoritative_seed
     }
 
-    /// Returns the complete optional branch seed retained for host-side validation.
+    /// Returns the ordered fork seeds and exact node-local draw boundaries.
     #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn branch_seed(&self) -> Option<Seed> {
-        self.branch_seed
-    }
-
-    pub(crate) fn branch_reseeds(&self) -> &[(Seed, u64)] {
+    pub fn branch_seed_sequence(&self) -> &[(Seed, u64)] {
         &self.branch_reseeds
     }
 
@@ -244,9 +164,6 @@ pub struct QemuLaunchPluginConfig {
         Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
-    fingerprint_mode: QemuFingerprintSamplingMode,
-    fingerprint_oracle: QemuLaunchPluginSwitch,
-    state_dump: Option<(u64, String)>,
 }
 
 impl QemuLaunchPluginConfig {
@@ -269,9 +186,6 @@ impl QemuLaunchPluginConfig {
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
-            fingerprint_mode: QemuFingerprintSamplingMode::EveryQuantum,
-            fingerprint_oracle: QemuLaunchPluginSwitch::Off,
-            state_dump: None,
         }
     }
 
@@ -383,37 +297,6 @@ impl QemuLaunchPluginConfig {
         self
     }
 
-    /// Returns a config with the fingerprint capture mode set.
-    ///
-    /// On-demand mode is a launch compatibility choice: it is serialized into
-    /// the immutable plugin argument and survives profile cloning and restore.
-    #[must_use]
-    pub const fn with_fingerprint_mode(mut self, mode: QemuFingerprintSamplingMode) -> Self {
-        self.fingerprint_mode = mode;
-        self
-    }
-
-    /// Returns a config with gate-only synchronous fingerprint comparison set.
-    ///
-    /// This switch deliberately retains the old vCPU-thread digest only as an
-    /// acceptance oracle. Production launches leave it off.
-    #[must_use]
-    pub fn with_fingerprint_oracle(mut self, oracle: QemuLaunchPluginSwitch) -> Self {
-        self.fingerprint_oracle = oracle;
-        self
-    }
-
-    /// Returns a config that terminally exports full raw state at `target_icount`.
-    #[must_use]
-    pub fn with_terminal_state_dump(
-        mut self,
-        target_icount: u64,
-        output_path: impl Into<String>,
-    ) -> Self {
-        self.state_dump = Some((target_icount, output_path.into()));
-        self
-    }
-
     /// Returns the plugin shared-object path.
     #[must_use]
     pub fn plugin_path(&self) -> &str {
@@ -481,27 +364,6 @@ impl QemuLaunchPluginConfig {
         self.fingerprint
     }
 
-    /// Returns the fingerprint capture mode passed to the plugin.
-    #[must_use]
-    pub const fn fingerprint_mode(&self) -> QemuFingerprintSamplingMode {
-        self.fingerprint_mode
-    }
-
-    /// Returns the gate-only synchronous fingerprint-oracle switch.
-    #[must_use]
-    pub const fn fingerprint_oracle(&self) -> QemuLaunchPluginSwitch {
-        self.fingerprint_oracle
-    }
-
-    /// Returns the fixed inherited setup descriptors.
-    #[must_use]
-    pub const fn inherited_fds(&self) -> QemuLaunchInheritedFds {
-        QemuLaunchInheritedFds {
-            shmem_fd: FIXED_PLUGIN_SHMEM_FD,
-            wake_fd: FIXED_PLUGIN_WAKE_FD,
-        }
-    }
-
     /// Returns the raw plugin argument string passed after the plugin path.
     #[must_use]
     pub fn plugin_args_raw(&self) -> String {
@@ -554,15 +416,7 @@ impl QemuLaunchPluginConfig {
                 "{PLUGIN_ARG_APP_RANDOM_NODE}={}",
                 app_random.node_name
             ));
-            if let [(branch_seed, branch_after)] = app_random.branch_reseeds.as_slice() {
-                args.push(format!(
-                    "{PLUGIN_ARG_APP_RANDOM_BRANCH_SEED}={}",
-                    branch_seed.decision_rng_root_seed()
-                ));
-                args.push(format!(
-                    "{PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER}={branch_after}"
-                ));
-            } else if !app_random.branch_reseeds.is_empty() {
+            if !app_random.branch_reseeds.is_empty() {
                 let seeds = app_random
                     .branch_reseeds
                     .iter()
@@ -597,28 +451,12 @@ impl QemuLaunchPluginConfig {
         if self.fingerprint == QemuLaunchPluginSwitch::On {
             args.push(format!("{PLUGIN_ARG_FINGERPRINT}={}", self.fingerprint));
         }
-        if self.fingerprint_mode == QemuFingerprintSamplingMode::OnDemand {
-            args.push(format!(
-                "{PLUGIN_ARG_FINGERPRINT_MODE}={}",
-                self.fingerprint_mode
-            ));
-        }
-        if self.fingerprint_oracle == QemuLaunchPluginSwitch::On {
-            args.push(format!(
-                "{PLUGIN_ARG_FINGERPRINT_ORACLE}={}",
-                self.fingerprint_oracle
-            ));
-        }
-        if let Some((target_icount, output_path)) = &self.state_dump {
-            args.push(format!("{PLUGIN_ARG_STATE_DUMP_TARGET}={target_icount}"));
-            args.push(format!("{PLUGIN_ARG_STATE_DUMP_PATH}={output_path}"));
-        }
         args.join(",")
     }
 
     /// Returns the complete QEMU `-plugin` option value.
     #[must_use]
-    pub fn qemu_plugin_argument(&self) -> String {
+    pub(super) fn qemu_plugin_argument(&self) -> String {
         format!("{},{}", self.plugin_path, self.plugin_args_raw())
     }
 
@@ -668,18 +506,10 @@ impl QemuLaunchPluginConfig {
             if app_random.node_name.contains(',') || app_random.node_name.contains('=') {
                 return Err(QemuLaunchCommandError::InvalidAppRandomNodeName);
             }
-            let legacy_branch = match app_random.branch_reseeds.as_slice() {
-                [(seed, after)] => (Some(seed.decision_rng_root_seed()), Some(*after)),
-                _ => (None, None),
-            };
-            if (
-                app_random.branch_decision_rng_root_seed,
-                app_random.branch_after_draws,
-            ) != legacy_branch
-                || app_random
-                    .branch_reseeds
-                    .iter()
-                    .any(|(_, after)| *after > app_random.draw_cap)
+            if app_random
+                .branch_reseeds
+                .iter()
+                .any(|(_, after)| *after > app_random.draw_cap)
                 || app_random
                     .branch_reseeds
                     .windows(2)
@@ -713,26 +543,6 @@ impl QemuLaunchPluginConfig {
                 })
             {
                 return Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration);
-            }
-        }
-        if self.fingerprint_mode == QemuFingerprintSamplingMode::OnDemand
-            && self.fingerprint != QemuLaunchPluginSwitch::On
-        {
-            return Err(QemuLaunchCommandError::FingerprintModeWithoutFingerprint);
-        }
-        if let Some((target_icount, output_path)) = &self.state_dump {
-            if self.fingerprint != QemuLaunchPluginSwitch::On
-                || self.fingerprint_mode == QemuFingerprintSamplingMode::OnDemand
-                || *target_icount == 0
-            {
-                return Err(QemuLaunchCommandError::InvalidStateDumpConfiguration);
-            }
-            validate_launch_text(PLUGIN_ARG_STATE_DUMP_PATH, output_path)?;
-            if !output_path.starts_with('/')
-                || output_path.contains(',')
-                || output_path.contains('=')
-            {
-                return Err(QemuLaunchCommandError::InvalidStateDumpConfiguration);
             }
         }
         Ok(())

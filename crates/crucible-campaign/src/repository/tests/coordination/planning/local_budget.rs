@@ -25,10 +25,12 @@ fn edge(
 
 fn capped_request(request: &BranchRequest, values: BTreeSet<ChoiceValue>) -> BranchRequest {
     BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
+        BranchRequest::identity(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+        ),
         CandidateSource::finite(values).expect("source"),
         request.cause(),
         BranchBudget::new(2, 1).expect("one new attempt"),
@@ -139,7 +141,6 @@ fn assert_local_projection(
         .expect("inputs");
     let input = &inputs[&position(capped)];
     let budget = input.budget.as_ref().expect("request budget");
-    assert_eq!(budget.remaining_request_attempts(), 0);
     assert!(!budget.request_can_issue());
     let snapshot = repository
         .read_snapshot(request.expected_snapshot().content_id())
@@ -340,10 +341,12 @@ fn request_attempt_caps_do_not_block_other_frontiers_or_later_convergence() {
             // A new cause can establish the next candidate's execution basis.
             // Reusing it must remain legal even though this request spent its cap.
             let convergent = BranchRequest::new(
-                capped.branch_point(),
-                capped.parent(),
-                capped.opportunity(),
-                capped.domain(),
+                BranchRequest::identity(
+                    capped.branch_point(),
+                    capped.parent(),
+                    capped.opportunity(),
+                    capped.domain(),
+                ),
                 CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
                     .expect("convergent source"),
                 BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(

@@ -11,7 +11,6 @@
 //! warm-up, which is the leak evidence the RFC's stress task asks for.
 
 use std::fs;
-use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use super::child_files::{
@@ -20,7 +19,9 @@ use super::child_files::{
     file_identity, invariant, launch_guarded_source, qmp_operation, realization,
     wait_for_child_exit,
 };
-use super::child_measure::{ProcessFootprint, elapsed_milliseconds, monotonic_nanoseconds};
+use super::child_measure::{
+    ProcessFootprint, allocated_tree_bytes, elapsed_milliseconds, monotonic_nanoseconds,
+};
 use super::{exact_gate_checkpoint, source_set::require_vmstate_source, *};
 use crate::{
     DEFAULT_VMSTATE_FILE_NAME, DEFAULT_VMSTATE_NODE_NAME, LinuxQemuAttemptHostFactory,
@@ -45,6 +46,10 @@ pub struct QemuLiveHotForkChildStressReport {
     /// Child-file plan generation the last lifecycle consumed; monotonic
     /// across the run, so it also counts every plan QEMU admitted.
     pub last_child_files_generation: u64,
+    /// Logical bytes in the retained source VMState container.
+    pub source_vmstate_bytes: u64,
+    /// Physical bytes allocated below the retained source generation.
+    pub source_allocated_bytes: u64,
     /// Source threads with the template retained and no child staged.
     pub source_threads: u64,
     /// Source descriptors with the template retained and no child staged.
@@ -66,6 +71,18 @@ pub struct QemuLiveHotForkChildStressReport {
     pub max_fork_ms: u64,
     /// Longest fork-to-private-QMP-handshake across the run, in milliseconds.
     pub max_ready_ms: u64,
+    /// Fork-call latency for every lifecycle, in order, in milliseconds.
+    pub fork_latency_ms: Vec<u64>,
+    /// Fork-to-private-QMP-ready latency for every lifecycle, in order, in milliseconds.
+    pub ready_latency_ms: Vec<u64>,
+    /// Largest child anonymous RSS sampled after its private QMP greeting.
+    pub max_child_rss_anon_kib: u64,
+    /// Largest child private-dirty footprint sampled after its private QMP greeting.
+    pub max_child_private_dirty_kib: u64,
+    /// Largest clean-plus-dirty private RSS sampled after the private QMP greeting.
+    pub max_child_private_rss_kib: u64,
+    /// Largest physical allocation below a live child generation directory.
+    pub max_child_allocated_bytes: u64,
     /// Wall time of the whole lifecycle loop, in milliseconds.
     pub total_ms: u64,
     /// Directory entries under the run root after the last target finished;
@@ -98,6 +115,11 @@ pub fn run_qemu_live_hot_fork_child_stress_gate(
     run_root: &Path,
     lifecycles: u32,
 ) -> Result<QemuLiveHotForkChildStressReport, QemuLiveNodeStepGateError> {
+    if config.rr_control_boundary_trace || config.runtime_determinism_trace {
+        return Err(invariant(
+            "diagnostic trace is not reinitialized for hot-fork children",
+        ));
+    }
     if config.root_image.is_some() || config.shmem_block.is_some() {
         return Err(invariant(
             "hot-fork lifecycle stress requires only the native VMState graph",
@@ -116,7 +138,7 @@ pub fn run_qemu_live_hot_fork_child_stress_gate(
     let identity = node_id(GATE_NODE);
 
     let quantum = advance_to_busy_ceiling(&mut node, SOURCE_BUSY_CEILING)?;
-    node.capture_exact_snapshot_paused(
+    node.capture_native_hot_fork_vmstate_paused(
         &identity,
         exact_gate_checkpoint(&identity, quantum.completion_icount, false),
     )
@@ -130,12 +152,27 @@ pub fn run_qemu_live_hot_fork_child_stress_gate(
         .map_err(|source| qmp_operation("prepare retained template", source))?;
     require_vmstate_source(&held)?;
     let template_generation = held.generation();
+    let source_allocated_bytes = allocated_tree_bytes(source_directory.path())?;
 
     let source_baseline = ProcessFootprint::read(node.process_id())?;
     let mut sampled = source_baseline;
     let mut after_warmup = None;
     let mut max_fork_ms = 0;
     let mut max_ready_ms = 0;
+    let sample_capacity = usize::try_from(lifecycles)
+        .map_err(|_error| invariant("lifecycle sample capacity overflowed"))?;
+    let mut fork_latency_ms = Vec::new();
+    fork_latency_ms
+        .try_reserve_exact(sample_capacity)
+        .map_err(|_error| invariant("reserve fork-latency samples"))?;
+    let mut ready_latency_ms = Vec::new();
+    ready_latency_ms
+        .try_reserve_exact(sample_capacity)
+        .map_err(|_error| invariant("reserve ready-latency samples"))?;
+    let mut max_child_rss_anon_kib = 0;
+    let mut max_child_private_dirty_kib = 0;
+    let mut max_child_private_rss_kib = 0;
+    let mut max_child_allocated_bytes = 0;
     let mut last_child_files_generation = 0;
     let mut private_dirty_samples = Vec::new();
     let loop_started = monotonic_nanoseconds();
@@ -150,6 +187,14 @@ pub fn run_qemu_live_hot_fork_child_stress_gate(
         .map_err(|error| lifecycle_error(lifecycle, error))?;
         max_fork_ms = max_fork_ms.max(outcome.fork_ms);
         max_ready_ms = max_ready_ms.max(outcome.ready_ms);
+        fork_latency_ms.push(outcome.fork_ms);
+        ready_latency_ms.push(outcome.ready_ms);
+        max_child_rss_anon_kib = max_child_rss_anon_kib.max(outcome.child_footprint.rss_anon_kib);
+        max_child_private_dirty_kib =
+            max_child_private_dirty_kib.max(outcome.child_footprint.private_dirty_kib);
+        max_child_private_rss_kib =
+            max_child_private_rss_kib.max(outcome.child_footprint.private_rss_kib());
+        max_child_allocated_bytes = max_child_allocated_bytes.max(outcome.child_allocated_bytes);
         last_child_files_generation = outcome.child_files_generation;
 
         let completed = lifecycle.saturating_add(1);
@@ -189,6 +234,8 @@ pub fn run_qemu_live_hot_fork_child_stress_gate(
         template_generation,
         lifecycles,
         last_child_files_generation,
+        source_vmstate_bytes: source_before.length,
+        source_allocated_bytes,
         source_threads: source_baseline.threads,
         source_descriptors: source_baseline.descriptors,
         source_threads_leaked: sampled.threads.saturating_sub(source_baseline.threads),
@@ -200,6 +247,12 @@ pub fn run_qemu_live_hot_fork_child_stress_gate(
         source_private_dirty_growth_kib: growth_kib,
         max_fork_ms,
         max_ready_ms,
+        fork_latency_ms,
+        ready_latency_ms,
+        max_child_rss_anon_kib,
+        max_child_private_dirty_kib,
+        max_child_private_rss_kib,
+        max_child_allocated_bytes,
         total_ms,
         run_root_entries,
         private_dirty_samples,
@@ -211,6 +264,8 @@ struct LifecycleOutcome {
     child_files_generation: u64,
     fork_ms: u64,
     ready_ms: u64,
+    child_footprint: ProcessFootprint,
+    child_allocated_bytes: u64,
 }
 
 /// Stages, forks, greets, kills, reaps, and releases one child.
@@ -284,7 +339,7 @@ fn run_one_lifecycle(
         )));
     }
     let child_process_id = launch.child_process_id();
-    let child_generation = parent_state.request().child_process_generation();
+    let child_generation = parent_state.request().child_process_contract_generation();
     let (_parent, authority, child_qmp, mut diagnostics, continuation) = launch.into_parts();
 
     // The greeting proves the child finished its reconstruction; nothing
@@ -301,6 +356,8 @@ fn run_one_lifecycle(
         }
     };
     let ready_ms = elapsed_milliseconds(fork_started);
+    let child_footprint = ProcessFootprint::read(child_process_id)?;
+    let child_allocated_bytes = allocated_tree_bytes(target_directory.path())?;
 
     drop(child_channel);
     drop(continuation);
@@ -338,6 +395,8 @@ fn run_one_lifecycle(
         child_files_generation: plan.generation(),
         fork_ms,
         ready_ms,
+        child_footprint,
+        child_allocated_bytes,
     })
 }
 

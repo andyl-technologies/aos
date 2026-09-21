@@ -4,14 +4,39 @@
 #![allow(dead_code)]
 
 use crucible::model::{
-    ContentHash, FaultPhase, SignalId, WorldNodeArchitecture, WorldNodeClockSource,
-    WorldNodeDramGeometry, WorldNodeFaultCapabilities, WorldNodeRegister, WorldNodeRegisterGroup,
+    ContentHash, FaultPhase, SignalId, WorldNodeArchitecture, WorldNodeClockBaseDomain,
+    WorldNodeClockMonotonicity, WorldNodeClockSource, WorldNodeClockSourceKind,
+    WorldNodeClockTimerRelationship, WorldNodeDramGeometry, WorldNodeFaultCapabilities,
+    WorldNodeRegister, WorldNodeRegisterGroup,
 };
 use crucible_qemu::QemuFaultCapabilityRequirement;
 use crucible_shmem::{
     FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_VMSTATE, FaultCapabilityScope,
     FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1, FaultRegisterGroupV1,
 };
+
+fn x86_tsc_clock(id: SignalId) -> WorldNodeClockSource {
+    WorldNodeClockSource {
+        id,
+        implementation: "target/i386/tcg".to_owned(),
+        source_kind: WorldNodeClockSourceKind::X86Tsc,
+        base_domain: WorldNodeClockBaseDomain::SchedulerVirtual,
+        timer_relationship: WorldNodeClockTimerRelationship::None,
+        width_bits: 64,
+        wraps: true,
+        read_error: false,
+        frequency_numerator: 1_000_000_000,
+        frequency_denominator: 1,
+        model_phases: vec![
+            FaultPhase::ClockRead,
+            FaultPhase::Synchronize,
+            FaultPhase::SourceSwitch,
+        ],
+        monotonicity: WorldNodeClockMonotonicity::ClampMonotonic,
+        vmstate: true,
+        semantic_version: 1,
+    }
+}
 
 /// Returns one canonical x86-64 World declaration for launch-only tests.
 pub fn x86_fault_node(node_name: &str, realized_cpu_type: &str) -> WorldNodeFaultCapabilities {
@@ -67,9 +92,7 @@ pub fn x86_fault_node(node_name: &str, realized_cpu_type: &str) -> WorldNodeFaul
         dram_geometry: WorldNodeDramGeometry::emulated_v1(),
         interrupts: Vec::new(),
         hardware_errors: Vec::new(),
-        clock_sources: vec![WorldNodeClockSource::emulated_x86_tsc_v1(id(
-            "x86-tsc-vcpu-0",
-        ))],
+        clock_sources: vec![x86_tsc_clock(id("x86-tsc-vcpu-0"))],
         accelerators: Vec::new(),
         ready_markers: Vec::new(),
         semantic_version: 1,

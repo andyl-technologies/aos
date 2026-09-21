@@ -65,12 +65,12 @@ keywords:
 ```text
 continue
 pause
-step                  alias: step-quantum
+step-quantum
 step-event
 step-assertion
 step-timer
 step-duration
-save                  alias: create-savepoint
+create-savepoint
 fork
 query
 stop
@@ -88,14 +88,9 @@ the response. An interactive terminal therefore does not require a separate EOF
 after `stop`.
 
 The current parser accepts only the keyword; it does not parse payloads for a
-duration, query selector, savepoint label, or fork override. Use the
-top-level `save`, `resume`, and `fork` commands for parameterized workflows and
+duration, query selector, or savepoint label. Use the
+top-level `save` and `resume` commands for parameterized workflows and
 put deterministic fault behavior in the scenario's signal graph and bindings.
-
-An interactive live-QEMU `fork` is intentionally transient: its final report
-retains checkpoint and oracle evidence but marks its reproduction artifact
-`status=not-captured`. Run a non-interactive fork to produce a replayable child
-artifact.
 
 For a bounded inspection session, pipe commands explicitly:
 
@@ -109,8 +104,8 @@ scenario has an independent terminal condition.
 
 ## Live status
 
-`run`, `resume`, and `fork` accept `--watch`. It adds session status updates to
-the backend's collected run evidence. Table output prints collected updates as
+`run` and `resume` accept `--watch`. It adds live Campaign and attempt status
+updates to the backend's collected run evidence. Table output prints collected updates as
 human-readable `run-watch` lines. JSON and JSONL remain canonical event-log
 renderings and do not add a separate non-canonical status stream.
 

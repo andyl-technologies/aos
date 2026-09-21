@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EventDiagnosticPayload,
     EventLevel, EventLogCoverageObservation, EventSource, Icount, MarkerId, MaterializationPolicy,
@@ -192,7 +199,7 @@ fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
-    let child = valid_step(
+    let child = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("graph-cache-stamping"),
@@ -225,7 +232,10 @@ fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
         .expect("baked genesis should seed graph");
 
     graph
-        .cache_snapshot_with_event_log_coverage(&child, checkpoint, &coverage_log)
+        .cache_snapshot(
+            &child,
+            checkpoint.with_coverage_from_event_log(&coverage_log),
+        )
         .expect("coverage-stamped snapshot should cache");
     assert_eq!(
         graph
@@ -260,7 +270,7 @@ fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
-    let child = valid_step(
+    let child = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("delayed-closure-stamping"),
@@ -284,7 +294,10 @@ fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
     let mut graph = TemporalGraph::empty();
 
     graph
-        .cache_snapshot_with_event_log_coverage(&child, checkpoint, &coverage_log)
+        .cache_snapshot(
+            &child,
+            checkpoint.with_coverage_from_event_log(&coverage_log),
+        )
         .expect("coverage-stamped snapshot should cache before baked genesis");
     assert!(graph.checkpoint_node(child.id()).is_none());
 
@@ -333,11 +346,4 @@ fn coverage_projection_is_excluded_from_causal_determinism_comparison() {
         coverage_fingerprint_from_event_log(&expected),
         coverage_fingerprint_from_event_log(&reproduced)
     );
-}
-
-fn valid_step(
-    configuration: &crucible::Configuration,
-    decision: crucible::Decision,
-) -> crucible::Configuration {
-    crucible::try_step(configuration, decision).expect("test configuration step")
 }

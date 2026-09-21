@@ -8,19 +8,15 @@ pub(in crate::vm_lifecycle::quantum_loop) struct PreparedTerminalReplacement {
     pub(in crate::vm_lifecycle::quantum_loop) decision: QemuNodeLifecycleDecision,
     pub(in crate::vm_lifecycle::quantum_loop) snapshot: ExactSnapshotHandle,
     pub(in crate::vm_lifecycle::quantum_loop) terminal_fingerprint: Option<FingerprintSample>,
-    pub(in crate::vm_lifecycle::quantum_loop) source_run_directory: PathBuf,
     pub(in crate::vm_lifecycle::quantum_loop) run_directory: PathBuf,
-    pub(in crate::vm_lifecycle::quantum_loop) launch: ProductionLiveNodeStepGateConfig,
+    pub(in crate::vm_lifecycle::quantum_loop) launch: QemuLiveNodeStepGateConfig,
     pub(in crate::vm_lifecycle::quantum_loop) generation: u64,
     pub(in crate::vm_lifecycle::quantum_loop) replacement: Option<ProductionVmNodeLaunch>,
     pub(in crate::vm_lifecycle::quantum_loop) service_state: ProductionNodeServiceState,
     pub(in crate::vm_lifecycle::quantum_loop) debug_backend_path: Option<PathBuf>,
-    pub(in crate::vm_lifecycle::quantum_loop) crash_detector: String,
     pub(in crate::vm_lifecycle::quantum_loop) process_owner: Option<PreparedLifecycleProcessOwner>,
     pub(in crate::vm_lifecycle::quantum_loop) backend_node: Option<NodeId>,
     pub(in crate::vm_lifecycle::quantum_loop) observed_exit_node: Option<NodeId>,
-    pub(in crate::vm_lifecycle::quantum_loop) fault_coordinators:
-        PreparedLifecycleFaultCoordinators,
 }
 
 pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecycleProcessOwner {
@@ -175,46 +171,13 @@ pub(in crate::vm_lifecycle::quantum_loop) fn lifecycle_hash_matches(
     storage.len() == 64
         && storage
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .zip(value.bytes)
             .all(|(encoded, byte)| {
                 encoded[0] == HEX[(byte >> 4) as usize] && encoded[1] == HEX[(byte & 0x0f) as usize]
             })
-}
-
-pub(in crate::vm_lifecycle::quantum_loop) fn try_lifecycle_crash_detector(
-    node: &str,
-    generation: u64,
-    current: usize,
-    limits: FaultResourceLimits,
-) -> Result<String, SchedulerError> {
-    let mut digits = [0_u8; 20];
-    let mut cursor = digits.len();
-    let mut remaining = generation;
-    loop {
-        cursor -= 1;
-        digits[cursor] = b'0' + (remaining % 10) as u8;
-        remaining /= 10;
-        if remaining == 0 {
-            break;
-        }
-    }
-    let required = 10_usize
-        .checked_add(node.len())
-        .and_then(|length| length.checked_add(12))
-        .and_then(|length| length.checked_add(digits.len() - cursor))
-        .ok_or_else(|| lifecycle_resource_error("event_log_bytes", current, usize::MAX, limits))?;
-    let mut detector = String::new();
-    detector
-        .try_reserve_exact(required)
-        .map_err(|_| lifecycle_resource_error("event_log_bytes", current, required, limits))?;
-    detector.push_str("lifecycle-");
-    detector.push_str(node);
-    detector.push_str("-generation-");
-    for digit in &digits[cursor..] {
-        detector.push(*digit as char);
-    }
-    Ok(detector)
 }
 
 #[cfg(test)]

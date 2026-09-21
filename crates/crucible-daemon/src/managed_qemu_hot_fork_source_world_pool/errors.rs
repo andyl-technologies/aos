@@ -6,7 +6,8 @@ use super::ManagedQemuHotForkSourceWorld;
 use crate::{
     DurableHotCheckpointCatalogError, HotCheckpointAdmissionCommitError,
     HotCheckpointAdmissionRejection, HotCheckpointDemotion, HotCheckpointFallbackRetentionError,
-    HotCheckpointFallbackSlot, HotCheckpointInventoryError, QemuHotForkTemplateKey,
+    HotCheckpointFallbackSlot, HotCheckpointInventoryError, HotCheckpointPoolKey,
+    HotCheckpointPressure,
 };
 
 /// Invalid managed source-world pool construction.
@@ -26,6 +27,21 @@ pub enum ManagedQemuHotForkSourceWorldCheckoutError {
     /// The process-wide fork-start rate gate rejected this attempt.
     #[error("managed source-world fork rate rejected the attempt")]
     ForkRate(#[source] crate::HotCheckpointForkRateError),
+    /// A concurrent child reservation overflowed one retained-resource dimension.
+    #[error("managed source-world concurrent lease accounting overflowed")]
+    LeaseAccountingOverflow,
+    /// The concurrent child population would exceed retained-resource ceilings.
+    #[error("managed source-world concurrent lease exceeds retained-resource ceilings")]
+    LeaseCapacity {
+        /// Exact retained-resource dimensions that exceed their ceiling.
+        pressure: HotCheckpointPressure,
+    },
+    /// The process exhausted the nonzero source-lease identity space.
+    #[error("managed source-world lease identity space is exhausted")]
+    LeaseIdentityExhausted,
+    /// The retained source lock was poisoned before a child launch began.
+    #[error("managed source-world retained source lock is poisoned")]
+    SourcePoisoned,
 }
 
 /// Failed admission retaining the candidate source world.
@@ -80,6 +96,12 @@ pub enum ManagedQemuHotForkSourceWorldAdmissionError<E> {
     /// Shared resource/hotness policy rejected the candidate.
     #[error("source-world candidate was rejected by hot-checkpoint policy")]
     Rejected(#[source] HotCheckpointAdmissionRejection),
+    /// Live or quarantined child leases leave insufficient aggregate capacity.
+    #[error("source-world candidate plus concurrent leases exceeds retained-resource ceilings")]
+    LeaseCapacity {
+        /// Exact retained-resource dimensions that exceed their ceiling.
+        pressure: HotCheckpointPressure,
+    },
     /// Exact/thin fallback authentication failed.
     #[error("source-world fallback authentication failed")]
     Fallback(E),
@@ -144,25 +166,11 @@ pub enum ManagedQemuHotForkSourceWorldDemotionError<E> {
     Demotion(E),
 }
 
-/// Failure to release one durable cold fallback.
-#[derive(Debug, Error)]
-pub enum ManagedQemuHotForkSourceWorldReleaseError {
-    /// The fallback still protects a live source.
-    #[error("source-world fallback still protects a live source")]
-    Active,
-    /// The catalog slot is absent.
-    #[error("source-world fallback slot is absent")]
-    Missing,
-    /// The durable catalog rejected the exact removal.
-    #[error("release source-world fallback")]
-    Catalog(#[source] DurableHotCheckpointCatalogError),
-}
-
 /// Complete failure report from orderly process-wide source shutdown.
 #[derive(Debug)]
 pub struct ManagedQemuHotForkSourceWorldShutdownError<E> {
     failures: Vec<(
-        QemuHotForkTemplateKey,
+        HotCheckpointPoolKey,
         ManagedQemuHotForkSourceWorldDemotionError<E>,
     )>,
 }
@@ -170,7 +178,7 @@ pub struct ManagedQemuHotForkSourceWorldShutdownError<E> {
 impl<E> ManagedQemuHotForkSourceWorldShutdownError<E> {
     pub(super) fn new(
         failures: Vec<(
-            QemuHotForkTemplateKey,
+            HotCheckpointPoolKey,
             ManagedQemuHotForkSourceWorldDemotionError<E>,
         )>,
     ) -> Self {
@@ -182,7 +190,7 @@ impl<E> ManagedQemuHotForkSourceWorldShutdownError<E> {
     pub fn failures(
         &self,
     ) -> &[(
-        QemuHotForkTemplateKey,
+        HotCheckpointPoolKey,
         ManagedQemuHotForkSourceWorldDemotionError<E>,
     )] {
         &self.failures

@@ -28,6 +28,8 @@
 #
 #   mkCrucibleFleetCheck {
 #     name;                 # fleet check attr name, e.g. "crucible-e2e-determinism"
+#     checkPath ? ...;      # result identity when the canonical check lives
+#                           #   outside checks.fleet and is aliased there.
 #     runPhaseScript;       # bash executed with the whole closure on-hand; the
 #                           #   built CLI is $CRUCIBLE/bin/crucible and the closure
 #                           #   members are exported as env vars (see below).
@@ -60,12 +62,19 @@
 {
   pkgs,
   lib,
+  testing ? null,
 }: let
   crucible = pkgs.crucible;
   qemuCrucible = pkgs.qemu-crucible;
   cruciblePlugin = pkgs.crucible-qemu-plugin;
   linuxCrucible = pkgs.linux-crucible;
   crucibleFixtures = pkgs.crucible-fixtures;
+  e2eNativeRunnerPackage = pkgs.writeTextFile {
+    name = "crucible-e2e-determinism-native-runner";
+    text = builtins.readFile ./_e2e-determinism-native-runner.sh;
+    destination = "/share/crucible/e2e-determinism-native-runner.sh";
+  };
+  e2eNativeRunner = "${e2eNativeRunnerPackage}/share/crucible/e2e-determinism-native-runner.sh";
 
   qemuBinary = "${qemuCrucible}/bin/qemu-system-x86_64";
   pluginLibrary = "${cruciblePlugin}/lib/libcrucible_qemu_plugin.so";
@@ -75,9 +84,14 @@
   mkCrucibleFleetCheck = {
     name,
     runPhaseScript,
+    checkPath ? "checks.fleet.${name}",
     extraClosure ? [],
     gateResults ? [],
     resultLines ? [],
+    campaignComposition ? null,
+    gateName ? null,
+    authoritativeAttr ? checkPath,
+    executionFamily ? "fleet-runtime",
   }: let
     extraResultText =
       lib.concatMapStrings (line: "            ${line}\n") resultLines;
@@ -88,90 +102,116 @@
         ''
       )
       gateResults;
-  in
-    pkgs.mkDerivation {
-      pname = name;
-      version = "0";
-      src = null;
-
-      # The whole Crucible closure is a hermetic build input ([PKG-1], [PKG-29]).
-      # `crucible` carries qemu-crucible + crucible-qemu-plugin through its
-      # runtimeDeps, so listing it pulls the patched QEMU + plugin into the
-      # closure; the kernel and fixtures are added explicitly.
-      buildDeps =
-        [
-          pkgs.coreutils
-          pkgs.grep
-          crucible
-          qemuCrucible
-          cruciblePlugin
-          linuxCrucible
-          crucibleFixtures
-        ]
-        ++ extraClosure
-        ++ gateResults;
-
-      # DELIBERATELY no `requiredSystemFeatures = [ "kvm" ]`: [PKG-30] mandates
-      # TCG-only so this runs on any CI runner without nested virtualization.
-
-      phases = [
-        {
-          name = "run-crucible-fleet-scenario";
-          script = ''
-            set -eu
-
-            export CRUCIBLE="${crucible}"
-            export CRUCIBLE_QEMU="${qemuBinary}"
-            export CRUCIBLE_PLUGIN="${pluginLibrary}"
-            export CRUCIBLE_KERNEL="${kernelImage}"
-            export CRUCIBLE_ROOT_IMAGE="${rootImage}"
-            export CRUCIBLE_KERNEL_CMDLINE="${linuxCrucible.passthru.crucibleFixtureKernelCmdline} init=/init"
-            export LINUX_CRUCIBLE="${linuxCrucible}"
-            export CRUCIBLE_FIXTURES="${crucibleFixtures}"
-
-            FLEET_WORKDIR="$TMPDIR/crucible-fleet-workdir"
-            CRUCIBLE_SCRATCH="$FLEET_WORKDIR"
-            FLEET_STORE="$FLEET_WORKDIR/store"
-            FLEET_ARTIFACTS="$FLEET_WORKDIR/artifacts"
-            CRUCIBLE_RUN_STATE_ROOT="$FLEET_WORKDIR/run-state"
-            mkdir -p "$FLEET_STORE" "$FLEET_ARTIFACTS" "$CRUCIBLE_RUN_STATE_ROOT"
-            export FLEET_WORKDIR CRUCIBLE_SCRATCH FLEET_STORE FLEET_ARTIFACTS CRUCIBLE_RUN_STATE_ROOT
-
-            # The whole closure must be present as a build input.
-            test -x "$CRUCIBLE/bin/crucible"
-            test -x "$CRUCIBLE_QEMU"
-            test -e "$CRUCIBLE_PLUGIN"
-            test -e "$CRUCIBLE_KERNEL"
-            test -e "$CRUCIBLE_ROOT_IMAGE"
-            test -e "$LINUX_CRUCIBLE"
-            test -e "$CRUCIBLE_FIXTURES"
-
-            ${gateAssertions}
-
-            # Caller-supplied scenario: runs the built CLI end to end under TCG.
-            ${runPhaseScript}
-
-            mkdir -p "$out"
-            cat > "$out/result" <<RESULT
-            PASS
-            check=checks.fleet.${name}
-            fleet_check_surface=checks.fleet.${name}
-            vm_runner=tcg-only
-            tcg_only=true
-            required_system_features=none
-            kvm_required=false
-            hermetic_closure=crucible,qemu-crucible,crucible-qemu-plugin,linux-crucible,crucible-fixtures
-            crucible_cli=${crucible}/bin/crucible
-            qemu_crucible=${qemuBinary}
-            crucible_plugin=${pluginLibrary}
-            linux_crucible=${linuxCrucible}
-            crucible_fixtures=${crucibleFixtures}
-            durable_process_recovery_state=$CRUCIBLE_RUN_STATE_ROOT
-            ${extraResultText}RESULT
-          '';
-        }
-      ];
+    runtimeInputs = [
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.grep
+      pkgs.sed
+      pkgs.util-linux
+    ];
+    runtimeClosures =
+      [
+        crucible
+        qemuCrucible
+        cruciblePlugin
+        linuxCrucible
+        crucibleFixtures
+        e2eNativeRunnerPackage
+      ]
+      ++ extraClosure
+      ++ gateResults;
+    runtimeEnvironment = {
+      CRUCIBLE = crucible;
+      CRUCIBLE_QEMU = qemuBinary;
+      CRUCIBLE_PLUGIN = pluginLibrary;
+      CRUCIBLE_KERNEL = kernelImage;
+      CRUCIBLE_ROOT_IMAGE = rootImage;
+      CRUCIBLE_KERNEL_CMDLINE = "${linuxCrucible.passthru.crucibleFixtureKernelCmdline} init=/init";
+      LINUX_CRUCIBLE = linuxCrucible;
+      CRUCIBLE_FIXTURES = crucibleFixtures;
+      CRUCIBLE_E2E_NATIVE_RUNNER = e2eNativeRunner;
     };
+    executionScript = ''
+      set -eu
+
+      FLEET_WORKDIR="$TMPDIR/crucible-fleet-workdir"
+      CRUCIBLE_SCRATCH="$FLEET_WORKDIR"
+      FLEET_STORE="$FLEET_WORKDIR/store"
+      FLEET_ARTIFACTS="$FLEET_WORKDIR/artifacts"
+      CRUCIBLE_RUN_STATE_ROOT="$FLEET_WORKDIR/run-state"
+      mkdir -p "$FLEET_STORE" "$FLEET_ARTIFACTS" "$CRUCIBLE_RUN_STATE_ROOT"
+      export FLEET_WORKDIR CRUCIBLE_SCRATCH FLEET_STORE FLEET_ARTIFACTS CRUCIBLE_RUN_STATE_ROOT
+
+      test -x "$CRUCIBLE/bin/crucible"
+      test -x "$CRUCIBLE_QEMU"
+      test -e "$CRUCIBLE_PLUGIN"
+      test -e "$CRUCIBLE_KERNEL"
+      test -e "$CRUCIBLE_ROOT_IMAGE"
+      test -e "$LINUX_CRUCIBLE"
+      test -e "$CRUCIBLE_FIXTURES"
+      test -f "$CRUCIBLE_E2E_NATIVE_RUNNER"
+
+      ${gateAssertions}
+      ${runPhaseScript}
+
+      mkdir -p "$out"
+      cat > "$out/result" <<RESULT
+      PASS
+      check=${checkPath}
+      fleet_check_surface=checks.fleet.${name}
+      vm_runner=tcg-only
+      tcg_only=true
+      required_system_features=none
+      kvm_required=false
+      hermetic_closure=crucible,qemu-crucible,crucible-qemu-plugin,linux-crucible,crucible-fixtures
+      crucible_cli=${crucible}/bin/crucible
+      qemu_crucible=${qemuBinary}
+      crucible_plugin=${pluginLibrary}
+      linux_crucible=${linuxCrucible}
+      crucible_fixtures=${crucibleFixtures}
+      durable_process_recovery_state=$CRUCIBLE_RUN_STATE_ROOT
+      ${extraResultText}RESULT
+    '';
+  in
+    if campaignComposition != null
+    then
+      assert testing != null;
+      assert gateName != null;
+        import ./phase9-campaign-mode-system-gate.nix {
+          inherit pkgs lib testing runtimeInputs runtimeClosures runtimeEnvironment;
+          inherit (campaignComposition) mode system;
+          runtimeScript = executionScript;
+          name = "fleet-${name}";
+          inherit gateName authoritativeAttr executionFamily;
+          timeout = 10800;
+          memoryMiB = 8192;
+          varSizeMiB = 16384;
+        }
+    else
+      pkgs.mkDerivation {
+        pname = name;
+        version = "0";
+        src = null;
+
+        # The whole Crucible closure is a hermetic build input ([PKG-1], [PKG-29]).
+        # `crucible` carries qemu-crucible + crucible-qemu-plugin through its
+        # runtimeDeps, so listing it pulls the patched QEMU + plugin into the
+        # closure; the kernel and fixtures are added explicitly.
+        buildDeps = runtimeInputs ++ runtimeClosures;
+
+        # DELIBERATELY no `requiredSystemFeatures = [ "kvm" ]`: [PKG-30] mandates
+        # TCG-only so this runs on any CI runner without nested virtualization.
+
+        phases = [
+          {
+            name = "run-crucible-fleet-scenario";
+            script = ''
+              ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg (toString value)}") runtimeEnvironment)}
+              ${executionScript}
+            '';
+          }
+        ];
+      };
 in {
-  inherit mkCrucibleFleetCheck;
+  inherit mkCrucibleFleetCheck e2eNativeRunner;
 }

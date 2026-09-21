@@ -157,63 +157,59 @@ in
             repository::tests::destructive_recovery::daemon_fault_during_snapshot_publication_recovers_complete_ref
 
           run_exact_feature_lib_test \
-            crucible-daemon \
+            crucible-cas \
             destructive-recovery-faults \
-            exact_checkpoint_store::tests::exact_capture_enospc_restart_retries_root_last_publication
+            content_store::s3::tests::behavior::multipart_remove_leaf_aborts_before_completion_and_retries
 
           run_exact_feature_lib_test \
             crucible-cas \
             destructive-recovery-faults \
-            content_store::s3::tests::multipart_remove_leaf_aborts_before_completion_and_retries
+            content_store::s3::tests::behavior::credential_expiry_preserves_identity_and_authenticated_retry
 
           run_exact_feature_lib_test \
             crucible-cas \
             destructive-recovery-faults \
-            content_store::s3::tests::credential_expiry_preserves_identity_and_authenticated_retry
+            content_store::tests::tier::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier
 
           run_exact_feature_lib_test \
             crucible-cas \
             destructive-recovery-faults \
-            content_store::tests::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier
-
-          run_exact_feature_lib_test \
-            crucible-cas \
-            destructive-recovery-faults \
-            content_store::tests::pack_index_interruption_recovers_old_generation_and_retries
+            content_store::tests::packed::pack_index_interruption_recovers_old_generation_and_retries
 
           run_exact_feature_lib_test \
             crucible-daemon \
             destructive-recovery-faults \
-            qemu_hot_fork_world_factory::tests::world_fork_one_vm_failure_quarantines_partial_world
+            qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_one_vm_failure_quarantines_partial_world
 
           run_exact_feature_lib_test \
             crucible-daemon \
             destructive-recovery-faults \
-            qemu_hot_fork_world_factory::tests::child_resource_alias_rejects_before_fork_and_restores_source_world
+            qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::child_resource_alias_rejects_before_fork_and_restores_source_world
 
           for cas_test in \
-            content_store::tests::changing_and_failing_sources_leave_no_published_object_or_staging_file \
-            content_store::s3::tests::interrupted_upload_aborts_and_failed_abort_is_explicit \
-            content_store::s3::tests::credential_expiry_and_configuration_bounds_fail_closed \
-            content_store::tests::read_through_cache_failure_does_not_hide_authenticated_source_bytes \
-            content_store::tests::compressed_directory_rejects_oversized_sources_and_corrupt_physical_records \
-            content_store::tests::packed_initialization_waits_for_in_flight_staging \
-            content_store::tests::packed_backend_restarts_repackages_and_keeps_old_reader_inodes_valid \
-            content_store::tests::packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs
+            content_store::tests::tier::changing_and_failing_sources_leave_no_published_object_or_staging_file \
+            content_store::s3::tests::behavior::interrupted_upload_aborts_and_failed_abort_is_explicit \
+            content_store::s3::tests::behavior::credential_expiry_and_configuration_bounds_fail_closed \
+            content_store::tests::tier::read_through_cache_failure_does_not_hide_authenticated_source_bytes \
+            content_store::tests::directory::compressed_directory_rejects_oversized_sources_and_corrupt_physical_records \
+            content_store::tests::packed::packed_initialization_waits_for_in_flight_staging \
+            content_store::tests::packed::packed_backend_restarts_repackages_and_keeps_old_reader_inodes_valid \
+            content_store::tests::packed::packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs
           do
             run_exact_lib_test crucible-cas "$cas_test"
           done
 
           for daemon_test in \
+            exact_checkpoint_store::production::tests::production_exact_capture_enospc_restart_retries_root_last_publication \
+            exact_checkpoint_store::production::tests::production_exact_capture_cancellation_after_preparation_stops_before_first_write \
             executor_worker::tests::operational_worker_failure_requeues_without_growing_the_bounded_queue \
             assignment_ledger::tests::memory_ledger_matches_conditional_publish_contract \
             executor_supervisor::tests::restart_recovers_publishing_without_losing_the_expected_observation \
             executor_supervisor::tests::durable_restart_replaces_stale_running_and_preserves_completion \
-            durable_managed_hot_checkpoint_pool::tests::restart_reconstructs_all_records_as_cold_without_claiming_live_sources \
+            campaign_bootstrap::tests::prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart \
             executor_supervisor::tests::paused_execution_resumes_from_the_exact_root_and_survives_restart \
-            exact_checkpoint_store::tests::cancellation_after_preparation_stops_before_the_first_publication_write \
             qemu_hot_fork_world_resource::tests::partial_world_ambiguous_failure_quarantines_the_aggregate \
-            qemu_hot_fork_world_factory::tests::target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation \
+            qemu_hot_fork_world_factory::tests::reconciliation::publication::target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation \
             hot_checkpoint_manager::tests::pressure_demotes_the_coldest_exact_coordinate_deterministically \
             qemu_resource_guard::tests::cancellation_that_wins_before_begin_signals_and_rolls_back \
             qemu_resource_guard::tests::failed_reap_quarantines_process_and_filesystem_authority_once
@@ -230,7 +226,8 @@ in
           injection_classes=14
           prerequisite_tests=29
           operator_commands=contract-validated
-          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication,exact-capture-enospc,multipart-remove-leaf,store-credential-expiry,corrupt-tier-copy,pack-index-interruption,world-fork-one-vm-failure,child-resource-alias;all-required-hooks-implemented
+          fault_build_hooks=coordinator-before-observation-commit,daemon-during-snapshot-publication,multipart-remove-leaf,store-credential-expiry,corrupt-tier-copy,pack-index-interruption,world-fork-one-vm-failure,child-resource-alias
+          required_fault_build_hooks=exact-capture-enospc
           manual_evidence=required
           acceptance=not-evaluated
           RESULT

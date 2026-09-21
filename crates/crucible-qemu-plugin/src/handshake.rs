@@ -231,29 +231,28 @@ mod tests {
 
     #[test]
     fn plugin_handshake_preserves_protocol_failures() {
-        assert_eq!(ABI_VERSION, 21);
-        for host_abi in [1, ABI_VERSION + 1] {
-            let ack = control_encode_host_msg(&HostMsg::HelloAck {
-                proto_version: CONTROL_PROTOCOL_VERSION,
-                abi_version: host_abi,
-                slot_index: 0,
-                node_count: 1,
-            });
-            let mut io = ScriptedIo::from_input(ack);
-            let args = plugin_args(
-                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
-            );
+        assert_eq!(ABI_VERSION, 25);
+        let host_abi = u32::MAX;
+        let ack = control_encode_host_msg(&HostMsg::HelloAck {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: host_abi,
+            slot_index: 0,
+            node_count: 1,
+        });
+        let mut io = ScriptedIo::from_input(ack);
+        let args = plugin_args(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
+        );
 
-            assert!(matches!(
-                perform_plugin_handshake(&mut io, &args),
-                Err(PluginHandshakeError::Protocol {
-                    source: HandshakeError::AbiMismatch {
-                        plugin_abi: ABI_VERSION,
-                        host_abi: rejected,
-                    },
-                }) if rejected == host_abi
-            ));
-        }
+        assert!(matches!(
+            perform_plugin_handshake(&mut io, &args),
+            Err(PluginHandshakeError::Protocol {
+                source: HandshakeError::AbiMismatch {
+                    plugin_abi: ABI_VERSION,
+                    host_abi: rejected,
+                },
+            }) if rejected == host_abi
+        ));
     }
 
     struct ScriptedIo {

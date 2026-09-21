@@ -131,7 +131,7 @@
       }
       {
         label = "STEP updates scheduler frontier";
-        needle = "self.frontier = frontier_for(&self.nodes, self.timeline.shift())?";
+        needle = "let frontier = frontier_for(&self.nodes, self.timeline.shift(), Some(self.frontier))?;";
       }
       {
         label = "STEP counts one quantum";

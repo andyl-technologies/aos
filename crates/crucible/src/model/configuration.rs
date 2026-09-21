@@ -212,29 +212,6 @@ impl ScenarioDefForm {
         Ok(rebuilt)
     }
 
-    /// Rebuilds this scenario around replacement measurement definitions.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScenarioSerialization`] when `measurements`
-    /// reference objects outside the retained world, plan, or properties, or
-    /// otherwise violate the bounded measurement contract.
-    pub fn with_measurements(
-        &self,
-        measurements: MeasurementDefinitions,
-    ) -> Result<Self, EngineError> {
-        let mut rebuilt = Self::from_components_with_measurements_and_app_random_draw_cap(
-            &self.world,
-            &self.plan,
-            &self.properties,
-            &measurements,
-            self.seed,
-            self.app_random_draw_cap,
-        )?;
-        rebuilt.selectables = self.selectables.clone();
-        Ok(rebuilt)
-    }
-
     /// Rebuilds this scenario around an exact validated selectable catalog.
     ///
     /// # Errors
@@ -472,22 +449,11 @@ pub enum Decision {
     Override(OverrideDecision),
     /// A vCPU switch or interrupt-preemption decision.
     Preemption(PreemptionDecision),
-    /// A served application-requested random value.
-    AppRandom(AppRandomDecision),
     /// An unresolved typed campaign selection requiring producer validation.
     Selection(SelectionDecision),
 }
 
 impl Decision {
-    /// Returns the set of nodes this decision is known to touch.
-    ///
-    /// `None` means the current model cannot prove the decision is node-local,
-    /// so search reductions must treat it as dependent on other decisions.
-    #[must_use]
-    pub fn touched_nodes(&self) -> Option<BTreeSet<NodeId>> {
-        decision_touched_nodes(self)
-    }
-
     /// Returns whether `policy` proves this decision independent from `other`.
     ///
     /// Independence requires an explicit unordered-pair proof, known disjoint
@@ -570,7 +536,6 @@ impl Schedule {
                 Decision::RngDraw(_)
                 | Decision::Override(_)
                 | Decision::Preemption(_)
-                | Decision::AppRandom(_)
                 | Decision::Selection(_) => None,
             };
             match (recorded, at) {

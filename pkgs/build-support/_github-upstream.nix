@@ -69,7 +69,7 @@
           fetcher = "fetchurl";
           urlTemplates =
             source.urlTemplates
-          or [
+            or [
               {
                 scheme = "https";
                 inherit (source) authority path;
@@ -79,7 +79,7 @@
           hashMode = source.hashMode or "flat";
           allowedRedirectHosts =
             source.allowedRedirectHosts
-          or (
+            or (
               if (builtins.head (source.urlTemplates or [{inherit (source) authority;}])).authority == "github.com"
               then [
                 "codeload.github.com"

@@ -246,8 +246,8 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
 
-        // Additive ABI v3 section: one fingerprint sample slot per logical VM,
-        // appended after the coverage data with the slot's own alignment.
+        // One fingerprint sample slot per logical VM follows the coverage data
+        // with its own alignment.
         let fingerprint_sample_count = config.vm_node_count;
         let fingerprint_sample_stride = usize_to_u64(FINGERPRINT_SAMPLE_SLOT_SIZE)?;
         let fingerprint_sample_off = checked_align_up(
@@ -262,8 +262,8 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
 
-        // Additive ABI v4 section: one observational marker ring per logical
-        // VM, appended after the v3 fingerprint slots.
+        // One observational marker ring per logical VM follows the fingerprint
+        // slots.
         let whitebox_marker_ring_count = config.vm_node_count;
         let whitebox_marker_queue_capacity = WHITEBOX_MARKER_QUEUE_CAPACITY;
         let whitebox_marker_ring_hdr_off =
@@ -287,7 +287,7 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
 
-        // ABI v7 sections: one host-to-plugin command transport and one
+        // One host-to-plugin command transport and one
         // plugin-to-host result transport per logical VM. Each direction has
         // an independent SPSC ring and explicitly sized circular byte arena.
         let fault_command_ring_count = config.vm_node_count;
@@ -374,7 +374,7 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
 
-        // ABI v9 section: one independent, lossless QEMU rule-event stream per
+        // One independent, lossless QEMU rule-event stream exists per
         // logical VM. Command results remain strictly request/response shaped.
         let fault_event_ring_count = config.vm_node_count;
         let fault_event_queue_capacity = DEFAULT_FAULT_EVENT_CAPACITY;
@@ -418,8 +418,8 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
 
-        // ABI v10 appends the two bounded guest-introspection directions after
-        // the fault transports, preserving all ABI v9 fault offsets.
+        // The two bounded guest-introspection directions follow the fault
+        // transports.
         let guest_introspection_ring_count = config
             .vm_node_count
             .checked_mul(GUEST_INTROSPECTION_RINGS_PER_VM)
@@ -446,8 +446,7 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
 
-        // ABI v11 appends accelerator request/completion rings, preserving all
-        // prior section offsets.
+        // Accelerator request/completion rings follow guest introspection.
         let accelerator_ring_count = config
             .vm_node_count
             .checked_mul(ACCELERATOR_RINGS_PER_VM)
@@ -476,7 +475,7 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
 
-        // ABI v18 appends one single-entry host-to-plugin selectable reply
+        // One single-entry host-to-plugin selectable reply
         // ring per logical VM. A catalog owns at most one pending request, so
         // additional queue capacity would permit only invalid pipelining.
         let selectable_reply_ring_count = config.vm_node_count;

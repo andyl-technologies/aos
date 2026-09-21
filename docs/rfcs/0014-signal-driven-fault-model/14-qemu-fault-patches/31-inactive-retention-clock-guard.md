@@ -1,9 +1,9 @@
-# Patch 0080: inactive retention clock guard
+# Capability task 0080 — Inactive retention clock guard
 
 ## Responsibility
 
-`0080-crucible-inactive-retention-clock-guard.patch` prevents the node-memory
-retention boundary from reading QEMU virtual time when no memory fault rule is
+The atomic patch `crucible-qemu-11.1.1.patch` prevents
+the node-memory retention boundary from reading QEMU virtual time when no memory fault rule is
 active. The boundary callback runs for every node boundary, including the first
 boundary after a checkpoint is loaded into a fresh QEMU process. During that
 restore transition, QEMU may use a negative signed virtual-time value as an
@@ -12,8 +12,8 @@ is not a valid unsigned fault-model coordinate.
 
 An inactive retention subsystem has no deadline to evaluate and no event to
 emit. Sampling its clock before the active-rule check is therefore both
-unnecessary and incorrect. The patch zero-initializes the local boundary-count
-record, returns through the existing inactive-rule guard, and samples
+unnecessary and incorrect. The atomic patch zero-initializes the local
+boundary-count record, returns through the existing inactive-rule guard, and samples
 `node_virtual_now()` only after that guard admits real retention work.
 
 ## Ordering invariant
@@ -36,7 +36,7 @@ counter semantics exactly.
 The authenticated VMState test checkpoints a pending node-boundary command,
 destroys the original QEMU process, restores into a new paused process, and
 continues to the command coordinate. It deliberately installs no memory fault
-rule. Before this patch, the generic node boundary entered
+rule. Without this capability, the generic node boundary entered
 `node_memory_retention_boundary()`, evaluated `node_virtual_now()` while
 constructing a local initializer, and aborted on the restore-time signed clock
 sentinel before the inactive-rule guard could return.
@@ -47,7 +47,7 @@ operation was the irrelevant memory-retention clock read.
 
 ## Verification
 
-The per-patch microtest requires all three properties in the isolated diff:
+The focused atomic-patch capability test requires all three properties:
 
 - the boundary-count record is safely zero-initialized;
 - the active-memory-rule guard remains fail-closed; and
@@ -68,5 +68,5 @@ cells, and emit their bounded evidence.
 
 The change is confined to `plugins/crucible-fault-node.c` in the QEMU/GPL
 process. It changes no shared-memory layout, command ABI, result ABI, callback
-surface, or Apache host code. The corresponding source is retained as a
-separate DCO-signed commit in the QEMU patch bundle.
+surface, or Apache host code. The corresponding source retains the single
+DCO-signed atomic QEMU commit in the atomic bundle.

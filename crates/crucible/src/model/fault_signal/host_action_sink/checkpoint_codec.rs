@@ -449,16 +449,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_host_state_codec_rejects_old_version_and_reports_authored_limit() {
+    fn public_host_state_codec_rejects_unsupported_version_and_reports_authored_limit() {
         let state = HostFaultActionState::default();
         let bytes = state
             .canonical_bytes()
             .unwrap_or_else(|error| panic!("encode host state: {error}"));
 
-        let mut old_version = bytes.clone();
-        old_version[..MAGIC.len()].copy_from_slice(b"crucible.host-fault-action-state.v2\0");
+        let mut unsupported_version = bytes.clone();
+        unsupported_version[..MAGIC.len()]
+            .copy_from_slice(b"crucible.host-fault-action-state.v?\0");
         assert_eq!(
-            HostFaultActionState::from_canonical_bytes(&old_version),
+            HostFaultActionState::from_canonical_bytes(&unsupported_version),
             Err(FaultRuntimeError::AdapterCheckpointCodec)
         );
 

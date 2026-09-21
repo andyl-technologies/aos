@@ -13,7 +13,7 @@
 //!                           finding-candidate
 //! ```
 //!
-//! The parent module catalogs the retained earlier versions.
+//! Decoders reject every request or response version other than these current shapes.
 
 use super::*;
 
@@ -28,7 +28,7 @@ pub struct SubmitAttemptRequest {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     start_mode: AttemptStartMode,
-    retention_policy_basis: Option<AttemptRetentionPolicyBasis>,
+    retention_policy: AttemptRetentionPolicyDisposition,
 }
 
 impl SubmitAttemptRequest {
@@ -49,9 +49,10 @@ impl SubmitAttemptRequest {
         attempt: AttemptId,
         resources: AttemptResourceLimits,
         retention: ExecutionRetentionIntent,
+        retention_policy: AttemptRetentionPolicyDisposition,
     ) -> Result<Self, CampaignCodecError> {
         let request = Self {
-            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            schema_version: RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION,
             assignment,
             daemon_epoch,
             lineage,
@@ -59,7 +60,7 @@ impl SubmitAttemptRequest {
             resources,
             retention,
             start_mode: AttemptStartMode::Execute,
-            retention_policy_basis: None,
+            retention_policy,
         };
         codec::ensure_encoded_size(
             &request,
@@ -80,31 +81,17 @@ impl SubmitAttemptRequest {
     /// Returns an error if the resulting component message exceeds its strict
     /// encoded bound.
     pub fn new_capture_materialized_start(
-        assignment: AssignmentId,
-        daemon_epoch: DaemonEpoch,
-        lineage: CampaignLineageId,
-        attempt: AttemptId,
-        resources: AttemptResourceLimits,
-        retention: ExecutionRetentionIntent,
+        mut assignment: Self,
         configuration: ConfigurationArtifactId,
     ) -> Result<Self, CampaignCodecError> {
-        let request = Self {
-            schema_version: MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION,
-            assignment,
-            daemon_epoch,
-            lineage,
-            attempt,
-            resources,
-            retention,
-            start_mode: AttemptStartMode::CaptureMaterializedStart { configuration },
-            retention_policy_basis: None,
-        };
+        require_disabled_capture_policy(assignment.retention_policy)?;
+        assignment.start_mode = AttemptStartMode::CaptureMaterializedStart { configuration };
         codec::ensure_encoded_size(
-            &request,
+            &assignment,
             MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
             "submit-attempt-request-encoded-bytes",
         )?;
-        Ok(request)
+        Ok(assignment)
     }
 
     /// Builds a campaign savepoint capture in its isolated operational scope.
@@ -117,38 +104,22 @@ impl SubmitAttemptRequest {
     ///
     /// Returns an error if the resulting component message exceeds its strict
     /// encoded bound.
-    // crucible-lint: allow rust-allow -- the constructor keeps every authenticated savepoint binding explicit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_savepoint_capture(
-        assignment: AssignmentId,
-        daemon_epoch: DaemonEpoch,
-        lineage: CampaignLineageId,
-        attempt: AttemptId,
-        resources: AttemptResourceLimits,
-        retention: ExecutionRetentionIntent,
+        mut assignment: Self,
         request: CampaignFactId,
         configuration: ConfigurationArtifactId,
     ) -> Result<Self, CampaignCodecError> {
-        let request = Self {
-            schema_version: SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION,
-            assignment,
-            daemon_epoch,
-            lineage,
-            attempt,
-            resources,
-            retention,
-            start_mode: AttemptStartMode::SavepointCapture {
-                request,
-                configuration,
-            },
-            retention_policy_basis: None,
+        require_disabled_capture_policy(assignment.retention_policy)?;
+        assignment.start_mode = AttemptStartMode::SavepointCapture {
+            request,
+            configuration,
         };
         codec::ensure_encoded_size(
-            &request,
+            &assignment,
             MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
             "submit-attempt-request-encoded-bytes",
         )?;
-        Ok(request)
+        Ok(assignment)
     }
 
     /// Builds an ordinary semantic assignment with a selected savepoint preference.
@@ -162,69 +133,23 @@ impl SubmitAttemptRequest {
     ///
     /// Returns an error if the resulting component message exceeds its strict
     /// encoded bound.
-    // crucible-lint: allow rust-allow -- the constructor keeps every selected-savepoint binding explicit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_selected_savepoint(
-        assignment: AssignmentId,
-        daemon_epoch: DaemonEpoch,
-        lineage: CampaignLineageId,
-        attempt: AttemptId,
-        resources: AttemptResourceLimits,
-        retention: ExecutionRetentionIntent,
+        mut assignment: Self,
         snapshot: CampaignSnapshotId,
         selection: CampaignFactId,
         request: CampaignFactId,
     ) -> Result<Self, CampaignCodecError> {
-        let request = Self {
-            schema_version: SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION,
-            assignment,
-            daemon_epoch,
-            lineage,
-            attempt,
-            resources,
-            retention,
-            start_mode: AttemptStartMode::SelectedSavepoint {
-                snapshot,
-                selection,
-                request,
-            },
-            retention_policy_basis: None,
+        assignment.start_mode = AttemptStartMode::SelectedSavepoint {
+            snapshot,
+            selection,
+            request,
         };
         codec::ensure_encoded_size(
-            &request,
+            &assignment,
             MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
             "submit-attempt-request-encoded-bytes",
         )?;
-        Ok(request)
-    }
-
-    /// Binds the execution-basis admission and its authenticated retention policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the version-6 component message exceeds its strict
-    /// encoded bound.
-    pub fn with_retention_policy_basis(
-        mut self,
-        basis: AttemptRetentionPolicyBasis,
-    ) -> Result<Self, CampaignCodecError> {
-        if matches!(
-            self.start_mode,
-            AttemptStartMode::CaptureMaterializedStart { .. }
-                | AttemptStartMode::SavepointCapture { .. }
-        ) {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "capture submit request cannot carry a retention policy basis",
-            });
-        }
-        self.schema_version = RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION;
-        self.retention_policy_basis = Some(basis);
-        codec::ensure_encoded_size(
-            &self,
-            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
-            "submit-attempt-request-encoded-bytes",
-        )?;
-        Ok(self)
+        Ok(assignment)
     }
 
     /// Returns the idempotent operational assignment identity.
@@ -269,10 +194,10 @@ impl SubmitAttemptRequest {
         self.start_mode
     }
 
-    /// Returns the admission-bound finding-retention policy basis, when supplied.
+    /// Returns the explicit finding-retention policy disposition.
     #[must_use]
-    pub const fn retention_policy_basis(&self) -> Option<AttemptRetentionPolicyBasis> {
-        self.retention_policy_basis
+    pub const fn retention_policy(&self) -> AttemptRetentionPolicyDisposition {
+        self.retention_policy
     }
 
     /// Returns the durable operational namespace selected by this assignment.
@@ -284,23 +209,11 @@ impl SubmitAttemptRequest {
     /// Returns the domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        let domain = match self.schema_version {
-            EXECUTOR_MESSAGE_SCHEMA_VERSION => "crucible.campaign.submit-attempt-request.v2",
-            MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION => {
-                "crucible.campaign.submit-attempt-request.v3"
-            }
-            SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION => {
-                "crucible.campaign.submit-attempt-request.v4"
-            }
-            SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION => {
-                "crucible.campaign.submit-attempt-request.v5"
-            }
-            RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION => {
-                "crucible.campaign.submit-attempt-request.v6"
-            }
-            _ => unreachable!("validated submit request schema"),
-        };
-        CampaignHash::derive(domain, &self.canonical_bytes())
+        let domain = format!(
+            "crucible.campaign.submit-attempt-request.v{}",
+            self.schema_version
+        );
+        CampaignHash::derive(&domain, &self.canonical_bytes())
     }
 
     /// Returns the assignment-neutral local execution-contract digest.
@@ -316,7 +229,7 @@ impl SubmitAttemptRequest {
             self.resources,
             self.retention,
             self.start_mode,
-            self.retention_policy_basis,
+            self.retention_policy,
         )
     }
 
@@ -346,16 +259,8 @@ impl Canonical for SubmitAttemptRequest {
         self.attempt.encode(encoder);
         self.resources.encode(encoder);
         self.retention.encode(encoder);
-        if self.schema_version == MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION
-            || self.schema_version == SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION
-            || self.schema_version == SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION
-            || self.schema_version == RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION
-        {
-            self.start_mode.encode(encoder);
-        }
-        if self.schema_version == RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION {
-            self.retention_policy_basis.encode(encoder);
-        }
+        self.start_mode.encode(encoder);
+        self.retention_policy.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -367,121 +272,45 @@ impl Canonical for SubmitAttemptRequest {
         let attempt = AttemptId::decode(decoder)?;
         let resources = AttemptResourceLimits::decode(decoder)?;
         let retention = ExecutionRetentionIntent::decode(decoder)?;
-        if schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
-            return Self::new(
-                assignment,
-                daemon_epoch,
-                lineage,
-                attempt,
-                resources,
-                retention,
-            );
-        }
-
         let start_mode = AttemptStartMode::decode(decoder)?;
-        if schema_version == RETENTION_POLICY_SUBMIT_REQUEST_SCHEMA_VERSION {
-            let basis = Option::<AttemptRetentionPolicyBasis>::decode(decoder)?.ok_or(
-                CampaignCodecError::InvalidValue {
-                    reason: "submit attempt request version 6 requires retention policy basis",
-                },
-            )?;
-            let request = match start_mode {
-                AttemptStartMode::Execute => Self::new(
-                    assignment,
-                    daemon_epoch,
-                    lineage,
-                    attempt,
-                    resources,
-                    retention,
-                ),
-                AttemptStartMode::CaptureMaterializedStart { .. }
-                | AttemptStartMode::SavepointCapture { .. } => {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "submit attempt request version 6 has a capture start mode",
-                    });
-                }
-                AttemptStartMode::SelectedSavepoint {
-                    snapshot,
-                    selection,
-                    request,
-                } => Self::new_selected_savepoint(
-                    assignment,
-                    daemon_epoch,
-                    lineage,
-                    attempt,
-                    resources,
-                    retention,
-                    snapshot,
-                    selection,
-                    request,
-                ),
-            }?;
-            return request.with_retention_policy_basis(basis);
-        }
-        match (schema_version, start_mode) {
-            (
-                MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION,
-                AttemptStartMode::CaptureMaterializedStart { configuration },
-            ) => Self::new_capture_materialized_start(
-                assignment,
-                daemon_epoch,
-                lineage,
-                attempt,
-                resources,
-                retention,
-                configuration,
-            ),
-            (
-                SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION,
-                AttemptStartMode::SavepointCapture {
-                    request,
-                    configuration,
-                },
-            ) => Self::new_savepoint_capture(
-                assignment,
-                daemon_epoch,
-                lineage,
-                attempt,
-                resources,
-                retention,
+        let retention_policy = crate::AttemptRetentionPolicyDisposition::decode(decoder)?;
+
+        let assignment = Self::new(
+            assignment,
+            daemon_epoch,
+            lineage,
+            attempt,
+            resources,
+            retention,
+            retention_policy,
+        )?;
+        match start_mode {
+            AttemptStartMode::Execute => Ok(assignment),
+            AttemptStartMode::CaptureMaterializedStart { configuration } => {
+                Self::new_capture_materialized_start(assignment, configuration)
+            }
+            AttemptStartMode::SavepointCapture {
                 request,
                 configuration,
-            ),
-            (
-                SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION,
-                AttemptStartMode::SelectedSavepoint {
-                    snapshot,
-                    selection,
-                    request,
-                },
-            ) => Self::new_selected_savepoint(
-                assignment,
-                daemon_epoch,
-                lineage,
-                attempt,
-                resources,
-                retention,
+            } => Self::new_savepoint_capture(assignment, request, configuration),
+            AttemptStartMode::SelectedSavepoint {
                 snapshot,
                 selection,
                 request,
-            ),
-            (MATERIALIZED_START_SUBMIT_REQUEST_SCHEMA_VERSION, _) => {
-                Err(CampaignCodecError::InvalidValue {
-                    reason: "submit attempt request version 3 requires materialized-start capture",
-                })
-            }
-            (SCOPED_SUBMIT_ATTEMPT_REQUEST_SCHEMA_VERSION, _) => {
-                Err(CampaignCodecError::InvalidValue {
-                    reason: "submit attempt request version 4 requires savepoint capture",
-                })
-            }
-            (SELECTED_SAVEPOINT_SUBMIT_REQUEST_SCHEMA_VERSION, _) => {
-                Err(CampaignCodecError::InvalidValue {
-                    reason: "submit attempt request version 5 requires selected savepoint",
-                })
-            }
-            _ => unreachable!("validated submit request schema"),
+            } => Self::new_selected_savepoint(assignment, snapshot, selection, request),
         }
+    }
+}
+
+fn require_disabled_capture_policy(
+    policy: AttemptRetentionPolicyDisposition,
+) -> Result<(), CampaignCodecError> {
+    if policy == crate::AttemptRetentionPolicyDisposition::Disabled {
+        Ok(())
+    } else {
+        Err(CampaignCodecError::InvalidValue {
+            reason: "capture submit request requires disabled finding retention",
+        })
     }
 }
 
@@ -635,15 +464,6 @@ impl SubmitAttemptDisposition {
     const fn is_completed(self) -> bool {
         matches!(self, Self::AlreadyCompleted { .. })
     }
-
-    const fn uses_terminal_failure_schema(self) -> bool {
-        matches!(
-            self,
-            Self::Rejected {
-                reason: ExecutorRejection::TerminalFailure
-            }
-        )
-    }
 }
 
 /// Strict response bound to the exact assignment, epoch, and attempt request.
@@ -692,11 +512,7 @@ impl SubmitAttemptResponse {
         finding_candidate: Option<FindingCandidateBundleId>,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: response_schema_version(
-                disposition.is_completed(),
-                disposition.uses_terminal_failure_schema(),
-                finding_candidate,
-            )?,
+            schema_version: response_schema_version(disposition.is_completed(), finding_candidate)?,
             assignment: request.assignment,
             daemon_epoch: request.daemon_epoch,
             attempt: request.attempt,
@@ -818,17 +634,12 @@ impl Canonical for SubmitAttemptResponse {
         self.attempt.encode(encoder);
         self.request_digest.encode(encoder);
         self.disposition.encode(encoder);
-        if let Some(finding_candidate) = self.finding_candidate {
-            finding_candidate.encode(encoder);
-        }
+        self.finding_candidate.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if schema_version != EXECUTOR_MESSAGE_SCHEMA_VERSION
-            && schema_version != SUBMIT_ATTEMPT_RESPONSE_SCHEMA_VERSION
-            && schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION
-        {
+        if schema_version != FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported submit attempt response schema version",
             });
@@ -838,11 +649,7 @@ impl Canonical for SubmitAttemptResponse {
         let attempt = AttemptId::decode(decoder)?;
         let request_digest = CampaignHash::decode(decoder)?;
         let disposition = SubmitAttemptDisposition::decode(decoder)?;
-        let finding_candidate = if schema_version == FINDING_CANDIDATE_RESPONSE_SCHEMA_VERSION {
-            Some(FindingCandidateBundleId::decode(decoder)?)
-        } else {
-            None
-        };
+        let finding_candidate = Option::<FindingCandidateBundleId>::decode(decoder)?;
         let response = Self {
             schema_version,
             assignment,
@@ -854,7 +661,6 @@ impl Canonical for SubmitAttemptResponse {
         };
         if response_schema_version(
             response.disposition.is_completed(),
-            response.disposition.uses_terminal_failure_schema(),
             response.finding_candidate,
         )? != schema_version
         {

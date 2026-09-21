@@ -8,9 +8,9 @@
 //! with percent-escaped string fields.
 //!
 //! ```text
-//! schema  crucible.reproduction-artifact.v3
+//! schema  crucible.reproduction-artifact.v4
 //! seed    42
-//! identity  0.1.0  engine-abi:v1  crucible.reproduction-artifact.v3  crucible-hash:...  crucible-hash:...  1  1  6.0.0  crucible-rpc-abi-v6  plugin-abi:v1
+//! identity  0.1.0  engine-abi:v1  crucible.reproduction-artifact.v4  crucible-hash:...  crucible-hash:...  25  3  6.0.0  crucible-rpc-abi-v6  plugin-abi:v1
 //! scenario  scenario_def  cluster.scn  crucible-hash:...  cas:crucible-hash:...  application/vnd.crucible.scenario+text  128
 //! payload  crucible-hash:...  7363656e6172696f
 //! schedule  crucible-hash:...  12
@@ -30,7 +30,7 @@ use crate::e2e::{
 };
 
 /// Current reproduction artifact schema identifier.
-pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v3";
+pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v4";
 
 /// Media type for the canonical artifact encoding.
 pub const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
@@ -296,7 +296,7 @@ impl ReproductionArtifact {
                 &self.build_identity.engine_abi,
                 &self.build_identity.artifact_abi,
                 &self.build_identity.qemu_build_id,
-                &self.build_identity.qemu_patch_series_hash,
+                &self.build_identity.qemu_atomic_patch_hash,
                 &self.build_identity.shmem_abi_version,
                 &self.build_identity.guest_host_protocol_version,
                 &self.build_identity.rpc_abi_version,
@@ -376,8 +376,8 @@ pub struct PinnedBuildIdentity {
     pub artifact_abi: String,
     /// Content address of the QEMU build identity used by the producer.
     pub qemu_build_id: String,
-    /// Hash of the ordered QEMU patch series applied to the producer QEMU.
-    pub qemu_patch_series_hash: String,
+    /// Hash of the ordered QEMU atomic patch applied to the producer QEMU.
+    pub qemu_atomic_patch_hash: String,
     /// Shared-memory ABI version used by the producer.
     pub shmem_abi_version: String,
     /// Guest-host channel protocol version used by the producer.
@@ -402,8 +402,8 @@ impl PinnedBuildIdentity {
         require_non_empty("build_identity.engine_abi", &self.engine_abi)?;
         require_non_empty("build_identity.artifact_abi", &self.artifact_abi)?;
         require_non_empty(
-            "build_identity.qemu_patch_series_hash",
-            &self.qemu_patch_series_hash,
+            "build_identity.qemu_atomic_patch_hash",
+            &self.qemu_atomic_patch_hash,
         )?;
         require_non_empty("build_identity.shmem_abi_version", &self.shmem_abi_version)?;
         require_non_empty(
@@ -498,7 +498,7 @@ pub enum CampaignCorpusReuseDecision {
 /// Computes the deterministic campaign provenance key for a pinned identity.
 ///
 /// The key is derived from the full pinned build identity used by reproduction
-/// artifacts: Crucible version and ABI, QEMU build id and patch-series hash,
+/// artifacts: Crucible version and ABI, QEMU build id and atomic-patch hash,
 /// shmem ABI, guest-host protocol, RPC ABI/build tag, and plugin ABI.
 ///
 /// # Errors
@@ -917,12 +917,12 @@ impl fmt::Display for ReproductionArtifactError {
             }
             Self::BuildIdentityMismatch { expected, actual } => write!(
                 formatter,
-                "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`",
+                "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` atomic-patch `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` atomic-patch `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`",
                 expected.engine_version,
                 expected.engine_abi,
                 expected.artifact_abi,
                 expected.qemu_build_id,
-                expected.qemu_patch_series_hash,
+                expected.qemu_atomic_patch_hash,
                 expected.shmem_abi_version,
                 expected.guest_host_protocol_version,
                 expected.rpc_abi_version,
@@ -932,7 +932,7 @@ impl fmt::Display for ReproductionArtifactError {
                 actual.engine_abi,
                 actual.artifact_abi,
                 actual.qemu_build_id,
-                actual.qemu_patch_series_hash,
+                actual.qemu_atomic_patch_hash,
                 actual.shmem_abi_version,
                 actual.guest_host_protocol_version,
                 actual.rpc_abi_version,
@@ -1321,7 +1321,7 @@ fn decode_artifact(text: &str) -> Result<ReproductionArtifact, ReproductionArtif
                         engine_abi: fields[2].clone(),
                         artifact_abi: fields[3].clone(),
                         qemu_build_id: fields[4].clone(),
-                        qemu_patch_series_hash: fields[5].clone(),
+                        qemu_atomic_patch_hash: fields[5].clone(),
                         shmem_abi_version: fields[6].clone(),
                         guest_host_protocol_version: fields[7].clone(),
                         rpc_abi_version: fields[8].clone(),
@@ -1449,7 +1449,7 @@ fn pinned_identity_from_e2e(source: &E2eBuildIdentity) -> PinnedBuildIdentity {
         engine_abi: source.harness_abi.clone(),
         artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
         qemu_build_id: content_address_bytes(source.backend_build_id.as_bytes()),
-        qemu_patch_series_hash: source.qemu_patch_series_hash.clone(),
+        qemu_atomic_patch_hash: source.qemu_atomic_patch_hash.clone(),
         shmem_abi_version: source.shmem_abi_version.clone(),
         guest_host_protocol_version: source.guest_host_protocol_version.clone(),
         rpc_abi_version: source.rpc_abi_version.clone(),
@@ -1469,7 +1469,7 @@ fn campaign_provenance_material(identity: &PinnedBuildIdentity) -> String {
             &identity.engine_abi,
             &identity.artifact_abi,
             &identity.qemu_build_id,
-            &identity.qemu_patch_series_hash,
+            &identity.qemu_atomic_patch_hash,
             &identity.shmem_abi_version,
             &identity.guest_host_protocol_version,
             &identity.rpc_abi_version,
@@ -1614,7 +1614,7 @@ fn reconstructed_e2e_artifact_digest(
             E2eCanonicalField::Str(&artifact.build_identity.engine_abi),
             E2eCanonicalField::Str(backend),
             E2eCanonicalField::Str(&backend_build_id),
-            E2eCanonicalField::Str(&artifact.build_identity.qemu_patch_series_hash),
+            E2eCanonicalField::Str(&artifact.build_identity.qemu_atomic_patch_hash),
             E2eCanonicalField::Str(&artifact.build_identity.shmem_abi_version),
             E2eCanonicalField::Str(&artifact.build_identity.guest_host_protocol_version),
             E2eCanonicalField::Str(&artifact.build_identity.rpc_abi_version),

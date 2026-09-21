@@ -66,8 +66,8 @@
         needle = "pre-spawn validator rejects MTTCG";
       }
       {
-        label = "T-QEMU-15 completion note names RFC alias";
-        needle = "`crucible-rr-quantum-icount`";
+        label = "T-QEMU-15 completion note names canonical RR option";
+        needle = "`rr_switch_quantum`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialSpec [
@@ -176,12 +176,8 @@
         needle = "QemuPreSpawnLaunchValidationError::SingleThreadSimNotPinned";
       }
       {
-        label = "RR quantum validator supports current patch option and RFC alias";
-        needle = "&[\"rr_switch_quantum\", \"crucible-rr-quantum-icount\"],";
-      }
-      {
-        label = "RR quantum duplicate label covers alias/current ambiguity";
-        needle = "\"rr_switch_quantum\",";
+        label = "RR quantum validator accepts only the canonical option";
+        needle = "unique_comma_value(icount, \"-icount\", \"rr_switch_quantum\")";
       }
       {
         label = "duplicate deterministic sub-options rejected";
@@ -190,10 +186,6 @@
       {
         label = "unique accelerator thread parser";
         needle = "unique_comma_value(&lower, \"-accel\", \"thread\")?";
-      }
-      {
-        label = "unique RR quantum parser across alias/current key";
-        needle = "unique_comma_value_any(";
       }
       {
         label = "unpinned RR quantum rejected";
@@ -298,10 +290,6 @@
         needle = "rr_switch_quantum=4096,rr_switch_quantum=8192";
       }
       {
-        label = "mixed current and RFC alias assertion";
-        needle = "rr_switch_quantum=4096,crucible-rr-quantum-icount=4096";
-      }
-      {
         label = "sleep realtime switching assertion";
         needle = "shift=0,sleep=on,align=off,rr_switch_quantum=4096";
       }
@@ -401,7 +389,6 @@ in
             smp_multi_vcpu_test=4
             rr_switch_quantum=content-addressed-node-icount
             rr_switch_quantum_current_qemu_option=rr_switch_quantum
-            rr_switch_quantum_rfc_alias=crucible-rr-quantum-icount
             rr_vcpu_rotation=ascending-vcpu-id
             cpu_model_scope=uniform-all-vcpus
             per_vcpu_tsc_source=node-icount

@@ -47,7 +47,7 @@ fn lineage(label: &str) -> CampaignLineageId {
 fn policy(label: &str) -> CampaignPolicyId {
     CampaignPolicyId::from_content_id(ContentId::for_bytes(
         ObjectKind::Policy,
-        1,
+        4,
         label.as_bytes(),
     ))
     .expect("policy id")
@@ -55,25 +55,27 @@ fn policy(label: &str) -> CampaignPolicyId {
 
 fn branch_request(label: &str) -> BranchRequest {
     BranchRequest::new(
-        BranchPointId::from_hash(hash(&format!("{label}-branch-point"))),
-        ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
-            ObjectKind::Configuration,
-            1,
-            format!("{label}-parent").as_bytes(),
-        ))
-        .expect("parent id"),
-        ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            1,
-            format!("{label}-opportunity").as_bytes(),
-        ))
-        .expect("opportunity id"),
-        ChoiceDomainId::from_content_id(ContentId::for_bytes(
-            ObjectKind::CampaignFact,
-            1,
-            format!("{label}-domain").as_bytes(),
-        ))
-        .expect("domain id"),
+        BranchRequest::identity(
+            BranchPointId::from_hash(hash(&format!("{label}-branch-point"))),
+            ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Configuration,
+                1,
+                format!("{label}-parent").as_bytes(),
+            ))
+            .expect("parent id"),
+            ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                format!("{label}-opportunity").as_bytes(),
+            ))
+            .expect("opportunity id"),
+            ChoiceDomainId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                format!("{label}-domain").as_bytes(),
+            ))
+            .expect("domain id"),
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
             .expect("finite source"),
         BranchRequestCause::Operator(CampaignCommandId::from_hash(hash(&format!(
@@ -201,7 +203,7 @@ fn get_campaign_messages_are_canonical_and_request_bound() {
         ],
         [
             String::from("e25fd54be8cb0ea10f0dc695d3f7b029883e0f87269c692abe85f5ba9701a61d"),
-            String::from("1fe7760e23f11073592759affd3d537cfcd100fceef28f5c70b407b38688016b"),
+            String::from("2897207d1ac7ba38eb06008d56b90fa2442efa418c2532802563f0d2373270b8"),
         ]
     );
 }
@@ -1046,7 +1048,7 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
     );
     response.validate_for(&request).expect("request binding");
     let mut malformed_schema = response.canonical_bytes();
-    malformed_schema[..std::mem::size_of::<u32>()].copy_from_slice(&1_u32.to_be_bytes());
+    malformed_schema[..std::mem::size_of::<u32>()].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(SubmitCampaignBranchResponse::from_canonical_bytes(&malformed_schema).is_err());
     let mut truncated = response.canonical_bytes();
     truncated.pop();
@@ -1102,8 +1104,8 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
                 .to_string(),
         ],
         [
-            String::from("6f0cfefbe81b9748e59bebbd16f87c6bc1fcd3d98c543453dc1699c8f8edcffb"),
-            String::from("1cdbfc6a088923991809fb35660532b871e987fb9d6fe92cc82d086ee536af9c"),
+            String::from("ac57a4b4eb3e5780675ad023667ca406b2fddbd5693924659c1bbd581eb5e87e"),
+            String::from("bf138cc1df310f18f7b925e57e246a099995cabd61a53111f729e9a1d00254b8"),
         ]
     );
 }
@@ -1203,7 +1205,7 @@ fn discovery_messages_are_canonical_and_bind_the_exact_request() {
 
     let attempt = AttemptId::parse(&format!(
         "crucible.campaign.attempt@{}",
-        ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"discovery-attempt").encode()
+        ContentId::for_bytes(ObjectKind::CampaignFact, 8, b"discovery-attempt").encode()
     ))
     .expect("attempt ID");
     let admission = AttemptAdmissionId::parse(&format!(
@@ -1257,8 +1259,8 @@ fn discovery_messages_are_canonical_and_bind_the_exact_request() {
                 .to_string(),
         ],
         [
-            String::from("1da05ba3a110dbbd55eab6d5bbf75405320aeefbc3234b15377fa710bc9245cb"),
-            String::from("e32fdc21bae24db9305eef06c39d973fd0922a9519fba3da1fb22ff5236d508f"),
+            String::from("269a135008ecab22d20877fa82820a698f54d389198f080ccd971f5421cf8a1b"),
+            String::from("f81ba154cee99a40f079be79a5e47584126ddad740d7c9e327cd4eb50baba725"),
         ]
     );
 }

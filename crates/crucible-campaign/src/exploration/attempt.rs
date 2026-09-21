@@ -63,16 +63,6 @@ impl AttemptContinuationInput {
         })
     }
 
-    /// Validates encoded scheduler overrides before a source observation is known.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when the set is empty, contains duplicate
-    /// records, or exceeds the fixed count, item, or aggregate byte bounds.
-    pub fn validate_scheduler_overrides(decisions: &[Vec<u8>]) -> Result<(), CampaignCodecError> {
-        validate_continuation_override_decisions(decisions)
-    }
-
     /// Returns the canonical observation proving the source boundary.
     #[must_use]
     pub const fn source_observation(&self) -> ObservationId {
@@ -423,7 +413,6 @@ impl Canonical for AttemptStart {
 /// Immutable semantic execution attempt independent of placement and retry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attempt {
-    schema_version: u32,
     start: AttemptStart,
     path: BranchPathId,
     stop: StopCondition,
@@ -442,18 +431,7 @@ impl Attempt {
         stop: StopCondition,
     ) -> Result<Self, CampaignCodecError> {
         stop.validate()?;
-        let schema_version = match start {
-            _ if stop.uses_observation_wire_schema() => OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION,
-            AttemptStart::AfterAttempt { .. } => AFTER_ATTEMPT_SCHEMA_VERSION,
-            AttemptStart::Discover { .. } | AttemptStart::Branch { .. }
-                if stop.uses_extended_wire_schema() =>
-            {
-                ATTEMPT_SCHEMA_VERSION
-            }
-            AttemptStart::Discover { .. } | AttemptStart::Branch { .. } => RECORD_SCHEMA_VERSION,
-        };
         Ok(Self {
-            schema_version,
             start,
             path,
             stop,
@@ -481,13 +459,7 @@ impl Attempt {
         }
         continuation_input.validate()?;
         stop.validate()?;
-        let schema_version = if stop.uses_observation_wire_schema() {
-            OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
-        } else {
-            CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
-        };
         Ok(Self {
-            schema_version,
             start,
             path,
             stop,
@@ -520,7 +492,7 @@ impl Attempt {
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
-        self.schema_version
+        ATTEMPT_SCHEMA_VERSION
     }
 
     /// Returns strict canonical bytes.
@@ -548,7 +520,7 @@ impl Attempt {
         AttemptId::from_content_id(
             crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::Attempt,
-                self.schema_version,
+                ATTEMPT_SCHEMA_VERSION,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -585,31 +557,15 @@ impl Attempt {
 
 impl Canonical for Attempt {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        ATTEMPT_SCHEMA_VERSION.encode(encoder);
         self.start.encode(encoder);
         self.path.encode(encoder);
         self.stop.encode(encoder);
-        if matches!(
-            self.schema_version,
-            CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
-                | OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
-        ) && let Some(continuation_input) = &self.continuation_input
-        {
-            continuation_input.encode(encoder);
-        }
+        self.continuation_input.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            RECORD_SCHEMA_VERSION
-                | ATTEMPT_SCHEMA_VERSION
-                | AFTER_ATTEMPT_SCHEMA_VERSION
-                | OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION
-                | CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
-                | OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
-        ) {
+        if u32::decode(decoder)? != ATTEMPT_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported attempt schema version",
             });
@@ -617,50 +573,16 @@ impl Canonical for Attempt {
         let start = AttemptStart::decode(decoder)?;
         let path = BranchPathId::decode(decoder)?;
         let stop = StopCondition::decode(decoder)?;
-        let continuation_input = matches!(
-            schema_version,
-            CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
-                | OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION
-        )
-        .then(|| AttemptContinuationInput::decode(decoder))
-        .transpose()?;
-        let compatible = match schema_version {
-            RECORD_SCHEMA_VERSION => {
-                !stop.uses_extended_wire_schema()
-                    && !stop.uses_observation_wire_schema()
-                    && !matches!(start, AttemptStart::AfterAttempt { .. })
-            }
-            ATTEMPT_SCHEMA_VERSION => {
-                stop.uses_extended_wire_schema()
-                    && !matches!(start, AttemptStart::AfterAttempt { .. })
-            }
-            AFTER_ATTEMPT_SCHEMA_VERSION => {
-                matches!(start, AttemptStart::AfterAttempt { .. })
-                    && !stop.uses_observation_wire_schema()
-                    && continuation_input.is_none()
-            }
-            OBSERVATION_STOP_ATTEMPT_SCHEMA_VERSION => {
-                stop.uses_observation_wire_schema() && continuation_input.is_none()
-            }
-            CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION => {
-                matches!(start, AttemptStart::AfterAttempt { .. })
-                    && !stop.uses_observation_wire_schema()
-                    && continuation_input.is_some()
-            }
-            OBSERVATION_CONTINUATION_INPUT_ATTEMPT_SCHEMA_VERSION => {
-                matches!(start, AttemptStart::AfterAttempt { .. })
-                    && stop.uses_observation_wire_schema()
-                    && continuation_input.is_some()
-            }
-            _ => false,
-        };
-        if !compatible {
+        let continuation_input = Option::<AttemptContinuationInput>::decode(decoder)?;
+        if continuation_input.is_some() && !matches!(start, AttemptStart::AfterAttempt { .. }) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "attempt schema disagrees with start or stop semantics",
             });
         }
+        if let Some(input) = &continuation_input {
+            input.validate()?;
+        }
         Ok(Self {
-            schema_version,
             start,
             path,
             stop,

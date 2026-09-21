@@ -121,21 +121,21 @@
       }
       {
         label = "shmem slot publish call";
-        needle = "slot.publish_scheduler_ceiling(ceiling)";
+        needle = "slot.publish_scheduler_advance(";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
       {
         label = "shmem slot publish API";
-        needle = "pub fn publish_scheduler_ceiling";
+        needle = "pub fn publish_scheduler_advance";
       }
       {
         label = "ABI field release store";
-        needle = ".store(ceiling.max_advance_icount, Ordering::Release)";
+        needle = ".store(max_advance_icount, Ordering::Release)";
       }
       {
         label = "node ceiling acquire load";
-        needle = "pub fn load_node_ceiling";
+        needle = "pub fn load_scheduler_advance";
       }
       {
         label = "advance ceiling authorization";

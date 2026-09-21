@@ -1,17 +1,18 @@
-# Patch 0052 — `crucible-instruction-faults`
+# Capability task 0052 — `crucible-instruction-faults`
 
 ## Purpose
 
 Implements instruction-result corruption, instruction skip, instruction replay,
 and illegal/spurious exception injection at exact architecture instruction
-opportunities. This is intentionally a separate high-risk patch because it
+opportunities. This is a focused high-risk capability because it
 changes TCG translation/execution boundaries.
 
 ## Capability and dependencies
 
 - Provides `qemu.instruction-fault.x86_64.v1` and
   `qemu.instruction-fault.aarch64.v1`.
-- Depends on 0047–0051, TCG execution callbacks, safe boundary, TB invalidation,
+- Requires the capabilities specified by capability tasks 0047–0051, TCG
+  execution callbacks, safe boundary, TB invalidation,
   and architecture register manifests.
 
 ## Instruction manifest and selector
@@ -28,7 +29,7 @@ atomic prepare/commit rule-set digest and is not overloaded with runtime state.
 
 The immutable runtime manifest is the exhaustive decoder contract, not a broad
 ISA-family promise. It names the exact x86 opcode/range and ModR/M families and
-the exact AArch64 mask/value pairs accepted by this patch. The bridge retrieves
+the exact AArch64 mask/value pairs accepted by this capability. The bridge retrieves
 the manifest bytes through
 `qemu_plugin_crucible_fault_instruction_manifest`, verifies their SHA-256, and
 binds that digest into every event. Admission rejects a selector whose requested
@@ -43,7 +44,7 @@ class or mutation is outside this table:
 | atomic | `86`, `87`, `0fb0-0fb1`, `0fc0-0fc1`, and admitted locked read-modify-write forms | exclusive/atomic family mask | replay only; skip and result mutation reject |
 | FP/SIMD | admitted `0f10-11`, `0f28-29`, arithmetic, and `66`/`f3` move forms | Advanced SIMD and scalar FP masks | result, skip, replay subject to exact destination decoding |
 | exception-producing | `cc`, `cd`, `ce`, `f1`, `0f0b` | exception-generation mask | skip only |
-| device I/O | `e4-e7`, `ec-ef` | none in this patch | replay only |
+| device I/O | `e4-e7`, `ec-ef` | none in this capability | replay only |
 
 x86 address-size overrides reject. Prefix decoding is limited to lock, operand
 size, repeat, segment, and REX prefixes enumerated by the manifest. Any opcode,
@@ -61,7 +62,8 @@ Result corruption targets one exact decoded destination register/flag via the
 register manifest and applies the embedded `bit_flip/stuck/replace` transform after the
 instruction commits but before interrupt/next-instruction observation. Memory
 load return corruption uses the load destination register here or the memory
-access hook; memory stores are handled by patch 0050. If a destination cannot be
+access hook; memory stores are handled by the capability specified by capability
+task 0050. If a destination cannot be
 identified and the command does not name an exact writable register, admission
 rejects it.
 
@@ -107,7 +109,8 @@ the payload cannot forge a different level. The record is
 x86 machine-check/AArch64 RAS fields defined by the common JSON contract. QEMU
 uses the architecture exception entry machinery. Invalid
 combinations reject before state change. Machine-check/hardware-error classes use
-patch 0054 rather than this generic exception hook.
+the capability specified by capability task 0054 rather than this generic
+exception hook.
 The prepare command remains pending while an exception is queued. QEMU emits
 the terminal `applied` command result only after the architecture delivery hook
 has verified vector, syndrome, fault address, entry PC, and post-entry state;
@@ -165,7 +168,8 @@ composite system fingerprints,
 byte counts, authenticated device transaction transcripts, and exception
 delivery state. The migration-VMState stream is broad context and may contain
 registered CPU sections; it is not used as the proof that port I/O occurred.
-Patch 0067 serializes rules, occurrence counters, active
+The VMState capability specified by capability task 0067 serializes rules,
+occurrence counters, active
 replay state, and pending hooks. Snapshot is prohibited mid-instruction and
 occurs only at the next safe boundary.
 
@@ -187,7 +191,8 @@ occurs only at the next safe boundary.
    stop.
 8. Check checkpoint before/after rule and between distinct instructions.
 9. Benchmark disabled, empty, sparse non-match, and active hooks.
-10. Revert patch and fail live gate; prove non-sim inertness.
+10. Run the live gate against pristine QEMU and require capability absence;
+    prove non-sim inertness with the atomic patch installed.
 
 ## Licensing checklist
 

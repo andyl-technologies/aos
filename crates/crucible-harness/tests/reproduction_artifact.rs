@@ -54,7 +54,7 @@ fn reproduction_artifact_format_round_trips_seed_scenario_schedule_and_pinned_id
             .qemu_build_id
             .starts_with("crucible-hash:")
     );
-    assert!(!decoded.build_identity.qemu_patch_series_hash.is_empty());
+    assert!(!decoded.build_identity.qemu_atomic_patch_hash.is_empty());
     assert_eq!(
         decoded.build_identity.shmem_abi_version,
         crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string()
@@ -194,11 +194,12 @@ fn reproduction_artifact_format_keeps_large_components_by_reference() -> Result<
             engine_abi: String::from("engine-abi:v1"),
             artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
             qemu_build_id: crucible_harness::reproduction::content_address_bytes(b"qemu"),
-            qemu_patch_series_hash: String::from(
+            qemu_atomic_patch_hash: String::from(
                 "crucible-hash:e1e3694e392946298e90eb185ad349906d47acc81ad934cb631fe9438b4bfc5d",
             ),
-            shmem_abi_version: String::from("1"),
-            guest_host_protocol_version: String::from("1"),
+            shmem_abi_version: crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),
+            guest_host_protocol_version:
+                crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string(),
             rpc_abi_version: String::from("6.0.0"),
             rpc_abi_build: String::from("crucible-rpc-abi-v6"),
             plugin_abi: String::from("plugin-abi:v1"),
@@ -283,11 +284,12 @@ fn reproduction_artifact_format_rejects_payload_digest_mismatch() -> Result<(), 
             engine_abi: String::from("engine-abi:v1"),
             artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
             qemu_build_id: crucible_harness::reproduction::content_address_bytes(b"qemu"),
-            qemu_patch_series_hash: String::from(
+            qemu_atomic_patch_hash: String::from(
                 "crucible-hash:e1e3694e392946298e90eb185ad349906d47acc81ad934cb631fe9438b4bfc5d",
             ),
-            shmem_abi_version: String::from("1"),
-            guest_host_protocol_version: String::from("1"),
+            shmem_abi_version: crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),
+            guest_host_protocol_version:
+                crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string(),
             rpc_abi_version: String::from("6.0.0"),
             rpc_abi_build: String::from("crucible-rpc-abi-v6"),
             plugin_abi: String::from("plugin-abi:v1"),
@@ -564,17 +566,17 @@ fn campaign_corpus_reuse_seeds_matching_provenance() -> Result<(), Box<dyn Error
 }
 
 #[test]
-fn campaign_corpus_reuse_refuses_patch_series_drift() -> Result<(), Box<dyn Error>> {
+fn campaign_corpus_reuse_refuses_atomic_patch_drift() -> Result<(), Box<dyn Error>> {
     let prior_identity = mock_reproduction_build_identity();
-    let corpus_root = content_address_bytes(b"patch-series-corpus-root");
-    let lineage_id = content_address_bytes(b"patch-series-lineage");
+    let corpus_root = content_address_bytes(b"atomic-patch-corpus-root");
+    let lineage_id = content_address_bytes(b"atomic-patch-lineage");
     let prior = CampaignCorpusSeed::new(
         corpus_root.clone(),
         lineage_id.clone(),
         prior_identity.clone(),
     )?;
     let mut run_identity = prior_identity.clone();
-    run_identity.qemu_patch_series_hash = String::from("sha256-different-qemu-patch-series");
+    run_identity.qemu_atomic_patch_hash = String::from("sha256-different-qemu-atomic-patch");
 
     let decision = evaluate_campaign_corpus_reuse(&prior, &run_identity)?;
 
@@ -601,7 +603,7 @@ fn campaign_corpus_reuse_refuses_patch_series_drift() -> Result<(), Box<dyn Erro
             );
         }
         CampaignCorpusReuseDecision::SeedPriorCorpus { .. } => {
-            panic!("patch-series drift must refuse cross-provenance corpus reuse")
+            panic!("atomic-patch drift must refuse cross-provenance corpus reuse")
         }
     }
 

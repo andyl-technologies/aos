@@ -216,6 +216,7 @@ where
             outcome: Some(OutcomeKind::Passed),
             terminal_savepoint: Some(oracle.fat_checkpoint),
             terminal_configuration: Some(snapshot.configuration.clone()),
+            final_snapshot: None,
             final_frontier_ticks: stopped
                 .as_ref()
                 .map(|summary| summary.frontier.ticks)
@@ -234,6 +235,7 @@ where
             execution_fingerprints: Vec::new(),
             resolved_effect_trace: None,
             acknowledged_commands,
+            reproduction_commands: Vec::new(),
             watch_statuses: Vec::new(),
         },
         oracle,

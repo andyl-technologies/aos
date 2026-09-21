@@ -512,13 +512,11 @@ impl CampaignRepository {
             {
                 return Err(integrity("finding-minimized-reproduction-basis-mismatch"));
             }
-            if minimized.schema_version() >= 2 {
-                let minimization = minimized
-                    .minimization()
-                    .ok_or_else(|| integrity("finding-minimized-reproduction-has-no-trace"))?;
-                if minimization.original() != finding.reproduction() {
-                    return Err(integrity("finding-minimization-original-mismatch"));
-                }
+            let minimization = minimized
+                .minimization()
+                .ok_or_else(|| integrity("finding-minimized-reproduction-has-no-trace"))?;
+            if minimization.original() != finding.reproduction() {
+                return Err(integrity("finding-minimization-original-mismatch"));
             }
         }
         for pin in finding.exact_pins() {

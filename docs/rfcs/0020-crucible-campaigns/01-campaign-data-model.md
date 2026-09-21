@@ -25,7 +25,7 @@ CampaignLineageId = H(
   GenesisConfigurationId,
   ConfigurationArtifactId,
   CrucibleVersion,
-  QemuBuildAndPatchSeries,
+  QemuBuildAndAtomicPatch,
   ProtocolVersions
 )
 
@@ -84,37 +84,31 @@ configuration record binds its semantic `ConfigurationId`, its
 Repository reads resolve these records and recheck every cross-record binding;
 validation is not limited to the campaign-creation path.
 
-Finding reproduction uses the same exact-artifact rule. A schema-v1
+Finding reproduction uses the same exact-artifact rule. The current schema-v2
 `ReproductionArtifact` binds semantic and exact scenario/configuration
-identities, a stable failure fingerprint, and verifier-checked self-contained
-execution-model bytes. Schema v2 is used only for a minimized reproduction and
-additionally retains its original schema-v1 reproduction, versioned exact
-minimization policy, dense bounded candidate history, and final replayed state.
-A schema-v2 `Finding` binds its normalized signature, representative and
-occurrence observations, original and optional minimized reproductions, the
-authenticated first-seen parent snapshot, and bounded pre-failure,
-last-successful-measurement, post-failure, and additional exact-checkpoint role
-sets. Schema v4 extends that current shape with the first verified candidate
-bundle and an authenticated occurrence set retaining every verified bundle.
-Both current finding shapes require every minimized reproduction to carry
-schema-v2 minimization evidence. The original reproduction uses schema v1; an
-optional minimized reproduction uses schema v2 and names that original. Finding
-schemas v1 and v3 are rejected by normal admission and by the bounded repository
-migration because they lack a current authenticated translation.
+identities, a stable failure fingerprint, verifier-checked self-contained
+execution-model bytes, its original reproduction, the exact minimization
+policy, bounded candidate history, and the final replayed state. The current
+schema-v4 `Finding` binds its normalized signature, representative and
+occurrence observations, reproduction artifacts, authenticated first-seen
+parent snapshot, role-tagged exact checkpoint retention, and the authenticated
+candidate bundle and occurrence set. Repository admission verifies those
+relationships and fails closed on any other schema version. A broad finding
+content ID is not authoritative until its envelope schema and complete child
+table are authenticated.
 
 Campaign creation inserts the exact genesis configuration artifact into the
 canonical graph and corpus keys, publishes any candidate-generator closure,
 and verifies the complete snapshot closure before advancing the name. A
 semantic digest without the corresponding reachable bytes is not a readable
-campaign. Raw pre-RFC scenario/configuration blobs require explicit migration
-into these owned records before import; they are never guessed to be either a
-legacy blob or a record based on their bytes.
+campaign. Noncurrent scenario/configuration blobs are rejected before import;
+bytes are never guessed to be a current record from their shape.
 
 - **[CMOD-10]** A policy revision MUST NOT change existing configuration IDs.
   Every proposal MUST name the policy revision that issued it.
 - **[CMOD-11]** A QEMU, Crucible, guest protocol, shared-memory protocol, scenario
-  schema, or exact-closure compatibility change MUST begin a new lineage unless
-  the relevant version contract explicitly admits the old representation.
+  schema, or exact-closure change MUST begin a new lineage. Admission rejects
+  every noncurrent representation.
 
 ## 01.2 Campaign policy
 
@@ -176,13 +170,8 @@ pub struct CampaignSnapshot {
 }
 ```
 
-Version-3 snapshots carry a required budget-ledger child after the transition
-field. Genesis requires zero totals. Successor validation reconstructs exact
-deltas from the causal fact and unique admission sequence; the ledger's bytes
-alone never confer authority. Normal repository admission accepts version 3
-only and rejects version-2 lineages.
-
-New ledgers use schema version 2, appending a `ContentId` for the authenticated
+The current snapshot requires the current budget-ledger child after the
+transition field. The ledger appends a `ContentId` for the authenticated
 request-spending Merkle map. This is the ledger's sole child. Its outer map
 indexes request identities; each value is a nested map from semantic attempt
 identity to the exact execution-basis admission. Additional causes and
@@ -190,8 +179,7 @@ discovery admissions do not spend a request-local attempt. The nested root's
 authenticated entry count gives exact local spending without scanning campaign
 history. Genesis requires the canonical empty map. Successors derive updates
 from newly added dense global admissions; validation recomputes the root without
-publishing objects. Normal admission accepts version 2 only and rejects
-version-1 ledgers.
+publishing objects. Ordinary runtime accepts only the current ledger contract.
 
 Snapshot ancestry for one campaign ref is linear in this RFC because exactly
 one coordinator owns that ref. `derive` creates another named ref whose first
@@ -226,9 +214,9 @@ The roots name immutable canonical maps or sets:
 | `accounting_root` | Budget grants, consumed attempts, modeled completion counts, policy activation, pause/resume, and operator commands. |
 | `coordination_root` | Durable coordinator progress, planner-step identity/replay indexes, and other authenticated control-plane state excluded from semantic planner input. |
 
-The nine-root layout is `crucible.campaign.snapshot` schema v3. Earlier
-snapshot bodies and envelopes are rejected rather than reinterpreted with a
-different root order. `coordination_root` exists so recording a paginated
+The nine-root layout is the sole current `crucible.campaign.snapshot` schema
+v3. Every other snapshot body or envelope version is rejected.
+`coordination_root` exists so recording a paginated
 planner step does not change the immutable planning view that the next page
 must resume.
 
@@ -294,8 +282,7 @@ pub enum CampaignFact {
 executor incompatibility, invalid input, authorization denial, and terminal
 worker failure. A terminal worker failure is an operational quarantine: it
 closes the admitted ordinal without manufacturing an observation or modeled
-stop outcome. Campaign fact v10 is used only for that new disposition; the
-older closure dispositions retain their version-2 bytes.
+stop outcome. The current campaign-fact schema v14 encodes every disposition.
 
 New branch-request transitions use `BranchRequestAccepted`. Its immutable
 summary records the validated addressable source cardinality, the existing
@@ -306,10 +293,6 @@ cardinality is distinct from the proposal window: the latter is capped by the
 request proposal limit, while generators whose definition incorporates that
 limit may also have a limit-bounded source cardinality.
 
-The removed `BranchRequestIssued` fact is rejected by normal repository
-admission because it lacks the immutable
-acceptance summary required by the current transition.
-
 Publishing a valid `ChoiceOpportunity` body does not make it campaign
 knowledge. The graph owner admits it only through an exact
 `ChoiceOpportunityDiscovered` transition or as a discovered choice in a
@@ -318,9 +301,8 @@ domain closure and bind the opportunity to the campaign scenario and exact
 parent-derived branch point. A branch request must find the exact opportunity
 under its domain-separated `(BranchPointId, ChoiceOpportunityId)` graph key;
 backing-store presence, global opportunity membership, an arbitrary Merkle key,
-or a caller-supplied subset root is insufficient. Campaign-fact schema v2 made
-the explicit discovery parent and branch point part of the fact rather than
-reinterpreting the former layout.
+or a caller-supplied subset root is insufficient. The current campaign-fact
+schema v14 binds the explicit discovery parent and branch point.
 
 `CampaignDerived` names the exact source snapshot and policy active in the new
 child. Its successor preserves lineage and every semantic root, changes only
@@ -331,29 +313,16 @@ creation are one owner transaction. Exact retries resolve the first derived
 snapshot from the target history even after later target mutations. They are
 bound to that target's most recent founding derivation edge; a locator inherited
 from an ancestor derived campaign cannot replay as the child ref's own result.
-Campaign-fact schema v3 adds this transition. Schema v4 adds
-`ObservationCredited`, whose owner recomputes both scoped expansion credits and
-the child configuration-to-path membership described in §01.6. Schema v5 adds
-`PinCommandAccepted(PinRequest)`, which binds the caller's command ID, exact
-parent snapshot, configuration, retention tier or removal, and bounded reason
-in one owner-validated transition. Schema v6 adds
-`ObjectiveEvaluationPublished(ObjectiveEvaluationId)`, which makes one exact
-active-policy evaluation of one canonical observation authoritative. Schema v7
-adds branch-request acceptance summaries, schemas v8 and v9 add discovery
-requests and their extended stop conditions, and schema v10 adds terminal
-worker failure. Schema v11 is reserved for `SavepointCaptureRequested`; schema
-v12 is reserved for `SavepointCaptureResolved`. Every older variant retains its
-original version and bytes. A body cannot carry a variant introduced by another
-version, and body/envelope version mismatches fail closed. Historical schema-v2
-`ObservationPublished` successors are
-validated against either their original observation-only delta or the interim
-credit-bearing delta; new publication always uses the unambiguous schema-v4
-owner.
+Campaign facts use schema v14. Every current transition variant has one exact
+encoding under that schema, including observation crediting, pin commands,
+objective publication, branch-request acceptance, discovery, terminal worker
+failure, and savepoint capture. Any other fact schema or a mismatched envelope
+version is rejected before transition validation.
 
 The pin owner resolves command replay before staleness. An exact retry returns
 the first accepted parent/child snapshot pair; reuse of the command ID with a
 different `PinRequest` fails closed. The configuration must already occur in
-the parent's authenticated graph. Acceptance inserts the v5 fact under both
+the parent's authenticated graph. Acceptance inserts the v14 fact under both
 `accounting.command(command_id)` and `pins.configuration(configuration_id)`;
 unpinning writes a `retention = None` tombstone at the same pin key rather than
 deleting historical intent. Imported and restarted histories recompute these
@@ -394,8 +363,10 @@ SavepointCaptureRequestV1 = command_id | expected_snapshot | attempt_id |
 SavepointCaptureResolutionV1 = command_id | expected_snapshot |
                                capture_request_fact_id |
                                ready | canceled | failed | discarded
-CampaignFactV11 = 11:u32be | 18:u8 | SavepointCaptureRequestV1
-CampaignFactV12 = 12:u32be | 19:u8 | SavepointCaptureResolutionV1
+CampaignFactV14(SavepointCaptureRequested) =
+    14:u32be | 18:u8 | SavepointCaptureRequestV1
+CampaignFactV14(SavepointCaptureResolved) =
+    14:u32be | 19:u8 | SavepointCaptureResolutionV1
 ```
 
 The request references an existing immutable attempt and authenticates its exact
@@ -532,13 +503,13 @@ pub struct PlannerCandidateGuidance {
 }
 ```
 
-`PlannerInvocation` schema v2 binds the exact coordinator-served continuation
+The current `PlannerInvocation` schema binds the exact coordinator-served continuation
 page. Positions are strictly increasing after the authenticated `after`
 position and name canonical branch-request bodies in `input_view`. A
 non-complete page contains exactly `limit` positions; `complete` is true only
 when owner recomputation reaches EOF. `input_objects` is the position count and
-`input_bytes` is the checked sum of canonical served request-body bytes. Schema
-v1 invocations are rejected rather than interpreted as having an implicit page.
+`input_bytes` is the checked sum of canonical served request-body bytes. Every
+noncurrent invocation schema is rejected rather than assigned implicit fields.
 
 `input_view` is the complete immutable semantic pre-step basis. Naming only the
 observation root is insufficient because fairness, prior proposals, stop
@@ -554,9 +525,9 @@ match the accepted lists. Accounting is recomputed by the coordinator from
 accepted outputs and measured bounded input execution; a planner's retained
 `usage_claim` is diagnostic only. The coordinator records planner-step,
 invocation-result, and current-head indexes as one exact `coordination_root`
-delta. Schema v4 additionally commits both a
+delta. The sole current schema v4 commits both a
 `crucible.campaign.retained-planner-request` schema-v1 record and the
-domain-separated digest of its exact canonical `PlannerRequestV1` body. The
+domain-separated digest of its exact canonical `PlannerRequestV3` body. The
 retained record is a distinct Policy-kind envelope whose children name the
 stored invocation, direct basis, expected snapshot, and every bundled object;
 import validation decodes that record and recomputes the digest. This makes the
@@ -564,13 +535,11 @@ by-value interpretation bundle auditable even when two requests share one
 `PlannerInvocationId`. Standalone step loading cannot prove the request's
 snapshot precondition and therefore requires the exact owning snapshot. The
 complete layout is registered as
-`crucible.campaign.planner-step` schema v4; v1 through v3 envelopes are rejected
-rather than reinterpreted under the new field order. Typed `PlannerStepId`
-admission is likewise schema-v4-only; historical schema-v3 identities are
-rejected because they lack a current authenticated representation.
+`crucible.campaign.planner-step` schema v4. Noncurrent envelopes and typed IDs
+are rejected rather than reinterpreted under the current field order.
 
 `PlannerCandidateGuidance` is the schema-v2, at-most-64-KiB owner projection
-used by current PUCT engine version 6/state 2. Its exact envelope children are
+used by PUCT engine version 6. Its exact envelope children are
 the input view, active policy, served branch request, and exact choice domain.
 It repeats the offer tuple plus authenticated semantic edge and decomposed PUCT
 statistics so an authority-free planner can validate and score the record using
@@ -579,10 +548,10 @@ guidance envelope as a child. Local acceptance, restart, and imported-snapshot
 validation reconstruct the exact records from the owning snapshot; a
 structurally canonical substituted score, semantic domain, reward count, or
 offer tuple fails closed.
-Schema v2 includes `objective_reward_micros` after `novelty_events`; it is the
-owner-derived signed scalar-objective sum for that edge. Normal body, envelope,
-and typed-ID admission accepts only schema v2. Schema-v1 guidance is rejected
-because it lacks a current authenticated representation.
+The current guidance schema includes `objective_reward_micros` after
+`novelty_events`; it is the
+owner-derived signed scalar-objective sum for that edge. Guidance with any
+other schema is rejected rather than reinterpreted with an implicit reward.
 
 `ContinueScan` is accepted only for a non-complete served page and its cursor
 must equal that page's last position. `NoWork` is accepted only for a complete
@@ -612,7 +581,7 @@ pub struct BranchPoint {
 }
 
 pub struct BranchRequest {
-    pub schema_version: u32, // v2 explicit/uniform, v3 modeled finite, v4 modeled generated, v5 scenario default, v6 extended stop, v7 finite statistical, v8 SMC, v9 observation stop
+    pub schema_version: u32, // exact current schema v9
     pub branch_point: BranchPointId,
     pub parent: ConfigurationArtifactId,
     pub opportunity: ChoiceOpportunityId,
@@ -707,7 +676,7 @@ pub struct BranchEdge {
 }
 
 pub struct Attempt {
-    pub schema_version: u32, // current semantic shapes: v1-v4 and v7-v8
+    pub schema_version: u32, // exact current schema v8
     pub start: AttemptStart,
     pub path: BranchPathId,
     pub stop: StopCondition,
@@ -796,7 +765,7 @@ pub enum AttemptAdmissionRole {
 }
 
 pub struct Observation {
-    pub schema_version: u32, // v1-v4 base, v5-v8 extended stop, v9-v12 observation stop
+    pub schema_version: u32, // exact current schema v12
     pub attempt: AttemptId,
     pub child: ConfigurationId,
     pub child_content: ConfigurationArtifactId,
@@ -806,19 +775,19 @@ pub struct Observation {
     pub properties: PropertyVerdictSetId,
     pub coverage: CoverageProjectionId,
     pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
-    pub produced_selections: CanonicalSet<SelectionId>, // v3/v4/v7/v8/v11/v12
+    pub produced_selections: CanonicalSet<SelectionId>,
 }
 ```
 
-`Observation` schemas v1 and v2 carry, respectively, ordinary stop outcomes and
-`ScenarioFailure(Vec<String>)` without produced selections. Schemas v3 and v4
-carry the same two shapes plus the bounded canonical set of selections produced
-while execution continued through choices discovered by that attempt. Each
-selection must resolve to exactly one discovered opportunity, and no opportunity
-may be selected twice. The selection IDs are envelope children, so the accepted
-observation roots the complete replay closure. The combined discovered-opportunity
-and produced-selection count cannot exceed the envelope's 65,530 variable-child
-allowance.
+Observation schema v12 is the sole current encoding. It carries the current
+stop outcome plus the bounded canonical set of selections produced while execution
+continued through choices discovered by that attempt. Each selection must
+resolve to exactly one of the observation's discovered opportunities, and no
+opportunity may be selected twice. The selection IDs are envelope children, so
+the accepted observation roots the complete replay closure. The combined
+discovered-opportunity and produced-selection count cannot exceed the
+envelope's 65,530 variable-child allowance. Any other observation schema is
+rejected.
 
 Stop-condition tags 5 and 6 add `ExecutionQuanta` and
 `VirtualTimeOrExecutionQuanta`. Both quantum bounds are absolute scheduler
@@ -832,72 +801,40 @@ may be earlier and is not a substitute. Terminal and assertion outcomes retain
 precedence. When virtual time and execution quanta first cross on the same
 scheduler quantum, virtual time is the reporting priority.
 
-These stop tags require versioned enclosing records. `Attempt` v1 carries a
-`Discover` or `Branch` start with the original stop set; v2 carries those starts
-with an extended stop. V3 adds `AfterAttempt` without modeled continuation
-input, and v4 carries an authenticated observation stop for any start. V7 adds
-an `AfterAttempt` scheduler reseed or bounded override input, while v8 combines
-that input with an observation stop. Versions v5 and v6 are unsupported.
+These stop tags occur only in the current enclosing records: `Attempt` v8,
+`BranchRequest` v9, `CampaignFact` v14, `Observation` v12, and discovery-service
+request v3. A noncurrent enclosing schema is rejected before interpreting the
+stop body.
 
-`BranchRequest` v6 carries extended stops and v9 carries observation stops. A
-`DiscoveryRequested` campaign fact uses v9 for the extended-stop request shape
-and v14 for observation-stop requests. `Observation` adds
-four to the matching v1-through-v4 shape for extended stops and eight for
-authenticated observation-stop proofs. The observation-stop mapping uses v9
-and v10 without produced selections and v11 and v12 with them. Current
-production emits v9 or v11 because v10/v12 occupy the matrix's
-scenario-failure positions and fail closed: those outcomes do not carry
-reached-stop semantics. Extended stops likewise emit v5 or v7; v6/v8 occupy
-the incompatible scenario-failure positions.
+`BranchRequest` schema v9 encodes uniform finite, generated, explicitly
+weighted finite, modeled finite, modeled generated, statistical finite, and SMC
+sources with distinct tags. Finite mass maps are nonempty, contain at most
+4,096 entries, and name exactly the finite value set. A modeled ID must equal
+the referenced opportunity's `model_prior`; an absent or different model fails
+before request publication or import acceptance. Generated sources retain the
+generator envelope as a child and validate its implementation contract.
+`ScenarioDefault(CampaignPolicyId)` is valid only with the exact active policy,
+an enabled `admits_scenario_defaults` bit, an unweighted finite singleton equal
+to the opportunity default, and a one-proposal/one-attempt budget.
 
-Retired `BranchRequest` schema v1 encoded uniform finite and generated sources
-without a distinct current semantic shape. Normal admission rejects v1 because
-no authenticated translation exists. Current schema v2 encodes those
-sources and adds tag 2 for an explicitly weighted finite source encoded as a canonical map
-from value to positive `u64` raw weight. Schema v3 adds tag 3, followed by one
-`ProbabilityModelId` and a canonical value-to-positive-`u64` map, for finite
-masses resolved by the execution-model adapter. The modeled ID must equal the
-referenced opportunity's `model_prior`; an absent or different model fails
-before request publication or import acceptance. Each map is nonempty,
-contains at most 4,096 entries, and its keys are exactly the finite value set.
-Absolute mass scale is immaterial; the owner normalizes masses only when
-constructing exact planner guidance. New uniform, generated, and explicitly
-weighted requests retain schema v2 and its established keyed generator
-streams; a newly authored modeled finite request uses v3. A modeled finite
-source is invalid before v3. Schema v4 adds
-candidate-source tag 4 followed by one `ProbabilityModelId` and one
-`CandidateGeneratorSpecId`. The generator is an envelope child, and both its
-exact implementation contract and the opportunity-model equality are
-owner-validated before publication, restart, or import acceptance. New modeled
-generated requests use v4; current v2 and v3 bodies and envelope identities
-remain unchanged. Schema v5 adds branch-request-cause tag 4 for
-`ScenarioDefault(CampaignPolicyId)`. It is valid only with the exact active
-policy, an enabled `admits_scenario_defaults` policy bit, an unweighted finite
-singleton equal to the referenced opportunity's declared default, and a
-one-proposal/one-attempt budget. Every other cause remains on its established
-v2 through v4 writer schema and is invalid in v5. V2 through v4 bodies and
-envelope identities remain unchanged.
+Branch requests use schema v9. The current encoding admits the complete current
+source, cause, budget, and stop-condition vocabulary. Any other request schema
+is rejected before those semantics are validated.
 
-Schema v6 accepts either new execution-quanta stop condition with every source
-and cause shape otherwise legal in v2 through v5. A v6 body carrying an older
-stop, or an older body carrying a new stop, is invalid. Source, cause, and
-budget semantics remain unchanged.
-
-Schema v7 carries a statistical finite source, and v8 carries a statistical SMC
-source. Both retain exact positive target and proposal masses and their checked
-totals. Schema v9 carries any otherwise legal source and cause with an
-`Observation` or `NextChoiceOrExecutionQuanta` stop. A body whose source,
-cause, or stop does not match its schema fails closed.
+The current request schema retains exact positive target and proposal masses
+and their checked totals for statistical sources. It also admits any otherwise
+legal source and cause with an `Observation` or
+`NextChoiceOrExecutionQuanta` stop. A body whose source, cause, or stop does
+not match the current schema fails closed.
 
 `BranchPath` schema version 2 retains each `BranchPointId` beside its
 non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit
 for every ancestor without an in-memory MCTS stack or a reverse hash lookup.
-Current runtime admission accepts only version 2. Historical edge-only paths
-are rejected because they lack branch-point evidence. A path must
-end in the exact `(BranchPointId, BranchEdgeId)` selected by its request. Its
-prefix is empty for genesis; for a non-genesis parent, the prefix identity must
-be a member of that exact parent configuration's authenticated nested path set
-in the source snapshot's observation root.
+The current admission owner accepts only version-2 paths. A version-2 path must
+end in the exact `(BranchPointId, BranchEdgeId)` selected
+by its request. Its prefix is empty for genesis; for a non-genesis parent, the
+prefix identity must be a member of that exact parent configuration's
+authenticated nested path set in the source snapshot's observation root.
 Canonical `ObservationCredited` incorporation adds the observation's complete
 path to its exact child configuration set. The nested set retains every path to
 a convergent configuration rather than selecting one graph parent. Direct
@@ -942,9 +879,9 @@ Planner cause names policy and observation basis directly rather than the
 acyclic while preserving the full causal chain.
 
 `ScenarioDefault` is distinct from adaptive planner and exhaustive-policy
-causes. It records the compatibility path that follows exactly one
-scenario-declared default and cannot widen that choice. Its policy child makes
-default admission replayable and fail-closed after import.
+causes. It follows exactly one scenario-declared default and cannot widen that
+choice. Its policy child makes default admission replayable and fail-closed
+after import.
 
 `AttemptId` is the digest of the canonical `Attempt` semantic inputs. Executor,
 reservation generation, retry number, start time, preferred materialization,
@@ -957,13 +894,9 @@ retroactively change estimator eligibility. A repeated attempt may produce
 identical bytes and deduplicate. If it does not, the replay oracle localizes a
 determinism defect.
 
-New `AttemptAdmission` records use schema v3 and carry the exact campaign policy
-whose retention rules govern the admitted execution and every additional
-cause. The policy is an authenticated envelope child. This direct binding
-prevents a later policy activation from changing whether an admitted attempt
-must retain its completion, exact checkpoints, findings, or replay evidence.
-Normal admission accepts schema v3 only, and a v3 body without its explicit
-policy is invalid. Schema-v1/v2 records are rejected.
+`AttemptAdmission` schema v3 is the sole current encoding. It binds every
+execution basis or additional cause to the policy that governs its retention.
+Any other body or envelope version is rejected.
 
 `AttemptStart::Discover` is the bootstrap form. It realizes a configuration
 until the next pending choice or terminal outcome without pretending a choice
@@ -1058,17 +991,14 @@ corresponding projection. The projection body names its request as a typed
 envelope child, so closure traversal retains the authoritative request without
 store listing.
 
-New genesis also anchors `crucible.campaign.planner-scan-index.v1` under the
+New genesis also anchors `crucible.campaign.planner-scan-index.v2` under the
 exploration root. This separate ordered index contains every request, including
-closed and currently unaffordable continuations. Three nested Merkle levels
-order positions by semantic branch-point hash, request schema version, and
-request content digest; leaf values are the exact request content IDs. Schema
-keys are the big-endian `u32` version followed by 28 zero bytes. This preserves
-`PlanningScanPosition` ordering across current request schemas 2 through 9. Request
-transitions update the index atomically, and cold validation recomputes every
-delta. Other transitions preserve it. A current lineage cannot drop the anchor
-or omit positions; normal admission fails closed when authenticated index
-evidence is absent.
+closed and currently unaffordable continuations. Two nested Merkle levels order
+positions by semantic branch-point hash and request content digest; leaf values
+are the exact current request content IDs. Request transitions update the index
+atomically, and cold validation recomputes every delta. Other transitions
+preserve it. An indexed lineage cannot drop or omit positions. Current histories
+require the anchor.
 
 Planner page construction reads only the requested ordered window plus one
 lookahead position. Invocation closure validation reuses exact roots already
@@ -1086,22 +1016,20 @@ budget and source state. Generated requests start and remain `Open` at this
 checkpoint because deterministic generated-source enumeration and feedback
 ownership remain an implementation-plan gate.
 
-Normal repository reads and mutations reject schema-v2 snapshots and any
-snapshot without the frontier-index anchor.
+Snapshots without the frontier-index anchor are rejected before ordinary
+runtime admission.
 
 `FeedbackWait` is constructed only when `completed_visits < required_visits`;
 its fields are private and strict decoding enforces the same invariant. Reaching
 the threshold produces `Ready` rather than an already-eligible waiting value.
 This changes no canonical wire bytes.
 
-Schema version 2 binds every page to an authenticated campaign snapshot and its
+The current expansion-state schema binds every page to an authenticated
+campaign snapshot and its
 complete planning view. The request, proposal, and admission roots are
 homogeneous branch-point projections rebuilt by the owner from the view's
 authoritative exploration and accounting roots. They are not caller-selected
-subsets. The observation root is the exact view observation root. Schema
-version 1 has no compatibility interpretation after admission became a
-required derivation input and is rejected at both the record body and envelope
-layers.
+subsets. The observation root is the exact view observation root. Every noncurrent record body or envelope is rejected without reinterpretation.
 
 A finite source's next cursor is the first unissued value in canonical request
 order. A proposal without an admission disposition leaves the continuation

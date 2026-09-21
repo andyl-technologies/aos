@@ -4,11 +4,14 @@
 #![allow(clippy::expect_used)]
 
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crucible::ContentHash;
 use crucible_api::ProductionVmNodeLauncher;
+use crucible_campaign::ExactCheckpointId;
+use crucible_cas::content_store::{ContentId, ObjectKind};
 
 use super::*;
 
@@ -19,6 +22,7 @@ struct HostCounters {
     signals: AtomicUsize,
     finishes: AtomicUsize,
     quarantines: AtomicUsize,
+    selected_roots: Mutex<Vec<ContentHash>>,
 }
 
 struct FakeHostFactory {
@@ -36,26 +40,122 @@ impl QemuAttemptHostResourceFactory for FakeHostFactory {
         &mut self,
         _resources: AttemptResourceLimits,
     ) -> Result<Self::Owner, QemuVmRealizationError> {
+        self.begin_with_root(None)
+    }
+}
+
+impl FakeHostFactory {
+    fn begin_with_root(
+        &mut self,
+        exact_checkpoint_root: Option<ContentHash>,
+    ) -> Result<FakeHostOwner, QemuVmRealizationError> {
         self.counters.begins.fetch_add(1, Ordering::SeqCst);
         let (cgroup_procs, _cgroup_peer) =
             UnixStream::pair().expect("cgroup process contract descriptors");
         let (cancellation_event, _cancellation_peer) =
             UnixStream::pair().expect("cancellation process contract descriptors");
+        if let Some(root) = exact_checkpoint_root {
+            self.counters
+                .selected_roots
+                .lock()
+                .expect("selected-root fixture lock")
+                .push(root);
+        }
+        let process_contract = QemuChildProcessContract::from_unvalidated_test_descriptors(
+            cgroup_procs.into(),
+            cancellation_event.into(),
+            self.installed.maximum_vcpus(),
+            self.installed.maximum_resident_bytes(),
+            self.installed.maximum_disk_bytes(),
+        );
         Ok(FakeHostOwner {
             installed: self.installed,
-            process_contract: QemuChildProcessContract::from_unvalidated_test_descriptors(
-                cgroup_procs.into(),
-                cancellation_event.into(),
-                self.installed.maximum_vcpus(),
-                self.installed.maximum_resident_bytes(),
-                self.installed.maximum_disk_bytes(),
-            ),
+            process_contract,
             counters: Arc::clone(&self.counters),
             signal_error: self.signal_error,
             signal_panics: self.signal_panics,
             finish_error: self.finish_error,
             terminal: false,
         })
+    }
+}
+
+struct RetrySelectedHostFactory {
+    host: FakeHostFactory,
+    fail_next_selected_begin: bool,
+}
+
+impl QemuAttemptHostResourceFactory for RetrySelectedHostFactory {
+    type Owner = FakeHostOwner;
+
+    fn begin(
+        &mut self,
+        resources: AttemptResourceLimits,
+    ) -> Result<Self::Owner, QemuVmRealizationError> {
+        self.host.begin(resources)
+    }
+}
+
+impl QemuAttemptSelectedHostResourceFactory for RetrySelectedHostFactory {
+    fn begin_selected(
+        &mut self,
+        _resources: AttemptResourceLimits,
+        selected_checkpoint: Option<SelectedExactCheckpointRoot>,
+    ) -> Result<
+        (Self::Owner, Option<SelectedExactCheckpointRoot>),
+        QemuAttemptResourceGuardBeginFailure,
+    > {
+        if self.fail_next_selected_begin {
+            self.fail_next_selected_begin = false;
+            return Err(
+                QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                    QemuVmRealizationError::ExecutorUnavailable {
+                        operation: "begin exact test host resources",
+                        message: String::from("injected clean resource-allocation failure"),
+                    },
+                    selected_checkpoint,
+                ),
+            );
+        }
+
+        let exact_root = selected_checkpoint
+            .as_ref()
+            .map(SelectedExactCheckpointRoot::process_contract_root);
+        match self.host.begin_with_root(exact_root) {
+            Ok(owner) => Ok((owner, selected_checkpoint)),
+            Err(error) => Err(
+                QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                    error,
+                    selected_checkpoint,
+                ),
+            ),
+        }
+    }
+}
+
+impl QemuAttemptSelectedHostResourceFactory for FakeHostFactory {
+    fn begin_selected(
+        &mut self,
+        resources: AttemptResourceLimits,
+        selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+    ) -> Result<
+        (Self::Owner, Option<SelectedExactCheckpointRoot>),
+        QemuAttemptResourceGuardBeginFailure,
+    > {
+        if selected_checkpoint.is_some() {
+            return Err(
+                QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+                    QemuVmRealizationError::Executor {
+                        operation: "begin fake host resources",
+                        message: String::from("fake host cannot preseal an exact checkpoint root"),
+                    },
+                    selected_checkpoint,
+                ),
+            );
+        }
+        self.begin(resources)
+            .map(|owner| (owner, None))
+            .map_err(QemuAttemptResourceGuardBeginFailure::after_checkpoint_claim)
     }
 }
 
@@ -166,6 +266,14 @@ fn resources(quanta: u64) -> AttemptResourceLimits {
         .expect("attempt resources")
 }
 
+fn selected_checkpoint(label: &[u8]) -> (ExactCheckpointId, SelectedExactCheckpointRoot) {
+    let checkpoint =
+        ExactCheckpointId::try_from(ContentId::for_bytes(ObjectKind::ExactManifest, 4, label))
+            .expect("build selected exact checkpoint ID");
+    let selected = SelectedExactCheckpointRoot::from_test_checkpoint(checkpoint);
+    (checkpoint, selected)
+}
+
 fn factory(
     installed: AttemptResourceLimits,
     counters: Arc<HostCounters>,
@@ -207,13 +315,13 @@ fn fixed_workers_share_one_host_allocator_without_sharing_attempt_owners() {
 
     let first = thread::spawn(move || {
         let mut guard = first
-            .begin(resources, ExecutionCancellation::default())
+            .begin(resources, ExecutionCancellation::default(), None)
             .expect("first shared guard");
         guard.finish().expect("finish first shared guard");
     });
     let second = thread::spawn(move || {
         let mut guard = second
-            .begin(resources, ExecutionCancellation::default())
+            .begin(resources, ExecutionCancellation::default(), None)
             .expect("second shared guard");
         guard.finish().expect("finish second shared guard");
     });
@@ -226,13 +334,145 @@ fn fixed_workers_share_one_host_allocator_without_sharing_attempt_owners() {
 }
 
 #[test]
+fn clean_selected_resource_failure_returns_the_one_shot_claim_for_retry() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = ComposedQemuAttemptResourceGuardFactory::new(RetrySelectedHostFactory {
+        host: FakeHostFactory {
+            installed: resources,
+            counters: Arc::clone(&counters),
+            signal_error: false,
+            signal_panics: false,
+            finish_error: false,
+        },
+        fail_next_selected_begin: true,
+    });
+    let (checkpoint, selected) = selected_checkpoint(b"retry selected exact checkpoint");
+
+    let failure = match factory.begin(resources, ExecutionCancellation::default(), Some(selected)) {
+        Ok(_) => panic!("injected first allocation failure unexpectedly succeeded"),
+        Err(failure) => failure,
+    };
+    let (error, selected) = failure.into_parts();
+    assert!(matches!(
+        error,
+        QemuVmRealizationError::ExecutorUnavailable { .. }
+    ));
+    let selected = selected.expect("clean failure retains selected-root authority");
+    assert!(selected.authorizes(checkpoint));
+
+    let mut guard = factory
+        .begin(resources, ExecutionCancellation::default(), Some(selected))
+        .expect("retry installs the exact presealed resource guard");
+    guard.finish().expect("finish retried exact guard");
+
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn selected_resource_cleanup_failure_spends_the_claim_and_quarantines() {
+    let requested = resources(2);
+    let installed = resources(3);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = ComposedQemuAttemptResourceGuardFactory::new(RetrySelectedHostFactory {
+        host: FakeHostFactory {
+            installed,
+            counters: Arc::clone(&counters),
+            signal_error: false,
+            signal_panics: false,
+            finish_error: true,
+        },
+        fail_next_selected_begin: false,
+    });
+    let (_, selected) = selected_checkpoint(b"quarantined selected exact checkpoint");
+
+    let failure = match factory.begin(requested, ExecutionCancellation::default(), Some(selected)) {
+        Ok(_) => panic!("mismatched resource installation unexpectedly succeeded"),
+        Err(failure) => failure,
+    };
+    let (error, selected) = failure.into_parts();
+
+    assert!(matches!(
+        error,
+        QemuVmRealizationError::ReapQuarantined { .. }
+    ));
+    assert!(
+        selected.is_none(),
+        "quarantined ownership must consume the selected-root claim"
+    );
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn replay_targets_share_one_selected_guard_and_quantum_ceiling() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = ComposedQemuAttemptResourceGuardFactory::new(RetrySelectedHostFactory {
+        host: FakeHostFactory {
+            installed: resources,
+            counters: Arc::clone(&counters),
+            signal_error: false,
+            signal_panics: false,
+            finish_error: false,
+        },
+        fail_next_selected_begin: false,
+    });
+    let (_, selected) = selected_checkpoint(b"aggregate replay exact checkpoint");
+    let selected_root = selected.process_contract_root();
+    let mut guard = factory
+        .begin(resources, ExecutionCancellation::default(), Some(selected))
+        .expect("install one aggregate replay guard");
+
+    let first_contract = guard
+        .child_process_contract()
+        .expect("first replay target contract")
+        as *const QemuChildProcessContract;
+    guard
+        .charge_execution_quantum()
+        .expect("charge first replay target");
+    let second_contract = guard
+        .child_process_contract()
+        .expect("second replay target contract")
+        as *const QemuChildProcessContract;
+    guard
+        .charge_execution_quantum()
+        .expect("charge second replay target");
+
+    assert_eq!(first_contract, second_contract);
+    assert!(matches!(
+        guard.charge_execution_quantum(),
+        Err(QemuVmRealizationError::Executor {
+            operation: "charge QEMU execution quantum",
+            ..
+        })
+    ));
+    guard.finish().expect("finish aggregate replay guard");
+
+    assert_eq!(
+        counters
+            .selected_roots
+            .lock()
+            .expect("selected-root fixture lock")
+            .as_slice(),
+        &[selected_root]
+    );
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn cancellation_signals_process_synchronously_and_unregisters_on_finish() {
     let resources = resources(2);
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let cancellation = ExecutionCancellation::default();
     let mut guard = factory
-        .begin(resources, cancellation.clone())
+        .begin(resources, cancellation.clone(), None)
         .expect("composed resource guard");
 
     cancellation.cancel_for_test();
@@ -257,9 +497,9 @@ fn cancellation_that_wins_before_begin_signals_and_rolls_back() {
     let cancellation = ExecutionCancellation::default();
     cancellation.cancel_for_test();
 
-    let error = match factory.begin(resources, cancellation) {
+    let error = match factory.begin(resources, cancellation, None) {
         Ok(_) => panic!("pre-canceled guard unexpectedly installed"),
-        Err(error) => error,
+        Err(failure) => failure.into_parts().0,
     };
     assert!(matches!(error, QemuVmRealizationError::Canceled { .. }));
     assert_eq!(counters.signals.load(Ordering::SeqCst), 1);
@@ -273,7 +513,7 @@ fn guard_charges_the_exact_quantum_ceiling() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, counters);
     let mut guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
 
     assert!(guard.charge_execution_quantum().is_ok());
@@ -291,7 +531,7 @@ fn production_lifecycle_launcher_charges_the_attempt_quantum_ceiling() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, counters);
     let guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
     let owner =
         QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation resource owner");
@@ -317,7 +557,7 @@ fn production_lifecycle_launcher_preserves_cancellation_class() {
     let mut factory = factory(resources, counters);
     let cancellation = ExecutionCancellation::default();
     let guard = factory
-        .begin(resources, cancellation.clone())
+        .begin(resources, cancellation.clone(), None)
         .expect("composed resource guard");
     let owner =
         QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation resource owner");
@@ -348,8 +588,8 @@ fn mismatched_host_limits_are_released_before_rejection() {
     let mut factory = factory(installed, Arc::clone(&counters));
 
     assert!(matches!(
-        factory.begin(requested, ExecutionCancellation::default()),
-        Err(QemuVmRealizationError::Executor { .. })
+        factory.begin(requested, ExecutionCancellation::default(), None),
+        Err(QemuAttemptResourceGuardBeginFailure { .. })
     ));
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
@@ -363,12 +603,12 @@ fn one_execution_cannot_install_two_process_hooks() {
     let mut first_factory = factory(resources, Arc::clone(&counters));
     let mut second_factory = factory(resources, Arc::clone(&counters));
     let mut first = first_factory
-        .begin(resources, cancellation.clone())
+        .begin(resources, cancellation.clone(), None)
         .expect("first resource guard");
 
     assert!(matches!(
-        second_factory.begin(resources, cancellation),
-        Err(QemuVmRealizationError::Executor { .. })
+        second_factory.begin(resources, cancellation, None),
+        Err(QemuAttemptResourceGuardBeginFailure { .. })
     ));
     assert_eq!(counters.begins.load(Ordering::SeqCst), 2);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
@@ -389,7 +629,7 @@ fn cancellation_signal_failure_is_a_terminal_operational_error() {
     });
     let cancellation = ExecutionCancellation::default();
     let mut guard = factory
-        .begin(resources, cancellation.clone())
+        .begin(resources, cancellation.clone(), None)
         .expect("resource guard before cancellation");
 
     cancellation.cancel_for_test();
@@ -415,7 +655,7 @@ fn cancellation_signal_panic_is_contained_and_reported() {
     });
     let cancellation = ExecutionCancellation::default();
     let mut guard = factory
-        .begin(resources, cancellation.clone())
+        .begin(resources, cancellation.clone(), None)
         .expect("resource guard before cancellation");
 
     cancellation.cancel_for_test();
@@ -440,7 +680,7 @@ fn failed_reap_quarantines_process_and_filesystem_authority_once() {
         finish_error: true,
     });
     let mut guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("resource guard");
 
     assert!(matches!(
@@ -458,7 +698,7 @@ fn dropping_a_live_guard_transfers_all_host_resources_to_quarantine() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("resource guard");
 
     drop(guard);
@@ -482,7 +722,7 @@ fn generation_owner_releases_only_after_exact_monotone_leases_finish() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
     let mut owner =
         QemuAttemptGenerationResourceOwner::new(guard, 2).expect("bounded generation owner");
@@ -527,7 +767,7 @@ fn abandoned_generation_lease_permanently_quarantines_aggregate_guard() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
     let mut owner =
         QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
@@ -552,7 +792,7 @@ fn no_process_abort_preserves_the_exact_generation_for_retry() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
     let mut owner =
         QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
@@ -580,7 +820,7 @@ fn aborting_a_replacement_restores_the_previous_generation_fence() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
     let mut owner =
         QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
@@ -612,7 +852,7 @@ fn active_generation_prevents_aggregate_release_without_losing_lease_authority()
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let guard = factory
-        .begin(resources, ExecutionCancellation::default())
+        .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
     let mut owner =
         QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");

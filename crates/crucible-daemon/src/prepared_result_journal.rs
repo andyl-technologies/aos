@@ -8,16 +8,13 @@
 //! <namespace>/<execution-key-digest>/result-v2
 //! <namespace>/<execution-key-digest>/state-v2
 //! <namespace>/.staged-<execution-key-digest>/...
-//! <namespace>/.retired-<execution-key-digest>/...
-//! <namespace>/<execution-key-digest>/.<legacy-name>.removing-v1-<device>-<inode>
-//! <namespace>/.<staged-or-retired-name>.removing-v1-<device>-<inode>/
-//!   .orphan-cleanup-v1.json
-//!   .<owned-file>.removing-v1-<device>-<inode>
 //! ```
 //!
 //! The result contains the complete typed observation/finding closure. State
 //! binds its hash and exact publication IDs to the lineage, attempt, and
-//! versioned execution scope. State is published last. A visible directory
+//! versioned execution scope. The complete pair remains hidden until the
+//! operational ledger grants `Publishing`, then one rename makes it visible.
+//! A visible directory
 //! without both authenticated files is incomplete and fails closed; recovery
 //! must inspect the operational ledger before deciding whether such a pre-stage
 //! orphan may be removed.
@@ -31,99 +28,108 @@
 //! ```
 //!
 //! State is bounded at 16 KiB. The result has both the format ceiling and the
-//! smaller operational ceiling authenticated in state. Runtime opens accept
-//! only the current v2 file pair; legacy conversion is an explicit offline
-//! operation. Zero-length migration tombstones remain terminal metadata and
-//! are admitted only when their exact name and inode are sealed by the
-//! completed prepared-result rewrite receipt. Normal orphan cleanup similarly
-//! retains one terminal directory containing a write-once authenticated cleanup
-//! receipt and the zero-length children sealed by that receipt.
-//! The retained runtime-owner lock gives one startup-inventoried authority
-//! exclusive ownership of the namespace for the daemon lifetime.
+//! smaller operational ceiling authenticated in state. Noncurrent file pairs fail
+//! closed at ordinary journal open.
 
 use std::fs;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use crucible_campaign::{
-    AttemptExecutionScope, AttemptId, CampaignHash, CampaignLineageId, ExecutionId,
-};
+use crucible_campaign::{AttemptExecutionScope, ExecutionId};
 
-use crate::crucible_artifact::is_current_prepared_result_payload;
 use crate::owned_advisory_lock::OwnedAdvisoryLock;
 use crate::{
-    AssignmentLedger, AssignmentLedgerError, AttemptExecutionKey, DirectoryAssignmentLedger,
-    MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
+    AttemptExecutionKey, MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
     PreparedSemanticResultCodecError,
 };
 
 const JOURNAL_LOCK_PREFIX: &str = ".lock-";
 const JOURNAL_OWNER_LOCK: &str = ".lock-runtime-owner";
 const JOURNAL_STAGED_PREFIX: &str = ".staged-";
-const JOURNAL_RETIRED_PREFIX: &str = ".retired-";
 const JOURNAL_RESULT_FILE: &str = "result-v2";
 const JOURNAL_STATE_FILE: &str = "state-v2";
-const ORPHAN_CLEANUP_RECEIPT: &str = ".orphan-cleanup-v1.json";
-const ORPHAN_CLEANUP_RECEIPT_PENDING: &str = "..orphan-cleanup-v1.json.pending";
-const ORPHAN_CLEANUP_OUTPUT_SCHEMA: &str = "crucible.executor.prepared-result-orphan-cleanup.v1";
 const JOURNAL_STATE_MAGIC_V2: &[u8] = b"crucible.executor.prepared-result-journal-state.v2\0";
 const JOURNAL_STATE_HASH_DOMAIN_V2: &str = "crucible.executor.prepared-result-journal-state.v2";
 const JOURNAL_MEASUREMENT_EVIDENCE_HASH_DOMAIN: &str =
     "crucible.executor.prepared-result-journal-measurement-evidence.v1";
-const PREPARED_RESULT_LEDGER_BINDING_DOMAIN: &str =
-    "crucible.executor.prepared-result-ledger-binding.v1";
 const MAX_JOURNAL_STATE_BYTES: usize = 16 * 1024;
-const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 6;
+const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 4;
+const MAX_RUNTIME_JOURNAL_ENTRIES: usize = 1_000_000;
 
-/// Startup-validated authority for one prepared-result journal namespace.
+static JOURNAL_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Descriptor-bound process authority for one prepared-result namespace.
 ///
-/// Opening this authority performs the single bounded inventory required before
-/// normal runtime work. Clones retain the same anchored directory and terminal
-/// inventory; journal operations do not reopen or rescan the namespace.
+/// Construction acquires the namespace's single-owner lease and validates its
+/// complete current-format inventory before any worker can use it.
 #[derive(Clone, Debug)]
-pub(crate) struct PreparedResultJournalNamespace {
-    runtime: Arc<RuntimeNamespace>,
+pub struct PreparedResultJournalNamespace {
+    runtime: Arc<PreparedResultJournalRuntime>,
+}
+
+#[derive(Debug)]
+struct PreparedResultJournalRuntime {
+    directory: crate::anchored_fs::AnchoredDirectory,
+    owner_lock: OwnedAdvisoryLock,
 }
 
 impl PreparedResultJournalNamespace {
-    /// Opens, authenticates, and completely inventories an existing namespace.
+    /// Opens and validates one exact v2/v6 runtime namespace.
     ///
     /// # Errors
     ///
-    /// Returns [`PreparedResultJournalError`] when the path is not an ordinary
-    /// directory, a migration is active, or the bounded inventory contains an
-    /// incomplete, legacy, malformed, or unauthenticated entry.
-    pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self, PreparedResultJournalError> {
+    /// Returns [`PreparedResultJournalError`] if the directory or owner lock is
+    /// replaced, another process owns it, or any entry is malformed, unsupported,
+    /// unbounded, or outside the current journal layout.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, PreparedResultJournalError> {
         let path = path.as_ref();
         validate_namespace(path)?;
-        let path = fs::canonicalize(path)
+        let canonical = fs::canonicalize(path)
             .map_err(|source| io_error("canonicalize-journal-namespace", path, source))?;
-        let guard =
-            crate::anchored_fs::AnchoredDirectory::new(path).map_err(migration_guard_error)?;
-        reject_active_migration_guard(&guard)?;
-        let owner_lock = acquire_runtime_owner_lock(&guard)?;
-        let terminal_orphans = reject_unfenced_migration_entries(&guard)?;
-        #[cfg(test)]
-        run_journal_race_hook();
-        guard.verify_path_binding().map_err(migration_guard_error)?;
+        let directory = crate::anchored_fs::AnchoredDirectory::open(canonical)
+            .map_err(|source| anchored_journal_error(source, "open-journal-namespace"))?;
+        let lock_path = directory.path().join(JOURNAL_OWNER_LOCK);
+        let lock = directory
+            .open_or_create_regular(&lock_path, "open-journal-owner-lock")
+            .map_err(|source| anchored_journal_error(source, "open-journal-owner-lock"))?;
+        let owner_lock = OwnedAdvisoryLock::try_exclusive_bound(lock)
+            .map_err(|source| anchored_journal_error(source, "lock-journal-namespace"))?;
+        validate_runtime_namespace(&directory)?;
+        directory
+            .verify_path_binding()
+            .map_err(|source| anchored_journal_error(source, "verify-journal-namespace"))?;
 
         Ok(Self {
-            runtime: Arc::new(RuntimeNamespace {
-                guard,
-                _owner_lock: owner_lock,
-                terminal_orphans: Mutex::new(terminal_orphans),
+            runtime: Arc::new(PreparedResultJournalRuntime {
+                directory,
+                owner_lock,
             }),
         })
+    }
+
+    fn root(&self) -> PathBuf {
+        self.runtime.directory.path().to_owned()
+    }
+
+    fn verify(&self) -> Result<(), PreparedResultJournalError> {
+        self.runtime
+            .owner_lock
+            .verify_path_binding()
+            .map_err(|source| anchored_journal_error(source, "verify-journal-owner-lock"))?;
+        self.runtime
+            .directory
+            .verify_path_binding()
+            .map_err(|source| anchored_journal_error(source, "verify-journal-namespace"))
     }
 }
 
 /// Outcome of idempotently creating one prepared-result journal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PreparedResultJournalCreateDisposition {
+pub enum PreparedResultJournalCreateDisposition {
     /// This call durably created the exact journal.
     Created,
     /// The exact journal already existed and was reopened.
@@ -132,36 +138,25 @@ pub(crate) enum PreparedResultJournalCreateDisposition {
 
 /// Bounded outcome of a ledger-authorized orphan cleanup.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PreparedResultJournalCleanupDisposition {
-    /// Whether a live staging name was retired into authenticated terminal state.
+pub struct PreparedResultJournalCleanupDisposition {
+    /// Whether an incomplete visible directory was removed.
+    pub visible_removed: bool,
+    /// Whether a pre-publication staging directory was removed.
     pub staged_removed: bool,
-    /// Whether a live retired name was retired into authenticated terminal state.
-    pub retired_removed: bool,
-}
-
-/// Bounded result of an explicit prepared-result journal migration.
-#[derive(Debug)]
-pub(crate) struct PreparedResultJournalMigrationSummary {
-    /// Number of authenticated visible journals examined.
-    pub journals: usize,
-    /// Number of legacy journals converted or durably finalized.
-    pub migrated: usize,
-    /// Pinned durable prepared-result rewrite receipt.
-    pub(crate) receipt: crate::operational_state_migration::receipt::PhaseReceipt,
 }
 
 /// Exclusive authenticated owner of one prepared semantic result journal.
 #[derive(Debug)]
-pub(crate) struct DirectoryPreparedResultJournal {
+pub struct DirectoryPreparedResultJournal {
+    namespace: PreparedResultJournalNamespace,
     root: PathBuf,
-    root_guard: crate::anchored_fs::AnchoredDirectory,
-    namespace_guard: Arc<RuntimeNamespace>,
-    staged: bool,
+    root_authority: crate::anchored_fs::AnchoredDirectory,
     key: AttemptExecutionKey,
     execution: ExecutionId,
-    prepared_result_digest: CampaignHash,
+    maximum_payload_bytes: usize,
     result: PreparedSemanticAttemptResult,
     namespace_lock: OwnedAdvisoryLock,
+    staged: bool,
 }
 
 impl DirectoryPreparedResultJournal {
@@ -175,8 +170,7 @@ impl DirectoryPreparedResultJournal {
     ///
     /// Returns [`PreparedResultJournalError`] when encoding, filesystem
     /// durability, locking, authentication, or exact replay validation fails.
-    #[cfg(test)]
-    pub(crate) fn create(
+    pub fn create(
         namespace: &PreparedResultJournalNamespace,
         key: AttemptExecutionKey,
         execution: ExecutionId,
@@ -189,15 +183,16 @@ impl DirectoryPreparedResultJournal {
         Ok((journal, disposition))
     }
 
-    /// Durably prepares a hidden journal without making it a recovery root.
+    /// Durably prepares a hidden journal without granting publication authority.
     ///
-    /// The caller must retain repository GC exclusion until [`Self::commit_staged`]
-    /// succeeds after the matching operational publication-root transition.
+    /// The caller must commit the operational ledger's `Publishing` state before
+    /// calling [`Self::commit_staged`]. An exact existing hidden or visible
+    /// journal is reopened idempotently.
     ///
     /// # Errors
     ///
-    /// Returns [`PreparedResultJournalError`] when encoding, filesystem
-    /// durability, locking, authentication, or exact replay validation fails.
+    /// Returns [`PreparedResultJournalError`] when the namespace, result,
+    /// journal identity, lock, or durable write is invalid.
     pub(crate) fn prepare_staged(
         namespace: &PreparedResultJournalNamespace,
         key: AttemptExecutionKey,
@@ -205,30 +200,35 @@ impl DirectoryPreparedResultJournal {
         maximum_payload_bytes: usize,
         result: PreparedSemanticAttemptResult,
     ) -> Result<(Self, PreparedResultJournalCreateDisposition), PreparedResultJournalError> {
-        let namespace_guard = Arc::clone(&namespace.runtime);
-        let namespace = namespace_guard.path().to_owned();
-        let anchored_namespace = namespace_guard.anchored_path();
+        namespace.verify()?;
+        let namespace_root = namespace.root();
         validate_semantic_key(key)?;
         let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
         validate_result_key(key, &result)?;
-        reject_active_migration(&namespace_guard)?;
-        let namespace_lock = acquire_namespace_lock(&namespace_guard, key)?;
-        reject_active_migration(&namespace_guard)?;
-        if namespace_guard.has_terminal(&staged_path(&namespace, key))
-            || namespace_guard.has_terminal(&retired_path(&namespace, key))
-        {
+        let namespace_lock = acquire_namespace_lock(namespace, key)?;
+        let root = journal_path(&namespace_root, key);
+        let staging = staged_path(&namespace_root, key);
+        let root_present = directory_presence(
+            &namespace.runtime.directory,
+            &root,
+            "inspect-journal-before-create",
+        )?;
+        let staging_present = directory_presence(
+            &namespace.runtime.directory,
+            &staging,
+            "inspect-staged-journal-before-create",
+        )?;
+        if root_present && staging_present {
             return Err(PreparedResultJournalError::RecoveryRequired);
         }
-        let root = journal_path(&namespace, key);
-        let anchored_root = journal_path(&anchored_namespace, key);
-        if path_presence(&anchored_root, "inspect-journal-before-create")? {
+        if root_present {
             let journal = Self::open_locked(
+                namespace.clone(),
                 root,
                 key,
                 Some(execution),
                 maximum_payload_bytes,
                 namespace_lock,
-                namespace_guard,
                 false,
             )?;
             if journal.result != result {
@@ -236,140 +236,106 @@ impl DirectoryPreparedResultJournal {
             }
             return Ok((journal, PreparedResultJournalCreateDisposition::Existing));
         }
-        let staging = staged_path(&namespace, key);
-        let anchored_staging = staged_path(&anchored_namespace, key);
-        if path_presence(&anchored_staging, "inspect-staged-journal-before-create")? {
-            let journal = Self::open_locked(
+        if staging_present {
+            let journal = match Self::open_locked(
+                namespace.clone(),
                 staging,
                 key,
                 Some(execution),
                 maximum_payload_bytes,
                 namespace_lock,
-                namespace_guard,
                 true,
-            )?;
+            ) {
+                Ok(journal) => journal,
+                Err(source @ PreparedResultJournalError::Io { .. }) => return Err(source),
+                Err(_) => return Err(PreparedResultJournalError::RecoveryRequired),
+            };
             if journal.result != result {
                 return Err(PreparedResultJournalError::ResultMismatch);
             }
             return Ok((journal, PreparedResultJournalCreateDisposition::Existing));
         }
-        if path_presence(
-            &retired_path(&anchored_namespace, key),
-            "inspect-retired-journal-before-create",
-        )? {
-            return Err(PreparedResultJournalError::RecoveryRequired);
-        }
-
         let payload = result.canonical_bytes_with_limit(maximum_payload_bytes)?;
-        let prepared_result_digest =
-            CampaignHash::derive(PREPARED_RESULT_LEDGER_BINDING_DOMAIN, &payload);
         let state = encode_state(key, execution, maximum_payload_bytes, &result, &payload)?;
-        let staging = staged_path(&namespace, key);
-        namespace_guard
-            .create_directory(&staging, "create-staged-journal")
-            .map_err(migration_guard_error)?;
-        namespace_guard
-            .write_once(&staging.join(JOURNAL_RESULT_FILE), &payload)
-            .map_err(migration_guard_error)?;
-        namespace_guard
-            .write_once(&staging.join(JOURNAL_STATE_FILE), &state)
-            .map_err(migration_guard_error)?;
-        let root_guard = namespace_guard
-            .open_child(&staging, "pin-staged-journal")
-            .map_err(migration_guard_error)?;
-        namespace_lock
-            .verify_path_binding()
-            .map_err(migration_guard_error)?;
-        reject_active_migration(&namespace_guard)?;
+        let root_authority = create_staging_directory(namespace, key)?;
+        initialize_new(&root_authority, &payload, &state)?;
+        namespace.verify()?;
         Ok((
             Self {
+                namespace: namespace.clone(),
                 root: staging,
-                root_guard,
-                namespace_guard,
-                staged: true,
+                root_authority,
                 key,
                 execution,
-                prepared_result_digest,
+                maximum_payload_bytes,
                 result,
                 namespace_lock,
+                staged: true,
             },
             PreparedResultJournalCreateDisposition::Created,
         ))
     }
 
-    /// Atomically promotes a durable staged journal into the recovery namespace.
+    /// Makes a prepared journal visible after the ledger grants publication.
+    ///
+    /// Repeating the operation on an already visible journal is a no-op.
     ///
     /// # Errors
     ///
-    /// Returns [`PreparedResultJournalError`] when rename or parent-directory
-    /// durability fails.
+    /// Returns [`PreparedResultJournalError`] when authority was replaced, a
+    /// conflicting visible name exists, or the rename cannot be made durable.
     pub(crate) fn commit_staged(&mut self) -> Result<(), PreparedResultJournalError> {
-        self.namespace_lock
-            .verify_path_binding()
-            .map_err(migration_guard_error)?;
-        reject_active_migration(&self.namespace_guard)?;
         if !self.staged {
+            self.namespace.verify()?;
+            self.root_authority
+                .verify_path_binding()
+                .map_err(|source| anchored_journal_error(source, "verify-visible-journal"))?;
             return Ok(());
         }
-        let namespace = self
-            .root
-            .parent()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-        let visible = journal_path(namespace, self.key);
-        let visible_guard = rename_bound_journal_directory(
-            &self.namespace_guard,
-            &self.root_guard,
-            &visible,
-            "publish-journal-directory",
-        )?;
-        self.root = visible;
-        self.root_guard = visible_guard;
-        self.staged = false;
+
+        self.namespace.verify()?;
         self.namespace_lock
             .verify_path_binding()
-            .map_err(migration_guard_error)?;
-        reject_active_migration(&self.namespace_guard)?;
-        Ok(())
-    }
-
-    /// Opens an authenticated hidden journal after the ledger proves Publishing.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreparedResultJournalError`] for invalid namespace, locking,
-    /// authentication, or staged journal bytes.
-    pub(crate) fn open_staged_for_recovery(
-        namespace: &PreparedResultJournalNamespace,
-        key: AttemptExecutionKey,
-        maximum_payload_bytes: usize,
-    ) -> Result<Option<Self>, PreparedResultJournalError> {
-        let namespace_guard = Arc::clone(&namespace.runtime);
-        let namespace = namespace_guard.path().to_owned();
-        let anchored_namespace = namespace_guard.anchored_path();
-        validate_semantic_key(key)?;
-        let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
-        reject_active_migration(&namespace_guard)?;
-        let namespace_lock = acquire_namespace_lock(&namespace_guard, key)?;
-        if namespace_guard.has_terminal_key(key) {
+            .map_err(|source| anchored_journal_error(source, "verify-journal-key-lock"))?;
+        let namespace_authority = &self.namespace.runtime.directory;
+        let visible = journal_path(&self.namespace.root(), self.key);
+        let staged_present = directory_presence(
+            namespace_authority,
+            &self.root,
+            "inspect-staged-journal-before-commit",
+        )?;
+        let visible_present = directory_presence(
+            namespace_authority,
+            &visible,
+            "inspect-visible-journal-before-commit",
+        )?;
+        let committed = match (staged_present, visible_present) {
+            (true, false) => namespace_authority
+                .rename_directory(
+                    &self.root_authority,
+                    &visible,
+                    true,
+                    "commit-staged-journal",
+                )
+                .map_err(|source| anchored_journal_error(source, "commit-staged-journal"))?,
+            (false, true) => namespace_authority
+                .open_directory(&visible, "open-committed-journal")
+                .map_err(|source| anchored_journal_error(source, "open-committed-journal"))?,
+            (true, true) | (false, false) => {
+                return Err(PreparedResultJournalError::RecoveryRequired);
+            }
+        };
+        namespace_authority
+            .sync()
+            .map_err(|source| anchored_journal_error(source, "sync-journal-after-commit"))?;
+        if committed.identity() != self.root_authority.identity() {
             return Err(PreparedResultJournalError::RecoveryRequired);
         }
-        let root = staged_path(&namespace, key);
-        if !path_presence(
-            &staged_path(&anchored_namespace, key),
-            "inspect-staged-journal-for-recovery",
-        )? {
-            return Ok(None);
-        }
-        Self::open_locked(
-            root,
-            key,
-            None,
-            maximum_payload_bytes,
-            namespace_lock,
-            namespace_guard,
-            true,
-        )
-        .map(Some)
+
+        self.root = visible;
+        self.root_authority = committed;
+        self.staged = false;
+        self.namespace.verify()
     }
 
     /// Opens and authenticates the complete journal for `key`.
@@ -379,32 +345,72 @@ impl DirectoryPreparedResultJournal {
     /// Returns [`PreparedResultJournalError`] when the expected directory is
     /// incomplete, malformed, corrupt, locked, or bound to different result
     /// IDs or execution-key material.
-    #[cfg(test)]
-    pub(crate) fn open(
+    pub fn open(
         namespace: &PreparedResultJournalNamespace,
         key: AttemptExecutionKey,
         execution: ExecutionId,
         maximum_payload_bytes: usize,
     ) -> Result<Self, PreparedResultJournalError> {
-        let namespace_guard = Arc::clone(&namespace.runtime);
-        let namespace = namespace_guard.path().to_owned();
+        namespace.verify()?;
+        let namespace_root = namespace.root();
         validate_semantic_key(key)?;
         let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
-        reject_active_migration(&namespace_guard)?;
-        let namespace_lock = acquire_namespace_lock(&namespace_guard, key)?;
-        if namespace_guard.has_terminal_key(key) {
-            return Err(PreparedResultJournalError::RecoveryRequired);
-        }
-        let root = journal_path(&namespace, key);
+        let namespace_lock = acquire_namespace_lock(namespace, key)?;
+        let root = journal_path(&namespace_root, key);
         Self::open_locked(
+            namespace.clone(),
             root,
             key,
             Some(execution),
             maximum_payload_bytes,
             namespace_lock,
-            namespace_guard,
             false,
         )
+    }
+
+    /// Opens a hidden journal for restart reconciliation against the ledger.
+    ///
+    /// Absence is distinct from malformed or conflicting visible state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedResultJournalError`] when authority, locking, state,
+    /// or exact v2/v6 result authentication fails.
+    pub(crate) fn open_staged_for_recovery(
+        namespace: &PreparedResultJournalNamespace,
+        key: AttemptExecutionKey,
+        maximum_payload_bytes: usize,
+    ) -> Result<Option<Self>, PreparedResultJournalError> {
+        namespace.verify()?;
+        let namespace_root = namespace.root();
+        validate_semantic_key(key)?;
+        let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
+        let namespace_lock = acquire_namespace_lock(namespace, key)?;
+        let staged = staged_path(&namespace_root, key);
+        if !directory_presence(
+            &namespace.runtime.directory,
+            &staged,
+            "inspect-staged-journal-for-recovery",
+        )? {
+            return Ok(None);
+        }
+        if directory_presence(
+            &namespace.runtime.directory,
+            &journal_path(&namespace_root, key),
+            "inspect-visible-journal-beside-staged",
+        )? {
+            return Err(PreparedResultJournalError::RecoveryRequired);
+        }
+        Self::open_locked(
+            namespace.clone(),
+            staged,
+            key,
+            None,
+            maximum_payload_bytes,
+            namespace_lock,
+            true,
+        )
+        .map(Some)
     }
 
     /// Opens a complete journal without replacing its producer execution.
@@ -419,44 +425,38 @@ impl DirectoryPreparedResultJournal {
     ///
     /// Returns [`PreparedResultJournalError`] when the namespace, key, locking,
     /// journal authentication, or exact result validation fails.
-    pub(crate) fn open_for_recovery(
+    pub fn open_for_recovery(
         namespace: &PreparedResultJournalNamespace,
         key: AttemptExecutionKey,
         maximum_payload_bytes: usize,
     ) -> Result<Option<Self>, PreparedResultJournalError> {
-        let namespace_guard = Arc::clone(&namespace.runtime);
-        let namespace = namespace_guard.path().to_owned();
-        let anchored_namespace = namespace_guard.anchored_path();
+        namespace.verify()?;
+        let namespace_root = namespace.root();
         validate_semantic_key(key)?;
         let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
-        reject_active_migration(&namespace_guard)?;
-        let namespace_lock = acquire_namespace_lock(&namespace_guard, key)?;
-        if namespace_guard.has_terminal_key(key) {
-            return Err(PreparedResultJournalError::RecoveryRequired);
-        }
-        let root = journal_path(&namespace, key);
-        if !path_presence(
-            &journal_path(&anchored_namespace, key),
+        let namespace_lock = acquire_namespace_lock(namespace, key)?;
+        let root = journal_path(&namespace_root, key);
+        if !directory_presence(
+            &namespace.runtime.directory,
+            &root,
             "inspect-journal-for-recovery",
         )? {
-            if path_presence(
-                &staged_path(&anchored_namespace, key),
+            if directory_presence(
+                &namespace.runtime.directory,
+                &staged_path(&namespace_root, key),
                 "inspect-staged-journal-for-recovery",
-            )? || path_presence(
-                &retired_path(&anchored_namespace, key),
-                "inspect-retired-journal-for-recovery",
             )? {
                 return Err(PreparedResultJournalError::RecoveryRequired);
             }
             return Ok(None);
         }
         Self::open_locked(
+            namespace.clone(),
             root,
             key,
             None,
             maximum_payload_bytes,
             namespace_lock,
-            namespace_guard,
             false,
         )
         .map(Some)
@@ -476,201 +476,149 @@ impl DirectoryPreparedResultJournal {
         namespace: &PreparedResultJournalNamespace,
         key: AttemptExecutionKey,
     ) -> Result<bool, PreparedResultJournalError> {
-        let namespace_guard = Arc::clone(&namespace.runtime);
-        let anchored_namespace = namespace_guard.anchored_path();
+        namespace.verify()?;
+        let namespace_root = namespace.root();
         validate_semantic_key(key)?;
-        reject_active_migration(&namespace_guard)?;
 
-        let present = namespace_guard.has_terminal_key(key)
-            || path_presence(
-                &journal_path(&anchored_namespace, key),
-                "inventory-prepared-result-journal",
-            )?
-            || path_presence(
-                &staged_path(&anchored_namespace, key),
-                "inventory-staged-prepared-result-journal",
-            )?
-            || path_presence(
-                &retired_path(&anchored_namespace, key),
-                "inventory-retired-prepared-result-journal",
-            )?;
-        reject_active_migration(&namespace_guard)?;
-        Ok(present)
+        Ok(directory_presence(
+            &namespace.runtime.directory,
+            &journal_path(&namespace_root, key),
+            "inventory-prepared-result-journal",
+        )? || directory_presence(
+            &namespace.runtime.directory,
+            &staged_path(&namespace_root, key),
+            "inventory-staged-prepared-result-journal",
+        )?)
     }
 
     fn open_locked(
+        namespace: PreparedResultJournalNamespace,
         root: PathBuf,
         key: AttemptExecutionKey,
         expected_execution: Option<ExecutionId>,
         maximum_payload_bytes: usize,
         namespace_lock: OwnedAdvisoryLock,
-        namespace_guard: Arc<RuntimeNamespace>,
         staged: bool,
     ) -> Result<Self, PreparedResultJournalError> {
-        reject_active_migration(&namespace_guard)?;
-        let root_guard = namespace_guard
-            .open_child(&root, "open-current-journal")
-            .map_err(migration_guard_error)?;
-        root_guard.sync().map_err(migration_guard_error)?;
-        namespace_guard.sync().map_err(migration_guard_error)?;
+        namespace.verify()?;
+        let root_authority = namespace
+            .runtime
+            .directory
+            .open_directory(&root, "open-journal-directory")
+            .map_err(|source| anchored_journal_error(source, "open-journal-directory"))?;
+        root_authority
+            .sync()
+            .map_err(|source| anchored_journal_error(source, "sync-journal-directory-on-open"))?;
+        namespace
+            .runtime
+            .directory
+            .sync()
+            .map_err(|source| anchored_journal_error(source, "sync-journal-parent-on-open"))?;
 
-        let cleanup_keys = sealed_prepared_cleanup_keys(&namespace_guard)?;
-        let (state_file, result_file) = journal_files(&root_guard, cleanup_keys.as_ref())?;
-        let state = read_bounded_anchored_file(
-            &root_guard,
-            state_file,
+        let mut journal_entries = 0;
+        validate_runtime_journal_directory(&root_authority, false, &mut journal_entries)?;
+        let state = read_bounded_file(
+            &root_authority,
+            &root.join(JOURNAL_STATE_FILE),
             MAX_JOURNAL_STATE_BYTES,
             "read-journal-state",
         )?;
         let envelope = decode_state(&state, key, expected_execution, maximum_payload_bytes)?;
-        let payload = read_bounded_anchored_file(
-            &root_guard,
-            result_file,
+        let payload = read_bounded_file(
+            &root_authority,
+            &root.join(JOURNAL_RESULT_FILE),
             maximum_payload_bytes,
             "read-journal-result",
         )?;
         envelope.validate_payload(&payload)?;
-        if !is_current_prepared_result_payload(&payload) {
-            return Err(PreparedResultJournalError::InvalidState);
-        }
         let result = PreparedSemanticAttemptResult::from_canonical_bytes_with_limit(
             &payload,
             maximum_payload_bytes,
         )?;
         envelope.validate_result(&result)?;
         validate_result_key(key, &result)?;
-        root_guard
-            .verify_path_binding()
-            .map_err(migration_guard_error)?;
         namespace_lock
             .verify_path_binding()
-            .map_err(migration_guard_error)?;
-        reject_active_migration(&namespace_guard)?;
+            .map_err(|source| anchored_journal_error(source, "verify-journal-key-lock"))?;
+        root_authority
+            .verify_path_binding()
+            .map_err(|source| anchored_journal_error(source, "verify-journal-directory"))?;
+        namespace.verify()?;
 
         Ok(Self {
+            namespace,
             root,
-            root_guard,
-            namespace_guard,
-            staged,
+            root_authority,
             key,
             execution: envelope.execution,
-            prepared_result_digest: CampaignHash::derive(
-                PREPARED_RESULT_LEDGER_BINDING_DOMAIN,
-                &payload,
-            ),
+            maximum_payload_bytes,
             result,
             namespace_lock,
+            staged,
         })
     }
 
     /// Returns the exact journal directory selected by the scoped key.
-    #[cfg(test)]
     #[must_use]
-    pub(crate) fn root(&self) -> &Path {
+    pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Returns the exact lineage, attempt, and execution-scope key.
+    #[must_use]
+    pub const fn key(&self) -> AttemptExecutionKey {
+        self.key
     }
 
     /// Returns the exact local execution incarnation that produced the result.
     #[must_use]
-    pub(crate) const fn execution(&self) -> ExecutionId {
+    pub const fn execution(&self) -> ExecutionId {
         self.execution
     }
 
-    /// Returns the authenticated full-payload digest bound into the ledger.
+    /// Returns the operational encoded-payload ceiling bound into state.
     #[must_use]
-    pub(crate) const fn prepared_result_digest(&self) -> CampaignHash {
-        self.prepared_result_digest
+    pub const fn maximum_payload_bytes(&self) -> usize {
+        self.maximum_payload_bytes
     }
 
     /// Returns the complete prepared publication value.
     #[must_use]
-    pub(crate) const fn result(&self) -> &PreparedSemanticAttemptResult {
+    pub const fn result(&self) -> &PreparedSemanticAttemptResult {
         &self.result
     }
 
-    /// Retires this journal after the operational ledger proves it is no longer
+    /// Deletes this journal after the operational ledger proves it is no longer
     /// needed for publication recovery.
     ///
-    /// Cleanup occurs while the journal lock is held and leaves one bounded,
-    /// authenticated terminal tombstone for this key.
+    /// Removal occurs while the journal lock is held. The parent directory is
+    /// synced after the name disappears.
     ///
     /// # Errors
     ///
     /// Returns [`PreparedResultJournalError`] if a file or directory cannot be
-    /// retired or the parent cannot be synced. The caller must treat an error
-    /// as indeterminate cleanup and retry without rerunning guest execution.
-    pub(crate) fn remove(&self) -> Result<(), PreparedResultJournalError> {
+    /// removed or the parent cannot be synced. The caller must treat an error as
+    /// indeterminate cleanup and retry without rerunning guest execution.
+    pub fn remove(&self) -> Result<(), PreparedResultJournalError> {
+        let _held_lock = &self.namespace_lock;
+        self.namespace.verify()?;
         self.namespace_lock
             .verify_path_binding()
-            .map_err(migration_guard_error)?;
-        reject_active_migration(&self.namespace_guard)?;
-        let namespace = self
-            .root
-            .parent()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-        if self.staged {
-            let anchored_root = self
-                .namespace_guard
-                .anchored_path_for(&self.root)
-                .map_err(migration_guard_error)?;
-            if path_presence(&anchored_root, "inspect-staged-journal-before-remove")? {
-                self.root_guard
-                    .verify_path_binding()
-                    .map_err(migration_guard_error)?;
-                remove_bound_orphan_directory(&self.namespace_guard, &self.root, &self.root_guard)?;
-                self.namespace_guard.record_terminal(&self.root)?;
-            }
-            self.namespace_lock
-                .verify_path_binding()
-                .map_err(migration_guard_error)?;
-            return reject_active_migration(&self.namespace_guard);
-        }
-        let tombstone = retired_path(namespace, self.key);
-        let anchored_root = self
-            .namespace_guard
-            .anchored_path_for(&self.root)
-            .map_err(migration_guard_error)?;
-        let anchored_tombstone = self
-            .namespace_guard
-            .anchored_path_for(&tombstone)
-            .map_err(migration_guard_error)?;
-        let root_present = path_presence(&anchored_root, "inspect-journal-before-retire")?;
-        let tombstone_present = path_presence(&anchored_tombstone, "inspect-retired-journal")?;
-        if root_present && self.namespace_guard.has_terminal(&tombstone) {
-            return Err(PreparedResultJournalError::RecoveryRequired);
-        }
-        let retired_guard = match (root_present, tombstone_present) {
-            (true, false) => Some(rename_bound_journal_directory(
-                &self.namespace_guard,
-                &self.root_guard,
-                &tombstone,
-                "retire-journal-directory",
-            )?),
-            (false, true) => {
-                let guard = self
-                    .namespace_guard
-                    .open_inventory_child(&tombstone, "pin-retired-journal")
-                    .map_err(migration_guard_error)?;
-                if guard.identity() != self.root_guard.identity() {
-                    return Err(PreparedResultJournalError::RecoveryRequired);
-                }
-                Some(guard)
-            }
-            (false, false) => None,
-            (true, true) => return Err(PreparedResultJournalError::RecoveryRequired),
-        };
-        reject_active_migration(&self.namespace_guard)?;
-        if let Some(retired_guard) = retired_guard {
-            remove_bound_orphan_directory(&self.namespace_guard, &tombstone, &retired_guard)?;
-            self.namespace_guard.record_terminal(&tombstone)?;
-        }
-        self.namespace_lock
-            .verify_path_binding()
-            .map_err(migration_guard_error)?;
-        reject_active_migration(&self.namespace_guard)
+            .map_err(|source| anchored_journal_error(source, "verify-journal-key-lock"))?;
+        remove_orphan_directory(
+            &self.namespace,
+            &self.root,
+            Some(self.root_authority.identity()),
+        )?;
+        self.namespace
+            .runtime
+            .directory
+            .sync()
+            .map_err(|source| anchored_journal_error(source, "sync-journal-parent-after-remove"))?;
+        self.namespace.verify()
     }
 
-    /// Retires at most the fixed staged and retired live names for `key`.
+    /// Removes at most the fixed visible and staged orphans for `key`.
     ///
     /// The caller must first acquire the production repository-GC and ledger
     /// exclusions, prove that `key` has no result requiring recovery, and retain
@@ -682,71 +630,31 @@ impl DirectoryPreparedResultJournal {
     /// # Errors
     ///
     /// Returns [`PreparedResultJournalError`] for an invalid key or namespace,
-    /// lock contention, unexpected orphan contents, or failed durable
-    /// transition to terminal state.
-    pub(crate) fn cleanup_orphans_after_ledger_check(
+    /// lock contention, unexpected orphan contents, or failed durable removal.
+    pub fn cleanup_orphans_after_ledger_check(
         namespace: &PreparedResultJournalNamespace,
         key: AttemptExecutionKey,
     ) -> Result<PreparedResultJournalCleanupDisposition, PreparedResultJournalError> {
-        let namespace_guard = Arc::clone(&namespace.runtime);
-        let namespace = namespace_guard.anchored_path();
-        let namespace = namespace.as_path();
+        namespace.verify()?;
+        let namespace_root = namespace.root();
         validate_semantic_key(key)?;
-        reject_active_migration(&namespace_guard)?;
-        let namespace_lock = acquire_namespace_lock(&namespace_guard, key)?;
-        reject_active_migration(&namespace_guard)?;
-        #[cfg(test)]
-        run_journal_race_hook();
-        if path_presence(
-            &journal_path(namespace, key),
-            "inspect-visible-journal-before-orphan-cleanup",
-        )? {
-            return Err(PreparedResultJournalError::RecoveryRequired);
-        }
-
+        let namespace_lock = acquire_namespace_lock(namespace, key)?;
+        let visible_removed =
+            remove_orphan_directory(namespace, &journal_path(&namespace_root, key), None)?;
         let staged_removed =
-            remove_orphan_directory(&namespace_guard, &staged_path(namespace, key))?;
-        reject_active_migration(&namespace_guard)?;
-        let retired_removed =
-            remove_orphan_directory(&namespace_guard, &retired_path(namespace, key))?;
-        namespace_lock
-            .verify_path_binding()
-            .map_err(migration_guard_error)?;
-        reject_active_migration(&namespace_guard)?;
+            remove_orphan_directory(namespace, &staged_path(&namespace_root, key), None)?;
+        // Retry the durability barrier even when a prior call removed the
+        // names and failed its parent sync.
+        namespace.runtime.directory.sync().map_err(|source| {
+            anchored_journal_error(source, "sync-journal-parent-after-cleanup")
+        })?;
+        namespace.verify()?;
         drop(namespace_lock);
         Ok(PreparedResultJournalCleanupDisposition {
+            visible_removed,
             staged_removed,
-            retired_removed,
         })
     }
-}
-
-/// Converts every legacy prepared-result journal in an offline namespace.
-///
-/// The caller must retain the assignment ledger's exclusive writer lock. This
-/// function acquires per-key namespace locks in sorted key order, authenticates
-/// the complete bounded inventory before staging anything, and rewrites each
-/// journal through pinned files. A rerun completes an interrupted rewrite.
-///
-/// # Errors
-///
-/// Returns [`PreparedResultJournalError`] when the namespace is invalid, its
-/// inventory exceeds `maximum_entries`, a journal or ledger binding is
-/// invalid, a per-key lock is held, or durable conversion fails.
-pub(crate) fn migrate_prepared_result_journals(
-    namespace: &crate::anchored_fs::AnchoredDirectory,
-    receipt_directory: &crate::anchored_fs::AnchoredDirectory,
-    ledger: &mut DirectoryAssignmentLedger,
-    maximum_entries: usize,
-    maximum_payload_bytes: usize,
-) -> Result<PreparedResultJournalMigrationSummary, crate::OperationalStateMigrationError> {
-    migration::migrate_prepared_result_journals(
-        namespace,
-        receipt_directory,
-        ledger,
-        maximum_entries,
-        maximum_payload_bytes,
-    )
 }
 
 /// Failure to persist, reopen, authenticate, or remove a prepared result.
@@ -781,7 +689,7 @@ pub enum PreparedResultJournalError {
     /// An existing journal retains a different prepared result.
     #[error("prepared-result journal retains a different result")]
     ResultMismatch,
-    /// A fixed staging or retirement name requires ledger-authorized recovery.
+    /// A fixed visible or staging name requires ledger-authorized recovery.
     #[error("prepared-result journal requires ledger-authorized orphan recovery")]
     RecoveryRequired,
     /// The observation belongs to a different admitted attempt than the key.
@@ -793,12 +701,6 @@ pub enum PreparedResultJournalError {
     /// The operational payload ceiling is zero or exceeds the format ceiling.
     #[error("prepared-result journal payload limit is invalid")]
     InvalidPayloadLimit,
-    /// The bounded migration inventory contains too many journals.
-    #[error("prepared-result journal migration limit exceeded")]
-    MigrationLimitExceeded,
-    /// The assignment ledger could not authenticate a journal binding.
-    #[error(transparent)]
-    Ledger(#[from] AssignmentLedgerError),
 }
 
 fn journal_path(namespace: &Path, key: AttemptExecutionKey) -> PathBuf {
@@ -819,11 +721,34 @@ fn staged_path(namespace: &Path, key: AttemptExecutionKey) -> PathBuf {
     ))
 }
 
-fn retired_path(namespace: &Path, key: AttemptExecutionKey) -> PathBuf {
-    namespace.join(format!(
-        "{JOURNAL_RETIRED_PREFIX}{}",
-        hex(key.storage_digest().as_bytes())
-    ))
+fn create_staging_directory(
+    namespace: &PreparedResultJournalNamespace,
+    key: AttemptExecutionKey,
+) -> Result<crate::anchored_fs::AnchoredDirectory, PreparedResultJournalError> {
+    let staging = staged_path(&namespace.root(), key);
+    namespace
+        .runtime
+        .directory
+        .create_new_directory(&staging, "create-journal-staging-directory")
+        .map_err(|source| match source {
+            crate::anchored_fs::AnchoredFsError::Io { ref source, .. }
+                if source.kind() == io::ErrorKind::AlreadyExists =>
+            {
+                PreparedResultJournalError::RecoveryRequired
+            }
+            source => anchored_journal_error(source, "create-journal-staging-directory"),
+        })
+}
+
+fn initialize_new(
+    root: &crate::anchored_fs::AnchoredDirectory,
+    payload: &[u8],
+    state: &[u8],
+) -> Result<(), PreparedResultJournalError> {
+    write_atomic(root, JOURNAL_RESULT_FILE, payload)?;
+    write_atomic(root, JOURNAL_STATE_FILE, state)?;
+    root.sync()
+        .map_err(|source| anchored_journal_error(source, "sync-journal-directory-after-initialize"))
 }
 
 fn encode_state(
@@ -1014,69 +939,6 @@ fn decode_state<'a>(
     })
 }
 
-fn journal_files(
-    root: &crate::anchored_fs::AnchoredDirectory,
-    cleanup_keys: Option<&std::collections::BTreeSet<String>>,
-) -> Result<(&'static str, &'static str), PreparedResultJournalError> {
-    let mut state = false;
-    let mut result = false;
-    let anchored = root.anchored_path();
-    for entry in fs::read_dir(&anchored)
-        .map_err(|source| io_error("read-current-journal-directory", &anchored, source))?
-    {
-        let entry = entry.map_err(|source| {
-            io_error("read-current-journal-directory-entry", &anchored, source)
-        })?;
-        if !entry
-            .file_type()
-            .map_err(|source| io_error("stat-current-journal-entry", &entry.path(), source))?
-            .is_file()
-        {
-            return Err(PreparedResultJournalError::Incomplete);
-        }
-        let name = entry.file_name();
-        if let Some(logical_name) = crate::anchored_fs::removal_original_name(&name) {
-            let authority = root
-                .open_inventory_file(&entry.path(), "pin-current-journal-tombstone")
-                .map_err(migration_guard_error)?
-                .ok_or(PreparedResultJournalError::Incomplete)?;
-            let metadata = entry.metadata().map_err(|source| {
-                io_error("inspect-current-journal-tombstone", &entry.path(), source)
-            })?;
-            let journal = root
-                .path()
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or(PreparedResultJournalError::Incomplete)?;
-            let logical_name = logical_name
-                .to_str()
-                .ok_or(PreparedResultJournalError::Incomplete)?;
-            if metadata.len() != 0
-                || !cleanup_keys.is_some_and(|keys| {
-                    keys.contains(&migration::prepared_cleanup_key(
-                        journal,
-                        logical_name,
-                        authority.identity(),
-                    ))
-                })
-            {
-                return Err(PreparedResultJournalError::Incomplete);
-            }
-            continue;
-        }
-        match name.to_str() {
-            Some(JOURNAL_STATE_FILE) if !state => state = true,
-            Some(JOURNAL_RESULT_FILE) if !result => result = true,
-            _ => return Err(PreparedResultJournalError::Incomplete),
-        }
-    }
-    if state && result {
-        Ok((JOURNAL_STATE_FILE, JOURNAL_RESULT_FILE))
-    } else {
-        Err(PreparedResultJournalError::Incomplete)
-    }
-}
-
 fn measurement_evidence_identity(
     result: &PreparedSemanticAttemptResult,
 ) -> Result<(usize, [u8; 32]), PreparedResultJournalError> {
@@ -1198,310 +1060,154 @@ fn validate_payload_limit(maximum: usize) -> Result<usize, PreparedResultJournal
     }
 }
 
-fn path_presence(path: &Path, operation: &'static str) -> Result<bool, PreparedResultJournalError> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(io_error(operation, path, source)),
-    }
-}
-
-fn rename_bound_journal_directory(
+fn directory_presence(
     namespace: &crate::anchored_fs::AnchoredDirectory,
-    source_guard: &crate::anchored_fs::AnchoredDirectory,
-    destination: &Path,
+    path: &Path,
     operation: &'static str,
-) -> Result<crate::anchored_fs::AnchoredDirectory, PreparedResultJournalError> {
+) -> Result<bool, PreparedResultJournalError> {
     namespace
-        .rename_bound_directory_with(source_guard, destination, operation, || {
-            #[cfg(test)]
-            run_journal_race_hook();
-            Ok(())
-        })
-        .map_err(migration_guard_error)
+        .open_directory_optional(path, operation)
+        .map(|directory| directory.is_some())
+        .map_err(|source| anchored_journal_error(source, operation))
 }
 
 fn remove_orphan_directory(
-    namespace: &RuntimeNamespace,
+    namespace: &PreparedResultJournalNamespace,
     root: &Path,
+    expected_identity: Option<(u64, u64)>,
 ) -> Result<bool, PreparedResultJournalError> {
-    let anchored_root = namespace
-        .anchored_path_for(root)
-        .map_err(migration_guard_error)?;
-    if namespace.has_terminal(root) {
-        return if path_presence(&anchored_root, "inspect-terminal-orphan-logical-name")? {
-            Err(PreparedResultJournalError::RecoveryRequired)
-        } else {
-            Ok(false)
-        };
-    }
-    let Some((root_guard, entries)) = inventory_orphan_directory(namespace, root)? else {
+    namespace.verify()?;
+    let Some(root_authority) = namespace
+        .runtime
+        .directory
+        .open_directory_optional(root, "open-journal-orphan")
+        .map_err(|source| anchored_journal_error(source, "open-journal-orphan"))?
+    else {
         return Ok(false);
     };
-    remove_orphan_inventory(namespace, root_guard, entries)?;
-    namespace.record_terminal(root)?;
-    Ok(true)
-}
-
-fn remove_bound_orphan_directory(
-    namespace: &RuntimeNamespace,
-    root: &Path,
-    expected: &crate::anchored_fs::AnchoredDirectory,
-) -> Result<(), PreparedResultJournalError> {
-    if namespace.has_terminal(root) {
+    if expected_identity.is_some_and(|expected| expected != root_authority.identity()) {
         return Err(PreparedResultJournalError::RecoveryRequired);
     }
-    let (root_guard, entries) = inventory_orphan_directory(namespace, root)?
-        .ok_or(PreparedResultJournalError::RecoveryRequired)?;
-    if root_guard.identity() != expected.identity() {
-        return Err(PreparedResultJournalError::RecoveryRequired);
-    }
-    remove_orphan_inventory(namespace, root_guard, entries)
-}
-
-fn remove_orphan_inventory(
-    namespace: &crate::anchored_fs::AnchoredDirectory,
-    root_guard: crate::anchored_fs::AnchoredDirectory,
-    entries: Vec<crate::anchored_fs::AnchoredFile>,
-) -> Result<(), PreparedResultJournalError> {
-    let receipt = seal_orphan_cleanup(&root_guard, &entries)?;
-    for entry in entries {
-        root_guard
-            .remove_bound_file(&entry, "remove-journal-orphan-file")
-            .map_err(migration_guard_error)?;
-    }
-    receipt
-        .verify_path_binding()
-        .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
-    namespace
-        .remove_bound_directory(&root_guard, "remove-journal-directory")
-        .map_err(migration_guard_error)
-}
-
-fn seal_orphan_cleanup(
-    root: &crate::anchored_fs::AnchoredDirectory,
-    entries: &[crate::anchored_fs::AnchoredFile],
-) -> Result<crate::operational_state_migration::receipt::PhaseReceipt, PreparedResultJournalError> {
-    let prior = crate::operational_state_migration::receipt::load_phase_receipt(
-        root,
-        ORPHAN_CLEANUP_RECEIPT,
-        ORPHAN_CLEANUP_OUTPUT_SCHEMA,
-    )
-    .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
-    if let Some(receipt) = prior {
-        validate_orphan_cleanup_receipt(root, entries, &receipt)?;
-        return Ok(receipt);
-    }
-    if entries
-        .iter()
-        .any(|entry| entry.removal_original_name().is_some())
-    {
-        return Err(PreparedResultJournalError::RecoveryRequired);
-    }
-    let objects = orphan_cleanup_objects(root, entries, true)?;
-    let receipt = crate::operational_state_migration::receipt::persist_phase_receipt(
-        root,
-        ORPHAN_CLEANUP_RECEIPT,
-        ORPHAN_CLEANUP_OUTPUT_SCHEMA,
-        objects,
-    )
-    .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
-    validate_orphan_cleanup_receipt(root, entries, &receipt)?;
-    Ok(receipt)
-}
-
-fn validate_orphan_cleanup_receipt(
-    root: &crate::anchored_fs::AnchoredDirectory,
-    entries: &[crate::anchored_fs::AnchoredFile],
-    receipt: &crate::operational_state_migration::receipt::PhaseReceipt,
-) -> Result<(), PreparedResultJournalError> {
-    let objects = orphan_cleanup_objects(root, entries, false)?;
-    if receipt.objects.len() != objects.len()
-        || objects.iter().any(|object| {
-            !receipt.objects.iter().any(|sealed| {
-                sealed.key == object.key
-                    && sealed.output_object_id == object.output_object_id
-                    && (sealed.source_object_id == object.source_object_id
-                        || object.source_object_id == object.output_object_id)
-            })
-        })
-    {
-        return Err(PreparedResultJournalError::RecoveryRequired);
-    }
-    receipt
-        .verify_path_binding()
-        .map_err(|_| PreparedResultJournalError::RecoveryRequired)
-}
-
-fn orphan_cleanup_objects(
-    root: &crate::anchored_fs::AnchoredDirectory,
-    entries: &[crate::anchored_fs::AnchoredFile],
-    require_sources: bool,
-) -> Result<
-    Vec<crate::operational_state_migration::receipt::MigrationObjectReceipt>,
-    PreparedResultJournalError,
-> {
-    let root_name = crate::anchored_fs::removal_original_name(
-        root.path()
-            .file_name()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?,
-    )
-    .unwrap_or_else(|| root.path().file_name().unwrap_or_default().to_owned());
-    let (root_device, root_inode) = root.identity();
-    let root_id = crate::operational_state_migration::receipt::authenticated_id(
-        "crucible.prepared-result-orphan-cleanup-root.v1",
-        &[
-            root_name.as_bytes(),
-            &root_device.to_be_bytes(),
-            &root_inode.to_be_bytes(),
-        ],
-    );
-    let mut objects = vec![
-        crate::operational_state_migration::receipt::MigrationObjectReceipt {
-            key: "root".to_owned(),
-            source_object_id: root_id.clone(),
-            output_object_id: root_id,
-        },
-    ];
-    for entry in entries {
-        let name = entry.logical_name();
-        let (device, inode) = entry.identity();
-        let output = crate::operational_state_migration::receipt::authenticated_id(
-            "crucible.prepared-result-orphan-cleanup-output.v1",
-            &[name.as_bytes(), &device.to_be_bytes(), &inode.to_be_bytes()],
-        );
-        let bytes = entry
-            .read_bounded(runtime_journal_file_limit(&name.to_string_lossy()) as u64)
-            .map_err(migration_guard_error)?;
-        let source = if entry.removal_original_name().is_some() && bytes.is_empty() {
-            output.clone()
-        } else {
-            if require_sources && entry.removal_original_name().is_some() {
-                return Err(PreparedResultJournalError::RecoveryRequired);
-            }
-            crate::operational_state_migration::receipt::authenticated_id(
-                "crucible.prepared-result-orphan-cleanup-source.v1",
-                &[
-                    name.as_bytes(),
-                    &device.to_be_bytes(),
-                    &inode.to_be_bytes(),
-                    &bytes,
-                ],
-            )
-        };
-        objects.push(
-            crate::operational_state_migration::receipt::MigrationObjectReceipt {
-                key: format!("file/{}", name.to_string_lossy()),
-                source_object_id: source,
-                output_object_id: output,
-            },
-        );
-    }
-    Ok(objects)
-}
-
-fn inventory_orphan_directory(
-    namespace: &crate::anchored_fs::AnchoredDirectory,
-    root: &Path,
-) -> Result<
-    Option<(
-        crate::anchored_fs::AnchoredDirectory,
-        Vec<crate::anchored_fs::AnchoredFile>,
-    )>,
-    PreparedResultJournalError,
-> {
-    let actual_root = namespace
-        .anchored_path_for(root)
-        .map_err(migration_guard_error)?;
-    if !path_presence(&actual_root, "inspect-journal-orphan")? {
-        return Ok(None);
-    }
-    let root_guard = namespace
-        .open_inventory_child(&actual_root, "open-journal-orphan")
-        .map_err(migration_guard_error)?;
-    let anchored_root = root_guard.anchored_path();
     let mut entries = Vec::new();
-    let mut raw_entries = 0usize;
-    let mut cleanup_receipt_seen = false;
-    for entry in fs::read_dir(&anchored_root)
-        .map_err(|source| io_error("read-journal-orphan", &anchored_root, source))?
-        .take(MAX_ORPHAN_DIRECTORY_ENTRIES + 2)
+    for name in root_authority
+        .entry_names(MAX_ORPHAN_DIRECTORY_ENTRIES + 1, "read-journal-orphan")
+        .map_err(|source| anchored_journal_error(source, "read-journal-orphan"))?
     {
-        let entry = entry.map_err(|source| io_error("read-journal-orphan", root, source))?;
-        raw_entries += 1;
-        if raw_entries > MAX_ORPHAN_DIRECTORY_ENTRIES + 1 {
-            return Err(PreparedResultJournalError::InvalidDirectory);
-        }
-        let actual_name = entry.file_name();
-        if actual_name == ORPHAN_CLEANUP_RECEIPT || actual_name == ORPHAN_CLEANUP_RECEIPT_PENDING {
-            if cleanup_receipt_seen {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
-            cleanup_receipt_seen = true;
-            root_guard
-                .open_inventory_file(&entry.path(), "pin-orphan-cleanup-receipt")
-                .map_err(migration_guard_error)?
-                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-            continue;
-        }
-        let name = crate::anchored_fs::removal_original_name(&actual_name)
-            .unwrap_or_else(|| actual_name.clone());
         let name = name
             .to_str()
             .ok_or(PreparedResultJournalError::InvalidDirectory)?;
         if entries.len() == MAX_ORPHAN_DIRECTORY_ENTRIES || !is_owned_orphan_file(name) {
             return Err(PreparedResultJournalError::InvalidDirectory);
         }
-        let authority = root_guard
-            .open_inventory_file(&entry.path(), "pin-journal-orphan-file")
-            .map_err(migration_guard_error)?
+        let file = root_authority
+            .open_regular_optional(&root.join(name), "open-journal-orphan-file")
+            .map_err(|source| anchored_journal_error(source, "open-journal-orphan-file"))?
             .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-        entries.push(authority);
+        entries.push(file);
     }
-    Ok(Some((root_guard, entries)))
+    for entry in entries {
+        root_authority
+            .remove_file(&entry, "remove-journal-orphan-file")
+            .map_err(|source| anchored_journal_error(source, "remove-journal-orphan-file"))?;
+    }
+    namespace
+        .runtime
+        .directory
+        .remove_directory(&root_authority, "remove-journal-directory")
+        .map_err(|source| anchored_journal_error(source, "remove-journal-directory"))?;
+    namespace.verify()?;
+    Ok(true)
 }
 
 fn is_owned_orphan_file(name: &str) -> bool {
     name == JOURNAL_STATE_FILE
         || name == JOURNAL_RESULT_FILE
-        || name == "lock"
-        || name.starts_with(&format!(".{JOURNAL_STATE_FILE}."))
-        || name.starts_with(&format!(".{JOURNAL_RESULT_FILE}."))
+        || is_current_temporary_name(name, JOURNAL_STATE_FILE)
+        || is_current_temporary_name(name, JOURNAL_RESULT_FILE)
 }
 
-fn read_bounded_anchored_file(
+fn write_atomic(
     root: &crate::anchored_fs::AnchoredDirectory,
     name: &str,
+    bytes: &[u8],
+) -> Result<(), PreparedResultJournalError> {
+    let temporary = loop {
+        let suffix = JOURNAL_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = root
+            .path()
+            .join(format!(".{name}.{}.{}", std::process::id(), suffix));
+        match root.create_new_regular(&path, "create-journal-temporary") {
+            Ok(file) => break file,
+            Err(crate::anchored_fs::AnchoredFsError::Io { ref source, .. })
+                if source.kind() == io::ErrorKind::AlreadyExists =>
+            {
+                continue;
+            }
+            Err(source) => {
+                return Err(anchored_journal_error(source, "create-journal-temporary"));
+            }
+        }
+    };
+    temporary
+        .write_all_sync(bytes)
+        .map_err(|source| anchored_journal_error(source, "write-journal-temporary"))?;
+    let destination = root.path().join(name);
+    root.rename_file(&temporary, &destination, true, "publish-journal-file")
+        .map_err(|source| anchored_journal_error(source, "publish-journal-file"))?;
+    root.sync()
+        .map_err(|source| anchored_journal_error(source, "sync-journal-directory-after-file"))
+}
+
+fn read_bounded_file(
+    root: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
     maximum: usize,
     operation: &'static str,
 ) -> Result<Vec<u8>, PreparedResultJournalError> {
-    let path = root.path().join(name);
-    root.open_regular_optional(&path, operation)
-        .map_err(migration_guard_error)?
-        .ok_or(PreparedResultJournalError::Incomplete)?
+    let file = root
+        .open_regular_optional(path, operation)
+        .map_err(|source| anchored_journal_error(source, operation))?
+        .ok_or(PreparedResultJournalError::Incomplete)?;
+    let length = file
+        .length()
+        .map_err(|source| anchored_journal_error(source, operation))?;
+    if length > maximum as u64 {
+        return Err(PreparedResultJournalError::InvalidState);
+    }
+    let bytes = file
         .read_bounded(maximum as u64)
-        .map_err(migration_guard_error)
+        .map_err(|source| anchored_journal_error(source, operation))?;
+    if bytes.len() > maximum {
+        return Err(PreparedResultJournalError::InvalidState);
+    }
+    file.verify_path_binding()
+        .map_err(|source| anchored_journal_error(source, operation))?;
+    root.verify_path_binding()
+        .map_err(|source| anchored_journal_error(source, operation))?;
+    Ok(bytes)
 }
 
 fn acquire_namespace_lock(
-    namespace: &crate::anchored_fs::AnchoredDirectory,
+    namespace: &PreparedResultJournalNamespace,
     key: AttemptExecutionKey,
 ) -> Result<OwnedAdvisoryLock, PreparedResultJournalError> {
-    let path = namespace_lock_path(namespace.path(), key);
+    namespace.verify()?;
+    let path = namespace_lock_path(namespace.runtime.directory.path(), key);
     let lock = namespace
-        .open_or_create_regular(&path, "open-journal-namespace-lock")
-        .map_err(migration_guard_error)?;
-    lock_exclusive(lock, &path)
+        .runtime
+        .directory
+        .open_or_create_regular(&path, "open-journal-key-lock")
+        .map_err(|source| anchored_journal_error(source, "open-journal-key-lock"))?;
+    OwnedAdvisoryLock::try_exclusive_bound(lock)
+        .map_err(|source| anchored_journal_error(source, "lock-journal-key"))
 }
 
-fn lock_exclusive(
-    lock: crate::anchored_fs::AnchoredFile,
-    path: &Path,
-) -> Result<OwnedAdvisoryLock, PreparedResultJournalError> {
-    OwnedAdvisoryLock::try_exclusive_bound(lock).map_err(|source| {
-        let (_, _, source) = source.into_io_parts("lock-journal-namespace");
-        io_error("lock-journal-namespace", path, source)
-    })
+fn anchored_journal_error(
+    source: crate::anchored_fs::AnchoredFsError,
+    operation: &'static str,
+) -> PreparedResultJournalError {
+    let (operation, path, source) = source.into_io_parts(operation);
+    io_error(operation, &path, source)
 }
 
 fn validate_namespace(path: &Path) -> Result<(), PreparedResultJournalError> {
@@ -1515,421 +1221,148 @@ fn validate_namespace(path: &Path) -> Result<(), PreparedResultJournalError> {
     }
 }
 
-#[derive(Debug)]
-struct RuntimeNamespace {
-    guard: crate::anchored_fs::AnchoredDirectory,
-    _owner_lock: OwnedAdvisoryLock,
-    terminal_orphans: Mutex<std::collections::BTreeSet<std::ffi::OsString>>,
-}
-
-impl RuntimeNamespace {
-    fn has_terminal(&self, logical_path: &Path) -> bool {
-        logical_path.file_name().is_some_and(|name| {
-            self.terminal_orphans
-                .lock()
-                .map_or(true, |terminals| terminals.contains(name))
-        })
-    }
-
-    fn record_terminal(&self, logical_path: &Path) -> Result<(), PreparedResultJournalError> {
-        let name = logical_path
-            .file_name()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?
-            .to_owned();
-        self.terminal_orphans
-            .lock()
-            .map_err(|_| PreparedResultJournalError::RecoveryRequired)?
-            .insert(name);
-        Ok(())
-    }
-
-    fn has_terminal_key(&self, key: AttemptExecutionKey) -> bool {
-        self.has_terminal(&staged_path(self.path(), key))
-            || self.has_terminal(&retired_path(self.path(), key))
-    }
-}
-
-impl std::ops::Deref for RuntimeNamespace {
-    type Target = crate::anchored_fs::AnchoredDirectory;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-fn reject_active_migration(namespace: &RuntimeNamespace) -> Result<(), PreparedResultJournalError> {
-    namespace
-        ._owner_lock
-        .verify_path_binding()
-        .map_err(migration_guard_error)?;
-    reject_active_migration_guard(&namespace.guard)
-}
-
-fn reject_active_migration_guard(
+fn validate_runtime_namespace(
     namespace: &crate::anchored_fs::AnchoredDirectory,
 ) -> Result<(), PreparedResultJournalError> {
-    namespace
-        .verify_path_binding()
-        .map_err(migration_guard_error)?;
-    if crate::operational_state_migration::receipt::marker_present_guarded(namespace).map_err(
-        |source| {
-            io_error(
-                "inspect-operational-state-migration",
-                namespace.path(),
-                source,
-            )
-        },
-    )? {
-        Err(PreparedResultJournalError::RecoveryRequired)
-    } else {
-        Ok(())
-    }
-}
-
-pub(crate) fn acquire_runtime_owner_lock(
-    namespace: &crate::anchored_fs::AnchoredDirectory,
-) -> Result<OwnedAdvisoryLock, PreparedResultJournalError> {
-    let path = namespace.path().join(JOURNAL_OWNER_LOCK);
-    let lock = namespace
-        .open_or_create_regular(&path, "open-runtime-namespace-owner-lock")
-        .map_err(migration_guard_error)?;
-    lock_exclusive(lock, &path)
-}
-
-fn migration_guard_error(error: crate::anchored_fs::AnchoredFsError) -> PreparedResultJournalError {
-    let (operation, path, source) = error.into_io_parts("guard-prepared-result-namespace");
-    io_error(operation, &path, source)
-}
-
-fn reject_unfenced_migration_entries(
-    namespace: &crate::anchored_fs::AnchoredDirectory,
-) -> Result<std::collections::BTreeSet<std::ffi::OsString>, PreparedResultJournalError> {
-    let cleanup_keys = sealed_prepared_cleanup_keys(namespace)?;
-    let anchored_namespace = namespace.anchored_path();
-    let mut entries = 0usize;
-    let mut bytes = 0u64;
-    let mut terminal_orphans = std::collections::BTreeSet::new();
-    let mut orphan_keys = std::collections::BTreeSet::new();
-    for entry in fs::read_dir(&anchored_namespace).map_err(|source| {
-        io_error(
+    let root = namespace.path().to_owned();
+    let mut entry_count = 0usize;
+    let mut journal_keys = std::collections::BTreeSet::new();
+    for entry_name in namespace
+        .entry_names(
+            MAX_RUNTIME_JOURNAL_ENTRIES,
             "read-runtime-journal-namespace",
-            &anchored_namespace,
-            source,
         )
-    })? {
-        let entry = entry.map_err(|source| {
-            io_error(
-                "read-runtime-journal-namespace-entry",
-                &anchored_namespace,
-                source,
-            )
-        })?;
-        let metadata = admit_runtime_entry(&mut entries, &mut bytes, &entry.path())?;
-        let actual_name = entry.file_name();
-        if let Some(original_name) = crate::anchored_fs::removal_original_name(&actual_name) {
-            if !terminal_orphans.insert(original_name.clone()) {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
-            let name = original_name
-                .to_str()
-                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-            let key = name
-                .strip_prefix(JOURNAL_STAGED_PREFIX)
-                .or_else(|| name.strip_prefix(JOURNAL_RETIRED_PREFIX));
-            if !key
-                .is_some_and(|name| is_lower_hex(name, 64) && orphan_keys.insert(name.to_owned()))
-                || !metadata.file_type().is_dir()
-            {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
-            let root = namespace
-                .open_inventory_child(&entry.path(), "open-runtime-journal-tombstone")
-                .map_err(migration_guard_error)?;
-            inspect_runtime_journal_directory(
-                &root,
-                true,
-                cleanup_keys.as_ref(),
-                &mut entries,
-                &mut bytes,
-            )?;
-            continue;
+        .map_err(|source| anchored_journal_error(source, "read-runtime-journal-namespace"))?
+    {
+        entry_count = entry_count
+            .checked_add(1)
+            .ok_or(PreparedResultJournalError::RecoveryRequired)?;
+        if entry_count > MAX_RUNTIME_JOURNAL_ENTRIES {
+            return Err(PreparedResultJournalError::RecoveryRequired);
         }
-        let name = actual_name
-            .to_str()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-        let file_type = metadata.file_type();
-        if name == crate::operational_state_migration::receipt::ACTIVE_MARKER {
-            if !file_type.is_file() {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
-            continue;
-        }
-        if name == JOURNAL_OWNER_LOCK {
-            if !file_type.is_file() {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
-            continue;
-        }
-        if name.starts_with(JOURNAL_LOCK_PREFIX) {
-            if !name
-                .strip_prefix(JOURNAL_LOCK_PREFIX)
-                .is_some_and(|name| is_lower_hex(name, 64))
-                || !file_type.is_file()
-            {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
-            continue;
-        }
-        if name.starts_with(JOURNAL_STAGED_PREFIX) || name.starts_with(JOURNAL_RETIRED_PREFIX) {
-            let key = name
-                .strip_prefix(JOURNAL_STAGED_PREFIX)
-                .or_else(|| name.strip_prefix(JOURNAL_RETIRED_PREFIX));
-            if !key
-                .is_some_and(|name| is_lower_hex(name, 64) && orphan_keys.insert(name.to_owned()))
-                || !file_type.is_dir()
-            {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
-            let root = namespace
-                .open_inventory_child(&entry.path(), "open-runtime-journal-orphan")
-                .map_err(migration_guard_error)?;
-            inspect_runtime_journal_directory(
-                &root,
-                true,
-                cleanup_keys.as_ref(),
-                &mut entries,
-                &mut bytes,
-            )?;
-            continue;
-        }
-        if !is_lower_hex(name, 64) || !file_type.is_dir() {
-            return Err(PreparedResultJournalError::InvalidDirectory);
-        }
-        let root = namespace
-            .open_child(&entry.path(), "open-runtime-journal")
-            .map_err(migration_guard_error)?;
-        inspect_runtime_journal_directory(
-            &root,
-            false,
-            cleanup_keys.as_ref(),
-            &mut entries,
-            &mut bytes,
-        )
-        .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
-    }
-    Ok(terminal_orphans)
-}
+        let name = entry_name
+            .into_string()
+            .map_err(|_| PreparedResultJournalError::InvalidDirectory)?;
+        let path = root.join(&name);
 
-fn inspect_runtime_journal_directory(
-    root: &crate::anchored_fs::AnchoredDirectory,
-    orphan: bool,
-    cleanup_keys: Option<&std::collections::BTreeSet<String>>,
-    entries: &mut usize,
-    bytes: &mut u64,
-) -> Result<(), PreparedResultJournalError> {
-    let anchored = root.anchored_path();
-    let terminal_orphan = orphan
-        && root
-            .path()
-            .file_name()
-            .and_then(crate::anchored_fs::removal_original_name)
-            .is_some();
-    let orphan_receipt = if orphan {
-        crate::operational_state_migration::receipt::load_phase_receipt(
-            root,
-            ORPHAN_CLEANUP_RECEIPT,
-            ORPHAN_CLEANUP_OUTPUT_SCHEMA,
-        )
-        .map_err(|_| PreparedResultJournalError::RecoveryRequired)?
-    } else {
-        None
-    };
-    let mut orphan_entries = Vec::new();
-    let mut orphan_receipt_present = false;
-    let mut orphan_receipt_pending = false;
-    let mut state = false;
-    let mut result = false;
-    for entry in fs::read_dir(&anchored)
-        .map_err(|source| io_error("read-runtime-journal", &anchored, source))?
-    {
-        let entry =
-            entry.map_err(|source| io_error("read-runtime-journal-entry", &anchored, source))?;
-        let metadata = admit_runtime_entry(entries, bytes, &entry.path())?;
-        let actual_name = entry.file_name();
-        if orphan
-            && (actual_name == ORPHAN_CLEANUP_RECEIPT
-                || actual_name == ORPHAN_CLEANUP_RECEIPT_PENDING)
-        {
-            if !metadata.file_type().is_file() {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
-            if actual_name == ORPHAN_CLEANUP_RECEIPT {
-                orphan_receipt_present = true;
-            } else {
-                orphan_receipt_pending = true;
-            }
+        if name == JOURNAL_OWNER_LOCK {
+            validate_runtime_lock(namespace, &path)?;
             continue;
         }
-        let name = crate::anchored_fs::removal_original_name(&actual_name)
-            .unwrap_or_else(|| actual_name.clone())
-            .to_str()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?
-            .to_owned();
-        if let Some(logical_name) = crate::anchored_fs::removal_original_name(&actual_name) {
-            let authority = root
-                .open_inventory_file(&entry.path(), "pin-runtime-removal-file")
-                .map_err(migration_guard_error)?
-                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-            if metadata.len() != 0 {
-                if !orphan {
-                    return Err(PreparedResultJournalError::InvalidDirectory);
-                }
-            }
-            if orphan && is_owned_orphan_file(&name) {
-                orphan_entries.push(authority);
-                continue;
-            }
-            let journal = root
-                .path()
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-            let logical_name = logical_name
-                .to_str()
-                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-            if !cleanup_keys.is_some_and(|keys| {
-                keys.contains(&migration::prepared_cleanup_key(
-                    journal,
-                    logical_name,
-                    authority.identity(),
-                ))
-            }) {
+        if let Some(digest) = name.strip_prefix(JOURNAL_LOCK_PREFIX) {
+            if !is_lower_hex(digest, 64) {
                 return Err(PreparedResultJournalError::InvalidDirectory);
             }
+            validate_runtime_lock(namespace, &path)?;
             continue;
         }
-        if !metadata.file_type().is_file()
-            || metadata.len() > runtime_journal_file_limit(&name) as u64
-        {
+
+        let (digest, incomplete) = if is_lower_hex(&name, 64) {
+            (name.as_str(), false)
+        } else if let Some(digest) = name.strip_prefix(JOURNAL_STAGED_PREFIX) {
+            (digest, true)
+        } else {
             return Err(PreparedResultJournalError::InvalidDirectory);
+        };
+        if !is_lower_hex(digest, 64) || !journal_keys.insert(digest.to_owned()) {
+            return Err(PreparedResultJournalError::RecoveryRequired);
         }
-        match name.as_str() {
-            JOURNAL_STATE_FILE if !state => state = true,
-            JOURNAL_RESULT_FILE if !result => result = true,
-            name if orphan && is_owned_orphan_file(name) => {
-                if orphan_receipt.is_some() {
-                    orphan_entries.push(
-                        root.open_inventory_file(&entry.path(), "pin-sealed-orphan-file")
-                            .map_err(migration_guard_error)?
-                            .ok_or(PreparedResultJournalError::InvalidDirectory)?,
-                    );
-                }
-            }
-            _ => return Err(PreparedResultJournalError::InvalidDirectory),
-        }
-    }
-    if (orphan_receipt_present && orphan_receipt_pending)
-        || (terminal_orphan && orphan_receipt_pending)
-    {
-        return Err(PreparedResultJournalError::RecoveryRequired);
-    }
-    if terminal_orphan || !orphan_entries.is_empty() {
-        validate_orphan_cleanup_receipt(
-            root,
-            &orphan_entries,
-            orphan_receipt
-                .as_ref()
-                .ok_or(PreparedResultJournalError::RecoveryRequired)?,
-        )?;
-    }
-    if !orphan && !(state && result) {
-        return Err(PreparedResultJournalError::RecoveryRequired);
+        let journal = namespace
+            .open_directory(&path, "open-runtime-journal-entry")
+            .map_err(|source| anchored_journal_error(source, "open-runtime-journal-entry"))?;
+        validate_runtime_journal_directory(&journal, incomplete, &mut entry_count)?;
     }
     Ok(())
 }
 
-fn sealed_prepared_cleanup_keys(
+fn validate_runtime_lock(
     namespace: &crate::anchored_fs::AnchoredDirectory,
-) -> Result<Option<std::collections::BTreeSet<String>>, PreparedResultJournalError> {
-    let Some(receipts) =
-        crate::operational_state_migration::receipt::completed_receipt_directory_guarded(namespace)
-            .map_err(|source| {
-                io_error(
-                    "open-completed-migration-receipts",
-                    namespace.path(),
-                    source,
-                )
-            })?
-    else {
-        return Ok(None);
-    };
-    let receipt = crate::operational_state_migration::receipt::load_phase_receipt(
-        &receipts,
-        crate::operational_state_migration::receipt::PREPARED_RECEIPT,
-        migration::OUTPUT_SCHEMA,
-    )
-    .map_err(|_| PreparedResultJournalError::RecoveryRequired)?
-    .ok_or(PreparedResultJournalError::RecoveryRequired)?;
-    Ok(Some(
-        receipt
-            .objects
-            .into_iter()
-            .filter(|object| object.key.starts_with("cleanup/"))
-            .map(|object| object.key)
-            .collect(),
-    ))
-}
-
-fn admit_runtime_entry(
-    entries: &mut usize,
-    bytes: &mut u64,
     path: &Path,
-) -> Result<fs::Metadata, PreparedResultJournalError> {
-    *entries = entries
-        .checked_add(1)
-        .ok_or(PreparedResultJournalError::RecoveryRequired)?;
-    if *entries > crate::operational_state_migration::MAX_OPERATIONAL_STATE_RUNTIME_ENTRIES {
-        return Err(PreparedResultJournalError::RecoveryRequired);
-    }
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|source| io_error("bound-runtime-journal-entry", path, source))?;
-    *bytes = bytes
-        .checked_add(metadata.len())
-        .ok_or(PreparedResultJournalError::RecoveryRequired)?;
-    let maximum = crate::operational_state_migration::MAX_OPERATIONAL_STATE_RUNTIME_ENTRIES as u64
-        * (MAX_PREPARED_SEMANTIC_RESULT_BYTES as u64 + MAX_JOURNAL_STATE_BYTES as u64);
-    if *bytes > maximum {
-        return Err(PreparedResultJournalError::RecoveryRequired);
-    }
-    Ok(metadata)
-}
-
-fn runtime_journal_file_limit(name: &str) -> usize {
-    if name == JOURNAL_RESULT_FILE || name.starts_with(&format!(".{JOURNAL_RESULT_FILE}.")) {
-        MAX_PREPARED_SEMANTIC_RESULT_BYTES
+) -> Result<(), PreparedResultJournalError> {
+    let lock = namespace
+        .open_regular_optional(path, "open-runtime-journal-lock")
+        .map_err(|source| anchored_journal_error(source, "open-runtime-journal-lock"))?
+        .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+    let length = lock
+        .length()
+        .map_err(|source| anchored_journal_error(source, "inspect-runtime-journal-lock"))?;
+    if length == 0 {
+        Ok(())
     } else {
-        MAX_JOURNAL_STATE_BYTES
+        Err(PreparedResultJournalError::InvalidDirectory)
     }
 }
 
-#[cfg(test)]
-thread_local! {
-    static JOURNAL_RACE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        std::cell::RefCell::new(None);
-}
-
-#[cfg(test)]
-fn install_journal_race_hook(hook: impl FnOnce() + 'static) {
-    JOURNAL_RACE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
-}
-
-#[cfg(test)]
-fn run_journal_race_hook() {
-    JOURNAL_RACE_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
+fn validate_runtime_journal_directory(
+    journal: &crate::anchored_fs::AnchoredDirectory,
+    incomplete: bool,
+    total_entries: &mut usize,
+) -> Result<(), PreparedResultJournalError> {
+    let root = journal.path().to_owned();
+    let mut result_present = false;
+    let mut state_present = false;
+    let mut local_entries = 0usize;
+    for entry_name in journal
+        .entry_names(
+            MAX_ORPHAN_DIRECTORY_ENTRIES + 1,
+            "read-runtime-journal-directory",
+        )
+        .map_err(|source| anchored_journal_error(source, "read-runtime-journal-directory"))?
+    {
+        local_entries += 1;
+        *total_entries = total_entries
+            .checked_add(1)
+            .ok_or(PreparedResultJournalError::RecoveryRequired)?;
+        if local_entries > MAX_ORPHAN_DIRECTORY_ENTRIES
+            || *total_entries > MAX_RUNTIME_JOURNAL_ENTRIES
+        {
+            return Err(PreparedResultJournalError::RecoveryRequired);
         }
-    });
+        let name = entry_name
+            .into_string()
+            .map_err(|_| PreparedResultJournalError::InvalidDirectory)?;
+        let maximum = if name == JOURNAL_RESULT_FILE {
+            result_present = true;
+            MAX_PREPARED_SEMANTIC_RESULT_BYTES
+        } else if name == JOURNAL_STATE_FILE {
+            state_present = true;
+            MAX_JOURNAL_STATE_BYTES
+        } else if incomplete && is_current_temporary_name(&name, JOURNAL_RESULT_FILE) {
+            MAX_PREPARED_SEMANTIC_RESULT_BYTES
+        } else if incomplete && is_current_temporary_name(&name, JOURNAL_STATE_FILE) {
+            MAX_JOURNAL_STATE_BYTES
+        } else {
+            return Err(PreparedResultJournalError::InvalidDirectory);
+        };
+        let file = journal
+            .open_regular_optional(&root.join(&name), "open-runtime-journal-file")
+            .map_err(|source| anchored_journal_error(source, "open-runtime-journal-file"))?
+            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+        if file
+            .length()
+            .map_err(|source| anchored_journal_error(source, "inspect-runtime-journal-file"))?
+            > maximum as u64
+        {
+            return Err(PreparedResultJournalError::InvalidState);
+        }
+    }
+    if !incomplete && (!result_present || !state_present || local_entries != 2) {
+        return Err(PreparedResultJournalError::Incomplete);
+    }
+    Ok(())
+}
+
+fn is_current_temporary_name(name: &str, stable: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(&format!(".{stable}.")) else {
+        return false;
+    };
+    let Some((process, ordinal)) = suffix.split_once('.') else {
+        return false;
+    };
+    !process.is_empty()
+        && process.bytes().all(|byte| byte.is_ascii_digit())
+        && !ordinal.is_empty()
+        && ordinal.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn is_lower_hex(value: &str, length: usize) -> bool {
@@ -1957,7 +1390,604 @@ fn hex(bytes: [u8; 32]) -> String {
     encoded
 }
 
-mod migration;
-
 #[cfg(test)]
-mod tests;
+mod tests {
+    // crucible-lint: allow panic-shortcut -- journal tests use panic shortcuts for precise fixture failures.
+    #![allow(clippy::expect_used)]
+
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    use crucible::VirtualTime;
+    use crucible::model::{MeasurementDefinitions, MeasurementTerminalState};
+    use crucible_campaign::{
+        AttemptExecutionScope, AttemptId, BranchPathId, CampaignFactId, CampaignHash,
+        CampaignLineageId, ConfigurationArtifact, ConfigurationId, CoverageProjection, ExecutionId,
+        MeasurementSet, Observation, ObservationCandidate, PropertyVerdictSet, ScenarioArtifactId,
+        ScenarioDefId, StopOutcome,
+    };
+    use crucible_cas::content_store::{ContentId, ObjectKind};
+    use tempfile::TempDir;
+
+    use crate::{
+        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, evaluate_crucible_measurement_publication,
+    };
+
+    use super::*;
+
+    const TEST_PAYLOAD_LIMIT: usize = 1024 * 1024;
+
+    #[test]
+    fn journal_create_reopen_authenticate_and_remove_are_exact() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
+        let key = semantic_key(b"main");
+        let execution = ExecutionId::from_bytes([0x51; 16]).expect("execution");
+        let result = observation_result(0x61, key.attempt());
+
+        let (journal, disposition) = DirectoryPreparedResultJournal::create(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            result.clone(),
+        )
+        .expect("create journal");
+        assert_eq!(disposition, PreparedResultJournalCreateDisposition::Created);
+        assert_eq!(journal.result(), &result);
+        assert!(journal.root().is_dir());
+        let namespace_lock = namespace_lock_path(namespace.path(), key);
+        let lock_inode = fs::metadata(&namespace_lock)
+            .expect("namespace lock metadata")
+            .ino();
+        assert!(matches!(
+            DirectoryPreparedResultJournal::open(&runtime, key, execution, TEST_PAYLOAD_LIMIT,),
+            Err(PreparedResultJournalError::Io {
+                operation: "lock-file",
+                ..
+            })
+        ));
+        let root = journal.root().to_path_buf();
+        let retained_owner_description = journal
+            .namespace_lock
+            .file()
+            .try_clone()
+            .expect("duplicate successful owner lock descriptor");
+        drop(journal);
+
+        let failed_open_lock = acquire_namespace_lock(&runtime, key)
+            .expect("acquire lock for failed authenticated open");
+        let retained_failed_open_description = failed_open_lock
+            .file()
+            .try_clone()
+            .expect("duplicate failed-open lock descriptor");
+        assert!(matches!(
+            DirectoryPreparedResultJournal::open_locked(
+                runtime.clone(),
+                root.clone(),
+                key,
+                Some(ExecutionId::from_bytes([0x52; 16]).expect("other execution")),
+                TEST_PAYLOAD_LIMIT,
+                failed_open_lock,
+                false,
+            ),
+            Err(PreparedResultJournalError::InvalidState)
+        ));
+        let reopened_after_failure =
+            DirectoryPreparedResultJournal::open(&runtime, key, execution, TEST_PAYLOAD_LIMIT)
+                .expect("failed authenticated open releases retained lock description");
+        drop(reopened_after_failure);
+        drop(retained_failed_open_description);
+        assert!(matches!(
+            DirectoryPreparedResultJournal::open(&runtime, key, execution, TEST_PAYLOAD_LIMIT / 2,),
+            Err(PreparedResultJournalError::InvalidState)
+        ));
+
+        let (journal, disposition) = DirectoryPreparedResultJournal::create(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            result.clone(),
+        )
+        .expect("reopen exact journal");
+        assert_eq!(
+            disposition,
+            PreparedResultJournalCreateDisposition::Existing
+        );
+        drop(journal);
+        assert!(matches!(
+            DirectoryPreparedResultJournal::create(
+                &runtime,
+                key,
+                execution,
+                TEST_PAYLOAD_LIMIT,
+                observation_result(0x62, key.attempt()),
+            ),
+            Err(PreparedResultJournalError::ResultMismatch)
+        ));
+
+        let journal =
+            DirectoryPreparedResultJournal::open(&runtime, key, execution, TEST_PAYLOAD_LIMIT)
+                .expect("open complete journal");
+        journal.remove().expect("remove journal");
+        journal.remove().expect("repeat durable removal");
+        assert!(!root.exists());
+        assert_eq!(
+            fs::metadata(&namespace_lock)
+                .expect("persistent namespace lock metadata")
+                .ino(),
+            lock_inode
+        );
+        drop(journal);
+        let (recreated, disposition) = DirectoryPreparedResultJournal::create(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            result,
+        )
+        .expect("recreate journal after removal");
+        assert_eq!(disposition, PreparedResultJournalCreateDisposition::Created);
+        assert_eq!(
+            fs::metadata(&namespace_lock)
+                .expect("reused namespace lock metadata")
+                .ino(),
+            lock_inode
+        );
+        recreated.remove().expect("remove recreated journal");
+        drop(retained_owner_description);
+    }
+
+    #[test]
+    fn journal_v2_owns_raw_measurement_leaf() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
+        let key = semantic_key(b"measurement-evidence");
+        let execution = ExecutionId::from_bytes([0x63; 16]).expect("execution");
+        let result = measurement_result(0x64, key.attempt());
+        let payload = result
+            .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
+            .expect("v2 prepared result");
+
+        let (journal, disposition) = DirectoryPreparedResultJournal::create(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            result.clone(),
+        )
+        .expect("create v2 journal");
+        assert_eq!(disposition, PreparedResultJournalCreateDisposition::Created);
+        assert_eq!(journal.result(), &result);
+        assert_eq!(journal.result().measurement_replay_evidence().len(), 1);
+        assert_eq!(
+            fs::read(journal.root().join(JOURNAL_RESULT_FILE)).expect("v2 payload"),
+            payload
+        );
+        assert_eq!(
+            blake3::hash(&payload).to_hex().as_str(),
+            "4b7ab0776cae523fddb038c156802925bb15045abd9726f90354055beb63c76e"
+        );
+        let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v2 state");
+        assert_eq!(
+            blake3::hash(&state).to_hex().as_str(),
+            "50fd207cf03f4def72a72a8c216dac33739e45632f0cb835ec49c899d7a8506a"
+        );
+        journal.remove().expect("remove v2 journal");
+    }
+
+    #[test]
+    fn journal_rejects_corrupt_incomplete_and_nonsemantic_state() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
+        let key = semantic_key(b"corrupt");
+        let execution = ExecutionId::from_bytes([0x71; 16]).expect("execution");
+        let (journal, _) = DirectoryPreparedResultJournal::create(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            observation_result(0x72, key.attempt()),
+        )
+        .expect("create journal");
+        let root = journal.root().to_path_buf();
+        drop(journal);
+
+        let state_path = root.join(JOURNAL_STATE_FILE);
+        let mut state = fs::read(&state_path).expect("read state");
+        state[0] ^= 0xff;
+        fs::write(&state_path, state).expect("corrupt state");
+        assert!(matches!(
+            DirectoryPreparedResultJournal::open(&runtime, key, execution, TEST_PAYLOAD_LIMIT,),
+            Err(PreparedResultJournalError::InvalidState)
+        ));
+
+        let incomplete_namespace = TempDir::new().expect("incomplete namespace");
+        fs::create_dir(journal_path(incomplete_namespace.path(), key))
+            .expect("incomplete journal directory");
+        assert!(matches!(
+            PreparedResultJournalNamespace::open(incomplete_namespace.path()),
+            Err(PreparedResultJournalError::Incomplete)
+        ));
+
+        let request = CampaignFactId::parse(&typed_content_text(
+            "crucible.campaign.fact",
+            ObjectKind::CampaignFact,
+            14,
+            b"savepoint-capture-request",
+        ))
+        .expect("capture request ID");
+        let nonsemantic = AttemptExecutionKey::new_scoped(
+            key.lineage(),
+            key.attempt(),
+            AttemptExecutionScope::SavepointCapture { request },
+        );
+        assert!(matches!(
+            DirectoryPreparedResultJournal::create(
+                &runtime,
+                nonsemantic,
+                execution,
+                TEST_PAYLOAD_LIMIT,
+                observation_result(0x73, key.attempt()),
+            ),
+            Err(PreparedResultJournalError::NonSemanticKey)
+        ));
+    }
+
+    #[test]
+    fn journal_rejects_attempt_mismatch_before_creating_lock_or_staging() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
+        let key = semantic_key(b"attempt-binding");
+        let other = semantic_key(b"other-attempt").attempt();
+        let execution = ExecutionId::from_bytes([0x81; 16]).expect("execution");
+
+        assert!(matches!(
+            DirectoryPreparedResultJournal::create(
+                &runtime,
+                key,
+                execution,
+                TEST_PAYLOAD_LIMIT,
+                observation_result(0x82, other),
+            ),
+            Err(PreparedResultJournalError::AttemptMismatch)
+        ));
+        assert_eq!(
+            fs::read_dir(namespace.path())
+                .expect("read namespace")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn ledger_gated_cleanup_recovers_fixed_partial_staging_and_visible_removal() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let key = semantic_key(b"orphan-recovery");
+        let execution = ExecutionId::from_bytes([0x91; 16]).expect("execution");
+        let result = observation_result(0x92, key.attempt());
+
+        let staged = staged_path(namespace.path(), key);
+        fs::create_dir(&staged).expect("partial staging directory");
+        fs::write(staged.join(JOURNAL_RESULT_FILE), b"partial").expect("partial result");
+        fs::write(staged.join(".state-v2.123.0"), b"partial")
+            .expect("partial atomic state temporary");
+        let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
+        assert!(matches!(
+            DirectoryPreparedResultJournal::create(
+                &runtime,
+                key,
+                execution,
+                TEST_PAYLOAD_LIMIT,
+                result.clone(),
+            ),
+            Err(PreparedResultJournalError::RecoveryRequired)
+        ));
+        let cleaned =
+            DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(&runtime, key)
+                .expect("clean partial staging");
+        assert_eq!(
+            cleaned,
+            PreparedResultJournalCleanupDisposition {
+                visible_removed: false,
+                staged_removed: true,
+            }
+        );
+
+        let (journal, _) = DirectoryPreparedResultJournal::create(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            result,
+        )
+        .expect("create after staged cleanup");
+        let root = journal.root().to_path_buf();
+        drop(journal);
+        fs::remove_file(root.join(JOURNAL_RESULT_FILE)).expect("simulate partial visible cleanup");
+
+        let cleaned =
+            DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(&runtime, key)
+                .expect("finish partial visible removal");
+        assert_eq!(
+            cleaned,
+            PreparedResultJournalCleanupDisposition {
+                visible_removed: true,
+                staged_removed: false,
+            }
+        );
+        assert_eq!(
+            DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(&runtime, key,)
+                .expect("idempotent orphan cleanup"),
+            PreparedResultJournalCleanupDisposition::default()
+        );
+    }
+
+    #[test]
+    fn hidden_journal_becomes_visible_only_after_commit() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
+        let key = semantic_key(b"hidden-publication-root");
+        let execution = ExecutionId::from_bytes([0x94; 16]).expect("execution");
+        let visible = journal_path(&runtime.root(), key);
+        let staged = staged_path(&runtime.root(), key);
+
+        let (mut journal, disposition) = DirectoryPreparedResultJournal::prepare_staged(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            observation_result(0x95, key.attempt()),
+        )
+        .expect("prepare hidden journal");
+        assert_eq!(disposition, PreparedResultJournalCreateDisposition::Created);
+        assert!(staged.is_dir());
+        assert!(!visible.exists());
+
+        journal.commit_staged().expect("commit visible journal");
+        assert!(!staged.exists());
+        assert!(visible.is_dir());
+        journal.commit_staged().expect("repeat journal commit");
+    }
+
+    #[test]
+    fn namespace_owner_and_replacement_fence_runtime_mutation() {
+        let parent = TempDir::new().expect("journal parent");
+        let path = parent.path().join("journals");
+        fs::create_dir(&path).expect("journal namespace");
+        let runtime = PreparedResultJournalNamespace::open(&path).expect("runtime");
+        assert!(PreparedResultJournalNamespace::open(&path).is_err());
+
+        let detached = parent.path().join("detached");
+        fs::rename(&path, &detached).expect("detach namespace");
+        fs::create_dir(&path).expect("replacement namespace");
+        let key = semantic_key(b"replaced-namespace");
+        assert!(
+            DirectoryPreparedResultJournal::prepare_staged(
+                &runtime,
+                key,
+                ExecutionId::from_bytes([0x96; 16]).expect("execution"),
+                TEST_PAYLOAD_LIMIT,
+                observation_result(0x97, key.attempt()),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn key_lock_replacement_fences_hidden_commit() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
+        let key = semantic_key(b"replaced-key-lock");
+        let execution = ExecutionId::from_bytes([0x98; 16]).expect("execution");
+        let (mut journal, _) = DirectoryPreparedResultJournal::prepare_staged(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            observation_result(0x99, key.attempt()),
+        )
+        .expect("prepare hidden journal");
+        let lock = namespace_lock_path(namespace.path(), key);
+        fs::rename(&lock, namespace.path().join("detached-key-lock")).expect("detach key lock");
+        fs::write(&lock, []).expect("replacement key lock");
+
+        assert!(journal.commit_staged().is_err());
+        assert!(staged_path(&runtime.root(), key).is_dir());
+        assert!(!journal_path(&runtime.root(), key).exists());
+    }
+
+    #[test]
+    fn journal_rejects_a_replaced_result_child_without_external_access() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let outside = TempDir::new().expect("outside directory");
+        let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
+        let key = semantic_key(b"replaced-result-child");
+        let execution = ExecutionId::from_bytes([0x9a; 16]).expect("execution");
+        let (journal, _) = DirectoryPreparedResultJournal::create(
+            &runtime,
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            observation_result(0x9b, key.attempt()),
+        )
+        .expect("create journal");
+        let result_path = journal.root().join(JOURNAL_RESULT_FILE);
+        let exact_bytes = fs::read(&result_path).expect("exact result bytes");
+        let outside_result = outside.path().join("outside-result");
+        fs::write(&outside_result, &exact_bytes).expect("outside result");
+        fs::remove_file(&result_path).expect("remove journal result");
+        symlink(&outside_result, &result_path).expect("replace result with symlink");
+        drop(journal);
+
+        let open_error =
+            DirectoryPreparedResultJournal::open(&runtime, key, execution, TEST_PAYLOAD_LIMIT)
+                .expect_err("reject result symlink");
+        let cleanup_error =
+            DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(&runtime, key)
+                .expect_err("reject result symlink before cleanup");
+        for error in [open_error, cleanup_error] {
+            let PreparedResultJournalError::Io { source, .. } = error else {
+                panic!("result symlink must fail during descriptor-relative resolution");
+            };
+            assert_eq!(
+                source.raw_os_error(),
+                Some(rustix::io::Errno::LOOP.raw_os_error())
+            );
+        }
+        assert_eq!(
+            fs::read(&outside_result).expect("outside result remains"),
+            exact_bytes
+        );
+    }
+
+    #[test]
+    fn runtime_namespace_rejects_unknown_entries() {
+        for name in [
+            "unexpected-visible-entry",
+            ".unexpected-hidden-entry",
+            ".collision-0000000000000000000000000000000000000000000000000000000000000000",
+            "UnexpectedEntry",
+        ] {
+            let namespace = TempDir::new().expect("journal namespace");
+            fs::write(namespace.path().join(name), []).expect("unknown entry");
+
+            assert!(PreparedResultJournalNamespace::open(namespace.path()).is_err());
+        }
+    }
+
+    fn semantic_key(marker: &[u8]) -> AttemptExecutionKey {
+        let lineage = CampaignLineageId::parse(&typed_content_text(
+            "crucible.campaign.lineage",
+            ObjectKind::CampaignFact,
+            1,
+            marker,
+        ))
+        .expect("lineage ID");
+        let attempt = AttemptId::parse(&typed_content_text(
+            "crucible.campaign.attempt",
+            ObjectKind::CampaignFact,
+            8,
+            marker,
+        ))
+        .expect("attempt ID");
+        AttemptExecutionKey::new(lineage, attempt)
+    }
+
+    fn observation_result(marker: u8, attempt: AttemptId) -> PreparedSemanticAttemptResult {
+        measurement_result(marker, attempt)
+    }
+
+    fn measurement_result(marker: u8, attempt: AttemptId) -> PreparedSemanticAttemptResult {
+        let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", &[marker, 0]));
+        let configuration = ConfigurationId::from_hash(CampaignHash::derive("test", &[marker, 2]));
+        let publication = evaluate_crucible_measurement_publication(
+            scenario,
+            configuration,
+            &MeasurementDefinitions::empty(),
+            Vec::new(),
+            MeasurementTerminalState {
+                scenario_ready_at: None,
+                at: VirtualTime { ticks: 0 },
+                node_icounts: BTreeMap::new(),
+                scheduler_quiescent: true,
+            },
+            MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+        )
+        .expect("measurement publication");
+        let (evidence, _, measurements) = publication.into_parts();
+        let candidate = observation_candidate(marker, attempt, measurements);
+
+        assert!(matches!(
+            PreparedSemanticAttemptResult::new(candidate.clone(), Vec::new(), None),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "missing measurement replay evidence"
+            })
+        ));
+        assert!(matches!(
+            PreparedSemanticAttemptResult::new(
+                candidate.clone(),
+                vec![evidence.clone(), evidence.clone()],
+                None,
+            ),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "duplicate measurement replay evidence"
+            })
+        ));
+
+        let result = PreparedSemanticAttemptResult::new(candidate, vec![evidence], None)
+            .expect("prepared measurement result");
+        let encoded = result
+            .canonical_bytes()
+            .expect("encoded measurement result");
+        assert_eq!(
+            PreparedSemanticAttemptResult::from_canonical_bytes(&encoded)
+                .expect("decoded measurement result"),
+            result
+        );
+        result
+    }
+
+    fn observation_candidate(
+        marker: u8,
+        attempt: AttemptId,
+        measurements: MeasurementSet,
+    ) -> ObservationCandidate {
+        let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", &[marker, 0]));
+        let scenario_artifact = ScenarioArtifactId::parse(&typed_content_text(
+            "crucible.campaign.scenario-artifact",
+            ObjectKind::Scenario,
+            1,
+            &[marker, 1],
+        ))
+        .expect("scenario artifact ID");
+        let configuration = ConfigurationId::from_hash(CampaignHash::derive("test", &[marker, 2]));
+        let child =
+            ConfigurationArtifact::new(scenario, scenario_artifact, configuration, 1, vec![marker])
+                .expect("configuration artifact");
+        let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
+        let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage");
+        let path = BranchPathId::parse(&typed_content_text(
+            "crucible.campaign.branch-path",
+            ObjectKind::CampaignFact,
+            2,
+            &[marker, 4],
+        ))
+        .expect("branch path ID");
+        let observation = Observation::new(
+            attempt,
+            Observation::outcome(
+                configuration,
+                child.id().expect("configuration artifact ID"),
+                path,
+                StopOutcome::TerminalSuccess,
+                measurements.id().expect("measurement ID"),
+                properties.id().expect("property ID"),
+                coverage.id().expect("coverage ID"),
+            ),
+            BTreeSet::new(),
+        )
+        .expect("observation");
+        ObservationCandidate::new(
+            child,
+            measurements,
+            properties,
+            coverage,
+            Vec::new(),
+            observation,
+        )
+        .expect("observation candidate")
+    }
+
+    fn typed_content_text(
+        tag: &str,
+        kind: ObjectKind,
+        schema_version: u32,
+        marker: &[u8],
+    ) -> String {
+        let content = ContentId::for_bytes(kind, schema_version, marker);
+        format!("{tag}@{}", content.encode())
+    }
+}

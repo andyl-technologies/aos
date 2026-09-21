@@ -3,15 +3,25 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
+fn accepted_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    match crucible::try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
+
 use crucible::model::{
     Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
     MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType, UnitId,
 };
 use crucible::{
     AssertionDef, AssertionId, AssertionPhase, Configuration, ContentHash, EventLog,
-    EventLogOffset, GuestMeasurementEvent, GuestMeasurementValue, Icount, MarkerId, NodeId,
-    NodeTemplate, ObservableEvent, Plan, Predicate, Properties, Property, QuantumOutcome,
-    QuantumTerminalVerdict, ReachableDisposition, ReadyPoint, ScenarioDefForm,
+    EventLogOffset, FingerprintSample, GuestMeasurementEvent, GuestMeasurementValue, Icount,
+    MarkerId, NodeId, NodeTemplate, ObservableEvent, Plan, Predicate, Properties, Property,
+    QuantumOutcome, QuantumTerminalVerdict, ReachableDisposition, ReadyPoint, ScenarioDefForm,
     ScenarioSelectableLimits, ScenarioSelectables, SchedulerError, SchedulerEventLogEntry,
     SchedulerQuiescence, Seed, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
@@ -25,15 +35,9 @@ use crucible_campaign::{
 use crucible_cas::content_store::ObjectKind;
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
-#[cfg(target_os = "linux")]
-use crucible_qemu::{QemuHotForkChildDiagnosticDrain, QemuVmRealizationError};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::*;
-
-fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
-    crucible::try_step(configuration, decision).expect("test decision should be valid")
-}
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
 
 fn prepared_semantic_observation(product: AttemptExecutionProduct) -> ObservationCandidate {
@@ -66,109 +70,6 @@ fn evaluate_test_measurements(
         },
         MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
     )
-}
-
-#[cfg(target_os = "linux")]
-struct HotModeledLive<'a> {
-    modeled: &'a mut dyn QemuModeledAttemptLifecycle,
-    start_materialization: Option<QemuFreshStartMaterialization>,
-    resources: AttemptResourceLimits,
-    cancellation: ExecutionCancellation,
-    event_log: EventLog,
-}
-
-#[cfg(target_os = "linux")]
-impl crate::QemuAttemptOperationalBoundary for HotModeledLive<'_> {
-    fn resource_limits(&self) -> AttemptResourceLimits {
-        self.resources
-    }
-
-    fn cancellation(&self) -> &ExecutionCancellation {
-        &self.cancellation
-    }
-
-    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.cancellation.is_canceled() {
-            Err(QemuVmRealizationError::Canceled {
-                operation: "test hot-fork modeled boundary",
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
-        self.check_operational_boundary()
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl crate::QemuHotForkLiveExecution for HotModeledLive<'_> {
-    fn take_start_materialization(
-        &mut self,
-    ) -> Result<QemuFreshStartMaterialization, QemuVmRealizationError> {
-        self.start_materialization
-            .take()
-            .ok_or_else(|| QemuVmRealizationError::Executor {
-                operation: "take test hot-fork start materialization",
-                message: String::from("test hot-fork start materialization was already taken"),
-            })
-    }
-
-    fn modeled_lifecycle(
-        &mut self,
-    ) -> Result<&mut dyn QemuModeledAttemptLifecycle, QemuVmRealizationError> {
-        Ok(self.modeled)
-    }
-
-    fn event_log_mut(&mut self) -> &mut EventLog {
-        &mut self.event_log
-    }
-
-    fn drain_diagnostics(
-        &mut self,
-    ) -> Result<QemuHotForkChildDiagnosticDrain, QemuVmRealizationError> {
-        panic!("modeled-driver test does not use child diagnostics")
-    }
-}
-
-#[cfg(target_os = "linux")]
-struct RawHotLive {
-    resources: AttemptResourceLimits,
-    cancellation: ExecutionCancellation,
-    event_log: EventLog,
-}
-
-#[cfg(target_os = "linux")]
-impl crate::QemuAttemptOperationalBoundary for RawHotLive {
-    fn resource_limits(&self) -> AttemptResourceLimits {
-        self.resources
-    }
-
-    fn cancellation(&self) -> &ExecutionCancellation {
-        &self.cancellation
-    }
-
-    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
-        Ok(())
-    }
-
-    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl crate::QemuHotForkLiveExecution for RawHotLive {
-    fn event_log_mut(&mut self) -> &mut EventLog {
-        &mut self.event_log
-    }
-
-    fn drain_diagnostics(
-        &mut self,
-    ) -> Result<QemuHotForkChildDiagnosticDrain, QemuVmRealizationError> {
-        panic!("raw-live test does not use child diagnostics")
-    }
 }
 
 struct FakeLifecycle {
@@ -358,6 +259,15 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
         self.terminal.clone()
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        _cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("fake lifecycle cannot retain a terminal checkpoint cause"),
+        })
+    }
+
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         Ok(true)
     }
@@ -390,6 +300,14 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
         })
     }
 
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("fake lifecycle has no replay launch profiles"),
+        })
+    }
+
     fn fault_evidence_snapshot(
         &self,
     ) -> Result<crucible_api::ProductionFaultEvidenceSnapshot, SchedulerError> {
@@ -400,6 +318,20 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
 
     fn pending_network_output_count(&self) -> usize {
         0
+    }
+
+    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("fake lifecycle has no execution fingerprint"),
+        })
+    }
+
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -456,6 +388,15 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         None
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        _cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("selectable lifecycle cannot retain a terminal checkpoint cause"),
+        })
+    }
+
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         Ok(self.drives > 0)
     }
@@ -475,7 +416,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         reply: &crucible_protocol::SelectionReply,
     ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
         if parent != &self.frontier
-            || valid_step(parent, Decision::Selection(decision)) != *selected
+            || accepted_step(parent, Decision::Selection(decision)) != *selected
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("selectable lifecycle rejected an inconsistent transition"),
@@ -495,6 +436,14 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         })
     }
 
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("selectable lifecycle has no replay launch profiles"),
+        })
+    }
+
     fn fault_evidence_snapshot(
         &self,
     ) -> Result<crucible_api::ProductionFaultEvidenceSnapshot, SchedulerError> {
@@ -505,6 +454,20 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
 
     fn pending_network_output_count(&self) -> usize {
         0
+    }
+
+    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("selectable lifecycle has no execution fingerprint"),
+        })
+    }
+
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -533,6 +496,7 @@ fn sticky_checkpoint_request_stops_at_a_safe_boundary_without_driving() {
         ExecutionRetentionIntent::Discard,
         ExecutionCancellation::default(),
         checkpoint_request,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     );
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::new(),
@@ -570,11 +534,16 @@ fn savepoint_capture_ignores_prelatched_checkpoint_until_attempt_stop() {
         ExecutionRetentionIntent::RetainAlways,
         ExecutionCancellation::default(),
         checkpoint_request,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .with_start_mode(AttemptStartMode::SavepointCapture {
         request: CampaignFactId::parse(&format!(
             "crucible.campaign.fact@{}",
-            ContentId::for_bytes(ObjectKind::CampaignFact, 11, b"capture-at-stop-request")
+            ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                crucible_campaign::CampaignRecordKind::Fact.schema_version(),
+                b"capture-at-stop-request",
+            )
         ))
         .expect("capture request ID"),
         configuration: ConfigurationArtifactId::parse(&format!(
@@ -702,6 +671,7 @@ fn terminal_verdict_wins_over_a_coincident_checkpoint_request() {
         ExecutionRetentionIntent::Discard,
         ExecutionCancellation::default(),
         checkpoint_request,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     );
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::new(),
@@ -817,247 +787,6 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
     assert_eq!(candidate.measurements().schema_version(), 2);
     assert!(candidate.properties().properties().is_empty());
     assert_eq!(owner.drives, 1);
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn hot_fork_driver_reuses_the_common_modeled_loop_and_seals_a_candidate() {
-    let input = input(StopCondition::EventCount(1));
-    let configuration = starting_configuration(&input);
-    let node = node("node-a");
-    let mut observed = EventLog::new();
-    let append = observed
-        .append_observable_events([ObservableEvent::guest_marker(
-            Icount { retired: 1 },
-            node,
-            MarkerId::from_name("hot-fork-observation"),
-        )])
-        .expect("hot-fork observable event");
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::from([Ok(outcome(
-            configuration.clone(),
-            append.entries,
-            append.offset,
-            1,
-        ))]),
-        terminal: None,
-        initial_quanta: 0,
-        drives: 0,
-    };
-    let mut modeled = QemuFreshAttemptLifecycle::new(&mut owner);
-    let context = context();
-    let mut live = HotModeledLive {
-        modeled: &mut modeled,
-        start_materialization: Some(QemuFreshStartMaterialization::genesis()),
-        resources: context.resources(),
-        cancellation: context.cancellation().clone(),
-        event_log: EventLog::new(),
-    };
-    let mut driver = QemuHotForkModeledDriver;
-
-    let pending = crate::QemuHotForkAttemptDriver::drive(&mut driver, &mut live, &input, &context)
-        .expect("hot-fork modeled stop");
-    let product =
-        crate::QemuHotForkAttemptDriver::seal(&mut driver, pending, &mut live, &input, &context)
-            .expect("hot-fork modeled candidate");
-    let candidate = prepared_semantic_observation(product);
-
-    assert_eq!(
-        candidate.child().configuration(),
-        configuration_id(&configuration)
-    );
-    assert_eq!(
-        candidate.observation().stop(),
-        &StopOutcome::Reached(StopCondition::EventCount(1))
-    );
-    assert_eq!(owner.drives, 1);
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn hot_fork_absolute_quantum_stop_uses_the_complete_source_materialization() {
-    let completed_quanta = 3;
-    let input = input(StopCondition::ExecutionQuanta(completed_quanta));
-    let mut source_log = EventLog::new();
-    let prefix = source_log
-        .append_observable_events([ObservableEvent::guest_marker(
-            Icount { retired: 9 },
-            node("node-a"),
-            MarkerId::from_name("hot-source-prefix"),
-        )])
-        .expect("hot-source event prefix");
-    let prefix_bytes = prefix
-        .entries
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::new(),
-        terminal: None,
-        initial_quanta: completed_quanta,
-        drives: 0,
-    };
-    let mut modeled = QemuFreshAttemptLifecycle::new(&mut owner);
-    let context = context();
-    let mut live = HotModeledLive {
-        modeled: &mut modeled,
-        start_materialization: Some(QemuFreshStartMaterialization::from_resume_parts(
-            input.start().configuration().clone(),
-            prefix.entries.clone(),
-            prefix_bytes,
-            completed_quanta,
-            VirtualTime { ticks: 9 },
-            SchedulerQuiescence::default(),
-            None,
-        )),
-        resources: context.resources(),
-        cancellation: context.cancellation().clone(),
-        event_log: source_log,
-    };
-    let mut driver = QemuHotForkModeledDriver;
-
-    let pending = crate::QemuHotForkAttemptDriver::drive(&mut driver, &mut live, &input, &context)
-        .expect("hot-source absolute quantum stop");
-    assert_eq!(pending.event_log, prefix.entries);
-    assert_eq!(pending.terminal_at.ticks, 9);
-    let product =
-        crate::QemuHotForkAttemptDriver::seal(&mut driver, pending, &mut live, &input, &context)
-            .expect("hot-source observation");
-    let candidate = prepared_semantic_observation(product);
-
-    assert_eq!(owner.drives, 0);
-    assert_eq!(
-        candidate.observation().stop(),
-        &StopOutcome::Reached(StopCondition::ExecutionQuanta(completed_quanta))
-    );
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn hot_fork_virtual_time_stop_and_terminal_precedence_use_the_source_boundary() {
-    let deadline = 8;
-    let completed_quanta = 2;
-    let mut source_log = EventLog::new();
-    let prefix = source_log
-        .append_observable_events([ObservableEvent::guest_marker(
-            Icount { retired: 9 },
-            node("node-a"),
-            MarkerId::from_name("hot-source-time-prefix"),
-        )])
-        .expect("hot-source time prefix");
-    let prefix_bytes = prefix
-        .entries
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
-
-    for (terminal_verdict, expected_terminal) in
-        [(None, false), (Some(QuantumTerminalVerdict::Passed), true)]
-    {
-        let input = input(StopCondition::VirtualTimeNanoseconds(deadline));
-        let mut owner = FakeLifecycle {
-            outcomes: VecDeque::new(),
-            terminal: terminal_verdict.clone(),
-            initial_quanta: completed_quanta,
-            drives: 0,
-        };
-        let mut modeled = QemuFreshAttemptLifecycle::new(&mut owner);
-        let context = context();
-        let mut live = HotModeledLive {
-            modeled: &mut modeled,
-            start_materialization: Some(QemuFreshStartMaterialization::from_resume_parts(
-                input.start().configuration().clone(),
-                prefix.entries.clone(),
-                prefix_bytes,
-                completed_quanta,
-                VirtualTime { ticks: 9 },
-                SchedulerQuiescence::default(),
-                terminal_verdict,
-            )),
-            resources: context.resources(),
-            cancellation: context.cancellation().clone(),
-            event_log: EventLog::new(),
-        };
-        let mut driver = QemuHotForkModeledDriver;
-
-        let pending =
-            crate::QemuHotForkAttemptDriver::drive(&mut driver, &mut live, &input, &context)
-                .expect("hot-source virtual-time stop");
-
-        assert_eq!(owner.drives, 0);
-        assert_eq!(pending.event_log, prefix.entries);
-        assert_eq!(pending.terminal_at.ticks, 9);
-        assert_eq!(
-            matches!(pending.stop, ModeledStop::TerminalPassed),
-            expected_terminal
-        );
-        if !expected_terminal {
-            assert!(matches!(
-                pending.stop,
-                ModeledStop::Reached(StopCondition::VirtualTimeNanoseconds(value))
-                    if value == deadline
-            ));
-        }
-    }
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn hot_fork_driver_rejects_raw_channels_without_a_modeled_lifecycle() {
-    let input = input(StopCondition::Terminal);
-    let context = context();
-    let mut live = RawHotLive {
-        resources: context.resources(),
-        cancellation: context.cancellation().clone(),
-        event_log: EventLog::new(),
-    };
-    let mut driver = QemuHotForkModeledDriver;
-
-    let error = crate::QemuHotForkAttemptDriver::drive(&mut driver, &mut live, &input, &context)
-        .expect_err("raw child channels must not imply modeled execution readiness");
-
-    assert!(matches!(
-        error,
-        AttemptWorkerFailure::Terminal(QemuHotForkModeledDriverError::LifecycleUnavailable(_))
-    ));
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn hot_fork_driver_rejects_checkpoint_handoff_before_driving() {
-    let input = input(StopCondition::Terminal);
-    let checkpoint_request = ExecutionCheckpointRequest::default();
-    checkpoint_request.request_for_test();
-    let context = AttemptExecutionContext::new(
-        AttemptResourceLimits::new(1, 1, 0, 1).expect("checkpoint resources"),
-        ExecutionRetentionIntent::Discard,
-        ExecutionCancellation::default(),
-        checkpoint_request,
-    );
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::new(),
-        terminal: None,
-        initial_quanta: 0,
-        drives: 0,
-    };
-    let mut modeled = QemuFreshAttemptLifecycle::new(&mut owner);
-    let mut live = HotModeledLive {
-        modeled: &mut modeled,
-        start_materialization: Some(QemuFreshStartMaterialization::genesis()),
-        resources: context.resources(),
-        cancellation: context.cancellation().clone(),
-        event_log: EventLog::new(),
-    };
-    let mut driver = QemuHotForkModeledDriver;
-
-    let error = crate::QemuHotForkAttemptDriver::drive(&mut driver, &mut live, &input, &context)
-        .expect_err("hot-child checkpoint handoff must remain owner-controlled");
-
-    assert!(matches!(
-        error,
-        AttemptWorkerFailure::Terminal(QemuHotForkModeledDriverError::CheckpointRequested)
-    ));
-    assert_eq!(owner.drives, 0);
 }
 
 #[test]
@@ -1299,7 +1028,14 @@ fn guest_measurement_messages_fail_closed_on_type_and_lifecycle_mismatch() {
     let wrong_cohort_marker = SchedulerEventLogEntry::guest_semantic_marker_observation(
         0,
         Icount { retired: 1 },
-        fixture.scenario.world().vm_nodes()[1].id.clone(),
+        fixture
+            .scenario
+            .world()
+            .vm_nodes()
+            .get(1)
+            .expect("measurement fixture second VM")
+            .id
+            .clone(),
         String::from("routing-converged"),
         String::from("epoch-7"),
         Vec::new(),
@@ -1567,8 +1303,8 @@ fn resumed_driver_starts_from_the_actual_restored_configuration() {
         stream: crucible::RngStreamId::from_name("next-resumed-decision"),
         value: 12,
     });
-    let restored = valid_step(&original, prior_decision);
-    let continued = valid_step(&restored, next_decision.clone());
+    let restored = accepted_step(&original, prior_decision);
+    let continued = accepted_step(&restored, next_decision.clone());
     let mut lifecycle = RestoredFrontierLifecycle {
         expected_first: restored.clone(),
         next: Some(QuantumOutcome {
@@ -2985,483 +2721,8 @@ fn terminal_only_never_reached_failure_is_not_an_observation_match() {
     );
 }
 
-#[test]
-fn matching_observation_does_not_mutate_configuration_with_a_default_guest_reply() {
-    let (input, node) = input_with_guest_selectable(StopCondition::Observation(
-        ObservationCondition::SchedulerQuiescent,
-    ));
-    let configuration = starting_configuration(&input);
-    let mut quantum = outcome(
-        configuration.clone(),
-        Vec::new(),
-        EventLogOffset::default(),
-        1,
-    );
-    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
-    let mut owner = PendingSelectableLifecycle {
-        frontier: configuration.clone(),
-        outcomes: VecDeque::from([quantum]),
-        completed_coordinates: VecDeque::from([1]),
-        pending: VecDeque::from([vec![pending_guest_request(node, None)]]),
-        active_pending: Vec::new(),
-        reply_entries: VecDeque::new(),
-        replies: Vec::new(),
-        completed_quanta: 0,
-        drives: 0,
-    };
-
-    let pending = {
-        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
-        expect_observation(
-            QemuFreshModeledDriver::new()
-                .drive(
-                    &mut lifecycle,
-                    &input,
-                    &context(),
-                    QemuFreshStartMaterialization::genesis(),
-                )
-                .expect("observation before default reply"),
-        )
-    };
-
-    assert!(matches!(
-        pending.stop,
-        ModeledStop::ObservationReached { .. }
-    ));
-    assert_eq!(pending.configuration, configuration);
-    assert!(owner.replies.is_empty());
-}
-
-#[test]
-fn matching_observation_rejects_a_nonadvancing_quantum_coordinate() {
-    let input = input(StopCondition::Observation(
-        ObservationCondition::SchedulerQuiescent,
-    ));
-    let configuration = starting_configuration(&input);
-    let mut quantum = outcome(
-        configuration.clone(),
-        Vec::new(),
-        EventLogOffset::default(),
-        1,
-    );
-    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
-    let mut owner = PendingSelectableLifecycle {
-        frontier: configuration,
-        outcomes: VecDeque::from([quantum]),
-        completed_coordinates: VecDeque::from([0]),
-        pending: VecDeque::from([Vec::new()]),
-        active_pending: Vec::new(),
-        reply_entries: VecDeque::new(),
-        replies: Vec::new(),
-        completed_quanta: 0,
-        drives: 0,
-    };
-    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
-
-    let error = QemuFreshModeledDriver::new()
-        .drive(
-            &mut lifecycle,
-            &input,
-            &context(),
-            QemuFreshStartMaterialization::genesis(),
-        )
-        .expect_err("observation proof requires an advancing quantum coordinate");
-
-    assert!(matches!(
-        error,
-        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::QuantumCounterDidNotAdvance {
-            before: 0,
-            after: 0,
-        })
-    ));
-}
-
-fn pending_assertion_observation() -> QemuFreshPendingObservation {
-    let assertion = AssertionId::from_name("safety");
-    let input = input_with_assertions(
-        StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
-            assertion.name.clone(),
-        )),
-        ["safety"],
-    );
-    let configuration = starting_configuration(&input);
-    let mut log = EventLog::new();
-    let matching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            0,
-            VirtualTime { ticks: 1 },
-            assertion,
-            AssertionPhase::Violated,
-        )])
-        .expect("matching assertion segment");
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::from([Ok(outcome(
-            configuration,
-            matching.entries,
-            matching.offset,
-            1,
-        ))]),
-        terminal: None,
-        initial_quanta: 0,
-        drives: 0,
-    };
-    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
-    let mut driver = QemuFreshModeledDriver::new();
-    expect_observation(
-        driver
-            .drive(
-                &mut lifecycle,
-                &input,
-                &context(),
-                QemuFreshStartMaterialization::genesis(),
-            )
-            .expect("assertion observation"),
-    )
-}
-
-fn replace_observation_event_log(
-    pending: &mut QemuFreshPendingObservation,
-    event_log: ObservationEventLogProof,
-) {
-    let ModeledStop::ObservationReached { proof, .. } = &mut pending.stop else {
-        panic!("fixture must stop on an observation")
-    };
-    **proof = ObservationStopProof::new(
-        proof.condition().clone(),
-        proof.satisfaction(),
-        proof.child(),
-        proof.boundary(),
-        event_log,
-        proof.assertion_witness().cloned(),
-    )
-    .expect("structurally valid mutated proof");
-}
-
-fn assert_observation_boundary_rejected(pending: QemuFreshPendingObservation) {
-    let error = QemuFreshModeledDriver::new()
-        .seal(pending, Vec::new())
-        .expect_err("raw evidence must authenticate the observation boundary");
-
-    assert!(matches!(
-        error,
-        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::PreparedResult(
-            PreparedSemanticResultCodecError::Inconsistent {
-                component: "observation stop execution boundary"
-            }
-        ))
-    ));
-}
-
-#[test]
-fn observation_seal_rejects_a_bytes_only_offset_mutation() {
-    let mut pending = pending_assertion_observation();
-    let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
-        panic!("fixture must stop on an observation")
-    };
-    let event_log = proof.event_log();
-    replace_observation_event_log(
-        &mut pending,
-        ObservationEventLogProof::new(
-            event_log.prefix(),
-            event_log.appended_segment(),
-            event_log.bytes() + 1,
-            event_log.events(),
-            event_log.digest(),
-        ),
-    );
-
-    assert_observation_boundary_rejected(pending);
-}
-
-#[test]
-fn observation_seal_rejects_an_empty_segment_with_a_nonempty_prefix() {
-    let mut pending = pending_assertion_observation();
-    let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
-        panic!("fixture must stop on an observation")
-    };
-    let event_log = proof.event_log();
-    replace_observation_event_log(
-        &mut pending,
-        ObservationEventLogProof::new(
-            CampaignHash::derive("test", b"nonempty forged prefix"),
-            None,
-            event_log.bytes(),
-            event_log.events(),
-            event_log.digest(),
-        ),
-    );
-
-    assert_observation_boundary_rejected(pending);
-}
-
-#[test]
-fn observation_seal_rejects_a_forged_prefix_with_a_coherent_segment() {
-    let mut pending = pending_assertion_observation();
-    let ModeledStop::ObservationReached { proof, .. } = &pending.stop else {
-        panic!("fixture must stop on an observation")
-    };
-    let digest = proof.event_log().digest();
-    let entry = SchedulerEventLogEntry::assertion_state_observation(
-        0,
-        VirtualTime { ticks: 1 },
-        AssertionId::from_name("safety"),
-        AssertionPhase::Violated,
-    );
-    let forged_prefix = ContentHash::from_bytes(b"forged observation prefix");
-    let mut forged_log = EventLog::from_offset(EventLogOffset::new(forged_prefix, 0, 0));
-    let forged = forged_log
-        .append_entries(vec![entry])
-        .expect("coherent forged-prefix segment");
-    replace_observation_event_log(
-        &mut pending,
-        ObservationEventLogProof::new(
-            CampaignHash::from_bytes(forged.offset.prefix.bytes),
-            forged
-                .offset
-                .appended_segment
-                .map(|hash| CampaignHash::from_bytes(hash.bytes)),
-            forged.offset.bytes,
-            forged.offset.events,
-            digest,
-        ),
-    );
-
-    assert_observation_boundary_rejected(pending);
-}
-
-#[test]
-fn observation_seal_rejects_shifted_quantum_coordinates() {
-    let mut pending = pending_assertion_observation();
-    let ModeledStop::ObservationReached { proof, .. } = &mut pending.stop else {
-        panic!("fixture must stop on an observation")
-    };
-    let boundary = proof.boundary();
-    **proof = ObservationStopProof::new(
-        proof.condition().clone(),
-        proof.satisfaction(),
-        proof.child(),
-        ObservationQuantumBoundary::new(
-            boundary.frontier_nanoseconds() + 1,
-            boundary.start_completed_quanta() + 1,
-            boundary.completed_quanta() + 1,
-            boundary.start_events(),
-        )
-        .expect("structurally valid shifted boundary"),
-        proof.event_log(),
-        proof.assertion_witness().cloned(),
-    )
-    .expect("structurally valid shifted proof");
-
-    assert_observation_boundary_rejected(pending);
-}
-
-#[test]
-fn terminal_run_projects_offline_property_verdicts() {
-    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
-    let input = input_for_scenario(fixture.scenario.clone(), StopCondition::Terminal);
-    let configuration = starting_configuration(&input);
-    let mut log = EventLog::new();
-    let append = log
-        .append_observable_events(fixture.observations().iter().cloned())
-        .expect("happy-path event log");
-    let mut quantum = outcome(configuration, append.entries, append.offset, 38);
-    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::from([Ok(quantum)]),
-        terminal: Some(QuantumTerminalVerdict::Passed),
-        initial_quanta: 0,
-        drives: 0,
-    };
-    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
-    let mut driver = QemuFreshModeledDriver::new();
-
-    let pending = expect_observation(
-        driver
-            .drive(
-                &mut lifecycle,
-                &input,
-                &context(),
-                QemuFreshStartMaterialization::genesis(),
-            )
-            .expect("terminal modeled stop"),
-    );
-    let product = driver
-        .seal(pending, Vec::new())
-        .expect("property projection");
-    let candidate = prepared_semantic_observation(product);
-
-    assert_eq!(
-        candidate.observation().stop(),
-        &StopOutcome::TerminalSuccess
-    );
-    assert_eq!(
-        candidate
-            .properties()
-            .properties()
-            .get("no-crashes")
-            .expect("no-crashes verdict")
-            .verdict(),
-        PropertyVerdict::Passed
-    );
-    assert_eq!(
-        candidate
-            .properties()
-            .properties()
-            .get("all-requests-succeed")
-            .expect("request verdict")
-            .verdict(),
-        PropertyVerdict::Passed
-    );
-}
-
-#[test]
-fn terminal_failure_preserves_grouped_reasons_in_scheduler_order() {
-    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
-    let input = input_for_scenario(fixture.scenario.clone(), StopCondition::Terminal);
-    let configuration = starting_configuration(&input);
-    let mut log = EventLog::new();
-    let append = log
-        .append_observable_events(fixture.observations().iter().cloned())
-        .expect("happy-path event log");
-    let mut quantum = outcome(configuration, append.entries, append.offset, 38);
-    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
-    let reasons = vec![
-        "later lexical reason".to_owned(),
-        "earlier lexical reason".to_owned(),
-        "later lexical reason".to_owned(),
-    ];
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::from([Ok(quantum)]),
-        terminal: Some(QuantumTerminalVerdict::Failed(reasons.clone())),
-        initial_quanta: 0,
-        drives: 0,
-    };
-    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
-    let mut driver = QemuFreshModeledDriver::new();
-
-    let pending = expect_observation(
-        driver
-            .drive(
-                &mut lifecycle,
-                &input,
-                &context(),
-                QemuFreshStartMaterialization::genesis(),
-            )
-            .expect("terminal modeled failure"),
-    );
-    let product = driver
-        .seal(pending, Vec::new())
-        .expect("scenario failure projection");
-    let candidate = prepared_semantic_observation(product);
-
-    assert_eq!(
-        candidate.observation().stop(),
-        &StopOutcome::ScenarioFailure(reasons)
-    );
-}
-
-#[test]
-fn empty_terminal_failure_is_rejected() {
-    assert!(matches!(
-        modeled_terminal_stop(QuantumTerminalVerdict::Failed(Vec::new())),
-        Err(QemuFreshModeledDriverError::EmptyScenarioFailure)
-    ));
-}
-
-#[test]
-fn non_dense_final_drain_is_rejected_before_candidate_construction() {
-    let input = input(StopCondition::EventCount(1));
-    let configuration = starting_configuration(&input);
-    let mut log = EventLog::new();
-    let first = log
-        .append_observable_events([ObservableEvent::guest_marker(
-            Icount { retired: 1 },
-            node("node-a"),
-            MarkerId::from_name("first"),
-        )])
-        .expect("first event-log segment");
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::from([Ok(outcome(configuration, first.entries, first.offset, 1))]),
-        terminal: None,
-        initial_quanta: 0,
-        drives: 0,
-    };
-    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
-    let mut driver = QemuFreshModeledDriver::new();
-    let pending = expect_observation(
-        driver
-            .drive(
-                &mut lifecycle,
-                &input,
-                &context(),
-                QemuFreshStartMaterialization::genesis(),
-            )
-            .expect("event-count stop"),
-    );
-    let invalid = SchedulerEventLogEntry::guest_marker_observation(
-        7,
-        Icount { retired: 2 },
-        node("node-a"),
-        MarkerId::from_name("late"),
-    );
-
-    let error = driver
-        .seal(pending, vec![invalid])
-        .expect_err("non-dense final suffix must fail closed");
-
-    assert!(matches!(
-        error,
-        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Assertions(_))
-    ));
-}
-
-#[test]
-fn retained_event_material_is_byte_bounded_before_append() {
-    let entry = SchedulerEventLogEntry::guest_marker_observation(
-        0,
-        Icount { retired: 1 },
-        node("node-a"),
-        MarkerId::from_name("bounded"),
-    );
-    let mut event_log = Vec::new();
-    let mut retained_bytes = MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES
-        .checked_sub(entry.canonical_material_len())
-        .expect("entry fits configured bound")
-        + 1;
-
-    let error = append_event_entries(&mut event_log, &mut retained_bytes, vec![entry])
-        .expect_err("aggregate event material must be rejected before retention");
-
-    assert!(matches!(
-        error,
-        QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-bytes"
-        }
-    ));
-    assert!(event_log.is_empty());
-}
-
-#[test]
-fn retained_choices_share_contracts_and_charge_unique_records_once() {
-    let scenario = ScenarioDefId::from_hash(CampaignHash::derive("fresh-driver-test", b"scenario"));
-    let first = choice_discovery_named(scenario, "first");
-    let second = choice_discovery_named(scenario, "second");
-    let unshared_bytes = first.declaration().canonical_bytes().len()
-        + first.domain().canonical_bytes().len()
-        + first.opportunity().canonical_bytes().len()
-        + second.declaration().canonical_bytes().len()
-        + second.domain().canonical_bytes().len()
-        + second.opportunity().canonical_bytes().len();
-    let mut retained = RetainedChoiceDiscoveries::default();
-
-    retained.insert(first).expect("first discovery");
-    retained.insert(second).expect("second discovery");
-
-    assert_eq!(retained.charged_records.len(), 4);
-    assert!(retained.charged_bytes < unshared_bytes);
-    assert_eq!(retained.representatives.len(), 1);
-    assert_eq!(retained.discoveries.len(), 2);
-}
+#[path = "tests/observation_sealing.rs"]
+mod observation_sealing;
 
 fn input(stop: StopCondition) -> CrucibleAttemptExecution {
     let world = World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty world");
@@ -3792,6 +3053,7 @@ fn context() -> AttemptExecutionContext {
         ExecutionRetentionIntent::Discard,
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
 }
 

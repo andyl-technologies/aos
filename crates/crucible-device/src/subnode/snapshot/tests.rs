@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn io_core_snapshot_rejects_prior_version() {
+fn io_core_snapshot_rejects_unsupported_version() {
     let core =
         IoCore::new(8, 1, 2, 2).unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
     let mut bytes = core
@@ -12,7 +12,7 @@ fn io_core_snapshot_rejects_prior_version() {
         .unwrap_or_else(|error| panic!("encode I/O-core fixture: {error}"));
     let version_index = b"crucible.io-core-snapshot.v".len();
     assert_eq!(bytes[version_index], b'2');
-    bytes[version_index] = b'1';
+    bytes[version_index] = b'?';
     assert_eq!(
         IoCoreSnapshot::from_canonical_bytes(&bytes),
         Err(IoCoreSnapshotCodecError::Version)

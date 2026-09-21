@@ -105,7 +105,7 @@ pub(crate) struct RunInvocationPlan {
     pub(crate) startup_commands: Vec<SessionCommandKind>,
     pub(crate) initial_control_commands: Vec<SessionCommandKind>,
     pub(crate) accepted_interactive_commands: Vec<SessionCommandKind>,
-    pub(crate) observer_profile: VerifyHostProfile,
+    pub(crate) host_profile: VerifyHostProfile,
     pub(crate) collect_execution_fingerprints: bool,
     pub(crate) bounded_ack_quanta: u64,
     pub(crate) outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
@@ -175,30 +175,6 @@ pub(crate) struct ResumeInvocationPlan {
     pub(crate) startup_commands: Vec<SessionCommandKind>,
     pub(crate) initial_control_commands: Vec<SessionCommandKind>,
     pub(crate) accepted_interactive_commands: Vec<SessionCommandKind>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ForkInvocationPlan {
-    pub(crate) source: ResumeSavepointRef,
-    pub(crate) label: String,
-    pub(crate) artifact_dir: PathBuf,
-    pub(crate) store_root: PathBuf,
-    pub(crate) decision_overrides: Vec<ForkDecisionOverride>,
-    pub(crate) fork_seed: Option<u64>,
-    pub(crate) terminal_condition: RunTerminalCondition,
-    pub(crate) max_virtual_time: Option<String>,
-    pub(crate) max_virtual_time_ticks: Option<u64>,
-    pub(crate) execution_mode: RunExecutionMode,
-    pub(crate) watch_streams_live_status: bool,
-    pub(crate) startup_commands: Vec<SessionCommandKind>,
-    pub(crate) initial_control_commands: Vec<SessionCommandKind>,
-    pub(crate) accepted_interactive_commands: Vec<SessionCommandKind>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ForkDecisionOverride {
-    pub(crate) decision: String,
-    pub(crate) value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,14 +261,13 @@ pub(crate) struct FuzzDriverPlan {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FuzzDispatchRoute {
-    BuiltInFaultCampaignProof,
     #[cfg(any(test, feature = "test-double"))]
     LocalDouble,
     LocalPackagedBackend,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LocalDoubleFuzzReport {
+pub(crate) struct FuzzExecutionReport {
     pub(crate) family: String,
     pub(crate) corpus: Option<PathBuf>,
     pub(crate) iterations: usize,
@@ -321,10 +296,6 @@ impl FuzzFamilyRef {
             Self::File(path) => path.display().to_string(),
             Self::Stored(reference) => format_content_hash_ref(*reference),
         }
-    }
-
-    pub(crate) fn is_builtin_fault_campaign(&self) -> bool {
-        matches!(self, Self::BuiltInFaultCampaign)
     }
 }
 
@@ -413,18 +384,32 @@ pub(crate) struct CliNodeTemplateToml {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ResumeSavepointRef {
+pub(crate) enum ResumeSavepointRef {
+    CheckpointHash(crucible::ContentHash),
+    Handle(Box<ResolvedSavepointHandle>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedSavepointHandle {
     pub(crate) path: PathBuf,
     pub(crate) handle: SavepointHandle,
 }
 
 impl ResumeSavepointRef {
     pub(crate) fn checkpoint(&self) -> crucible::ContentHash {
-        self.handle.checkpoint
+        match self {
+            Self::CheckpointHash(checkpoint) => *checkpoint,
+            Self::Handle(resolved) => resolved.handle.checkpoint,
+        }
     }
 
     pub(crate) fn label(&self) -> String {
-        format!("{} ({})", self.handle.label, self.path.display())
+        match self {
+            Self::CheckpointHash(checkpoint) => format_content_hash_ref(*checkpoint),
+            Self::Handle(resolved) => {
+                format!("{} ({})", resolved.handle.label, resolved.path.display())
+            }
+        }
     }
 }
 
@@ -559,7 +544,7 @@ pub(crate) struct VerifyInvocationPlan {
     pub(crate) bisection_on_divergence: bool,
     pub(crate) print_bisection_state_dump: bool,
     pub(crate) writes_side_artifacts_on_divergence: bool,
-    pub(crate) applies_observer_perturbation_matrix: bool,
+    pub(crate) applies_hostile_condition_matrix: bool,
     pub(crate) outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
 }
 
@@ -575,8 +560,8 @@ impl VerifyInvocationPlan {
         let expected_reductions = match &self.mode {
             VerifyMode::RunScenario { .. } => {
                 self.requested_runs
-                    .saturating_mul(if self.applies_observer_perturbation_matrix {
-                        VERIFY_OBSERVER_PROFILES.len()
+                    .saturating_mul(if self.applies_hostile_condition_matrix {
+                        VERIFY_HOSTILE_PROFILES.len()
                     } else {
                         1
                     })
@@ -589,7 +574,7 @@ impl VerifyInvocationPlan {
             && self.compare_fingerprint_streams
             && self.pairwise_byte_identity
             && self.writes_side_artifacts_on_divergence
-            && (!self.applies_observer_perturbation_matrix
+            && (!self.applies_hostile_condition_matrix
                 || self
                     .reductions
                     .iter()
@@ -636,6 +621,15 @@ pub(crate) struct VerifyReductionPlan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct VerifyHostProfile {
     pub(crate) label: &'static str,
+    pub(crate) executor_workers: usize,
+    pub(crate) logical_cores: usize,
+    pub(crate) scheduling_seed: u64,
+    pub(crate) priority_pressure_iterations: u64,
+    pub(crate) priority_yield_every: u64,
+    pub(crate) wall_clock_skew_ms: i16,
+    pub(crate) wall_clock_coarsening_ms: u64,
+    pub(crate) wall_clock_backstep_every: u8,
+    pub(crate) host_io_stall_ms: u64,
     pub(crate) poll_order: VerifyPollOrder,
     pub(crate) event_timeout_ms: u64,
     pub(crate) state_timeout_ms: u64,
@@ -647,6 +641,66 @@ impl VerifyHostProfile {
     pub(crate) const fn label(self) -> &'static str {
         self.label
     }
+
+    pub(crate) const fn for_run(mut self, run_index: usize) -> Self {
+        self.scheduling_seed ^= (run_index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self
+    }
+
+    pub(crate) const fn is_valid(self) -> bool {
+        self.executor_workers > 0
+            && self.logical_cores > 0
+            && (self.priority_pressure_iterations == 0 || self.priority_yield_every > 0)
+            && self.wall_clock_coarsening_ms > 0
+            && self.wall_clock_backstep_every > 0
+    }
+
+    pub(crate) const fn requires_scheduler_preemption(self) -> bool {
+        self.executor_workers > 1
+            || self.logical_cores > 1
+            || self.priority_pressure_iterations > 0
+            || self.host_io_stall_ms > 0
+            || self.wall_clock_skew_ms != 0
+            || self.wall_clock_coarsening_ms > 1
+    }
+
+    pub(crate) const fn applies_deadline_backstep(self) -> bool {
+        self.wall_clock_skew_ms != 0
+    }
+
+    pub(crate) fn jittered_timeout_ms(self, base_ms: u64, poll_round: u64) -> u64 {
+        let coarsened = base_ms.saturating_add(self.wall_clock_coarsening_ms - 1)
+            / self.wall_clock_coarsening_ms
+            * self.wall_clock_coarsening_ms;
+        let skew_magnitude = u64::from(self.wall_clock_skew_ms.unsigned_abs());
+        let skewed = if self.wall_clock_skew_ms < 0 {
+            coarsened.saturating_sub(skew_magnitude)
+        } else {
+            coarsened.saturating_add(skew_magnitude)
+        };
+        let backstep =
+            poll_round > 0 && poll_round.is_multiple_of(u64::from(self.wall_clock_backstep_every));
+        if backstep {
+            skewed.saturating_sub(self.wall_clock_coarsening_ms).max(1)
+        } else {
+            skewed.max(1)
+        }
+    }
+
+    pub(crate) fn randomized_yields(self, poll_round: u64) -> u8 {
+        if self.priority_pressure_iterations == 0 {
+            return 0;
+        }
+        let mixed = self.scheduling_seed
+            ^ poll_round.wrapping_mul(0x517c_c1b7_2722_0a95)
+            ^ poll_round.rotate_left(17);
+        match mixed % 4 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 3,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -656,16 +710,35 @@ pub(crate) enum VerifyPollOrder {
 }
 
 pub(crate) const VERIFY_BASELINE_PROFILE: VerifyHostProfile = VerifyHostProfile {
-    label: "baseline",
+    label: "quiet-single-core",
+    executor_workers: 1,
+    logical_cores: 1,
+    scheduling_seed: 0x5eed_0017_0001,
+    priority_pressure_iterations: 0,
+    priority_yield_every: 1,
+    wall_clock_skew_ms: 0,
+    wall_clock_coarsening_ms: 1,
+    wall_clock_backstep_every: u8::MAX,
+    host_io_stall_ms: 0,
     poll_order: VerifyPollOrder::EventThenState,
     event_timeout_ms: 1,
     state_timeout_ms: 10,
     pre_poll_yields: 0,
     post_poll_yields: 1,
 };
-pub(crate) const VERIFY_OBSERVER_PROFILES: &[VerifyHostProfile] = &[
+pub(crate) const VERIFY_HOSTILE_PROFILES: &[VerifyHostProfile] = &[
+    VERIFY_BASELINE_PROFILE,
     VerifyHostProfile {
-        label: "state-first-extra-yields",
+        label: "loaded-single-core",
+        executor_workers: 1,
+        logical_cores: 1,
+        scheduling_seed: 0x5eed_0017_0011,
+        priority_pressure_iterations: 4_096,
+        priority_yield_every: 2,
+        wall_clock_skew_ms: 3,
+        wall_clock_coarsening_ms: 2,
+        wall_clock_backstep_every: 3,
+        host_io_stall_ms: 1,
         poll_order: VerifyPollOrder::StateThenEvent,
         event_timeout_ms: 1,
         state_timeout_ms: 10,
@@ -673,7 +746,16 @@ pub(crate) const VERIFY_OBSERVER_PROFILES: &[VerifyHostProfile] = &[
         post_poll_yields: 3,
     },
     VerifyHostProfile {
-        label: "event-first-varied-timeouts",
+        label: "reordered-two-core",
+        executor_workers: 2,
+        logical_cores: 2,
+        scheduling_seed: 0x5eed_0017_0022,
+        priority_pressure_iterations: 2_048,
+        priority_yield_every: 3,
+        wall_clock_skew_ms: -2,
+        wall_clock_coarsening_ms: 3,
+        wall_clock_backstep_every: 2,
+        host_io_stall_ms: 2,
         poll_order: VerifyPollOrder::EventThenState,
         event_timeout_ms: 3,
         state_timeout_ms: 7,
@@ -681,7 +763,16 @@ pub(crate) const VERIFY_OBSERVER_PROFILES: &[VerifyHostProfile] = &[
         post_poll_yields: 2,
     },
     VerifyHostProfile {
-        label: "state-first-prepoll-yields",
+        label: "loaded-many-core",
+        executor_workers: 4,
+        logical_cores: 4,
+        scheduling_seed: 0x5eed_0017_0044,
+        priority_pressure_iterations: 8_192,
+        priority_yield_every: 1,
+        wall_clock_skew_ms: 5,
+        wall_clock_coarsening_ms: 4,
+        wall_clock_backstep_every: 2,
+        host_io_stall_ms: 3,
         poll_order: VerifyPollOrder::StateThenEvent,
         event_timeout_ms: 2,
         state_timeout_ms: 5,
@@ -882,7 +973,7 @@ pub(crate) fn plan_run_invocation(
         startup_commands,
         initial_control_commands,
         accepted_interactive_commands,
-        observer_profile: VERIFY_BASELINE_PROFILE,
+        host_profile: VERIFY_BASELINE_PROFILE,
         collect_execution_fingerprints: false,
         bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
         outcome_exit_codes: vec![
@@ -1081,15 +1172,6 @@ pub(crate) fn plan_save_selector(value: &str, flag: &str) -> Result<String, CliE
     Ok(selector.to_string())
 }
 
-/// Resolves and validates a fork label.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when the label is empty or contains control whitespace.
-pub(crate) fn plan_fork_label(label: Option<&str>) -> Result<String, CliError> {
-    plan_nonempty_label(label, "fork")
-}
-
 /// Resolves an optional label and enforces the shared single-line label policy.
 ///
 /// # Errors
@@ -1181,204 +1263,6 @@ pub(crate) fn resolve_resume_savepoint(
     savepoint: Option<&str>,
 ) -> Result<ResumeSavepointRef, CliError> {
     resolve_savepoint_ref("resume", savepoint)
-}
-
-/// Validates fork arguments and constructs the fork invocation plan.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when the source savepoint, label, decision overrides,
-/// duration, or terminal-condition arguments are invalid.
-pub(crate) fn plan_fork_invocation(
-    args: &ForkArgs,
-    fork_seed: Option<u64>,
-    artifact_dir: &Path,
-    store_root: &Path,
-) -> Result<ForkInvocationPlan, CliError> {
-    let source = resolve_savepoint_ref("fork", args.savepoint.as_deref())?;
-    if fork_seed.is_some() && !args.overrides.is_empty() {
-        return Err(usage_error(
-            "fork does not accept both --seed and --override; choose one post-fork decision source",
-        ));
-    }
-    let label = plan_fork_label(args.label.as_deref())?;
-    let decision_overrides = args
-        .overrides
-        .iter()
-        .map(|raw| parse_fork_decision_override(raw))
-        .collect::<Result<Vec<_>, _>>()?;
-    validate_fork_decision_override_domain(&decision_overrides)?;
-    if let Some(duration) = &args.max_virtual_time
-        && parse_run_duration_budget_ticks(duration).is_none()
-    {
-        return Err(usage_error(
-            "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
-        ));
-    }
-    let terminal_condition = RunTerminalCondition::from_arg(args.until);
-    if terminal_condition == RunTerminalCondition::VirtualTime && args.max_virtual_time.is_none() {
-        return Err(usage_error(
-            "--until virtual-time requires --max-virtual-time",
-        ));
-    }
-    let execution_mode = if args.interactive {
-        RunExecutionMode::Interactive
-    } else {
-        RunExecutionMode::ToCompletion
-    };
-    let startup_commands = match execution_mode {
-        RunExecutionMode::ToCompletion => {
-            vec![SessionCommandKind::Fork, SessionCommandKind::Continue]
-        }
-        RunExecutionMode::Interactive => vec![SessionCommandKind::Fork],
-    };
-    let accepted_interactive_commands = if args.interactive {
-        run_interactive_session_command_set()
-    } else {
-        Vec::new()
-    };
-
-    Ok(ForkInvocationPlan {
-        source,
-        label,
-        artifact_dir: artifact_dir.to_path_buf(),
-        store_root: store_root.to_path_buf(),
-        decision_overrides,
-        fork_seed,
-        terminal_condition,
-        max_virtual_time: args.max_virtual_time.clone(),
-        max_virtual_time_ticks: args
-            .max_virtual_time
-            .as_deref()
-            .and_then(parse_run_duration_budget_ticks),
-        execution_mode,
-        watch_streams_live_status: args.watch,
-        startup_commands,
-        initial_control_commands: vec![SessionCommandKind::Query],
-        accepted_interactive_commands,
-    })
-}
-
-#[cfg(test)]
-/// Constructs a fork plan with the test fixture's conventional local paths.
-///
-/// # Errors
-///
-/// Returns [`CliError`] under the same invalid-input conditions as
-/// [`plan_fork_invocation`].
-pub(crate) fn plan_fork_invocation_for_test(
-    args: &ForkArgs,
-    fork_seed: Option<u64>,
-) -> Result<ForkInvocationPlan, CliError> {
-    plan_fork_invocation(
-        args,
-        fork_seed,
-        Path::new("./.crucible"),
-        Path::new("./.crucible/store"),
-    )
-}
-
-/// Parses one `decision=value` fork override.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when the override is multiline, omits either side, or
-/// does not contain exactly one separator.
-pub(crate) fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliError> {
-    let value = raw.trim();
-    if value.is_empty()
-        || value
-            .bytes()
-            .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
-    {
-        return Err(usage_error(
-            "--override must be a single-line decision=value pair",
-        ));
-    }
-    if value.bytes().filter(|byte| *byte == b'=').count() != 1 {
-        return Err(usage_error(
-            "--override must contain exactly one `=` separator",
-        ));
-    }
-    let Some((decision, pinned_value)) = value.split_once('=') else {
-        return Err(usage_error(
-            "--override must contain exactly one `=` separator",
-        ));
-    };
-    let decision = decision.trim();
-    let pinned_value = pinned_value.trim();
-    if decision.is_empty() || pinned_value.is_empty() {
-        return Err(usage_error(
-            "--override decision and value must both be non-empty",
-        ));
-    }
-    Ok(ForkDecisionOverride {
-        decision: decode_fork_override_component(decision)?,
-        value: decode_fork_override_component(pinned_value)?,
-    })
-}
-
-fn decode_fork_override_component(value: &str) -> Result<String, CliError> {
-    let mut decoded = Vec::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'%' {
-            decoded.push(bytes[index]);
-            index += 1;
-            continue;
-        }
-        let Some(encoded) = bytes.get(index + 1..index + 3) else {
-            return Err(usage_error(
-                "--override percent escapes must contain two hexadecimal digits",
-            ));
-        };
-        let text = std::str::from_utf8(encoded).map_err(|_| {
-            usage_error("--override percent escapes must contain hexadecimal ASCII")
-        })?;
-        let byte = u8::from_str_radix(text, 16).map_err(|_| {
-            usage_error("--override percent escapes must contain two hexadecimal digits")
-        })?;
-        decoded.push(byte);
-        index += 3;
-    }
-    String::from_utf8(decoded)
-        .map_err(|_| usage_error("--override percent escapes must decode to UTF-8"))
-}
-
-/// Rejects fork override coordinates that the production scheduler cannot consume.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when an override is outside the live World-network
-/// scheduling-point namespace, uses an unsupported choice, or repeats a point.
-pub(crate) fn validate_fork_decision_override_domain(
-    overrides: &[ForkDecisionOverride],
-) -> Result<(), CliError> {
-    let mut points = BTreeSet::new();
-    for override_plan in overrides {
-        let decision = OverrideDecision {
-            point: SchedulingPoint {
-                key: override_plan.decision.clone(),
-            },
-            choice: ChoiceTag {
-                name: override_plan.value.clone(),
-            },
-        };
-        if !crucible::is_supported_live_world_network_override(&decision) {
-            return Err(artifact_error(format!(
-                "fork override `{}`=`{}` is unresolvable; expected a scheduler-recorded `live-world-network/...` point and a canonical loss/duplicate/corrupt choice",
-                override_plan.decision, override_plan.value
-            )));
-        }
-        if !points.insert(override_plan.decision.as_str()) {
-            return Err(artifact_error(format!(
-                "fork override point `{}` was specified more than once",
-                override_plan.decision
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Validates search arguments and constructs the advanced-engine search plan.
@@ -1956,7 +1840,7 @@ pub(crate) fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError
             "family reference must not be empty or multiline",
         ));
     }
-    if value == crucible::FAULT_CAMPAIGN_FAMILY_NAME || value == "builtin:fault-campaign" {
+    if value == crucible::FAULT_CAMPAIGN_FAMILY_NAME {
         return Ok(FuzzFamilyRef::BuiltInFaultCampaign);
     }
     if value.starts_with(CONTENT_ADDRESS_PREFIX) {

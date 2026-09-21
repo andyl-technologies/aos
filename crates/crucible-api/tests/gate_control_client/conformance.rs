@@ -212,6 +212,9 @@ where
         .map(|record| record.payload.command)
         .collect();
     for required in [
+        SessionCommandKind::Continue,
+        SessionCommandKind::StepQuantum,
+        SessionCommandKind::Query,
         SessionCommandKind::Pause,
         SessionCommandKind::SetBreakpoint,
         SessionCommandKind::RemoveBreakpoint,
@@ -221,16 +224,6 @@ where
         assert!(
             report.reproduction_commands.contains(&required),
             "{backend}: reproduction context should contain {required:?}"
-        );
-    }
-    for excluded in [
-        SessionCommandKind::Continue,
-        SessionCommandKind::StepQuantum,
-        SessionCommandKind::Query,
-    ] {
-        assert!(
-            !report.reproduction_commands.contains(&excluded),
-            "{backend}: reproduction context should exclude non-boundary/read-only {excluded:?}"
         );
     }
     report.lifecycle.push("get-reproduction");

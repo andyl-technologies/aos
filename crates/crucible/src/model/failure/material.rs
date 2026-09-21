@@ -842,6 +842,32 @@ pub(in crate::model) fn failure_signature_preserving_minimization_result_materia
             "minimization.seed={}",
             run.minimization.seed.to_hex()
         ));
+        match run.minimization.interesting_window {
+            Some(window) => {
+                lines.push(format!(
+                    "minimization.interesting_window.original_schedule_len={}",
+                    window.original_schedule_len()
+                ));
+                lines.push(format!(
+                    "minimization.interesting_window.start={}",
+                    window.start()
+                ));
+                lines.push(format!(
+                    "minimization.interesting_window.end={}",
+                    window.end()
+                ));
+                lines.push(format!(
+                    "minimization.interesting_window.basis={}",
+                    match window.basis() {
+                        InterestingScheduleWindowBasis::LatestCampaignBranch => {
+                            "latest-campaign-branch"
+                        }
+                        InterestingScheduleWindowBasis::TerminalSuffix => "terminal-suffix",
+                    }
+                ));
+            }
+            None => lines.push(String::from("minimization.interesting_window=none")),
+        }
         lines.push(format!(
             "minimization.target_fingerprint={}",
             content_hash_hex(run.minimization.target_fingerprint)

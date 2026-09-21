@@ -411,14 +411,12 @@ irq = 32
     }
 
     #[test]
-    fn invalid_or_legacy_decisions_create_no_schedule() {
+    fn invalid_decisions_create_no_schedule() {
         let temporary = tempdir().expect("temporary directory");
         let input = temporary.path().join("decisions.toml");
         let output = temporary.path().join("schedule.bin");
         for invalid in [
             "schema_version = 1\ndecisions = []\n",
-            "schema_version = 1\n[[decisions]]\nkind = \"app-random\"\n",
-            "schema_version = 1\n[[decisions]]\nkind = \"selection\"\n",
             "schema_version = 1\n[[decisions]]\nkind = \"delivery-order\"\nat_ticks = 1\norder = []\n",
             "schema_version = 1\nunknown = true\n[[decisions]]\nkind = \"override\"\npoint = \"p\"\nchoice = \"c\"\n",
             "schema_version = 1\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\n",

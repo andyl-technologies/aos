@@ -282,27 +282,27 @@ QueryCampaignFindingsRequestV1 = version | principal | campaign | snapshot |
                                  optional after_signature_key | limit
 QueryCampaignFindingsResponseV1 = version | request_digest |
                                   CampaignSnapshotV3 |
-                                  findings[FindingV2-or-V4] |
+                                  findings[FindingV4] |
                                   optional next_after_signature_key |
                                   MerkleScanProofV1
 GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
                                     finding_id | object_kind
 GetCampaignFindingObjectResponseV1 = version | request_digest |
-                                     CampaignSnapshotV3 | FindingV2-or-V4 |
+                                     CampaignSnapshotV3 | FindingV4 |
                                      FindingObjectV1 | MerkleLookupProofV1
-FindingObjectV1 = 0 ObservationV1-through-V12 |
-                  1 latest ObservationV1-through-V12 |
-                  2 ReproductionArtifactV1 |
-                  3 minimized ReproductionArtifactV1
+FindingObjectV1 = 0 ObservationV12 |
+                  1 latest ObservationV12 |
+                  2 ReproductionArtifactV2 |
+                  3 minimized ReproductionArtifactV2
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
-                                   CampaignSnapshotV3 | AttemptV1-through-V4-or-V7-or-V8 |
+                                   CampaignSnapshotV3 | AttemptV8 |
                                    AttemptAdmissionV3 | BranchPathV2 |
-                                   optional SelectionV2 | optional ProposalV1 |
+                                   optional SelectionV2 | optional ProposalV2 |
                                    optional PlannerStepV4 |
-                                   optional ObservationV1-through-V12 |
+                                   optional ObservationV12 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
@@ -322,8 +322,8 @@ proposal names a planner invocation. The proof resolves
 snapshot. The step MUST name that invocation, proposal policy, and guidance
 view; its selected branch point and source MUST equal the proposal, and its
 issued-proposal set MUST contain the exact proposal ID. Operator, exhaustive,
-and debugger proposals carry neither field. Response version 1 is rejected. The version-20 loopback endpoint writes and
-reads only response version 2.
+and debugger proposals carry neither field. The version-20 loopback endpoint
+accepts and writes only response version 2.
 
 MerkleLookupProofV1 = node_count:u64 |
                       nodes[node_id | canonical MerkleNodeV1 envelope bytes]
@@ -363,7 +363,7 @@ GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
                                       CampaignSnapshotV3 |
                                       ContinuationProjectionV1 |
-                                     BranchRequestV2-through-V9 |
+                                     BranchRequestV9 |
                                       MerkleLookupProofV1 |
                                       MerkleLookupProofV1
 
@@ -385,16 +385,16 @@ PinCampaignRequestV1 = version | principal | campaign | PinRequestV1
 PinCampaignResponseV1 = version | request_digest | prior_snapshot |
                         new_snapshot | replayed
 
-DiscoveryRequestV1 = command | expected_snapshot | configuration_artifact |
-                     StopConditionV1-or-V2
-SubmitCampaignDiscoveryRequestV1-or-V2 = version | principal | campaign |
-                                         DiscoveryRequestV1
+DiscoveryRequestV3 = command | expected_snapshot | configuration_artifact |
+                     StopConditionV3
+SubmitCampaignDiscoveryRequestV3 = version | principal | campaign |
+                                   DiscoveryRequestV3
 SubmitCampaignDiscoveryResponseV1 = version | request_digest | prior_snapshot |
                                     new_snapshot | attempt | admission | replayed
 
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
-                                expected_snapshot | BranchRequestV2-through-V9
-SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
+                                expected_snapshot | BranchRequestV9
+SubmitCampaignBranchResponseV2 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
 
 CampaignServiceErrorResponseV1 = version | request_digest | failure
@@ -530,7 +530,7 @@ pin_request_digest =
   H("crucible.campaign-service.pin-campaign.v1", PinCampaignRequestV1)
 discovery_request_digest =
   H("crucible.campaign-service.submit-campaign-discovery.v1",
-    SubmitCampaignDiscoveryRequestV1-or-V2)
+    SubmitCampaignDiscoveryRequestV3)
 branch_request_digest =
   H("crucible.campaign-service.submit-branch-request.v1",
     SubmitCampaignBranchRequestV1)
@@ -606,10 +606,9 @@ specification = "/absolute/path/generator.bin"
 Unknown fields, zero entries, duplicate configuration pairs, duplicate
 generator paths, relative paths, dot components, symlinks, non-regular files,
 owner mismatch, and group/other-writable files are rejected. Configuration
-entries decode ScenarioDefForm compact binary V7 and Schedule compact binary
-V2. Older scenario and schedule forms fail closed. Imports publish campaign
-scenario payload V3 plus configuration payload V2 after semantic identity
-re-derivation. Generator entries
+entries accept `ScenarioDefForm` compact binary V7 and `Schedule` compact binary
+V2 only, publishing campaign scenario payload V3 and configuration payload V2
+after semantic identity re-derivation. Generator entries
 decode the current strict canonical `CandidateGeneratorSpec` and must appear
 after any child generator records on which they depend. A manifest path and
 every named path are at most 4,095 bytes.
@@ -692,7 +691,7 @@ minimal-proof, exact-node-set, range, lookahead, and EOF rules to
 key, and `limit` is in `1..=4`. For signature cluster key `c`, that key is
 `H("crucible.campaign-map-key.v1", u64be(len("findings.signature")) ||
 "findings.signature" || c)`. Each proof leaf value MUST equal the content ID
-reconstructed from the complete corresponding current `FindingV2` or `FindingV4` body, and its key
+reconstructed from the complete corresponding `FindingV4` body, and its key
 MUST equal the body signature's derived cluster key transformed by that exact
 formula. The checked client rejects substitution, reordering, false EOF,
 foreign snapshots, and unused proof nodes before exposing a finding.
@@ -721,10 +720,10 @@ does not grant evidence bodies, checkpoint bytes, or any other child closure.
 
 `ExplainCampaignAttempt` is the separately authorized provenance view for one
 exact attempt in the current authenticated snapshot. Two minimal accounting
-lookup proofs bind the complete `AttemptV1-through-V4-or-V7-or-V8` body and its unique execution-basis
-`AttemptAdmissionV3`; a third proof binds the execution-basis `ProposalV1` in
+lookup proofs bind the complete `AttemptV8` body and its unique execution-basis
+`AttemptAdmissionV3`; a third proof binds the execution-basis `ProposalV2` in
 the exploration root for branch attempts, and an observations-root proof binds
-either the canonical `ObservationV1-through-V12` or authenticated absence. The response
+either the canonical `ObservationV12` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
 `SelectionV2`. A checked reader reconstructs every typed ID, requires the
 attempt path and optional observation path to agree, requires the admission to
@@ -758,9 +757,8 @@ kind.
 genesis snapshots anchor one canonical empty choice-index Merkle root; every
 explicit or observation-driven discovery updates that root in the same
 snapshot transition as the authoritative and branch-point-scoped graph keys.
-Current version-3 snapshots always carry this index. Normal repository reads
-reject older snapshots and snapshots without the complete authenticated index.
-The exclusive cursor is a
+Current snapshots require this index. An imported snapshot without it is
+rejected before runtime admission. The exclusive cursor is a
 `ChoiceOpportunityId`, `limit` is in
 `1..=8`, and the result contains IDs only. The separately authorized
 `GetGraphObject` call uses `CampaignChoiceEntryV1`'s deterministic graph key to
@@ -787,7 +785,7 @@ index. New genesis snapshots anchor one canonical empty index, and the owner
 updates it atomically with request issue, proposal, disposition admission, and
 atomic planner-issue transitions. Imported validation recomputes each exact
 state change from the authoritative request, proposal, and accounting roots.
-Normal repository admission rejects snapshots without the anchor.
+Snapshots without the anchor are rejected before ordinary mutation or query.
 
 The exclusive cursor is a `BranchRequestId` and `limit` is in `1..=8`. The
 response carries the complete anchoring snapshot body, so authorization grants
@@ -810,8 +808,8 @@ before generated work is advertised as executable.
 
 `GetFrontierObject` is the separately authorized body read for one exact
 `BranchRequestId` returned by `QueryFrontier`. The response repeats the
-authenticated projection and returns the strict `BranchRequestV2` through
-`BranchRequestV9` body. The
+authenticated projection and returns the strict current `BranchRequestV9`
+body. The
 first minimal lookup proof authenticates the fixed frontier-index anchor; the
 second authenticates the request-keyed projection ID inside that index. A
 checked client reconstructs both the projection and request content IDs,
@@ -847,22 +845,19 @@ family, a partial or excessive proposal budget, or an over-ceiling domain is
 rejected before immutable request or Merkle publication.
 
 A scenario-default branch request uses
-`BranchRequestCause::ScenarioDefault` with the exact active policy. It is
-schema v5 and carries one unweighted finite value equal to the referenced
+`BranchRequestCause::ScenarioDefault` with the exact active policy. It carries
+one unweighted finite value equal to the referenced
 opportunity's declared default, a one-proposal/one-attempt budget, and no
 alternative candidates. Local publication and imported-history validation
 require `admits_scenario_defaults`, the active policy child, the exact default,
-and the finite singleton shape. The version-1
-`SubmitCampaignBranchRequest` message embeds the branch request's own schema,
-so accepting v5 leaves the outer framing, outer schema, and digest algorithm
-unchanged. Historical outer requests retain their exact bytes; a new request
-that embeds a v5 body naturally has new full-message bytes and a new digest.
+and the finite singleton shape. Every branch-request source, cause, and stop
+variant uses schema v9; noncurrent branch-request bodies and envelopes are rejected.
 
 Stop-condition tags 5 and 6 encode a nonzero absolute scheduler-quantum
 coordinate and a flat nonzero virtual-time-or-scheduler-quantum pair. They use
-`AttemptV2`, `BranchRequestV6`, `ObservationV5-through-V8`, version-9
-`DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV2`. Every enclosing
-decoder requires the exact old-or-new version pairing. The scheduler coordinate
+`AttemptV8`, `BranchRequestV9`, `ObservationV12`, version-14
+`DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV3`. Every enclosing
+decoder requires that exact current schema. The scheduler coordinate
 comes from `SingleSchedulerCheckpointV2.quanta`; discovery-only calls that make
 no scheduler progress do not consume it. Exact resume evaluates the restored
 coordinate before driving and charges only the remaining suffix. Terminal and
@@ -965,15 +960,14 @@ kind = 1 (GetCampaignRequestV1) |
       41 (AttachCampaignRuntimeResponseV1) |
       42 (GetCampaignStatusRequestV1) |
       43 (GetCampaignStatusResponseV1) |
-      44 (SubmitCampaignDiscoveryRequestV1-or-V2) |
+      44 (SubmitCampaignDiscoveryRequestV3) |
       45 (SubmitCampaignDiscoveryResponseV1)
 ```
 
-An accepted explicit discovery request is a version-8 or version-9 `CampaignFact` whose
+An accepted explicit discovery request is a version-14 `CampaignFact` whose
 canonical payload contains the command, exact parent snapshot, exact
-campaign-owned configuration artifact, and stop condition. Version 9 is used
-only for either execution-quanta stop tag; all established stops remain version
-8. The repository admits it only while the
+campaign-owned configuration artifact, and stop condition. Any other fact or
+request schema is rejected. The repository admits it only while the
 campaign is `Running`, the frontier and admission sequence are empty, the
 active policy permits a named boundary, and campaign attempt budget remains.
 It publishes the empty branch path, semantic attempt, admission, command index,
@@ -988,7 +982,7 @@ coordinator/executor. This ordering prevents automatic idle discovery from
 winning the admission sequence with `NextChoice`; if another admission wins,
 the explicit request fails closed without replacing it.
 
-Loopback frame versions 1 through 19 are rejected rather than reinterpreted
+Noncurrent loopback frames are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
@@ -1282,12 +1276,6 @@ The initial strict component messages refine the illustrative request above by
 carrying every direct invocation object by value:
 
 ```text
-PlannerRequestV1 = version | expected_snapshot | invocation | engine |
-                   policy_artifact | policy | planner_state | input_view |
-                   input_bundle
-PlannerRequestV2 = version | expected_snapshot | invocation | engine |
-                   policy_artifact | policy | planner_state | input_view |
-                   optional_statistical_request_basis | input_bundle
 PlannerRequestV3 = version | expected_snapshot | invocation | engine |
                    policy_artifact | policy | planner_state | input_view |
                    optional_statistical_request_basis |
@@ -1314,22 +1302,16 @@ equal `PlanningScanPage.input_bytes`. Direct engine dependencies reachable from
 the by-value engine, artifact, policy, state, view, or served requests may be
 included once.
 
-Schema v2 adds the owner-derived coordinate and parent basis needed to author a
-version-three finite statistical draw after its predeclared parent completes.
-Schema v3 adds the complete SMC generation, particle, parent, selected
-opportunity, and domain basis. Only canonical frontier implementation version 8
+Planner-request schema v3 contains the owner-derived coordinate and parent basis
+for finite statistical draws plus the complete SMC generation, particle,
+parent, selected opportunity, and domain basis. Only canonical frontier implementation version 8
 may receive a nonempty SMC basis, and the pure planner validates it against the
-version-four policy before emitting a schema-v8 branch request. Older request
-schemas remain byte-readable under their original field layouts and cannot
-carry the later basis fields.
+version-four policy before emitting a schema-v9 branch request.
 
-Planner engines advertising `canonical-frontier-offers-v1` additionally
-require, for every served position, the exact `ContinuationProjectionV1`
-envelope authenticated by the expected snapshot's nested frontier index. For an
-engine that advertises neither `canonical-frontier-puct-v1` nor
-`canonical-frontier-budget-v1`, the least
-Ready position on the page has exactly one `ProposalV1` candidate-offer
-envelope and every other position has none. An offer names the served request,
+The current planner engines require, for every served position, the exact
+`ContinuationProjectionV1` envelope authenticated by the expected snapshot's
+nested frontier index. Every Ready position has exactly one `ProposalV2`
+candidate-offer envelope and every other position has none. An offer names the served request,
 branch point, domain, active policy, exact invocation, input view, and next
 one-based ordinal, and contains the owner-computed next legal value. Extra,
 missing, duplicate, cross-invocation, or non-Ready offers fail closed. The
@@ -1340,43 +1322,128 @@ request children before publishing the request. Rejection therefore remains
 zero-write, while accepted requests remain closure-complete and restart-
 auditable.
 
-The built-in `crucible-canonical-frontier` implementation version 8 with
-`canonical-frontier-planner` state version 3 is the current canonical-order
-engine. The built-in `crucible-canonical-puct` implementation version 6 with
-`canonical-frontier-puct-planner` state version 2 is the current PUCT engine.
-Both are closed pure engines. They accept only their exact current descriptor
-and state versions; obsolete packaged descriptors fail normal admission.
+The built-in `crucible-canonical-frontier` implementation version 8 is a closed
+pure engine for this capability. It considers only `Ready` offers, chooses the
+least `PlanningScanPosition`, and carries that small exact position/domain/
+value/ordinal tuple in `canonical-frontier-planner` state version 3 across
+pages. It returns `ContinueScan` before EOF, `Issue` at EOF when an offer
+exists, and `NoWork` at EOF otherwise. When issuing a carried offer, it
+reconstructs the proposal under the final invocation; the coordinator
+independently recomputes the same source ordinal and value. This establishes a
+complete executable planner/frontier loop without granting repository or
+Merkle authority to the engine. The first invocation requires the exact empty
+state, and local acceptance plus imported/restart validation rerun this built-in
+pure transition and compare its complete next state, usage claim, evidence, and
+disposition.
 
-Every `Ready` position carries one exact `ProposalV1` candidate-offer envelope,
-one `PlannerCandidateGuidanceV2`, and one `PlannerCandidateBudgetV2` when the
-engine needs that evidence. Guidance authenticates the input view, active
-policy, position, semantic domain, value, ordinal, edge, PUCT statistics,
-novelty, objective reward, and bounded finding counts. Budget evidence adds the
-owner-computed proposal, aggregate-attempt, and request-local-attempt allowance.
-The coordinator recomputes these records from the authenticated current view,
-rejects missing or forged evidence, and enforces spending again in the atomic
-issue transaction.
+The current PUCT variant under the same engine name uses implementation version
+6 and advertises
+`canonical-frontier-puct-v1`. Every Ready position has one exact offer and one
+`PlannerCandidateGuidanceV2`; non-Ready positions have neither. The guidance
+body is bounded to 64 KiB and encodes, in order:
 
-Both engines scan through EOF, retain the best affordable offer and aggregate
-blocked state across pages, and issue only from the exact current portable
-state. Canonical order chooses the least eligible position. PUCT chooses the
-highest exact total, then the lower edge and position. Complete read-only
-preflight precedes publication, and restart validation reruns the same pure
-transition against the authenticated current indexes.
+```text
+schema_version = 2
+input_view: CampaignViewId
+policy: CampaignPolicyId
+position: PlanningScanPosition
+domain: ChoiceDomainId
+domain_semantics: ChoiceDomainSemanticId
+value: ChoiceValue
+ordinal: u64
+edge: BranchEdgeId
+statistics: PuctEdgeStatistics
+novelty_events: u64
+objective_reward_micros: i64
+finding_events: map<FindingKind, u64>  # at most three positive entries
+```
 
-New campaigns serve these canonical positions from an authenticated ordered
-scan index in the exploration root, not a sort over all exploration records.
+Its envelope children are the exact input view, policy, served request, and
+domain. `edge` MUST derive from the branch point, semantic domain, and value;
+the novelty count MUST agree with the Boolean statistic; the objective field
+MUST equal the bounded owner projection in RFC 03; and the reward sum MUST equal
+the saturating addition of that signed field and the by-value policy's
+configured closed finding weights times occurrence counts. Completed edges
+reuse exact authenticated statistics and their earliest execution-basis source
+weights. An unseen offered edge is the sole prospective addition to the
+completed set, with zero visits/reward/novelty/objective/findings, exact RFC 03
+normalization over completed weights plus its current BranchRequest explicit
+weight or implicit weight one, and fairness reserved. Guidance schema v2 always
+includes `objective_reward_micros`; any other schema is rejected rather than
+assigned an implicit neutral reward.
+
+The owner computes one batch per page. Aggregate credited observations and
+credit/path bodies retain the RFC 03 65,536-record/128-MiB limits; the canonical
+observation and finding roots are each scanned at most once; unique decoded
+choice-domain bodies are capped at 128 MiB; and distinct prospective raw
+weights charge at most 1,000,000 completed-edge normalization visits. Guidance
+schema v2 ranks higher exact total
+first, then lower `BranchEdgeId`, then lower `PlanningScanPosition`, carries the
+winner across pages in `canonical-frontier-puct-planner` state version 2, and
+issues only at EOF. Acceptance publishes guidance envelopes with offers only
+after complete zero-write preflight and recomputes/reruns the exact transition
+on restart and import. Any other guidance schema is rejected.
+
+Canonical engine version 8 and PUCT engine version 6 advertise
+`canonical-frontier-budget-v1`. Every Ready position has an exact offer and one
+`PlannerCandidateBudgetV1`, including positions that cannot currently afford
+issuance. Non-Ready positions have neither. This preserves request-local
+continuation semantics while allowing a scan to pass an unfunded new attempt
+and select a convergent cause that needs no additional attempt allowance. The
+budget body encodes, in order:
+
+```text
+schema_version = 1
+input_view: CampaignViewId
+position: PlanningScanPosition
+proposal: ProposalId
+remaining_proposals: u128
+remaining_attempts: u128
+new_attempt: bool
+```
+
+Its exact envelope children are the input view, served request, and offered
+proposal. Structural validation binds the record to that exact offer; the
+owner independently recomputes both remaining allowances and the semantic
+attempt's existing execution-basis membership before accepting or replaying a
+request. Missing, repeated, mismatched, or forged eligibility fails closed.
+As with guidance, these derived records become retained request children only
+after complete read-only preflight. They are evidence, not spending authority:
+the final atomic issue transaction separately enforces aggregate proposal and
+unique-attempt costs across the whole batch.
+
+Both budget-aware engines rank only affordable offers, scan through EOF, and carry a
+blocked-offer bit in version-2 portable state, including across an empty final
+page. A complete scan with no affordable offer and a retained blocker yields a
+waitable driver outcome without committing `NoWork` as settled. Repeating the
+unchanged blocked head does not reinvoke the engine. A grant changes the
+accounting planning-view root and restarts selection with fresh eligibility.
+Both current engines require `canonical-frontier-request-budget-v1`. Their candidate budget schema is version
+2: the same fields and children above, followed by the exact big-endian `u64`
+`remaining_request_attempts`. Owner validation recomputes this allowance from
+the authenticated request-spending ledger index and the served request's cap.
+Indexed ledgers need one outer trie lookup and one nested root read per request,
+independent of unrelated campaign history.
+
+These engines skip a locally capped new attempt before recording aggregate
+blockage. A frontier containing only locally capped new attempts settles as
+`NoWork`; an aggregate grant cannot reset a request's cap. A later view in which
+another cause creates that semantic execution basis can make its convergent
+offer eligible without additional request-local spending. Version-2 portable
+state remains unchanged because its blocked bit still denotes aggregate
+funding only.
+
+Campaigns serve these canonical positions from the mandatory authenticated
+ordered scan index in the exploration root, not a sort over all exploration records.
 The index includes all request states and preserves branch-point, request-schema,
 and request-digest ordering. Each page reads its bounded window and one
 lookahead; current-head authentication supplies trusted roots for reused
-invocation dependencies. New basis objects still require closure authentication,
-and the global closure bound is preserved. A missing index anchor fails closed
-in normal admission and in migration when authenticated evidence is absent.
+invocation dependencies. Basis objects require closure authentication, and the global closure bound is
+preserved. Roots lacking the scan index fail closed.
 
-Bounded
-model-resolved finite masses are retained in branch-request schema v3 and
-exact-checked against the opportunity's model ID. Schema v4 additionally
-retains an exact model ID and generator ID for modeled generated sources. The
+Bounded model-resolved finite masses and modeled generated sources are retained
+in the sole current branch-request schema v9. Their model and generator IDs are
+exact-checked against the opportunity. The
 first closed adapter maps standardized uniform app-random integer models to
 permuted-integer implementation version 17, supports power-of-two cardinality
 through `2^64`, caps emitted candidates by the request's `u64` proposal budget,
@@ -1387,7 +1454,7 @@ implementation-plan gate. Explicit finite weights and uniform defaults are
 owner-derived here.
 
 The initial coordinator retention profile is deliberately narrower than the
-version-1 wire format: an accepted request body is at most 32 MiB and its bundle
+current planner-request v3 wire format: an accepted request body is at most 32 MiB and its bundle
 contains at most 65,529 objects. Seven fixed retained-envelope children name
 the expected snapshot, invocation, engine, policy artifact, policy, planner
 state, and input view; every bundle object is one additional child. A valid
@@ -1518,7 +1585,7 @@ identity, dependency lock, planner ABI, engine version, arguments, and any
 source or compiled artifact required to reproduce it. `PlannerState` is bounded
 portable data. It is never a language stack, closure, heap, actor/process,
 native trait object, or runtime continuation. Repeating one complete
-`PlannerRequestV1` must return byte-identical canonical output; disagreement is
+`PlannerRequestV3` must return byte-identical canonical output; disagreement is
 a planner-determinism failure.
 
 A globally ordered frontier need not fit in one bundle. The coordinator serves
@@ -1584,19 +1651,12 @@ RetainExactClosure    EvictMaterialization
 GetHealth
 ```
 
-The first bounded assignment messages are:
+The bounded current assignment messages are:
 
 ```text
-SubmitAttemptRequestV2 = version | assignment_id | daemon_epoch | lineage_id |
-                         attempt_id | resource_limits | retention_intent
-
-SubmitAttemptRequestV3 = version | assignment_id | daemon_epoch | lineage_id |
+SubmitAttemptRequestV6 = version | assignment_id | daemon_epoch | lineage_id |
                          attempt_id | resource_limits | retention_intent |
-                         start_mode
-
-SubmitAttemptRequestV4 = version | assignment_id | daemon_epoch | lineage_id |
-                         attempt_id | resource_limits | retention_intent |
-                         scoped_start_mode
+                         start_mode | finding_retention_policy_disposition
 
 SubmitAttemptRequestV5 = version | assignment_id | daemon_epoch | lineage_id |
                          attempt_id | resource_limits | retention_intent |
@@ -1609,137 +1669,69 @@ SubmitAttemptRequestV6 = version | assignment_id | daemon_epoch | lineage_id |
 resource_limits = maximum_vcpus | maximum_resident_bytes |
                   maximum_disk_bytes | maximum_execution_quanta
 
-SubmitAttemptResponseV2/V3 = version | assignment_id | daemon_epoch |
-                             attempt_id | request_digest | disposition
-
 SubmitAttemptResponseV4 = version | assignment_id | daemon_epoch | attempt_id |
-                          request_digest | completed_disposition |
-                          finding_candidate
-
-GetAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id |
-                               execution_id | execution_basis_digest
+                          request_digest | disposition |
+                          optional_finding_candidate
 
 GetAttemptExecutionRequestV3 = version | daemon_epoch | lineage_id | attempt_id |
                                execution_id | execution_basis_digest |
                                execution_scope
 
-GetAttemptExecutionResponseV2/V3 = version | daemon_epoch | attempt_id |
-                                   execution_id | request_digest | disposition
-
 GetAttemptExecutionResponseV4 = version | daemon_epoch | attempt_id |
                                 execution_id | request_digest |
-                                completed_disposition | finding_candidate
-
-ResumeAttemptExecutionRequestV2 = version | assignment_id | daemon_epoch |
-                                  lineage_id | attempt_id | prior_execution_id |
-                                  exact_checkpoint_id | resource_limits |
-                                  retention_intent
-
-ResumeAttemptExecutionRequestV3 = version | assignment_id | daemon_epoch |
-                                  lineage_id | attempt_id | prior_execution_id |
-                                  exact_checkpoint_id | resource_limits |
-                                  retention_intent | prior_start_mode
-
-ResumeAttemptExecutionRequestV4 = version | assignment_id | daemon_epoch |
-                                  lineage_id | attempt_id | prior_execution_id |
-                                  exact_checkpoint_id | resource_limits |
-                                  retention_intent | selected_start_mode
-
-ResumeAttemptExecutionRequestV5 = version | assignment_id | daemon_epoch |
-                                  lineage_id | attempt_id | prior_execution_id |
-                                  exact_checkpoint_id | resource_limits |
-                                  retention_intent | prior_start_mode |
-                                  finding_retention_policy_basis
+                                disposition | optional_finding_candidate
 
 ResumeAttemptExecutionRequestV6 = version | assignment_id | daemon_epoch |
                                   lineage_id | attempt_id | prior_execution_id |
                                   exact_checkpoint_id | resource_limits |
                                   retention_intent | prior_start_mode |
-                                  finding_retention_policy_basis |
-                                  prior_finding_retention_policy_basis
-
-ResumeAttemptExecutionResponseV2/V3 = version | assignment_id | daemon_epoch |
-                                      attempt_id | prior_execution_id |
-                                      exact_checkpoint_id | request_digest |
-                                      disposition
+                                  finding_retention_policy_disposition |
+                                  prior_finding_retention_policy_disposition
 
 ResumeAttemptExecutionResponseV4 = version | assignment_id | daemon_epoch |
                                    attempt_id | prior_execution_id |
                                    exact_checkpoint_id | request_digest |
-                                   completed_disposition | finding_candidate
-
-CheckpointAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id |
-                                      attempt_id | execution_id |
-                                      execution_basis_digest
+                                   disposition | optional_finding_candidate
 
 CheckpointAttemptExecutionRequestV3 = version | daemon_epoch | lineage_id |
                                       attempt_id | execution_id |
                                       execution_basis_digest | execution_scope
 
-CheckpointAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id |
-                                       execution_id | request_digest | disposition
-
 CheckpointAttemptExecutionResponseV4 = version | daemon_epoch | attempt_id |
                                        execution_id | request_digest |
-                                       completed_disposition | finding_candidate
-
-CancelAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id |
-                                  execution_id | execution_basis_digest
+                                       disposition | optional_finding_candidate
 
 CancelAttemptExecutionRequestV3 = version | daemon_epoch | lineage_id | attempt_id |
                                   execution_id | execution_basis_digest |
                                   execution_scope
 
-CancelAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id |
-                                   execution_id | request_digest | disposition
-
 CancelAttemptExecutionResponseV4 = version | daemon_epoch | attempt_id |
                                    execution_id | request_digest |
-                                   completed_disposition | finding_candidate
+                                   disposition | optional_finding_candidate
 ```
 
-Version 3 of `GetAttemptExecutionResponse` adds the `TerminalFailure`
-disposition. Version 3 of the submit and resume responses adds the matching
-`TerminalFailure` rejection for a new assignment or resume that encounters the
-durable quarantine. The executor records that state in the current attempt-state record v15
-when a non-retryable worker failure stops an execution. The coordinator closes
-the admitted ordinal with `AttemptClosed(TerminalWorkerFailure)` in campaign
-fact v10. This operational classification does not synthesize a guest
-observation or modeled stop outcome. Every older response disposition and
-campaign closure reason retains its prior schema version and bytes.
+The request and response decoders reject every noncurrent wire version. The
+executor records a non-retryable worker failure in the current attempt-state
+record v15, and the coordinator closes its admitted ordinal with
+`AttemptClosed(TerminalWorkerFailure)` in campaign fact v14. This operational
+classification does not synthesize a guest observation or modeled stop
+outcome.
 
-Version 4 of the submit, status, resume, checkpoint, and cancellation responses
-adds a required finding-candidate bundle to a completed disposition. A response
-without that child retains its earlier version and bytes. Every response
-authenticates the complete request before exposing the candidate.
+Every current response authenticates the complete request before exposing its
+explicit optional candidate. `SubmitAttemptRequestV6` carries the closed
+execute, materialized-start capture, savepoint capture, and selected-savepoint
+start modes. Capture uses a separate execution-basis domain that authenticates
+its configuration and capture request. The supervisor persists
+`checkpoint-requested` and latches the worker signal before dispatch, so
+capture cannot race with an ordinary modeled quantum.
 
-Version 3 of `SubmitAttemptRequest` adds the explicit
-`capture-materialized-start(configuration-artifact ID)` start mode. Ordinary
-execution retains the exact version 2 bytes, digest domain, and execution-basis
-identity. Capture uses a separate execution-basis domain that authenticates the
-requested configuration. The supervisor persists `checkpoint-requested` and
-latches the worker signal before dispatch, so capture cannot race with an
-ordinary modeled quantum.
-
-Version 4 of `SubmitAttemptRequest` adds the closed
-`savepoint-capture(capture-request fact ID, configuration-artifact ID)` mode.
-Its `AttemptExecutionScope` is either `semantic` or
-`savepoint-capture(capture-request fact ID)`. The scope has canonical schema
-version 1 and is bound into the request and execution-basis digests. Version 3
-of each status, checkpoint, and cancellation request carries that scope
-explicitly. An executor uses the explicit scope for direct lookup and never
-scans or infers a scope from a lineage and attempt ID. Attempt-state record v15
-persists the scope and uses the current scope-bound storage-key domain.
-
-Version 6 of `SubmitAttemptRequest` binds an authenticated finding-retention
-policy basis to semantic execute and selected-savepoint assignments. Capture
-modes reject that field, and semantic assignment fails closed when the
-canonical basis is unavailable or does not match the admitted attempt. Version
-5 of `ResumeAttemptExecutionRequest` carries the same basis for both the prior
-and new ordinary or selected-savepoint execution. Version 6 represents the
-materialized-capture transition: the fresh execution has a basis and the prior
-capture has none, so the fresh policy basis cannot relabel the capture's
-execution-basis digest.
+`AttemptExecutionScope` is either `semantic` or
+`savepoint-capture(capture-request fact ID)`. The current status, checkpoint,
+and cancellation requests carry that scope explicitly and bind it into their
+request and execution-basis digests. An executor uses the explicit scope for
+direct lookup and never scans or infers a scope from a lineage and attempt ID.
+Attempt-state record v11 persists the scope and uses a separate storage-key
+domain for nonsemantic state.
 
 The canonical `AttemptId` names the immutable `Attempt` record and is itself
 the execution specification; the protocol deliberately does not create a
@@ -1774,11 +1766,8 @@ than a blind retry. A terminal failure names an existing durable worker
 quarantine; the coordinator closes that admitted ordinal without another
 assignment.
 
-`GetAttemptExecution` is the read-only completion-poll operation. Its request
-digest is
-`H("crucible.campaign.get-attempt-execution-request.v2", canonical_request)`
-for legacy semantic bytes or the corresponding `.v3` domain for an explicit
-scope;
+`GetAttemptExecution` is the read-only completion-poll operation. Its scoped current request digest is
+`H("crucible.campaign.get-attempt-execution-request.v3", canonical_request)`;
 the response repeats the exact epoch, attempt, and execution and is rejected if
 any echo or the digest differs. Its closed disposition vocabulary is
 `running | checkpoint-requested | checkpoint-publishing(exact-checkpoint ID) |
@@ -1794,11 +1783,9 @@ execution-basis mismatch is `not-current`. This operation reads the direct
 lineage-qualified attempt-state record and MUST NOT create an assignment
 record.
 
-`CheckpointAttemptExecution` is the exact-basis, idempotent pause request. Its
-request digest is
-`H("crucible.campaign.checkpoint-attempt-execution-request.v2",
-canonical_request)` for legacy semantic bytes or the corresponding `.v3`
-domain for an explicit scope. Its closed disposition vocabulary is `requested |
+`CheckpointAttemptExecution` is the exact-basis, idempotent pause request. Its scoped current request digest is
+`H("crucible.campaign.checkpoint-attempt-execution-request.v3",
+canonical_request)`. Its closed disposition vocabulary is `requested |
 already-requested | publishing(exact-checkpoint ID) |
 paused(exact-checkpoint ID) | already-completed(observation ID) |
 already-canceled | not-current`. The executor MUST persist
@@ -1841,15 +1828,16 @@ owner, not the process-local queue, remains authoritative for aggregate QEMU
 capacity when semantic and promotion workers overlap.
 
 `ResumeAttemptExecution` is the idempotent admission request for a fresh local
-execution incarnation from one exact durable `paused(root)` state. Its request
-version 2 request digest is
-`H("crucible.campaign.resume-attempt-execution-request.v2",
+execution incarnation from one exact durable `paused(root)` state. Its current
+request digest is
+`H("crucible.campaign.resume-attempt-execution-request.v6",
 canonical_request)`. The request carries the new assignment and daemon epoch,
-the semantic lineage and attempt, and the exact prior execution and checkpoint
-that must still own the paused state. Resource limits and retention form the
-same assignment-neutral execution basis used by `SubmitAttempt`; resume MUST
-reject a changed basis rather than silently run the checkpoint under different
-operational terms. Its closed disposition vocabulary is
+the semantic lineage and attempt, the exact prior execution and checkpoint that
+must still own the paused state, resource limits, retention intent, prior start
+mode, and both current and prior finding-retention policy dispositions. These
+fields form the same assignment-neutral execution basis used by
+`SubmitAttempt`; resume MUST reject a changed basis rather than silently run the
+checkpoint under different operational terms. Its closed disposition vocabulary is
 `accepted(new execution ID) | already-running(new execution ID) |
 already-completed(observation ID) | already-canceled | not-current |
 rejected(incompatible | backpressure | unavailable-input | unauthorized |
@@ -1861,19 +1849,11 @@ execution incarnation. After restart, an admitted resume remains bound to the
 same checkpoint and cannot degrade to an ordinary execution from the attempt's
 starting configuration.
 
-Version 3 resumes a materialized-start capture. It carries the prior capture
-mode and requested configuration under the
-`crucible.campaign.resume-attempt-execution-request.v3` digest domain. The
-executor first matches the paused root against that capture basis, then records
-the new incarnation under the ordinary execution basis. A version 2
-resume cannot match a captured root, and a version 3 request cannot relabel its
-new assignment as another capture.
+The decoder rejects every request version other than V6 before admission.
 
 `CancelAttemptExecution` is the idempotent mutation for the same exact
-execution basis. Its request digest is
-`H("crucible.campaign.cancel-attempt-execution-request.v2", canonical_request)`
-for legacy semantic bytes or the corresponding `.v3` domain for an explicit
-scope;
+execution basis. Its scoped current request digest is
+`H("crucible.campaign.cancel-attempt-execution-request.v3", canonical_request)`;
 the response repeats the exact epoch, attempt, and execution and is rejected if
 any echo or the digest differs. Its closed disposition vocabulary is
 `canceled | already-canceled | already-completed(observation ID) | not-current`.
@@ -1901,8 +1881,9 @@ before modeled guest work. For a branch, the live driver applies the selection
 exactly once when
 resuming the pre-selection parent and skips that application when resuming the
 post-selection boundary; a resumed attempt cannot traverse the edge twice. The
-checkpoint store and pinned run-directory transaction implement the
-complete-root, streamed-VMState materialization primitive for that operation.
+checkpoint store and pinned run-directory transaction install the complete
+version-nine device-state, direct-plus-delta RAM, and overlay descriptors for
+that operation.
 The guarded replay-validation session, source-bound promotion preparation,
 linear publication phases, version-5 ledger transition, restart
 reauthentication, and final paused-root CAS are implemented. Concrete
@@ -2078,18 +2059,9 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
-The normal assignment ledger admits only attempt-state v15. Its scope, origin,
-promotion basis, candidate roots, capture outcomes, exact-checkpoint roots, and
-prepared-result digest are authenticated before restart recovery. Any other
-schema fails closed before a worker or runtime recovery mutation can run.
-Historical versions 1 through 14 are parsed only by the bounded, authenticated,
-stopped-daemon `store repair operational-state` migration, which records source
-provenance and writes version 15 before normal runtime may reopen the ledger.
-Versions 5 through 10 may encode `checkpoint-promoting`; version 6 added its
-resource and retention basis, and version 10 bound its start mode. Versions 7
-through 9 added terminal worker failure and the pending-versus-acknowledged
-finding-candidate roots.
-
+The attempt-state reader accepts only version 15. It binds the exact resource,
+retention, pending or acknowledged finding-candidate, and start-mode state into
+checkpoint promotion. The
 terminal-worker-failure state retains its exact execution basis and prevents
 submission or resume from starting another incarnation.
 
@@ -2135,7 +2107,7 @@ operational context containing only resource ceilings, retention intent, and a
 cancellation signal. Candidate preflight runs without borrowing the supervisor
 actor. Under repository GC exclusion, the executor first publishes replay
 capture and exact-checkpoint children and binds the full prepared payload. For
-a Complete v5 finding it authenticates the bounded full candidate inventory,
+a Complete v6 finding it authenticates the bounded full candidate inventory,
 copies only selected checkpoint closures into the campaign CAS, and publishes
 the semantic candidate and observation while that same guard still protects
 the unselected inventory. It then fsyncs the payload and digest into a hidden
@@ -2143,50 +2115,31 @@ prepared-result journal. A short actor CAS changes `running` to
 `publishing(observation_id, candidate_id, exact_roots,
 prepared_result_digest)`, and the journal is promoted into its visible recovery
 namespace before the guard is released. Later publication outside the actor is
-idempotent; a prepublished Complete v5 candidate is cold-validated through its
+idempotent; a prepublished Complete v6 candidate is cold-validated through its
 selected closure without reopening unselected roots. A short `publishing ->
 completed` CAS carries the same full digest forward. Publishing and completed
 observation/candidate IDs are streamed by the ledger as authenticated GC roots
 without materializing history.
 
 After restart, a complete publishing observation is reauthenticated and
-promoted without guest execution. A completed candidate remains an operational
-root until coordinator incorporation. Before mutating any campaign ref,
-recovery reopens attempt-state v15 and the prepared-result journal together and
-compares execution basis, execution, observation, candidate, exact roots, and
-full payload digest, then authenticates the candidate's bounded complete closure,
-including replay-capture manifests and chunks and selected exact-checkpoint
-descendants. After canonical observation incorporation determines the exact
-post-observation snapshot, the daemon binds that snapshot and campaign to the
-authenticated tuple and seals it using a process-ephemeral key. The repository
-verifies the seal and creates a single-use authority bound to that exact
-campaign incorporation operation. This seal rejects cross-restart and stale-key
-reuse in the packaged trusted-daemon path; its public constructors and key
-installer do not make it an in-process unforgeability boundary against arbitrary
-linked code. If a
-closure is incomplete, a fresh daemon may recover publication under a new
-execution identity, but the committed observation ID remains fixed. Normal
-readers and writers accept only attempt-state v15; every other schema fails
-closed before operational recovery.
+promoted without guest execution. If its closure is incomplete, a fresh daemon
+may recover publication under a new execution identity, but the committed
+observation ID remains fixed. Readers and writers use version 2.
 
-
-The local Crucible execution adapter owns nested payload schemas. Current
+The local Crucible execution adapter owns nested payload schemas. Scenario
 scenario payload version 3 is the strict `ScenarioDefForm` compact-binary V7
-encoding; configuration payload version 2 is the
-strict `Schedule` compact-binary V2 encoding. Before VM launch the adapter decodes both, authenticates the exact
+encoding; configuration payload version 2 is the strict `Schedule`
+compact-binary V2 encoding. Before VM launch the adapter decodes both, authenticates the exact
 scenario-artifact reference, reconstructs `Configuration`, and requires its
 re-derived `ScenarioDefId` and `ConfigurationId` to equal the campaign record.
 Unsupported nested schemas and identity drift fail before execution.
 
-Schedule V2 adds the single canonical campaign-selection decision envelope.
+The current schedule includes one canonical campaign-selection decision envelope.
 The envelope contains only strict `Selection` canonical bytes and is globally
 dependent for reduction until its typed producer proves narrower locality. It
-contains no callback, native pointer, QEMU object, or consumer closure. Compact
-schedule V1 is rejected at this boundary instead of being silently interpreted
-through the new decision taxonomy. General execution-model readers also reject
-Schedule V1; there is no compatibility or migration path.
-Checkpoint V4 carries selection decisions; selection-free Checkpoint V3 remains
-readable, while a selection tag under V3 is rejected.
+contains no callback, native pointer, QEMU object, or consumer closure. Every
+noncurrent schedule is rejected at this boundary. Runtime checkpoint admission requires
+Checkpoint V4 and fails closed on noncurrent checkpoint schemas.
 
 Scenario V7 owns the complete bounded selectable declaration component. Its
 identity commits to non-default ceilings even when the declaration map is
@@ -2205,7 +2158,7 @@ language-neutral guest opportunity coordinates from RFC 02. A `NextChoice`
 attempt retains the complete declaration/domain/opportunity discovery without
 replying. Other discovery execution records and returns the declared default.
 Those executor-produced selections are published with the observation candidate
-and bound as schema-v3 or schema-v4 observation children. Candidate validation
+and bound as schema-v12 observation children. Candidate validation
 requires each selection to resolve against one exact opportunity discovered by
 the same attempt, rejects repeated opportunity selection, and enforces the
 existing aggregate choice-record byte bound before publication. This makes the
@@ -2247,8 +2200,8 @@ closure schema. The repository exposes that exact immutable request validator
 separately from
 response validation, and the supervisor accepts it through a narrow admission
 trait rather than receiving campaign mutable-ref authority.
-`AllowAllAttemptAdmission` exists only for already-authenticated compositions
-and component tests; it is not a production trust boundary. The production
+Component tests use a crate-private permissive validator to isolate supervisor
+behavior. Production compositions always bind an authenticating validator. The
 repository adapter maps missing, temporarily unavailable, or poisoned input to
 `unavailable-input`, preserves backend authorization failure as `unauthorized`,
 and maps corrupt or semantically incompatible closure data to `incompatible`.
@@ -2264,7 +2217,7 @@ objects, recomputes all derived identities, validates that the observation is a
 legal result of the admitted attempt, and only then incorporates it. An executor
 may capture an exact closure but cannot claim archival durability. The
 coordinator asks the store layer to ensure the complete closure under a named
-durability policy before publishing a durable pin or successful hibernation.
+durability policy before publishing a durable pin or transferable archive.
 For an accepted semantic `Exact` pin, the local executor/maintenance owner
 separately selects one authenticated `ExactCheckpointId` whose modeled
 configuration equals the pin target. That operational selection is bound to the
@@ -2429,10 +2382,11 @@ candidate separately from `hot-fork`, `exact-restore`, or `thin-replay`
 telemetry; the adapter strips that telemetry before canonical candidate
 publication.
 
-The first production-facing QEMU adapter realizes the authenticated starting
-configuration through the existing single `instantiate_qemu_vm` path. Exact
-snapshot admission reports `exact-restore`; ancestor or baked-genesis replay
-reports `thin-replay`. It can be instantiated only with an attempt-scoped live
+The production-facing QEMU adapter realizes an authenticated starting
+configuration through operation-specific lifecycle routes. Exact checkpoint
+continuations enter `build_production_vm_exact_resume_lifecycle` and report
+`exact-restore`; baked-genesis replay enters the typed production replay catalog
+and reports `thin-replay`. Each route can be entered only with an attempt-scoped live
 session created from the admitted CPU, resident-memory, writable-disk, and
 execution-quantum ceilings plus the cancellation signal. That session owns the
 live backend capability used by the typed post-materialization driver, checks
@@ -2445,7 +2399,7 @@ exhausted or canceled charge prevents guest progress and remains an operational
 failure even when the narrow backend method reports through its backend-error
 channel. The reusable counter charges exactly through the admitted nonzero
 ceiling and leaves its state unchanged on exhaustion.
-The realization executor owns replacement and VMState authority; the driver
+The realization executor owns descriptor-backed checkpoint and active-process authority; the driver
 receives a narrow mutable live-backend facade that excludes generic snapshot,
 restore, shutdown, and process-replacement operations. The driver also receives
 only an operational-boundary view of the resource guard, never its release or
@@ -2511,28 +2465,32 @@ to configured non-root values. Admission requires both IDs to differ from every
 real, effective, and saved supervisor user/group identity and its bounded
 supplementary-group set. `no_new_privs` is set before the credential switch so a
 later `exec` cannot regain privilege. Guarded spawn refuses implicit `qemu-img`
-work and requires an already-provisioned non-symlink VMState container. Before
+work. Exact restore requires authenticated version-nine device-state and
+direct-plus-delta RAM descriptors plus any writable-root overlay. Before
 revalidating the prepared authority or allocating child descriptors, it checks
-the launch command's exact vCPU, guest-memory, and minimum writable-byte
-baseline against the ceilings sealed into the child contract. The writable
-ceiling also supplies a conservative per-file `RLIMIT_FSIZE`; a separate
-attempt-owned filesystem quota remains required to enforce the aggregate. The
+the launch command's exact vCPU, guest-memory, writable-byte baseline, and
+aggregate transient checkpoint bytes against the ceilings sealed into the child
+contract. The writable ceiling also supplies a conservative per-file
+`RLIMIT_FSIZE`; a separate attempt-owned filesystem quota remains required to
+enforce the aggregate. The
 delegated hierarchy MUST NOT grant those child credentials an independent write
 path back to its controls.
 
 Public prepared-run-directory construction first admits the command's exact
 resource profile against the sealed child contract, then opens the directory
-without following its final path component, retains the exact regular VMState
-inode, and treats the original path as diagnostic only. The process contract
+without following its final path component, retains the exact regular writable
+root inode, and treats the original path as diagnostic only. The process contract
 and prepared directory share one private lifecycle token in addition to the
 numeric resource basis; a directory admitted for another attempt is rejected
 even when both attempts have identical ceilings. Exact-checkpoint
-materialization likewise requires that contract before path access. The
-authority stores that complete basis;
+materialization likewise requires that contract before path access and
+preflights aggregate device-plus-RAM bytes before opening the root or creating
+any sealed memfd. The authority stores that complete basis;
 guarded spawn requires an exact match before revalidation or descriptor
 allocation, preventing a directory admitted for one ceiling from being reused
 under another. Guarded spawn requires that pinned authority,
-reauthenticates the named VMState entry before allocating child descriptors, and
+reauthenticates the named writable-root entry and all sealed checkpoint
+descriptors before allocating child descriptors, and
 then, after cgroup placement and sticky-cancellation admission, uses `fchdir`
 plus a second `openat`/`fstat` identity check immediately before dropping child
 credentials and executing QEMU. Renaming or replacing the external diagnostic
@@ -2806,73 +2764,21 @@ Invocation by guarded launch, baked/thin image
 provisioning, and a real ext4 project-quota enforcement VM gate remain mandatory
 before this host owner is selected by the production executor.
 
-The packaged production executor now selects this authority after capturing
-and admitting baked genesis but before binding its endpoint. The guarded
-launch/session path transfers retained pre-install and active-node
-children into the abstract attempt guard, and the daemon guard composes
-cancellation, quantum accounting, descriptor-pinned preparation, and
-all-or-quarantine cleanup around the concrete combined Linux host owner. A
-production lifecycle now accepts and retains one object-safe node-launch
-authority. Initial fresh/exact materialization and every modeled crash/restart
-replacement pass through that same authority; whole-world debugger replay must
-obtain an independent authority from it or fail closed. The authoritative
-lifecycle binds the exact node, positive generation, launch profile, and one of
-three preparation operations in the same request: fresh overlay creation,
-authenticated exact overlay/VMState materialization, or replacement cloning
-from the prior generation. The launcher performs that preparation before it
-spawns the child. The lifecycle itself no longer creates a generation
-directory, invokes `qemu-img`, copies exact artifacts, or clones replacement
-artifacts before the authority sees the request. A fresh process request cannot
-be paired with exact/replacement preparation, and an exact process request
-cannot be paired with fresh preparation. Exact preparation carries the complete
-authenticated per-node checkpoint-manifest identity, not only snapshot
-metadata, and lends each retained artifact through a fixed-memory streaming
-reader that checks its declared length and content identity. A guarded launcher
-can therefore stream VMState into its already-pinned linear destination and bind
-that inode to the complete checkpoint root without replacing or reopening it.
-The lifecycle therefore has neither a
-pre-spawn writable-storage bypass nor a later direct-spawn bypass around the
-attempt guard. Every successful launch returns the live node together with a
-linear lease naming the exact scheduler `NodeId` and positive process
-generation. The lifecycle retains active and staged leases
-separately. A staged replacement cannot displace the active lease; the active
-lease is released only after the old child is attested reaped, and the staged
-lease becomes active only with the backend replacement commit. Failed staging
-reaps the staged child before releasing its lease, while lease-release failure
-is latched as a quarantine error: later shutdown attempts cannot attest
-aggregate release or reclaim capacity. Final shutdown
-asks all retained nodes to reap, releases each exact generation lease, and only
-then asks the aggregate launch authority to finish. A failed attestation stays
-observable and transfers the remaining authority to quarantine. Construction
-failure, unwind, or abandonment before those explicit finishes must perform the
-same fail-closed transfer from the lease and authority drop paths. The daemon's
-attempt-generation owner now enforces this join around one resource guard. It
-retains at most one latest generation integer per bounded scenario node plus
-at most the active lease and one staged successor per node, rejects a third,
-stale, or reused identity, and releases the guard only when every exact lease
-finished. Dropping a lease or requesting
-aggregate finish with a live lease permanently transfers the guard to
-quarantine; exact retry continues to report that terminal outcome. The packaged
-non-campaign lifecycle uses the existing launcher through the default
-authority and no-op generation leases. The campaign worker must still provide
-the Linux attempt-owned multi-generation implementation and must not select
-that default. The daemon now provides an attempt-owned lifecycle adapter for
-fresh, retained exact, and local replacement generations. It admits the launch
-resource profile before creating a generation directory. Fresh preparation
-runs both adjacent `qemu-img` invocations under the attempt cgroup, sticky
-cancellation, file ceiling, pinned directory, child credentials, parent-death
-rule, and fixed absolute deadline, then synchronizes and reauthenticates their
-named inodes. Retained exact preparation streams and authenticates both the
-writable root overlay and VMState through descriptor-pinned linear transactions
-and binds both to the complete checkpoint-manifest identity. Local replacement
-resolves the supplied source path only against the retained prior-generation
-capability, reflinks both writable files inside the same project quota, and
-binds them to the authenticated paused replacement snapshot. Every mode then
-invokes only its guarded live-node entry point. A failure with no remaining
-child rolls back the pending generation fence so the exact lifecycle request
-can retry. A failed synchronous reap instead transfers the direct QEMU or
-image-tool child into the aggregate owner and makes that owner terminal and
-quarantined. The production lifecycle now requires every injected launch
+The packaged production executor binds its endpoint only after baked genesis
+and the version-nine exact-checkpoint capability are admitted. The guarded
+launch/session path transfers retained pre-install and active-node children into
+the attempt guard. The daemon guard composes cancellation, quantum accounting,
+descriptor-pinned preparation, and all-or-quarantine cleanup around the Linux
+host owner. Current exact launch authenticates the complete per-node checkpoint
+identity, writable-root binding, device-state descriptor, and ordered
+direct-plus-delta RAM descriptors before spawn. Missing version-nine descriptors
+fail closed; every noncurrent production manifest is rejected.
+
+The current lifecycle has no local process-replacement or descriptorless
+VMState cloning branch. A modeled crash or power-off that lacks a new admitted
+version-nine checkpoint remains terminal before launch. Final shutdown asks all
+retained nodes to reap and transfers any unattested child and resource authority
+to quarantine. The production lifecycle requires every injected launch
 authority to admit and charge each scheduler quantum before any scheduler,
 host-fault, or guest state advances, and to recheck the same authority before
 returning the outcome. The campaign launcher maps those hooks to the exact
@@ -2902,12 +2808,12 @@ runs that cleanup. A cleanup or quarantine failure takes terminal precedence
 over an otherwise retryable or canceled driver result while retaining both
 diagnostics. The fresh runner independently rejects any exact-resume root before
 calling even an injected lifecycle factory. It also rejects a non-genesis
-target before resource installation when its schedule contains a legacy
+target before resource installation when its schedule contains a raw
 app-random value, an explorer override, or a typed selection outside the
 standardized app-random model/branch contract. For every admitted discovery or
 selected-branch target, the runner derives an immutable per-node replay plan
 from the already repository-resolved schedule before launch. Control-protocol
-v2 passes that bounded canonical plan as a sealed third `Setup` descriptor. Each
+v3 passes that bounded canonical plan as a sealed third `Setup` descriptor. Each
 entry binds the node-local draw ordinal, canonical stream, full seeded raw draw,
 selected value, and exact `SelectionId`; before any launch the lifecycle
 requires the aggregate plan entries and scheduler selection set to contain the
@@ -2929,7 +2835,7 @@ exhaustion fails closed and still tears down the lifecycle. The runner MUST NOT
 substitute seed changes or a post-hoc schedule append for a `CampaignBranch`
 selection.
 The daemon-packaged executor now selects the concrete fresh driver, the
-version-four exact-resume driver, and one concrete packaged replay-oracle
+version-nine exact-resume driver, and one concrete packaged replay-oracle
 factory per semantic worker in a fixed worker pool with a shared aggregate
 resource owner and disjoint stable worker recovery roots. The exact-origin
 router never sends a retained root through fresh reconstruction. An
@@ -2990,7 +2896,7 @@ the modeled driver. The runner rejects retained log suffixes, performs final
 drain and teardown itself, and reports `ExactRestore` only after sealing. The
 guarded fresh lifecycle now provides the baked-genesis bootstrap capture: at
 exact scenario genesis it executes no modeled quantum, captures through the
-same bounded version-four native store, tears every process down, and admits
+same bounded version-nine native store, tears every process down, and admits
 the result only when its exact World live-node set authenticates. This
 read-only capability grants neither campaign publication nor replay admission
 by itself. Fresh exact-cache and packaged thin-image materialization remain
@@ -3012,12 +2918,12 @@ remain crate-internal, and the process facade cannot be used as a complete
 resource guard until the process/storage composition lands.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
-baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,
-and root-overlay presence. Executor admission MUST reject before spawn when the
-admitted vCPU, resident-memory, or aggregate writable-byte ceiling is below
-that baseline. Guest RAM is only the minimum resident baseline; the concrete
-guard MUST retain QEMU/plugin overhead within the same admitted maximum, and a
-root overlay consumes only the quota remaining after the VMState minimum.
+baseline derived from its fixed `-smp`, guest RAM, and root-overlay presence.
+Executor admission MUST reject before spawn when the admitted vCPU,
+resident-memory, or aggregate writable-byte ceiling is below that baseline.
+Exact restore separately preflights the checked aggregate device-state and RAM
+descriptor bytes against the compiled fat-checkpoint ceiling before any
+materialization side effect.
 
 The realization executor owns one unified event log resumed from the realized
 runtime offset. Replay requires the caller's runtime offset to equal that
@@ -3034,34 +2940,22 @@ modeled live-backend facade. The lifecycle owner supplies a materialized
 scheduler `Checkpoint`; capture first verifies that its identity and
 configuration equal the installed configuration, seals the executor-owned
 event log, and then requires the checkpoint's exact event-log offset and node
-instruction count to match the live boundary before QEMU VMState or host-I/O
+instruction count to match the live boundary before QEMU device/RAM or host-I/O
 capture begins. Success leaves QEMU paused. Failure after sealing also closes
 further modeled progress and retains the session for guarded reap or
 quarantine. A successful capture returns authenticated `QemuVmSnapshot`
 metadata, the complete `SingleSchedulerCheckpoint` from that same paused
-boundary, and a reopenable, byte-stable VMState source. The compatibility
-session reaps QEMU, invokes the pool-owned no-write preparation and durable-root
-handoff, and returns one opaque prepared result; the supervisor continues
-charging the execution reservation until durable pause. The real-node executor
-now supplies the underlying ordered primitive: after
-paused metadata capture it performs final drain and exact reap, rejects any
-sealed event-log change, synchronizes and reauthenticates the retained VMState
-inode, and yields only a bounded positional reader that survives artifact
-unlink without carrying directory or mutation authority. The daemon wraps that
-reader as a reopenable CAS source with an independent positional cursor per
-open. The guarded live session now performs that conversion itself, records the
-successful capture as the backend reap attestation, and releases only the host
-resource guard during `finish`; it cannot accidentally issue a second shutdown
-or hand modeled code the opaque source. That compatibility path prepares a
-no-write, content-addressed version-three single-node root over canonical
-snapshot metadata, the scheduler continuation, and streamed opaque VMState;
-stages that exact root in the assignment ledger before the first immutable
-write; publishes all three children before the root; and requires exact durable
-placement receipts.
+boundary, and reopenable byte-stable device and RAM sources. The guarded live
+session records successful capture as the backend reap attestation and releases
+the host resource guard only during `finish`; it cannot issue a second shutdown
+or hand modeled code mutable source authority. The version-nine publication
+path stages the exact root in the assignment ledger before the first immutable
+write, publishes every authenticated child before the root, and requires exact
+durable placement receipts.
 
-The complete production lifecycle separately exports its version-four
-multi-node manifest and exact object inventory through a bounded read-only
-streaming capability. The daemon's version-four exact store authenticates the
+The complete production lifecycle exports its native multi-node manifest and
+exact object inventory through a bounded read-only streaming capability. The
+daemon's version-nine exact store authenticates the
 complete production continuation, maps every native object identity to a typed
 CAS object through bounded 4,096-entry child-index pages, binds exact scenario,
 configuration, production identity, counts, and aggregate bytes in the root,
@@ -3070,7 +2964,7 @@ lazy portable source; the production installer then runs the complete
 scenario-aware semantic restore in private storage before launch. The packaged
 fresh runner now honors the sticky request at a safe boundary, captures this
 complete source closure, exact-checks its scenario against the admitted
-lineage, prepares the version-four campaign root without campaign-CAS writes,
+lineage, prepares the version-nine campaign root without campaign-CAS writes,
 and uses a pool-owned callback to persist `checkpoint-publishing(root)` while
 the production lifecycle is still live. Only then does it shut down the
 lifecycle, return the opaque prepared token, publish children and root, and
@@ -3078,7 +2972,7 @@ reconcile durable pause. The handoff callback is absent from modeled input,
 cannot be minted by an external model, and never releases capacity before the
 runner attests teardown.
 
-The version-four installation boundary observes the exact attempt cancellation
+The version-nine installation boundary observes the exact attempt cancellation
 before and between at-most-one-MiB source reads, destination writes, semantic
 validation reads, and durable publication operations. It reconstructs the
 complete configuration and scheduler continuation and binds them to the
@@ -3104,21 +2998,21 @@ before retiring stale worker and promotion namespaces. This cleanup never
 permits an unstaged campaign root to become visible and never touches the
 separate baked-genesis source catalog.
 
-The version-four portable closure now supports source-bound replay-oracle
+The version-nine portable closure now supports source-bound replay-oracle
 promotion without destination writes. Preparation completely reauthenticates
 the raw closure, requires one check bound to every live node's exact raw
 snapshot, regenerates only the corresponding `NotRun` to `Match` snapshot
 objects, and derives the promoted target-manifest and closure identities from
 those semantic snapshot identities. All other modeled continuation and
 artifact objects are reused lazily. The daemon wraps this replacement in the
-same linear `checkpoint-promoting(raw,promoted)` phase used by the compatibility
-path, publishes the complete replacement only after staging both roots, and can
+same linear `checkpoint-promoting(raw,promoted)` restart-reconciliation phase,
+publishes the complete replacement only after staging both roots, and can
 reauthenticate the exact complete root pair after restart before the final
 paused-root CAS. A foreign source check, copied manifest identity, missing
 node, changed artifact, or non-matching oracle transition fails before writes.
 The production preparation boundary authenticates the raw attempt root, retains
 compact live-node descriptors plus read-only capabilities for their exact
-overlay and VMState manifests, and decodes one raw snapshot at a time. Each
+overlay, device-state, and RAM manifests, and decodes one raw snapshot at a time. Each
 artifact capability streams from the authenticated chunk sequence with fixed
 temporary memory, offers the caller's attempt operational boundary around every
 bounded I/O quantum, and rechecks exact length and content identity; it exposes
@@ -3132,7 +3026,7 @@ retries only classified availability failures, restores incomplete staged work
 to its raw root, and never holds supervisor ownership across repository,
 comparison, or publication work. The ordinary guarded lifecycle now constructs
 the adapter's independent baked-genesis source candidate at exact scenario
-genesis and admits only a complete version-four native closure with exactly the
+genesis and admits only a complete version-nine native closure with exactly the
 World live-node set. Constructing the packaged node-specific materializer and
 real-node replay factory over that source is now implemented: a shared compact
 catalog avoids complete-closure rescans, one target snapshot is decoded at a
@@ -3145,14 +3039,13 @@ catalog retirement uses the durable ordering above.
 Concrete production-loop process reconstruction and exact-resume modeled-driver
 selection are implemented: a resume-only installer rejects `NotRun` before
 native publication or resource installation, the guarded lifecycle restores the
-complete version-four loop, and the packaged worker routes retained roots only
+complete version-nine loop, and the packaged worker routes retained roots only
 to the exact-resume runner. Native-catalog cleanup uses the crash-safe
 attempt-owned retirement protocol above. The packaged
 executor installs the concrete replay owners during startup and advertises exact
 resume only after that installation succeeds.
-Version-two roots
-remain readable for legacy authentication but are incomplete campaign continuations and MUST be
-rejected by attempt resume before VMState materialization. The
+Every noncurrent production manifest is rejected during decode and cannot reach attempt
+resume or QEMU artifact materialization. The
 ledger preserves requested, publishing, and paused phases across restart; the
 worker result and publication APIs use linear captured, opaque-prepared,
 staged, and published tokens. A campaign-CAS storage or compare-exchange error
@@ -3162,58 +3055,45 @@ reservation until the executor reports durable pause. Attempt resume takes the
 exact root retained in that execution's durable paused origin, authenticates
 the complete immutable root, and requires its configuration to equal either
 the attempt's pre-selection boundary or its post-selection boundary before any
-destination write. The legacy version-three path exact-checks the scheduler
-frontier, scheduler-state projection, future decision-RNG cursors, event-log
-offset, and retained event-log segment set. The version-four path instead
-installs and restores the complete production scheduler, trigger/assertion,
-fault/network, lifecycle, overlay, VMState, generation, and service-state
-closure. In either case the modeled driver receives authenticated continuation
+destination write. The version-nine path installs and restores the complete
+production scheduler, trigger/assertion, fault/network, lifecycle, overlay,
+device-state, RAM, generation, and service-state closure. The modeled driver receives authenticated continuation
 separately from the QEMU live capability; it cannot silently restart scheduler
-state from a reduced runtime projection. Exact-pin
-hibernation instead loads the selected root under
+state from a reduced runtime projection. Exact-pin restoration instead loads
+the selected root under
 the exact-pin inventory fence, releases that fence, and reauthenticates the
 recorded pin fact against the current semantic projection. Both operations
-use the same pinned run-directory transaction: the compatibility path streams
-its single VMState child, while version four installs every target's exact
-overlay and VMState artifacts from the validated production closure. A
+use the same pinned run-directory transaction: version nine installs every
+target's exact overlay, device-state, and direct-plus-delta RAM artifacts from
+the validated production closure. A
 destination becomes unlaunchable before its first truncate, accepts no more
 than the declared/admitted bytes, and becomes
 eligible for exact restore only after authenticated EOF, exact length, file
-sync, retained-inode validation, and binding to the selected
-`ExactCheckpointId` root, which covers either the legacy single-node triple or
-the complete version-four production closure.
-Cancellation, corruption, a short copy, or a dropped writer leaves
-the authority unready; a later exact retry must replace it completely. Guarded
-spawn separately requires the same launch-resource ceiling and exact snapshot
-basis. The exact-root launcher is not an unguarded realization launcher: it can
-enter production resume only with the attempt guard's sealed child-process
-contract, and production replay admission rejects missing or mismatched oracle
-evidence before invoking it. Before child launch, both the exact-target and
-thin-base launchers require authenticated VMState and, when the launch profile
-uses one, a writable-root overlay carrying one common artifact binding. Exact
-target, thin-catalog, and in-attempt replacement bindings use distinct hash
-domains, so a valid artifact pair from one role cannot satisfy another. A
-merely provisioned file, mixed pair, short stream, or foreign binding remains
-unlaunchable. The compatibility v2/v3 owner authenticates the
-exact selected raw root, runs the fat/thin comparison, promotes only a
-source-bound match into a new root that reuses the single VMState child, and
-durably replaces the selection. The version-four owner applies the same
-source-bound rule independently to every live-node snapshot, reuses unchanged
-chunked overlay and VMState objects, and authenticates the raw/promoted closure
-pair on restart. No version-four root may become resume-eligible merely
-because its CAS closure is complete. The comparison session owns one
+sync, sealed-descriptor validation, and binding to the selected
+`ExactCheckpointId` root, which must cover the complete version-nine
+production closure. Cancellation, corruption, a short copy, or a dropped
+writer leaves the authority unready; a later exact retry must replace it
+completely. Guarded spawn separately requires the same launch-resource ceiling
+and exact snapshot basis. The exact-root launcher can enter production resume
+only with the attempt guard's sealed child-process contract, and production
+replay admission rejects missing or mismatched oracle evidence before invoking
+it. Before child launch, both the exact-target and thin-base launchers require
+authenticated direct-plus-delta RAM layers, device state, and, when the launch
+profile uses one, a writable-root overlay carrying one common artifact binding.
+A merely provisioned file, mixed descriptor set, short stream, or foreign
+binding remains unlaunchable. A noncurrent manifest cannot mint a runtime
+launch capability. The version-nine owner applies the source-bound rule
+independently to every live-node snapshot, reuses unchanged RAM, device, and
+overlay objects, and authenticates the raw/promoted closure pair on restart.
+The comparison session owns one
 process/resource guard, uses
 disjoint launch capabilities for target and thin base, reaps each generation
-before replacement, and finishes before promotion writes. Any realization or
-cleanup failure quarantines the guard and leaves the raw root selected. The
-nondroppable child/cgroup/watcher worker now exists crate-internally, and the
-exact-resume adapter transfers both failed-launch and active-node child
-authority into the attempt guard before returning a failed realization. The
-concrete packaged comparison factory and its full real-node flight remain
-mandatory before the packaged executor may advertise exact restore and before
-the full campaign/QEMU gate may claim completion.
+before launching the next generation, and finishes before promotion writes. Any
+realization or cleanup failure quarantines the guard and leaves the raw root
+selected. The exact-resume adapter transfers both failed-launch and active-node
+child authority into the attempt guard before returning a failed realization.
 
-Coverage-enabled warm restore uses the ABI-v21 logical-time restore generation
+Coverage-enabled exact-checkpoint restore uses the current-ABI logical-time restore generation
 as its exact reset transaction. Before acknowledging that generation, the
 paused plugin clears every per-vCPU novelty-scoreboard entry, its process-local
 coverage map, and setup-era producer-ring entries. After observing the exact
@@ -3238,8 +3118,7 @@ one-shot child runtime status, and authenticated private-channel query. A
 changed or foreign generation fails closed. The inventory and binding remain
 observational prerequisites and do not satisfy the separate child monitor
 reconstruction or fork authority.
-Template contract version 20, resource-stage version 10, and child-QMP version
-4 additionally retain the exact admitted `MonitorQMP`, monitor `IOThread`, and
+The current monitor ownership basis retains the exact admitted `MonitorQMP`, monitor `IOThread`, and
 dispatcher coroutine with that generation as one QEMU-private ownership basis.
 Staging revalidates the complete profile and exact objects immediately before
 commit and on an idempotent restage; release clears the basis. QAPI exposes only
@@ -3247,15 +3126,13 @@ whether the basis is bound, never its process-private pointers. This closes an
 ownership prerequisite for future monitor reconstruction but still does not
 dispose or recreate a monitor, invoke `fork(2)`, release input, or acknowledge
 readiness bit 7 or 8.
-Template contract version 21, resource-stage version 11, and child-QMP version
-5 additionally retain the exact inherited `Chardev` and require that it remain
+The same ownership basis retains the exact inherited `Chardev` and require that it remain
 the admitted monitor's connected GMainContext-capable frontend with backend
 disconnect and add-client operations. QAPI exposes only
 `monitor-disposition-bound`. This authenticates the concrete endpoint owner and
 operations that a future child transition must consume; it still does not call
 those operations or advance either readiness bit.
-Template contract version 22, resource-stage version 12, and child-QMP version
-6 additionally bind the exact supported connected Unix-socket backend:
+The current socket ownership basis binds the exact supported connected Unix-socket backend:
 frontend, address, channel, socket, listener, read and HUP sources,
 `GMainContext`, and a positive monotonic connection generation. Staging rejects
 non-Unix and non-listening endpoints, TLS, telnet, TN3270, WebSocket, reconnect
@@ -3289,7 +3166,7 @@ second operation. It flushes the greeting, returns `-EAGAIN` without mutation
 while any greeting bytes remain buffered, and otherwise attaches exactly one
 read and HUP source. Input therefore cannot dispatch before the greeting has
 been accepted by the replacement socket. These operations remain unwired to
-the fork owner. Child-QMP contract version 7 now binds the exact concrete
+the fork owner. The current child-QMP contract binds the exact concrete
 monitor callback and private monitor basis into the one-shot reinitializer at
 staging. That callback composes held socket, protocol, dispatcher, monitor
 IOThread, and greeting reconstruction, and the resource transaction no longer

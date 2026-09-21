@@ -105,8 +105,11 @@ impl CrucibleShmemBlockDevice {
         args.push(self.qemu_blockdev_argument());
         args.push("-device".to_owned());
         args.push(format!(
-            "virtio-blk-pci,drive={},id={},ioeventfd=off",
-            self.block_node_name, self.device_id
+            "virtio-blk-pci,drive={},id={},ioeventfd=off,bus={},addr={}",
+            self.block_node_name,
+            self.device_id,
+            super::QEMU_PCI_BUS,
+            super::QEMU_SHMEM_BLOCK_PCI_ADDRESS,
         ));
     }
 
@@ -202,7 +205,7 @@ mod tests {
                 "-blockdev".to_owned(),
                 "driver=crucible-shmem,node-name=crucible-blk0,size=1048576".to_owned(),
                 "-device".to_owned(),
-                "virtio-blk-pci,drive=crucible-blk0,id=crucible-blk-device0,ioeventfd=off"
+                "virtio-blk-pci,drive=crucible-blk0,id=crucible-blk-device0,ioeventfd=off,bus=pcie.0,addr=0x3"
                     .to_owned(),
             ]
         );

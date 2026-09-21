@@ -12,13 +12,23 @@ use std::env;
 #[cfg(target_os = "linux")]
 use std::error::Error;
 #[cfg(target_os = "linux")]
+use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
+use crucible::Seed;
+#[cfg(target_os = "linux")]
 use crucible_qemu::{
-    LivePluginGuestArchitecture, LivePluginInstallGateConfig, QemuLaunchAppRandomConfig,
-    QemuLaunchPluginSwitch, run_live_plugin_install_gate,
+    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, LivePluginGuestArchitecture,
+    LivePluginInstallAdmission, LivePluginInstallGateConfig, QemuLaunchAppRandomConfig,
+    QemuLaunchPluginSwitch, QemuLaunchResourceRequirements, run_live_plugin_install_gate,
 };
+
+#[cfg(target_os = "linux")]
+const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const DISK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[cfg(target_os = "linux")]
 fn main() -> ExitCode {
@@ -42,7 +52,16 @@ fn run() -> Result<(), String> {
     let plugin = required_arg(&mut args, &program)?;
     let kernel = required_arg(&mut args, &program)?;
     let root_image = required_arg(&mut args, &program)?;
-    let run_directory = required_arg(&mut args, &program)?;
+    let cgroup_root = required_arg(&mut args, &program)?;
+    let run_root = required_arg(&mut args, &program)?;
+    let child_user_id = required_arg(&mut args, &program)?
+        .to_string_lossy()
+        .parse::<u32>()
+        .map_err(|_| String::from("child user id must be a u32"))?;
+    let child_group_id = required_arg(&mut args, &program)?
+        .to_string_lossy()
+        .parse::<u32>()
+        .map_err(|_| String::from("child group id must be a u32"))?;
     let initrd = args.next();
     let kernel_cmdline = args.next();
     if args.next().is_some() {
@@ -50,12 +69,45 @@ fn run() -> Result<(), String> {
     }
 
     let architecture = guest_architecture_env()?;
+    let host = LinuxQemuAttemptHostConfig::new(
+        cgroup_root,
+        &run_root,
+        "plugin-install-gate",
+        20_000,
+        1,
+        child_user_id,
+        child_group_id,
+        64,
+        4096,
+        std::time::Duration::from_secs(15),
+    )
+    .map_err(|error| error_chain(&error))?;
+    let mut factory =
+        LinuxQemuAttemptHostFactory::open(host).map_err(|error| error_chain(&error))?;
+    let mut owner = factory
+        .begin(1, MEMORY_BYTES, DISK_BYTES)
+        .map_err(|error| error_chain(&error))?;
+    let requirements = QemuLaunchResourceRequirements::from_vm_shape(64, 1, true);
+    let mut run_directory = owner
+        .prepare_generation_run_directory(requirements)
+        .map_err(|error| error_chain(&error))?;
+    let process_contract = owner
+        .process_contract()
+        .map_err(|error| error_chain(&error))?;
+    run_directory
+        .prepare_fresh_artifacts_guarded(
+            Path::new(&qemu),
+            Some(Path::new(&root_image)),
+            process_contract,
+        )
+        .map_err(|error| error_chain(&error))?;
+
     let mut config = LivePluginInstallGateConfig::new(
-        qemu,
+        &qemu,
         plugin,
         kernel,
-        root_image,
-        run_directory,
+        &root_image,
+        run_directory.path(),
         architecture,
     );
     if let Some(initrd) = initrd {
@@ -73,7 +125,12 @@ fn run() -> Result<(), String> {
     if let Some(app_random) = app_random_env()? {
         config = config.with_app_random(app_random);
     }
-    let report = run_live_plugin_install_gate(&config).map_err(|error| error_chain(&error))?;
+    let admission = LivePluginInstallAdmission::admit(&config, &run_directory, process_contract)
+        .map_err(|error| error_chain(&error))?;
+    let report =
+        run_live_plugin_install_gate(&config, admission).map_err(|error| error_chain(&error))?;
+    drop(run_directory);
+    owner.finish().map_err(|error| error_chain(&error))?;
     println!("PASS");
     println!("gate=gate:plugin-install-lifecycle");
     println!("plugin_loaded=rust-control-cdylib");
@@ -99,6 +156,60 @@ fn run() -> Result<(), String> {
             .as_ref()
             .map_or_else(|| "not-observed".to_owned(), |value| value.hash.to_hex())
     );
+    if let Some(sample) = report.fingerprint_sample.as_ref() {
+        println!("fingerprint_sample_icount={}", sample.sample_icount);
+        println!("fingerprint_vcpu_count={}", sample.vcpu_count);
+        println!("fingerprint_rr_current_vcpu={}", sample.rr_current_vcpu);
+        println!(
+            "fingerprint_rr_position_in_quantum={}",
+            sample.rr_position_in_quantum
+        );
+        println!("fingerprint_rr_switch_quantum={}", sample.rr_switch_quantum);
+        println!(
+            "fingerprint_component_failures={}",
+            sample.component_failures
+        );
+        println!("fingerprint_ram_bytes={}", sample.ram_bytes);
+        println!(
+            "fingerprint_ram_digest={}",
+            lowercase_hex(&sample.ram_digest)
+        );
+        println!(
+            "fingerprint_device_state_bytes={}",
+            sample.device_state_bytes
+        );
+        println!(
+            "fingerprint_device_state_sections={}",
+            sample.device_state_sections
+        );
+        println!(
+            "fingerprint_device_state_digest={}",
+            lowercase_hex(&sample.device_state_digest)
+        );
+        println!(
+            "fingerprint_device_state_schema_digest={}",
+            lowercase_hex(&sample.device_state_schema_digest)
+        );
+        for (index, vcpu) in sample
+            .vcpus
+            .iter()
+            .take(sample.vcpu_count as usize)
+            .enumerate()
+        {
+            println!(
+                "fingerprint_vcpu_{index}_register_digest={}",
+                lowercase_hex(&vcpu.register_digest)
+            );
+            println!(
+                "fingerprint_vcpu_{index}_register_file_bytes={}",
+                vcpu.register_file_bytes
+            );
+            println!(
+                "fingerprint_vcpu_{index}_retired_instruction_count={}",
+                vcpu.retired_instruction_count
+            );
+        }
+    }
     println!("run_control_silent={}", report.run_control_silent);
     println!("plugin_quit_consumed={}", report.plugin_quit_consumed);
     println!("orderly_child_exit={}", report.orderly_child_exit);
@@ -145,10 +256,13 @@ fn run() -> Result<(), String> {
             .map_or_else(|| "not-observed".to_owned(), |value| value.to_string())
     );
     println!(
-        "app_random_value={}",
+        "app_random_values={}",
         report
-            .app_random_value
-            .map_or_else(|| "not-observed".to_owned(), |value| value.to_string())
+            .app_random_values
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
     );
     println!(
         "app_random_width_bits={}",
@@ -158,6 +272,11 @@ fn run() -> Result<(), String> {
     );
     println!("fingerprint={fingerprint}");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn lowercase_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -179,15 +298,15 @@ fn app_random_env() -> Result<Option<QemuLaunchAppRandomConfig>, String> {
     let seed = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED");
     let cap = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP");
     let node = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_NODE");
-    let branch_seed = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_SEED");
-    let branch_after = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_AFTER");
+    let branch_seeds = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_SEEDS");
+    let branch_afters = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_AFTERS");
     match (seed, cap, node) {
         (
             Err(env::VarError::NotPresent),
             Err(env::VarError::NotPresent),
             Err(env::VarError::NotPresent),
-        ) if matches!(&branch_seed, Err(env::VarError::NotPresent))
-            && matches!(&branch_after, Err(env::VarError::NotPresent)) =>
+        ) if matches!(&branch_seeds, Err(env::VarError::NotPresent))
+            && matches!(&branch_afters, Err(env::VarError::NotPresent)) =>
         {
             Ok(None)
         }
@@ -198,17 +317,29 @@ fn app_random_env() -> Result<Option<QemuLaunchAppRandomConfig>, String> {
             let draw_cap = cap.parse::<u64>().map_err(|_error| {
                 String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP must be a u64")
             })?;
-            let mut config = QemuLaunchAppRandomConfig::new(root_seed, draw_cap, node);
-            match (branch_seed, branch_after) {
+            let mut config =
+                QemuLaunchAppRandomConfig::from_seed(Seed::from_u64(root_seed), draw_cap, node);
+            match (branch_seeds, branch_afters) {
                 (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) => {}
-                (Ok(seed), Ok(after)) => {
-                    let seed = seed.parse::<u64>().map_err(|_error| {
-                        String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_SEED must be a u64")
-                    })?;
-                    let after = after.parse::<u64>().map_err(|_error| {
-                        String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_AFTER must be a u64")
-                    })?;
-                    config = config.with_branch_reseed(seed, after);
+                (Ok(seeds), Ok(afters)) => {
+                    let seeds =
+                        parse_u64_sequence("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_SEEDS", &seeds)?;
+                    let afters = parse_u64_sequence(
+                        "CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_AFTERS",
+                        &afters,
+                    )?;
+                    if seeds.len() != afters.len() {
+                        return Err(String::from(
+                            "live app-random branch seed and boundary sequences must have equal lengths",
+                        ));
+                    }
+                    config = config.with_branch_seed_sequence(
+                        seeds
+                            .into_iter()
+                            .zip(afters)
+                            .map(|(seed, after)| (Seed::from_u64(seed), after))
+                            .collect(),
+                    );
                 }
                 _ => {
                     return Err(String::from(
@@ -222,6 +353,17 @@ fn app_random_env() -> Result<Option<QemuLaunchAppRandomConfig>, String> {
             "live app-random requires seed, cap, and node environment variables together",
         )),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_u64_sequence(name: &str, value: &str) -> Result<Vec<u64>, String> {
+    value
+        .split(',')
+        .map(|item| {
+            item.parse::<u64>()
+                .map_err(|_error| format!("{name} must be a comma-separated u64 sequence"))
+        })
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -262,7 +404,7 @@ fn required_arg(
 #[cfg(target_os = "linux")]
 fn usage(program: &str) -> String {
     format!(
-        "usage: {program} QEMU PLUGIN KERNEL ROOT_IMAGE RUN_DIRECTORY [INITRD [KERNEL_CMDLINE]]"
+        "usage: {program} QEMU PLUGIN KERNEL ROOT_IMAGE CGROUP_ROOT RUN_ROOT CHILD_UID CHILD_GID [INITRD [KERNEL_CMDLINE]]"
     )
 }
 

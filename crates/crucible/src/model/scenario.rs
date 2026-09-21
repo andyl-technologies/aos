@@ -50,7 +50,6 @@ impl World {
         Ok(Self {
             id,
             topology_nodes,
-            nodes,
             links,
             fault_topology: WorldFaultTopology::default(),
             fault_topology_id: ContentHash::default(),
@@ -74,13 +73,10 @@ impl World {
         &self.topology_nodes
     }
 
-    /// Returns the derived VM-only compatibility projection.
-    ///
-    /// This is not a third logical World collection and is never serialized or
-    /// hashed independently. Constructors rebuild it from [`World::nodes`].
+    /// Returns a VM-only view over the canonical heterogeneous topology.
     #[must_use]
-    pub fn vm_nodes(&self) -> &[WorldNode] {
-        &self.nodes
+    pub fn vm_nodes(&self) -> WorldVmNodes<'_> {
+        WorldVmNodes::new(&self.topology_nodes)
     }
 
     /// Iterates the world's first-class deterministic I/O sub-nodes.
@@ -141,7 +137,7 @@ impl World {
     /// additionally validated to match the node's read-only `root_image`.
     #[must_use]
     pub fn workload_config_trees(&self) -> Vec<WorldWorkloadConfigTree> {
-        self.nodes
+        self.vm_nodes()
             .iter()
             .filter_map(|node| {
                 node.guest_workload_config_tree()
@@ -250,7 +246,6 @@ impl World {
         Ok(Self {
             id: ContentHash::from_canonical_material("crucible.model.world.v4", &material),
             topology_nodes,
-            nodes,
             links,
             fault_topology: WorldFaultTopology::default(),
             fault_topology_id,
@@ -314,7 +309,7 @@ impl World {
     /// transport configuration violates the latency floor, or an I/O-node owner
     /// or static-core configuration is invalid.
     pub fn validate_topology(&self) -> Result<(), EngineError> {
-        validate_world_nodes(&self.nodes)?;
+        validate_world_nodes(&world_vm_node_projection(&self.topology_nodes))?;
         validate_world_node_defs(&self.topology_nodes)?;
         validate_world_links_for_node_defs(&self.topology_nodes, &self.links)
     }
@@ -347,38 +342,6 @@ impl World {
         self.scenario_def_from_components(&Plan::empty(), &Properties::empty(), Seed::default())
     }
 
-    /// Builds the canonical scenario definition for this world, plan, and empty
-    /// properties.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] when the plan's events, predicates, signal
-    /// bindings, or resolved targets are incompatible with this World.
-    pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError> {
-        plan.validate_for_world(self)?;
-        Ok(self.scenario_def_from_components(plan, &Properties::empty(), Seed::default()))
-    }
-
-    /// Builds the canonical scenario definition for this world, empty plan, and
-    /// properties.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::PropertyDuplicateAssertionId`],
-    /// [`EngineError::PropertyPredicateUnknownNode`], or
-    /// [`EngineError::PropertyPredicateEmptyCompound`], or
-    /// [`EngineError::PropertyPredicateTriggerOnly`] when `properties` cannot be
-    /// layered over this world's static topology.
-    pub fn scenario_def_with_properties(
-        &self,
-        properties: &Properties,
-    ) -> Result<ScenarioDef, EngineError> {
-        let plan = Plan::empty();
-        let properties = resolve_properties_dsl_for_context(self, &plan, properties)?;
-        properties.validate_for_world(self)?;
-        Ok(self.scenario_def_from_components(&plan, &properties, Seed::default()))
-    }
-
     /// Builds the canonical scenario definition for this world, plan, and
     /// properties, using the default seed.
     ///
@@ -404,22 +367,6 @@ impl World {
     #[must_use]
     pub fn scenario_def_with_seed(&self, seed: Seed) -> ScenarioDef {
         self.scenario_def_from_components(&Plan::empty(), &Properties::empty(), seed)
-    }
-
-    /// Builds the canonical scenario definition for this world, empty plan,
-    /// empty properties, `seed`, and app-random draw cap.
-    #[must_use]
-    pub fn scenario_def_with_seed_and_app_random_draw_cap(
-        &self,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> ScenarioDef {
-        self.scenario_def_from_components_with_app_random_draw_cap(
-            &Plan::empty(),
-            &Properties::empty(),
-            seed,
-            app_random_draw_cap,
-        )
     }
 
     /// Builds the canonical scenario definition for this world, plan,
@@ -533,40 +480,6 @@ impl World {
             seed,
             app_random_draw_cap: DEFAULT_APP_RANDOM_DRAW_CAP,
         }
-    }
-
-    pub(super) fn scenario_def_from_components_with_app_random_draw_cap(
-        &self,
-        plan: &Plan,
-        properties: &Properties,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> ScenarioDef {
-        self.scenario_def_from_components_with_measurements_and_app_random_draw_cap(
-            plan,
-            properties,
-            &MeasurementDefinitions::empty(),
-            seed,
-            app_random_draw_cap,
-        )
-    }
-
-    pub(super) fn scenario_def_from_components_with_measurements_and_app_random_draw_cap(
-        &self,
-        plan: &Plan,
-        properties: &Properties,
-        measurements: &MeasurementDefinitions,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> ScenarioDef {
-        self.scenario_def_from_components_with_measurements_selectables_and_app_random_draw_cap(
-            plan,
-            properties,
-            measurements,
-            &ScenarioSelectables::empty(),
-            seed,
-            app_random_draw_cap,
-        )
     }
 
     pub(super) fn scenario_def_from_components_with_measurements_selectables_and_app_random_draw_cap(

@@ -24,6 +24,12 @@ use crate::{
     SchedulerSendAuthorizer, SchedulingNodeKind, SimulationBackend, StepObservation, VirtualTime,
 };
 
+mod host_schedule;
+mod shmem;
+
+pub use host_schedule::{SimDoubleHostScheduleEvent, sim_double_host_schedule_canonical_bytes};
+use shmem::*;
+
 use crate::{SimBackend, SimBackendState};
 
 /// Configuration for an in-process QEMU plugin-side test double.
@@ -162,167 +168,6 @@ pub struct SimDeliveredFrame {
     pub delivery_icount: u64,
     /// Payload bytes copied from the shared-memory frame.
     pub payload: Vec<u8>,
-}
-
-/// A canonical host-side ordering event observed while driving [`SimDouble`].
-///
-/// The event vocabulary deliberately excludes the synthetic guest fingerprint
-/// and other double-only state. It records only ordering visible to the host
-/// scheduler or shared-memory transport so tests can compare it with the real
-/// plugin path.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SimDoubleHostScheduleEvent {
-    /// The host-authorized quantum advanced or paused at an earlier delivery.
-    HorizonAdvance {
-        /// Icount before the advance request.
-        from_icount: u64,
-        /// Icount requested by the host for this quantum.
-        requested_icount: u64,
-        /// Icount reached by the backend before returning control.
-        reached_icount: u64,
-        /// Backend result reported to the host.
-        outcome: AdvanceOutcome,
-    },
-    /// An inbound frame became visible to the guest through a shared SPSC ring.
-    FrameDelivery {
-        /// Source physical slot.
-        src_slot: u32,
-        /// Producer sequence number.
-        sequence: u32,
-        /// Consumer icount at which the frame became visible.
-        delivery_icount: u64,
-        /// Delivered payload bytes.
-        payload: Vec<u8>,
-    },
-    /// A guest-emitted frame was posted to an outbound shared SPSC ring.
-    FrameEmission {
-        /// Physical destination slot.
-        dst_slot: u32,
-        /// Producer sequence number stamped on the outbound frame.
-        sequence: u32,
-        /// Consumer icount at which the frame is deliverable.
-        delivery_icount: u64,
-        /// Emitted payload bytes.
-        payload: Vec<u8>,
-    },
-    /// A deterministic device callback completed host-side I/O.
-    IoCompletion {
-        /// Stable device or executor label.
-        device: String,
-        /// Completion sequence within the device stream.
-        sequence: u64,
-        /// Icount at which the completion became host-observable.
-        completion_icount: u64,
-        /// Completion payload or status bytes.
-        payload: Vec<u8>,
-    },
-    /// A host-visible snapshot was captured.
-    Snapshot {
-        /// Content-addressed checkpoint identifier.
-        checkpoint_id: ContentHash,
-        /// Execution fingerprint recorded in the checkpoint.
-        fingerprint: ContentHash,
-        /// Captured checkpoint representation.
-        kind: CheckpointKind,
-    },
-}
-
-/// Encodes a host-observable schedule into a stable byte representation.
-///
-/// The encoding is versioned, length-prefixes variable data, and assigns a
-/// fixed tag to every event and outcome variant. It is the comparison surface
-/// shared by the in-process double and production-plugin integration gates.
-#[must_use]
-pub fn sim_double_host_schedule_canonical_bytes(
-    schedule: &[SimDoubleHostScheduleEvent],
-) -> Vec<u8> {
-    let mut bytes = b"crucible.sim-double.host-schedule.v1\0".to_vec();
-    push_u64(&mut bytes, schedule.len() as u64);
-    for event in schedule {
-        match event {
-            SimDoubleHostScheduleEvent::HorizonAdvance {
-                from_icount,
-                requested_icount,
-                reached_icount,
-                outcome,
-            } => {
-                bytes.push(0);
-                push_u64(&mut bytes, *from_icount);
-                push_u64(&mut bytes, *requested_icount);
-                push_u64(&mut bytes, *reached_icount);
-                match outcome {
-                    AdvanceOutcome::ReachedHorizon => bytes.push(0),
-                    AdvanceOutcome::Paused { at } => {
-                        bytes.push(1);
-                        push_u64(&mut bytes, at.retired);
-                    }
-                }
-            }
-            SimDoubleHostScheduleEvent::FrameDelivery {
-                src_slot,
-                sequence,
-                delivery_icount,
-                payload,
-            } => {
-                bytes.push(1);
-                push_u32(&mut bytes, *src_slot);
-                push_u32(&mut bytes, *sequence);
-                push_u64(&mut bytes, *delivery_icount);
-                push_bytes(&mut bytes, payload);
-            }
-            SimDoubleHostScheduleEvent::FrameEmission {
-                dst_slot,
-                sequence,
-                delivery_icount,
-                payload,
-            } => {
-                bytes.push(2);
-                push_u32(&mut bytes, *dst_slot);
-                push_u32(&mut bytes, *sequence);
-                push_u64(&mut bytes, *delivery_icount);
-                push_bytes(&mut bytes, payload);
-            }
-            SimDoubleHostScheduleEvent::IoCompletion {
-                device,
-                sequence,
-                completion_icount,
-                payload,
-            } => {
-                bytes.push(3);
-                push_bytes(&mut bytes, device.as_bytes());
-                push_u64(&mut bytes, *sequence);
-                push_u64(&mut bytes, *completion_icount);
-                push_bytes(&mut bytes, payload);
-            }
-            SimDoubleHostScheduleEvent::Snapshot {
-                checkpoint_id,
-                fingerprint,
-                kind,
-            } => {
-                bytes.push(4);
-                bytes.extend_from_slice(&checkpoint_id.bytes);
-                bytes.extend_from_slice(&fingerprint.bytes);
-                bytes.push(match kind {
-                    CheckpointKind::Fat => 0,
-                    CheckpointKind::Thin => 1,
-                });
-            }
-        }
-    }
-    bytes
-}
-
-fn push_u32(bytes: &mut Vec<u8>, value: u32) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
-
-fn push_u64(bytes: &mut Vec<u8>, value: u64) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
-
-fn push_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
-    push_u64(bytes, value.len() as u64);
-    bytes.extend_from_slice(value);
 }
 
 /// An in-process QEMU plugin-side test double.
@@ -780,7 +625,7 @@ impl SimDouble {
         reached_icount: u64,
     ) -> Result<(), SimDoubleError> {
         let slot = self.shmem.node_slot(self.slot_index)?;
-        slot.publish_scheduler_ceiling(ceiling)?;
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
         slot.publish_reached_icount(reached_icount, self.icount_shift)?;
         Ok(())
     }
@@ -1083,124 +928,6 @@ pub enum SimDoubleError {
         #[from]
         source: BackendError,
     },
-}
-
-fn sim_scheduler_node_for_slot(slot: u32) -> SchedulerNodeId {
-    SchedulerNodeId {
-        node: NodeId {
-            name: format!("slot-{slot}"),
-        },
-        kind: SchedulingNodeKind::Vm,
-    }
-}
-
-#[derive(Clone)]
-struct SimDoubleShmem {
-    allocation: RegionAllocation,
-}
-
-impl SimDoubleShmem {
-    fn new(config: RegionConfig) -> Result<Self, RegionLayoutError> {
-        Ok(Self {
-            allocation: RegionAllocation::new_model(config)?,
-        })
-    }
-
-    fn layout(&self) -> RegionLayout {
-        self.allocation.layout()
-    }
-
-    fn header_snapshot(&self) -> RegionHeaderSnapshot {
-        self.allocation.header().snapshot()
-    }
-
-    fn node_slot(&self, slot_index: u32) -> Result<&crucible_shmem::NodeSlot, SimDoubleError> {
-        self.allocation
-            .node_slot(slot_index)
-            .ok_or(SimDoubleError::SlotOutOfRange {
-                slot_index,
-                vm_node_count: self.layout().vm_node_count,
-            })
-    }
-
-    fn slot(&self, slot_index: u32) -> crucible_shmem::NodeSlotSnapshot {
-        self.allocation
-            .node_slot(slot_index)
-            .map(crucible_shmem::NodeSlot::snapshot)
-            .unwrap_or_else(|| crucible_shmem::NodeSlot::default().snapshot())
-    }
-
-    fn inbound_sources(&self, dst_slot: u32) -> Vec<u32> {
-        self.allocation
-            .rings()
-            .iter()
-            .filter(|ring| ring.dst_slot == dst_slot)
-            .map(|ring| ring.src_slot)
-            .collect()
-    }
-
-    fn enqueue_directed_frame(
-        &mut self,
-        src_slot: u32,
-        dst_slot: u32,
-        frame: &FrameEntry,
-    ) -> Result<(), SimDoubleError> {
-        Ok(self
-            .allocation
-            .enqueue_directed_frame(src_slot, dst_slot, frame)?)
-    }
-
-    fn peek_directed_frame(
-        &self,
-        src_slot: u32,
-        dst_slot: u32,
-    ) -> Result<Option<FrameEntry>, SimDoubleError> {
-        Ok(self.allocation.peek_directed_frame(src_slot, dst_slot)?)
-    }
-
-    fn dequeue_directed_frame(
-        &self,
-        src_slot: u32,
-        dst_slot: u32,
-    ) -> Result<Option<FrameEntry>, SimDoubleError> {
-        Ok(self.allocation.dequeue_directed_frame(src_slot, dst_slot)?)
-    }
-
-    fn earliest_inbound_delivery_key(
-        &self,
-        dst_slot: u32,
-    ) -> Result<Option<FrameDeliveryKey>, SimDoubleError> {
-        let mut earliest = None;
-        for src_slot in self.inbound_sources(dst_slot) {
-            let Some(frame) = self.peek_directed_frame(src_slot, dst_slot)? else {
-                continue;
-            };
-            let key = frame.delivery_key();
-            if earliest
-                .map(|current: FrameDeliveryKey| key < current)
-                .unwrap_or(true)
-            {
-                earliest = Some(key);
-            }
-        }
-        Ok(earliest)
-    }
-}
-
-fn authorize_sim_double_delivery_ceiling(
-    current_icount: u64,
-    max_advance_icount: u64,
-    earliest_possible_delivery_icount: Option<u64>,
-) -> Result<AdvanceCeiling, crucible_shmem::LookaheadGateError> {
-    if earliest_possible_delivery_icount == Some(max_advance_icount) {
-        authorize_advance_ceiling(current_icount, max_advance_icount, None)
-    } else {
-        authorize_advance_ceiling(
-            current_icount,
-            max_advance_icount,
-            earliest_possible_delivery_icount,
-        )
-    }
 }
 
 #[cfg(test)]
@@ -1606,7 +1333,7 @@ mod tests {
         assert!(matches!(
             double.accept_host_control_frame(&bad_version),
             Err(SimDoubleError::Handshake {
-                source: HandshakeError::NegotiatedProtocolOutOfRange { .. },
+                source: HandshakeError::ProtocolVersionMismatch { .. },
             })
         ));
 

@@ -18,7 +18,10 @@
   cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   replayGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   replayOracleHarness = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
-  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
+  qemuRealization = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu/src/realization.rs)
+    (builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs)
+  ];
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
@@ -445,12 +448,12 @@
         needle = "seed = 0x0010_0027";
       }
       {
-        label = "materialized state loadvm sufficiency test";
-        needle = "gate_replay_oracle_materialized_state_loadvm_branch_captures_resume_components";
+        label = "materialized exact-state sufficiency test";
+        needle = "gate_replay_oracle_materialized_state_captures_exact_resume_components";
       }
       {
         label = "incomplete materialized state rejection test";
-        needle = "gate_replay_oracle_loadvm_rejects_incomplete_materialized_state";
+        needle = "gate_replay_oracle_rejects_incomplete_materialized_state";
       }
       {
         label = "saved descendant materialized state test";
@@ -635,68 +638,70 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
       {
-        label = "QEMU replay-oracle checker";
-        needle = "pub fn check_qemu_replay_oracle(";
+        label = "one-shot QEMU replay-oracle match";
+        needle = "pub struct QemuReplayOracleMatch";
       }
       {
-        label = "loadvm probe executor hook";
-        needle = "load_exact_snapshot_for_replay_oracle_probe";
+        label = "guarded exact descriptor probe";
+        needle = "pub fn load_materialized_exact_snapshot_probe_guarded(";
       }
       {
-        label = "QEMU loadvm materialized-state validator";
-        needle = "fn validate_checkpoint_loadvm_state(";
+        label = "QEMU exact materialized-state validator";
+        needle = "fn validate_exact_checkpoint_state(";
       }
       {
         label = "QEMU materialized state id validation";
         needle = "materialized state id does not match its components";
       }
       {
-        label = "QEMU rejects incomplete exact snapshot state";
-        needle = "qemu_exact_snapshot_rejects_incomplete_materialized_state";
+        label = "replay match rejects snapshot transplant";
+        needle = "admissions_reject_node_and_full_snapshot_transplants";
       }
       {
-        label = "QEMU rejects incomplete replay-oracle probe state";
-        needle = "qemu_replay_oracle_rejects_incomplete_materialized_state_probe";
+        label = "replay match rejects target transplant";
+        needle = "admissions_reject_node_and_full_snapshot_transplants";
       }
       {
-        label = "thin replay derivation";
-        needle = "fn realize_qemu_replay_oracle_thin_path(";
+        label = "guarded thin replay derivation";
+        needle = "pub fn load_prepared_baked_genesis_guarded(";
       }
       {
-        label = "probe-only loadvm authorization";
-        needle = "policy.authorize_loadvm_probe()";
+        label = "consuming source authentication";
+        needle = "pub fn into_authenticated_source(";
       }
       {
-        label = "replay-oracle match result";
-        needle = "QemuReplayOracleValidation::Match";
+        label = "replay comparison completion";
+        needle = "pub fn finish_replay_oracle_comparison(";
       }
       {
-        label = "replay-oracle mismatch result";
-        needle = "QemuReplayOracleValidation::Mismatch";
+        label = "replay match rejects node transplant";
+        needle = "admissions_reject_node_and_full_snapshot_transplants";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
+      {
+        label = "generic loadvm probe authorization";
+        needle = "authorize_" + "loadvm_probe";
       }
       {
-        label = "QEMU replay-oracle match test";
-        needle = "qemu_replay_oracle_matches_loadvm_snapshot_to_replay_from_ancestor";
+        label = "generic restore command authorization";
+        needle = "QemuRestoreCommand" + "Authorization";
       }
       {
-        label = "QEMU replay-oracle mismatch test";
-        needle = "qemu_replay_oracle_reports_loadvm_replay_mismatch";
-      }
-      {
-        label = "replay-oracle probe purpose";
-        needle = "QemuLoadvmCommandPurpose::ReplayOracleProbe";
+        label = "generic restore command purpose";
+        needle = "QemuRestoreCommand" + "Purpose";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
       {
-        label = "QEMU replay-oracle checker exported";
-        needle = "check_qemu_replay_oracle";
+        label = "QEMU replay-oracle match exported";
+        needle = "QemuReplayOracleMatch";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "implemented replay-oracle target";
-        needle = "gate: \"gate:replay-oracle\",\n        package: \"crucible\",\n        test_target: \"gate_replay_oracle\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
+        needle = "gate: \"gate:replay-oracle\",\n        package: \"crucible\",\n        test_target: \"gate_replay_oracle\",\n        required_features: &[\"test-double\"],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
@@ -714,11 +719,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented replay-oracle mapping target";
-        needle = "gate = \"gate:replay-oracle\";\n      package = \"crucible\";\n      testTarget = \"gate_replay_oracle\";\n      requiredFeatures = [\"test-double\"];\n      placeholder = false;";
-      }
-      {
-        label = "updated placeholder count";
-        needle = "placeholder_targets=0";
+        needle = "gate = \"gate:replay-oracle\";\n      package = \"crucible\";\n      testTarget = \"gate_replay_oracle\";\n      requiredFeatures = [\"test-double\"];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -1016,11 +1017,11 @@ in
             harness_rust_test=crucible-harness::replay_oracle
             qemu_rust_test=crucible-qemu::realization::replay_oracle
             oracle=fat-materialized-equals-thin-from-ancestor
-            qemu_oracle=loadvm-snapshot-equals-replay-from-ancestor
-            qemu_oracle_probe_authorization=snapshot-completeness
-            loadvm_materialized_state=vm-snapshot-icount,scheduler,decision-rng,event-log
-            loadvm_incomplete_state=rejected
-            loadvm_saved_descendant_state=target-cow-vm-snapshot-ref-and-icount
+            qemu_oracle=v9-descriptor-restore-equals-replay-from-ancestor
+            qemu_oracle_probe_authority=private-descriptor-bound-operation
+            descriptor_materialized_state=device,ram-direct-plus-delta,scheduler,decision-rng,event-log
+            incomplete_descriptor_state=rejected
+            descriptor_saved_descendant_state=target-cow-exact-checkpoint-ref-and-icount
             thin_source_of_truth=checkpoint-node-state-none
             fat_cache_policy=hot-nodes-budgeted
             fat_eviction=ancestor-replay-preserves-state

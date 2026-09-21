@@ -53,7 +53,7 @@
     ++ lib.optionals (!(hasInfix "PKG-11" packagingSpec && hasInfix "MUST NOT be applied in the shipped" packagingSpec)) [
       "docs/rfcs/0010-crucible/26-packaging-aos-integration.md: PKG-11 shipped diagnostic exclusion requirement missing"
     ]
-    ++ lib.optionals (!(hasInfix "T-PKG-6" packagingSpec && hasInfix "Keep dev-only diagnostic patches out" packagingSpec)) [
+    ++ lib.optionals (!(hasInfix "T-PKG-6" packagingSpec && hasInfix "Keep dev-only diagnostic capabilities out" packagingSpec)) [
       "docs/rfcs/0010-crucible/26-packaging-aos-integration.md: T-PKG-6 diagnostic exclusion task missing"
     ]
     ++ lib.optionals (!(hasInfix "qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix" defaultChecks)) [

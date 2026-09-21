@@ -46,10 +46,11 @@ fn qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report() {
         &mut outbound_entries,
     );
 
-    let pending = match hot_path.start_quantum(horizon(10)) {
-        Ok(pending) => pending,
-        Err(error) => panic!("quantum start should publish ceiling: {error}"),
-    };
+    let pending =
+        match hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling) {
+            Ok(pending) => pending,
+            Err(error) => panic!("quantum start should publish ceiling: {error}"),
+        };
     assert_eq!(slot.snapshot().max_advance_icount, 10);
     assert_eq!(slot.snapshot().current_icount, 0);
     assert!(
@@ -100,7 +101,7 @@ fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
         &[
             "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
             "self.record(QemuQuantumOperation::FutexWake);",
-            ".publish_scheduler_inbox_and_ceiling(",
+            ".publish_scheduler_inbox_and_advance(",
             "self.config.vm_slot,",
             "self.config.router_slot,",
             "self.view.inbound_ring,",
@@ -121,7 +122,7 @@ fn qemu_quantum_inbound_uses_ordered_scheduler_wake_handoff() {
             "self.record(QemuQuantumOperation::EnqueueInboundFrame);",
             "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
             "self.record(QemuQuantumOperation::FutexWake);",
-            ".publish_scheduler_inbox_and_ceiling(",
+            ".publish_scheduler_inbox_and_advance(",
             "self.config.vm_slot,",
             "entry.src_node,",
             "self.view.inbound_ring,",
@@ -148,10 +149,11 @@ fn qemu_quantum_rejects_finish_before_reaching_a_boundary() {
         &mut outbound_entries,
     );
 
-    let pending = match hot_path.start_quantum(horizon(10)) {
-        Ok(pending) => pending,
-        Err(error) => panic!("quantum start should publish ceiling: {error}"),
-    };
+    let pending =
+        match hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling) {
+            Ok(pending) => pending,
+            Err(error) => panic!("quantum start should publish ceiling: {error}"),
+        };
     let result = hot_path.finish_quantum(pending);
 
     assert!(matches!(
@@ -179,7 +181,7 @@ fn qemu_quantum_accepts_a_fresh_explicit_quiesced_boundary() {
     );
 
     let pending = hot_path
-        .start_quantum(horizon(10))
+        .start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("quantum start should publish ceiling: {error}"));
     slot.publish_pause_quiesced(0, 0, 0)
         .unwrap_or_else(|error| panic!("fresh quiesced boundary should publish: {error}"));
@@ -210,10 +212,11 @@ fn qemu_quantum_reports_idle_before_horizon() {
         &mut outbound_entries,
     );
 
-    let pending = match hot_path.start_quantum(horizon(10)) {
-        Ok(pending) => pending,
-        Err(error) => panic!("quantum start should publish ceiling: {error}"),
-    };
+    let pending =
+        match hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling) {
+            Ok(pending) => pending,
+            Err(error) => panic!("quantum start should publish ceiling: {error}"),
+        };
     if let Err(error) = slot.publish_idle(4, 12, 0) {
         panic!("plugin idle report should publish through shared node slot: {error}");
     }
@@ -253,7 +256,8 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
     });
     assert!(enqueue.is_ok());
 
-    let pending = match hot_path.start_quantum(horizon(6)) {
+    let pending = match hot_path.start_quantum(horizon(6), crate::QemuQuantumStopCondition::Ceiling)
+    {
         Ok(pending) => pending,
         Err(error) => panic!("pending delivery should cap the quantum: {error}"),
     };
@@ -263,6 +267,7 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
         pending.completion_fence,
         Some(QemuAdvanceCompletionFence {
             initial_publish_generation: 0,
+            stop_condition: crate::QemuQuantumStopCondition::Ceiling,
         })
     );
     let consumed = plugin_consume_inbound(&mut hot_path, 1);
@@ -287,7 +292,9 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
 #[test]
 fn qemu_quantum_rejects_unproven_frame_behind_current_icount() {
     let slot = NodeSlot::default();
-    if let Err(error) = slot.publish_scheduler_ceiling(ceiling(0, 5)) {
+    if let Err(error) =
+        slot.publish_scheduler_advance(ceiling(0, 5), crucible_shmem::AdvanceStopCondition::Ceiling)
+    {
         panic!("test ceiling should publish: {error}");
     }
     if let Err(error) = slot.publish_reached_icount(5, 0) {
@@ -311,7 +318,7 @@ fn qemu_quantum_rejects_unproven_frame_behind_current_icount() {
     );
 
     let pending = hot_path
-        .start_quantum(horizon(5))
+        .start_quantum(horizon(5), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("late-frame rejection quantum should start: {error}"));
     assert_eq!(
         hot_path.finish_quantum(pending),
@@ -338,10 +345,11 @@ fn qemu_quantum_rejects_unconsumed_mid_quantum_publication() {
         &mut outbound_entries,
     );
 
-    let pending = match hot_path.start_quantum(horizon(10)) {
-        Ok(pending) => pending,
-        Err(error) => panic!("quantum should start with no known inbound frame: {error}"),
-    };
+    let pending =
+        match hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling) {
+            Ok(pending) => pending,
+            Err(error) => panic!("quantum should start with no known inbound frame: {error}"),
+        };
     enqueue_raw(
         &inbound_ring,
         hot_path.view.inbound_entries,
@@ -377,7 +385,7 @@ fn qemu_quantum_accepts_ledgered_mid_quantum_publication() {
     );
 
     let pending = hot_path
-        .start_quantum(horizon(10))
+        .start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("quantum should start without inbound frames: {error}"));
     hot_path
         .enqueue_inbound_frame(QemuInboundFrame {

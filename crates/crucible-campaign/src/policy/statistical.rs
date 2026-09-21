@@ -559,19 +559,23 @@ mod tests {
 
     fn statistical_policy() -> CampaignPolicy {
         CampaignPolicy::new(
-            ScenarioDefId::from_hash(CampaignHash::derive("test.scenario", b"scenario")),
-            CampaignSeed::from_bytes([0x31; 32]),
-            CampaignMode::Statistical,
-            ExplorerPolicy::Exhaustive {
-                maximum_cardinality: 16,
-            },
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeSet::new(),
-            FairnessPolicy::new(0, 0).expect("fairness policy"),
-            RetentionPolicy::new(false, 2, false, false),
-            false,
+            CampaignPolicy::identity(
+                ScenarioDefId::from_hash(CampaignHash::derive("test.scenario", b"scenario")),
+                CampaignSeed::from_bytes([0x31; 32]),
+                CampaignMode::Statistical,
+                ExplorerPolicy::Exhaustive {
+                    maximum_cardinality: 16,
+                },
+            ),
+            CampaignPolicy::rules(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                FairnessPolicy::new(0, 0).expect("fairness policy"),
+                RetentionPolicy::new(false, 2, false, false),
+                false,
+            ),
         )
         .expect("statistical policy")
     }

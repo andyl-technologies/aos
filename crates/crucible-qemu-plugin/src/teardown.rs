@@ -223,7 +223,7 @@ impl PluginTeardown {
     ///
     /// Returns [`PluginTeardownError`] when teardown has already completed or
     /// the fail-loud QEMU shutdown hook fails.
-    pub fn teardown_after_run_control_fault<S>(
+    pub(crate) fn teardown_after_run_control_fault<S>(
         &mut self,
         slot: &NodeSlot,
         shutdown: &mut S,
@@ -488,16 +488,16 @@ mod tests {
             .unwrap_or_else(|error| panic!("lifecycle stream should connect: {error}"));
 
         peer.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-            proto_version: 2,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
             slot_index: 0,
             node_count: 1,
         }))
         .unwrap_or_else(|error| panic!("HelloAck should write: {error}"));
         plugin
             .plugin_start_handshake(PluginHandshakeConfig {
-                proto_version: 2,
-                abi_version: 1,
+                proto_version: 3,
+                abi_version: 25,
             })
             .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
         let _ = read_control_frame(peer)

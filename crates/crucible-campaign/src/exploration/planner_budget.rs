@@ -51,12 +51,6 @@ impl PlannerCandidateBudget {
         })
     }
 
-    /// Returns the request-local allowance.
-    #[must_use]
-    pub const fn remaining_request_attempts(&self) -> u64 {
-        self.remaining_request_attempts
-    }
-
     /// Returns whether request-local allowance permits this candidate.
     ///
     /// A convergent candidate spends no request-local attempt.
@@ -126,7 +120,7 @@ impl PlannerCandidateBudget {
         codec::encode(self)
     }
 
-    /// Decodes one exact version-1 or version-2 projection without trailing bytes.
+    /// Decodes one exact current version-2 projection without trailing bytes.
     ///
     /// # Errors
     ///

@@ -86,7 +86,8 @@ fn gate_basic_block_coverage_consumes_tcg_exec_blocks_without_guest_instrumentat
 
 #[test]
 fn gate_basic_block_coverage_has_zero_fingerprint_effect() {
-    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
+    let world = World::from_nodes(Vec::new())
+        .unwrap_or_else(|error| panic!("build empty coverage world: {error}"));
     let off_config = BasicBlockCoverageConfig::off();
     let on_config = BasicBlockCoverageConfig::on();
     let off_genesis = Configuration::genesis(world.scenario_def());

@@ -33,10 +33,12 @@ fn ten_thousand_budget_transitions_preserve_exact_spending_and_cold_replay() {
         );
         let granted = repository.apply_control(CAMPAIGN, &control).expect("grant");
         let request = BranchRequest::new(
-            template.branch_point(),
-            template.parent(),
-            template.opportunity(),
-            template.domain(),
+            BranchRequest::identity(
+                template.branch_point(),
+                template.parent(),
+                template.opportunity(),
+                template.domain(),
+            ),
             template.source().clone(),
             BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
                 CampaignHash::derive("test.budget-scale", &ordinal.to_be_bytes()),

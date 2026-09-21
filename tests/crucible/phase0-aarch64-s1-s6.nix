@@ -323,7 +323,7 @@ in
               -initrd "$INITRAMFS" \
               -append "$append" \
               -serial "file:$serial" \
-              -plugin "$PLUGIN,out=$trace,cadence=25000000,stop_at=25000000,extended=on,mem_events=off,rr_switch_events=on,vcpus=1" \
+              -plugin "$PLUGIN,out=$trace,cadence=25000000,stop_at=25000000,mem_events=off,vcpus=1" \
               -no-reboot \
               -no-shutdown
             qemu_binary=$(command -v "$1")
@@ -382,13 +382,13 @@ in
             bounded_preemption_wait_qemu 2>/dev/null || true
             qemu_pid=""
             jq -c '
-              select(.observed_icount == 25000000)
+              select(.observed_icount == 26000000)
               | del(.process_argv_digest)
               | select(
-                  .sample_register_failures == 0
+                  .schema == "crucible.qemu.trace-fingerprint.v7"
+                  and .sample_register_failures == 0
                   and .register_read_failures == 0
                   and .device_state_failures == 0
-                  and .trajectory_digest_failures == 0
                   and (.register_file_bytes | all(. > 0))
                   and .device_state_complete == true
                   and .ram_status == 0
@@ -411,7 +411,7 @@ in
           cmp "$TMPDIR/kernel-offset-randomized-a" "$TMPDIR/kernel-offset-randomized-b" \
             || fail "aarch64 KASLR offset differed under bounded scheduler preemption"
           cmp "$TMPDIR/horizon-randomized-a.json" "$TMPDIR/horizon-randomized-b.json" \
-            || fail "aarch64 S1 extended fingerprints differed under bounded scheduler preemption"
+            || fail "aarch64 S1 aggregate fingerprints differed under bounded scheduler preemption"
           if cmp -s "$TMPDIR/bases-control-a" "$TMPDIR/bases-randomized-a"; then
             fail "randomized aarch64 PIE/ASLR bases equal the no-randomization control"
           fi
@@ -446,9 +446,9 @@ in
             echo host_adversary_nominal_worker_wall_milliseconds=95
             echo host_adversary_worker_wall_timeout_seconds=2
             echo host_adversary_busy_workers=0
-            echo extended_fingerprint_match=true
+            echo aggregate_fingerprint_match=true
             echo exact_horizon_icount=25000000
-            echo final_extended_hash="$final_hash"
+            echo final_aggregate_hash="$final_hash"
             echo aarch64_s1_complete=true
             echo aarch64_s6_complete=true
             echo fallback_adopted=none

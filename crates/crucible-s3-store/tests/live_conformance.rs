@@ -11,7 +11,7 @@ use crucible_cas::content_store::conformance::{
     assert_blob_leaf_conformance, assert_ref_leaf_conformance,
 };
 use crucible_cas::content_store::{
-    S3BlobBackend, S3RefBackend, StoreS3EndpointId, StoreS3RefCapability,
+    S3BlobBackend, S3BlobBackendConfig, S3RefBackend, StoreS3EndpointId, StoreS3RefCapability,
 };
 use crucible_s3_store::{AwsSdkS3Client, AwsSdkS3ClientConfig, AwsSdkS3StrongCasClient};
 
@@ -56,12 +56,14 @@ fn live_s3_service_passes_blob_and_ref_conformance() {
 
     let blob_prefix = format!("{}/blob", deployment.root_prefix);
     let blob = S3BlobBackend::new_with_admin(
-        "live-s3-conformance",
-        deployment.endpoint.clone(),
-        deployment.bucket.clone(),
-        blob_prefix,
-        12 * 1024 * 1024,
-        5 * 1024 * 1024,
+        S3BlobBackendConfig::new(
+            "live-s3-conformance",
+            deployment.endpoint.clone(),
+            deployment.bucket.clone(),
+            blob_prefix,
+            12 * 1024 * 1024,
+            5 * 1024 * 1024,
+        ),
         client.clone(),
         strong.clone(),
     )

@@ -167,8 +167,6 @@ where
                 execution: current_execution,
                 observation: staged_observation,
                 finding_candidate,
-                prepared_result_digest,
-                ..
             } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
                 if staged_observation != observation {
                     return Err(LocalExecutorError::ConflictingCompletion);
@@ -191,7 +189,6 @@ where
                     execution,
                     observation,
                     finding_candidate: CompletedFindingCandidate::pending(finding_candidate),
-                    prepared_result_digest,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 self.release_active_if_present(execution)?;

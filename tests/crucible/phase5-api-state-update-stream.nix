@@ -24,7 +24,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
@@ -69,6 +69,10 @@
       {
         label = "state transition subscription";
         needle = "state_transitions.subscribe";
+      }
+      {
+        label = "infallible coalesced state update receiver";
+        needle = "pub async fn recv_state_update(&mut self) -> Option<StreamingStateUpdateFrame>";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/client.rs" client [

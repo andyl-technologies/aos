@@ -11,8 +11,8 @@ different portability and retention contracts. This guide separates them.
 | Canonical scenario | World, plan, properties, seed references, derived IDs | `run`, `verify`, `save`, `search` | Only when all referenced external objects are available. |
 | DAG store object | Scenario forms, schedules, checkpoints, imported signal/spatial objects and chunks | lifecycle, continuation, search | No; retain its reachable closure. |
 | Canonical trace | Ordered machine-readable execution/evidence records | CI, debugging, `replay --check` | Diagnostic evidence, not a continuation by itself. |
-| Checkpoint | Exact scheduler, VM, adapter, signal, property, and object-closure state | `resume`, `fork`, replay/debug | Addressed through the store or embedded artifact. |
-| Savepoint handle | Typed selector and proof naming a checkpoint | `resume`, `fork`, `debug`, `replay --to` | No; referenced store closure must remain available. |
+| Checkpoint | Exact scheduler, VM, adapter, signal, property, and object-closure state | `resume`, replay/debug | Addressed through the store or embedded artifact. |
+| Savepoint handle | Typed selector and proof naming a checkpoint | `resume`, `debug`, `replay --to` | No; referenced store closure must remain available. |
 | Reproduction artifact v3 | Authenticated inputs, schedule, live recipe, evidence scope, terminal checkpoint and reachable signal objects | `replay`, compare, bisect | Yes within its declared backend/build requirements. |
 | Findings ledger | Signed search/fuzz findings and identities | `triage`, replay/minimize | Findings carry or reference self-contained reproduction material. |
 | Triage report | Human/machine cluster, comparison, minimization output | operator/CI | Preserve alongside source ledgers and artifacts. |
@@ -71,19 +71,25 @@ mismatch instead of partially restoring.
 
 ## Savepoint handles
 
-`save` stops at `virtual-time`, `quiescence`, `property`, or `marker`
-boundaries and writes a `crucible.savepoint-handle.v6` record. The handle
-contains the selected boundary, exact proof, content-addressed predicate
-payload, scenario and schedule payloads, frontier identity, and checkpoint
-hash. Campaign-owned handles also carry the authenticated replay closure needed
-by their schedule. Property and marker misses exit 3 without a handle; an
-explicit trace still ends with `save_boundary_failure`.
+`save` stops at `virtual-time`, `quiescence`, `property`, or `marker` boundaries.
+All supported saves write a v6 handle. Campaign-owned virtual-time and marker
+saves require a `campaign-replay-closure` field carrying
+content-addressed canonical records for every typed guest Selection in the saved
+schedule. The handle also records the selected boundary, exact proof,
+content-addressed predicate payload, scenario/frontier identity, and checkpoint
+hash. Property and marker misses exit 3 without a handle; an explicit trace
+still ends with `save_boundary_failure`.
 
-The handle is the sole portable savepoint authority. Resume and fork reject
-bare checkpoint hashes and retired handle schemas. A typed Selection schedule
-without an authenticated replay closure fails before QEMU or session execution.
-Standard non-interactive local-QEMU resume and unchanged forks consume the
-closure through the campaign owner.
+The handle is a reference, not an archive. Preserve every store object reachable
+from its checkpoint. A campaign save therefore writes the current v3 local checkpoint
+closure index: the index retains both the ordinary reproduction artifact and an
+opaque content-addressed replay-closure object. Explicit garbage collection
+traverses both references. Readers accept only v6 handles and v3 closure indexes. A typed
+Selection schedule without an authenticated replay closure fails before QEMU or
+session execution. Standard non-interactive local-QEMU resume and unchanged
+forks to a virtual-time or stopped boundary consume the closure through the
+campaign owner. Session-owned and remote paths, including reseeded, overridden,
+interactive, property, or quiescence forks, reject that schedule before launch.
 
 Use:
 
@@ -119,7 +125,7 @@ Useful operations:
 ```
 
 `--check` requires byte-identical canonical JSONL after live replay. `--to`
-validates a typed prefix; a v3 artifact can resolve its embedded terminal
+validates a typed prefix; a v4 artifact can resolve its embedded terminal
 checkpoint without an external store object. Compare and bisect distinguish
 input, schedule, evidence, and terminal-fingerprint divergence.
 

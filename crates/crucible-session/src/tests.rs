@@ -13,6 +13,16 @@ use crucible::{
     try_step,
 };
 
+fn accepted_step(
+    configuration: &crucible::Configuration,
+    decision: Decision,
+) -> crucible::Configuration {
+    match try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
+
 #[path = "tests/actor_runtime.rs"]
 mod actor_runtime;
 #[path = "tests/breakpoint_metadata.rs"]
@@ -23,10 +33,3 @@ mod engine_state;
 mod terminal_verdict;
 
 use actor_runtime::*;
-
-fn valid_step(
-    configuration: &crucible::Configuration,
-    decision: crucible::Decision,
-) -> crucible::Configuration {
-    crucible::try_step(configuration, decision).expect("test configuration step")
-}

@@ -27,6 +27,19 @@ pub(crate) fn black_box_execution_fingerprint(
             "black-box fingerprint sample contains no vCPU state",
         ));
     }
+    if sample.ram_bytes == 0
+        || sample.device_state_bytes == 0
+        || sample.device_state_sections == 0
+        || sample
+            .device_state_schema_digest
+            .iter()
+            .all(|byte| *byte == 0)
+    {
+        return Err(QemuNodeChannelError::new(
+            "execution_fingerprint",
+            "black-box fingerprint sample contains incomplete component evidence",
+        ));
+    }
 
     let mut material = vec![
         format!("node={}", node.name),
@@ -59,6 +72,7 @@ pub(crate) fn black_box_execution_fingerprint(
         format!("ram_bytes={}", sample.ram_bytes),
         format!("ram_digest={}", lowercase_hex(&sample.ram_digest)),
         format!("device_state_bytes={}", sample.device_state_bytes),
+        format!("device_state_sections={}", sample.device_state_sections),
         format!(
             "device_state_digest={}",
             lowercase_hex(&sample.device_state_digest)

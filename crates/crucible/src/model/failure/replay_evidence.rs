@@ -16,8 +16,6 @@ pub const FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
 // The final magic byte is the payload schema. This assertion keeps the public
 // version used by campaign envelopes synchronized with the compact codec.
-const FAILURE_TRIAGE_REPLAY_EVIDENCE_V1_MAGIC: &[u8] =
-    b"CRUCIBLE_FAILURE_TRIAGE_REPLAY_EVIDENCE\0\x01";
 const FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC: &[u8] =
     b"CRUCIBLE_FAILURE_TRIAGE_REPLAY_EVIDENCE\0\x02";
 const _: () = assert!(
@@ -32,7 +30,6 @@ const MAX_RECORDED_EVENT_FRAMES: usize = 65_536;
 const MAX_RECORDED_EVENT_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_RECORDED_EVENT_FRAME_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FAILURE_SIGNATURE_MATERIAL_BYTES: usize = 16 * 1024 * 1024;
-const MAX_V1_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES: usize = 48 * 1024 * 1024;
 
 /// Maximum canonical size of one portable failure replay-evidence payload.
 pub const MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES: usize = 80 * 1024 * 1024;
@@ -46,7 +43,6 @@ struct PairedDivergenceLogs {
 /// Replay-owned inputs and the full failure signature recomputed from them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailureTriageReplayEvidence {
-    schema_version: u32,
     finding: FindingReproductionArtifact,
     failure: FailureClusterReportFailure,
     causal_entries: Vec<SchedulerEventLogEntry>,
@@ -83,7 +79,6 @@ impl FailureTriageReplayEvidence {
         )?;
         let signature = recompute_failure_signature(&finding, &recorded_event_log, &failure)?;
         let value = Self {
-            schema_version: 1,
             finding,
             failure,
             causal_entries,
@@ -136,7 +131,6 @@ impl FailureTriageReplayEvidence {
         )?;
         let signature = recompute_failure_signature(&finding, &recorded_event_log, &failure)?;
         let value = Self {
-            schema_version: FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
             finding,
             failure,
             causal_entries,
@@ -173,29 +167,23 @@ impl FailureTriageReplayEvidence {
                 "failure triage replay evidence exceeds canonical size limit",
             ));
         }
-        let schema_version = if bytes.starts_with(FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC) {
-            2
-        } else {
-            1
-        };
-        if schema_version == 1 && bytes.len() > MAX_V1_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES {
-            return Err(scenario_serialization_error(
-                "failure triage replay evidence exceeds schema-v1 canonical size limit",
-            ));
-        }
-        let magic = if schema_version == 2 {
-            FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC
-        } else {
-            FAILURE_TRIAGE_REPLAY_EVIDENCE_V1_MAGIC
-        };
-        let mut reader = ScenarioBinaryReader::new(bytes, magic)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC)?;
         validate_finding_binding(&finding, &mut reader)?;
         let failure = decode_failure_source(&mut reader, finding.artifact.id())?;
         let expected =
             decode_causal_entries(&mut reader, "failure triage expected causal entries")?;
-        let reproduced = (schema_version == 2)
-            .then(|| decode_causal_entries(&mut reader, "failure triage reproduced causal entries"))
-            .transpose()?;
+        let reproduced = match reader.read_u8()? {
+            0 => None,
+            1 => Some(decode_causal_entries(
+                &mut reader,
+                "failure triage reproduced causal entries",
+            )?),
+            _ => {
+                return Err(scenario_serialization_error(
+                    "failure triage replay evidence has an invalid replay-log tag",
+                ));
+            }
+        };
         let coverage_fingerprint = reader.read_hash()?;
         let frame_count = reader.read_collection_count("failure triage recorded frames")?;
         if frame_count > MAX_RECORDED_EVENT_FRAMES {
@@ -283,13 +271,13 @@ impl FailureTriageReplayEvidence {
     /// Returns the encoded payload schema version.
     #[must_use]
     pub const fn schema_version(&self) -> u32 {
-        self.schema_version
+        FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
     }
 
     /// Returns whether `schema_version` is supported by this decoder.
     #[must_use]
     pub const fn supports_schema(schema_version: u32) -> bool {
-        schema_version == 1 || schema_version == FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
+        schema_version == FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
     }
 
     /// Returns both complete execution logs retained for divergence evidence.
@@ -386,30 +374,20 @@ impl FailureTriageReplayEvidence {
         }
 
         let encoded_size = encoded_size(
-            self.schema_version,
             failure.len(),
             expected_entries.len(),
             reproduced_entries.as_ref().map_or(0, Vec::len),
+            reproduced_entries.is_some(),
             &self.recorded_event_frames,
             signature_material.len(),
         )?;
-        let maximum = if self.schema_version == 1 {
-            MAX_V1_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES
-        } else {
-            MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES
-        };
-        if encoded_size > maximum {
+        if encoded_size > MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES {
             return Err(scenario_serialization_error(
                 "failure triage replay evidence exceeds canonical size limit",
             ));
         }
 
-        let magic = if self.schema_version == 2 {
-            FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC
-        } else {
-            FAILURE_TRIAGE_REPLAY_EVIDENCE_V1_MAGIC
-        };
-        let mut writer = ScenarioBinaryWriter::new(magic);
+        let mut writer = ScenarioBinaryWriter::new(FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC);
         writer.write_u8(discovery_path_tag(self.finding.discovery_path));
         writer.write_hash(self.finding.finding_fingerprint);
         writer.write_hash(self.finding.configuration);
@@ -417,7 +395,10 @@ impl FailureTriageReplayEvidence {
         writer.write_binary_blob(&failure);
         writer.write_binary_blob(&expected_entries);
         if let Some(reproduced_entries) = reproduced_entries {
+            writer.write_u8(1);
             writer.write_binary_blob(&reproduced_entries);
+        } else {
+            writer.write_u8(0);
         }
         writer.write_hash(self.coverage_fingerprint);
         writer.write_count(self.recorded_event_frames.len());
@@ -793,17 +774,18 @@ fn validate_frame_bounds(frames: &[Vec<u8>]) -> Result<(), EngineError> {
 }
 
 fn encoded_size(
-    schema_version: u32,
     failure_bytes: usize,
     expected_entry_bytes: usize,
     reproduced_entry_bytes: usize,
+    has_reproduced_entries: bool,
     frames: &[Vec<u8>],
     signature_material_bytes: usize,
 ) -> Result<usize, EngineError> {
-    let length_fields = if schema_version == 1 { 4 } else { 5 };
+    let length_fields = 4 + usize::from(has_reproduced_entries);
     let fixed_size = FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC
         .len()
         .checked_add(1)
+        .and_then(|size| size.checked_add(1))
         .and_then(|size| size.checked_add(4 * ContentHash::default().bytes.len()))
         .and_then(|size| size.checked_add(length_fields * std::mem::size_of::<u64>()))
         .ok_or_else(|| {

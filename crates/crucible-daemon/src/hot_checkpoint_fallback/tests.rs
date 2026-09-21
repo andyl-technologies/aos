@@ -8,25 +8,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, MaterializedState,
-    SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler, VirtualTime,
-};
+use crucible::{Configuration, ContentHash};
 use crucible_campaign::{
     CampaignExecutorStore, CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed,
     ConfigurationArtifactId, ExactRational, ExplorerPolicy, FairnessPolicy,
     ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
 };
-use crucible_cas::content_store::{
-    BlobHandle, DirectoryBlobBackend, MemoryBlobBackend, MemoryRefBackend,
-};
-use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
+use crucible_cas::content_store::{DirectoryBlobBackend, MemoryBlobBackend, MemoryRefBackend};
 
 use super::*;
 use crate::{
-    CapturedExactCheckpoint, CrucibleCampaignArtifactStore, HotCheckpointCandidate,
-    HotCheckpointHotnessSignals, HotCheckpointLimits, HotCheckpointManager,
-    HotCheckpointResourceProfile, QemuHotForkTemplatePoolSlot,
+    CrucibleCampaignArtifactStore, HotCheckpointCandidate, HotCheckpointHotnessSignals,
+    HotCheckpointLimits, HotCheckpointManager, HotCheckpointPoolSlot, HotCheckpointResourceProfile,
 };
 
 #[derive(Clone)]
@@ -133,8 +126,8 @@ impl FallbackFixture {
         }
     }
 
-    fn key(&self) -> QemuHotForkTemplateKey {
-        QemuHotForkTemplateKey::new(self.lineage, self.configuration.id())
+    fn key(&self) -> HotCheckpointPoolKey {
+        HotCheckpointPoolKey::new(self.lineage, self.configuration.id())
     }
 
     fn thin_bases(&self, available: bool) -> ScriptedThinBases {
@@ -169,7 +162,7 @@ fn thin_fallback_authenticates_exact_artifacts_and_native_base() {
 #[test]
 fn thin_fallback_rejects_wrong_configuration_and_missing_native_base() {
     let fixture = FallbackFixture::new("hot-fallback-thin-reject");
-    let wrong_key = QemuHotForkTemplateKey::new(
+    let wrong_key = HotCheckpointPoolKey::new(
         fixture.lineage,
         ContentHash::from_bytes(b"another configuration"),
     );
@@ -200,50 +193,6 @@ fn thin_fallback_rejects_wrong_configuration_and_missing_native_base() {
     ));
 }
 
-#[test]
-fn exact_fallback_requires_matching_scenario_configuration_and_continuation() {
-    let fixture = FallbackFixture::new("hot-fallback-exact");
-    let (snapshot, scheduler) = resumable_snapshot(&fixture.configuration);
-    let prepared = fixture
-        .checkpoints
-        .prepare_capture(CapturedExactCheckpoint::new_with_scheduler(
-            snapshot,
-            scheduler,
-            BlobHandle::from_bytes(vec![0x5a; 4_096]),
-        ))
-        .expect("prepare exact fallback");
-    fixture
-        .checkpoints
-        .publish(&prepared)
-        .expect("publish exact fallback");
-    let authenticator = QemuHotCheckpointFallbackAuthenticator::new(
-        fixture.campaign.clone(),
-        Arc::clone(&fixture.checkpoints),
-        fixture.thin_bases(true),
-    );
-
-    authenticator
-        .authenticate_fallback(fixture.key(), HotCheckpointFallback::Exact(prepared.root()))
-        .expect("authenticated exact fallback");
-
-    let legacy = fixture
-        .checkpoints
-        .prepare(
-            &plain_snapshot(&fixture.configuration),
-            BlobHandle::from_bytes(vec![0x2c; 4_096]),
-        )
-        .expect("prepare legacy root");
-    fixture
-        .checkpoints
-        .publish(&legacy)
-        .expect("publish legacy root");
-    assert!(matches!(
-        authenticator
-            .authenticate_fallback(fixture.key(), HotCheckpointFallback::Exact(legacy.root())),
-        Err(QemuHotCheckpointFallbackAuthenticationError::MissingCampaignContinuation)
-    ));
-}
-
 #[derive(Default)]
 struct ScriptedAuthenticator {
     calls: Cell<usize>,
@@ -255,7 +204,7 @@ impl HotCheckpointFallbackAuthenticator for ScriptedAuthenticator {
 
     fn authenticate_fallback(
         &self,
-        _key: QemuHotForkTemplateKey,
+        _key: HotCheckpointPoolKey,
         _fallback: HotCheckpointFallback,
     ) -> Result<(), Self::Error> {
         self.calls.set(self.calls.get() + 1);
@@ -269,7 +218,7 @@ impl HotCheckpointFallbackAuthenticator for ScriptedAuthenticator {
 
 #[derive(Default)]
 struct ScriptedSourceDemoter {
-    calls: usize,
+    calls: Rc<Cell<usize>>,
     fail: bool,
 }
 
@@ -281,7 +230,7 @@ impl HotCheckpointSourceDemoter<u64> for ScriptedSourceDemoter {
         factory: u64,
         _plan: HotCheckpointPlannedDemotion,
     ) -> Result<(), HotCheckpointTemplateDemotionFailure<u64, Self::Error>> {
-        self.calls += 1;
+        self.calls.set(self.calls.get() + 1);
         if self.fail {
             Err(HotCheckpointTemplateDemotionFailure::new(
                 factory,
@@ -300,12 +249,16 @@ struct ScriptedFailure;
 #[test]
 fn authenticated_sink_rechecks_at_release_and_preserves_factory_on_failure() {
     let plan = demotion_plan();
+    let demotion_calls = Rc::new(Cell::new(0));
     let mut sink = AuthenticatedHotCheckpointDemotionSink::new(
         ScriptedAuthenticator {
             calls: Cell::new(0),
             fail_call: Some(2),
         },
-        ScriptedSourceDemoter::default(),
+        ScriptedSourceDemoter {
+            calls: Rc::clone(&demotion_calls),
+            fail: false,
+        },
     );
     sink.validate_fallback(plan.slot().template_key(), plan.fallback())
         .expect("read-only preflight");
@@ -321,14 +274,14 @@ fn authenticated_sink_rechecks_at_release_and_preserves_factory_on_failure() {
         AuthenticatedHotCheckpointDemotionError::Fallback(ScriptedFailure)
     ));
     assert_eq!(sink.authenticator().calls.get(), 2);
-    assert_eq!(sink.source_demoter().calls, 0);
+    assert_eq!(demotion_calls.get(), 0);
 }
 
 fn demotion_plan() -> HotCheckpointPlannedDemotion {
     let limits = HotCheckpointLimits::new(1, resources(), 1, 1).expect("limits");
     let mut manager = HotCheckpointManager::new(limits);
     let first = candidate(1, 1);
-    let slot = QemuHotForkTemplatePoolSlot::new(first.template_key(), 0);
+    let slot = HotCheckpointPoolSlot::new(first.template_key(), 0);
     manager
         .commit_admission(manager.plan_admission(first).expect("first plan"), slot)
         .expect("first commit");
@@ -340,7 +293,7 @@ fn demotion_plan() -> HotCheckpointPlannedDemotion {
 
 fn candidate(byte: u8, score: u64) -> HotCheckpointCandidate {
     HotCheckpointCandidate::new(
-        QemuHotForkTemplateKey::new(
+        HotCheckpointPoolKey::new(
             crucible_campaign::CampaignLineageId::parse(&format!(
                 "crucible.campaign.lineage@campaign-fact.1.{}",
                 encode_hex(&[byte; 32])
@@ -368,82 +321,35 @@ fn resources() -> HotCheckpointResourceProfile {
 
 fn policy(scenario: ScenarioDefId) -> CampaignPolicy {
     CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(
-                ProgressiveWideningPolicy::new(
-                    ExactRational::new(1, 1).expect("rational"),
-                    ExactRational::new(1, 2).expect("rational"),
-                    1,
-                    100,
-                    1,
-                )
-                .expect("widening"),
-            ),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(
+                    ProgressiveWideningPolicy::new(
+                        ExactRational::new(1, 1).expect("rational"),
+                        ExactRational::new(1, 2).expect("rational"),
+                        1,
+                        100,
+                        1,
+                    )
+                    .expect("widening"),
+                ),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy")
-}
-
-fn resumable_snapshot(
-    configuration: &Configuration,
-) -> (QemuVmSnapshot, crucible::SingleSchedulerCheckpoint) {
-    let scheduler_scenario = SchedulerLivenessScenario::from_canonical_material(
-        "hot-fallback",
-        Shift::new(0).expect("zero shift"),
-        1,
-        SimInstant { nanos: 1 },
-        Vec::new(),
-        Vec::new(),
-    )
-    .with_scenario_def(configuration.def.clone());
-    let scheduler = SingleScheduler::new(scheduler_scenario).expect("scheduler");
-    let scheduler_checkpoint = scheduler.checkpoint().expect("scheduler checkpoint");
-    let checkpoint = Checkpoint::from_recorded_configuration(
-        configuration,
-        None,
-        scheduler_checkpoint.frontier(),
-        BTreeMap::new(),
-        CheckpointKind::Fat,
-        BTreeMap::new(),
-    )
-    .expect("checkpoint");
-    let materialized = MaterializedState::from_components(
-        BTreeMap::new(),
-        BTreeMap::new(),
-        scheduler_checkpoint
-            .scheduler_state()
-            .expect("scheduler state"),
-        scheduler_checkpoint.future_decision_rng_state().clone(),
-        scheduler_checkpoint.event_log_offset(),
-    );
-    let checkpoint = checkpoint.with_materialized_state(Some(materialized));
-    let snapshot =
-        QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun).expect("snapshot");
-    (snapshot, scheduler_checkpoint)
-}
-
-fn plain_snapshot(configuration: &Configuration) -> QemuVmSnapshot {
-    let checkpoint = Checkpoint::from_recorded_configuration(
-        configuration,
-        None,
-        VirtualTime::default(),
-        BTreeMap::new(),
-        CheckpointKind::Fat,
-        BTreeMap::new(),
-    )
-    .expect("checkpoint");
-    QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun).expect("snapshot")
 }
 
 fn encode_hex(bytes: &[u8]) -> String {

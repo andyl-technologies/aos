@@ -1219,7 +1219,7 @@ mod tests {
     }
 
     fn publish_ceiling(slot: &NodeSlot, ceiling: AdvanceCeiling) {
-        slot.publish_scheduler_ceiling(ceiling)
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
             .unwrap_or_else(|error| {
                 panic!("plugin projection scheduler ceiling should publish: {error}")
             });

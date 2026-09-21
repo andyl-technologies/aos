@@ -9,8 +9,8 @@
 use thiserror::Error;
 
 use crucible_shmem::{
-    FrameDeliveryKey, FrameEntry, FutexError, FutexWait, FutexWaitOutcome, NodeSlot, NodeSlotError,
-    RegionControlAction, RegionHeader,
+    AdvanceStopCondition, FrameDeliveryKey, FrameEntry, FutexError, FutexWait, FutexWaitOutcome,
+    NodeSlot, NodeSlotError, RegionControlAction, RegionHeader,
 };
 
 use crate::{
@@ -284,7 +284,8 @@ impl PluginIdleHotLoop {
         device_io_freeze: Option<&PluginDeviceIoFreeze>,
     ) -> Result<IdleParkRequest, IdleHotLoopError> {
         let current_icount = clock.current_icount();
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(slot);
+        let (ceiling_icount, _) = PluginShmemOrdering::load_scheduler_advance(slot)
+            .map_err(|source| IdleHotLoopError::AdvanceStopCondition { source })?;
         if ceiling_icount < current_icount {
             return Err(IdleHotLoopError::CeilingBehindCurrent {
                 current_icount,
@@ -368,7 +369,11 @@ impl PluginIdleHotLoop {
                 }
                 RegionControlAction::Continue => {}
             }
-            if PluginShmemOrdering::load_scheduler_ceiling(slot) >= request.plan.desired_wake_icount
+            let (ceiling_icount, stop_condition) =
+                PluginShmemOrdering::load_scheduler_advance(slot)
+                    .map_err(|source| IdleHotLoopError::AdvanceStopCondition { source })?;
+            if stop_condition == AdvanceStopCondition::Ceiling
+                && ceiling_icount >= request.plan.desired_wake_icount
             {
                 if PluginShmemOrdering::observe_control_action(header)
                     == RegionControlAction::Shutdown
@@ -389,9 +394,11 @@ impl PluginIdleHotLoop {
                         PluginShmemOrdering::mark_done_after_shutdown(slot);
                         return Ok(IdleWaitOutcome::ShutdownRequested);
                     }
+                    let (ceiling_icount, _) = PluginShmemOrdering::load_scheduler_advance(slot)
+                        .map_err(|source| IdleHotLoopError::AdvanceStopCondition { source })?;
                     return Err(IdleHotLoopError::WakeStillBlocked {
                         desired_wake_icount: request.plan.desired_wake_icount,
-                        ceiling_icount: PluginShmemOrdering::load_scheduler_ceiling(slot),
+                        ceiling_icount,
                     });
                 }
                 FutexWaitOutcome::Runnable
@@ -754,8 +761,11 @@ impl PluginIdleHotLoop {
         queued_idle_advance: &QueuedIdleAdvance,
         request: &IdleParkRequest,
     ) -> Result<(PluginClockAdvance, PendingIdleAdvance), IdleHotLoopError> {
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(slot);
-        if ceiling_icount < request.plan.desired_wake_icount {
+        let (ceiling_icount, stop_condition) = PluginShmemOrdering::load_scheduler_advance(slot)
+            .map_err(|source| IdleHotLoopError::AdvanceStopCondition { source })?;
+        if stop_condition != AdvanceStopCondition::Ceiling
+            || ceiling_icount < request.plan.desired_wake_icount
+        {
             return Err(IdleHotLoopError::WakeNotAuthorized {
                 desired_wake_icount: request.plan.desired_wake_icount,
                 ceiling_icount,
@@ -797,8 +807,11 @@ impl PluginIdleHotLoop {
         let completed_advance = pending_advance
             .validate_completion(completion)
             .map_err(|source| IdleHotLoopError::QueuedIdleAdvance { source })?;
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(slot);
-        if ceiling_icount < request.plan.desired_wake_icount {
+        let (ceiling_icount, stop_condition) = PluginShmemOrdering::load_scheduler_advance(slot)
+            .map_err(|source| IdleHotLoopError::AdvanceStopCondition { source })?;
+        if stop_condition != AdvanceStopCondition::Ceiling
+            || ceiling_icount < request.plan.desired_wake_icount
+        {
             return Err(IdleHotLoopError::WakeNotAuthorized {
                 desired_wake_icount: request.plan.desired_wake_icount,
                 ceiling_icount,
@@ -907,6 +920,12 @@ pub enum IdleHotLoopError {
     #[error("publishing idle state failed: {source}")]
     PublishIdle {
         /// The shared-memory slot publication error.
+        source: NodeSlotError,
+    },
+    /// The scheduler's current advance-stop condition was not valid.
+    #[error("reading scheduler advance-stop condition failed: {source}")]
+    AdvanceStopCondition {
+        /// The shared-memory slot validation error.
         source: NodeSlotError,
     },
     /// Publishing coordinated-pause quiescence failed.

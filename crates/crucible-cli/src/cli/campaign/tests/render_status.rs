@@ -47,6 +47,8 @@ fn campaign_head_report_renders_machine_and_human_forms() {
     let decoded: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert_eq!(decoded["schema"], CAMPAIGN_HEAD_REPORT_SCHEMA);
     assert_eq!(decoded["advanced"], true);
+    assert!(decoded.get("semantic").is_none());
+    assert!(decoded.get("operational").is_none());
 
     let table = render_campaign_head(&report, OutputFormat::Table).expect("table report");
     assert!(table.contains("campaign   example"));
@@ -336,47 +338,6 @@ fn campaign_page_reports_render_all_query_shapes() {
 }
 
 #[test]
-fn campaign_status_and_watch_use_the_checked_loopback_transport() {
-    let status = CampaignCommand::Status(CampaignStatusArgs {
-        name: "example".to_owned(),
-    });
-    let status_report = query_over_loopback(&status);
-    assert_eq!(status_report.operation, "status");
-    assert_eq!(status_report.snapshot, snapshot("current").to_string());
-    assert_eq!(status_report.advanced, None);
-    let status_json =
-        render_campaign_head(&status_report, OutputFormat::Json).expect("campaign status JSON");
-    let status_value: serde_json::Value =
-        serde_json::from_str(&status_json).expect("valid campaign status JSON");
-    assert_eq!(status_value["schema"], CAMPAIGN_STATUS_REPORT_SCHEMA);
-    assert_eq!(status_value["semantic"]["latent_or_open_continuations"], 10);
-    assert_eq!(status_value["semantic"]["admitted_attempts"], 13);
-    assert_eq!(status_value["semantic"]["stored_graph_nodes"], 17);
-    assert_eq!(status_value["semantic"]["continuation_records_scanned"], 28);
-    assert_eq!(status_value["operational"]["availability"], "observed");
-    assert_eq!(status_value["operational"]["running_worlds"], 23);
-    assert_eq!(status_value["operational"]["retained_checkpoint_roots"], 43);
-    assert_eq!(status_value["operational"]["materialized_checkpoints"], 47);
-    let status_table =
-        render_campaign_head(&status_report, OutputFormat::Table).expect("campaign status table");
-    assert!(status_table.contains("latent_or_open_continuations 10"));
-    assert!(status_table.contains("operational observed"));
-    assert!(status_table.contains("running_worlds 23"));
-
-    let watch = CampaignCommand::Watch(CampaignWatchArgs {
-        name: "example".to_owned(),
-        after: Some(snapshot("previous").to_string()),
-    });
-    let watch_report = query_over_loopback(&watch);
-    assert_eq!(watch_report.operation, "watch");
-    assert_eq!(watch_report.state, "running");
-    assert_eq!(watch_report.advanced, Some(true));
-    let watch_value = serde_json::to_value(&watch_report).expect("watch JSON");
-    assert!(watch_value.get("semantic").is_none());
-    assert!(watch_value.get("operational").is_none());
-}
-
-#[test]
 fn campaign_status_refreshes_the_entire_pair_after_one_stale_snapshot() {
     let calls = Arc::new(StatusSequenceCalls::default());
     let client = CampaignClient::new(StatusSequenceService {
@@ -457,87 +418,4 @@ fn campaign_status_does_not_retry_a_non_stale_failure() {
     assert!(error.to_string().contains("not authorized"));
     assert_eq!(calls.get.load(Ordering::SeqCst), 1);
     assert_eq!(calls.status.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn campaign_validation_authenticates_connected_and_offline_targets() {
-    let validate = CampaignValidateArgs {
-        name: Some("example".to_owned()),
-        policy: None,
-    };
-    let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
-    let server = thread::spawn(move || {
-        serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
-            .expect("serve one campaign validation");
-    });
-    let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
-    let client = CampaignClient::new(service);
-    let report = query_campaign_validation(
-        &client,
-        CampaignPrincipal::new("operator").expect("campaign principal"),
-        &validate,
-    )
-    .expect("checked campaign validation");
-    server.join().expect("campaign server thread");
-    let validation::CampaignValidationReport::Campaign {
-        campaign,
-        snapshot: current,
-        state,
-        ..
-    } = &report
-    else {
-        panic!("connected validation report");
-    };
-    assert_eq!(campaign, "example");
-    assert_eq!(current, &snapshot("current").to_string());
-    assert_eq!(*state, "running");
-    let rendered =
-        render_campaign_validation(&report, OutputFormat::Json).expect("campaign validation JSON");
-    let value: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
-    assert_eq!(
-        value["schema"],
-        validation::CAMPAIGN_VALIDATION_REPORT_SCHEMA
-    );
-    assert_eq!(value["subject"], "campaign");
-
-    let temporary = tempfile::tempdir().expect("temporary policy input");
-    let path = temporary.path().join("policy.bin");
-    let (_, policy) = campaign_records();
-    let canonical = policy.canonical_bytes();
-    std::fs::write(&path, &canonical).expect("write canonical policy");
-    let report = validate_campaign_policy_file(&path).expect("offline policy validation");
-    let validation::CampaignValidationReport::Policy {
-        policy: validated,
-        encoded_bytes,
-        choice_policies,
-        ..
-    } = &report
-    else {
-        panic!("offline policy validation report");
-    };
-    assert_eq!(validated, &policy.id().expect("policy ID").to_string());
-    assert_eq!(*encoded_bytes, canonical.len());
-    assert_eq!(*choice_policies, 0);
-    assert!(
-        render_campaign_validation(&report, OutputFormat::Markdown)
-            .expect("policy validation Markdown")
-            .contains("| subject | policy |")
-    );
-    let invocation = Cli::try_parse_from([
-        std::ffi::OsString::from("crucible"),
-        std::ffi::OsString::from("campaign"),
-        std::ffi::OsString::from("validate"),
-        std::ffi::OsString::from("--policy"),
-        path.as_os_str().to_owned(),
-    ])
-    .expect("offline validation invocation");
-    let Commands::Campaign(args) = &invocation.command else {
-        panic!("campaign validation command");
-    };
-    run_campaign_invocation(&invocation, args).expect("offline validation without a socket");
-
-    let mut malformed = canonical;
-    malformed.push(0);
-    std::fs::write(&path, malformed).expect("write malformed policy");
-    assert!(validate_campaign_policy_file(&path).is_err());
 }

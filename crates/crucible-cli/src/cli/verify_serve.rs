@@ -8,9 +8,8 @@ pub(super) use artifact_capture::*;
 
 #[path = "verify_serve/packaged_executor.rs"]
 mod packaged_executor;
-pub(crate) use packaged_executor::GuardedCampaignRunDeployment;
 use packaged_executor::{
-    load_guarded_campaign_run_deployment, prepare_cli_packaged_executor,
+    load_campaign_run_deployment, prepare_cli_packaged_executor,
     resolve_guarded_campaign_deployment_path,
 };
 
@@ -18,28 +17,25 @@ pub(crate) fn load_guarded_campaign_deployment(
     explicit: Option<&Path>,
 ) -> Result<packaged_executor::GuardedCampaignRunDeployment, CliError> {
     let path = packaged_executor::resolve_guarded_campaign_deployment_path(explicit)?;
-    packaged_executor::load_guarded_campaign_run_deployment(&path)
+    packaged_executor::load_campaign_run_deployment(&path)
+}
+
+/// Applies the deployment's paired-replay policy to one guarded campaign request.
+#[must_use]
+pub(crate) fn apply_guarded_campaign_determinism_policy(
+    request: crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest,
+    verify_determinism_findings: bool,
+) -> crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest {
+    if verify_determinism_findings {
+        request.with_determinism_finding_verification()
+    } else {
+        request
+    }
 }
 
 #[path = "campaign_run.rs"]
-pub(super) mod campaign_run;
+pub(crate) mod campaign_run;
 
-/// Projects one completed guarded campaign into the shared CLI run report.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when retained campaign evidence cannot be encoded or
-/// does not satisfy the report's terminal-evidence invariants.
-pub(crate) fn campaign_run_report(
-    run_plan: &RunInvocationPlan,
-    campaign: &crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRun,
-    terminal_outcome: OutcomeKind,
-    status: BackendCommandStatus,
-) -> Result<RunWorkflowReport, CliError> {
-    campaign_run::campaign_run_report(run_plan, campaign, terminal_outcome, status)
-}
-
-// crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
 pub(crate) fn run_local_qemu_campaign_workflow(
     backend: &ResolvedLocalBackend,
     thin_plan: &CliThinWrapperPlan,
@@ -56,16 +52,29 @@ pub(crate) fn run_local_qemu_campaign_workflow(
     )
 }
 
-// crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated fork evidence to the daemon owner and only renders its accepted result.
-pub(crate) fn run_local_qemu_campaign_fork_workflow(
+pub(crate) fn run_local_qemu_interactive_workflow(
     backend: &ResolvedLocalBackend,
-    fork_plan: &ForkInvocationPlan,
-    evidence: &ResumeHandleEvidence,
-) -> Result<ForkWorkflowReport, CliError> {
-    campaign_run::run_local_qemu_campaign_fork_workflow(backend, fork_plan, evidence)
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: &RunInvocationPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    campaign_run::run_local_qemu_interactive_workflow(
+        backend,
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        run_plan,
+    )
 }
 
-// crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
+pub(crate) fn guarded_campaign_resume_eligible(
+    plan: &ResumeInvocationPlan,
+    evidence: &ResumeHandleEvidence,
+) -> bool {
+    campaign_run::guarded_campaign_resume_eligible(plan, evidence)
+}
+
 pub(crate) fn run_local_qemu_campaign_save_workflow(
     backend: &ResolvedLocalBackend,
     thin_plan: &CliThinWrapperPlan,
@@ -105,46 +114,38 @@ const DEFAULT_CAMPAIGN_MAINTENANCE_WRITE_BACK_TRANSFERS: u32 = 64;
 const DEFAULT_CAMPAIGN_MAINTENANCE_S3_NODES: u16 = 8;
 const DEFAULT_CAMPAIGN_MAINTENANCE_S3_UPLOADS: u16 = 128;
 
-pub(super) async fn run_control_client_verify_workflow_async<C>(
+pub(super) async fn run_control_client_verify_reduction_async<C>(
     client: &C,
-    verify_plan: &VerifyInvocationPlan,
+    seeded_scenario: RunScenarioRef,
+    request_seed: crucible::Seed,
+    reduction: VerifyReductionPlan,
     backend: Option<&ResolvedLocalBackend>,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-) -> Result<VerifyWorkflowReport, CliError>
+    store_root: &Path,
+) -> Result<VerifyRunWitness, CliError>
 where
     C: ControlClient + Sync,
 {
-    let Some(scenario) = verify_plan.scenario() else {
-        return Err(backend_error(
-            "verify compare mode must not enter the live control-client workflow",
-        ));
-    };
-    let mut witnesses = Vec::with_capacity(verify_plan.reductions.len());
-    let request_seed = ergonomics_plan
-        .map(|plan| crucible::Seed::from_u64(plan.seed.value))
-        .unwrap_or_else(|| scenario.scenario_def().seed());
-    let seeded_scenario = reseed_run_scenario_ref(scenario, request_seed)?;
-    for reduction in &verify_plan.reductions {
-        let run_plan =
-            verify_run_invocation_plan(seeded_scenario.clone(), request_seed, reduction.clone());
-        let report = run_control_client_workflow_async(client, &run_plan, &[]).await?;
-        // Determinism applies to failing and budget-terminated executions too.
-        // A completed reduction remains comparable; transport/backend errors
-        // have already returned above without producing a report.
-        witnesses.push(verify_witness_from_run_report(
-            reduction.clone(),
-            &run_plan,
-            &report,
-            backend,
-            ergonomics_plan,
-            &verify_plan.store_root,
-        )?);
+    if !reduction.host_profile.is_valid() {
+        return Err(backend_error(format!(
+            "verify hostile host profile `{}` is invalid",
+            reduction.host_profile.label()
+        )));
     }
-    let divergence = compare_verify_witnesses(&witnesses);
-    Ok(VerifyWorkflowReport {
-        witnesses,
-        divergence,
-    })
+    let run_plan = verify_run_invocation_plan(seeded_scenario, request_seed, reduction.clone());
+    let report = run_control_client_workflow_async(client, &run_plan, &[]).await?;
+
+    // Determinism applies to failing and budget-terminated executions too. A
+    // completed reduction remains comparable; transport/backend errors have
+    // already returned above without producing a report.
+    verify_witness_from_run_report(
+        reduction.clone(),
+        &run_plan,
+        &report,
+        backend,
+        ergonomics_plan,
+        store_root,
+    )
 }
 
 pub(super) fn verify_compare_artifacts(
@@ -226,7 +227,7 @@ pub(super) fn verify_run_invocation_plan(
         ],
         initial_control_commands: vec![SessionCommandKind::Query, SessionCommandKind::Query],
         accepted_interactive_commands: Vec::new(),
-        observer_profile: reduction.host_profile,
+        host_profile: reduction.host_profile,
         collect_execution_fingerprints: true,
         bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
         outcome_exit_codes: vec![
@@ -296,7 +297,7 @@ pub(super) fn verify_witness_from_run_report(
             })?;
             let live = live_qemu_artifact_evidence_from_run(
                 LiveQemuArtifactRecipe {
-                    producer: "verify",
+                    producer: "campaign-run",
                     terminal_condition: run_plan.terminal_condition,
                     max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
                     max_quanta: run_plan.max_quanta,
@@ -340,6 +341,7 @@ pub(super) fn verify_witness_from_run_report(
         fingerprint_samples,
         fingerprint_stream,
         live_event_evidence,
+        host_scheduler_preemption: None,
         state_dump,
         artifact,
     })
@@ -362,6 +364,7 @@ pub(super) fn verify_witness_from_artifact(
         fingerprint_samples,
         fingerprint_stream,
         live_event_evidence: VerifyLiveEventEvidence::default(),
+        host_scheduler_preemption: None,
         state_dump,
         artifact: Some(bytes),
     })
@@ -449,649 +452,16 @@ fn verify_frame_string_attribute(
     Ok(None)
 }
 
-pub(super) fn canonical_run_log_entries(
-    run_plan: &RunInvocationPlan,
-    report: &RunWorkflowReport,
-) -> Vec<CanonicalLogEntry> {
-    let mut outcome = BackendCommandOutcome {
-        subcommand: CliSubcommand::Run,
-        status: BackendCommandStatus::Passed,
-        exit_code: 0,
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-        canonical_log: Vec::new(),
-        canonical_log_digest: content_address_bytes(b"empty"),
-        artifact_digest: content_address_bytes(b"empty"),
-        terminal_savepoint: None,
-        savepoint_oracle: None,
-        save_boundary_evidence: None,
-        savepoint_replay_closure: None,
-        reproduction_artifact: None,
-        side_reproduction_artifacts: Vec::new(),
-        host_scheduler_preemption: Vec::new(),
-    };
-    append_local_double_run_entries(&mut outcome, run_plan, report);
-    outcome.canonical_log
-}
+#[path = "verify_serve/evidence.rs"]
+mod evidence;
 
-pub(super) fn canonical_log_entry_bytes(entries: &[CanonicalLogEntry]) -> Vec<u8> {
-    jsonl_for_canonical_log_entries(entries).into_bytes()
-}
+pub(crate) use evidence::*;
 
-pub(super) fn canonical_verify_log_stream_bytes(
-    entries: &[CanonicalLogEntry],
-    event_frames: &[Vec<u8>],
-) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"crucible.verify.canonical-log-stream.v1\n");
-    bytes.extend_from_slice(&canonical_log_entry_bytes(entries));
-    bytes.extend_from_slice(b"\ncrucible.verify.api-event-frames.v1\n");
-    for frame in event_frames {
-        bytes.extend_from_slice(frame);
-        if !frame.ends_with(b"\n") {
-            bytes.push(b'\n');
-        }
-    }
-    bytes
-}
-
-pub(super) fn canonical_streaming_event_frame_bytes(
-    frame: &crucible_api::StreamingEventFrame,
-) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/event-frame\n");
-    push_canonical_wire_line(&mut output, "generation", &frame.generation.to_string());
-    push_canonical_wire_line(
-        &mut output,
-        "cursor",
-        &frame.cursor.next_sequence.to_string(),
-    );
-    push_canonical_wire_line(
-        &mut output,
-        "next-cursor",
-        &frame.next_cursor.next_sequence.to_string(),
-    );
-    push_canonical_wire_line(&mut output, "sequence", &frame.event.sequence.to_string());
-    push_canonical_wire_line(
-        &mut output,
-        "virtual-time-ticks",
-        &frame.event.at.virtual_time_ticks.to_string(),
-    );
-    push_canonical_wire_line(
-        &mut output,
-        "icount-retired",
-        &frame.event.at.icount_retired.to_string(),
-    );
-    push_canonical_wire_line(
-        &mut output,
-        "icount-node",
-        &optional_string_canonical_wire(frame.event.at.icount_node.as_deref()),
-    );
-    push_canonical_wire_line(
-        &mut output,
-        "source",
-        &event_source_canonical_wire(&frame.event.source),
-    );
-    push_canonical_wire_line(
-        &mut output,
-        "level",
-        event_level_canonical_wire(frame.event.level),
-    );
-    push_canonical_wire_line(
-        &mut output,
-        "observational",
-        if frame.event.observational {
-            "true"
-        } else {
-            "false"
-        },
-    );
-    push_canonical_wire_line(&mut output, "kind", &frame.event.payload.kind);
-    for (name, value) in &frame.event.payload.attributes {
-        push_canonical_wire_line(
-            &mut output,
-            "attribute",
-            &format!(
-                "{}|{}",
-                hex_bytes(name.as_bytes()),
-                attribute_canonical_wire(value)
-            ),
-        );
-    }
-    output.into_bytes()
-}
-
-pub(super) fn optional_string_canonical_wire(value: Option<&str>) -> String {
-    value
-        .map(|value| hex_bytes(value.as_bytes()))
-        .unwrap_or_else(|| String::from("none"))
-}
-
-pub(super) fn event_source_canonical_wire(source: &crucible_api::OpenSetEventSource) -> String {
-    match source {
-        crucible_api::OpenSetEventSource::Scenario { event } => {
-            format!("scenario|{}", hex_bytes(event.as_bytes()))
-        }
-        crucible_api::OpenSetEventSource::Engine => String::from("engine"),
-        crucible_api::OpenSetEventSource::Node { node } => {
-            format!("node|{}", hex_bytes(node.as_bytes()))
-        }
-        crucible_api::OpenSetEventSource::Guest { node } => {
-            format!("guest|{}", hex_bytes(node.as_bytes()))
-        }
-        crucible_api::OpenSetEventSource::Command { command_id } => {
-            format!("command|{command_id}")
-        }
-    }
-}
-
-pub(super) fn event_level_canonical_wire(level: crucible::EventLevel) -> &'static str {
-    match level {
-        crucible::EventLevel::Trace => "trace",
-        crucible::EventLevel::Debug => "debug",
-        crucible::EventLevel::Info => "info",
-        crucible::EventLevel::Warn => "warn",
-        crucible::EventLevel::Error => "error",
-    }
-}
-
-pub(super) fn attribute_canonical_wire(value: &crucible_api::OpenSetAttributeValue) -> String {
-    match value {
-        crucible_api::OpenSetAttributeValue::Bool(value) => {
-            format!("bool|{}", if *value { "true" } else { "false" })
-        }
-        crucible_api::OpenSetAttributeValue::Int(value) => format!("int|{value}"),
-        crucible_api::OpenSetAttributeValue::Uint(value) => format!("uint|{value}"),
-        crucible_api::OpenSetAttributeValue::Uint128(value) => format!("uint128|{value}"),
-        crucible_api::OpenSetAttributeValue::Float64Bits(value) => {
-            format!("float64bits|{value}")
-        }
-        crucible_api::OpenSetAttributeValue::String(value) => {
-            format!("string|{}", hex_bytes(value.as_bytes()))
-        }
-        crucible_api::OpenSetAttributeValue::Bytes(value) => format!("bytes|{}", hex_bytes(value)),
-    }
-}
-
-pub(super) fn push_canonical_wire_line(output: &mut String, key: &str, value: &str) {
-    output.push_str(key);
-    output.push('=');
-    output.push_str(value);
-    output.push('\n');
-}
-
-pub(super) fn verify_fingerprint_samples(
-    report: &RunWorkflowReport,
-) -> Result<Vec<VerifyFingerprintSample>, CliError> {
-    let samples = run_fingerprint_samples(report);
-    if samples.is_empty() {
-        return Err(backend_error(
-            "verify did not collect any backend execution fingerprint samples",
-        ));
-    }
-    Ok(samples)
-}
-
-pub(super) fn run_fingerprint_samples(report: &RunWorkflowReport) -> Vec<VerifyFingerprintSample> {
-    let mut samples = Vec::new();
-    for (index, sample) in report.execution_fingerprints.iter().enumerate() {
-        let index = u64::try_from(index).unwrap_or(u64::MAX);
-        samples.push(VerifyFingerprintSample {
-            index,
-            instruction: sample.at.ticks,
-            node: sample.node.name.clone(),
-            digest: format!(
-                "{}{}",
-                CONTENT_ADDRESS_PREFIX,
-                sample.fingerprint.hash.to_hex()
-            ),
-        });
-    }
-    samples
-}
-
-pub(super) fn verify_fingerprint_stream_bytes(samples: &[VerifyFingerprintSample]) -> Vec<u8> {
-    let mut text = String::from("crucible.verify.execution-fingerprint-stream.v1\n");
-    for sample in samples {
-        artifact_line(
-            &mut text,
-            &[
-                "sample",
-                &sample.index.to_string(),
-                &sample.instruction.to_string(),
-                &sample.node,
-                &sample.digest,
-            ],
-        );
-    }
-    text.into_bytes()
-}
-
-pub(super) fn verify_state_dump(
-    run_plan: &RunInvocationPlan,
-    report: &RunWorkflowReport,
-) -> String {
-    let seed = run_plan
-        .request_seed
-        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-    format!(
-        "scenario={} seed={} final_state={} outcome={} frontier_ticks={} quanta={} savepoint={} events={} frames={}",
-        run_plan.scenario.scenario_id().to_hex(),
-        seed.to_hex(),
-        report.final_state,
-        terminal_outcome_label(report.outcome),
-        report.final_frontier_ticks,
-        report.final_quanta,
-        report
-            .terminal_savepoint
-            .map(format_content_hash_ref)
-            .unwrap_or_else(|| String::from("none")),
-        report.streamed_events.len(),
-        report.streamed_event_frames.len()
-    )
-}
-
-pub(super) fn canonical_log_entries_from_artifact(
-    artifact: &CliReproductionArtifact,
-) -> Result<Vec<CanonicalLogEntry>, CliError> {
-    if artifact.decisions.is_empty() {
-        return Err(artifact_error(
-            "verify comparison artifact contains no canonical decisions",
-        ));
-    }
-    artifact
-        .decisions
-        .iter()
-        .map(|decision| {
-            Ok(CanonicalLogEntry {
-                sequence: decision.sequence,
-                virtual_time_ticks: decision.virtual_time_ticks,
-                node: decision.node.clone(),
-                kind: decision.kind.clone(),
-                summary: decision_payload_summary(artifact, decision)?,
-            })
-        })
-        .collect()
-}
-
-pub(super) fn decision_payload_summary(
-    artifact: &CliReproductionArtifact,
-    decision: &CliDecision,
-) -> Result<String, CliError> {
-    let payload = artifact
-        .payloads
-        .iter()
-        .find(|payload| payload.digest == decision.payload_digest)
-        .ok_or_else(|| {
-            artifact_error(format!(
-                "decision payload `{}` is missing from artifact payloads",
-                decision.payload_digest
-            ))
-        })?;
-    String::from_utf8(payload.bytes.clone()).map_err(|error| {
-        artifact_error(format!(
-            "decision payload `{}` is not UTF-8: {error}",
-            decision.payload_digest
-        ))
-    })
-}
-
-pub(super) fn artifact_fingerprint_samples(
-    artifact: &CliReproductionArtifact,
-) -> Vec<VerifyFingerprintSample> {
-    artifact
-        .fingerprints
-        .iter()
-        .map(|fingerprint| VerifyFingerprintSample {
-            index: fingerprint.index,
-            instruction: fingerprint.instruction,
-            node: fingerprint.node.clone(),
-            digest: fingerprint.digest.clone(),
-        })
-        .collect()
-}
-
-pub(super) fn artifact_state_dump(artifact: &CliReproductionArtifact) -> String {
-    format!(
-        "scenario={} seed={} decisions={} fingerprints={} schedule={}",
-        artifact.scenario.digest,
-        artifact.seed,
-        artifact.decisions.len(),
-        artifact.fingerprints.len(),
-        artifact.schedule_digest
-    )
-}
-
-pub(super) fn compare_verify_witnesses(
-    witnesses: &[VerifyRunWitness],
-) -> Option<VerifyDivergenceReport> {
-    for left_index in 0..witnesses.len() {
-        for right_index in left_index + 1..witnesses.len() {
-            let left = &witnesses[left_index];
-            let right = &witnesses[right_index];
-            let canonical_log_differs = left.canonical_log_bytes != right.canonical_log_bytes;
-            let fingerprint_differs = left.fingerprint_stream != right.fingerprint_stream;
-            if canonical_log_differs || fingerprint_differs {
-                let mismatch = match (canonical_log_differs, fingerprint_differs) {
-                    (true, true) => VerifyMismatchKind::CanonicalLogAndFingerprintStream,
-                    (true, false) => VerifyMismatchKind::CanonicalLog,
-                    (false, true) => VerifyMismatchKind::FingerprintStream,
-                    (false, false) => unreachable!("guarded by difference check"),
-                };
-                return Some(localize_verify_divergence(
-                    left_index,
-                    right_index,
-                    mismatch,
-                    left,
-                    right,
-                ));
-            }
-        }
-    }
-    None
-}
-
-pub(super) fn localize_verify_divergence(
-    left_index: usize,
-    right_index: usize,
-    mismatch: VerifyMismatchKind,
-    left: &VerifyRunWitness,
-    right: &VerifyRunWitness,
-) -> VerifyDivergenceReport {
-    let first_different_decision =
-        first_different_canonical_entry(&left.canonical_log, &right.canonical_log);
-    let first_different_sample =
-        first_different_fingerprint_sample(&left.fingerprint_samples, &right.fingerprint_samples);
-    let entry = first_different_decision.and_then(|index| {
-        left.canonical_log
-            .get(index)
-            .or_else(|| right.canonical_log.get(index))
-    });
-    let sample = first_different_sample.and_then(|index| {
-        left.fingerprint_samples
-            .get(index)
-            .or_else(|| right.fingerprint_samples.get(index))
-    });
-    let first_different_byte = bisect_first_different_byte(
-        bytes_for_mismatch(mismatch, left),
-        bytes_for_mismatch(mismatch, right),
-    );
-    VerifyDivergenceReport {
-        left: left_index,
-        right: right_index,
-        mismatch,
-        first_different_decision,
-        first_different_fingerprint_sample: first_different_sample,
-        first_different_virtual_time: entry.map(|entry| entry.virtual_time_ticks),
-        first_different_virtual_time_node: entry.map(|entry| entry.node.clone()),
-        first_different_instruction: sample.map(|sample| sample.instruction),
-        first_different_instruction_node: sample.map(|sample| sample.node.clone()),
-        first_different_byte,
-        left_state_digest: verify_witness_state_digest(left),
-        right_state_digest: verify_witness_state_digest(right),
-        left_state_dump: left.state_dump.clone(),
-        right_state_dump: right.state_dump.clone(),
-    }
-}
-
-pub(super) fn verify_witness_state_digest(witness: &VerifyRunWitness) -> String {
-    if let Some(artifact) = witness.artifact.as_ref() {
-        return content_address_bytes(artifact);
-    }
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&witness.canonical_log_bytes);
-    bytes.extend_from_slice(&witness.fingerprint_stream);
-    bytes.extend_from_slice(witness.state_dump.as_bytes());
-    content_address_bytes(&bytes)
-}
-
-pub(super) fn bytes_for_mismatch(
-    mismatch: VerifyMismatchKind,
-    witness: &VerifyRunWitness,
-) -> &[u8] {
-    match mismatch {
-        VerifyMismatchKind::CanonicalLog | VerifyMismatchKind::CanonicalLogAndFingerprintStream => {
-            &witness.canonical_log_bytes
-        }
-        VerifyMismatchKind::FingerprintStream => &witness.fingerprint_stream,
-    }
-}
-
-pub(super) fn first_different_canonical_entry(
-    left: &[CanonicalLogEntry],
-    right: &[CanonicalLogEntry],
-) -> Option<usize> {
-    for (index, (left_entry, right_entry)) in left.iter().zip(right.iter()).enumerate() {
-        if json_for_canonical_log_entry(left_entry) != json_for_canonical_log_entry(right_entry) {
-            return Some(index);
-        }
-    }
-    (left.len() != right.len()).then_some(left.len().min(right.len()))
-}
-
-pub(super) fn first_different_fingerprint_sample(
-    left: &[VerifyFingerprintSample],
-    right: &[VerifyFingerprintSample],
-) -> Option<usize> {
-    for (index, (left_sample, right_sample)) in left.iter().zip(right.iter()).enumerate() {
-        if left_sample != right_sample {
-            return Some(index);
-        }
-    }
-    (left.len() != right.len()).then_some(left.len().min(right.len()))
-}
-
-pub(super) fn bisect_first_different_byte(left: &[u8], right: &[u8]) -> usize {
-    let max_len = left.len().max(right.len());
-    if max_len == 0 || left == right {
-        return 0;
-    }
-    let mut low = 0usize;
-    let mut high = max_len;
-    while low < high {
-        let midpoint = low + ((high - low) / 2);
-        if prefixes_match(left, right, midpoint.saturating_add(1)) {
-            low = midpoint.saturating_add(1);
-        } else {
-            high = midpoint;
-        }
-    }
-    low
-}
-
-pub(super) fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
-    left.get(..len) == right.get(..len)
-}
-
-/// Encodes a self-contained reproduction artifact around an explicit scenario payload.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when component identity, decision payload, or canonical
-/// artifact encoding validation fails.
-// crucible-lint: allow host-nondeterminism-state -- this pure encoder exports canonical reproduction bytes without admitting host observations into scheduler state.
-pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
-    seed: u64,
-    backend: Option<&ResolvedLocalBackend>,
-    scenario: ReproductionScenarioPayload<'_>,
-    canonical_log: &[CanonicalLogEntry],
-    fingerprint_samples: &[VerifyFingerprintSample],
-    extra_payloads: &[ReproductionArtifactComponentPayload],
-) -> Result<Vec<u8>, CliError> {
-    let scenario_digest = content_address_bytes(scenario.bytes);
-    let store_uri = format!("cas:{scenario_digest}");
-    let identity = expected_replay_identity_for_backend(backend);
-    let decisions = cli_decisions_from_canonical_log(canonical_log);
-    let extra_components = extra_payloads
-        .iter()
-        .map(|payload| CliComponent {
-            kind: payload.kind.clone(),
-            name: payload.name.clone(),
-            digest: content_address_bytes(&payload.bytes),
-            store_uri: format!("cas:{}", content_address_bytes(&payload.bytes)),
-            media_type: payload.media_type.clone(),
-            size_bytes: payload.bytes.len() as u64,
-        })
-        .collect::<Vec<_>>();
-    let schedule_digest = schedule_digest(&decisions);
-    let mut text = String::new();
-
-    artifact_line(&mut text, &["schema", REPRODUCTION_ARTIFACT_SCHEMA]);
-    artifact_line(&mut text, &["seed", &seed.to_string()]);
-    artifact_line(
-        &mut text,
-        &[
-            "identity",
-            &identity.engine_version,
-            &identity.engine_abi,
-            &identity.artifact_abi,
-            &identity.qemu_build_id,
-            &identity.qemu_patch_series_hash,
-            &identity.shmem_abi_version,
-            &identity.guest_host_protocol_version,
-            &identity.rpc_abi_version,
-            &identity.rpc_abi_build,
-            &identity.plugin_abi,
-        ],
-    );
-    artifact_line(
-        &mut text,
-        &[
-            "scenario",
-            "scenario_def",
-            scenario.name,
-            &scenario_digest,
-            &store_uri,
-            scenario.media_type,
-            &scenario.bytes.len().to_string(),
-        ],
-    );
-    artifact_line(
-        &mut text,
-        &[
-            "component",
-            "scenario_def",
-            scenario.name,
-            &scenario_digest,
-            &store_uri,
-            scenario.media_type,
-            &scenario.bytes.len().to_string(),
-        ],
-    );
-    for component in &extra_components {
-        artifact_component_line(&mut text, "component", component);
-    }
-    for decision in &decisions {
-        let payload = canonical_log
-            .get(decision.sequence as usize)
-            .ok_or_else(|| artifact_error("decision payload is missing from canonical log"))?
-            .summary
-            .as_bytes();
-        artifact_line(
-            &mut text,
-            &[
-                "component",
-                "other",
-                &format!("decision-{}-payload", decision.sequence),
-                &decision.payload_digest,
-                &format!("cas:{}", decision.payload_digest),
-                RECORDED_DECISION_PAYLOAD_MEDIA_TYPE,
-                &payload.len().to_string(),
-            ],
-        );
-    }
-    artifact_line(
-        &mut text,
-        &["payload", &scenario_digest, &hex_bytes(scenario.bytes)],
-    );
-    for (component, payload) in extra_components.iter().zip(extra_payloads) {
-        artifact_line(
-            &mut text,
-            &["payload", &component.digest, &hex_bytes(&payload.bytes)],
-        );
-    }
-    for decision in &decisions {
-        let payload = canonical_log
-            .get(decision.sequence as usize)
-            .ok_or_else(|| artifact_error("decision payload is missing from canonical log"))?
-            .summary
-            .as_bytes();
-        artifact_line(
-            &mut text,
-            &["payload", &decision.payload_digest, &hex_bytes(payload)],
-        );
-    }
-    artifact_line(
-        &mut text,
-        &["schedule", &schedule_digest, &decisions.len().to_string()],
-    );
-    for decision in &decisions {
-        artifact_line(
-            &mut text,
-            &[
-                "decision",
-                &decision.sequence.to_string(),
-                &decision.virtual_time_ticks.to_string(),
-                &decision.node,
-                &decision.kind,
-                &decision.payload_digest,
-            ],
-        );
-    }
-    for sample in fingerprint_samples {
-        artifact_line(
-            &mut text,
-            &[
-                "fingerprint",
-                &sample.index.to_string(),
-                &sample.instruction.to_string(),
-                &sample.node,
-                &sample.digest,
-            ],
-        );
-    }
-    artifact_line(
-        &mut text,
-        &[
-            "sampling",
-            "every-fingerprint-sample",
-            "final",
-            "1",
-            "execution-fingerprint-stream",
-        ],
-    );
-
-    let bytes = text.into_bytes();
-    let artifact = decode_reproduction_artifact(&bytes)?;
-    verify_replay_identity(&artifact.identity, &identity)?;
-    Ok(bytes)
-}
-
-pub(super) fn seed_to_u64(seed: crucible::Seed) -> u64 {
-    let bytes = seed.bytes();
-    let mut low = [0u8; 8];
-    low.copy_from_slice(&bytes[..8]);
-    u64::from_le_bytes(low)
-}
-
-pub(super) fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u8> {
-    format!(
-        "scenario_id={}\nseed={}\napp_random_draw_cap={}\n",
-        scenario.id().to_hex(),
-        scenario.seed().to_hex(),
-        scenario.app_random_draw_cap()
-    )
-    .into_bytes()
-}
-
-// crucible-lint: allow host-nondeterminism-state -- this pure admission check authenticates the exact campaign replay closure before the resumed backend is allocated.
 fn validate_remote_resume_replay_closure(
     scenario: &crucible::ScenarioDefForm,
-    // crucible-lint: allow host-nondeterminism-state -- the canonical configuration is authenticated schedule evidence forwarded unchanged to the daemon validator.
     configuration: &crucible::Configuration,
     checkpoint: &crucible::Checkpoint,
-    // crucible-lint: allow host-nondeterminism-state -- the API envelope remains untrusted transport input until the daemon validates every bound identity.
     envelope: &crucible_api::ResumeReplayClosure,
-    // crucible-lint: allow host-nondeterminism-state -- the typed API error reports only this pure admission result and cannot alter scheduler state.
 ) -> Result<(), crucible_api::ResumeReplayClosureValidationError> {
     crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(
         scenario,
@@ -1099,7 +469,6 @@ fn validate_remote_resume_replay_closure(
         checkpoint,
         envelope,
     )
-    // crucible-lint: allow host-nondeterminism-state -- this converts a deterministic closure-authentication failure at the API boundary.
     .map_err(|error| crucible_api::ResumeReplayClosureValidationError::new(error.to_string()))
 }
 
@@ -1113,7 +482,8 @@ pub(super) async fn run_local_double_workflow_async(
         "crucible-cli-double",
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-    );
+    )
+    .with_terminal_session_retention(true);
     let client = InProcessLifecycleClient::new(control_plane);
     run_control_client_workflow_async(&client, run_plan, interactive_commands).await
 }
@@ -1127,7 +497,8 @@ pub(super) async fn run_local_double_workflow_stdin_async(
         "crucible-cli-double",
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-    );
+    )
+    .with_terminal_session_retention(true);
     let client = InProcessLifecycleClient::new(control_plane);
     run_control_client_workflow_stdin_async(&client, run_plan, false).await
 }
@@ -1190,7 +561,6 @@ where
     } else {
         None
     };
-    let campaign_service = open_local_campaign_service(args, production_config.as_ref())?;
     let listener = tokio::net::TcpListener::bind(&args.listen)
         .await
         .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
@@ -1209,12 +579,6 @@ where
             "http"
         };
         println!("crucible: serving API daemon at {scheme}://{address} mode={mode}");
-        if let Some(service) = campaign_service.as_ref() {
-            println!(
-                "crucible: serving local campaign service at {}",
-                service.socket_path().display()
-            );
-        }
     }
     let mode = if args.read_only {
         LifecycleServerMode::read_only()
@@ -1226,7 +590,7 @@ where
             .take()
             .ok_or_else(|| serve_error("production QEMU configuration disappeared"))?;
         let config = production_session_lifecycle_config(campaign_config, &debug_authorization);
-        let resume_config = config.clone();
+        let packaged_campaign_config = config.clone();
         let observation_config = config.clone();
         let observation_qemu_build_id = production_qemu_build_id
             .take()
@@ -1235,14 +599,15 @@ where
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
             Vec::new(),
-            move |scenario, source, _seed| {
-                let source =
-                    source.ok_or_else(|| crucible_api::LifecycleApiError::LoopFactory {
-                        message: String::from(
-                            "production QEMU daemon requires an inline scenario definition",
-                        ),
-                    })?;
-                crucible_api::build_production_vm_lifecycle_loop(scenario, source, &config)
+            move |_scenario, _source, _seed| -> Result<
+                crucible_api::ProductionVmLifecycleLoop,
+                crucible_api::LifecycleApiError,
+            > {
+                Err(crucible_api::LifecycleApiError::LoopFactory {
+                    message: String::from(
+                        "production QEMU daemon creates nodes only through guarded campaign attempts",
+                    ),
+                })
             },
         )
         .with_resume_observation_loop_factory(move |request, configuration, context| {
@@ -1253,33 +618,39 @@ where
                             message: format!("resolve guarded campaign deployment: {error}"),
                         },
                     )?;
-            let deployment =
-                load_guarded_campaign_run_deployment(&deployment_path).map_err(|error| {
-                    crucible_api::LifecycleApiError::ResumeObservationSource {
-                        message: format!("load guarded campaign deployment: {error}"),
-                    }
-                })?;
+            let deployment = load_campaign_run_deployment(&deployment_path).map_err(|error| {
+                crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: format!("load guarded campaign deployment: {error}"),
+                }
+            })?;
             crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::new(
                 env!("CARGO_PKG_VERSION"),
                 observation_qemu_build_id.clone(),
                 observation_config.clone(),
                 deployment.host,
                 deployment.resources,
+                deployment.verify_determinism_findings,
             )
             .resume_loop(request, configuration, context)
-        })
-        .with_fat_checkpoint_resume_factory(move |scenario, source, _seed, checkpoint| {
-            crucible_api::build_production_vm_lifecycle_loop_from_checkpoint(
-                scenario,
-                source,
-                &resume_config,
-                checkpoint,
-            )
         })
         .with_resume_replay_closure_validator(validate_remote_resume_replay_closure);
         if let Some(max_sessions) = args.max_sessions {
             control_plane = control_plane.with_max_sessions(max_sessions);
         }
+        let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane));
+        let lifecycle =
+            InProcessLifecycleClient::from_shared_control_plane(Arc::clone(&control_plane));
+        let campaign_debug_lifecycle: Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission> =
+            Arc::new(CliCampaignDebugLifecycleAdmission {
+                lifecycle,
+                runtime: tokio::runtime::Handle::current(),
+            });
+        let campaign_service = open_local_campaign_service(
+            args,
+            Some(&packaged_campaign_config),
+            Some(campaign_debug_lifecycle),
+        )?;
+        announce_campaign_service(cli, campaign_service.as_ref());
         return run_bound_daemon_services(
             listener,
             control_plane,
@@ -1300,6 +671,9 @@ where
     if let Some(max_sessions) = args.max_sessions {
         control_plane = control_plane.with_max_sessions(max_sessions);
     }
+    let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane));
+    let campaign_service = open_local_campaign_service(args, None, None)?;
+    announce_campaign_service(cli, campaign_service.as_ref());
     run_bound_daemon_services(
         listener,
         control_plane,
@@ -1312,11 +686,20 @@ where
     .await
 }
 
+fn announce_campaign_service(cli: &Cli, service: Option<&PreparedLocalCampaignService>) {
+    if !cli.quiet
+        && let Some(service) = service
+    {
+        println!(
+            "crucible: serving local campaign service at {}",
+            service.socket_path().display()
+        );
+    }
+}
+
 pub(super) fn production_session_lifecycle_config(
-    // crucible-lint: allow host-nondeterminism-state -- this backend configuration is explicit CLI input and is not derived from host timing, entropy, or observations.
     campaign_config: crucible_api::ProductionVmLifecycleConfig,
     debug_authorization: &DebugAuthorizationPolicy,
-    // crucible-lint: allow host-nondeterminism-state -- the returned API configuration changes only operational debug authorization and does not construct scheduler state.
 ) -> crucible_api::ProductionVmLifecycleConfig {
     campaign_config.with_authorized_debug_gdbstubs_for_all_nodes("127.0.0.1:0", debug_authorization)
 }
@@ -1324,6 +707,31 @@ pub(super) fn production_session_lifecycle_config(
 pub(super) struct PreparedLocalCampaignService {
     service: crucible_daemon::CampaignLocalService,
     socket_path: PathBuf,
+}
+
+struct CliCampaignDebugLifecycleAdmission<F> {
+    lifecycle: InProcessLifecycleClient<crucible_api::ProductionVmLifecycleLoop, F>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl<F> crucible_daemon::CampaignDebugLifecycleAdmission for CliCampaignDebugLifecycleAdmission<F>
+where
+    F: Fn(
+            &crucible::ScenarioDef,
+            Option<&crucible::ScenarioDefForm>,
+            crucible::Seed,
+        )
+            -> Result<crucible_api::ProductionVmLifecycleLoop, crucible_api::LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn admit(
+        &self,
+        request: crucible_daemon::PreparedCampaignDebugLifecycle,
+    ) -> Result<crucible_api::ResumeSessionResponse, crucible_api::LifecycleApiError> {
+        self.runtime.block_on(request.admit(&self.lifecycle))
+    }
 }
 
 impl PreparedLocalCampaignService {
@@ -1335,6 +743,7 @@ impl PreparedLocalCampaignService {
 pub(super) fn open_local_campaign_service(
     args: &ServeArgs,
     production_qemu: Option<&crucible_api::ProductionVmLifecycleConfig>,
+    campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
     validate_campaign_runtime_attachments(args)?;
     let (Some(socket), Some(state), Some(policy)) = (
@@ -1466,12 +875,15 @@ pub(super) fn open_local_campaign_service(
                 })?,
         );
     }
-    let prepared = match runtime_control_planner {
+    let mut prepared = match runtime_control_planner {
         Some(planner) => prepared
             .with_runtime_control(planner)
             .map_err(|error| serve_error(format!("campaign runtime control error: {error}")))?,
         None => prepared,
     };
+    if let Some(lifecycle) = campaign_debug_lifecycle {
+        prepared = prepared.with_campaign_debug_lifecycle(lifecycle);
+    }
     let service = if let Some(executor) = packaged_executor {
         prepared.bind_with_runtimes_and_executor(runtimes, executor)
     } else if runtimes.is_empty() {
@@ -1506,7 +918,7 @@ struct RunningLocalCampaignService {
     thread: std::thread::JoinHandle<
         Result<
             crucible_daemon::CampaignLoopbackServerReport,
-            crucible_daemon::CampaignLocalServiceError,
+            Box<crucible_daemon::CampaignLocalServiceError>,
         >,
     >,
     done: tokio::sync::oneshot::Receiver<()>,
@@ -1520,7 +932,7 @@ fn start_local_campaign_service(
     let thread = std::thread::Builder::new()
         .name(String::from("crucible-campaign-service"))
         .spawn(move || {
-            let result = prepared.service.serve();
+            let result = prepared.service.serve().map_err(Box::new);
             let _ = done_sender.send(());
             result
         })
@@ -1534,7 +946,7 @@ fn start_local_campaign_service(
 
 async fn run_bound_daemon_services<L, F, S>(
     listener: tokio::net::TcpListener,
-    control_plane: LifecycleControlPlane<L, F>,
+    control_plane: Arc<tokio::sync::Mutex<LifecycleControlPlane<L, F>>>,
     mode: LifecycleServerMode,
     tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
     debug_authorization: DebugAuthorizationPolicy,
@@ -1571,13 +983,14 @@ where
     } = start_local_campaign_service(campaign)?;
     let wait_shutdown = campaign_shutdown.clone();
     let combined_shutdown = async move {
-        // crucible-lint: allow unordered-select -- either daemon service ending stops the process.
-        tokio::select! {
-            result = shutdown => {
+        match crate::host_boundary::first_completed(shutdown, &mut done).await {
+            crate::host_boundary::HostRaceOutcome::First(result) => {
                 wait_shutdown.shutdown();
                 result
             }
-            _ = &mut done => Err(serve_error("campaign service stopped unexpectedly")),
+            crate::host_boundary::HostRaceOutcome::Second(_) => {
+                Err(serve_error("campaign service stopped unexpectedly"))
+            }
         }
     };
     let lifecycle_result = run_bound_lifecycle_server(
@@ -1593,7 +1006,7 @@ where
     let campaign_result = match tokio::task::spawn_blocking(move || campaign_thread.join()).await {
         Err(error) => Err(serve_error(format!("campaign service join error: {error}"))),
         Ok(Err(_)) => Err(serve_error("campaign service thread panicked")),
-        Ok(Ok(Err(error))) => Err(campaign_service_join_error(&error)),
+        Ok(Ok(Err(error))) => Err(campaign_service_join_error(error.as_ref())),
         Ok(Ok(Ok(_))) => Ok(()),
     };
     combine_lifecycle_and_campaign_results(lifecycle_result, campaign_result)
@@ -1646,7 +1059,7 @@ pub(super) fn combine_lifecycle_and_campaign_results(
 
 async fn run_bound_lifecycle_server<L, F, S>(
     listener: tokio::net::TcpListener,
-    control_plane: LifecycleControlPlane<L, F>,
+    control_plane: Arc<tokio::sync::Mutex<LifecycleControlPlane<L, F>>>,
     mode: LifecycleServerMode,
     tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
     debug_authorization: DebugAuthorizationPolicy,
@@ -1667,7 +1080,7 @@ where
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
     let server: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>> =
         if let Some(tls_acceptor) = tls_acceptor {
-            Box::pin(serve_lifecycle_http2_mtls_with_mode_until_shutdown(
+            Box::pin(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
                 listener,
                 control_plane,
                 mode,
@@ -1678,25 +1091,26 @@ where
                 },
             ))
         } else {
-            Box::pin(serve_lifecycle_http2_with_debug_policy_until_shutdown(
-                listener,
-                control_plane,
-                mode,
-                debug_authorization,
-                async move {
-                    let _ = shutdown_receiver.await;
-                },
-            ))
+            Box::pin(
+                serve_shared_lifecycle_http2_with_debug_policy_until_shutdown(
+                    listener,
+                    control_plane,
+                    mode,
+                    debug_authorization,
+                    async move {
+                        let _ = shutdown_receiver.await;
+                    },
+                ),
+            )
         };
     tokio::pin!(server);
     tokio::pin!(shutdown);
-    // crucible-lint: allow unordered-select -- serve shutdown races only with host daemon drainage.
-    tokio::select! {
-        result = &mut server => {
+    match crate::host_boundary::first_completed(server.as_mut(), shutdown.as_mut()).await {
+        crate::host_boundary::HostRaceOutcome::First(result) => {
             result.map_err(|error| serve_error(format!("serve backend error: {error}")))?;
             Ok(())
         }
-        signal = &mut shutdown => {
+        crate::host_boundary::HostRaceOutcome::Second(signal) => {
             signal?;
             let _ = shutdown_sender.send(());
             if let Ok(result) = tokio::time::timeout(SERVE_SHUTDOWN_DRAIN_TIMEOUT, server).await {
@@ -1715,11 +1129,8 @@ pub(super) async fn serve_shutdown_signal() -> Result<(), CliError> {
         .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))?;
     let mut terminate = signal(SignalKind::terminate())
         .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))?;
-    // crucible-lint: allow unordered-select -- signal choice is host shutdown policy, not replay state.
-    tokio::select! {
-        _ = interrupt.recv() => Ok(()),
-        _ = terminate.recv() => Ok(()),
-    }
+    let _ = crate::host_boundary::first_completed(interrupt.recv(), terminate.recv()).await;
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -1958,223 +1369,4 @@ where
         false,
     )
     .await
-}
-
-#[cfg(any(test, feature = "test-double"))]
-pub(super) async fn run_control_client_save_workflow_async<C>(
-    client: &C,
-    save_plan: &SaveInvocationPlan,
-) -> Result<SaveWorkflowReport, CliError>
-where
-    C: ControlClient + Sync,
-{
-    let run_plan = &save_plan.run_plan;
-    let seed = run_plan
-        .request_seed
-        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_form().clone(), seed)
-        .with_start_paused(true);
-    let created = client
-        .create_session(request)
-        .await
-        .map_err(save_control_client_error)?;
-    let mut acknowledged_commands = Vec::new();
-    let mut state_updates = Vec::new();
-    let mut command_id = 1;
-
-    let (boundary, breakpoint_firing) = match save_plan.at {
-        SaveAtArg::Quiescence => {
-            let predicate = crucible::Predicate::quiescent();
-            let (boundary, breakpoint_id) = run_save_predicate_to_boundary(
-                client,
-                created.session,
-                BreakpointSpec::suspend_once(predicate.clone()),
-                &mut command_id,
-                &mut acknowledged_commands,
-                &mut state_updates,
-                "paused quiescence save boundary",
-                false,
-            )
-            .await?;
-            let firings = query_save_breakpoint_firings(
-                client,
-                created.session,
-                &mut command_id,
-                &mut acknowledged_commands,
-                &mut state_updates,
-            )
-            .await?;
-            let firing = validate_save_breakpoint_firing(
-                "quiescence",
-                &predicate,
-                breakpoint_id,
-                &boundary,
-                &firings,
-            )?;
-            (boundary, Some(firing))
-        }
-        SaveAtArg::VirtualTime => {
-            let budget = run_plan.max_virtual_time_ticks.ok_or_else(|| {
-                usage_error("save --at virtual-time requires --max-virtual-time <dur>")
-            })?;
-            let boundary = drive_save_to_virtual_time_boundary(
-                client,
-                created.session,
-                budget,
-                &mut command_id,
-                &mut acknowledged_commands,
-                &mut state_updates,
-                "",
-            )
-            .await?;
-            (boundary, None)
-        }
-        SaveAtArg::Property | SaveAtArg::Marker => {
-            let (boundary, firing) = run_save_selector_to_boundary(
-                client,
-                created.session,
-                save_plan,
-                &mut command_id,
-                &mut acknowledged_commands,
-                &mut state_updates,
-            )
-            .await?;
-            (boundary, Some(firing))
-        }
-    };
-
-    let snapshot_response = send_save_workflow_command(
-        client,
-        created.session,
-        &mut command_id,
-        SessionCommand::query_snapshot(),
-        &mut acknowledged_commands,
-        &mut state_updates,
-    )
-    .await?;
-    let snapshot = match snapshot_response.query_result {
-        Some(QueryResult::Snapshot(snapshot)) => *snapshot,
-        Some(other) => {
-            return Err(save_backend_error(format!(
-                "save boundary snapshot returned unexpected query payload: {other:?}"
-            )));
-        }
-        None => {
-            return Err(save_backend_error(
-                "save boundary snapshot returned no query payload",
-            ));
-        }
-    };
-    let savepoint_response = send_save_workflow_command(
-        client,
-        created.session,
-        &mut command_id,
-        SessionCommand::CreateSavepoint {
-            label: save_plan.label.clone(),
-            reply: CommandReply::discard(),
-        },
-        &mut acknowledged_commands,
-        &mut state_updates,
-    )
-    .await?;
-    let savepoint = savepoint_response
-        .savepoint_info
-        .ok_or_else(|| save_backend_error("savepoint command returned no savepoint payload"))?;
-    if savepoint.label != save_plan.label {
-        return Err(CliError::Identity(format!(
-            "savepoint label mismatch: expected `{}`, got `{}`",
-            save_plan.label, savepoint.label
-        )));
-    }
-    let configuration = snapshot.configuration.id();
-    if savepoint.configuration != configuration {
-        return Err(CliError::Identity(format!(
-            "savepoint configuration {} did not match boundary snapshot {}",
-            format_content_hash_ref(savepoint.configuration),
-            format_content_hash_ref(configuration)
-        )));
-    }
-    let oracle = validate_savepoint_checkpoint(
-        save_plan,
-        &snapshot.configuration,
-        &savepoint.checkpoint,
-        boundary.frontier,
-    )?;
-    send_save_workflow_command(
-        client,
-        created.session,
-        &mut command_id,
-        SessionCommand::Stop,
-        &mut acknowledged_commands,
-        &mut state_updates,
-    )
-    .await?;
-    let stopped = client
-        .list_sessions()
-        .await
-        .map_err(control_client_error)?
-        .sessions
-        .into_iter()
-        .find(|summary| summary.session == created.session);
-    if let Some(summary) = &stopped
-        && let Some(terminal) = summary.terminal_savepoint
-        && terminal != oracle.fat_checkpoint
-    {
-        return Err(CliError::Identity(format!(
-            "save terminal checkpoint {} did not match validated checkpoint {}",
-            format_content_hash_ref(terminal),
-            format_content_hash_ref(oracle.fat_checkpoint)
-        )));
-    }
-
-    let final_state = match save_plan.at {
-        SaveAtArg::Quiescence => String::from("quiescent"),
-        SaveAtArg::VirtualTime => String::from("virtual-time"),
-        SaveAtArg::Property => String::from("property"),
-        SaveAtArg::Marker => String::from("marker"),
-    };
-    if state_updates.last() != Some(&final_state) {
-        state_updates.push(final_state.clone());
-    }
-
-    Ok(SaveWorkflowReport {
-        run: RunWorkflowReport {
-            status: BackendCommandStatus::Passed,
-            execution_owner: RunExecutionOwner::Session,
-            campaign_replay_closure: None,
-            created_state: format!("{:?}", created.state).to_ascii_lowercase(),
-            final_state,
-            outcome: Some(OutcomeKind::Passed),
-            terminal_savepoint: Some(oracle.fat_checkpoint),
-            terminal_configuration: Some(snapshot.configuration.clone()),
-            final_frontier_ticks: stopped
-                .as_ref()
-                .map(|summary| summary.frontier.ticks)
-                .unwrap_or(boundary.frontier.ticks)
-                .max(boundary.frontier.ticks),
-            final_quanta: stopped
-                .as_ref()
-                .map(|summary| summary.quanta_stepped)
-                .unwrap_or(boundary.quanta_stepped)
-                .max(boundary.quanta_stepped),
-            budget_timed_out: false,
-            state_updates,
-            streamed_events: Vec::new(),
-            streamed_event_frames: Vec::new(),
-            coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
-            execution_fingerprints: Vec::new(),
-            resolved_effect_trace: None,
-            acknowledged_commands,
-            watch_statuses: Vec::new(),
-        },
-        oracle,
-        boundary_evidence: SaveBoundaryEvidence {
-            at: save_plan.at,
-            selector: save_plan.selector.clone(),
-            frontier_ticks: boundary.frontier.ticks,
-            quanta: boundary.quanta_stepped,
-            proof: breakpoint_firing
-                .map_or(SaveBoundaryProof::Coordinate, SaveBoundaryProof::Breakpoint),
-        },
-    })
 }

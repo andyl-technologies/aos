@@ -298,6 +298,13 @@ fn advanced_feature_schedule_rejects_unwrapped_default_check() {
     assert!(
         failures.iter().any(|failure| {
             failure.task_id == "T-ADV-12"
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAttrPath
+        }),
+        "unwrapped ADV metadata must not borrow a nearby attrPath: {failures:#?}"
+    );
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-12"
                 && failure.kind == AdvancedFeatureScheduleFailureKind::MissingTaskSchedule
                 && failure.prerequisite_task_id.as_deref() == Some("T-ADV-11")
         }),

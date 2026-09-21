@@ -120,7 +120,7 @@
       }
       {
         label = "command-driven step yield test";
-        needle = "session_actor_yields_after_command_driven_step";
+        needle = "session_actor_yields_after_command_driven_accepted_step";
       }
     ]
     ++ failuresFor "crates/crucible-session/Cargo.toml" sessionManifest [

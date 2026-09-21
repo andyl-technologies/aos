@@ -38,8 +38,8 @@
         needle = "Preemption(PreemptionDecision)";
       }
       {
-        label = "app-random decision variant";
-        needle = "AppRandom(AppRandomDecision)";
+        label = "selection decision variant";
+        needle = "Selection(SelectionDecision)";
       }
       {
         label = "schedule type";
@@ -84,8 +84,8 @@
         needle = "Decision::Preemption(preemption)";
       }
       {
-        label = "app-random canonical arm";
-        needle = "Decision::AppRandom(random)";
+        label = "selection canonical arm";
+        needle = "Decision::Selection(selection)";
       }
     ]
     ++ forbiddenFor "crates/crucible/src/model/canonical.rs" canonical [
@@ -215,7 +215,7 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            decisions=DeliveryOrder,RngDraw,Override,Preemption,AppRandom
+            decisions=DeliveryOrder,RngDraw,Override,Preemption,Selection
             fault_outcomes=ResolvedEffectTrace
             schedule_api=prefix,appended
             rng_stream_isolation=unrelated-world-edits

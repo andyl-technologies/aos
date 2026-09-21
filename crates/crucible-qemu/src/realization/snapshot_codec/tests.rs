@@ -21,12 +21,12 @@ fn production_envelope_reports_typed_aggregate_limit() {
 }
 
 #[test]
-fn production_envelope_rejects_pre_policy_version() {
-    let snapshot = snapshot_fixture("old-policy-version");
+fn production_envelope_rejects_an_unsupported_version() {
+    let snapshot = snapshot_fixture("unsupported-version");
     let mut bytes = snapshot
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("encode current snapshot: {error}"));
-    bytes[..MAGIC.len()].copy_from_slice(b"crucible.qemu-vm-snapshot.v2\0");
+    bytes[..MAGIC.len()].copy_from_slice(b"crucible.qemu-vm-snapshot.v?\0");
 
     assert_eq!(
         QemuVmSnapshot::from_canonical_bytes(&bytes),
@@ -56,7 +56,6 @@ fn production_envelope_round_trips_full_network_frame_capacity() {
         &snapshot.checkpoint,
         &snapshot.host_io,
         &snapshot.node,
-        snapshot.replay_oracle_validation,
         snapshot.live_capture,
     )
     .unwrap_or_else(|error| panic!("authenticate full-capacity snapshot: {error}"));
@@ -86,6 +85,6 @@ fn snapshot_fixture(label: &str) -> QemuVmSnapshot {
         BTreeMap::new(),
     )
     .unwrap_or_else(|error| panic!("build canonical checkpoint: {error}"));
-    QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+    QemuVmSnapshot::diskless(checkpoint)
         .unwrap_or_else(|error| panic!("build diskless snapshot: {error}"))
 }

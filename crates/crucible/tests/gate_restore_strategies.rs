@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::BTreeMap;
 use std::error::Error;
 
@@ -16,9 +23,7 @@ use crucible_harness::divergence::{
     DecisionTraceEntry, DivergenceMemoryRegion, DivergenceRegister, DivergenceSide,
     DivergenceStateDump,
 };
-use crucible_harness::fingerprint::{
-    FingerprintSample, FingerprintSampleTrigger, FingerprintStream,
-};
+use crucible_harness::fingerprint::{FingerprintSample, FingerprintStream};
 use crucible_harness::replay_oracle::{
     ReplayOracleCheckpointKind, ReplayOracleDivergenceInputs, ReplayOracleMaterializedCase,
     ReplayOracleSamplingConfig, ReplayOracleSearchBisectionError,
@@ -87,11 +92,11 @@ fn gate_restore_strategies_reject_corrupt_snapshot_restore_and_evict_cache()
     let world = restore_world();
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let parent = valid_step(
-        &valid_step(&genesis, rng_decision("restore/corrupt-a", 31)),
+    let parent = accepted_step!(
+        &accepted_step!(&genesis, rng_decision("restore/corrupt-a", 31)),
         rng_decision("restore/corrupt-b", 32),
     );
-    let target = valid_step(&parent, rng_decision("restore/corrupt-c", 33));
+    let target = accepted_step!(&parent, rng_decision("restore/corrupt-c", 33));
     let baked = bake(&world)?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let corrupt = corrupt_loadable_checkpoint(&restore_node(), &parent, &target)?;
@@ -178,9 +183,9 @@ fn restore_node() -> NodeId {
 }
 
 fn restore_target(genesis: &Configuration) -> Configuration {
-    valid_step(
-        &valid_step(
-            &valid_step(genesis, rng_decision("restore/seed-a", 11)),
+    accepted_step!(
+        &accepted_step!(
+            &accepted_step!(genesis, rng_decision("restore/seed-a", 11)),
             rng_decision("restore/seed-b", 12),
         ),
         rng_decision("restore/seed-c", 13),
@@ -356,7 +361,6 @@ fn restore_sample(seq: u64, icount: u64, rolling_fingerprint: &[u8]) -> Fingerpr
         seq,
         node: String::from("restore-a"),
         icount,
-        trigger: FingerprintSampleTrigger::Periodic,
         rolling_fingerprint: rolling_fingerprint.to_vec(),
     }
 }
@@ -383,15 +387,8 @@ fn corrupt_loadable_checkpoint(
             node.clone(),
             NodeBlobRef::baked(ContentHash::from_canonical_material(
                 "crucible.test.restore-strategies.corrupt-snapshot",
-                "wrong-loadvm-payload",
+                "wrong-restore-payload",
             )),
         )]),
     )
-}
-
-fn valid_step(
-    configuration: &crucible::Configuration,
-    decision: crucible::Decision,
-) -> crucible::Configuration {
-    crucible::try_step(configuration, decision).expect("test configuration step")
 }

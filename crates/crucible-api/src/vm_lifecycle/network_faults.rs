@@ -586,29 +586,6 @@ fn validate_network_adapter_checkpoint(
     checkpoint.effect_state.boundary.validate_bounds()
 }
 
-#[derive(Clone, Debug)]
-// crucible-lint: allow rust-allow -- the complete transition record is retained for deterministic fault diagnostics.
-#[allow(
-    dead_code,
-    reason = "the complete transition record is retained for deterministic fault diagnostics"
-)]
-struct NetworkAvailabilityTransitionRecord {
-    action: ContentHash,
-    binding: FaultObjectId,
-    target: crucible::model::ResolvedFaultTarget,
-    phase: FaultPhase,
-    transition_sequence: u64,
-    old_state: NetworkAvailabilityState,
-    state: NetworkAvailabilityState,
-    queued_policy: NetworkInFlightPolicy,
-    in_flight_policy: NetworkInFlightPolicy,
-    source: crucible::NodeId,
-    destination: crucible::NodeId,
-    in_flight: crucible::NetworkInFlightDropEvidence,
-    queued: Vec<crucible::BackendNetworkOutput>,
-    evidence: ContentHash,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 struct NetworkEffectStateKey {
     binding: FaultObjectId,
@@ -1373,6 +1350,7 @@ impl ProductionFaultEvaluationCursor {
 pub(super) type SharedProductionFaultEvaluationCursor = Arc<Mutex<ProductionFaultEvaluationCursor>>;
 
 /// Owns the production signal continuation at the pre-routing network seam.
+#[derive(Clone)]
 pub(super) struct ProductionFaultNetworkInterceptor {
     runtime: Arc<Mutex<ProductionFaultRuntime>>,
     cursor: SharedProductionFaultEvaluationCursor,
@@ -1380,7 +1358,6 @@ pub(super) struct ProductionFaultNetworkInterceptor {
     resource_limits: FaultResourceLimits,
     topology: crucible::model::WorldFaultTopology,
     links: Vec<crucible::LinkDef>,
-    transition_ledger: BTreeMap<ContentHash, NetworkAvailabilityTransitionRecord>,
     effect_state: NetworkEffectRuntimeState,
 }
 
@@ -1464,7 +1441,6 @@ impl ProductionFaultNetworkInterceptor {
             resource_limits,
             topology,
             links,
-            transition_ledger: BTreeMap::new(),
             effect_state: NetworkEffectRuntimeState::default(),
         }
     }
@@ -1487,7 +1463,7 @@ impl ProductionFaultNetworkInterceptor {
         scenario_seed: ContentHash,
         checkpoint: ProductionFaultRuntimeCheckpoint,
         host_manifests: crucible::model::HostFaultAdapterManifests,
-        nodes: &mut ProductionNodeSet,
+        nodes: &mut QemuNodeSet,
         topology: crucible::model::WorldFaultTopology,
         links: Vec<crucible::LinkDef>,
         scheduler: &mut SingleScheduler,
@@ -1547,7 +1523,6 @@ impl ProductionFaultNetworkInterceptor {
             resource_limits,
             topology,
             links,
-            transition_ledger: BTreeMap::new(),
             effect_state: staged.adapter.effect_state,
         };
         *scheduler = staged.scheduler;
@@ -1566,7 +1541,7 @@ impl ProductionFaultNetworkInterceptor {
         scheduler: &SingleScheduler,
         committed_frontier: VirtualTime,
         pending_outputs: &[crucible::BackendNetworkOutput],
-        backend: &mut ProductionNodeSet,
+        backend: &mut QemuNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, SchedulerError> {
         let cursor_guard = self
             .cursor
@@ -1643,7 +1618,7 @@ impl ProductionFaultNetworkInterceptor {
         &mut self,
         coordinate: FaultCoordinate,
         scheduler: &mut SingleScheduler,
-        backend: &mut ProductionNodeSet,
+        backend: &mut QemuNodeSet,
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         self.evaluate_boundary_with_event_reservation(
@@ -1659,7 +1634,7 @@ impl ProductionFaultNetworkInterceptor {
         &mut self,
         coordinate: FaultCoordinate,
         scheduler: &mut SingleScheduler,
-        backend: &mut ProductionNodeSet,
+        backend: &mut QemuNodeSet,
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
         reserved_event_usage: (u64, u64),
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
@@ -2026,7 +2001,7 @@ impl ProductionFaultNetworkInterceptor {
                     });
                 }
             }
-            let (observations, records) = self.stage_availability_transition_drops(
+            let observations = self.stage_availability_transition_drops(
                 coordinate,
                 &network_actions,
                 &host_before,
@@ -2138,9 +2113,9 @@ impl ProductionFaultNetworkInterceptor {
                     return Err(error);
                 }
             };
-            Ok((append, records))
+            Ok(append)
         })();
-        let (append, records) = match staged {
+        let append = match staged {
             Ok(staged) => staged,
             Err(error) => {
                 runtime.poison();
@@ -2150,9 +2125,6 @@ impl ProductionFaultNetworkInterceptor {
         *scheduler = staged_scheduler;
         *pending_outputs = staged_pending;
         self.effect_state = staged_effect_state;
-        for record in records {
-            self.transition_ledger.insert(record.action, record);
-        }
         Ok(append)
     }
 
@@ -2164,13 +2136,7 @@ impl ProductionFaultNetworkInterceptor {
         scheduler: &mut SingleScheduler,
         queued_outputs: &mut Vec<crucible::BackendNetworkOutput>,
         ready_outputs: Option<&mut Vec<crucible::BackendNetworkOutput>>,
-    ) -> Result<
-        (
-            Vec<FaultObservation>,
-            Vec<NetworkAvailabilityTransitionRecord>,
-        ),
-        SchedulerError,
-    > {
+    ) -> Result<Vec<FaultObservation>, SchedulerError> {
         let transitions = actions
             .iter()
             .filter(|action| action.kind == BindingActionKind::UpsertPersistent)
@@ -2185,7 +2151,7 @@ impl ProductionFaultNetworkInterceptor {
             })
             .collect::<Vec<_>>();
         if transitions.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(Vec::new());
         }
 
         let mut blockers =
@@ -2237,7 +2203,6 @@ impl ProductionFaultNetworkInterceptor {
         }
 
         let mut observations = Vec::new();
-        let mut records = Vec::new();
         for ((source, destination), route_blockers) in blockers {
             let destructive_in_flight = route_blockers.iter().any(|action| {
                 let EffectSpecification::Network(NetworkEffectSpecification::Availability {
@@ -2319,25 +2284,9 @@ impl ProductionFaultNetworkInterceptor {
                         evidence,
                     });
                 }
-                records.push(NetworkAvailabilityTransitionRecord {
-                    action: action.committed_state_id(),
-                    binding: action.binding.clone(),
-                    target: action.target.clone(),
-                    phase: action.phase,
-                    transition_sequence: action.transition_sequence,
-                    old_state,
-                    state: *state,
-                    queued_policy: *queued_policy,
-                    in_flight_policy: *in_flight_policy,
-                    source: source.clone(),
-                    destination: destination.clone(),
-                    in_flight: in_flight.clone(),
-                    queued: queued.clone(),
-                    evidence,
-                });
             }
         }
-        Ok((observations, records))
+        Ok(observations)
     }
 }
 
@@ -2625,19 +2574,11 @@ fn replace_control_result(
                 ));
             }
             let inputs = bytes
-                .chunks_exact(8)
-                .map(|chunk| {
-                    let encoded: [u8; 8] = chunk.try_into().map_err(|_error| {
-                        network_effect_application_error(
-                            transform,
-                            "replacement association input width is invalid",
-                        )
-                    })?;
-                    Ok(crucible::model::SignalValue::I64(i64::from_be_bytes(
-                        encoded,
-                    )))
-                })
-                .collect::<Result<Vec<_>, SchedulerError>>()?;
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|encoded| crucible::model::SignalValue::I64(i64::from_be_bytes(*encoded)))
+                .collect::<Vec<_>>();
             let mut mapping = event.action.mapping_output.as_ref().clone();
             match &mut mapping {
                 crucible::model::ResolvedMappingOutput::Parameter { value, .. }

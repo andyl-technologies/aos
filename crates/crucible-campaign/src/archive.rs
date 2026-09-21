@@ -392,35 +392,35 @@ pub struct CampaignArchiveManifest {
     omitted_digest: CampaignHash,
 }
 
+pub(crate) struct CampaignArchiveManifestBasis<'a> {
+    pub(crate) source_snapshot: CampaignSnapshotId,
+    pub(crate) policy: CampaignArchivePolicy,
+    pub(crate) checkpoint_selections: Vec<CampaignArchiveCheckpointSelection>,
+    pub(crate) retained_roots: Vec<ContentId>,
+    pub(crate) selected_pages: Vec<CampaignArchiveInventoryPageId>,
+    pub(crate) omitted_pages: Vec<CampaignArchiveInventoryPageId>,
+    pub(crate) selected: &'a [ArchiveObjectEntry],
+    pub(crate) omitted: &'a [ArchiveObjectEntry],
+}
+
 impl CampaignArchiveManifest {
-    // crucible-lint: allow rust-allow -- manifest construction names every independently authenticated archive field.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        source_snapshot: CampaignSnapshotId,
-        policy: CampaignArchivePolicy,
-        checkpoint_selections: Vec<CampaignArchiveCheckpointSelection>,
-        retained_roots: Vec<ContentId>,
-        selected_pages: Vec<CampaignArchiveInventoryPageId>,
-        omitted_pages: Vec<CampaignArchiveInventoryPageId>,
-        selected: &[ArchiveObjectEntry],
-        omitted: &[ArchiveObjectEntry],
-    ) -> Result<Self, CampaignCodecError> {
-        let selected_count = u64::try_from(selected.len())
+    pub(crate) fn new(basis: CampaignArchiveManifestBasis<'_>) -> Result<Self, CampaignCodecError> {
+        let selected_count = u64::try_from(basis.selected.len())
             .map_err(|_| invalid("archive selected count is unrepresentable"))?;
-        let omitted_count = u64::try_from(omitted.len())
+        let omitted_count = u64::try_from(basis.omitted.len())
             .map_err(|_| invalid("archive omitted count is unrepresentable"))?;
         let manifest = Self {
             schema_version: ARCHIVE_SCHEMA_VERSION,
-            source_snapshot,
-            policy,
-            checkpoint_selections,
-            retained_roots,
-            selected_pages,
-            omitted_pages,
+            source_snapshot: basis.source_snapshot,
+            policy: basis.policy,
+            checkpoint_selections: basis.checkpoint_selections,
+            retained_roots: basis.retained_roots,
+            selected_pages: basis.selected_pages,
+            omitted_pages: basis.omitted_pages,
             selected_count,
             omitted_count,
-            selected_digest: inventory_digest(selected),
-            omitted_digest: inventory_digest(omitted),
+            selected_digest: inventory_digest(basis.selected),
+            omitted_digest: inventory_digest(basis.omitted),
         };
         manifest.validate()?;
         Ok(manifest)
@@ -773,7 +773,7 @@ impl CampaignArchivePlan {
 }
 
 /// Result of one idempotent missing-object archive transfer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CampaignArchiveTransferReport {
     /// Objects copied during this call.
     pub copied_objects: u64,
@@ -781,6 +781,30 @@ pub struct CampaignArchiveTransferReport {
     pub existing_objects: u64,
     /// Logical bytes copied during this call.
     pub copied_bytes: u64,
+    /// Lowest distinct durable-placement count authenticated for any object.
+    pub minimum_observed_durable_placements: u16,
+}
+
+impl CampaignArchiveTransferReport {
+    pub(crate) const fn new() -> Self {
+        Self {
+            copied_objects: 0,
+            existing_objects: 0,
+            copied_bytes: 0,
+            minimum_observed_durable_placements: u16::MAX,
+        }
+    }
+
+    pub(crate) fn observe_durable_placements(
+        &mut self,
+        placements: usize,
+    ) -> Result<(), CampaignCodecError> {
+        let placements = u16::try_from(placements)
+            .map_err(|_| invalid("archive durable-placement count is unrepresentable"))?;
+        self.minimum_observed_durable_placements =
+            self.minimum_observed_durable_placements.min(placements);
+        Ok(())
+    }
 }
 
 pub(crate) fn inventory_digest(entries: &[ArchiveObjectEntry]) -> CampaignHash {

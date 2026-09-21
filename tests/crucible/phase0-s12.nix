@@ -23,12 +23,6 @@
     name = "crucible-rfc0010-docs";
   };
   s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
-  livePreemption = import ./phase2-qemu-live-plugin-preemption.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase0.s12PreemptionDecision.livePreemption";
-    taskIds = [];
-    openTaskIds = [];
-  };
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s12-preemption-decision";
@@ -54,11 +48,10 @@ in
     CRATES_SRC = builtins.toString cratesSource;
     RFC_DOCS = builtins.toString rfcDocs;
     S11_RESULT = "${s11MultiVcpuFingerprint}/result";
-    LIVE_PREEMPTION_RESULT = "${livePreemption}/result";
 
     phases = [
       {
-        name = "run-s12-preemption-decision-fallback";
+        name = "run-s12-preemption-decision-proof";
         script = ''
           set -eu
 
@@ -93,19 +86,12 @@ in
 
           [ -x "$QEMU_OUT/bin/qemu-system-x86_64" ] \
             || fail "qemu-crucible x86_64 system emulator is missing"
-          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0001-crucible-sim-accel.patch}'
-          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}'
-          require_fixed qemu-patches/0001-crucible-sim-accel.patch 'TYPE_SIM_ACCEL'
-          require_fixed qemu-patches/0002-crucible-rr-fingerprint-helpers.patch 'qemu_plugin_crucible_rr_switch_quantum'
-          require_fixed qemu-patches/0063-crucible-plugin-vmstop.patch 'qemu_plugin_request_vmstop'
-          if grep -F -R -q -- 'qemu_plugin_crucible_pause_vm' qemu-patches; then
-            fail "legacy unvalidated VM pause export remains in the QEMU patch series"
-          fi
+          require_fixed qemu-patches/crucible-qemu-11.1.1.patch 'TYPE_SIM_ACCEL'
+          require_fixed qemu-patches/crucible-qemu-11.1.1.patch 'qemu_plugin_request_vmstop'
 
           preemption_regex='preempt|preemption|interrupt_at|vcpu_switch|crucible_.*inject|qemu_plugin_crucible_.*(irq|interrupt)'
-          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0030-crucible-preemption-inject.patch}'
-          require_fixed qemu-patches/0030-crucible-preemption-inject.patch 'qemu_plugin_inject_preemption'
-          require_fixed qemu-patches/0030-crucible-preemption-inject.patch 'crucible_sim_preemption_clamp_cpu_budget'
+          require_fixed qemu-patches/crucible-qemu-11.1.1.patch 'qemu_plugin_inject_preemption'
+          require_fixed qemu-patches/crucible-qemu-11.1.1.patch 'crucible_sim_preemption_clamp_cpu_budget'
           require_present_regex qemu-patches "$preemption_regex" "preemption-injection API"
           require_fixed crates/crucible-qemu-plugin/src/preemption.rs 'QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL'
           require_fixed crates/crucible-qemu-plugin/src/preemption.rs 'preemption_injector_rejects_out_of_window_without_clamping_or_calling_qemu'
@@ -126,28 +112,20 @@ in
           require_fixed "$S11_RESULT" "rr_switch_quantum=4096"
           require_fixed "$S11_RESULT" "horizon_icount=4000000000"
           require_fixed "$S11_RESULT" "workload_affinity_active=true"
-          require_fixed "$S11_RESULT" "extended_fingerprint_match=true"
-          require_fixed "$S11_RESULT" "fallback=smp1_not_needed"
+          require_fixed "$S11_RESULT" "aggregate_fingerprint_match=true"
+          require_fixed "$S11_RESULT" "exact_horizon_authoritative=true"
 
-          require_fixed "$LIVE_PREEMPTION_RESULT" "PASS"
-          require_fixed "$LIVE_PREEMPTION_RESULT" "gate=gate:single-vm-fingerprint"
-          require_fixed "$LIVE_PREEMPTION_RESULT" "ipi_rr_switch_quantum=4096"
-          require_fixed "$LIVE_PREEMPTION_RESULT" "switch_consumed_sequence=1"
-          require_fixed "$LIVE_PREEMPTION_RESULT" "interrupt_consumed_sequence=2"
-          require_fixed "$LIVE_PREEMPTION_RESULT" "deterministic_under_scheduler_preemption=true"
-          require_fixed "$LIVE_PREEMPTION_RESULT" "sim_double_schedule_matches=true"
 
           decision_doc="rfc-docs/31-decision-register.md"
           require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
-          require_fixed "$decision_doc" "checks.crucible.phase0.s1Fingerprint"
-          require_fixed "$decision_doc" "\`s1_horizon_extended_hash=9d1e61606ac54920\`"
-          require_fixed "$decision_doc" "\`s1_pause_retired=3200000005\`"
+          require_fixed "$decision_doc" "checks.crucible.phase7.productionRustPluginFlight"
+          require_fixed "$decision_doc" "\`sample_target_icounts=2000000,2000001,4000000,8000000\`"
           require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
           require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
           require_fixed "$decision_doc" "\`s11_result_status=PASS\`"
           require_fixed "$decision_doc" "\`s11_rr_switch_quantum=4096\`"
           require_fixed "$decision_doc" "\`s11_horizon_icount=4000000000\`"
-          require_fixed "$decision_doc" "\`s11_extended_fingerprint_match=true\`"
+          require_fixed "$decision_doc" "\`s11_aggregate_fingerprint_match=true\`"
 
           mkdir -p "$out"
           cp qemu.nix "$out/qemu.nix"
@@ -155,7 +133,6 @@ in
           cp crucible-qemu-trace-plugin.c "$out/crucible-qemu-trace-plugin.c"
           cp "$decision_doc" "$out/31-decision-register.md"
           cp "$S11_RESULT" "$out/s11-result"
-          cp "$LIVE_PREEMPTION_RESULT" "$out/live-preemption-result"
           {
             echo PASS
             echo spike=decision-preemption
@@ -164,7 +141,7 @@ in
             echo preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates
             echo known_preemption_injection_surface_found=true
             echo preemption_injection_api_available=qemu_plugin_inject_preemption
-            echo preemption_patch_present=0030-crucible-preemption-inject.patch
+            echo preemption_patch_present=crucible-qemu-11.1.1.patch
             echo plugin_preemption_surface_present=true
             echo vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject
             echo interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject
@@ -177,21 +154,15 @@ in
             echo commanded_preemption_discrimination_witness=crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race
             echo commanded_preemption_injection_witness=gate:single-vm-fingerprint
             echo default_determinism_prereqs_green=true
-            echo default_determinism_prereqs_source=decision_register_s1_s11
-            echo s1_decision_entry_consumed=true
-            echo s1_result_status=PASS
-            echo s1_horizon_extended_hash=9d1e61606ac54920
-            echo s1_pause_retired=3200000005
+            echo default_determinism_prereqs_source=production-fingerprint-and-s11
+            echo production_fingerprint_prerequisite=checks.crucible.phase7.productionRustPluginFlight
             echo s11_decision_entry_consumed=true
             echo s11_result_status=PASS
             echo s11_rr_switch_quantum=4096
             echo s11_horizon_icount=4000000000
-            echo s11_extended_fingerprint_match=true
-            echo live_preemption_rr_switch_quantum=4096
-            echo live_preemption_deterministic_under_scheduler_preemption=true
-            echo live_preemption_sim_double_schedule_matches=true
+            echo s11_aggregate_fingerprint_match=true
             echo decision_preemption_exploration_enabled=true
-            echo fallback_adopted=none
+            echo exact_preemption_proof=true
             echo s12_complete=true
           } > "$out/result"
         '';

@@ -249,14 +249,14 @@ fn capture_request_owns_no_semantic_admission_budget_or_configuration_pin() {
     );
     let request_fact = CampaignFact::SavepointCaptureRequested(request.clone());
     let request_bytes = request_fact.canonical_bytes();
-    assert_eq!(&request_bytes[..4], &11_u32.to_be_bytes());
+    assert_eq!(&request_bytes[..4], &14_u32.to_be_bytes());
     assert_eq!(
-        CampaignFact::from_canonical_bytes(&request_bytes).expect("decode v11 capture request"),
+        CampaignFact::from_canonical_bytes(&request_bytes).expect("decode capture request"),
         request_fact
     );
-    let mut request_as_v12 = request_bytes;
-    request_as_v12[..4].copy_from_slice(&12_u32.to_be_bytes());
-    assert!(CampaignFact::from_canonical_bytes(&request_as_v12).is_err());
+    let mut request_with_wrong_version = request_bytes;
+    request_with_wrong_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(CampaignFact::from_canonical_bytes(&request_with_wrong_version).is_err());
 
     let accepted = repository
         .request_savepoint_capture("savepoint-atomic", &request)
@@ -371,16 +371,22 @@ fn capture_scope_rejects_changed_fact_basis_and_wrong_fact_kind() {
         b"wrong configuration",
     ))
     .expect("configuration ID");
-    let mismatched = SubmitAttemptRequest::new_savepoint_capture(
+    let mismatched = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0xb1; 16]).expect("assignment"),
         DaemonEpoch::from_bytes([0xb2; 16]).expect("daemon epoch"),
         lineage.id().expect("lineage ID"),
         accepted.attempt,
         resources(),
         ExecutionRetentionIntent::RetainAlways,
-        accepted.request,
-        wrong_configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            accepted.request,
+            wrong_configuration,
+        )
+    })
     .expect("mismatched scoped assignment");
     assert!(matches!(
         repository.validate_executor_execution_scope_with_profile(&mismatched, &profile),
@@ -394,16 +400,22 @@ fn capture_scope_rejects_changed_fact_basis_and_wrong_fact_kind() {
             BudgetGrant::new(1, 1).expect("budget grant"),
         ))
         .expect("publish wrong fact kind");
-    let forged = SubmitAttemptRequest::new_savepoint_capture(
+    let forged = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0xb3; 16]).expect("assignment"),
         DaemonEpoch::from_bytes([0xb2; 16]).expect("daemon epoch"),
         lineage.id().expect("lineage ID"),
         accepted.attempt,
         resources(),
         ExecutionRetentionIntent::RetainAlways,
-        CampaignFactId::from_content_id(wrong_fact).expect("fact ID"),
-        accepted.configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            CampaignFactId::from_content_id(wrong_fact).expect("fact ID"),
+            accepted.configuration,
+        )
+    })
     .expect("wrong-fact scoped assignment");
     assert!(matches!(
         repository.validate_executor_execution_scope_with_profile(&forged, &profile),
@@ -435,16 +447,22 @@ fn capture_scope_rejects_changed_fact_basis_and_wrong_fact_kind() {
     let orphan_content = repository
         .put_fact(&CampaignFact::SavepointCaptureRequested(orphan))
         .expect("publish orphan capture fact");
-    let orphan_assignment = SubmitAttemptRequest::new_savepoint_capture(
+    let orphan_assignment = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0xb7; 16]).expect("assignment"),
         DaemonEpoch::from_bytes([0xb8; 16]).expect("daemon epoch"),
         lineage.id().expect("lineage ID"),
         accepted.attempt,
         resources(),
         ExecutionRetentionIntent::RetainAlways,
-        CampaignFactId::from_content_id(orphan_content).expect("orphan fact ID"),
-        accepted.configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            CampaignFactId::from_content_id(orphan_content).expect("orphan fact ID"),
+            accepted.configuration,
+        )
+    })
     .expect("orphan scoped assignment");
     assert!(matches!(
         repository.validate_executor_execution_scope_with_profile(&orphan_assignment, &profile),
@@ -687,15 +705,14 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
     };
     let resolution_fact = CampaignFact::SavepointCaptureResolved(resolution.clone());
     let resolution_bytes = resolution_fact.canonical_bytes();
-    assert_eq!(&resolution_bytes[..4], &12_u32.to_be_bytes());
+    assert_eq!(&resolution_bytes[..4], &14_u32.to_be_bytes());
     assert_eq!(
-        CampaignFact::from_canonical_bytes(&resolution_bytes)
-            .expect("decode v12 capture resolution"),
+        CampaignFact::from_canonical_bytes(&resolution_bytes).expect("decode capture resolution"),
         resolution_fact
     );
-    let mut resolution_as_v11 = resolution_bytes;
-    resolution_as_v11[..4].copy_from_slice(&11_u32.to_be_bytes());
-    assert!(CampaignFact::from_canonical_bytes(&resolution_as_v11).is_err());
+    let mut resolution_with_wrong_version = resolution_bytes;
+    resolution_with_wrong_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(CampaignFact::from_canonical_bytes(&resolution_with_wrong_version).is_err());
     let resolved = repository
         .resolve_savepoint_capture("savepoint-coexist", &resolution, &assignment, &status)
         .expect("resolve paused capture");
@@ -776,7 +793,7 @@ fn selected_continuation_identity_deduplicates_distinct_capture_causes() {
         StopCondition::ExecutionQuanta(200),
     )
     .expect("semantic continuation");
-    assert_eq!(&continuation.canonical_bytes()[..4], &3_u32.to_be_bytes());
+    assert_eq!(&continuation.canonical_bytes()[..4], &8_u32.to_be_bytes());
 
     let first_selection = SavepointContinuationSelection {
         command: CampaignCommandId::from_hash(CampaignHash::derive(
@@ -793,11 +810,11 @@ fn selected_continuation_identity_deduplicates_distinct_capture_causes() {
     let selection_fact = CampaignFact::SavepointContinuationSelected(first_selection.clone());
     assert_eq!(
         &selection_fact.canonical_bytes()[..4],
-        &13_u32.to_be_bytes()
+        &14_u32.to_be_bytes()
     );
     assert_eq!(
         CampaignFact::from_canonical_bytes(&selection_fact.canonical_bytes())
-            .expect("decode v13 selection"),
+            .expect("decode selection"),
         selection_fact
     );
 
@@ -1956,16 +1973,22 @@ fn scoped_assignment(
     assignment: [u8; 16],
     epoch: [u8; 16],
 ) -> SubmitAttemptRequest {
-    SubmitAttemptRequest::new_savepoint_capture(
+    SubmitAttemptRequest::new(
         AssignmentId::from_bytes(assignment).expect("assignment"),
         DaemonEpoch::from_bytes(epoch).expect("daemon epoch"),
         lineage.id().expect("lineage ID"),
         accepted.attempt,
         resources(),
         ExecutionRetentionIntent::RetainAlways,
-        accepted.request,
-        accepted.configuration,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
     )
+    .and_then(|assignment| {
+        SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            accepted.request,
+            accepted.configuration,
+        )
+    })
     .expect("scoped capture assignment")
 }
 
@@ -1976,7 +1999,7 @@ fn resources() -> AttemptResourceLimits {
 fn exact_checkpoint(label: &str) -> ExactCheckpointId {
     ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        2,
+        4,
         label.as_bytes(),
     ))
     .expect("exact checkpoint")

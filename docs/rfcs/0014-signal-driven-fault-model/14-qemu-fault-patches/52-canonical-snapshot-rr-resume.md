@@ -1,8 +1,8 @@
-# 0101 - Canonical snapshot RR resume
+# Capability task 0101 — Canonical snapshot RR resume
 
 ## Purpose
 
-Patch `0101` makes source execution resume from the same serialized RR
+Capability task `0101` makes source execution resume from the same serialized RR
 coordinate that a fresh process selects after loading the snapshot. Snapshot
 creation drains and resumes QEMU internally; without an explicit one-shot
 selection, the source RR loop can replace the serialized owner with its local
@@ -18,7 +18,7 @@ execution remain unchanged.
 
 ## Files and license scope
 
-The patch modifies GPL-side `accel/tcg/icount-common.c`,
+The atomic patch modifies GPL-side `accel/tcg/icount-common.c`,
 `include/system/cpu-timers.h`, and `migration/savevm.c`. It changes no
 shared-memory or control wire format and adds no QEMU file.
 
@@ -27,8 +27,8 @@ shared-memory or control wire format and adds no QEMU file.
 1. Exact snapshot source continuation and both fresh-process restores must
    converge at the same canonical RR coordinate and guest-state fingerprint.
 2. A nonzero intra-turn cursor must survive snapshot creation on the source.
-3. Patch-prefix provenance, regeneration, ABI, and license-boundary gates must
-   pass.
+3. Atomic-patch source attribution, regeneration, pristine-QEMU negative, ABI,
+   and license-boundary gates must pass.
 
 - **[QFP-SNAPSHOT-RR-1]** Successful snapshot creation MUST preserve the
   serialized RR owner and intra-turn cursor used by fresh-process restore.

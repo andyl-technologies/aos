@@ -7,96 +7,11 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    /// Durably reserves the exact observation as an in-progress publication root.
-    ///
-    /// The operational ledger entry is established before immutable candidate
-    /// bytes are written. GC therefore treats the observation closure as an
-    /// in-progress root even across a daemon crash. The execution-model worker
-    /// is considered physically stopped when this actor method is called.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalExecutorError`] for an invalid execution token, ledger
-    /// failure, or a conflicting observation.
-    pub fn stage_observation_publication(
-        &mut self,
-        queued: &QueuedAttempt,
-        observation: ObservationId,
-    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
-        self.stage_observation_publication_with_candidate(
-            queued,
-            observation,
-            None,
-            None,
-            [None; 3],
-            None,
-        )
-    }
-
-    /// Durably reserves an observation and finding candidate before publication.
-    ///
-    /// Both deterministic identities enter the same assignment-ledger state
-    /// transition. The caller must compute and preflight them without writes,
-    /// invoke this method, and only then publish either immutable closure. A
-    /// crash therefore leaves the exact missing or complete candidate root for
-    /// bounded restart recovery, while destructive GC fails closed on an
-    /// incomplete closure.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalExecutorError`] for an invalid execution token, ledger
-    /// failure, or a conflicting observation or finding candidate.
-    pub fn stage_observation_and_finding_candidate_publication(
-        &mut self,
-        queued: &QueuedAttempt,
-        observation: ObservationId,
-        finding_candidate: crucible_campaign::FindingCandidateBundleId,
-    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
-        self.stage_observation_publication_with_candidate(
-            queued,
-            observation,
-            Some(finding_candidate),
-            None,
-            [None; 3],
-            None,
-        )
-    }
-
-    /// Durably reserves an observation, candidate, and portable capture roots.
-    ///
-    /// The caller holds repository GC exclusion across capture-object writes
-    /// and the prepared-result journal commit. A successful state becomes the
-    /// operational root before the guard is released.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalExecutorError`] for an invalid execution token, ledger
-    /// failure, or a conflicting publication identity.
-    pub fn stage_observation_finding_and_replay_capture_publication(
-        &mut self,
-        queued: &QueuedAttempt,
-        observation: ObservationId,
-        finding_candidate: crucible_campaign::FindingCandidateBundleId,
-        finding_replay_captures: crucible_campaign::FindingReplayCaptureSet,
-    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
-        self.stage_observation_publication_with_candidate(
-            queued,
-            observation,
-            Some(finding_candidate),
-            Some(finding_replay_captures),
-            [None; 3],
-            None,
-        )
-    }
-
-    pub(crate) fn stage_observation_publication_with_candidate(
+    pub(super) fn stage_observation_publication(
         &mut self,
         queued: &QueuedAttempt,
         observation: ObservationId,
         finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
-        finding_replay_captures: Option<crucible_campaign::FindingReplayCaptureSet>,
-        finding_exact_retention_roots: [Option<ExactCheckpointId>; 3],
-        prepared_result_digest: Option<crucible_campaign::CampaignHash>,
     ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
         self.validate_pending_basis(queued)?;
         self.mark_worker_finished(queued.execution);
@@ -131,9 +46,6 @@ where
                     execution,
                     observation,
                     finding_candidate,
-                    finding_replay_captures,
-                    finding_exact_retention_roots,
-                    prepared_result_digest,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -148,29 +60,11 @@ where
                 execution: current_execution,
                 observation: current_observation,
                 finding_candidate: current_candidate,
-                finding_replay_captures: current_captures,
-                finding_exact_retention_roots: current_exact_roots,
-                prepared_result_digest: current_prepared_digest,
                 ..
             } if current_execution == queued.execution
                 && current_observation == observation
-                && (finding_candidate.is_none()
-                    || current_candidate.is_none()
-                    || current_candidate == finding_candidate)
-                && (finding_replay_captures.is_none()
-                    || current_captures.is_none()
-                    || current_captures == finding_replay_captures)
-                && (finding_exact_retention_roots == [None; 3]
-                    || current_exact_roots == [None; 3]
-                    || current_exact_roots == finding_exact_retention_roots)
-                && (prepared_result_digest.is_none()
-                    || current_prepared_digest.is_none()
-                    || current_prepared_digest == prepared_result_digest)
-                && ((current_candidate.is_none() && finding_candidate.is_some())
-                    || (current_captures.is_none() && finding_replay_captures.is_some())
-                    || (current_exact_roots == [None; 3]
-                        && finding_exact_retention_roots != [None; 3])
-                    || (current_prepared_digest.is_none() && prepared_result_digest.is_some())) =>
+                && current_candidate.is_none()
+                && finding_candidate.is_some() =>
             {
                 let next = AttemptRuntimeState::Publishing {
                     execution_basis,
@@ -178,14 +72,7 @@ where
                     daemon_epoch,
                     execution: current_execution,
                     observation,
-                    finding_candidate: finding_candidate.or(current_candidate),
-                    finding_replay_captures: finding_replay_captures.or(current_captures),
-                    finding_exact_retention_roots: if finding_exact_retention_roots == [None; 3] {
-                        current_exact_roots
-                    } else {
-                        finding_exact_retention_roots
-                    },
-                    prepared_result_digest: prepared_result_digest.or(current_prepared_digest),
+                    finding_candidate,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -197,19 +84,10 @@ where
                 execution: current_execution,
                 observation: current_observation,
                 finding_candidate: current_candidate,
-                finding_replay_captures: current_captures,
-                finding_exact_retention_roots: current_exact_roots,
-                prepared_result_digest: current_prepared_digest,
                 ..
             } if current_execution == queued.execution
                 && current_observation == observation
-                && (finding_candidate.is_none() || current_candidate == finding_candidate)
-                && (finding_replay_captures.is_none()
-                    || current_captures == finding_replay_captures)
-                && (finding_exact_retention_roots == [None; 3]
-                    || current_exact_roots == finding_exact_retention_roots)
-                && (prepared_result_digest.is_none()
-                    || current_prepared_digest == prepared_result_digest) =>
+                && (finding_candidate.is_none() || current_candidate == finding_candidate) =>
             {
                 Ok(ObservationPublicationOutcome::AlreadyStaged)
             }
@@ -304,7 +182,7 @@ where
     /// Returns [`LocalExecutorError::ConflictingCompletion`] when the current
     /// execution retains a different observation or finding candidate. Other
     /// ledger and semantic validation failures are returned unchanged.
-    pub fn stage_and_reconcile_completion_with_finding_candidate(
+    pub(crate) fn stage_and_reconcile_completion_with_finding_candidate(
         &mut self,
         queued: &QueuedAttempt,
         observation: ObservationId,
@@ -490,6 +368,65 @@ where
                 }
                 Err(error)
             }
+        }
+    }
+}
+
+/// Establishes the durable publication root with a short supervisor CAS.
+///
+/// # Errors
+///
+/// Returns [`LocalExecutorError`] for stale, conflicting, or unavailable
+/// operational ledger state.
+pub fn stage_prepared_attempt_result<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    prepared: PreparedAttemptResult,
+) -> Result<AttemptResultStageOutcome, AttemptResultStagingError<LocalExecutorError<L::Error>>>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let observation = prepared.observation();
+    let stage_result = supervisor.stage_observation_publication(
+        prepared.queued(),
+        observation,
+        prepared.finding_candidate(),
+    );
+    let stage = match stage_result {
+        Ok(stage) => stage,
+        Err(source) => {
+            return Err(AttemptResultStagingError {
+                prepared: Box::new(prepared),
+                source,
+            });
+        }
+    };
+    match stage {
+        ObservationPublicationOutcome::Staged | ObservationPublicationOutcome::AlreadyStaged => Ok(
+            AttemptResultStageOutcome::Publish(Box::new(StagedAttemptResult::new(prepared))),
+        ),
+        ObservationPublicationOutcome::Canceled => Ok(AttemptResultStageOutcome::Finished {
+            prepared: Box::new(prepared),
+            outcome: AttemptWorkerReconcileOutcome::Discarded {
+                observation,
+                completion: CompletionOutcome::Canceled,
+            },
+        }),
+        ObservationPublicationOutcome::NotCurrent => Ok(AttemptResultStageOutcome::Finished {
+            prepared: Box::new(prepared),
+            outcome: AttemptWorkerReconcileOutcome::Discarded {
+                observation,
+                completion: CompletionOutcome::NotCurrent,
+            },
+        }),
+        ObservationPublicationOutcome::AlreadyCompleted => {
+            Ok(AttemptResultStageOutcome::Finished {
+                prepared: Box::new(prepared),
+                outcome: AttemptWorkerReconcileOutcome::Reconciled {
+                    observation,
+                    completion: CompletionOutcome::AlreadyCompleted,
+                },
+            })
         }
     }
 }

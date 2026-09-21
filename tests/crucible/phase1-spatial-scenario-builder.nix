@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  workloadTest = builtins.readFile ../../crates/crucible/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -51,16 +51,8 @@
         needle = "pub fn link(mut self, left: impl Into<String>, right: impl Into<String>) -> Self";
       }
       {
-        label = "transport link entry point";
-        needle = "pub fn link_with_transport(";
-      }
-      {
         label = "plan layer entry point";
         needle = "pub fn plan(mut self, plan: Plan) -> Self";
-      }
-      {
-        label = "plan-entry layer entry point";
-        needle = "pub fn plan_entry(mut self, entry: PlanEntry) -> Self";
       }
       {
         label = "properties layer entry point";
@@ -93,30 +85,22 @@
         needle = "boot_event";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/tests/workload_parameterization.rs" workloadTest [
       {
-        label = "builder test";
-        needle = "scenario_builder_keeps_authoring_layers_structurally_orthogonal";
+        label = "builder produces validated concrete scenario values";
+        needle = "fn scenario_def_with_template(";
       }
       {
         label = "test uses node template";
         needle = "NodeTemplate::fixed_icount";
       }
       {
-        label = "test uses node-like templating";
-        needle = ".node_like(\"b\", \"a\")";
+        label = "test builds through ScenarioBuilder";
+        needle = "crucible::ScenarioBuilder::new()";
       }
       {
-        label = "test uses world reuse";
-        needle = ".world(&manual_world)";
-      }
-      {
-        label = "test validates plan layer against world";
-        needle = "Err(EngineError::PlanFaultUnknownLink";
-      }
-      {
-        label = "test validates properties layer against world";
-        needle = "Err(EngineError::PropertyPredicateUnknownNode";
+        label = "builder output changes with template material";
+        needle = "assert_eq!(template_rootfs.id(), manual_rootfs.id())";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -179,8 +163,8 @@ in
               --target-dir "$TMPDIR/crucible-spatial-scenario-builder-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --lib \
-              scenario_builder_keeps_authoring_layers \
+              --test workload_parameterization \
+              config_tree_change_changes_scenario_id_and_reproduces \
               -- --test-threads=1
           '';
         }

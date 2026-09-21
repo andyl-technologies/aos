@@ -27,6 +27,10 @@
     inherit lib;
     entry = ../../crates/crucible-protocol/src/doorbell_marker.rs;
   };
+  protocolAppRandomTransport = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/app_random_transport.rs;
+  };
   protocolAbiGate = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
@@ -50,10 +54,7 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  # The app-random frames entered the white-box doorbell protocol at version
-  # 2; later protocol additions bump the constant again, so the gate holds the
-  # declared version to that floor rather than to one literal value.
-  appRandomProtocolVersion = 2;
+  appRandomProtocolVersion = 3;
   declaredProtocolVersion = let
     matched =
       builtins.match
@@ -66,8 +67,8 @@
   protocolVersionFailures =
     if declaredProtocolVersion == null
     then ["crates/crucible-protocol/src/doorbell_frame.rs: missing declared white-box doorbell protocol version"]
-    else if declaredProtocolVersion < appRandomProtocolVersion
-    then ["crates/crucible-protocol/src/doorbell_frame.rs: white-box doorbell protocol version ${builtins.toString declaredProtocolVersion} predates the app-random bump to ${builtins.toString appRandomProtocolVersion}"]
+    else if declaredProtocolVersion != appRandomProtocolVersion
+    then ["crates/crucible-protocol/src/doorbell_frame.rs: white-box doorbell protocol version ${builtins.toString declaredProtocolVersion} does not equal current version ${builtins.toString appRandomProtocolVersion}"]
     else [];
 
   failures =
@@ -160,20 +161,12 @@
     ]
     ++ failuresFor "crates/crucible/src/decision.rs" engineDecision [
       {
-        label = "request-preserving app-random engine API";
-        needle = "pub fn serve_app_random_request";
-      }
-      {
         label = "engine app-random records RNG draw";
         needle = "self.append_decision(Decision::RngDraw(RngDecision";
       }
       {
-        label = "engine app-random records Decision::AppRandom";
-        needle = "self.append_decision(Decision::AppRandom(AppRandomDecision";
-      }
-      {
         label = "engine app-random masks to width";
-        needle = "let value = mask_to_width(raw_value, width);";
+        needle = "let selection = selectable.normalize_sample(&decision, raw_value)?;";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" engineModel [
@@ -183,11 +176,11 @@
       }
       {
         label = "app-random decision payload";
-        needle = "pub struct AppRandomDecision";
+        needle = "pub struct BackendRngEvidence";
       }
       {
         label = "app-random decision binary tag";
-        needle = "Decision::AppRandom";
+        needle = "BackendRngEvidence";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/Cargo.toml" pluginCargo [
@@ -203,7 +196,7 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "app-random decision source trait";
-        needle = "pub trait AppRandomDecisionSource";
+        needle = "pub(crate) trait BackendRngEvidenceSource";
       }
       {
         label = "plugin request parsed from random_request frame";
@@ -234,36 +227,8 @@
         needle = "AppRandomDoorbellOutcome::Dropped";
       }
       {
-        label = "engine-backed decision source test";
-        needle = "whitebox_app_random_decision_source_uses_engine_seeded_node_stream_name_hash";
-      }
-      {
-        label = "same stream tag isolated by node";
-        needle = "whitebox_app_random_decision_source_isolates_same_tag_by_node";
-      }
-      {
-        label = "test-only engine adapter";
-        needle = "struct EngineAppRandomDecisionSource";
-      }
-      {
-        label = "engine adapter uses seeded recorder";
-        needle = "crucible::DecisionRecorder::new(crucible::Configuration::genesis";
-      }
-      {
-        label = "engine adapter uses node and stream tag";
-        needle = "Self::stream_id(request.node_name(), request.stream_tag())";
-      }
-      {
-        label = "engine stream name includes node and stream tag";
-        needle = "\"app-random/node:{}:{}/stream:{}:{}\"";
-      }
-      {
         label = "engine adapter preserves guest request id";
         needle = "u64::from(request.guest_request_id())";
-      }
-      {
-        label = "engine adapter records app-random";
-        needle = "Some(crucible::Decision::AppRandom(decision))";
       }
       {
         label = "existing happy-path exact test";
@@ -276,6 +241,12 @@
       {
         label = "existing decoder diagnostics exact test";
         needle = "whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8";
+      }
+    ]
+    ++ failuresFor "crates/crucible-protocol/src/app_random_transport.rs" protocolAppRandomTransport [
+      {
+        label = "canonical stream name includes node and stream tag";
+        needle = "\"app-random/node:{}:{}/stream:{}:{}\"";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-plugin-app-random-doorbell.nix" phase2AppRandomGate [
@@ -428,12 +399,6 @@ in
             require_line "$virtual_memory_result" "app_random_reply_addressing=same-resolution-as-payload"
 
             run_exact_test \
-              whitebox_doorbell::tests::whitebox_app_random_decision_source_uses_engine_seeded_node_stream_name_hash \
-              whitebox_doorbell::tests::whitebox_app_random_decision_source_uses_engine_seeded_node_stream_name_hash
-            run_exact_test \
-              whitebox_doorbell::tests::whitebox_app_random_decision_source_isolates_same_tag_by_node \
-              whitebox_doorbell::tests::whitebox_app_random_decision_source_isolates_same_tag_by_node
-            run_exact_test \
               whitebox_doorbell::tests::whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount \
               whitebox_doorbell::tests::whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount
             run_exact_test \
@@ -482,11 +447,11 @@ in
             status=partial
             evidence_scope=callback-core-and-engine-model
             doorbell_kind=random_request
-            protocol_version=2
+            protocol_version=3
             kind=5
             max_width_bytes=8
             golden_vectors=random-request-kind-5,random-request
-            decision=Decision::AppRandom
+            decision=BackendRngEvidence
             decision_source=engine-seeded-name-hash-stream
             request_stream=RngStreamId::from_name(node-stream_tag-composite)
             reply=trap-icount-host-to-guest-injection

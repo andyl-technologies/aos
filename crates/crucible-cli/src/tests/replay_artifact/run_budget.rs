@@ -164,7 +164,8 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
         "crucible-cli-timeout-test",
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| NonQuiescentLifecycleLoop::default(),
-    );
+    )
+    .with_terminal_session_retention(true);
     let client = InProcessLifecycleClient::new(control_plane);
     let timeout_report = runtime.block_on(run_control_client_workflow_async(
         &client,

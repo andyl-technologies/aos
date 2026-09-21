@@ -33,7 +33,7 @@ pkgs.mkDerivation {
         PASS
         check=${attrPath}
         tasks=${builtins.concatStringsSep "," taskIds}
-        patch=0198-crucible-retire-native-workers-before-hot-fork.patch
+        patch=crucible-qemu-11.1.1.patch
         inherited_native_workers_negative_control=true
         native_child_source_read=true
         durable_child_private_overlay_write=true

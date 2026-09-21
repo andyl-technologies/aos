@@ -82,6 +82,14 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
             ),
+            control_boundary_fault_command_frontier: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+            ),
+            control_boundary_capture_request: read_u32(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+            ),
             preemption_at_icount: read_u64(
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
@@ -129,6 +137,42 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
             logical_time_restore_ack: read_u32(
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
+            ),
+            timer_witness_generation: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+            ),
+            timer_witness_deadline_ns: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
+            ),
+            timer_witness_deadline_icount: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
+            ),
+            timer_witness_armed_raw_icount: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+            ),
+            timer_witness_fired_expire_ns: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
+            ),
+            timer_witness_fired_virtual_ns: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
+            ),
+            timer_witness_fired_raw_icount: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+            ),
+            timer_witness_completed: read_u32(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+            ),
+            timer_witness_reserved: read_u32(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET,
             ),
         },
         ring: RingHeaderState {

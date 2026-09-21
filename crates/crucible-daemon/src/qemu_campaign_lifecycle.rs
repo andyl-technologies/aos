@@ -4,15 +4,15 @@
 //! context and the production lifecycle scheduler. It installs one exact
 //! process/resource guard before lifecycle construction, validates the guard's
 //! resource and cancellation incarnation, and transfers that authority into
-//! [`QemuAttemptProductionVmNodeLauncher`]. [`QemuFreshExecutionRunner`] keeps
+//! `QemuAttemptProductionVmNodeLauncher`. `QemuFreshExecutionRunner` keeps
 //! final drain and teardown outside the modeled driver and seals a result only
 //! after those final events are available. Exact roots normally retain their
 //! physical resume path; newly selected continuation control cold executes
-//! because an older checkpoint cannot contain that semantic input.
+//! because a checkpoint captured before selection cannot contain that input.
 
 use crucible::{
-    CheckpointTerminalCause, Configuration, ContentHash, Decision, EngineError, FingerprintSample,
-    NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
+    CheckpointTerminalCause, Configuration, ContentHash, Decision, FingerprintSample, NodeId,
+    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
     SchedulerOperationalFailureClass, SchedulerQuiescence, Seed, SelectionDecision, VirtualTime,
 };
@@ -20,8 +20,7 @@ use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmExactHotForkSourceBoundary,
     ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
     authenticate_production_vm_exact_hot_fork_source_boundary,
-    build_production_vm_lifecycle_loop_from_exact_closure_with_launcher,
-    build_production_vm_lifecycle_loop_with_launcher,
+    build_production_vm_exact_resume_lifecycle, build_production_vm_lifecycle_loop_with_launcher,
 };
 use crucible_campaign::{
     AttemptContinuationInput, AttemptStartMode, CampaignHash, ChoiceDiscovery, ChoiceOpportunityId,
@@ -51,16 +50,29 @@ use crate::{
     ProductionAttemptCheckpointRestoreError, QemuAttemptGenerationResourceOwner,
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
-    QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuSavepointReplayProof,
-    QemuSelectedOriginVerifier, encode_crucible_configuration_artifact,
+    QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuExactResumeBasis,
+    QemuSavepointReplayProof, QemuSelectedOriginVerifier, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, install_attempt_production_resume_checkpoint,
 };
 
 mod app_random_branch_replay;
 use app_random_branch_replay::app_random_branch_replay;
 
+mod interactive_session;
+pub use interactive_session::{
+    InteractiveQemuSessionError, build_guarded_interactive_qemu_session,
+};
+
+mod failure_classification;
+pub(crate) use failure_classification::{
+    classify_production_lifecycle_failure, production_lifecycle_failure_class,
+};
+
 mod remote_observation_resume;
 pub use remote_observation_resume::RemoteObservationResumeFactory;
+
+mod resume_admission;
+use resume_admission::validate_exact_resume_request;
 
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
 #[derive(Debug, Error)]
@@ -96,9 +108,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The production lifecycle rejected construction under the installed guard.
     #[error("build guarded production VM lifecycle: {0}")]
     Lifecycle(#[source] LifecycleApiError),
-    /// The durable version-four root failed exact attempt resume admission.
+    /// The durable version-nine root failed exact attempt resume admission.
     #[error("install production VM attempt checkpoint: {0}")]
-    CheckpointRestore(#[source] ProductionAttemptCheckpointRestoreError),
+    CheckpointRestore(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The resolved start configuration does not form an executable branch plan.
     #[error("derive exact app-random branch replay: {0}")]
     InvalidAppRandomBranchReplay(String),
@@ -116,7 +128,7 @@ pub use resource_admission::{
 };
 
 /// Factory that binds one admitted attempt to the guarded production lifecycle.
-pub struct QemuAttemptProductionVmLifecycleFactory<R> {
+pub(crate) struct QemuAttemptProductionVmLifecycleFactory<R> {
     config: ProductionVmLifecycleConfig,
     resources: R,
     continuations: Vec<OwnedQemuAttemptContinuation>,
@@ -184,12 +196,7 @@ pub trait QemuFreshAttemptLifecycleOwner {
     fn prepare_terminal_checkpoint(
         &mut self,
         cause: CheckpointTerminalCause,
-    ) -> Result<(), SchedulerError> {
-        let _ = cause;
-        Err(SchedulerError::BoundaryViolation {
-            message: String::from("fresh lifecycle cannot retain a terminal checkpoint cause"),
-        })
-    }
+    ) -> Result<(), SchedulerError>;
 
     /// Returns whether every live node can enter an exact checkpoint now.
     ///
@@ -237,21 +244,13 @@ pub trait QemuFreshAttemptLifecycleOwner {
 
     /// Copies immutable node launch profiles for independent background replay.
     ///
-    /// The default fails closed so a lifecycle implementation cannot
-    /// accidentally claim baked-genesis support without preserving its exact
-    /// scenario-aware QEMU launch basis.
-    ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when replay launch profiles are unavailable
     /// or inconsistent with the live lifecycle.
     fn replay_launch_profiles(
         &self,
-    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
-        Err(SchedulerError::NotImplemented {
-            operation: "copy fresh-genesis replay launch profiles",
-        })
-    }
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, SchedulerError>;
 
     /// Captures read-only production fault evidence at the current boundary.
     ///
@@ -271,36 +270,22 @@ pub trait QemuFreshAttemptLifecycleOwner {
     ///
     /// Returns [`SchedulerError`] when the node is absent or its live state cannot
     /// be read consistently.
-    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
-        let _ = node;
-        Err(SchedulerError::NotImplemented {
-            operation: "sample fresh-attempt execution fingerprint",
-        })
-    }
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError>;
 
     /// Prepares exact terminal fingerprints before lifecycle teardown.
-    ///
-    /// Lifecycles without an attached evidence observer have no terminal
-    /// fingerprint work to perform.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when any authenticated scenario node cannot
     /// be sampled at the terminal boundary.
-    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
-        Ok(())
-    }
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError>;
 
     /// Copies the exact resolved-effect trace retained by the live fault runtime.
-    ///
-    /// Lifecycles without a signal-driven fault runtime return `None`.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when retained effect evidence cannot be encoded.
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
-        Ok(None)
-    }
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError>;
 
     /// Performs final drain, process reap, lease release, and aggregate release.
     ///
@@ -382,7 +367,7 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
             }
             Ok(())
         })
-        .map(Into::into)
+        .map(CapturedAttemptCheckpoint::from_production_closure)
     }
 
     fn replay_launch_profiles(
@@ -408,6 +393,10 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         QuantumLoop::sample_fingerprint(self, node)
     }
 
+    fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- this copies scheduler-retained replay evidence without feeding it into execution.
         QuantumLoop::resolved_effect_trace(self)
@@ -424,22 +413,23 @@ mod evidence;
 pub(crate) use evidence::QemuTerminalEvidenceExecutionRunnerError;
 pub use evidence::{
     QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot,
-    QemuObservedFreshAttemptLifecycle, QemuObservedFreshAttemptLifecycleFactory,
-    QemuObservedFreshAttemptLifecycleFactoryError,
+    QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
 };
 pub(crate) use evidence::{
-    QemuTerminalEvidenceExecutionRunner, map_observed_evidence_failure, map_observed_inner_failure,
+    QemuObservedFreshAttemptLifecycle, QemuTerminalEvidenceExecutionRunner,
+    map_observed_evidence_failure, map_observed_inner_failure,
 };
 
 mod campaign_run;
 #[cfg(any(test, feature = "test-support"))]
 pub use campaign_run::test_support::{
     GuardedDefaultCampaignTestTrace, run_guarded_default_campaign_test_fixture,
+    run_guarded_default_campaign_test_fixture_with_choice_offer,
     run_guarded_default_campaign_test_fixture_with_trace,
+    run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer,
 };
 pub use campaign_run::{
-    GuardedCampaignBranchAcceptance, GuardedCampaignContinuationControl,
-    GuardedCampaignContinuationControlError, GuardedCampaignExploration,
+    GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
     GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
     GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
@@ -596,7 +586,7 @@ impl<'a> QemuAttemptContinuation<'a> {
 }
 
 /// Factory for one guarded scenario-genesis lifecycle used by the campaign runner.
-pub trait QemuFreshAttemptLifecycleFactory {
+pub(crate) trait QemuFreshAttemptLifecycleFactory {
     /// Exact lifecycle owner created for one attempt.
     type Lifecycle: QemuFreshAttemptLifecycleOwner;
     /// Factory-specific admission or construction failure.
@@ -709,19 +699,15 @@ pub enum QemuFreshDriveOutcome<P> {
 /// model-sampled schedule from scenario genesis before lending the lifecycle to
 /// its modeled driver. Producer-owned overrides remain rejected before resource
 /// installation until their versioned live injection protocol is available.
-pub struct QemuFreshExecutionRunner<F, D> {
+pub(crate) struct QemuFreshExecutionRunner<F, D> {
     lifecycles: F,
     driver: D,
     finding_replay_capture:
         Option<crate::automatic_finding_runner::QemuFindingReplayCaptureProducer>,
-    abandoned_native_checkpoint: Option<crate::NativeCheckpointCleanup>,
-    in_flight_native_checkpoint: Option<crucible_api::ProductionExactCheckpointRetirement>,
 }
 
 /// Stable reasons an exact finding candidate cannot be reconstructed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum QemuFindingCandidateIncompatibility {
     PrefixDiverged,
     PrefixTerminated,
@@ -730,34 +716,16 @@ pub(crate) enum QemuFindingCandidateIncompatibility {
 
 /// Result of one private exact finding-candidate replay.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum QemuFindingCandidateReplayOutcome {
     Observed(Box<crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>),
     DeterministicallyIncompatible(QemuFindingCandidateIncompatibility),
 }
 
-/// Private replay result with an optional exact checkpoint captured at its safe stop.
-///
-/// The checkpoint remains linear and unpublished. Its caller must either hand
-/// it to the guarded exact-retention publication phase or explicitly abandon
-/// its native source authority.
-pub(crate) struct QemuFindingCandidateCheckpointReplay {
-    outcome: QemuFindingCandidateReplayOutcome,
-    checkpoint: Option<CapturedAttemptCheckpoint>,
-}
-
-impl QemuFindingCandidateCheckpointReplay {
-    /// Consumes the replay into its semantic evidence and raw exact capture.
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        QemuFindingCandidateReplayOutcome,
-        Option<CapturedAttemptCheckpoint>,
-    ) {
-        (self.outcome, self.checkpoint)
-    }
-}
+type QemuFindingCandidateReplayFailure<LifecycleError> = Box<
+    AttemptWorkerFailure<
+        QemuFreshExecutionRunnerError<LifecycleError, crate::QemuFreshModeledDriverError>,
+    >,
+>;
 
 impl<F, D> QemuFreshExecutionRunner<F, D> {
     /// Creates a genesis-start runner from its guarded lifecycle factory and modeled driver.
@@ -767,12 +735,9 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             lifecycles,
             driver,
             finding_replay_capture: None,
-            abandoned_native_checkpoint: None,
-            in_flight_native_checkpoint: None,
         }
     }
 
-    /// Enables path-free evidence capture for private production replays.
     pub(crate) fn with_finding_replay_capture(
         mut self,
         producer: crate::automatic_finding_runner::QemuFindingReplayCaptureProducer,
@@ -781,185 +746,24 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
         self
     }
 
-    /// Returns mutable access to the optional private-replay capture owner.
     pub(crate) fn finding_replay_capture_mut(
         &mut self,
     ) -> Option<&mut crate::automatic_finding_runner::QemuFindingReplayCaptureProducer> {
         self.finding_replay_capture.as_mut()
     }
 
-    /// Returns the guarded lifecycle factory.
-    #[must_use]
-    pub const fn lifecycle_factory(&self) -> &F {
-        &self.lifecycles
-    }
-
-    /// Returns mutable access to the guarded lifecycle factory.
-    #[must_use]
-    pub const fn lifecycle_factory_mut(&mut self) -> &mut F {
-        &mut self.lifecycles
-    }
-
-    /// Returns the modeled fresh-attempt driver.
-    #[must_use]
-    pub const fn driver(&self) -> &D {
-        &self.driver
-    }
-
-    /// Returns mutable access to the modeled fresh-attempt driver.
-    #[must_use]
-    pub const fn driver_mut(&mut self) -> &mut D {
-        &mut self.driver
-    }
-
-    pub(crate) fn retain_abandoned_checkpoint(
-        &mut self,
-        checkpoint: CapturedAttemptCheckpoint,
-        quarantine: bool,
-    ) {
-        let Some(retirement) = checkpoint.native_retirement() else {
-            return;
-        };
-        let cleanup = if quarantine {
-            crate::NativeCheckpointCleanup::Quarantine(retirement)
-        } else {
-            crate::NativeCheckpointCleanup::Retire(retirement)
-        };
-        self.retain_native_checkpoint_cleanup(cleanup);
-    }
-
-    fn retain_native_checkpoint_cleanup(&mut self, cleanup: crate::NativeCheckpointCleanup) {
-        crate::NativeCheckpointCleanup::retain(&mut self.abandoned_native_checkpoint, cleanup);
-    }
-
-    fn register_native_checkpoint_capture(&mut self, checkpoint: &CapturedAttemptCheckpoint) {
-        let Some(retirement) = checkpoint.native_retirement() else {
-            return;
-        };
-        if let Some(prior) = self.in_flight_native_checkpoint.replace(retirement) {
-            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
-                prior,
-            ));
-        }
-    }
-
-    fn resolve_native_checkpoint_capture(
-        &mut self,
-        shutdown_succeeded: bool,
-        result_succeeded: bool,
-    ) {
-        let Some(retirement) = self.in_flight_native_checkpoint.take() else {
-            return;
-        };
-        if !shutdown_succeeded {
-            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
-                retirement,
-            ));
-        } else if !result_succeeded {
-            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Retire(
-                retirement,
-            ));
-        }
-    }
-
-    pub(crate) fn take_abandoned_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
-        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
-            self.retain_native_checkpoint_cleanup(crate::NativeCheckpointCleanup::Quarantine(
-                retirement,
-            ));
-        }
-        self.abandoned_native_checkpoint.take()
-    }
-}
-
-impl<F, D> Drop for QemuFreshExecutionRunner<F, D> {
-    fn drop(&mut self) {
-        if let Some(retirement) = self.in_flight_native_checkpoint.take() {
-            crate::NativeCheckpointCleanup::Quarantine(retirement).retain_for_process_lifetime();
-        }
-        if let Some(cleanup) = self.abandoned_native_checkpoint.take() {
-            cleanup.retain_for_process_lifetime();
-        }
-    }
-}
-
-// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
-#[cfg_attr(not(test), allow(dead_code))]
-// crucible-lint: allow rust-allow -- a crate-private capability deliberately gates this public runner's private replay method.
-#[allow(private_bounds)]
-impl<F, D> QemuFreshExecutionRunner<F, D>
-where
-    F: QemuFreshAttemptLifecycleFactory,
-    D: crate::qemu_campaign_driver::QemuFindingReplayDriver,
-{
     /// Reconstructs and evaluates one exact candidate without publishing an observation.
-    // crucible-lint: allow rust-allow -- the existing runner error preserves phase and cleanup diagnostics.
-    #[allow(clippy::result_large_err)]
     pub(crate) fn replay_finding_candidate_boundary(
         &mut self,
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         expected_replay: Option<&crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>,
         context: &AttemptExecutionContext,
-    ) -> Result<
-        QemuFindingCandidateReplayOutcome,
-        AttemptWorkerFailure<
-            QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
-        >,
-    > {
-        self.replay_finding_candidate_boundary_inner(
-            input,
-            candidate,
-            expected_replay,
-            context,
-            false,
-        )
-        .map(|replay| replay.outcome)
-    }
-
-    /// Reconstructs one exact candidate and captures its canonical safe stop.
-    ///
-    /// A missing checkpoint means the replay completed but the boundary was not
-    /// safely capturable. The semantic replay remains usable for thin finding
-    /// publication in that case.
-    // crucible-lint: allow rust-allow -- the existing runner error preserves phase and cleanup diagnostics.
-    #[allow(clippy::result_large_err)]
-    pub(crate) fn replay_and_capture_finding_candidate_boundary(
-        &mut self,
-        input: &CrucibleAttemptExecution,
-        candidate: &ConfigurationArtifact,
-        expected_replay: Option<&crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>,
-        context: &AttemptExecutionContext,
-    ) -> Result<
-        QemuFindingCandidateCheckpointReplay,
-        AttemptWorkerFailure<
-            QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
-        >,
-    > {
-        self.replay_finding_candidate_boundary_inner(
-            input,
-            candidate,
-            expected_replay,
-            context,
-            true,
-        )
-    }
-
-    // crucible-lint: allow rust-allow -- the existing runner error preserves phase and cleanup diagnostics.
-    #[allow(clippy::result_large_err)]
-    fn replay_finding_candidate_boundary_inner(
-        &mut self,
-        input: &CrucibleAttemptExecution,
-        candidate: &ConfigurationArtifact,
-        expected_replay: Option<&crate::qemu_campaign_driver::QemuFindingCandidateBoundaryEvidence>,
-        context: &AttemptExecutionContext,
-        capture_checkpoint: bool,
-    ) -> Result<
-        QemuFindingCandidateCheckpointReplay,
-        AttemptWorkerFailure<
-            QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
-        >,
-    > {
+    ) -> Result<QemuFindingCandidateReplayOutcome, QemuFindingCandidateReplayFailure<F::Error>>
+    where
+        F: QemuFreshAttemptLifecycleFactory,
+        D: crate::qemu_campaign_driver::QemuFindingReplayDriver,
+    {
         let continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
@@ -967,14 +771,14 @@ where
             .lifecycles
             .configure_attempt_continuations(&continuations)
         {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
-            ));
+            )));
         }
         if let Some(checkpoint) = context.resume_checkpoint() {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(checkpoint),
-            ));
+            )));
         }
 
         let scenario = input.scenario().scenario_def();
@@ -982,38 +786,38 @@ where
             configuration: target,
         } = input.start()
         else {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::FindingCandidateStartUnsupported,
-            ));
+            )));
         };
         let signal_fault_replay = input.signal_fault_replay();
         let scenario_artifact = encode_crucible_scenario_artifact(input.scenario())
-            .map_err(crate::QemuFreshModeledDriverError::Artifact)
+            .map_err(|error| crate::QemuFreshModeledDriverError::Artifact(Box::new(error)))
             .map_err(AttemptWorkerFailure::Terminal)
             .map_err(map_fresh_driver_failure)?;
         let encoded_candidate =
             encode_crucible_configuration_artifact(&scenario_artifact, &target.schedule)
-                .map_err(crate::QemuFreshModeledDriverError::Artifact)
+                .map_err(|error| crate::QemuFreshModeledDriverError::Artifact(Box::new(error)))
                 .map_err(AttemptWorkerFailure::Terminal)
                 .map_err(map_fresh_driver_failure)?;
         if encoded_candidate != *candidate {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::Driver(
-                    crate::QemuFreshModeledDriverError::Artifact(
+                    crate::QemuFreshModeledDriverError::Artifact(Box::new(
                         crate::CrucibleArtifactError::SemanticIdentityMismatch {
                             artifact: "finding replay candidate configuration",
                         },
-                    ),
+                    )),
                 ),
-            ));
+            )));
         }
         if let Some(decision) = unsupported_fresh_replay_decision(target, signal_fault_replay) {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::StartDecisionUnsupported {
                     configuration: target.id(),
                     decision,
                 },
-            ));
+            )));
         }
 
         let mut lifecycle = self
@@ -1046,91 +850,44 @@ where
                 .map(|()| pending)
                 .map_err(map_terminal_fingerprint_capture_failure)
         });
-        let checkpoint = if capture_checkpoint && pending.is_ok() {
-            capture_finding_candidate_checkpoint(&mut lifecycle, context)
-        } else {
-            None
-        };
-        if let Some(checkpoint) = checkpoint.as_ref() {
-            self.register_native_checkpoint_capture(checkpoint);
-        }
         let cleanup = lifecycle.shutdown();
 
         let (pending, final_events) = match (pending, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
             (Err(failure), Ok(_)) => {
-                self.resolve_native_checkpoint_capture(true, false);
                 if let Some(reason) = finding_candidate_incompatibility(&failure) {
-                    return Ok(QemuFindingCandidateCheckpointReplay {
-                        outcome: QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
-                            reason,
-                        ),
-                        checkpoint: None,
-                    });
+                    return Ok(
+                        QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(reason),
+                    );
                 }
-                return Err(failure);
+                return Err(Box::new(failure));
             }
             (Ok(_), Err(cleanup)) => {
-                self.resolve_native_checkpoint_capture(false, false);
-                return Err(AttemptWorkerFailure::Terminal(
+                return Err(Box::new(AttemptWorkerFailure::Terminal(
                     QemuFreshExecutionRunnerError::Cleanup(cleanup),
-                ));
+                )));
             }
             (Err(failure), Err(cleanup)) => {
-                self.resolve_native_checkpoint_capture(false, false);
-                return Err(AttemptWorkerFailure::Terminal(
+                return Err(Box::new(AttemptWorkerFailure::Terminal(
                     cleanup_after_fresh_runner_failure(failure, cleanup),
-                ));
+                )));
             }
         };
         let evidence = self
             .driver
             .build_finding_candidate_boundary_evidence(pending, candidate, final_events)
             .map_err(AttemptWorkerFailure::Terminal)
-            .map_err(map_fresh_driver_failure);
-        let evidence = match evidence {
-            Ok(evidence) => evidence,
-            Err(failure) => {
-                self.resolve_native_checkpoint_capture(true, false);
-                return Err(failure);
-            }
-        };
+            .map_err(map_fresh_driver_failure)?;
         let evidence = match expected_replay {
             Some(expected) => evidence.compare_against_expected_replay(expected),
             None => evidence,
         };
-        self.resolve_native_checkpoint_capture(true, true);
-        Ok(QemuFindingCandidateCheckpointReplay {
-            outcome: QemuFindingCandidateReplayOutcome::Observed(Box::new(evidence)),
-            checkpoint,
-        })
+        Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(
+            evidence,
+        )))
     }
 }
 
-fn capture_finding_candidate_checkpoint<L>(
-    lifecycle: &mut L,
-    context: &AttemptExecutionContext,
-) -> Option<CapturedAttemptCheckpoint>
-where
-    L: QemuFreshAttemptLifecycleOwner,
-{
-    if let Some(verdict) = lifecycle.terminal_verdict_for_stop() {
-        let cause = match verdict {
-            QuantumTerminalVerdict::Passed => CheckpointTerminalCause::Passed,
-            QuantumTerminalVerdict::Failed(violations) => {
-                CheckpointTerminalCause::Failed(violations)
-            }
-        };
-        lifecycle.prepare_terminal_checkpoint(cause).ok()?;
-    }
-    if !lifecycle.exact_checkpoint_ready().ok()? {
-        return None;
-    }
-    lifecycle.capture_attempt_checkpoint(context).ok()
-}
-
-// crucible-lint: allow rust-allow -- consumed by the automatic-finding wrapper in the composed change.
-#[cfg_attr(not(test), allow(dead_code))]
 fn finding_candidate_incompatibility<F, D>(
     failure: &AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
 ) -> Option<QemuFindingCandidateIncompatibility> {
@@ -1152,7 +909,7 @@ fn finding_candidate_incompatibility<F, D>(
     }
 }
 
-/// Failure from one phase of [`QemuFreshExecutionRunner`].
+/// Failure from one phase of the private `QemuFreshExecutionRunner`.
 #[derive(Debug, Error)]
 pub enum QemuFreshExecutionRunnerError<F, D> {
     /// The modeled continuation input does not name its authenticated time boundary.
@@ -1350,30 +1107,15 @@ impl QemuFreshStartMaterialization {
         )
     }
 
-    // crucible-lint: allow rust-allow -- the tuple mirrors the existing modeled-parts boundary plus discoveries.
-    #[allow(clippy::type_complexity)]
-    // crucible-lint: allow rust-allow -- consumed by private finding-candidate replay in the composed change.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn into_candidate_parts(
-        self,
-    ) -> (
-        Vec<SchedulerEventLogEntry>,
-        usize,
-        u64,
-        crucible::VirtualTime,
-        Option<SchedulerQuiescence>,
-        Option<QuantumTerminalVerdict>,
-        BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
-    ) {
-        (
-            self.event_log,
-            self.event_log_bytes,
-            self.completed_quanta,
-            self.frontier,
-            self.terminal_quiescence,
-            self.terminal_verdict,
-            self.replayed_discoveries,
-        )
+    pub(crate) fn into_candidate_parts(self) -> QemuFreshCandidateMaterializationParts {
+        QemuFreshCandidateMaterializationParts {
+            event_log: self.event_log,
+            event_log_bytes: self.event_log_bytes,
+            completed_quanta: self.completed_quanta,
+            frontier: self.frontier,
+            terminal_quiescence: self.terminal_quiescence,
+            replayed_discoveries: self.replayed_discoveries,
+        }
     }
 
     pub(crate) fn from_resume_parts(
@@ -1476,12 +1218,18 @@ impl QemuFreshStartMaterialization {
     }
 }
 
+pub(crate) struct QemuFreshCandidateMaterializationParts {
+    pub(crate) event_log: Vec<SchedulerEventLogEntry>,
+    pub(crate) event_log_bytes: usize,
+    pub(crate) completed_quanta: u64,
+    pub(crate) frontier: crucible::VirtualTime,
+    pub(crate) terminal_quiescence: Option<SchedulerQuiescence>,
+    pub(crate) replayed_discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
+}
+
 /// Failure while reconstructing one exact fresh-QEMU start configuration.
 #[derive(Debug, Error)]
 pub enum QemuFreshStartReplayError {
-    /// A replayed campaign decision violated the scenario's configuration limits.
-    #[error("fresh start replay configuration step failed: {0}")]
-    Configuration(#[source] EngineError),
     /// The attempt was canceled before its start configuration was reached.
     #[error("fresh start replay was canceled")]
     Canceled,
@@ -1553,6 +1301,9 @@ struct GuestSelectableReplayContext<'a> {
     attempt_role: GuestSelectableReplayAttemptRole,
     attempt: &'a crucible_campaign::Attempt,
     start: &'a CrucibleResolvedAttemptStart,
+    scenario: crucible_campaign::ScenarioDefId,
+    source: &'a ScenarioDefForm,
+    target: &'a Configuration,
 }
 
 /// Failure before a fresh genesis checkpoint candidate reached teardown.
@@ -1580,16 +1331,6 @@ pub struct QemuFreshGenesisCheckpointCandidate {
 }
 
 impl QemuFreshGenesisCheckpointCandidate {
-    pub(crate) fn new(
-        capture: CapturedAttemptCheckpoint,
-        launch_profiles: Vec<ProductionVmNodeReplayLaunchProfile>,
-    ) -> Self {
-        Self {
-            capture,
-            launch_profiles,
-        }
-    }
-
     /// Returns the exact captured scenario identity.
     #[must_use]
     pub fn scenario(&self) -> ContentHash {
@@ -1637,19 +1378,6 @@ pub enum QemuFreshGenesisCheckpointError<E> {
         /// Mandatory lifecycle teardown failure.
         #[source]
         cleanup: SchedulerError,
-        /// Native catalog authority quarantined until process exit can be attested.
-        retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
-    },
-    /// Safe teardown completed, but native catalog retirement failed terminally.
-    #[error("retire rejected fresh genesis checkpoint catalog: {source}")]
-    NativeRetirement {
-        /// Earlier capture failure whose abandoned catalog required retirement.
-        prior: Box<QemuFreshGenesisCheckpointCaptureFailure>,
-        /// Terminal native retirement failure.
-        #[source]
-        source: crucible_api::ProductionExactCheckpointRetirementError,
-        /// Sole authority retained for operator repair.
-        retirement: crucible_api::ProductionExactCheckpointRetirement,
     },
 }
 
@@ -1660,8 +1388,8 @@ pub enum QemuFreshGenesisCheckpointError<E> {
 /// genesis, performs no modeled quantum, captures through the same portable
 /// checkpoint path used by attempts, and always tears the lifecycle down before
 /// returning. The returned value remains only a candidate: a catalog owner must
-/// require the version-four production variant and authenticate its complete
-/// closure before lending any thin-replay authority.
+/// require the current version-nine production closure and authenticate its
+/// complete semantic snapshot catalog before replay validation.
 ///
 /// # Errors
 ///
@@ -1669,7 +1397,7 @@ pub enum QemuFreshGenesisCheckpointError<E> {
 /// fails, genesis is not checkpoint ready, capture returns a foreign basis, or
 /// mandatory teardown cannot be attested. Teardown failure takes precedence
 /// and retains any earlier capture diagnostic.
-pub fn capture_fresh_genesis_checkpoint_candidate<F>(
+pub(crate) fn capture_fresh_genesis_checkpoint_candidate<F>(
     factory: &mut F,
     source: &ScenarioDefForm,
     context: &AttemptExecutionContext,
@@ -1684,25 +1412,21 @@ where
         .start_fresh_lifecycle(&scenario, source, &genesis, &signal_fault_replay, context)
         .map_err(QemuFreshGenesisCheckpointError::Start)?;
 
-    let mut native_guard = None;
     let captured = match lifecycle.exact_checkpoint_ready() {
         Ok(true) => lifecycle
             .capture_attempt_checkpoint(context)
             .map_err(QemuFreshGenesisCheckpointCaptureFailure::Capture)
             .and_then(|capture| {
-                native_guard = Some(crate::executor_worker::NativeCheckpointUnwindGuard::new(
-                    &capture,
-                ));
                 if capture.scenario() != scenario.id() || capture.configuration() != genesis.id() {
                     return Err(QemuFreshGenesisCheckpointCaptureFailure::BasisMismatch);
                 }
                 let launch_profiles = lifecycle
                     .replay_launch_profiles()
                     .map_err(QemuFreshGenesisCheckpointCaptureFailure::LaunchProfiles)?;
-                Ok(QemuFreshGenesisCheckpointCandidate::new(
+                Ok(QemuFreshGenesisCheckpointCandidate {
                     capture,
                     launch_profiles,
-                ))
+                })
             }),
         Ok(false) => Err(QemuFreshGenesisCheckpointCaptureFailure::NotCheckpointReady),
         Err(error) => Err(QemuFreshGenesisCheckpointCaptureFailure::Capture(error)),
@@ -1710,57 +1434,16 @@ where
     let cleanup = lifecycle.shutdown();
 
     match (captured, cleanup) {
-        (Ok(capture), Ok(_final_events)) => {
-            if let Some(guard) = native_guard.as_mut() {
-                guard.disarm();
-            }
-            Ok(capture)
-        }
-        (Err(error), Ok(_final_events)) => {
-            if let Some(retirement) = native_guard
-                .as_mut()
-                .and_then(crate::executor_worker::NativeCheckpointUnwindGuard::take)
-            {
-                retire_rejected_fresh_genesis_checkpoint(retirement, error)
-            } else {
-                Err(error.into())
-            }
-        }
+        (Ok(capture), Ok(_final_events)) => Ok(capture),
+        (Err(error), Ok(_final_events)) => Err(error.into()),
         (Ok(_capture), Err(cleanup)) => Err(QemuFreshGenesisCheckpointError::Cleanup {
             prior: None,
             cleanup,
-            retirement: native_guard
-                .as_mut()
-                .and_then(crate::executor_worker::NativeCheckpointUnwindGuard::take),
         }),
         (Err(prior), Err(cleanup)) => Err(QemuFreshGenesisCheckpointError::Cleanup {
             prior: Some(Box::new(prior)),
             cleanup,
-            retirement: native_guard
-                .as_mut()
-                .and_then(crate::executor_worker::NativeCheckpointUnwindGuard::take),
         }),
-    }
-}
-
-fn retire_rejected_fresh_genesis_checkpoint<E>(
-    retirement: crucible_api::ProductionExactCheckpointRetirement,
-    prior: QemuFreshGenesisCheckpointCaptureFailure,
-) -> Result<QemuFreshGenesisCheckpointCandidate, QemuFreshGenesisCheckpointError<E>> {
-    loop {
-        match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
-            Ok(_) => return Err(prior.into()),
-            Err(source) if source.is_retryable() => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(source) => {
-                return Err(QemuFreshGenesisCheckpointError::NativeRetirement {
-                    prior: Box::new(prior),
-                    source,
-                    retirement,
-                });
-            }
-        }
     }
 }
 
@@ -1779,30 +1462,6 @@ impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
             continuations: Vec::new(),
         }
     }
-
-    /// Returns the trusted lifecycle configuration.
-    #[must_use]
-    pub const fn config(&self) -> &ProductionVmLifecycleConfig {
-        &self.config
-    }
-
-    /// Returns the resource-guard factory.
-    #[must_use]
-    pub const fn resources(&self) -> &R {
-        &self.resources
-    }
-
-    /// Returns the mutable resource-guard factory.
-    #[must_use]
-    pub const fn resources_mut(&mut self) -> &mut R {
-        &mut self.resources
-    }
-
-    /// Consumes the factory into its lifecycle configuration and resource owner.
-    #[must_use]
-    pub fn into_parts(self) -> (ProductionVmLifecycleConfig, R) {
-        (self.config, self.resources)
-    }
 }
 
 impl<R> QemuAttemptProductionVmLifecycleFactory<R>
@@ -1810,22 +1469,7 @@ where
     R: QemuAttemptResourceGuardFactory,
     R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
-    /// Builds one fresh lifecycle under the exact admitted attempt guard.
-    ///
-    /// Exact-checkpoint resume is deliberately not accepted by this method. A
-    /// resumed execution must use the exact-root realization path so a missing
-    /// or unavailable root cannot silently become a fresh guest execution.
-    /// Construction failure drops the installed generation owner, which
-    /// transfers the guard to quarantine rather than releasing it without a
-    /// complete lifecycle shutdown attestation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuAttemptProductionVmLifecycleError`] when the context names
-    /// an exact resume root, scenario identity or node bounds do not match, the
-    /// resource guard cannot install the exact contract, or lifecycle
-    /// construction fails.
-    pub fn begin_fresh(
+    pub(crate) fn begin_fresh(
         &mut self,
         scenario: &ScenarioDef,
         source: &ScenarioDefForm,
@@ -1834,7 +1478,7 @@ where
         self.begin_fresh_with_config(scenario, source, context, self.config.clone())
     }
 
-    /// Builds one resumed lifecycle from an exact promoted version-four root.
+    /// Builds one resumed lifecycle from an exact promoted version-nine root.
     ///
     /// The campaign root is installed and completely authenticated before the
     /// attempt process guard exists. Only a closure whose every live snapshot
@@ -1847,26 +1491,21 @@ where
     /// Returns [`QemuAttemptProductionVmLifecycleError`] when the context/root
     /// basis, scenario, branch prefix, replay evidence, resource contract, or
     /// guarded lifecycle construction is invalid or unavailable.
-    // crucible-lint: allow rust-allow -- exact resume binds the store root, semantic start, scenario source, and operational context independently.
-    #[allow(clippy::too_many_arguments)]
     pub fn begin_resume(
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
-        if context.resume_checkpoint() != Some(checkpoint) {
-            return Err(
-                QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(checkpoint),
-            );
-        }
-        if source.scenario_def() != *scenario {
-            return Err(QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch);
-        }
+        validate_exact_resume_request(checkpoint, basis, context)?;
+        let QemuExactResumeBasis {
+            scenario,
+            source,
+            initial,
+            post_selection,
+        } = basis;
+
         let maximum_nodes = source.world().vm_nodes().len();
         if maximum_nodes == 0 || maximum_nodes > MAX_QEMU_ATTEMPT_GENERATION_NODES {
             return Err(QemuAttemptProductionVmLifecycleError::InvalidNodeCount(
@@ -1880,21 +1519,20 @@ where
             source,
             initial,
             post_selection,
-            self.config.run_state_root(),
             context.cancellation(),
         )
-        .map_err(QemuAttemptProductionVmLifecycleError::CheckpointRestore)?;
+        .map_err(|error| {
+            QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(error))
+        })?;
         let config = production_lifecycle_config_for_start(
             &self.config,
             source,
             installed.configuration(),
             None,
         )?;
-        let closure = installed.closure().identity();
+        let decoded = installed.into_decoded();
         self.with_attempt_launcher(context, maximum_nodes, |launcher| {
-            build_production_vm_lifecycle_loop_from_exact_closure_with_launcher(
-                scenario, source, &config, closure, launcher,
-            )
+            build_production_vm_exact_resume_lifecycle(scenario, source, &config, decoded, launcher)
         })
     }
 
@@ -1905,16 +1543,11 @@ where
     /// Returns the same source and semantic validation errors as [`Self::begin_resume`],
     /// or [`QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary`] when
     /// the portable scheduler retains only an event suffix.
-    // crucible-lint: allow rust-allow -- resume authentication keeps every source and checkpoint binding explicit.
-    #[allow(clippy::too_many_arguments)]
     pub fn authenticate_resume_boundary(
         &mut self,
         checkpoints: &ExactCheckpointStore,
         checkpoint: ExactCheckpointId,
-        scenario: &ScenarioDef,
-        source: &ScenarioDefForm,
-        initial: &Configuration,
-        post_selection: Option<&Configuration>,
+        basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<
         (
@@ -1923,24 +1556,25 @@ where
         ),
         QemuAttemptProductionVmLifecycleError,
     > {
-        if context.resume_checkpoint() != Some(checkpoint) {
-            return Err(
-                QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(checkpoint),
-            );
-        }
-        if source.scenario_def() != *scenario {
-            return Err(QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch);
-        }
+        validate_exact_resume_request(checkpoint, basis, context)?;
+        let QemuExactResumeBasis {
+            scenario,
+            source,
+            initial,
+            post_selection,
+        } = basis;
+
         let installed = install_attempt_production_resume_checkpoint(
             checkpoints,
             checkpoint,
             source,
             initial,
             post_selection,
-            self.config.run_state_root(),
             context.cancellation(),
         )
-        .map_err(QemuAttemptProductionVmLifecycleError::CheckpointRestore)?;
+        .map_err(|error| {
+            QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(error))
+        })?;
         let scheduler = installed.scheduler();
         if scheduler.retained_event_log_base_events() != 0 {
             return Err(QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary);
@@ -1956,7 +1590,7 @@ where
             self.config.run_state_root(),
             scenario,
             source,
-            installed.closure().identity(),
+            installed.production_identity(),
         )
         .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
         Ok((
@@ -2006,10 +1640,24 @@ where
         let process_resources = context
             .process_resources()
             .map_err(QemuAttemptProductionVmLifecycleError::ResourceRefusal)?;
-        let mut guard = self
-            .resources
-            .begin(process_resources, context.cancellation().clone())
-            .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?;
+        let selected_checkpoint = context.take_selected_checkpoint();
+        let guard = self.resources.begin(
+            process_resources,
+            context.cancellation().clone(),
+            selected_checkpoint,
+        );
+        let mut guard = match guard {
+            Ok(guard) => guard,
+            Err(failure) => {
+                let (error, selected_checkpoint) = failure.into_parts();
+                if let Some(selected_checkpoint) = selected_checkpoint {
+                    context.restore_selected_checkpoint(selected_checkpoint);
+                }
+                return Err(QemuAttemptProductionVmLifecycleError::ResourceInstallation(
+                    error,
+                ));
+            }
+        };
         if guard.resource_limits() != process_resources
             || !guard
                 .cancellation()
@@ -2076,366 +1724,504 @@ where
     }
 }
 
-fn production_lifecycle_config_for_continuations(
-    mut config: ProductionVmLifecycleConfig,
-    source: &ScenarioDefForm,
-    continuations: &[OwnedQemuAttemptContinuation],
-) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    for continuation in continuations {
-        config = production_continuation_plan(source, Some(continuation))?.apply(config);
-    }
-    Ok(config)
-}
+#[path = "qemu_campaign_lifecycle/continuation.rs"]
+mod continuation;
+use continuation::*;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ProductionContinuationPlan {
-    Unchanged,
-    Reseed {
-        base: Configuration,
-        frontier: VirtualTime,
-        seed: Seed,
-    },
-    NetworkOverrides {
-        base: Configuration,
-        frontier: VirtualTime,
-        overrides: Vec<crucible::OverrideDecision>,
-    },
-}
-
-impl ProductionContinuationPlan {
-    fn apply(self, config: ProductionVmLifecycleConfig) -> ProductionVmLifecycleConfig {
-        match self {
-            Self::Unchanged => config,
-            Self::Reseed {
-                base,
-                frontier,
-                seed,
-            } => config.append_branch_reseed(base, frontier, seed),
-            Self::NetworkOverrides {
-                base,
-                frontier,
-                overrides,
-            } => config
-                .append_branch_prefix_overrides(base, frontier, Vec::new())
-                .append_branch_network_choices(overrides),
-        }
-    }
-}
-
-fn production_continuation_plan(
-    source: &ScenarioDefForm,
-    continuation: Option<&OwnedQemuAttemptContinuation>,
-) -> Result<ProductionContinuationPlan, QemuAttemptProductionVmLifecycleError> {
-    let Some(continuation) = continuation else {
-        return Ok(ProductionContinuationPlan::Unchanged);
-    };
-    let input = &continuation.input;
-    let frontier = VirtualTime {
-        ticks: input.source_frontier_ticks(),
-    };
-
-    match input {
-        AttemptContinuationInput::SchedulerReseed { seed, .. } => {
-            Ok(ProductionContinuationPlan::Reseed {
-                base: continuation.source.clone(),
-                frontier,
-                seed: Seed::from_bytes(*seed),
-            })
-        }
-        AttemptContinuationInput::SchedulerOverrides { decisions, .. } => {
-            let mut overrides = Vec::new();
-            overrides
-                .try_reserve(decisions.len())
-                .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
-            let mut points = BTreeSet::new();
-            for bytes in decisions {
-                let schedule = Schedule::from_compact_binary(bytes)
-                    .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
-                if schedule.to_compact_binary() != *bytes {
-                    return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
-                }
-                let [Decision::Override(decision)] = schedule.decisions() else {
-                    return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
-                };
-                if !crucible::live_world_network_override_matches_world(source.world(), decision)
-                    || !points.insert(decision.point.key.clone())
-                {
-                    return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
-                }
-                overrides.push(decision.clone());
-            }
-            Ok(ProductionContinuationPlan::NetworkOverrides {
-                base: continuation.source.clone(),
-                frontier,
-                overrides,
-            })
-        }
-    }
-}
-
-fn production_lifecycle_config_for_start(
-    config: &ProductionVmLifecycleConfig,
-    source: &ScenarioDefForm,
-    start: &Configuration,
-    signal_fault_replay: Option<&crucible::SignalFaultCampaignReplayPlan>,
-) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    let (selections, plans) = app_random_branch_replay(start)
-        .map_err(QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay)?;
-    if plans.keys().any(|node| {
-        !source
-            .world()
-            .vm_nodes()
-            .iter()
-            .any(|vm| vm.id == *node && vm.white_box == crucible::WhiteBoxPolicy::Enabled)
-    }) {
-        return Err(
-            QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(String::from(
-                "app-random branch plan names a missing or white-box-disabled VM",
-            )),
-        );
-    }
-    let mut config = config
-        .clone()
-        .with_app_random_branch_replay(selections, plans);
-    if let Some(replay) = signal_fault_replay {
-        if replay.target() != start {
-            return Err(
-                QemuAttemptProductionVmLifecycleError::InvalidSignalFaultBranchReplay(
-                    String::from(
-                        "signal-fault replay target differs from the admitted start configuration",
-                    ),
-                ),
-            );
-        }
-        config = config.with_signal_fault_campaign_replay(replay.clone());
-    }
-    Ok(config)
-}
-
-impl<F, D> CrucibleExecutionRunner for QemuFreshExecutionRunner<F, D>
-where
-    F: QemuFreshAttemptLifecycleFactory,
-    D: QemuFreshAttemptDriver,
+fn materialize_fresh_start<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    input: &CrucibleAttemptExecution,
+    target: &Configuration,
+    context: &AttemptExecutionContext,
+    retain_replayed_discoveries: bool,
+) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
 {
-    type Error = QemuFreshExecutionRunnerError<F::Error, D::Error>;
+    let completed_quanta = lifecycle.completed_quanta();
+    materialize_start_from(
+        lifecycle,
+        input,
+        Configuration::genesis(target.def.clone()),
+        target,
+        context,
+        QemuFreshStartMaterialization {
+            retain_replayed_discoveries,
+            ..QemuFreshStartMaterialization::at_quanta(completed_quanta)
+        },
+    )
+}
 
-    fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
-        self.take_abandoned_checkpoint()
+pub(crate) fn materialize_start_from<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    input: &CrucibleAttemptExecution,
+    mut current: Configuration,
+    target: &Configuration,
+    context: &AttemptExecutionContext,
+    mut replay: QemuFreshStartMaterialization,
+) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
+{
+    let authoritative_quanta = lifecycle.completed_quanta();
+    if replay.completed_quanta != authoritative_quanta {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::QuantumCoordinateMismatch {
+                    materialized: replay.completed_quanta,
+                    authoritative: authoritative_quanta,
+                },
+            ),
+        ));
+    }
+    if current == *target {
+        return Ok(replay);
+    }
+    if replay.terminal_verdict.is_some() {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
+        ));
     }
 
-    fn execute(
-        &mut self,
-        input: &CrucibleAttemptExecution,
-        context: &AttemptExecutionContext,
-    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
-        })?;
-        if !self
-            .lifecycles
-            .configure_attempt_continuations(&continuations)
-        {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
-            ));
-        }
-        if let Some(checkpoint) = context.resume_checkpoint() {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(checkpoint),
-            ));
-        }
-        if matches!(
-            context.start_mode(),
-            AttemptStartMode::CaptureMaterializedStart { .. }
-                | AttemptStartMode::SavepointCapture { .. }
-        ) && !context.checkpoint_request().is_requested()
-        {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::CaptureCheckpointNotRequested,
-            ));
-        }
-        let scenario = input.scenario().scenario_def();
-        let (start, start_signal_fault_replay) = match input.start() {
-            CrucibleResolvedAttemptStart::AfterAttempt {
-                base,
-                base_signal_fault_replay,
-                ..
-            } => (base.configuration(), base_signal_fault_replay),
-            start @ (CrucibleResolvedAttemptStart::Discover { .. }
-            | CrucibleResolvedAttemptStart::Branch { .. }) => {
-                (start.configuration(), input.signal_fault_replay())
-            }
-        };
-        if let Some(decision) = unsupported_fresh_replay_decision(start, start_signal_fault_replay)
-        {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartDecisionUnsupported {
-                    configuration: start.id(),
-                    decision,
-                },
-            ));
-        }
-        let mut lifecycle = self
-            .lifecycles
-            .start_fresh_lifecycle(
-                &scenario,
-                input.scenario(),
-                start,
-                start_signal_fault_replay,
-                context,
-            )
-            .map_err(map_fresh_lifecycle_failure)?;
-        let materialization = materialize_fresh_start(&mut lifecycle, input, start, context, false)
-            .and_then(|materialization| {
-                replay_selected_origins(&mut lifecycle, input, context, materialization)
-            });
-        let driven = materialization.and_then(|materialization| {
-            if matches!(
-                context.start_mode(),
-                AttemptStartMode::CaptureMaterializedStart { .. }
-            ) {
-                let lifecycle_terminal = lifecycle.terminal_verdict_for_stop();
-                if let (Some(materialized), Some(retained)) =
-                    (&materialization.terminal_verdict, &lifecycle_terminal)
-                    && materialized != retained
-                {
-                    return Err(map_checkpoint_capture_failure(
-                        SchedulerError::BoundaryViolation {
-                            message: String::from(
-                                "materialized terminal verdict differs from lifecycle evidence",
-                            ),
-                        },
-                    ));
-                }
-                let terminal_verdict = materialization
-                    .terminal_verdict
-                    .as_ref()
-                    .or(lifecycle_terminal.as_ref());
-                let checkpoint_ready = lifecycle
-                    .exact_checkpoint_ready()
-                    .map_err(map_checkpoint_capture_failure)?;
-                if !checkpoint_ready {
-                    return Err(AttemptWorkerFailure::Terminal(
-                        QemuFreshExecutionRunnerError::CaptureStartNotCheckpointReady,
-                    ));
-                }
-                if let Some(verdict) = terminal_verdict {
-                    let cause = match verdict {
-                        QuantumTerminalVerdict::Passed => CheckpointTerminalCause::Passed,
-                        QuantumTerminalVerdict::Failed(violations) => {
-                            CheckpointTerminalCause::Failed(violations.clone())
-                        }
-                    };
-                    lifecycle
-                        .prepare_terminal_checkpoint(cause)
-                        .map_err(map_checkpoint_capture_failure)?;
-                }
-                let capture = lifecycle
-                    .capture_attempt_checkpoint(context)
-                    .map_err(map_checkpoint_capture_failure)?;
-                self.register_native_checkpoint_capture(&capture);
-                return context
-                    .prepare_and_stage_checkpoint(&capture)
-                    .map(QemuFreshRunnerResult::Checkpoint)
-                    .map_err(map_checkpoint_handoff_failure);
-            }
-            if input.attempt().stop().accepts_next_choice() {
-                lifecycle.enable_signal_fault_campaign_promotion();
-            }
-            let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
-            let outcome = self
-                .driver
-                .drive(&mut facade, input, context, materialization)
-                .map_err(map_fresh_driver_failure)?;
-            match outcome {
-                QemuFreshDriveOutcome::Observation(pending) => {
-                    Ok(QemuFreshRunnerResult::Observation(pending))
-                }
-                QemuFreshDriveOutcome::CheckpointRequested => {
-                    if !context.checkpoint_request().is_requested() {
-                        return Err(AttemptWorkerFailure::Terminal(
-                            QemuFreshExecutionRunnerError::UnsolicitedCheckpoint,
-                        ));
-                    }
-                    if matches!(
-                        context.start_mode(),
-                        AttemptStartMode::SavepointCapture { .. }
-                    ) && let Some(verdict) = lifecycle.terminal_verdict_for_stop()
-                    {
-                        let cause = match verdict {
-                            QuantumTerminalVerdict::Passed => CheckpointTerminalCause::Passed,
-                            QuantumTerminalVerdict::Failed(violations) => {
-                                CheckpointTerminalCause::Failed(violations)
-                            }
-                        };
-                        lifecycle
-                            .prepare_terminal_checkpoint(cause)
-                            .map_err(map_checkpoint_capture_failure)?;
-                    }
-                    let capture = lifecycle
-                        .capture_attempt_checkpoint(context)
-                        .map_err(map_checkpoint_capture_failure)?;
-                    self.register_native_checkpoint_capture(&capture);
-                    context
-                        .prepare_and_stage_checkpoint(&capture)
-                        .map(QemuFreshRunnerResult::Checkpoint)
-                        .map_err(map_checkpoint_handoff_failure)
-                }
-            }
-        });
-        let driven = driven.and_then(|pending| {
-            lifecycle
-                .prepare_terminal_fingerprints()
-                .map(|()| pending)
-                .map_err(map_terminal_fingerprint_capture_failure)
-        });
-        let cleanup = lifecycle.shutdown();
-        self.resolve_native_checkpoint_capture(cleanup.is_ok(), driven.is_ok());
+    // A guest selectable can already be pending at lifecycle admission. Replay
+    // it at the current boundary before charging a quantum so a saved choice at
+    // genesis retains its original absolute quantum and event coordinates.
+    let initial_selection_entries = apply_replayed_guest_selectables(
+        lifecycle,
+        context,
+        GuestSelectableReplayContext {
+            phase: GuestSelectableReplayPhase::FreshStart,
+            attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,
+            attempt: input.attempt(),
+            start: input.start(),
+            scenario: input.lineage().scenario(),
+            source: input.scenario(),
+            target,
+        },
+        &mut current,
+        &mut replay,
+    )?;
+    append_start_replay_events(&mut replay, &initial_selection_entries)?;
+    if current == *target {
+        return Ok(replay);
+    }
 
-        let (pending, final_events) = match (driven, cleanup) {
-            (Ok(pending), Ok(events)) => (pending, events),
-            (Err(failure), Ok(_events)) => return Err(failure),
-            (Ok(_pending), Err(cleanup)) => {
-                return Err(AttemptWorkerFailure::Terminal(
-                    QemuFreshExecutionRunnerError::Cleanup(cleanup),
-                ));
-            }
-            (Err(failure), Err(cleanup)) => {
-                return Err(AttemptWorkerFailure::Terminal(
-                    cleanup_after_fresh_runner_failure(failure, cleanup),
-                ));
-            }
+    loop {
+        if context.cancellation().is_canceled() {
+            return Err(AttemptWorkerFailure::Canceled(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Canceled),
+            ));
+        }
+        let prior_len = current.schedule.len();
+        context.charge_execution_quantum().map_err(|error| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::ResourceRefusal(error),
+            ))
+        })?;
+        let outcome = lifecycle
+            .drive_quantum(QuantumRequest {
+                configuration: current,
+                control: Vec::new(),
+            })
+            .map_err(map_start_replay_scheduler_failure)?;
+        let completed_quanta = lifecycle.completed_quanta();
+        if completed_quanta < replay.completed_quanta {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::QuantumCounterRegressed {
+                        before: replay.completed_quanta,
+                        after: completed_quanta,
+                    },
+                ),
+            ));
+        }
+        let prior_completed_quanta = replay.completed_quanta;
+        replay.completed_quanta = completed_quanta;
+        replay.frontier = outcome.frontier;
+        if context.cancellation().is_canceled() {
+            return Err(AttemptWorkerFailure::Canceled(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Canceled),
+            ));
+        }
+
+        let mut next = outcome.configuration;
+        let next_len = next.schedule.len();
+        if next.def != target.def
+            || next_len < prior_len
+            || next_len > target.schedule.len()
+            || next.schedule.decisions()[prior_len..]
+                != target.schedule.decisions()[prior_len..next_len]
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+            ));
+        }
+        let terminal = lifecycle.terminal_verdict_for_stop();
+        let selection_entries = if terminal.is_none() {
+            apply_replayed_guest_selectables(
+                lifecycle,
+                context,
+                GuestSelectableReplayContext {
+                    phase: GuestSelectableReplayPhase::FreshStart,
+                    attempt_role: GuestSelectableReplayAttemptRole::ExecutingAttempt,
+                    attempt: input.attempt(),
+                    start: input.start(),
+                    scenario: input.lineage().scenario(),
+                    source: input.scenario(),
+                    target,
+                },
+                &mut next,
+                &mut replay,
+            )?
+        } else {
+            Vec::new()
         };
-        let product = match pending {
-            QemuFreshRunnerResult::Observation(pending) => self
-                .driver
-                .seal(pending, final_events)
-                .map_err(map_fresh_driver_failure)?,
-            QemuFreshRunnerResult::Checkpoint(checkpoint) => {
-                AttemptExecutionProduct::exact_checkpoint(checkpoint)
-            }
-        };
-        Ok(CrucibleExecutionOutcome::new(
-            product,
-            CrucibleMaterializationTier::ThinReplay,
-        ))
+
+        append_start_replay_events(&mut replay, &outcome.event_log_entries)?;
+        append_start_replay_events(&mut replay, &selection_entries)?;
+        replay.terminal_quiescence = outcome.scheduler_quiescence;
+        current = next;
+        if current == *target {
+            replay.terminal_verdict = terminal;
+            return Ok(replay);
+        }
+        if terminal.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
+            ));
+        }
+        if replay.completed_quanta == prior_completed_quanta && current.schedule.len() == prior_len
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+            ));
+        }
     }
 }
 
-mod start_replay;
+fn apply_replayed_guest_selectables<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    context: &AttemptExecutionContext,
+    replay_context: GuestSelectableReplayContext<'_>,
+    current: &mut Configuration,
+    materialization: &mut QemuFreshStartMaterialization,
+) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
+{
+    let pending = lifecycle
+        .drain_pending_selectable_requests()
+        .map_err(map_start_replay_scheduler_failure)?;
+    let mut replayed = current.clone();
+    let mut replies = Vec::with_capacity(pending.len());
+    for pending in pending {
+        let discovery = resolve_guest_selectable(
+            replay_context.scenario,
+            replay_context.source,
+            pending.node(),
+            pending.pending(),
+        )
+        .map_err(start_replay_guest_selectable_failure)?;
+        materialization
+            .retain_replayed_discovery(discovery.clone())
+            .map_err(start_replay_guest_selectable_failure)?;
+        let Some(Decision::Selection(decision)) = replay_context
+            .target
+            .schedule
+            .decisions()
+            .get(replayed.schedule.len())
+        else {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+            ));
+        };
+        let selection = decision
+            .selection()
+            .map_err(GuestSelectableError::Campaign)
+            .map_err(start_replay_guest_selectable_failure)?;
+        let expected_selection = replay_context
+            .start
+            .replay_selection(replayed.schedule.len());
+        record_guest_selectable_boundary_diagnostic(
+            context,
+            replay_context.attempt,
+            GuestSelectableBoundaryDiagnosticStage::Replay,
+            replayed.schedule.len(),
+            pending.node(),
+            pending.pending(),
+            &discovery,
+            expected_selection,
+        );
+        let validation = match selection.origin() {
+            SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
+                selection.validate_replay(discovery.opportunity(), discovery.domain())
+            }
+            SelectionOrigin::CampaignBranch { .. } => {
+                let parent =
+                    ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
+                selection.validate_branch_replay(
+                    discovery.opportunity(),
+                    discovery.domain(),
+                    discovery.opportunity().branch_point_id(parent),
+                )
+            }
+            SelectionOrigin::ModelSample(_) => {
+                return Err(start_replay_guest_selectable_failure(
+                    GuestSelectableError::Campaign(
+                        crucible_campaign::CampaignCodecError::InvalidValue {
+                            reason: "guest selectable replay does not admit model-sample provenance",
+                        },
+                    ),
+                ));
+            }
+        };
+        if let Err(error) = validation {
+            let attempt = replay_context.attempt.id().ok();
+            let mismatch = selection
+                .replay_mismatch(discovery.opportunity(), discovery.domain())
+                .ok()
+                .flatten();
+            let error = match (attempt, mismatch) {
+                (Some(attempt), Some(mismatch)) => {
+                    let request = pending.pending().request();
+                    let replayed_configuration =
+                        ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
+                    let expected_opportunity = expected_selection.map(|selection| {
+                        GuestSelectableReplayOpportunityContext::from_opportunity(
+                            selection.opportunity(),
+                        )
+                    });
+                    let correlation = GuestSelectableReplayCorrelation {
+                        phase: replay_context.phase,
+                        attempt_role: replay_context.attempt_role,
+                        attempt,
+                        replayed_configuration,
+                        decision_index: replayed.schedule.len(),
+                        node: pending.node().name.clone(),
+                        selectable: request.selectable_id().to_owned(),
+                        request_instance: request.instance_key().to_owned(),
+                        request_sequence: request.sequence(),
+                        request_icount: pending.pending().icount(),
+                        request_vcpu_index: pending.pending().vcpu_index(),
+                        expected_opportunity,
+                        replayed_opportunity:
+                            GuestSelectableReplayOpportunityContext::from_opportunity(
+                                discovery.opportunity(),
+                            ),
+                    };
+                    GuestSelectableError::ReplayMismatch(Box::new(
+                        GuestSelectableReplayMismatch::new(correlation, mismatch, error),
+                    ))
+                }
+                _ => GuestSelectableError::Campaign(error),
+            };
+            return Err(start_replay_guest_selectable_failure(error));
+        }
+        let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
+            .map_err(start_replay_guest_selectable_failure)?;
+        replies.push((pending, reply, decision.clone(), replayed.clone()));
+        replayed =
+            crucible::try_step(&replayed, Decision::Selection(decision.clone())).map_err(|_| {
+                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::Diverged,
+                ))
+            })?;
+    }
+    let mut selection_entries = Vec::new();
+    for (pending, reply, decision, parent) in replies {
+        let selected =
+            crucible::try_step(&parent, Decision::Selection(decision.clone())).map_err(|_| {
+                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::Diverged,
+                ))
+            })?;
+        let entries = lifecycle
+            .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
+            .map_err(map_start_replay_scheduler_failure)?;
+        selection_entries.extend(entries);
+    }
+    *current = replayed;
+    Ok(selection_entries)
+}
 
-#[cfg(test)]
-use start_replay::apply_replayed_guest_selectables;
-pub(crate) use start_replay::{
-    classify_production_lifecycle_failure, materialize_start_from,
-    production_lifecycle_failure_class,
-};
-use start_replay::{
-    cleanup_after_fresh_runner_failure, map_checkpoint_capture_failure,
-    map_checkpoint_handoff_failure, map_fresh_driver_failure, map_fresh_lifecycle_failure,
-    map_terminal_fingerprint_capture_failure, materialize_fresh_start, replay_selected_origins,
-    unsupported_fresh_replay_decision, validated_attempt_continuations,
-};
+fn start_replay_guest_selectable_failure<F, D>(
+    error: GuestSelectableError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+        QemuFreshStartReplayError::GuestSelectable(error),
+    ))
+}
+
+fn append_start_replay_events<F, D>(
+    replay: &mut QemuFreshStartMaterialization,
+    entries: &[SchedulerEventLogEntry],
+) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
+    let count = replay
+        .event_log
+        .len()
+        .checked_add(entries.len())
+        .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-entry-count"))?;
+    if count > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
+                limit: "fresh-campaign-event-log-entry-count",
+            }),
+        ));
+    }
+    let added = entries.iter().try_fold(0usize, |total, entry| {
+        total
+            .checked_add(entry.canonical_material_len())
+            .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))
+    })?;
+    let bytes = replay
+        .event_log_bytes
+        .checked_add(added)
+        .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))?;
+    if bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
+                limit: "fresh-campaign-event-log-bytes",
+            }),
+        ));
+    }
+    replay.event_log.extend_from_slice(entries);
+    replay.event_log_bytes = bytes;
+    Ok(())
+}
+
+fn start_replay_limit_failure<F, D>(
+    limit: &'static str,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+        QemuFreshStartReplayError::LimitExceeded { limit },
+    ))
+}
+
+fn map_start_replay_scheduler_failure<F, D>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error =
+        QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Scheduler(error));
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
+    }
+}
+
+fn map_checkpoint_capture_failure<F, D>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error = QemuFreshExecutionRunnerError::CheckpointCapture(error);
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
+    }
+}
+
+fn map_terminal_fingerprint_capture_failure<F, D>(
+    error: SchedulerError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    let class = match &error {
+        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::Backend(_)
+        | SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::ResourceLimit { .. }
+        | SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. } => None,
+    };
+    let error = QemuFreshExecutionRunnerError::TerminalFingerprintCapture(error);
+    match class {
+        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
+        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
+        Some(SchedulerOperationalFailureClass::Terminal) | None => {
+            AttemptWorkerFailure::Terminal(error)
+        }
+    }
+}
+
+fn map_checkpoint_handoff_failure<F, D>(
+    failure: AttemptWorkerFailure<CheckpointHandoffFailure>,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
+        }
+    }
+}
+
+fn map_fresh_lifecycle_failure<F, D>(
+    failure: AttemptWorkerFailure<F>,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Lifecycle(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Lifecycle(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Lifecycle(error))
+        }
+    }
+}
+
+fn map_fresh_driver_failure<F, D>(
+    failure: AttemptWorkerFailure<D>,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error))
+        }
+    }
+}
+
+fn cleanup_after_fresh_runner_failure<F, D>(
+    failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
+    cleanup: SchedulerError,
+) -> QemuFreshExecutionRunnerError<F, D> {
+    let driver = match failure {
+        AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
+        | AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
+        | AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error)) => error,
+        AttemptWorkerFailure::Retryable(error)
+        | AttemptWorkerFailure::Canceled(error)
+        | AttemptWorkerFailure::Terminal(error) => {
+            return QemuFreshExecutionRunnerError::CleanupAfterRunner {
+                failure: Box::new(error),
+                cleanup,
+            };
+        }
+    };
+    QemuFreshExecutionRunnerError::CleanupAfterDriver { driver, cleanup }
+}
 
 #[cfg(test)]
 mod tests;

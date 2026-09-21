@@ -1202,9 +1202,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
 - [x] **T-TRIG-20** Provide equivalent validated code-first and canonical
   serialized event-graph authoring forms. — satisfies [TRIG-32]; spec §17a.10.
 
-## Historical gate aliases
+## Current executable coverage
 
-Historical gate aliases retained for the executable event-graph checks:
+The event-graph checks are executable at these current gate paths:
 
 - Completed by `checks.crucible.phase4.assertionQuiescenceLeaves`
 - Completed by `checks.crucible.phase4.blackBoxFirstGuarantee`

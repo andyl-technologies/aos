@@ -265,8 +265,8 @@ and discard is specified in
 [`15-block-discard.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/15-block-discard.md).
 Reset transport is specified in
 [`16-block-transport-reset.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/16-block-transport-reset.md).
-Versions 1 through 3 are not accepted by a version 4 endpoint; there is no legacy
-decode or silent downgrade path.
+Every noncurrent version is rejected; there is no alternate decode or silent
+downgrade path.
 
 - **[IO-8]** The block request/response wire format MUST be a **versioned
   boundary ABI** ([G-8]): every message MUST carry an ABI version byte and a
@@ -1009,7 +1009,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Summary: block and 9p request/response lifecycles now use real shmem rings
   while preserving COMPUTE-then-DELIVER visibility, exact next-event ordering,
   deterministic full-ring backpressure, and producer/consumer wakes.
-  `checks.crucible.phase2.qemuLiveBlockIo` supplies the final real-backend
+  `checks.crucible.phase2.qemuLiveBlockRealization` supplies the final real-backend
   discharge: a Linux guest's explicit sector write is computed by the host
   servicer, remains invisible until its future delivery icount, then crosses
   `SLOT_BLK_IO` and releases the guest. Delaying response publication by 100 ms

@@ -33,7 +33,7 @@ fn checkpoint_fixture_with_latency(
         .unwrap_or_else(|| panic!("test region must contain slot zero"));
     let ceiling = authorize_advance_ceiling(0, 0, None)
         .unwrap_or_else(|error| panic!("authorize test boundary: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("publish test ceiling: {error}"));
     slot.publish_reached_icount(0, 0)
         .unwrap_or_else(|error| panic!("publish test boundary: {error}"));
@@ -133,35 +133,13 @@ fn latency_replacement_is_retained_in_exact_checkpoint_state() {
 }
 
 #[test]
-fn deterministic_diagnostics_ignore_host_poll_cadence() {
-    let first = BlockIoDiagnosticsSnapshot {
-        frames_processed: 1,
-        write_frames_processed: 1,
-        frames_delivered: 1,
-        service_calls: 17,
-        first_request_icount: Some(0),
-        first_completion_horizon: Some(1512),
-        last_current_icount: 12_000_000,
-        max_current_icount: 12_000_000,
-        last_device_io_active: false,
-        last_idle_wake_icount: 1,
-    };
-    let second = BlockIoDiagnosticsSnapshot {
-        service_calls: 29,
-        ..first
-    };
-
-    assert_ne!(first, second);
-    assert!(first.deterministic_observation_eq(&second));
-}
-
-#[test]
 fn terminal_slot_observation_replaces_pre_consumption_device_state() {
     let diagnostics = BlockIoDiagnostics::default();
     diagnostics.record(
         10,
         true,
         20,
+        2,
         &QemuLiveBlockIoServiceStep {
             processed: 1,
             write_frames_processed: 1,
@@ -172,7 +150,7 @@ fn terminal_slot_observation_replaces_pre_consumption_device_state() {
         },
     );
 
-    diagnostics.observe_slot(30, false, 30);
+    diagnostics.observe_slot(30, false, 30, 3);
 
     let snapshot = diagnostics.snapshot();
     assert_eq!(snapshot.service_calls, 1);
@@ -180,6 +158,8 @@ fn terminal_slot_observation_replaces_pre_consumption_device_state() {
     assert_eq!(snapshot.max_current_icount, 30);
     assert!(!snapshot.last_device_io_active);
     assert_eq!(snapshot.last_idle_wake_icount, 30);
+    assert_eq!(snapshot.last_control_boundary_ack, 3);
+    assert_eq!(snapshot.last_active_control_boundary_ack, Some(2));
 }
 
 #[cfg(unix)]

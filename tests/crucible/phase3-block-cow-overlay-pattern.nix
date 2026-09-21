@@ -9,11 +9,14 @@
 
   patternDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
-  blockModule = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-device/src/block.rs;
-    siblingTests = true;
-  };
+  blockModule =
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-device/src/block.rs;
+      siblingTests = true;
+    }
+    + builtins.readFile ../../crates/crucible-device/src/block_overlay_codec_test.rs
+    + builtins.readFile ../../crates/crucible-device/src/block_snapshot_array_test.rs;
   overlay = builtins.readFile ../../crates/crucible-device/src/block/overlay.rs;
   device =
     import ./_rust-module-source.nix {

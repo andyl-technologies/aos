@@ -28,7 +28,7 @@ use crucible_cas::content_store::ContentId;
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 use thiserror::Error;
 
-use crate::{HotCheckpointFallback, QemuHotForkTemplateKey};
+use crate::{HotCheckpointFallback, HotCheckpointPoolKey};
 
 /// Maximum durable fallback records retained by one daemon catalog.
 pub const MAX_HOT_CHECKPOINT_FALLBACK_ROOTS: usize = 65_536;
@@ -65,20 +65,20 @@ impl HotCheckpointFallbackSlot {
 /// Exact source key and fallback identity retained in one catalog slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HotCheckpointFallbackRecord {
-    key: QemuHotForkTemplateKey,
+    key: HotCheckpointPoolKey,
     fallback: HotCheckpointFallback,
 }
 
 impl HotCheckpointFallbackRecord {
     /// Binds one exact source identity to its durable fallback.
     #[must_use]
-    pub const fn new(key: QemuHotForkTemplateKey, fallback: HotCheckpointFallback) -> Self {
+    pub const fn new(key: HotCheckpointPoolKey, fallback: HotCheckpointFallback) -> Self {
         Self { key, fallback }
     }
 
     /// Returns the source lineage/configuration identity.
     #[must_use]
-    pub const fn template_key(self) -> QemuHotForkTemplateKey {
+    pub const fn template_key(self) -> HotCheckpointPoolKey {
         self.key
     }
 
@@ -638,7 +638,7 @@ fn decode_record(
     };
     cursor.finish()?;
     Ok(HotCheckpointFallbackRecord::new(
-        QemuHotForkTemplateKey::new(lineage, configuration),
+        HotCheckpointPoolKey::new(lineage, configuration),
         fallback,
     ))
 }

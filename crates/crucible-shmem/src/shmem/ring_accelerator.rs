@@ -1,9 +1,8 @@
 //! Accelerator co-simulation request and completion transport.
 //!
-//! ABI v11 appends one guest/QEMU-to-host request ring and one host-to-QEMU
-//! completion ring per VM. ABI v12 adds the completion-capacity field and moves
-//! the payload accordingly. ABI v13 reserves request-ring capacity for
-//! cancellation of every full-depth guest queue entry. Each fixed-size entry owns a complete, bounded job
+//! Each VM owns one guest/QEMU-to-host request ring and one host-to-QEMU
+//! completion ring. Request capacity covers cancellation of every full-depth
+//! guest queue entry. Each fixed-size entry owns a complete, bounded job
 //! or result; no guest address, native pointer, or process-private object
 //! crosses the Apache/GPL process boundary.
 

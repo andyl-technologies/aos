@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -53,13 +60,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -242,7 +254,7 @@ fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let child = valid_step(
+    let child = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("event-log-content-address"),
@@ -321,14 +333,14 @@ fn thin_replay_rejects_stale_nonzero_event_log_offset() {
     let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let first = valid_step(
+    let first = accepted_step!(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("stale-offset-first"),
             value: 1,
         }),
     );
-    let second = valid_step(
+    let second = accepted_step!(
         &first,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("stale-offset-second"),
@@ -372,11 +384,4 @@ fn thin_replay_rejects_stale_nonzero_event_log_offset() {
         } if start == first.id() && target == second.id() && events == append.offset.events => {}
         other => panic!("unexpected stale-offset replay error: {other:?}"),
     }
-}
-
-fn valid_step(
-    configuration: &crucible::Configuration,
-    decision: crucible::Decision,
-) -> crucible::Configuration {
-    crucible::try_step(configuration, decision).expect("test configuration step")
 }

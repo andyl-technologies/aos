@@ -1,86 +1,121 @@
 {
   pkgs,
-  lib ? null,
+  lib,
+  productionPluginFlight,
   attrPath ? "checks.crucible.phase7.fingerprintDigestOffload",
   taskIds ? ["T-PERF-30"],
-  dependencies ? [],
-  liveFingerprint,
-  fingerprintHelpers,
+  campaignComposition ? null,
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  taskList = lib.concatStringsSep "," taskIds;
-  fingerprintWorkerSource = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs;
-in
-  pkgs.mkDerivation {
-    pname = "crucible-phase7-fingerprint-digest-offload";
-    version = "0";
+  taskList = builtins.concatStringsSep "," taskIds;
+  workerSource = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs;
+  callbackSource = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+  inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
 
-    buildDeps =
-      [
-        pkgs.coreutils
-        pkgs.grep
-        liveFingerprint
-        fingerprintHelpers
-      ]
-      ++ dependencies;
-
-    phases = [
+  failures =
+    failuresFor "fingerprint_worker.rs" workerSource [
       {
-        name = "verify-offload-evidence";
-        script = ''
-          set -eu
-          grep -Fq 'mpsc::sync_channel::<LiveFingerprintDigestWork>(1)' ${fingerprintWorkerSource}
-          grep -Fq '.name("crucible-fingerprint-digest".to_owned())' ${fingerprintWorkerSource}
-          grep -Fq 'let sample = captured.digest();' ${fingerprintWorkerSource}
-          grep -Fq '.publish(&sample)' ${fingerprintWorkerSource}
-          grep -Fq 'last_capture_icount' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
-          grep -Fq 'fingerprint.worker.submit(captured)?;' ${../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs}
-          grep -Fq 'struct CapturedFingerprintMaterial' ${../../crates/crucible-qemu-plugin/src/fingerprint_sampler.rs}
-          grep -Fq 'unsafe impl Send for CapturedFingerprintMaterial' ${../../crates/crucible-qemu-plugin/src/fingerprint_sampler.rs}
-          grep -Fq 'FINGERPRINT_FAILURE_ORACLE_MISMATCH' ${../../crates/crucible-qemu-plugin/src/fingerprint_sampler.rs}
-          grep -Fq 'oracle != &self.sample' ${../../crates/crucible-qemu-plugin/src/fingerprint_sampler.rs}
-          grep -Fq 'qemu_plugin_crucible_fingerprint_capture' ${../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}
-          grep -Fq 'memory_global_dirty_log_start(GLOBAL_DIRTY_MIGRATION' ${../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}
-          grep -Fq 'bql_lock();' ${../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}
-          grep -Fq 'qemu_plugin_crucible_sha256_bytes' ${../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch}
-          grep -Fq 'synchronous_oracle_enabled=false' ${./phase2-qemu-live-plugin-fingerprint.nix}
-          grep -Fq 'synchronous_oracle_matches_all_samples=true' ${./phase2-qemu-live-plugin-fingerprint.nix}
-          grep -Fq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' ${./phase2-qemu-live-plugin-fingerprint.nix}
-          grep -Fxq PASS "${liveFingerprint}/result"
-          grep -Fxq 'synchronous_oracle_enabled=false' "${liveFingerprint}/result"
-          grep -Fxq 'second_run_scheduler_preemption=true' "${liveFingerprint}/result"
-          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "${liveFingerprint}/result"
-          grep -Fxq 'sample_count=5' "${liveFingerprint}/result"
-          grep -Fxq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' "${liveFingerprint}/result"
-          grep -Fxq 'aggregate_icount_equals_target=true' "${liveFingerprint}/result"
-          grep -Fxq 'synchronous_oracle_enabled=true' "${liveFingerprint}/oracle-result"
-          grep -Fxq 'synchronous_oracle_matches_all_samples=true' "${liveFingerprint}/oracle-result"
-          grep -Fxq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' "${liveFingerprint}/oracle-result"
-          grep -Fxq 'fingerprint_capture_uses_dirty_tracking=true' "${fingerprintHelpers}/result"
-          grep -Fxq 'fingerprint_capture_acquires_bql=true' "${fingerprintHelpers}/result"
-          grep -Fxq 'fingerprint_capture_preserves_existing_dirty_owner=true' "${fingerprintHelpers}/result"
-          grep -Fxq 'captured_component_digests_match_synchronous=true' "${fingerprintHelpers}/result"
-
-          mkdir -p "$out"
-          cp "${liveFingerprint}/result" "$out/live-result"
-          cp "${liveFingerprint}/oracle-result" "$out/oracle-result"
-          cp "${fingerprintHelpers}/result" "$out/helper-result"
-          cat > "$out/result" <<'RESULT'
-          PASS
-          check=${attrPath}
-          gate=gate:fingerprint-digest-offload
-          tasks=${taskList}
-          status=complete
-          admission_class=A
-          capture=exact-icount-dirty-tracked-immutable-preimage
-          digest_thread=dedicated-bounded-worker
-          vcpu_digest_blocking=false
-          synchronous_corpus_identity=true
-          cadence_unchanged=true
-          sample_coordinates_unchanged=true
-          forced_event_boundaries_unchanged=true
-          production_oracle_overhead=false
-          RESULT
-        '';
+        label = "bounded digest queue";
+        needle = "mpsc::sync_channel::<LiveFingerprintDigestWork>(1)";
+      }
+      {
+        label = "worker-owned digest";
+        needle = "let sample = work.captured.digest();";
+      }
+      {
+        label = "worker-owned acknowledgement";
+        needle = ".acknowledge_capture_v1(work.capture_request)";
+      }
+    ]
+    ++ failuresFor "live_callbacks.rs" callbackSource [
+      {
+        label = "production asynchronous submission";
+        needle = "fingerprint.worker.submit(captured, capture_request)";
+      }
+    ]
+    ++ forbiddenFor "live_callbacks.rs" callbackSource [
+      {
+        label = "synchronous digest wait";
+        needle = "submit_and_wait";
+      }
+      {
+        label = "callback-owned capture acknowledgement";
+        needle = "acknowledge_capture_v1(capture_request)";
       }
     ];
-  }
+  liveLog =
+    if campaignComposition == null
+    then "${productionPluginFlight}/serial.log"
+    else "${productionPluginFlight}/raw-result";
+  modeDependencyAuthentication = lib.optionalString (campaignComposition != null) ''
+    grep -Fxq PASS ${productionPluginFlight}/raw-result
+    grep -Fxq 'gate=gate:production-rust-plugin-flight' ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} ${productionPluginFlight}/raw-result
+  '';
+  verifyScript = ''
+    set -eu
+    ${modeDependencyAuthentication}
+    live=${lib.escapeShellArg liveLog}
+    grep -Fxq 'rust_plugin_loaded=true' "$live"
+    grep -Fxq 'sample_stream_restart_identical=true' "$live"
+    grep -Fxq 'on_demand_worker_acknowledgements=24' "$live"
+    grep -Fxq 'on_demand_boundary_stream_bit_identical=true' "$live"
+    grep -Fxq 'sample_target_icounts=2000000,2000001,4000000,8000000' "$live"
+    grep -Fxq 'bounded_scheduler_preemption_applied=true' "$live"
+    grep -Fxq 'component_failures=0' "$live"
+
+    mkdir -p "$out"
+    cp "$live" "$out/live-plugin-flight.log"
+    cat > "$out/result" <<'RESULT'
+    PASS
+    check=${attrPath}
+    gate=gate:fingerprint-digest-offload
+    tasks=${taskList}
+    status=complete
+    admission_class=A
+    capture=exact-boundary-sealed-descriptor-preimage
+    digest_thread=crucible-fingerprint-digest
+    callback_waits_for_digest=false
+    acknowledgement_owner=digest-worker
+    bounded_queue=1
+    live_production_fingerprint_run=true
+    run_twice_fingerprints_identical=true
+    on_demand_sample_coordinates_unchanged=true
+    authenticated_on_demand_requests_acknowledged=24
+    on_demand_boundary_stream_bit_identical=true
+    RESULT
+  '';
+in
+  if failures != []
+  then throw "crucible fingerprint digest offload check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else if campaignComposition != null
+  then
+    import ./phase9-campaign-mode-system-gate.nix {
+      inherit pkgs lib testing;
+      inherit (campaignComposition) mode system;
+      gateName = "gate:fingerprint-digest-offload";
+      authoritativeAttr = attrPath;
+      executionFamily = "qemu-runtime";
+      name = "fingerprint-digest-offload";
+      runtimeInputs = [pkgs.coreutils pkgs.grep];
+      runtimeClosures = [productionPluginFlight];
+      runtimeScript = verifyScript;
+      timeout = 3600;
+      memoryMiB = 4096;
+      varSizeMiB = 8192;
+    }
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase7-fingerprint-digest-offload";
+      version = "0";
+      buildDeps = [pkgs.coreutils pkgs.grep productionPluginFlight];
+
+      phases = [
+        {
+          name = "verify-production-fingerprint-offload";
+          script = verifyScript;
+        }
+      ];
+    }

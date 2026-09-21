@@ -45,6 +45,12 @@ on_tb_exec(unsigned int vcpu_index, void *userdata)
     return;
   }
 
+  struct qemu_plugin_rr_cursor cursor = {
+      .current_vcpu = UINT64_MAX,
+      .cursor_position = UINT64_MAX,
+  };
+  (void)qemu_plugin_rr_cursor(&cursor);
+
   fprintf(
       trace_file,
       "tb_exec ordinal=%" PRIu64 " tb=%" PRIu64 " vcpu=%u rr_vcpu=%" PRIu64
@@ -52,17 +58,17 @@ on_tb_exec(unsigned int vcpu_index, void *userdata)
       tb_execs,
       info->id,
       vcpu_index,
-      qemu_plugin_crucible_rr_current_vcpu(),
-      qemu_plugin_crucible_rr_cursor_position(),
+      cursor.current_vcpu,
+      cursor.cursor_position,
       info->insns,
       retired_insns);
   fflush(trace_file);
 }
 
 static void
-on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+on_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
-  (void)id;
+  (void)userdata;
 
   struct tb_info *info = calloc(1, sizeof(*info));
   if (info == NULL) {
@@ -77,9 +83,8 @@ on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 }
 
 static void
-on_plugin_exit(qemu_plugin_id_t id, void *userdata)
+on_plugin_exit(void *userdata)
 {
-  (void)id;
   (void)userdata;
 
   if (trace_file != NULL) {
@@ -116,7 +121,7 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
     return -1;
   }
 
-  qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
+  qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate, NULL);
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);
   return 0;
 }
