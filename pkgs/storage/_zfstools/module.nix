@@ -12,6 +12,7 @@
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "zfs-auto-snapshot";
+  storageReadiness = config.aos.storage.readinessResources;
 
   nonEmptyString = abilityTypes.refined {
     name = "non-empty bounded string";
@@ -162,10 +163,10 @@
         (builtins.map datasetCommand cfg.datasets)
         true;
       dependencies = {
-        prerequisites = cfg.storageReadiness;
-        after = cfg.storageReadiness;
+        prerequisites = storageReadiness;
+        after = storageReadiness;
         before = [];
-        requires = cfg.storageReadiness;
+        requires = storageReadiness;
         wants = [];
       };
       inherit isolation;
@@ -185,11 +186,11 @@
       randomized_delay_millis = cfg.randomizedDelayMillis;
     };
     dependencies = {
-      prerequisites = cfg.storageReadiness;
-      after = cfg.storageReadiness;
+      prerequisites = storageReadiness;
+      after = storageReadiness;
       before = [];
       requires = lib.optional (cfg.datasets != []) (resultOf "prepare-lifecycle" "resource");
-      wants = cfg.storageReadiness;
+      wants = storageReadiness;
     };
     service = serviceManagement.forService {
       featureContributions = [
@@ -292,15 +293,6 @@ in {
       default = 300000;
       description = "Maximum randomized delay applied to scheduled snapshot runs.";
     };
-    storageReadiness = lib.mkOption {
-      type = abilityTypes.list {
-        element = abilityTypes.deferredResult abilityTypes.resourceReference;
-        maxItems = 1025;
-      };
-      default = [];
-      internal = true;
-      description = "Exact owning storage resources that must be ready before snapshot work.";
-    };
   };
 
   config = lib.mkMerge [
@@ -316,7 +308,7 @@ in {
           message = "aos.services.zfsAutoSnapshot requires at least one enabled interval";
         }
         {
-          assertion = cfg.storageReadiness != [];
+          assertion = storageReadiness != [];
           message = "aos.services.zfsAutoSnapshot requires owning storage readiness resources";
         }
       ];

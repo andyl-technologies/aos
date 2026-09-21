@@ -9,6 +9,7 @@
       inherit lib;
       modules = [
         lib.abilities.module
+        ../../modules/abilities/storage.nix
         ../../modules/base/_manager-contributions.nix
         ../../modules/image/_platform.nix
         ../../modules/services/zfs-auto-snapshot.nix
@@ -63,7 +64,7 @@
   prepareLifecycle = requests."zfstools:prepare-lifecycle".parameters;
   schedule = requests."zfstools:hourly-schedule".parameters;
   activation = requests."zfstools:zfs-auto-snapshot-hourly-activation".parameters;
-  storageReadiness = enabled.config.aos.filesystems.zfs.readinessResources;
+  storageReadiness = enabled.config.aos.storage.readinessResources;
   poolRequests = builtins.attrNames (lib.filterAttrs
     (_: request:
       request.package
@@ -136,8 +137,8 @@ in
   == [(outputReference "zfstools:prepare-lifecycle" "resource")];
   assert storageReadiness
   == [
-    (outputReference poolRequest "resource")
     (outputReference datasetRequest "resource")
+    (outputReference poolRequest "resource")
   ];
   assert requests."zfstools:prepare-dependencies".parameters.requires == storageReadiness;
   assert requests."zfstools:zfs-auto-snapshot-hourly-dependencies".parameters.after == storageReadiness;
