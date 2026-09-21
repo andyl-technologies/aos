@@ -9,43 +9,37 @@
     modules = [
       ../../systems/server.nix
       {
-        systemd.units = {
-          "aos-pkg-preset-enabled.target".text = ''
-            [Unit]
-            Description=RFC-0001 preset-enabled package target
-            Wants=preset-enabled.service
-
-            [Install]
-            WantedBy=multi-user.target
-          '';
-          "preset-enabled.service".text = ''
-            [Unit]
-            Description=RFC-0001 preset-enabled package service
-            PartOf=aos-pkg-preset-enabled.target
-
-            [Service]
-            Type=oneshot
-            RemainAfterExit=yes
-            ExecStart=${pkgs.bash}/bin/bash -c '${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-preset-enabled && ${pkgs.coreutils}/bin/printf boot >> /var/lib/aos-preset-enabled/boots'
-          '';
-          "aos-pkg-preset-disabled.target".text = ''
-            [Unit]
-            Description=RFC-0001 preset-disabled package target
-            Wants=preset-disabled.service
-
-            [Install]
-            WantedBy=multi-user.target
-          '';
-          "preset-disabled.service".text = ''
-            [Unit]
-            Description=RFC-0001 preset-disabled package service
-            PartOf=aos-pkg-preset-disabled.target
-
-            [Service]
-            Type=oneshot
-            RemainAfterExit=yes
-            ExecStart=${pkgs.bash}/bin/bash -c '${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-preset-disabled && ${pkgs.coreutils}/bin/printf boot >> /var/lib/aos-preset-disabled/boots'
-          '';
+        systemd.targets = {
+          aos-pkg-preset-enabled = {
+            description = "RFC-0001 preset-enabled package target";
+            wants = ["preset-enabled.service"];
+            wantedBy = ["multi-user.target"];
+          };
+          aos-pkg-preset-disabled = {
+            description = "RFC-0001 preset-disabled package target";
+            wants = ["preset-disabled.service"];
+            wantedBy = ["multi-user.target"];
+          };
+        };
+        systemd.services = {
+          preset-enabled = {
+            description = "RFC-0001 preset-enabled package service";
+            partOf = ["aos-pkg-preset-enabled.target"];
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-preset-enabled && ${pkgs.coreutils}/bin/printf boot >> /var/lib/aos-preset-enabled/boots'";
+            };
+          };
+          preset-disabled = {
+            description = "RFC-0001 preset-disabled package service";
+            partOf = ["aos-pkg-preset-disabled.target"];
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-preset-disabled && ${pkgs.coreutils}/bin/printf boot >> /var/lib/aos-preset-disabled/boots'";
+            };
+          };
         };
         # The per-host preset is baked directly into the image's /etc tree.
         environment.etc."systemd/system-preset/20-aos-host.preset".text = hostPreset;
