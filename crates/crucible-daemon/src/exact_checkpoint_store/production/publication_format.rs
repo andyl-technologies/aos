@@ -285,7 +285,11 @@ pub(super) fn decode_index_page(
         .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
     let mut children = envelope.children().iter();
     let mut previous = None;
-    for record in bytes[12..].chunks_exact(40) {
+    let (records, remainder) = bytes[12..].as_chunks::<40>();
+    if !remainder.is_empty() {
+        return Err(invalid_root("production index record is truncated"));
+    }
+    for record in records {
         let mut raw = [0_u8; 32];
         raw.copy_from_slice(&record[..32]);
         let identity = ContentHash { bytes: raw };

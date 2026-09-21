@@ -831,8 +831,10 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             )
             .map_err(map_fresh_lifecycle_failure)?;
         let materialization = materialize_fresh_start(&mut lifecycle, input, target, context, true)
+            .map_err(Box::new)
             .and_then(|materialization| {
                 replay_selected_origins(&mut lifecycle, input, context, materialization)
+                    .map_err(Box::new)
             });
 
         let pending = materialization.and_then(|materialization| {
@@ -843,12 +845,14 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             )
             .map_err(AttemptWorkerFailure::Terminal)
             .map_err(map_fresh_driver_failure)
+            .map_err(Box::new)
         });
         let pending = pending.and_then(|pending| {
             lifecycle
                 .prepare_terminal_fingerprints()
                 .map(|()| pending)
                 .map_err(map_terminal_fingerprint_capture_failure)
+                .map_err(Box::new)
         });
         let cleanup = lifecycle.shutdown();
 
@@ -860,7 +864,7 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
                         QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(reason),
                     );
                 }
-                return Err(Box::new(failure));
+                return Err(failure);
             }
             (Ok(_), Err(cleanup)) => {
                 return Err(Box::new(AttemptWorkerFailure::Terminal(
@@ -869,7 +873,7 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             }
             (Err(failure), Err(cleanup)) => {
                 return Err(Box::new(AttemptWorkerFailure::Terminal(
-                    cleanup_after_fresh_runner_failure(failure, cleanup),
+                    cleanup_after_fresh_runner_failure(*failure, cleanup),
                 )));
             }
         };
