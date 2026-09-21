@@ -42,6 +42,45 @@
   artifactFor = name: packageArtifactFor (packageOutput name);
   systemdPackage = packageArtifactFor builderArtifact;
   systemdTools = packageArtifactFor systemdToolsOutput;
+  testDiskPackagesFor = {
+    mkDerivation,
+    sshTools,
+    testAgent,
+  }: {
+    inherit mkDerivation;
+    aos-test-agent = testAgent;
+    bash = artifactFor "bash";
+    coreutils = artifactFor "coreutils";
+    cryptsetup = artifactFor "cryptsetup";
+    e2fsprogs = artifactFor "e2fsprogs";
+    erofs-utils = artifactFor "erofs-utils";
+    fakeroot = artifactFor "fakeroot";
+    findutils = artifactFor "findutils";
+    gawk = artifactFor "gawk";
+    gcc-libs = artifactFor "gcc-libs";
+    grep = artifactFor "grep";
+    kmod = artifactFor "kmod";
+    openssh = sshTools;
+    openssl = artifactFor "openssl";
+    systemd = {
+      outPath = systemdPackage;
+      tools = systemdTools;
+    };
+    tar = artifactFor "tar";
+    util-linux = artifactFor "util-linux";
+  };
+  buildTestDisk = {
+    closureInfoFor,
+    mkDerivation,
+    sshTools,
+    testAgent,
+    inputs,
+  }:
+    import ../testing/disk.nix {
+      inherit closureInfoFor lib;
+      packages = testDiskPackagesFor {inherit mkDerivation sshTools testAgent;};
+    }
+    inputs;
   builderBindings =
     if abilitySelection == null
     then []
@@ -241,6 +280,7 @@
     package = systemdPackage;
     inherit normalArtifactPath;
     build = buildImage;
+    inherit buildTestDisk;
   };
   builderProjectionReady =
     selectedBuilderOutput

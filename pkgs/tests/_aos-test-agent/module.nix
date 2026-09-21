@@ -49,6 +49,7 @@
         search_path = [
           (lib.abilities.packageOutput {package = "coreutils";})
           (lib.abilities.packageOutput {package = "bash";})
+          (lib.abilities.packageOutput {package = "socat";})
           (lib.abilities.packageOutput {package = "systemd";})
         ];
       };
