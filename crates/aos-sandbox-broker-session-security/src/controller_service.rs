@@ -32,7 +32,7 @@ use aos_proto::aos::sandbox::v1::{
     GetPublicFeatureRegistryResponse, NodeCapabilities, OperationService, OperationServiceExt,
     Timestamp, WatchRequest,
 };
-use aos_sandbox_core::{NodeId, ObjectDigest, OperationId};
+use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::seqpacket::SeqpacketError;
@@ -47,6 +47,9 @@ use rustix::net::{
 use sha2::{Digest as _, Sha256};
 
 use aos_sandbox::controller::DormantControllerCompositionV1;
+use aos_sandbox::controller_service::journal::{
+    production_journal_limits, validate_controller_journal,
+};
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationClient, HostCatalogPublicationError, HostCatalogServiceIdentity,
 };
@@ -55,10 +58,10 @@ use aos_sandbox::{
     ActivatedOperationCompiler, ControllerRequestScopeV1, ControllerServiceError,
     DestinationSlotInventoryClient, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
     HostCatalogReconciliationError, HostCatalogReconciliationV1, Journal, JournalError,
-    JournalLimits, JournalRecord, JournalTransaction, MountAttemptError, MountInventoryClient,
-    NetworkResourceInventoryClient, NodeController, NodeControllerLimits,
-    OperationCompilationError, OperationPlan, Reconciler, RecordNamespace, ResourceInventoryError,
-    ResourceInventoryServiceIdentity, SingleNodeEffectExecutor, StorageResourceInventoryClient,
+    MountAttemptError, MountInventoryClient, NetworkResourceInventoryClient, NodeController,
+    NodeControllerLimits, OperationCompilationError, OperationPlan, Reconciler,
+    ResourceInventoryError, ResourceInventoryServiceIdentity, SingleNodeEffectExecutor,
+    StorageResourceInventoryClient,
 };
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
@@ -76,17 +79,10 @@ const STORAGE_CGROUP: &str = "aos-storaged.service";
 const MOUNT_CGROUP: &str = "aos-sandbox-mountd.service";
 const NETWORK_CGROUP: &str = "aos-netd.service";
 const NODE_ID_CREDENTIAL: &str = "node-id";
-const CONTROLLER_IDENTITY_KEY: &[u8] = b"node";
-const CONTROLLER_IDENTITY_MAGIC: &[u8; 8] = b"AOSCNI01";
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
 const HOST_PUBLICATION_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
 const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
-const MEBIBYTE: usize = 1024 * 1024;
-const PRODUCTION_MAXIMUM_JOURNAL_BYTES: u64 = 256 * 1024 * 1024;
-const PRODUCTION_MAXIMUM_MATERIALIZED_BYTES: usize = 128 * MEBIBYTE;
-const PRODUCTION_MAXIMUM_TRANSACTIONS: usize = 65_536;
-const PRODUCTION_MAXIMUM_MATERIALIZED_RECORDS: usize = 131_072;
 
 type ProductionController = NodeController<UnavailableCompiler, UnavailableExecutor>;
 
@@ -606,12 +602,7 @@ fn controller_from_journal(
     mut journal: Journal,
     node_id: [u8; 16],
 ) -> Result<ProductionController, ControllerRuntimeError> {
-    bind_controller_identity(&mut journal, node_id)?;
-    aos_sandbox::runtime_authority::RuntimeAuthorityStore::load(
-        &mut journal,
-        aos_sandbox::runtime_authority::RuntimeAuthorityLimits::default(),
-    )?
-    .validate_current_node(NodeId::from_bytes(node_id))?;
+    validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
     let limits = NodeControllerLimits::new(1024 * 1024, 65_536, 1)?;
     Ok(NodeController::new(
@@ -620,59 +611,6 @@ fn controller_from_journal(
         UnavailableCompiler,
         Reconciler::new(journal, UnavailableExecutor),
     ))
-}
-
-fn bind_controller_identity(
-    journal: &mut Journal,
-    node_id: [u8; 16],
-) -> Result<(), ControllerRuntimeError> {
-    let records = journal
-        .records(RecordNamespace::ControllerIdentity)
-        .map(|(key, value)| (key.to_vec(), value.to_vec()))
-        .collect::<Vec<_>>();
-    match records.as_slice() {
-        [] => {
-            if journal.all_records().next().is_some() {
-                return Err(ControllerRuntimeError::UnboundControllerIdentity);
-            }
-            let mut value = Vec::with_capacity(CONTROLLER_IDENTITY_MAGIC.len() + node_id.len());
-            value.extend_from_slice(CONTROLLER_IDENTITY_MAGIC);
-            value.extend_from_slice(&node_id);
-            let record = JournalRecord::put(
-                RecordNamespace::ControllerIdentity,
-                CONTROLLER_IDENTITY_KEY.to_vec(),
-                value,
-            );
-            let transaction =
-                JournalTransaction::new(OperationId::new().into_bytes(), vec![record])?;
-            journal.commit(&transaction)?;
-            Ok(())
-        }
-        [(key, value)]
-            if key.as_slice() == CONTROLLER_IDENTITY_KEY
-                && value.len() == CONTROLLER_IDENTITY_MAGIC.len() + node_id.len()
-                && value.starts_with(CONTROLLER_IDENTITY_MAGIC) =>
-        {
-            if value[CONTROLLER_IDENTITY_MAGIC.len()..] != node_id {
-                return Err(ControllerRuntimeError::ControllerIdentityMismatch);
-            }
-            Ok(())
-        }
-        _ => Err(ControllerRuntimeError::InvalidControllerIdentity),
-    }
-}
-
-fn production_journal_limits() -> JournalLimits {
-    JournalLimits {
-        maximum_journal_bytes: PRODUCTION_MAXIMUM_JOURNAL_BYTES,
-        maximum_record_bytes: 16 * MEBIBYTE,
-        maximum_key_bytes: 1024,
-        maximum_records_per_transaction: 4096,
-        maximum_transaction_bytes: 64 * MEBIBYTE,
-        maximum_transactions: PRODUCTION_MAXIMUM_TRANSACTIONS,
-        maximum_materialized_bytes: PRODUCTION_MAXIMUM_MATERIALIZED_BYTES,
-        maximum_materialized_records: PRODUCTION_MAXIMUM_MATERIALIZED_RECORDS,
-    }
 }
 
 fn read_node_id() -> Result<[u8; 16], ControllerRuntimeError> {
@@ -1102,15 +1040,9 @@ pub enum ControllerRuntimeError {
     /// The protected node identity credential could not be read.
     #[error("protected controller node identity could not be read: {0}")]
     CredentialRead(std::io::Error),
-    /// Existing state predates a trustworthy durable node-identity binding.
-    #[error("nonempty controller state has no durable node identity")]
-    UnboundControllerIdentity,
-    /// The durable controller node identity record is malformed or duplicated.
-    #[error("durable controller node identity is invalid")]
-    InvalidControllerIdentity,
-    /// The configured node identity differs from the state-directory binding.
-    #[error("configured node identity does not match durable controller state")]
-    ControllerIdentityMismatch,
+    /// Controller journal identity or assignment validation failed.
+    #[error(transparent)]
+    ControllerJournal(#[from] aos_sandbox::controller_service::journal::ControllerJournalError),
     /// The diagnostic socket parent or stale entry violates ownership and type rules.
     #[error("controller diagnostic socket path is unsafe")]
     UnsafeDiagnosticSocket,
@@ -1172,24 +1104,6 @@ mod tests {
             state_directory: directory.path().join("state"),
             diagnostic_socket: directory.path().join("diagnostics.sock"),
         }
-    }
-
-    fn protected_test_directory() -> tempfile::TempDir {
-        // The public opener validates every ancestor, so a shared writable
-        // temporary directory cannot serve as the protected fixture's parent.
-        tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap()
-    }
-
-    fn protected_test_journal(directory: &tempfile::TempDir, limits: JournalLimits) -> Journal {
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        Journal::open_protected_at_for_uid(
-            directory.path(),
-            JOURNAL_NAME,
-            limits,
-            rustix::process::getuid().as_raw(),
-        )
-        .unwrap()
-        .0
     }
 
     #[test]
@@ -1509,109 +1423,6 @@ mod tests {
     }
 
     #[test]
-    fn protected_controller_recovery_retains_its_node_binding() {
-        let directory = protected_test_directory();
-        let journal = protected_test_journal(&directory, production_journal_limits());
-        let controller = controller_from_journal(journal, [7; 16]).unwrap();
-        drop(controller);
-        let before = std::fs::read(directory.path().join(JOURNAL_NAME)).unwrap();
-
-        let journal = protected_test_journal(&directory, production_journal_limits());
-        let controller = controller_from_journal(journal, [7; 16]).unwrap();
-        drop(controller);
-
-        assert_eq!(
-            std::fs::read(directory.path().join(JOURNAL_NAME)).unwrap(),
-            before
-        );
-    }
-
-    #[test]
-    fn durable_first_bind_is_idempotent_after_an_ambiguous_process_exit() {
-        let directory = protected_test_directory();
-        let mut journal = protected_test_journal(&directory, production_journal_limits());
-        bind_controller_identity(&mut journal, [7; 16]).unwrap();
-        let before = std::fs::read(directory.path().join(JOURNAL_NAME)).unwrap();
-        drop(journal);
-
-        let mut journal = protected_test_journal(&directory, production_journal_limits());
-        bind_controller_identity(&mut journal, [7; 16]).unwrap();
-
-        assert_eq!(
-            journal.records(RecordNamespace::ControllerIdentity).count(),
-            1
-        );
-        assert_eq!(
-            std::fs::read(directory.path().join(JOURNAL_NAME)).unwrap(),
-            before
-        );
-    }
-
-    #[test]
-    fn unbound_preexisting_state_has_no_automatic_identity_migration() {
-        let directory = protected_test_directory();
-        let mut journal = protected_test_journal(&directory, production_journal_limits());
-        let transaction = JournalTransaction::new(
-            OperationId::from_bytes([9; 16]).into_bytes(),
-            vec![JournalRecord::put(
-                RecordNamespace::DesiredState,
-                vec![1],
-                vec![2],
-            )],
-        )
-        .unwrap();
-        journal.commit(&transaction).unwrap();
-        let before = std::fs::read(directory.path().join(JOURNAL_NAME)).unwrap();
-        drop(journal);
-
-        let journal = protected_test_journal(&directory, production_journal_limits());
-        assert!(matches!(
-            controller_from_journal(journal, [7; 16]),
-            Err(ControllerRuntimeError::UnboundControllerIdentity)
-        ));
-
-        assert_eq!(
-            std::fs::read(directory.path().join(JOURNAL_NAME)).unwrap(),
-            before
-        );
-    }
-
-    #[test]
-    fn protected_controller_rejects_a_different_node_without_changing_state() {
-        let directory = protected_test_directory();
-        let journal = protected_test_journal(&directory, production_journal_limits());
-        let controller = controller_from_journal(journal, [7; 16]).unwrap();
-        drop(controller);
-        let before = std::fs::read(directory.path().join(JOURNAL_NAME)).unwrap();
-
-        let journal = protected_test_journal(&directory, production_journal_limits());
-        assert!(matches!(
-            controller_from_journal(journal, [8; 16]),
-            Err(ControllerRuntimeError::ControllerIdentityMismatch)
-        ));
-
-        assert_eq!(
-            std::fs::read(directory.path().join(JOURNAL_NAME)).unwrap(),
-            before
-        );
-    }
-
-    #[test]
-    fn production_journal_limits_fit_the_service_memory_budget() {
-        let limits = production_journal_limits();
-
-        assert_eq!(limits.maximum_journal_bytes, 256 * 1024 * 1024);
-        assert_eq!(limits.maximum_materialized_bytes, 128 * MEBIBYTE);
-        assert!(
-            limits.maximum_journal_bytes
-                + u64::try_from(limits.maximum_materialized_bytes).unwrap()
-                < 512 * 1024 * 1024
-        );
-        assert_eq!(limits.maximum_transactions, 65_536);
-        assert_eq!(limits.maximum_materialized_records, 131_072);
-    }
-
-    #[test]
     fn broker_retryability_is_preserved_across_inventory_classification() {
         use aos_proto::aos::sandbox::local::v1::BrokerErrorCode;
 
@@ -1717,31 +1528,6 @@ mod tests {
                 MountCatalogPreparationError::Deadline,
             )),
             CycleFailure::Retryable(_)
-        ));
-    }
-
-    #[test]
-    fn production_journal_rejects_a_sparse_file_above_its_limit() {
-        let directory = protected_test_directory();
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = directory.path().join(JOURNAL_NAME);
-        let file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        file.set_len(PRODUCTION_MAXIMUM_JOURNAL_BYTES + 1).unwrap();
-        drop(file);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        assert!(matches!(
-            Journal::open_protected_at_for_uid(
-                directory.path(),
-                JOURNAL_NAME,
-                production_journal_limits(),
-                rustix::process::getuid().as_raw(),
-            ),
-            Err(JournalError::JournalTooLarge)
         ));
     }
 }

@@ -178,7 +178,7 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
     ///
     /// Returns an error for unhealthy protected state, corrupt current bindings,
     /// or an assignment belonging to a different node.
-    pub fn validate_current_node(
+    pub(crate) fn validate_current_node(
         &self,
         expected_node: NodeId,
     ) -> Result<(), RuntimeAuthorityError> {

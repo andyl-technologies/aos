@@ -6,6 +6,7 @@
   moduleSource = builtins.readFile ../../modules/sandbox/controller-service.nix;
   hostModuleSource = builtins.readFile ../../modules/sandbox/host-broker.nix;
   runtimeSource = builtins.readFile ../../crates/aos-sandbox-broker-session-security/src/controller_service.rs;
+  journalSource = builtins.readFile ../../crates/aos-sandbox/src/controller_service/journal.rs;
   catalogReconciliationSource =
     builtins.readFile ../../crates/aos-sandbox/src/host_catalog_reconciliation.rs;
   resourceInventorySource =
@@ -97,8 +98,9 @@ in
   assert requires ''aos-netd.service'' moduleSource;
   assert requiresAbsent ''Slice ='' hostModuleSource;
   assert requires "open_protected_at_for_uid" runtimeSource;
-  assert requires "bind_controller_identity" runtimeSource;
-  assert requires "validate_current_node" runtimeSource;
+  assert requires "validate_controller_journal(&mut journal, node_id)" runtimeSource;
+  assert requires "bind_controller_identity" journalSource;
+  assert requires "validate_current_node" journalSource;
   assert requires "production_journal_limits" runtimeSource;
   assert requires "broker_retryability_is_preserved_across_inventory_classification" runtimeSource;
   assert requires "host_publication_retryability_is_preserved_through_reconciliation" runtimeSource;
@@ -111,8 +113,8 @@ in
   assert requires "into_async_authenticated_listener(listener, 0)" runtimeSource;
   assert requires ''/run/aos/sandboxd/diagnostics.sock'' runtimeSource;
   assert requires "root_diagnostic_response_discloses_no_catalog_or_resource_detail" runtimeSource;
-  assert requires "durable_first_bind_is_idempotent_after_an_ambiguous_process_exit" runtimeSource;
-  assert requires "unbound_preexisting_state_has_no_automatic_identity_migration" runtimeSource;
+  assert requires "durable_first_bind_is_idempotent_after_an_ambiguous_process_exit" journalSource;
+  assert requires "unbound_preexisting_state_has_no_automatic_identity_migration" journalSource;
   assert requires "ErrorCode::Unimplemented" runtimeSource;
   assert requiresAbsent "reconcile_quantum(" runtimeSource;
   assert requiresAbsent "SemanticCapability" runtimeSource;
