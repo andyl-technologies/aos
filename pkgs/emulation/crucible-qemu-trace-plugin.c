@@ -908,8 +908,8 @@ on_rr_handoff(unsigned int from_vcpu, unsigned int to_vcpu,
       "{\"kind\":\"rr_switch\""
       ",\"rr_switch_event\":%" PRIu64
       ",\"retired\":%" PRIu64
-      ",\"from_vcpu\":%" PRIu64
-      ",\"to_vcpu\":%" PRIu64
+      ",\"from_vcpu\":%u"
+      ",\"to_vcpu\":%u"
       ",\"rr_cursor_position\":%" PRIu64
       ",\"previous_rr_switch_quantum\":%" PRIu64
       ",\"rr_switch_quantum\":%" PRIu64
