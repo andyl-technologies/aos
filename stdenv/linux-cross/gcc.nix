@@ -128,14 +128,19 @@ in
         name = "build";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc
-          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgcc
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc \
+            AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgcc \
+            AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
           ${
             if finalStage
             then ''
-              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3
-              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic
-              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgomp
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
+                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic \
+                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgomp \
+                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
             ''
             else ""
           }
@@ -145,14 +150,19 @@ in
         name = "install";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make SHELL="$CONFIG_SHELL" install-gcc
-          make SHELL="$CONFIG_SHELL" install-target-libgcc
+          make SHELL="$CONFIG_SHELL" install-gcc \
+            AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+          make SHELL="$CONFIG_SHELL" install-target-libgcc \
+            AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
           ${
             if finalStage
             then ''
-              make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3
-              make SHELL="$CONFIG_SHELL" install-target-libatomic
-              make SHELL="$CONFIG_SHELL" install-target-libgomp
+              make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3 \
+                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+              make SHELL="$CONFIG_SHELL" install-target-libatomic \
+                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+              make SHELL="$CONFIG_SHELL" install-target-libgomp \
+                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
             ''
             else ""
           }
