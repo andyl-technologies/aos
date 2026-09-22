@@ -3,8 +3,6 @@
 #include <errno.h>
 #include <glib.h>
 #include <qemu-plugin.h>
-#include <sys/eventfd.h>
-#include <unistd.h>
 
 #include "aos/crucible/crucible_shmem_abi.h"
 #include "phase2-qemu-fault-event-envelope.h"
@@ -20,9 +18,15 @@ static bool require_ready;
 static bool ready_exhaustion;
 static bool crash_transition;
 static bool ready_observed;
-static gint ready_boundary_pending;
-static int ready_wake_fd = -1;
+static bool ready_call_active;
+static bool ready_control_witnessed;
 static bool finished;
+static unsigned int prepared_result_count;
+static unsigned int applied_result_count;
+static unsigned int lifecycle_event_count;
+static uint64_t ready_marker_icount;
+static uint64_t ready_applied_icount;
+static uint64_t ready_control_icount;
 static uint8_t terminal_evidence_hash[32];
 static uint8_t *payload;
 static size_t payload_len;
@@ -190,6 +194,12 @@ static void validate_event(void)
                    evidence ? get_u64(evidence + 120) : 0);
         fail("reset event or lifecycle evidence was absent or malformed");
     }
+    lifecycle_event_count++;
+    if (lifecycle_event_count != 1 ||
+        qemu_plugin_crucible_fault_event_poll(
+            &event, envelope, sizeof(envelope), &envelope_len) != 0) {
+        fail("lifecycle transition published more than one event");
+    }
     if (get_u32(evidence + 192) != (require_ready ? 2U : 1U) ||
         get_u32(evidence + 196) != (ready_exhaustion ? 2U : 1U) ||
         get_u32(evidence + 200) != (require_ready ? 2U : 1U) ||
@@ -258,6 +268,12 @@ static void completion(void *opaque)
     int status;
 
     (void)opaque;
+    if (ready_call_active) {
+        fail("queued ready marker completed inside its instruction callback");
+    }
+    if (finished) {
+        fail("lifecycle command completed more than once");
+    }
     memset(&result, 0, sizeof(result));
     status = qemu_plugin_crucible_fault_poll(
         &result, result_payload, sizeof(result_payload), &result_len);
@@ -267,6 +283,10 @@ static void completion(void *opaque)
     }
     if (result.status == CRUCIBLE_FAULT_STATUS_PREPARED &&
         result.command_sequence == 1) {
+        prepared_result_count++;
+        if (prepared_result_count != 1) {
+            fail("lifecycle preparation completed more than once");
+        }
         command.command_flags = 0;
         command.command_sequence = 2;
         command.target_icount = result.observed_icount;
@@ -291,6 +311,11 @@ static void completion(void *opaque)
                    require_ready, ready_observed, result_len);
         fail("reset did not complete through the deferred command path");
     }
+    applied_result_count++;
+    if (applied_result_count != 1) {
+        fail("lifecycle application completed more than once");
+    }
+    ready_applied_icount = result.applied_icount;
     validate_event();
     finished = true;
     if (ready_exhaustion) {
@@ -326,47 +351,70 @@ static void completion(void *opaque)
         g_printerr(" process_generation=1\n");
         return;
     }
-    g_printerr("CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=%u volatile_policy=%u device_policy=%u\n",
+    g_printerr("CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=%u volatile_policy=%u device_policy=%u",
                architecture, volatile_policy, device_policy);
+    if (require_ready) {
+        g_printerr(" ready_handoff=queued duplicate=coalesced boundary=drained-exact");
+    }
+    g_printerr("\n");
     qemu_plugin_request_shutdown(0);
 }
 
 static void ready_tb_exec(unsigned int vcpu_index, void *opaque)
 {
-    uint64_t wake = 1;
+    uint64_t observed_icount;
+    int decoy_status;
+    int duplicate_status;
+    int status;
 
     (void)vcpu_index;
     (void)opaque;
-    if (!require_ready || ready_observed ||
-        !g_atomic_int_compare_and_exchange(&ready_boundary_pending, 0, 1)) {
+    if (!require_ready || ready_observed || ready_call_active) {
         return;
     }
-    if (write(ready_wake_fd, &wake, sizeof(wake)) != sizeof(wake)) {
-        fail("guest ready-marker wake could not be published");
+
+    observed_icount = qemu_plugin_icount_raw();
+    ready_call_active = true;
+    decoy_status = qemu_plugin_crucible_fault_ready_marker(
+        "guest-decoy", strlen("guest-decoy"), observed_icount);
+    status = qemu_plugin_crucible_fault_ready_marker(
+        "guest-ready", strlen("guest-ready"), observed_icount);
+    if (status == QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED) {
+        duplicate_status = qemu_plugin_crucible_fault_ready_marker(
+            "guest-ready", strlen("guest-ready"), observed_icount);
+    } else {
+        duplicate_status = status;
     }
-    qemu_plugin_force_vcpu_exit();
+    ready_call_active = false;
+
+    if (decoy_status != 0) {
+        fail("unmatched live ready marker was not inert");
+    }
+    if (status == 0) {
+        return;
+    }
+    if (status != QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED ||
+        duplicate_status != QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED) {
+        fail("matching live ready marker was not queued and coalesced");
+    }
+    ready_marker_icount = observed_icount;
+    ready_observed = true;
 }
 
 static void ready_control_boundary(unsigned int vcpu_index,
                                    uint64_t observed_icount, void *opaque)
 {
-    int status;
-
     (void)vcpu_index;
     (void)opaque;
-    if (!g_atomic_int_get(&ready_boundary_pending) || ready_observed) {
+    if (!require_ready || ready_exhaustion || !finished ||
+        ready_control_witnessed) {
         return;
     }
-    ready_observed = true;
-    status = qemu_plugin_crucible_fault_ready_marker(
-        "guest-ready", strlen("guest-ready"), observed_icount);
-    if (status < 0) {
-        fail("QEMU rejected a live guest ready-marker observation");
+    if (observed_icount != ready_applied_icount) {
+        fail("ready marker completed outside its witnessed control boundary");
     }
-    if (status == 0) {
-        ready_observed = false;
-    }
-    g_atomic_int_set(&ready_boundary_pending, 0);
+    ready_control_icount = observed_icount;
+    ready_control_witnessed = true;
 }
 
 static void ready_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
@@ -381,6 +429,16 @@ static void at_exit(void *opaque)
     (void)opaque;
     if (!finished) {
         fail("QEMU exited before the reset completion was observed");
+    }
+    if (prepared_result_count != 1 || applied_result_count != 1 ||
+        lifecycle_event_count != 1) {
+        fail("lifecycle result or event cardinality was not exactly one");
+    }
+    if (require_ready && !ready_exhaustion &&
+        (!ready_observed || ready_call_active || !ready_control_witnessed ||
+         ready_control_icount != ready_applied_icount ||
+         ready_applied_icount < ready_marker_icount)) {
+        fail("queued ready marker lacked its drained exact-boundary witness");
     }
     g_free(payload);
 }
@@ -431,11 +489,6 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     if (argc == 4) {
         if (strcmp(argv[3], "boot_policy=require_ready") == 0) {
             require_ready = true;
-            ready_wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-            if (ready_wake_fd < 0 ||
-                qemu_plugin_register_wake_fd(ready_wake_fd) != 0) {
-                fail("guest ready-marker wake registration failed");
-            }
             qemu_plugin_register_control_boundary_cb(
                 ready_control_boundary, NULL);
             qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate, NULL);

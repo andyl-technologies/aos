@@ -126,7 +126,7 @@ in
                 require_ready)
                   expected_status=0
                   plugin_args="$plugin_args,boot_policy=require_ready"
-                  pass_marker="CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=$architecture_id volatile_policy=$volatile_policy device_policy=$device_policy"
+                  pass_marker="CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=$architecture_id volatile_policy=$volatile_policy device_policy=$device_policy ready_handoff=queued duplicate=coalesced boundary=drained-exact"
                   ;;
                 *)
                   echo "unknown boot policy: $boot_policy" >&2
@@ -417,7 +417,7 @@ in
               printf 'watchdog_deadline_axes=stalled,runnable-with-time-bias\n'
               printf 'watchdog_composition=atomic-severity-lattice\n'
               printf 'watchdog=transition_after-reset\n'
-              printf 'boot_policy=require_ready-live-guest-callback-and-terminal-exhaustion\n'
+              printf 'boot_policy=require_ready-qemu-owned-queued-handoff-and-terminal-exhaustion\n'
               printf 'ready_exhaustion=attempts-2,effective-permanent-failure,exit-72\n'
               printf 'recovery=transactional-remove\n'
               printf 'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG1+CRUCWDC1+CRUCLIF1\n'
