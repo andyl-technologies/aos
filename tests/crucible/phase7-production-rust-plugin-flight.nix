@@ -248,7 +248,9 @@
     # This canonical flight fixes shift zero, so ceil conversion is exact.
     test "$icount_shift" = 0
     test "$armed_deadline_ns" = "$fired_virtual_ns"
-    for lane in host-serial host-parallel host-failure host-recovery; do
+    for lane in \
+      host-serial host-parallel host-failure host-recovery \
+      host-replay-genesis host-replay-oracle; do
       mkdir "/sys/fs/cgroup/crucible/$lane"
       echo '+cpu +memory +pids' \
         > "/sys/fs/cgroup/crucible/$lane/cgroup.subtree_control"

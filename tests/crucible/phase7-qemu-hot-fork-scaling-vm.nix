@@ -127,10 +127,12 @@ in
       setup_lane production-stress-source 1073741824
       setup_lane production-stress-target 1073741824
       setup_lane performance-checkpoint-source 1073741824
+      setup_lane performance-replay-genesis 1073741824
       for index in 0 1 2; do
         setup_lane "performance-source-$index" 1073741824
         setup_lane "performance-hot-$index" 1073741824
         setup_lane "performance-exact-$index" 1073741824
+        setup_lane "performance-replay-oracle-$index" 1073741824
       done
 
       mkdir -m 700 /tmp/checkpoints
