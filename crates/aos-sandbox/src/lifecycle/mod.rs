@@ -162,7 +162,8 @@ pub use protected_journal::{
 };
 pub use protected_owner::{
     LifecycleCurrentAuxiliaryPublicationV1, LifecycleProgressCommitOutcomeV1,
-    LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
+    LifecycleOperationAdmissionV1, LifecycleProgressOutcomeUnknownV1,
+    LifecycleProgressRecoveryV1,
     LifecycleProtectedJournalOwnerV1, PreparedLifecycleProgressV1,
 };
 pub use recovery::{LifecycleRecoveryActionV1, classify_operation_recovery_v1};

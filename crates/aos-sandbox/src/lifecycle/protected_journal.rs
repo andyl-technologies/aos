@@ -215,7 +215,7 @@ fn canonical_operation(body: &[u8]) -> Option<LifecycleOperationV1> {
         .map(|_| operation)
 }
 
-fn lifecycle_journal_subject(intent: &LifecycleIntentV1) -> [u8; 16] {
+pub(super) fn lifecycle_journal_subject(intent: &LifecycleIntentV1) -> [u8; 16] {
     match intent {
         LifecycleIntentV1::Create { sandbox }
         | LifecycleIntentV1::UpdateEnvironment { sandbox, .. }

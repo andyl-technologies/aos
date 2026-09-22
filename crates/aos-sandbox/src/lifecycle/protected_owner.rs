@@ -80,6 +80,20 @@ pub enum LifecycleProgressRecoveryV1 {
     Diverged(LifecycleProgressOutcomeUnknownV1),
 }
 
+/// Reports first admission or exact idempotent replay of a lifecycle operation.
+#[must_use = "lifecycle admission outcomes must be retained through durability recovery"]
+pub enum LifecycleOperationAdmissionV1 {
+    /// The first protected operation record was committed or became ambiguous.
+    Admitted {
+        /// Names the admitted operation's current protected record.
+        key: LifecycleProtectedJournalKeyV1,
+        /// Retains exact durable success or outcome-unknown recovery custody.
+        outcome: LifecycleProgressCommitOutcomeV1,
+    },
+    /// The same caller/project/method/key/request is already durable.
+    Replay(LifecycleProtectedJournalKeyV1),
+}
+
 /// Reports a protected normal-source auxiliary publication.
 #[must_use = "current auxiliary authority or retained recovery custody must be consumed"]
 pub enum LifecycleCurrentAuxiliaryPublicationV1<Current> {
@@ -202,6 +216,87 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         &self,
     ) -> Result<LifecycleProtectedJournalProjectionV1, LifecycleProtectedJournalErrorV1> {
         self.journal.replay()
+    }
+
+    /// Admits one accepted lifecycle operation into protected source custody.
+    ///
+    /// Idempotency is resolved from replayed typed operation records before a
+    /// write is planned. Exact replay returns the current operation-bearing key
+    /// even after that operation has advanced to another protected record
+    /// family. A conflicting request or operation identity fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `operation` is a canonical first revision in
+    /// the Accepted phase, or when protected replay, idempotency resolution,
+    /// compare-and-swap planning, or durable commit fails.
+    pub fn admit_operation(
+        &mut self,
+        operation: LifecycleOperationV1,
+    ) -> Result<LifecycleOperationAdmissionV1, LifecycleProtectedJournalErrorV1> {
+        if operation.phase() != super::LifecyclePhaseV1::Accepted
+            || operation.record_revision().get() != 1
+            || operation.predecessor_digest().is_some()
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+
+        let projection = self.journal.replay()?;
+        for envelope in projection.records().iter().filter(|envelope| {
+            matches!(
+                envelope.key().kind(),
+                LifecycleProtectedRecordKindV1::Intent
+                    | LifecycleProtectedRecordKindV1::Operation
+                    | LifecycleProtectedRecordKindV1::Effect
+            )
+        }) {
+            let reducer =
+                decode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
+                    envelope.key(),
+                    envelope.payload(),
+                    &self.verifier,
+                )?;
+            let current = decode_operation_record_v1(reducer.body())
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+            if current.caller() != operation.caller()
+                || current.project() != operation.project()
+                || current.intent().method() != operation.intent().method()
+                || current.idempotency() != operation.idempotency()
+            {
+                continue;
+            }
+            if current.normalized_request() == operation.normalized_request()
+                && current.operation_id() == operation.operation_id()
+            {
+                return Ok(LifecycleOperationAdmissionV1::Replay(
+                    envelope.key().clone(),
+                ));
+            }
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+
+        let subject = aos_sandbox_core::ResourceId::from_bytes(
+            super::protected_journal::lifecycle_journal_subject(operation.intent()),
+        );
+        let key = super::lifecycle_protected_key_v1(
+            LifecycleProtectedRecordKindV1::Intent,
+            operation.project(),
+            subject,
+            operation.operation_id(),
+        )?;
+        let envelope = lifecycle_reducer_envelope_v1(
+            key.clone(),
+            1,
+            None,
+            LifecycleReducerRecordV1::Operation(&operation),
+            &self.verifier,
+        )?;
+        let prepared = self
+            .journal
+            .plan(operation.operation_id().into_bytes(), vec![envelope])?;
+        let outcome = self.commit_effect_progress(PreparedLifecycleProgressV1 { prepared })?;
+
+        Ok(LifecycleOperationAdmissionV1::Admitted { key, outcome })
     }
 
     /// Mints a one-shot challenge for the absent initial boot-inventory root.
