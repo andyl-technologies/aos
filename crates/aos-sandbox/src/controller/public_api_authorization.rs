@@ -10,7 +10,7 @@ use aos_sandbox_core::CapabilityId;
 
 use super::{
     AuditAuthorizationV1, AuthenticatedCliChannelEvidenceV1, AuthenticatedCliIdentityEvidenceV1,
-    AuthenticatedCliSessionEvidenceV1, CliAuthorizationAdapterError,
+    AuthenticatedCliSessionEvidenceV1, CliAuthorizationAdapterError, ControllerProtectedClockV1,
     CurrentProtectedCliAuthorizationV1, DORMANT_CLI_OBSERVATION_SCHEMA_V1,
     DecodedAuthenticatedCliRequestV1, DormantAuthenticatedCliRequestV1,
     DormantCliAuthorizationOwnerV1, PublisherAuthorityLimits, PublisherPolicyLimits,
@@ -21,6 +21,49 @@ use crate::cli_model::authorization_adapter::{
     PublicApiAuditMethodV1, canonical_public_audit_request_v2, canonical_public_mutation_request_v2,
 };
 use crate::public_api_session::PublicApiPeer;
+use crate::public_mutation_compiler::ResolvedPublicMutationRequestV1;
+
+/// Authorizes one resolved public mutation using the sole protected journal.
+///
+/// This helper is the only bridge from endpoint resolution into the dormant
+/// authorization owner. It constructs the fixed protected clock internally,
+/// rejects a create/fork project that differs from the registered TLS project,
+/// and binds the exact method, body, operation, kind, and selector.
+///
+/// # Errors
+///
+/// Rejects unavailable protected time, project substitution, stale transport
+/// evidence, or any current capability, policy, expiry, revocation, or grant
+/// failure.
+pub(crate) fn authorize_resolved_public_mutation_v1(
+    journal: &mut crate::Journal,
+    peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    request: &ResolvedPublicMutationRequestV1,
+) -> Result<PublicMutationAuthorizationV1, CliAuthorizationAdapterError> {
+    if request
+        .target_project()
+        .is_some_and(|project| project != peer.project())
+    {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
+
+    let protected_clock = ControllerProtectedClockV1::open_fixed()
+        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    let mut owner = DormantCliAuthorizationOwnerV1 {
+        journal,
+        protected_clock,
+    };
+    owner.authorize_public_mutation(
+        peer,
+        capability_id,
+        request.method(),
+        request.resource_kind(),
+        request.operation(),
+        request.selector().clone(),
+        request.protobuf_body(),
+    )
+}
 
 impl DormantCliAuthorizationOwnerV1<'_> {
     /// Reauthorizes an exact public operation read against its admitted scope.

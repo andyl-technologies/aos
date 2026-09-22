@@ -230,15 +230,28 @@ impl fmt::Debug for AuditAuthorizationV1 {
 
 /// Proves mutation authorization for one exact public RPC without exposing provenance.
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub struct PublicMutationAuthorizationV1(RequestProvenanceV1);
+pub struct PublicMutationAuthorizationV1 {
+    provenance: RequestProvenanceV1,
+    accepted_wall_seconds: i64,
+}
 
 impl PublicMutationAuthorizationV1 {
-    pub(crate) const fn from_authorized(provenance: RequestProvenanceV1) -> Self {
-        Self(provenance)
+    pub(crate) const fn from_authorized(
+        provenance: RequestProvenanceV1,
+        accepted_wall_seconds: i64,
+    ) -> Self {
+        Self {
+            provenance,
+            accepted_wall_seconds,
+        }
     }
 
     pub(crate) const fn provenance(self) -> RequestProvenanceV1 {
-        self.0
+        self.provenance
+    }
+
+    pub(crate) const fn accepted_wall_seconds(self) -> i64 {
+        self.accepted_wall_seconds
     }
 }
 

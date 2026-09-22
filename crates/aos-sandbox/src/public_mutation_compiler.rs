@@ -7,8 +7,8 @@
 
 use aos_proto::aos::sandbox::v1::{MutationContext, ObjectDescriptor as ProtoObjectDescriptor};
 use aos_sandbox_core::{
-    MediaType, ObjectDescriptor, ObjectDigest, Operation, ProjectId, ResourceId, ResourceKind,
-    Selector,
+    CapabilityId, MediaType, ObjectDescriptor, ObjectDigest, Operation, ProjectId, ResourceId,
+    ResourceKind, Selector,
 };
 
 use crate::cli_model::{
@@ -16,7 +16,71 @@ use crate::cli_model::{
     PublicMutationRequestV1,
 };
 use crate::controller_query::PublicOperationMethodV1;
-use crate::{IdempotencyKey, JournalError};
+use crate::public_api_session::PublicApiPeer;
+use crate::{IdempotencyKey, Journal, JournalError};
+
+/// Carries a resolved mutation only after current protected authorization.
+///
+/// The authorization proof remains private so downstream planning can consume
+/// this value but cannot construct one from request bytes alone.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AuthorizedPublicMutationRequestV1 {
+    request: ResolvedPublicMutationRequestV1,
+    authorization: crate::cli_model::PublicMutationAuthorizationV1,
+}
+
+impl AuthorizedPublicMutationRequestV1 {
+    /// Resolves and currently authorizes one exact public mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicMutationAuthorizationErrorV1`] for malformed endpoint
+    /// input or any rejected protected authorization decision.
+    pub(crate) fn authorize(
+        journal: &mut Journal,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        encoded: &[u8],
+    ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
+        let request = ResolvedPublicMutationRequestV1::decode(encoded)
+            .map_err(|_| PublicMutationAuthorizationErrorV1::Malformed)?;
+        let authorization = crate::controller::authorize_resolved_public_mutation_v1(
+            journal,
+            peer,
+            capability_id,
+            &request,
+        )
+        .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+
+        Ok(Self {
+            request,
+            authorization,
+        })
+    }
+
+    /// Returns the validated request and its closed endpoint semantics.
+    #[must_use]
+    pub(crate) const fn request(&self) -> &ResolvedPublicMutationRequestV1 {
+        &self.request
+    }
+
+    /// Returns the protected authorization decision time in Unix seconds.
+    #[must_use]
+    pub(crate) const fn accepted_wall_seconds(&self) -> i64 {
+        self.authorization.accepted_wall_seconds()
+    }
+}
+
+/// Classifies public mutation rejection at the compiler boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum PublicMutationAuthorizationErrorV1 {
+    /// Exact transport or endpoint bytes are malformed.
+    #[error("public mutation is malformed")]
+    Malformed,
+    /// Current protected authorization rejected the request.
+    #[error("public mutation authorization was rejected")]
+    Rejected,
+}
 
 /// Carries a validated public mutation and its closed authorization semantics.
 #[derive(Clone, Debug, PartialEq)]

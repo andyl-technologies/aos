@@ -53,6 +53,8 @@ mod destination_slot;
 
 #[cfg(target_os = "linux")]
 mod public_api_authorization;
+#[cfg(target_os = "linux")]
+pub(crate) use public_api_authorization::authorize_resolved_public_mutation_v1;
 
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
 #[cfg(target_os = "linux")]
