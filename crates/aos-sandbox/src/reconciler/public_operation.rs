@@ -382,26 +382,43 @@ impl DurablePublicOperationV1 {
         state: OperationState,
         effect_count: u32,
         applied_effects: u32,
+        controller_orchestration: bool,
+        cancelable: bool,
         operation_record: &[u8],
         effect_records: &[&[u8]],
     ) -> Operation {
-        let (phase, milestone, retry_class) = match state {
-            OperationState::OwnershipPending => (
+        let (phase, milestone, retry_class) = match (state, controller_orchestration) {
+            (OperationState::Accepted, true) => (
+                OperationPhase::OPERATION_PHASE_ACCEPTED,
+                "accepted",
+                RetryClass::RETRY_CLASS_SAME_REQUEST,
+            ),
+            (OperationState::Applying, true) => (
+                OperationPhase::OPERATION_PHASE_PREPARING,
+                "preparing",
+                RetryClass::RETRY_CLASS_SAME_REQUEST,
+            ),
+            (OperationState::OwnershipPending, _) => (
                 OperationPhase::OPERATION_PHASE_COMMITTED,
                 "blocked",
                 RetryClass::RETRY_CLASS_AFTER_STATE_CHANGE,
             ),
-            OperationState::Accepted | OperationState::Applying => (
+            (OperationState::Accepted | OperationState::Applying, false) => (
                 OperationPhase::OPERATION_PHASE_COMMITTED,
                 "reconciling",
                 RetryClass::RETRY_CLASS_SAME_REQUEST,
             ),
-            OperationState::Succeeded => (
+            (OperationState::Succeeded, _) => (
                 OperationPhase::OPERATION_PHASE_SUCCEEDED,
                 "complete",
                 RetryClass::RETRY_CLASS_NEVER,
             ),
-            OperationState::PermanentlyBlocked => (
+            (OperationState::CanceledBeforeCommit, _) => (
+                OperationPhase::OPERATION_PHASE_CANCELED_BEFORE_COMMIT,
+                "canceled",
+                RetryClass::RETRY_CLASS_NEVER,
+            ),
+            (OperationState::PermanentlyBlocked, _) => (
                 OperationPhase::OPERATION_PHASE_PERMANENTLY_BLOCKED,
                 "blocked",
                 RetryClass::RETRY_CLASS_NEVER,
@@ -427,7 +444,7 @@ impl DurablePublicOperationV1 {
             audit_id: self.audit_id.to_vec(),
             accepted_at: Some(timestamp(self.accepted_wall_seconds)).into(),
             completed_at: completed_at.into(),
-            cancelable: false,
+            cancelable,
             observation_sequence: self.observation_sequence,
             last_successful_reconciliation_time: Some(timestamp(
                 self.last_reconciliation_wall_seconds,

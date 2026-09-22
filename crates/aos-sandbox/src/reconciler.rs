@@ -375,9 +375,9 @@ impl OperationPlan {
 
     /// Adds immutable public observation metadata to this admission.
     ///
-    /// The accepted desired state is the semantic commit boundary, so public
-    /// operations produced by this reconciler are noncancelable and begin in
-    /// the committed/reconciling phase.
+    /// Direct desired-state plans begin at their semantic commit boundary.
+    /// A single controller-orchestration effect may instead advertise
+    /// cancellation while it remains accepted and has not begun execution.
     ///
     /// # Errors
     ///
@@ -527,6 +527,9 @@ pub enum AcceptOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectReceipt(Vec<u8>);
 
+const CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC: &[u8; 8] = b"AOSCXL01";
+const CANCELED_BEFORE_COMMIT_RECEIPT_BYTES: usize = 40;
+
 impl EffectReceipt {
     /// Constructs a bounded, nonempty executor receipt.
     ///
@@ -547,6 +550,32 @@ impl EffectReceipt {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+
+    /// Constructs controller evidence that an operation was canceled before
+    /// its semantic commit point.
+    #[must_use]
+    pub fn canceled_before_commit(evidence: ObjectDigest) -> Self {
+        let mut bytes = Vec::with_capacity(CANCELED_BEFORE_COMMIT_RECEIPT_BYTES);
+        bytes.extend_from_slice(CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC);
+        bytes.extend_from_slice(evidence.as_bytes());
+        Self(bytes)
+    }
+
+    fn canceled_before_commit_evidence(&self) -> Result<Option<ObjectDigest>, ()> {
+        if !self.0.starts_with(CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC) {
+            return Ok(None);
+        }
+        if self.0.len() != CANCELED_BEFORE_COMMIT_RECEIPT_BYTES {
+            return Err(());
+        }
+
+        let mut digest = [0_u8; 32];
+        digest.copy_from_slice(&self.0[CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC.len()..]);
+        if digest == [0; 32] {
+            return Err(());
+        }
+        Ok(Some(ObjectDigest::from_bytes(digest)))
     }
 }
 
@@ -732,6 +761,8 @@ pub enum ReconcileOutcome {
     RetryPending,
     /// Every planned effect and the terminal operation success are durable.
     Succeeded,
+    /// Protected orchestration canceled the operation before semantic commit.
+    CanceledBeforeCommit,
     /// A permanent executor failure durably blocked the operation.
     PermanentlyBlocked,
 }
@@ -880,6 +911,7 @@ enum OperationState {
     Succeeded = 3,
     PermanentlyBlocked = 4,
     OwnershipPending = 5,
+    CanceledBeforeCommit = 6,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -899,12 +931,16 @@ impl OperationState {
             3 => Ok(Self::Succeeded),
             4 => Ok(Self::PermanentlyBlocked),
             5 => Ok(Self::OwnershipPending),
+            6 => Ok(Self::CanceledBeforeCommit),
             _ => Err(ReconcilerError::CorruptLedger("unknown operation state")),
         }
     }
 
     const fn is_terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::PermanentlyBlocked)
+        matches!(
+            self,
+            Self::Succeeded | Self::PermanentlyBlocked | Self::CanceledBeforeCommit
+        )
     }
 }
 
@@ -1328,7 +1364,9 @@ where
             let operation = decode_operation(value)?;
             if !matches!(
                 operation.state,
-                OperationState::Succeeded | OperationState::PermanentlyBlocked
+                OperationState::Succeeded
+                    | OperationState::CanceledBeforeCommit
+                    | OperationState::PermanentlyBlocked
             ) {
                 pending = pending
                     .checked_add(1)
@@ -1363,7 +1401,9 @@ where
                 OperationState::Accepted => UnfinishedOperationStateV1::Accepted,
                 OperationState::Applying => UnfinishedOperationStateV1::Applying,
                 OperationState::OwnershipPending => UnfinishedOperationStateV1::OwnershipPending,
-                OperationState::Succeeded | OperationState::PermanentlyBlocked => continue,
+                OperationState::Succeeded
+                | OperationState::CanceledBeforeCommit
+                | OperationState::PermanentlyBlocked => continue,
             };
             first.get_or_insert(ValidatedUnfinishedOperationV1 {
                 operation_id,
@@ -1459,12 +1499,16 @@ where
         match operation.state {
             OperationState::OwnershipPending => return Ok(ReconcileOutcome::OwnershipPending),
             OperationState::Succeeded => return Ok(ReconcileOutcome::Succeeded),
+            OperationState::CanceledBeforeCommit => {
+                return Ok(ReconcileOutcome::CanceledBeforeCommit);
+            }
             OperationState::PermanentlyBlocked => {
                 return Ok(ReconcileOutcome::PermanentlyBlocked);
             }
             OperationState::Accepted | OperationState::Applying => {}
         }
 
+        let mut canceled_before_commit = false;
         for step in 0..operation.effect_count {
             let key = effect_key(operation_id, step);
             let bytes = self
@@ -1473,7 +1517,28 @@ where
                 .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
             let record = decode_effect(bytes)?;
             match record.state {
-                EffectState::Applied { .. } => continue,
+                EffectState::Applied { receipt, .. } => {
+                    if receipt
+                        .canceled_before_commit_evidence()
+                        .map_err(|()| {
+                            ReconcilerError::CorruptLedger(
+                                "invalid canceled-before-commit effect receipt",
+                            )
+                        })?
+                        .is_some()
+                    {
+                        if operation.effect_count != 1
+                            || step != 0
+                            || record.plan.public_mutation_method().is_none()
+                        {
+                            return Err(ReconcilerError::CorruptLedger(
+                                "invalid canceled-before-commit effect receipt",
+                            ));
+                        }
+                        canceled_before_commit = true;
+                    }
+                    continue;
+                }
                 EffectState::PermanentlyBlocked { .. } => {
                     self.store_operation(
                         operation_id,
@@ -1562,13 +1627,16 @@ where
             }
         }
 
-        self.store_operation(
-            operation_id,
-            OperationState::Succeeded,
-            operation.effect_count,
-            wall_seconds,
-        )?;
-        Ok(ReconcileOutcome::Succeeded)
+        let (state, outcome) = if canceled_before_commit {
+            (
+                OperationState::CanceledBeforeCommit,
+                ReconcileOutcome::CanceledBeforeCommit,
+            )
+        } else {
+            (OperationState::Succeeded, ReconcileOutcome::Succeeded)
+        };
+        self.store_operation(operation_id, state, operation.effect_count, wall_seconds)?;
+        Ok(outcome)
     }
 
     /// Advances one fairly selected nonterminal operation by one step.
@@ -1613,6 +1681,7 @@ where
             if matches!(
                 operation.state,
                 OperationState::Succeeded
+                    | OperationState::CanceledBeforeCommit
                     | OperationState::PermanentlyBlocked
                     | OperationState::OwnershipPending
             ) {
@@ -2046,6 +2115,7 @@ where
         operation: OperationRecord,
         validate_current_boot: bool,
     ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
+        self.validate_canceled_operation(operation_id, operation)?;
         let gate = self
             .journal
             .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
@@ -2131,6 +2201,50 @@ where
                 "ownership gate state does not match its operation",
             )),
         }
+    }
+
+    fn validate_canceled_operation(
+        &self,
+        operation_id: OperationId,
+        operation: OperationRecord,
+    ) -> Result<(), ReconcilerError> {
+        if operation.state != OperationState::CanceledBeforeCommit {
+            return Ok(());
+        }
+        if operation.effect_count != 1
+            || operation.ownership_gated
+            || operation.public_operation.is_none()
+        {
+            return Err(ReconcilerError::CorruptLedger(
+                "invalid canceled-before-commit operation",
+            ));
+        }
+
+        let bytes = self
+            .journal
+            .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+            .ok_or(ReconcilerError::CorruptLedger(
+                "canceled operation is missing its effect",
+            ))?;
+        let effect = decode_effect(bytes)?;
+        let EffectState::Applied { receipt, .. } = effect.state else {
+            return Err(ReconcilerError::CorruptLedger(
+                "canceled operation effect is not applied",
+            ));
+        };
+        if effect.plan.public_mutation_method().is_none()
+            || receipt
+                .canceled_before_commit_evidence()
+                .map_err(|()| {
+                    ReconcilerError::CorruptLedger("invalid canceled-before-commit effect receipt")
+                })?
+                .is_none()
+        {
+            return Err(ReconcilerError::CorruptLedger(
+                "canceled operation lacks cancellation evidence",
+            ));
+        }
+        Ok(())
     }
 
     fn validate_effect_authority_bindings(
@@ -2450,12 +2564,8 @@ where
                 EffectObservation::Applied(receipt) => receipt,
                 EffectObservation::Absent => {
                     let applied = if controller_effect {
-                        self.executor.apply_controller(
-                            operation_id,
-                            step,
-                            &plan,
-                            &mut self.journal,
-                        )
+                        self.executor
+                            .apply_controller(operation_id, step, &plan, &mut self.journal)
                     } else {
                         self.executor.apply(operation_id, step, &plan)
                     };
@@ -2481,6 +2591,20 @@ where
                 }
             }
         };
+        if receipt
+            .canceled_before_commit_evidence()
+            .map_err(|()| {
+                ReconcilerError::InvalidExecutorOutput(
+                    "invalid canceled-before-commit effect receipt",
+                )
+            })?
+            .is_some()
+            && (effect_count != 1 || step != 0 || plan.public_mutation_method().is_none())
+        {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "invalid canceled-before-commit effect receipt",
+            ));
+        }
         let applied = EffectLedgerRecord {
             plan,
             state: EffectState::Applied { attempt, receipt },
@@ -2696,14 +2820,40 @@ pub(crate) fn recovered_public_operation_resource_v1(
     let mut applied_effects = 0_u32;
     let mut applying_effects = 0_u32;
     let mut blocked_effects = 0_u32;
+    let mut canceled_effects = 0_u32;
+    let mut controller_method = None;
     let mut effect_records = Vec::with_capacity(operation.effect_count as usize);
     for step in 0..operation.effect_count {
         let bytes = journal
             .get(RecordNamespace::Effect, &effect_key(operation_id, step))
             .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
         let effect = decode_effect(bytes)?;
+        if operation.effect_count == 1 {
+            controller_method = effect.plan.public_mutation_method();
+        }
         match effect.state {
-            EffectState::Applied { .. } => increment_effect_count(&mut applied_effects)?,
+            EffectState::Applied { ref receipt, .. } => {
+                increment_effect_count(&mut applied_effects)?;
+                if receipt
+                    .canceled_before_commit_evidence()
+                    .map_err(|()| {
+                        ReconcilerError::CorruptLedger(
+                            "invalid canceled-before-commit effect receipt",
+                        )
+                    })?
+                    .is_some()
+                {
+                    if operation.effect_count != 1
+                        || step != 0
+                        || effect.plan.public_mutation_method().is_none()
+                    {
+                        return Err(ReconcilerError::CorruptLedger(
+                            "invalid canceled-before-commit effect receipt",
+                        ));
+                    }
+                    increment_effect_count(&mut canceled_effects)?;
+                }
+            }
             EffectState::Applying { .. } => increment_effect_count(&mut applying_effects)?,
             EffectState::PermanentlyBlocked { .. } => {
                 increment_effect_count(&mut blocked_effects)?;
@@ -2717,7 +2867,12 @@ pub(crate) fn recovered_public_operation_resource_v1(
             applied_effects == 0 && applying_effects == 0 && blocked_effects == 0
         }
         OperationState::Applying => applying_effects + applied_effects != 0 && blocked_effects == 0,
-        OperationState::Succeeded => applied_effects == operation.effect_count,
+        OperationState::Succeeded => {
+            applied_effects == operation.effect_count && canceled_effects == 0
+        }
+        OperationState::CanceledBeforeCommit => {
+            applied_effects == operation.effect_count && canceled_effects == 1
+        }
         OperationState::PermanentlyBlocked => blocked_effects != 0,
     };
     if !state_matches_effects {
@@ -2731,6 +2886,15 @@ pub(crate) fn recovered_public_operation_resource_v1(
         operation.state,
         operation.effect_count,
         applied_effects,
+        controller_method.is_some(),
+        operation.state == OperationState::Accepted
+            && controller_method.is_some_and(|method| {
+                !matches!(
+                    method,
+                    crate::controller_query::PublicOperationMethodV1::CancelOperation
+                        | crate::controller_query::PublicOperationMethodV1::OperatorRecover
+                )
+            }),
         operation_bytes,
         &effect_records,
     )))
@@ -3151,8 +3315,8 @@ mod tests {
         ApplyRuntimeRequest, BrokerMethod, RuntimeObservation, RuntimeState,
     };
     use aos_sandbox_core::{
-        LeaseAssignment, NodeId, ProjectId, RawClockProvenance, RawPairedClockSample, ResourceId,
-        ResourceKind, Selector,
+        LeaseAssignment, NodeId, PrincipalId, ProjectId, RawClockProvenance, RawPairedClockSample,
+        ResourceId, ResourceKind, Selector,
     };
     use buffa::Message as _;
 
@@ -3331,6 +3495,54 @@ mod tests {
         }
     }
 
+    struct CanceledControllerExecutor;
+
+    impl SingleNodeEffectExecutor for CanceledControllerExecutor {
+        fn observe(
+            &mut self,
+            _operation_id: OperationId,
+            _step: u32,
+            _plan: &EffectPlan,
+        ) -> Result<EffectObservation, EffectFailure> {
+            Err(EffectFailure::Permanent(
+                "controller effect used the broker hook".to_owned(),
+            ))
+        }
+
+        fn apply(
+            &mut self,
+            _operation_id: OperationId,
+            _step: u32,
+            _plan: &EffectPlan,
+        ) -> Result<EffectReceipt, EffectFailure> {
+            Err(EffectFailure::Permanent(
+                "controller effect used the broker hook".to_owned(),
+            ))
+        }
+
+        fn observe_controller(
+            &mut self,
+            _operation_id: OperationId,
+            _step: u32,
+            _plan: &EffectPlan,
+            _journal: &mut Journal,
+        ) -> Result<EffectObservation, EffectFailure> {
+            Ok(EffectObservation::Absent)
+        }
+
+        fn apply_controller(
+            &mut self,
+            _operation_id: OperationId,
+            _step: u32,
+            _plan: &EffectPlan,
+            _journal: &mut Journal,
+        ) -> Result<EffectReceipt, EffectFailure> {
+            Ok(EffectReceipt::canceled_before_commit(
+                ObjectDigest::from_bytes([0xc7; 32]),
+            ))
+        }
+    }
+
     fn operation() -> OperationPlan {
         OperationPlan::new(
             OperationId::from_bytes([0x44; 16]),
@@ -3363,6 +3575,60 @@ mod tests {
             Selector::Resource {
                 resource: ResourceId::from_bytes([0x92; 16]),
             },
+        )
+        .unwrap()
+    }
+
+    fn cancelable_controller_operation() -> OperationPlan {
+        use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
+        use crate::controller_query::PublicOperationMethodV1;
+        use aos_proto::aos::sandbox::v1::{MutationContext, SandboxLifecycleRequest};
+
+        let request = SandboxLifecycleRequest {
+            sandbox_id: vec![0x92; 16],
+            mutation: Some(MutationContext {
+                idempotency_key: b"cancelable-controller-operation".to_vec(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let envelope = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::StartSandbox,
+            &request.encode_to_vec(),
+        )
+        .unwrap()
+        .encode();
+        let effect = EffectPlan::authorized_public_mutation(
+            PublicOperationMethodV1::StartSandbox,
+            PublicMutationEffectV1::new(
+                PrincipalId::from_bytes([0x93; 16]),
+                ProjectId::from_bytes([0x91; 16]),
+                100,
+                envelope,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        OperationPlan::new(
+            OperationId::from_bytes([0xc1; 16]),
+            IdempotencyKey::new(b"cancelable-controller-operation".to_vec()).unwrap(),
+            [0xc2; 32],
+            b"controller-operation".to_vec(),
+            b"accepted".to_vec(),
+            vec![effect],
+        )
+        .unwrap()
+        .with_public_operation(
+            PublicOperationAdmissionV1::new(
+                PublicOperationMethodV1::StartSandbox,
+                7,
+                [0xc3; 16],
+                100,
+                public_operation_authorization(),
+            )
+            .unwrap(),
         )
         .unwrap()
     }
@@ -5500,6 +5766,70 @@ mod tests {
                 .unwrap()
                 .seconds,
             105
+        );
+    }
+
+    #[test]
+    fn controller_cancellation_receipt_projects_canceled_terminal_state() {
+        use crate::controller_query::{CheckedOperationObservationV1, CheckedOperationPhaseV1};
+
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let plan = cancelable_controller_operation();
+        let operation_id = plan.operation_id();
+        let mut reconciler = Reconciler::new(journal, CanceledControllerExecutor);
+
+        reconciler.accept(&plan).unwrap();
+        let accepted = reconciler.public_operation(operation_id).unwrap().unwrap();
+        let accepted = CheckedOperationObservationV1::try_from(accepted).unwrap();
+        assert_eq!(
+            accepted.resource().phase(),
+            CheckedOperationPhaseV1::Accepted
+        );
+        assert!(accepted.resource().cancelable());
+
+        assert_eq!(
+            reconciler.reconcile_once_at(operation_id, 101).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        let applying = reconciler.public_operation(operation_id).unwrap().unwrap();
+        let applying = CheckedOperationObservationV1::try_from(applying).unwrap();
+        assert_eq!(
+            applying.resource().phase(),
+            CheckedOperationPhaseV1::Preparing
+        );
+        assert!(!applying.resource().cancelable());
+
+        assert_eq!(
+            reconciler.reconcile_once_at(operation_id, 102).unwrap(),
+            ReconcileOutcome::EffectApplied
+        );
+        assert_eq!(
+            reconciler.reconcile_once_at(operation_id, 103).unwrap(),
+            ReconcileOutcome::CanceledBeforeCommit
+        );
+        assert_eq!(
+            reconciler.reconcile_once_at(operation_id, 104).unwrap(),
+            ReconcileOutcome::CanceledBeforeCommit
+        );
+
+        let canceled = reconciler.public_operation(operation_id).unwrap().unwrap();
+        let canceled = CheckedOperationObservationV1::try_from(canceled).unwrap();
+        assert_eq!(
+            canceled.resource().phase(),
+            CheckedOperationPhaseV1::CanceledBeforeCommit
+        );
+        assert_eq!(canceled.resource().progress(), (1, 1));
+        assert!(!canceled.resource().cancelable());
+        assert_eq!(
+            canceled
+                .resource()
+                .as_proto()
+                .completed_at
+                .as_option()
+                .unwrap()
+                .seconds,
+            103
         );
     }
 

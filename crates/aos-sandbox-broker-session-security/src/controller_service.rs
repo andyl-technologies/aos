@@ -1669,6 +1669,26 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
         let context = self.public_mutation_context(plan)?;
         if plan.public_mutation_method()
+            != Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
+        {
+            let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if let Some((_, current)) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            {
+                if current.operation().terminal_result()
+                    == Some(aos_sandbox::lifecycle::LifecycleTerminalResultV1::CanceledBeforeCommit)
+                {
+                    return Ok(EffectObservation::Applied(
+                        EffectReceipt::canceled_before_commit(current.record().digest()),
+                    ));
+                }
+            }
+        }
+        if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
         {
             let cancellation = Self::cancellation_request(&context)?;
