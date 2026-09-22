@@ -1532,6 +1532,17 @@ in
               control_ack_code = re.sub(
                   r"/\*.*?\*/", "", control_ack, flags=re.DOTALL
               )
+              main_loop_handoff_finish = rr[
+                  rr.index("static void rr_crucible_sim_finish_main_loop_handoff"):
+                  rr.index(
+                      "static void rr_crucible_sim_handoff_main_loop",
+                      rr.index("static void rr_crucible_sim_finish_main_loop_handoff")
+                  )
+              ]
+              deferred_reset_handoff = rr[
+                  rr.index("static bool rr_crucible_sim_service_deferred_reset_handoff"):
+                  rr.index("static bool rr_crucible_sim_main_loop_dispatch_pending")
+              ]
               run_tcg_batch = rr[
                   rr.index("static bool rr_crucible_sim_run_tcg_batch"):
                   rr.index("static void rr_wait_io_event")
@@ -3263,7 +3274,7 @@ in
                    r"completed_rr_quantum = false;\s*\}", 1),
                   ("pending main-loop work gets an acknowledged pass",
                    rr,
-                   r"if \(completed_rr_quantum\) \{\s*"
+                   r"if \(completed_rr_quantum && !reset_pending\) \{\s*"
                    r"if \(rr_crucible_sim_main_loop_dispatch_pending\(\)\) "
                    r"\{\s*"
                    r"rr_crucible_sim_handoff_main_loop\(\);\s*\}\s*"
@@ -3274,7 +3285,7 @@ in
                    r"&rr_main_loop_dispatch_active\)\);\s*"
                    r"qatomic_store_release\("
                    r"&rr_main_loop_dispatch_active, true\);\s*"
-                   r"generation =\s*qatomic_fetch_inc\("
+                   r"return qatomic_fetch_inc\("
                    r"&rr_main_loop_dispatch_requested\) \+ 1;", 1),
                   ("vCPU main-AIO notifications are latched", rr,
                    r"ctx != qemu_get_aio_context\(\).*?"
@@ -3298,7 +3309,15 @@ in
                    r"if \(hook\) \{\s*hook\(ctx\);\s*\}\s*"
                    r"/\*\s*\* Write e\.g\. ctx->bh_list before writing "
                    r"ctx->notified", 1),
-                  ("main-loop handoff preserves replay-before-BQL order", rr,
+                  ("main-loop handoff preserves replay-before-BQL order",
+                   main_loop_handoff_finish,
+                   r"rr_replay_mutex_unlock\(\);\s*"
+                   r"bql_unlock\(\);\s*"
+                   r"qemu_event_wait\(&rr_dispatch_ceiling_event\);\s*"
+                   r"rr_replay_mutex_lock\(\);\s*"
+                   r"bql_lock\(\);", 1),
+                  ("deferred reset handoff preserves replay-before-BQL order",
+                   deferred_reset_handoff,
                    r"rr_replay_mutex_unlock\(\);\s*"
                    r"bql_unlock\(\);\s*"
                    r"qemu_event_wait\(&rr_dispatch_ceiling_event\);\s*"
