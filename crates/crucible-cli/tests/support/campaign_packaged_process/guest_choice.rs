@@ -749,6 +749,15 @@ fn choice_is_authenticated_for_parent(
     let membership_key =
         CampaignHash::derive("crucible.campaign-branch-point-opportunity.v1", &canonical).to_hex();
 
+    let Some(membership_present) =
+        membership_key_is_in_authenticated_graph(fixture, snapshot, &membership_key)?
+    else {
+        return Ok(None);
+    };
+    if !membership_present {
+        return Ok(Some(false));
+    }
+
     let output = connected_campaign(fixture)
         .args([
             "graph-object",
@@ -760,10 +769,6 @@ fn choice_is_authenticated_for_parent(
         ])
         .output()?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("campaign-graph-object-key-is-not-present") {
-            return Ok(Some(false));
-        }
         if is_stale_snapshot_read(&output) {
             return Ok(None);
         }
@@ -788,6 +793,120 @@ fn choice_is_authenticated_for_parent(
         semantic_opportunity
     );
     Ok(Some(true))
+}
+
+fn membership_key_is_in_authenticated_graph(
+    fixture: &FlightFixture,
+    snapshot: &str,
+    membership_key: &str,
+) -> Result<Option<bool>, Box<dyn Error>> {
+    let output = connected_campaign(fixture)
+        .args([
+            "graph",
+            CAMPAIGN,
+            "--snapshot",
+            snapshot,
+            "--limit",
+            "256",
+            "--pages",
+            "256",
+        ])
+        .output()?;
+    if is_stale_snapshot_read(&output) {
+        return Ok(None);
+    }
+
+    let graph = parse_json_output(output, "scan authenticated campaign graph")?;
+    authenticated_graph_contains_key(&graph, snapshot, membership_key).map(Some)
+}
+
+fn authenticated_graph_contains_key(
+    graph: &Value,
+    snapshot: &str,
+    membership_key: &str,
+) -> Result<bool, Box<dyn Error>> {
+    if graph["operation"] != "graph" {
+        return Err("campaign graph scan returned the wrong operation".into());
+    }
+    if json_string(graph, "snapshot")? != snapshot {
+        return Err("campaign graph scan returned the wrong snapshot".into());
+    }
+    if graph["complete"] != true || !graph["next_after"].is_null() {
+        return Err(format!(
+            "campaign graph scan did not reach authenticated end-of-page at snapshot {snapshot}: {graph}"
+        )
+        .into());
+    }
+
+    let entries = graph["entries"]
+        .as_array()
+        .ok_or("campaign graph entries are not an array")?;
+    let mut found = false;
+    for entry in entries {
+        if entry["kind"] != "graph" {
+            return Err("campaign graph scan returned a non-graph entry".into());
+        }
+        let key = json_string(entry, "key")?;
+        CampaignHash::parse(&key)?;
+        if key == membership_key {
+            if found {
+                return Err(format!(
+                    "campaign graph scan returned duplicate membership key {membership_key}"
+                )
+                .into());
+            }
+            found = true;
+        }
+    }
+    Ok(found)
+}
+
+#[test]
+fn parent_membership_presence_requires_a_complete_authenticated_graph_scan() {
+    let snapshot = "snapshot-a";
+    let membership_key = "11".repeat(32);
+    let unrelated_key = "22".repeat(32);
+    let graph = serde_json::json!({
+        "operation": "graph",
+        "snapshot": snapshot,
+        "complete": true,
+        "entries": [
+            {
+                "kind": "graph",
+                "key": unrelated_key,
+                "object": "unrelated-object"
+            }
+        ]
+    });
+
+    assert!(
+        !authenticated_graph_contains_key(&graph, snapshot, &membership_key)
+            .expect("complete authenticated absence")
+    );
+
+    let mut present = graph.clone();
+    present["entries"]
+        .as_array_mut()
+        .expect("graph entries")
+        .push(serde_json::json!({
+            "kind": "graph",
+            "key": membership_key,
+            "object": "membership-object"
+        }));
+    assert!(
+        authenticated_graph_contains_key(&present, snapshot, &membership_key)
+            .expect("authenticated membership presence")
+    );
+
+    let mut incomplete = graph;
+    incomplete["complete"] = false.into();
+    incomplete["next_after"] = "33".repeat(32).into();
+    assert!(
+        authenticated_graph_contains_key(&incomplete, snapshot, &membership_key)
+            .expect_err("truncated graph cannot prove absence")
+            .to_string()
+            .contains("did not reach authenticated end-of-page")
+    );
 }
 
 fn is_stale_snapshot_read(output: &std::process::Output) -> bool {
