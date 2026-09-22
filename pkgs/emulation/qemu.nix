@@ -25,7 +25,11 @@
   gnutls,
   fuse3,
   gcc-libs,
+  libisoburn,
+  mtools,
+  socat,
   stdenv,
+  zstd,
   buildPackages,
   pname ? "qemu",
   enablePlugins ? false,
@@ -73,6 +77,26 @@
     if stdenv.isCross
     then buildPackages.perl
     else perl;
+  buildGnutls =
+    if stdenv.isCross
+    then buildPackages.gnutls
+    else gnutls;
+  buildLibisoburn =
+    if stdenv.isCross
+    then buildPackages.libisoburn
+    else libisoburn;
+  buildMtools =
+    if stdenv.isCross
+    then buildPackages.mtools
+    else mtools;
+  buildSocat =
+    if stdenv.isCross
+    then buildPackages.socat
+    else socat;
+  buildZstd =
+    if stdenv.isCross
+    then buildPackages.zstd
+    else zstd;
   darwinSigner =
     if isDarwinCross
     then
@@ -292,9 +316,16 @@
     guest_shebang_allowlist=tests/functional/aarch64/test_device_passthrough.py:20,60:/bin/bash;tests/lcitool/libvirt-ci/lcitool/ansible/playbooks/update/templates/gitlab-runner.j2:1:/bin/sh
     remaining_var_tmp_allowlist=tests/docker/Makefile.include:container-mount-only
     test_shebang_scope=all-files-under-tests-python-scripts
-    test_python=${buildPython}/bin/python3
+    test_python=build/pyvenv/bin/python3
     test_perl=${buildPerl}/bin/perl
     test_shell=${buildBash}/bin/bash
+    ${lib.optionalString fullUpstreamTestSuiteOnly ''
+      test_certtool=${buildGnutls}/bin/certtool
+      test_mformat=${buildMtools}/bin/mformat
+      test_socat=${buildSocat}/bin/socat
+      test_xorriso=${buildLibisoburn}/bin/xorriso
+      test_zstd=${buildZstd}/bin/zstd
+    ''}
   '';
   fullUpstreamTestHarnessMutationHash =
     builtins.hashString "sha256" fullUpstreamTestHarnessMutationMaterial;
@@ -366,6 +397,11 @@ in
             buildPygdbmi
             buildBash
             buildPerl
+            buildGnutls
+            buildLibisoburn
+            buildMtools
+            buildSocat
+            buildZstd
           ]
           ++ lib.optional isDarwinCross darwinSigner
         else
@@ -384,6 +420,11 @@ in
             buildPygdbmi
             buildBash
             buildPerl
+            buildGnutls
+            buildLibisoburn
+            buildMtools
+            buildSocat
+            buildZstd
           ];
       runtimeDeps = qemuRuntimeDeps ++ lib.optional enableLinuxUser bash;
       propagatedDeps = [];
@@ -601,12 +642,21 @@ in
                 '/var/tmp/gpio.out' '/tmp/gpio.out' \
                 >> "$mutation_manifest"
 
-              test -x ${buildPython}/bin/python3
+              test_python="$PWD/build/pyvenv/bin/python3"
+              test -x "$test_python"
+              "$test_python" -c 'import qemu.qmp'
               test -x ${buildPerl}/bin/perl
               test -x ${buildBash}/bin/bash
+              test "$(command -v certtool)" = ${buildGnutls}/bin/certtool
+              test "$(command -v mformat)" = ${buildMtools}/bin/mformat
+              test "$(command -v socat)" = ${buildSocat}/bin/socat
+              test "$(command -v xorriso)" = ${buildLibisoburn}/bin/xorriso
+              test "$(command -v zstd)" = ${buildZstd}/bin/zstd
               # First-line scripts in these trees run on the build host or are
-              # sourced by its test runner. The one guest configuration
-              # template is excluded here and asserted below with guest paths.
+              # sourced by its test runner. Python entry points must retain the
+              # configured QEMU environment, including its vendored qemu.qmp
+              # wheel. The one guest configuration template is excluded here
+              # and asserted below with guest paths.
               find tests python scripts -type f \
                 -exec grep -IlE '^#![[:space:]]*(/usr/bin/env|/usr/bin/python3|/bin/bash|/bin/sh)' {} + \
                 | LC_ALL=C sort \
@@ -618,10 +668,10 @@ in
                   first_line=$(head -n 1 "$test_script")
                   case "$first_line" in
                     '#!/usr/bin/env python3'|'#! /usr/bin/env python3'|'#!/usr/bin/python3')
-                      replacement='#!${buildPython}/bin/python3'
+                      replacement="#!$test_python"
                       ;;
                     '#!/usr/bin/env python')
-                      replacement='#!${buildPython}/bin/python3'
+                      replacement="#!$test_python"
                       ;;
                     '#!/usr/bin/env perl')
                       replacement='#!${buildPerl}/bin/perl'
