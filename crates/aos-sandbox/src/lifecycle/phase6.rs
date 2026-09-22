@@ -1463,7 +1463,18 @@ impl CurrentLifecycleEffectV1<'_> {
         )
     }
 
-    pub(crate) fn observe_controller_readback(
+    /// Joins deterministic controller-owned result and inventory commitments.
+    ///
+    /// This is the controller-domain equivalent of an authenticated broker
+    /// readback. The caller must derive both commitments from durable
+    /// controller state; the retained current-effect authority binds them to
+    /// the exact reserved request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless this handoff is owned by the
+    /// protected Controller domain and both commitments are nonzero.
+    pub fn observe_controller_readback(
         self,
         result: ObjectDigest,
         inventory: ObjectDigest,

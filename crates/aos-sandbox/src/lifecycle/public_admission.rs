@@ -11,6 +11,7 @@ use aos_sandbox_core::{
     DesiredGeneration, ExecutionId, NodeId, OperationId, ProjectId, ResourceId, Revision,
     SandboxId, SnapshotId, ViewId,
 };
+use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
 use crate::cli_model::DormantSandboxRequestKindV1;
@@ -20,10 +21,14 @@ use crate::controller_service::public_projection::{
 };
 
 use super::{
-    DesiredStateFenceV1, LifecycleIntentV1, LifecycleModelError, LifecycleResourceStateDigestV1,
-    LifecycleResourceV1, LifecycleResumeSourceV1, LifecycleRuntimeAdmissionErrorV1,
-    LifecycleRuntimeAdmissionFenceV1, LifecycleTargetFenceV1, ResourceExpectationV1,
-    ResourceExpectedStateV1, lifecycle_runtime_admission_fence_from_journal_v1,
+    DesiredStateCasV1, DesiredStateDocumentDigestV1, DesiredStateFenceV1,
+    LifecycleCommittedResourceV1, LifecycleIntentV1, LifecycleJournalCommitDigestV1,
+    LifecycleMethodSemanticCommitV1, LifecycleModelError, LifecycleOperationV1,
+    LifecycleReadCommitFactV1, LifecycleResourceStateDigestV1, LifecycleResourceV1,
+    LifecycleResumeSourceV1, LifecycleRuntimeAdmissionErrorV1, LifecycleRuntimeAdmissionFenceV1,
+    LifecycleSemanticCommitFactV1, LifecycleSemanticCommitV1, LifecycleSemanticEvidenceV1,
+    LifecycleTargetFenceV1, LifecycleTimeV1, ResourceExpectationV1, ResourceExpectedStateV1,
+    lifecycle_runtime_admission_fence_from_journal_v1,
 };
 
 /// Retains one method-specific intent and its exact canonical expectations.
@@ -74,6 +79,163 @@ pub enum LifecyclePublicMutationAdmissionErrorV1 {
     /// The resulting lifecycle fence violates the closed model.
     #[error(transparent)]
     Lifecycle(#[from] LifecycleModelError),
+}
+
+/// Reconstructs the already-committed public desired-state transition as a
+/// lifecycle semantic witness.
+///
+/// Public admission commits the successor projection before controller
+/// orchestration begins. This adapter does not write desired state again. It
+/// binds the exact operation-owned projection, its admitted predecessor, and
+/// the controller journal snapshot into the closed lifecycle fact model.
+/// Method families that require assignments, reservations, snapshot retention,
+/// cascade deletion, or initial-incarnation evidence are rejected until those
+/// authoritative facts are supplied by their specialized adapters.
+///
+/// # Errors
+///
+/// Returns [`LifecyclePublicMutationAdmissionErrorV1`] when the operation has
+/// no unique matching projection, generations are not adjacent, or its method
+/// requires specialized semantic facts or evidence.
+pub fn lifecycle_desired_state_semantic_commit_v1(
+    journal: &Journal,
+    operation: &LifecycleOperationV1,
+    committed_at: LifecycleTimeV1,
+) -> Result<LifecycleMethodSemanticCommitV1, LifecyclePublicMutationAdmissionErrorV1> {
+    let target = semantic_target(operation.intent());
+    let projections =
+        PublicProjectionStoreV1::new(journal).list_operation(operation.operation_id())?;
+    let projection = projections
+        .iter()
+        .find(|projection| {
+            projection.project() == operation.project()
+                && projection_resource(projection.resource()).ok() == Some(target)
+        })
+        .ok_or(LifecyclePublicMutationAdmissionErrorV1::MissingOperationProjection)?;
+    if projections
+        .iter()
+        .filter(|candidate| {
+            candidate.project() == operation.project()
+                && projection_resource(candidate.resource()).ok() == Some(target)
+        })
+        .count()
+        != 1
+    {
+        return Err(LifecyclePublicMutationAdmissionErrorV1::MissingOperationProjection);
+    }
+
+    let expectation = operation
+        .expectations()
+        .iter()
+        .find(|expectation| expectation.resource() == target)
+        .ok_or(LifecyclePublicMutationAdmissionErrorV1::InvalidPredecessor)?;
+    let (expected_generation, expected_state, successor_revision) = match expectation.expected() {
+        ResourceExpectedStateV1::Absent => (DesiredGeneration::new(0), None, Revision::new(1)),
+        ResourceExpectedStateV1::Present {
+            revision,
+            state_digest,
+        } => (
+            DesiredGeneration::new(revision.get()),
+            Some(DesiredStateDocumentDigestV1::commit(
+                state_digest.digest().as_bytes(),
+            )),
+            revision
+                .checked_next()
+                .map_err(|_| LifecyclePublicMutationAdmissionErrorV1::InvalidPredecessor)?,
+        ),
+    };
+    let successor_generation = projection_generation(projection)?;
+    if successor_generation != successor_revision.get() {
+        return Err(LifecyclePublicMutationAdmissionErrorV1::InvalidPredecessor);
+    }
+
+    let successor_document = DesiredStateDocumentDigestV1::commit(projection.revision().as_bytes());
+    let cas = DesiredStateCasV1::new(
+        target,
+        expected_generation,
+        expected_state,
+        DesiredGeneration::new(successor_generation),
+        successor_document,
+    )?;
+    let write = LifecycleCommittedResourceV1::new(
+        target,
+        expectation.expected(),
+        successor_revision,
+        LifecycleResourceStateDigestV1::from_stored(projection.revision())?,
+        Some(cas.digest()),
+    )?;
+    let reads = operation
+        .expectations()
+        .iter()
+        .filter(|expectation| expectation.resource() != target)
+        .map(|expectation| {
+            LifecycleReadCommitFactV1::new(expectation.resource(), expectation.expected())
+        })
+        .collect();
+    let facts = LifecycleSemanticCommitFactV1::DesiredState {
+        cas,
+        reads,
+        resources: vec![write],
+        assignments: Vec::new(),
+        reservations: Vec::new(),
+    };
+    let sequence = journal.snapshot_sequence();
+    let journal_commit = LifecycleJournalCommitDigestV1::commit(
+        &Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.public-semantic-commit.v1\0")
+            .chain_update(operation.operation_id().as_bytes())
+            .chain_update(sequence.to_be_bytes())
+            .chain_update(projection.revision().as_bytes())
+            .finalize(),
+    );
+    let witness = LifecycleSemanticCommitV1::new(sequence, cas, journal_commit, committed_at)?;
+    LifecycleMethodSemanticCommitV1::new(
+        witness,
+        facts,
+        LifecycleSemanticEvidenceV1::default(),
+        operation.intent(),
+        operation.expectations(),
+    )
+    .map_err(Into::into)
+}
+
+fn semantic_target(intent: &LifecycleIntentV1) -> LifecycleResourceV1 {
+    match intent {
+        LifecycleIntentV1::Create { sandbox }
+        | LifecycleIntentV1::Restore { sandbox, .. }
+        | LifecycleIntentV1::Start { sandbox, .. }
+        | LifecycleIntentV1::Stop { sandbox, .. }
+        | LifecycleIntentV1::SuspendMemory { sandbox, .. }
+        | LifecycleIntentV1::Resume { sandbox, .. }
+        | LifecycleIntentV1::Hibernate { sandbox, .. }
+        | LifecycleIntentV1::DeleteSandbox { sandbox, .. }
+        | LifecycleIntentV1::UpdateEnvironment { sandbox, .. }
+        | LifecycleIntentV1::UpdatePolicy { sandbox, .. } => LifecycleResourceV1::Sandbox(*sandbox),
+        LifecycleIntentV1::Fork { target, .. } => LifecycleResourceV1::Sandbox(*target),
+        LifecycleIntentV1::Snapshot { snapshot, .. }
+        | LifecycleIntentV1::DeleteSnapshot { snapshot, .. } => {
+            LifecycleResourceV1::Snapshot(*snapshot)
+        }
+        LifecycleIntentV1::CreateExecution { execution, .. }
+        | LifecycleIntentV1::CancelExecution { execution, .. } => {
+            LifecycleResourceV1::Execution(*execution)
+        }
+        LifecycleIntentV1::CreateView { view } | LifecycleIntentV1::ReleaseView { view, .. } => {
+            LifecycleResourceV1::View(*view)
+        }
+        LifecycleIntentV1::AttachView { attachment, .. }
+        | LifecycleIntentV1::ReplaceAttachment { attachment, .. }
+        | LifecycleIntentV1::DetachView { attachment, .. } => {
+            LifecycleResourceV1::Attachment(*attachment)
+        }
+        LifecycleIntentV1::AttenuateCapability { child, .. } => {
+            LifecycleResourceV1::Capability(*child)
+        }
+        LifecycleIntentV1::RenewCapability { capability, .. }
+        | LifecycleIntentV1::RevokeCapability { capability, .. } => {
+            LifecycleResourceV1::Capability(*capability)
+        }
+    }
 }
 
 /// Compiles one accepted public request into protected lifecycle intent.

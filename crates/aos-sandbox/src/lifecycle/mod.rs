@@ -172,7 +172,7 @@ pub use protected_owner::{
 };
 pub use public_admission::{
     LifecyclePublicMutationAdmissionErrorV1, LifecyclePublicMutationAdmissionV1,
-    lifecycle_public_mutation_admission_v1,
+    lifecycle_desired_state_semantic_commit_v1, lifecycle_public_mutation_admission_v1,
 };
 pub use public_operation::{
     LifecyclePublicOperationErrorV1, lifecycle_operation_from_public_mutation_v1,

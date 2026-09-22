@@ -1954,6 +1954,219 @@ impl ProductionEffectExecutor {
         self.settle_lifecycle_progress(operation_id, outcome)
     }
 
+    fn advance_controller_lifecycle_effect(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<bool, EffectFailure> {
+        let (current_key, current_record, observation, observed_at) = {
+            let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (current_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "lifecycle operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            if !matches!(
+                current.operation().phase(),
+                aos_sandbox::lifecycle::LifecyclePhaseV1::Preparing
+                    | aos_sandbox::lifecycle::LifecyclePhaseV1::Completing
+            ) || current.operation().intent().method()
+                != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+            {
+                return Ok(false);
+            }
+
+            let plan = LifecycleSuspensionPlanV1::suspend(&current, None)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let effect = plan
+                .next_effect(&current)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if effect.domain() != aos_sandbox::lifecycle::LifecycleEffectDomainV1::Controller {
+                return Ok(false);
+            }
+            let result = ObjectDigest::from_bytes(
+                Sha256::new()
+                    .chain_update(b"aos.sandbox.lifecycle.controller-effect-result.v1\0")
+                    .chain_update(effect.canonical_body())
+                    .chain_update(current.record().digest().as_bytes())
+                    .finalize()
+                    .into(),
+            );
+            let inventory = current.projection_root();
+            let observation = effect
+                .observe_controller_readback(result, inventory)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            (
+                current_key,
+                current.record(),
+                observation,
+                current_lifecycle_time()?,
+            )
+        };
+
+        let outcome = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let transaction_id = lifecycle_progress_transaction_id(
+                operation_id,
+                current_record.digest(),
+                b"controller-effect-success",
+            );
+            let prepared = owner
+                .prepare_successful_effect_progress(
+                    &current_key,
+                    transaction_id,
+                    observation,
+                    observed_at,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            owner
+                .commit_effect_progress(prepared)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        };
+        self.settle_lifecycle_progress(operation_id, outcome)?;
+        Ok(true)
+    }
+
+    fn advance_lifecycle_semantic_commit(
+        &mut self,
+        operation_id: OperationId,
+        journal: &Journal,
+    ) -> Result<bool, EffectFailure> {
+        let (current_key, current_record, phase, semantic_commit) = {
+            let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (current_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "lifecycle operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            let phase = current.operation().phase();
+            if !matches!(
+                phase,
+                aos_sandbox::lifecycle::LifecyclePhaseV1::Prepared
+                    | aos_sandbox::lifecycle::LifecyclePhaseV1::ReadyToCommit
+                    | aos_sandbox::lifecycle::LifecyclePhaseV1::Committed
+            ) {
+                return Ok(false);
+            }
+            if current.operation().intent().method()
+                != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+            {
+                return Ok(false);
+            }
+            let semantic_commit =
+                if phase == aos_sandbox::lifecycle::LifecyclePhaseV1::ReadyToCommit {
+                    Some(
+                        aos_sandbox::lifecycle::lifecycle_desired_state_semantic_commit_v1(
+                            journal,
+                            current.operation(),
+                            current_lifecycle_time()?,
+                        )
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+            (current_key, current.record(), phase, semantic_commit)
+        };
+
+        let outcome = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let transaction_id = lifecycle_progress_transaction_id(
+                operation_id,
+                current_record.digest(),
+                match phase {
+                    aos_sandbox::lifecycle::LifecyclePhaseV1::Prepared => b"commit-readiness",
+                    aos_sandbox::lifecycle::LifecyclePhaseV1::ReadyToCommit => b"semantic-commit",
+                    aos_sandbox::lifecycle::LifecyclePhaseV1::Committed => b"postcommit-progress",
+                    _ => {
+                        return Err(EffectFailure::Permanent(
+                            "invalid lifecycle semantic phase".to_owned(),
+                        ));
+                    }
+                },
+            );
+            let prepared = match phase {
+                aos_sandbox::lifecycle::LifecyclePhaseV1::Prepared => {
+                    owner.prepare_semantic_commit_readiness(&current_key, transaction_id)
+                }
+                aos_sandbox::lifecycle::LifecyclePhaseV1::ReadyToCommit => owner
+                    .prepare_semantic_commit(
+                        &current_key,
+                        transaction_id,
+                        semantic_commit.ok_or_else(|| {
+                            EffectFailure::Permanent(
+                                "lifecycle semantic witness is absent".to_owned(),
+                            )
+                        })?,
+                    ),
+                aos_sandbox::lifecycle::LifecyclePhaseV1::Committed => owner
+                    .prepare_postcommit_progress(
+                        &current_key,
+                        transaction_id,
+                        current_lifecycle_time()?,
+                    ),
+                _ => {
+                    return Err(EffectFailure::Permanent(
+                        "invalid lifecycle semantic phase".to_owned(),
+                    ));
+                }
+            }
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            owner
+                .commit_effect_progress(prepared)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        };
+        self.settle_lifecycle_progress(operation_id, outcome)?;
+        Ok(true)
+    }
+
+    fn lifecycle_terminal_receipt(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<Option<EffectReceipt>, EffectFailure> {
+        let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+            &mut self.source_domains,
+        )
+        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        let Some((_, current)) = owner
+            .current_operation_by_id(operation_id)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        if current.operation().terminal_result()
+            != Some(aos_sandbox::lifecycle::LifecycleTerminalResultV1::Succeeded)
+        {
+            return Ok(None);
+        }
+        let bytes = [
+            b"AOSLIF01".as_slice(),
+            operation_id.as_bytes(),
+            current.record().digest().as_bytes(),
+        ]
+        .concat();
+        EffectReceipt::new(bytes)
+            .map(Some)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))
+    }
+
     fn settle_lifecycle_progress(
         &mut self,
         operation_id: OperationId,
@@ -2059,6 +2272,27 @@ fn lifecycle_initial_reservation_transaction_id(
     transaction
 }
 
+fn lifecycle_progress_transaction_id(
+    operation: OperationId,
+    current_record: ObjectDigest,
+    purpose: &[u8],
+) -> [u8; 16] {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.lifecycle.progress-transaction.v1\0")
+        .chain_update(operation.as_bytes())
+        .chain_update(current_record.as_bytes())
+        .chain_update((purpose.len() as u64).to_be_bytes())
+        .chain_update(purpose)
+        .finalize()
+        .into();
+    let mut transaction = [0; 16];
+    transaction.copy_from_slice(&digest[..16]);
+    if transaction == [0; 16] {
+        transaction[15] = 1;
+    }
+    transaction
+}
+
 const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
     use DormantSandboxRequestKindV1 as Request;
 
@@ -2151,6 +2385,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                         EffectReceipt::canceled_before_commit(current.record().digest()),
                     ));
                 }
+            }
+            drop(owner);
+            if let Some(receipt) = self.lifecycle_terminal_receipt(operation_id)? {
+                return Ok(EffectObservation::Applied(receipt));
             }
         }
         if plan.public_mutation_method()
@@ -2258,6 +2496,22 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             self.settle_lifecycle_admission(operation_id, admission)?;
             self.bind_lifecycle_plan(operation_id)?;
             self.ensure_initial_lifecycle_reservation(operation_id)?;
+            if let Some(receipt) = self.lifecycle_terminal_receipt(operation_id)? {
+                return Ok(receipt);
+            }
+            if self.advance_controller_lifecycle_effect(operation_id)? {
+                return Err(EffectFailure::Retryable(
+                    CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+                ));
+            }
+            if self.advance_lifecycle_semantic_commit(operation_id, journal)? {
+                return Err(EffectFailure::Retryable(
+                    CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+                ));
+            }
+            if let Some(receipt) = self.lifecycle_terminal_receipt(operation_id)? {
+                return Ok(receipt);
+            }
         }
         Err(EffectFailure::Retryable(
             CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
