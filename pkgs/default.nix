@@ -1571,6 +1571,10 @@
         applyCruciblePatch = true;
         testOnlyNonDistributable = true;
         fullUpstreamTestSuiteOnly = true;
+        # The outer VM is deliberately the generic, unpatched package. The
+        # patched build under test must not provide its own filesystem or
+        # execution environment.
+        qemuTestRunner = self.qemu;
       };
       qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
