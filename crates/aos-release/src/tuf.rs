@@ -768,6 +768,7 @@ fn validate_root(root: &RootMetadataV1) -> Result<()> {
     if !root.consistent_snapshot {
         bail!("TUF root must require consistent snapshots");
     }
+    let production_assurance = registry_policy(&root.registry)?.requires_production_assurance();
     let keys = root_keys(root)?;
     let policies = root_policies(root)?;
     if policies.len() != 7 {
@@ -790,13 +791,13 @@ fn validate_root(root: &RootMetadataV1) -> Result<()> {
         {
             bail!("TUF role has an unattainable threshold");
         }
-        let (minimum_keys, minimum_threshold) = match role {
-            TufRole::Root | TufRole::Targets | TufRole::Stable => (3, 2),
-            TufRole::Candidate => (2, 1),
-            TufRole::Edge | TufRole::Snapshot | TufRole::Timestamp => (1, 1),
+        let (minimum_keys, minimum_threshold) = match (production_assurance, role) {
+            (true, TufRole::Root | TufRole::Targets | TufRole::Stable) => (3, 2),
+            (true, TufRole::Candidate) => (2, 1),
+            _ => (1, 1),
         };
         if role_policy.key_ids.len() < minimum_keys || role_policy.threshold < minimum_threshold {
-            bail!("TUF role is weaker than the canonical production policy");
+            bail!("TUF role is weaker than the registry assurance policy");
         }
         for key_id in &role_policy.key_ids {
             if !keys.contains_key(key_id.as_str()) {
@@ -1119,7 +1120,7 @@ fn require_not_expired(value: &str, now: std::time::SystemTime) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::MAIN_REGISTRY;
+    use crate::registry::{MAIN_REGISTRY, TESTING_REGISTRY};
 
     fn key(id: &str, byte: u8) -> TufKeyV1 {
         TufKeyV1 {
@@ -1160,6 +1161,41 @@ mod tests {
         }
     }
 
+    fn testing_root() -> RootMetadataV1 {
+        let roles = [
+            TufRole::Root,
+            TufRole::Targets,
+            TufRole::Stable,
+            TufRole::Candidate,
+            TufRole::Edge,
+            TufRole::Snapshot,
+            TufRole::Timestamp,
+        ];
+
+        RootMetadataV1 {
+            schema_version: TUF_ROOT_V1.to_owned(),
+            spec_version: TUF_SPEC_VERSION.to_owned(),
+            registry: TESTING_REGISTRY.to_owned(),
+            version: 1,
+            expires: "2030-01-01T00:00:00Z".to_owned(),
+            consistent_snapshot: true,
+            keys: roles
+                .iter()
+                .enumerate()
+                .map(|(index, _)| key(&format!("testing-key-{index}"), (index + 1) as u8))
+                .collect(),
+            roles: roles
+                .into_iter()
+                .enumerate()
+                .map(|(index, role)| TufRolePolicyV1 {
+                    role,
+                    key_ids: vec![format!("testing-key-{index}")],
+                    threshold: 1,
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn production_root_requires_role_separation_and_strong_offline_thresholds() {
         let root = production_root();
@@ -1172,6 +1208,16 @@ mod tests {
         let mut weak = root;
         weak.roles[0].threshold = 1;
         assert!(validate_root(&weak).is_err());
+    }
+
+    #[test]
+    fn testing_root_accepts_independent_single_key_roles() {
+        let root = testing_root();
+        assert!(validate_root(&root).is_ok());
+
+        let mut collapsed = root.clone();
+        collapsed.roles[1].key_ids[0] = "testing-key-0".to_owned();
+        assert!(validate_root(&collapsed).is_err());
     }
 
     #[test]
