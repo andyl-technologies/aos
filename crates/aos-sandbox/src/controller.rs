@@ -33,9 +33,14 @@ use crate::cli_model::authorization_adapter::{
 };
 #[cfg(target_os = "linux")]
 use crate::cli_model::{
-    AuditAuthorizationV1, AuthorizedResolvedMutationV1, DormantClientStatePlanV1,
-    DormantSandboxOutputV1, DormantSandboxRequestV1, PublicApiAuditMethodV1, RequestProvenanceV1,
-    ResolvedPublicMutationV1,
+    AuditAuthorizationV1, AuthorizedResolvedMutationV1, CheckedPolicyPlanV1,
+    DormantClientStatePlanV1, DormantSandboxOutputV1, DormantSandboxRequestV1,
+    PublicApiAuditMethodV1, RequestProvenanceV1, ResolvedPublicMutationV1,
+};
+#[cfg(target_os = "linux")]
+use crate::public_policy_planner::{
+    AuthorizedPublicPolicyPlanRequestV1, PublicPolicyPlanningErrorV1,
+    ResolvedPublicPolicyPlanRequestV1,
 };
 use crate::publisher_authority::{
     PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
@@ -199,6 +204,28 @@ pub trait ActivatedOperationCompiler {
         _request_digest: [u8; 32],
     ) -> Result<OperationPlan, OperationCompilationError> {
         Err(OperationCompilationError::Rejected)
+    }
+
+    /// Computes one pure policy plan from a currently authorized public request.
+    ///
+    /// The controller constructs `request` only after exact request validation,
+    /// live-peer checks, and current protected authorization. The lent journal
+    /// lets an implementation resolve current policy inputs without retaining a
+    /// second owner. Implementations must not commit desired state or perform
+    /// effects. The default remains fail-closed for deployments without an
+    /// installed policy input resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicPolicyPlanningErrorV1`] when policy inputs are unavailable
+    /// or the currently authorized request cannot produce a plan.
+    #[cfg(target_os = "linux")]
+    fn plan_public_policy(
+        &mut self,
+        _journal: &mut crate::Journal,
+        _request: AuthorizedPublicPolicyPlanRequestV1,
+    ) -> Result<aos_proto::aos::sandbox::v1::PolicyPlan, PublicPolicyPlanningErrorV1> {
+        Err(PublicPolicyPlanningErrorV1::Unavailable)
     }
 }
 
@@ -4964,6 +4991,66 @@ where
         peer.recheck()
             .map_err(|_| OperationCompilationError::Rejected)?;
         self.accept_compiled_plan(plan, request_digest)
+    }
+
+    /// Computes one pure public policy plan under current protected authority.
+    ///
+    /// The exact registered method selects the protobuf type and closed
+    /// capability semantics. The request is validated and authorized before the
+    /// injected compiler receives it, and the returned public plan is validated
+    /// before it crosses the controller boundary. No desired state, operation,
+    /// idempotency record, or effect is admitted by this path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicPolicyPlanningErrorV1`] for malformed input, stale peer
+    /// evidence, rejected current authorization, an unavailable planner, or an
+    /// invalid plan returned by the injected implementation.
+    #[cfg(target_os = "linux")]
+    pub fn plan_public_policy(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        method: PublicApiAuditMethodV1,
+        protobuf_body: &[u8],
+    ) -> Result<aos_proto::aos::sandbox::v1::PolicyPlan, PublicPolicyPlanningErrorV1> {
+        if protobuf_body.is_empty() || protobuf_body.len() > self.limits.maximum_request_bytes {
+            return Err(PublicPolicyPlanningErrorV1::Malformed);
+        }
+        peer.recheck()
+            .map_err(|_| PublicPolicyPlanningErrorV1::Rejected)?;
+
+        let request = ResolvedPublicPolicyPlanRequestV1::decode(method, protobuf_body)
+            .map_err(|_| PublicPolicyPlanningErrorV1::Malformed)?;
+        if request
+            .target_project()
+            .is_some_and(|project| project != peer.project())
+        {
+            return Err(PublicPolicyPlanningErrorV1::Rejected);
+        }
+        let authorization = self
+            .authorize_public_read(
+                peer,
+                capability_id,
+                request.method(),
+                request.resource_kind(),
+                request.operation(),
+                request.selector().clone(),
+                request.protobuf_body(),
+            )
+            .map_err(|_| PublicPolicyPlanningErrorV1::Unavailable)?
+            .ok_or(PublicPolicyPlanningErrorV1::Rejected)?;
+        let request = AuthorizedPublicPolicyPlanRequestV1::new(request, authorization);
+        let plan = self
+            .compiler
+            .plan_public_policy(self.reconciler.journal_mut(), request)?;
+
+        peer.recheck()
+            .map_err(|_| PublicPolicyPlanningErrorV1::Rejected)?;
+        CheckedPolicyPlanV1::try_from(plan.clone())
+            .map_err(|_| PublicPolicyPlanningErrorV1::InvalidPlan)?;
+
+        Ok(plan)
     }
 
     fn accept_compiled_plan(

@@ -44,7 +44,7 @@ use connectrpc::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::{AdmittedPublicMutationV1, CapabilityService, mutation_unavailable};
+use super::{AdmittedPublicMutationV1, CapabilityService};
 
 const QUERY_BINDING_HEADER: &str = "aos-query-binding-v1";
 const PAGE_TOKEN_MAGIC: &[u8; 8] = b"AOSPGT01";
@@ -307,10 +307,21 @@ impl PublicCacheService for CapabilityService {
 impl SandboxService for CapabilityService {
     async fn plan_create<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, PlanCreateSandboxRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, PlanCreateSandboxRequest>,
     ) -> ServiceResult<impl Encodable<PlanCreateSandboxResponse> + Send + use<'a>> {
-        Err::<Response<PlanCreateSandboxResponse>, _>(mutation_unavailable())
+        let plan = self
+            .plan_public_policy(
+                &context,
+                PublicApiAuditMethodV1::PlanCreate,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(PlanCreateSandboxResponse {
+            plan: Some(plan).into(),
+            ..Default::default()
+        })
     }
 
     async fn create_sandbox<'a>(
@@ -455,10 +466,21 @@ impl SandboxService for CapabilityService {
 
     async fn plan_policy<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, PlanSandboxPolicyRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, PlanSandboxPolicyRequest>,
     ) -> ServiceResult<impl Encodable<PlanSandboxPolicyResponse> + Send + use<'a>> {
-        Err::<Response<PlanSandboxPolicyResponse>, _>(mutation_unavailable())
+        let plan = self
+            .plan_public_policy(
+                &context,
+                PublicApiAuditMethodV1::PlanPolicy,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(PlanSandboxPolicyResponse {
+            plan: Some(plan).into(),
+            ..Default::default()
+        })
     }
 
     async fn update_policy<'a>(

@@ -38,7 +38,8 @@ use aos_proto::aos::sandbox::v1::{
     GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
     GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
     GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
-    OperationServiceExt, SandboxServiceExt, SnapshotServiceExt, Timestamp, WatchRequest,
+    OperationServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt, Timestamp,
+    WatchRequest,
 };
 use aos_sandbox_core::{CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId};
 use aos_sandbox_core::{ResourceKind, Selector};
@@ -67,6 +68,7 @@ use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
+use aos_sandbox::public_policy_planner::PublicPolicyPlanningErrorV1;
 use aos_sandbox::{
     AcceptOutcome, ActivatedOperationCompiler, ControllerRequestScopeV1, ControllerServiceError,
     EffectFailure, EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
@@ -141,6 +143,14 @@ enum ControllerCommand {
         reply: tokio::sync::oneshot::Sender<
             ControllerCommandResponse<Option<AuthorizedPublicProjectionReadV1>>,
         >,
+    },
+    PlanPublicPolicy {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        capability_id: CapabilityId,
+        method: PublicApiAuditMethodV1,
+        protobuf_body: Vec<u8>,
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<PolicyPlan>>,
     },
     AdmitPublicMutation {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
@@ -566,6 +576,42 @@ fn handle_controller_command(
                 }
                 Err(error) => {
                     let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    Err(message)
+                }
+            }
+        }
+        ControllerCommand::PlanPublicPolicy {
+            peer,
+            capability_id,
+            method,
+            protobuf_body,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            match controller.plan_public_policy(&peer, capability_id, method, &protobuf_body) {
+                Ok(plan) => {
+                    let _ = reply.send(Ok(plan));
+                    Ok(())
+                }
+                Err(PublicPolicyPlanningErrorV1::Malformed) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::InvalidRequest));
+                    Ok(())
+                }
+                Err(PublicPolicyPlanningErrorV1::Rejected) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::Rejected));
+                    Ok(())
+                }
+                Err(PublicPolicyPlanningErrorV1::Unavailable) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    Ok(())
+                }
+                Err(PublicPolicyPlanningErrorV1::InvalidPlan) => {
+                    let message = "public policy planner returned an invalid plan".to_owned();
                     let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
                     Err(message)
                 }
@@ -1542,6 +1588,74 @@ impl CapabilityService {
         }
     }
 
+    async fn plan_public_policy(
+        &self,
+        context: &RequestContext,
+        method: PublicApiAuditMethodV1,
+        protobuf_body: &[u8],
+    ) -> Result<PolicyPlan, ConnectError> {
+        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public policy planning is unavailable on the diagnostic endpoint",
+            ));
+        }
+        let peer = context
+            .extensions()
+            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
+            .ok_or_else(|| {
+                ConnectError::new(
+                    ErrorCode::Unauthenticated,
+                    "public policy planning requires registered TLS peer evidence",
+                )
+            })?;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::PlanPublicPolicy {
+                peer: peer.clone(),
+                capability_id: public_capability_id(context)?,
+                method,
+                protobuf_body: protobuf_body.to_vec(),
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(controller_command_send_error)?;
+        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
+            .await
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "controller public policy planning timed out",
+                )
+            })?
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::Unavailable,
+                    "controller worker ended before replying",
+                )
+            })?;
+
+        match result {
+            Ok(plan) => Ok(plan),
+            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
+                ErrorCode::DeadlineExceeded,
+                "controller public policy planning expired",
+            )),
+            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "public policy-planning request is invalid",
+            )),
+            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public policy-planning request was rejected",
+            )),
+            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "controller public policy planner is unavailable",
+            )),
+        }
+    }
+
     async fn admit_public_mutation(
         &self,
         context: &RequestContext,
@@ -1837,6 +1951,7 @@ fn public_capability_id(context: &RequestContext) -> Result<CapabilityId, Connec
     Ok(capability_id)
 }
 
+#[cfg(test)]
 fn mutation_unavailable() -> ConnectError {
     ConnectError::new(ErrorCode::Unimplemented, UNAVAILABLE_REASON)
 }

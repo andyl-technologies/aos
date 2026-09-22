@@ -79,6 +79,8 @@ pub mod policy_compiler;
 pub mod public_api_session;
 #[cfg(target_os = "linux")]
 pub mod public_mutation_compiler;
+#[cfg(target_os = "linux")]
+pub mod public_policy_planner;
 pub mod publication;
 pub mod publisher_admission;
 pub mod publisher_authority;
