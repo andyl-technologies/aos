@@ -1,9 +1,16 @@
-From e588de503c90c37c5c50767b8f2c723f73252cc5 Mon Sep 17 00:00:00 2001
+From fd00c3942f8a5af5250022988813bf1eb653b1db Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
 
-Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork, asynchronous-worker, and device-fingerprint implementation as one atomic, reconstructible QEMU 11.1.1 integration boundary.
+Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,
+asynchronous-worker, and device-fingerprint implementation as one atomic,
+reconstructible QEMU 11.1.1 integration boundary.
+
+Rearm pending main-loop work after a deferred reset consumes its original AIO
+wake, allowing repeated require-ready watchdog resets to complete without
+external QMP activity. Make the fingerprint projection test wait for an
+executed guest TB before checking the outside-boundary marker result.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -2658,10 +2665,10 @@ index 0000000000000000000000000000000000000000..c6da8461684ef5790ae0755c4aafe3ad
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2bd92d82c 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..e35a5230003c3bee0affab10938469963c84a053 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,41 +27,1537 @@
+@@ -27,41 +27,1544 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -2694,6 +2701,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
 +static bool rr_crucible_sim_stop_or_unplug_pending(void);
 +static bool rr_crucible_sim_vcpu_work_pending(void);
 +static void rr_crucible_sim_drain_vcpu_work(void);
++static bool rr_crucible_sim_main_loop_dispatch_pending(void);
 +static CPUState *rr_current_cpu;
 +static bool rr_initial_wait_complete;
 +static unsigned int rr_tcg_exec_state;
@@ -3733,6 +3741,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
 +            qatomic_store_release(
 +                &rr_deferred_reset_dispatch_generation, 0);
 +            qatomic_store_release(&rr_deferred_reset_handoff_ready, false);
++            if (rr_crucible_sim_main_loop_dispatch_pending()) {
++                generation = rr_crucible_sim_begin_main_loop_handoff();
++                /* Rearm work whose wake was consumed by reset handling. */
++                qemu_notify_event();
++                rr_crucible_sim_finish_main_loop_handoff(generation);
++            }
 +            return true;
 +        }
 +
@@ -4215,7 +4229,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
  
  static inline int64_t rr_next_kick_time(void)
  {
-@@ -90,6 +1586,14 @@ static void rr_kick_thread(void *opaque)
+@@ -90,6 +1593,14 @@ static void rr_kick_thread(void *opaque)
  
  static void rr_start_kick_timer(void)
  {
@@ -4230,7 +4244,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
      if (!rr_kick_vcpu_timer && CPU_NEXT(first_cpu)) {
          rr_kick_vcpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                             rr_kick_thread, NULL);
-@@ -110,15 +1614,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1621,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -4364,7 +4378,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
      }
  }
  
-@@ -140,6 +1760,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +1767,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -4383,7 +4397,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +1816,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +1823,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -4392,7 +4406,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -207,38 +1841,193 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -207,38 +1848,193 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_process_cpu_events_common(cpu);
          }
      }
@@ -4603,7 +4617,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2043,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2050,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -4636,7 +4650,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2085,105 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2092,105 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -4757,7 +4771,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2191,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2198,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -4897,7 +4911,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2
      }
  
      g_assert_not_reached();
-@@ -318,13 +2330,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2337,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -92327,10 +92341,10 @@ index 0000000000000000000000000000000000000000..74f76ce9c42cee9ebd27167bc4ee13b4
 +    main()
 diff --git a/tests/qtest/crucible-fingerprint-projection.py b/tests/qtest/crucible-fingerprint-projection.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5e35e237936ffc8278ddf282d42b8e0b58b46049
+index 0000000000000000000000000000000000000000..5d5c09f3b159b194d25c67646d46fd6eaba6d56d
 --- /dev/null
 +++ b/tests/qtest/crucible-fingerprint-projection.py
-@@ -0,0 +1,714 @@
+@@ -0,0 +1,720 @@
 +# Copyright (c) 2026 ANDYL Technologies
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Checks live machine fingerprint projections through the control boundary."""
@@ -92638,11 +92652,17 @@ index 0000000000000000000000000000000000000000..5e35e237936ffc8278ddf282d42b8e0b
 +                    )
 +        elif self.capture_count == 0:
 +            deadline = time.monotonic() + TIMEOUT_SECONDS
-+            while self.qmp("query-status") != {
-+                "status": "running", "running": True
-+            }:
++            while True:
++                running = self.qmp("query-status") == {
++                    "status": "running", "running": True
++                }
++                replay = self.qmp("query-replay")
++                if running and replay["icount"] > 0:
++                    break
 +                if time.monotonic() >= deadline:
-+                    raise TimeoutError("QEMU did not resume before capture")
++                    raise TimeoutError(
++                        "QEMU did not execute a TB before capture"
++                    )
 +        else:
 +            while True:
 +                boundary = self._read_result_line()
