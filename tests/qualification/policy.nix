@@ -201,7 +201,7 @@
     (rule: "package-function/${rule.name}/x86_64-linux")
     executedPackageRules;
   isStoreScenario = scenario:
-    builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString scenario)
+    builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+(/.*)?$" (builtins.toString scenario)
     != null;
   composed = import ../../qualification/_eval.nix {
     inherit lib nativeAdapterMatrix;
