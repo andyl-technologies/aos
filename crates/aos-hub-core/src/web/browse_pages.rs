@@ -91,6 +91,7 @@ pub(crate) fn registry_nav_at_release(slug: &str, active: &str, release: Option<
         ("overview", format!("/{slug}/"), "Overview"),
         ("releases", format!("/{slug}/-/releases"), "Releases"),
         ("packages", format!("/{slug}/-/packages"), "Packages"),
+        ("abilities", format!("/{slug}/-/abilities"), "Abilities"),
         ("docs", format!("/{slug}/-/docs"), "Docs"),
         ("images", format!("/{slug}/-/images"), "Images"),
         ("containers", format!("/{slug}/-/containers"), "Containers"),
@@ -100,8 +101,10 @@ pub(crate) fn registry_nav_at_release(slug: &str, active: &str, release: Option<
     let mut nav = String::from("<nav aria-label=\"registry\" class=\"local-nav\">");
     for (key, href, label) in items {
         let release = release.filter(|value| {
-            matches!(key, "packages" | "docs" | "images" | "containers")
-                && (*value != "all" || matches!(key, "images" | "containers"))
+            matches!(
+                key,
+                "packages" | "abilities" | "docs" | "images" | "containers"
+            ) && (*value != "all" || matches!(key, "images" | "containers"))
         });
         let href = release
             .map(|value| format!("{href}?release={}", urlencode(value)))

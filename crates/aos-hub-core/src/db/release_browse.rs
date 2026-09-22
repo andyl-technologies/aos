@@ -11,7 +11,7 @@ use anyhow::{ensure, Context as _, Result};
 use aos_registry_surface::manifest::PackageToml;
 use sha2::{Digest as _, Sha256};
 
-use super::{Database, IndexedPackageDocumentation};
+use super::{Database, IndexedPackageDocumentation, ReleaseAbilityGraphProjection};
 use crate::backend::Statement;
 
 /// One container index recorded by a signed release.
@@ -82,6 +82,41 @@ impl Database {
             ]
             .to_vec(),
         )];
+        statements.push(Statement::new(
+            "DELETE FROM release_ability_graphs
+             WHERE registry_id = ?1 AND source_commit = ?2",
+            vals![registry_id, source_commit].to_vec(),
+        ));
+        let mut references_by_platform = std::collections::BTreeMap::<
+            String,
+            Vec<&aos_doc_model::PackageAbilityReference>,
+        >::new();
+        for document in documents {
+            references_by_platform
+                .entry(document.platform.clone())
+                .or_default()
+                .push(&document.ability_reference);
+        }
+        for (platform, references) in references_by_platform {
+            let graph =
+                aos_doc_model::ReleaseAbilityGraph::from_references(platform.clone(), references)?;
+            let canonical_json = String::from_utf8(graph.canonical_json()?)
+                .context("release ability graph was not UTF-8")?;
+            let graph_digest = hex::encode(Sha256::digest(canonical_json.as_bytes()));
+            statements.push(Statement::new(
+                "INSERT INTO release_ability_graphs
+                   (registry_id, source_commit, platform, canonical_json, content_digest)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                vals![
+                    registry_id,
+                    source_commit,
+                    platform,
+                    canonical_json,
+                    graph_digest
+                ]
+                .to_vec(),
+            ));
+        }
         super::documentation_tree::extend_tree_projection(
             &mut statements,
             registry_id,
@@ -310,6 +345,106 @@ impl Database {
         ))
     }
 
+    /// Loads the generated ability graph for one exact published release.
+    ///
+    /// An empty platform selector chooses the first platform in lexical order.
+    /// The graph remains gated by the completed artifact snapshot that
+    /// authenticates the selected release commit.
+    ///
+    /// # Errors
+    /// Returns an error on database failure, digest mismatch, or invalid graph bytes.
+    pub async fn release_ability_graph(
+        &self,
+        registry_id: i64,
+        release: &str,
+        platform: &str,
+    ) -> Result<Option<ReleaseAbilityGraphProjection>> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT rel.semver, rel.commit_oid, graph.platform,
+                        graph.canonical_json, graph.content_digest
+                 FROM releases rel
+                 JOIN release_browse_catalogs catalog
+                   ON catalog.registry_id = rel.registry_id
+                  AND catalog.source_commit = rel.commit_oid
+                 JOIN release_ability_graphs graph
+                   ON graph.registry_id = catalog.registry_id
+                  AND graph.source_commit = catalog.source_commit
+                 JOIN release_artifact_snapshot_heads head
+                   ON head.registry_id = rel.registry_id AND head.release_id = rel.id
+                 JOIN release_artifact_snapshots snapshot
+                   ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                  AND snapshot.registry_id = rel.registry_id AND snapshot.release_id = rel.id
+                  AND snapshot.source_commit = rel.commit_oid
+                  AND snapshot.verified_tag_oid = rel.tag_oid
+                  AND snapshot.state = 'complete'
+                 WHERE rel.registry_id = ?1 AND rel.semver = ?2
+                   AND (?3 = '' OR graph.platform = ?3)
+                 ORDER BY graph.platform
+                 LIMIT 1",
+                &vals![registry_id, release, platform],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let canonical_json = row.get::<String>(3)?.into_bytes();
+        let content_digest = row.get::<String>(4)?;
+        ensure!(
+            hex::encode(Sha256::digest(&canonical_json)) == content_digest,
+            "release ability graph digest mismatch"
+        );
+        let graph = aos_doc_model::ReleaseAbilityGraph::from_canonical_json(&canonical_json)
+            .context("invalid retained release ability graph")?;
+        let selected_platform = row.get::<String>(2)?;
+        ensure!(
+            graph.platform == selected_platform,
+            "release ability graph platform mismatch"
+        );
+        Ok(Some(ReleaseAbilityGraphProjection {
+            release: row.get(0)?,
+            source_commit: row.get(1)?,
+            platform: selected_platform,
+            canonical_json,
+            content_digest,
+        }))
+    }
+
+    /// Lists platforms with a generated ability graph for one published release.
+    ///
+    /// # Errors
+    /// Returns an error on database failure or malformed row values.
+    pub async fn release_ability_graph_platforms(
+        &self,
+        registry_id: i64,
+        release: &str,
+    ) -> Result<Vec<String>> {
+        self.backend
+            .query(
+                "SELECT graph.platform
+                 FROM releases rel
+                 JOIN release_ability_graphs graph
+                   ON graph.registry_id = rel.registry_id
+                  AND graph.source_commit = rel.commit_oid
+                 JOIN release_artifact_snapshot_heads head
+                   ON head.registry_id = rel.registry_id AND head.release_id = rel.id
+                 JOIN release_artifact_snapshots snapshot
+                   ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+                  AND snapshot.registry_id = rel.registry_id AND snapshot.release_id = rel.id
+                  AND snapshot.source_commit = rel.commit_oid
+                  AND snapshot.verified_tag_oid = rel.tag_oid
+                  AND snapshot.state = 'complete'
+                 WHERE rel.registry_id = ?1 AND rel.semver = ?2
+                 ORDER BY graph.platform",
+                &vals![registry_id, release],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect()
+    }
+
     /// Lists container roots from exact signed releases, independently of tags.
     ///
     /// # Errors
@@ -527,6 +662,47 @@ mod tests {
         assert_eq!(
             db.release_browse_counts(registry).await.unwrap(),
             vec![("1.0.0".into(), 1, 0)]
+        );
+
+        let graph_document = IndexedPackageDocumentation {
+            package_name: "demo".into(),
+            package_version: "1.9.0".into(),
+            platform: "x86_64-linux".into(),
+            artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
+                format: aos_doc_model::DOCUMENT_FORMAT.into(),
+                store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo-docs".into(),
+                nar_hash: format!("sha256-{}", "A".repeat(43)),
+                nar_size: 1,
+                document_sha256: format!("sha256:{}", "b".repeat(64)),
+                document_size: 1,
+                semantic_schema_sha256: "c".repeat(64),
+                references: Vec::new(),
+            },
+            ability_reference: crate::db::test_package_ability_reference("demo", "1.9.0"),
+            search: Vec::new(),
+            options: Vec::new(),
+        };
+        db.retain_release_browse_catalog(
+            registry,
+            "branch-commit",
+            &released,
+            None,
+            &[graph_document],
+        )
+        .await
+        .unwrap();
+        let retained_graph = db
+            .release_ability_graph(registry, "1.0.0", "")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained_graph.platform, "x86_64-linux");
+        assert_eq!(
+            aos_doc_model::ReleaseAbilityGraph::from_canonical_json(&retained_graph.canonical_json)
+                .unwrap()
+                .packages
+                .len(),
+            1
         );
 
         db.backend.execute("UPDATE release_browse_catalogs SET packages_json = '{}' WHERE registry_id = ?1 AND source_commit = 'branch-commit'", &vals![registry]).await.unwrap();

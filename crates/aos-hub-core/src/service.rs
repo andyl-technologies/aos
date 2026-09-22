@@ -11643,6 +11643,49 @@ impl RpcService {
         })
     }
 
+    /// Returns the release-wide ability graph derived from signed package references.
+    ///
+    /// An empty release selects the registry's configured browsing release. An
+    /// empty platform selects the first indexed platform in lexical order.
+    ///
+    /// # Errors
+    ///
+    /// Returns registry visibility failures, not-found when no release graph is
+    /// available, and internal errors for corrupted generated projection bytes.
+    pub async fn get_release_ability_graph(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetReleaseAbilityGraphRequest,
+    ) -> Result<pb::GetReleaseAbilityGraphResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let release = if req.release.is_empty() {
+            self.db
+                .default_browse_release(registry.id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("default release"))?
+        } else {
+            req.release
+        };
+        let graph = self
+            .db
+            .release_ability_graph(registry.id, &release, &req.platform)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("release ability graph"))?;
+        Ok(pb::GetReleaseAbilityGraphResponse {
+            identity: Some(pb::ReleaseAbilityGraphIdentity {
+                registry_commit: graph.source_commit,
+                release: graph.release,
+                platform: graph.platform,
+                graph_sha256: graph.content_digest.clone(),
+            }),
+            canonical_json: graph.canonical_json,
+            etag: graph.content_digest,
+        })
+    }
+
     /// Plans creation, replacement, revocation, or re-enablement of a reporter slot.
     ///
     /// # Errors
@@ -37370,6 +37413,36 @@ mod cache_upload_tests {
         assert!(matches!(
             service
                 .get_package_ability_reference(Some(&underprivileged_auth), request)
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn release_ability_graph_authorizes_before_lookup() {
+        let (service, db, _lease, underprivileged_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db
+            .create_org("ability-graph-auth", "Ability graph auth")
+            .await
+            .unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+        let request = pb::GetReleaseAbilityGraphRequest {
+            registry: "ability-graph-auth/packages".into(),
+            release: String::new(),
+            platform: String::new(),
+        };
+
+        assert!(matches!(
+            service
+                .get_release_ability_graph(None, request.clone())
+                .await,
+            Err(RpcError::Unauthenticated(_))
+        ));
+        assert!(matches!(
+            service
+                .get_release_ability_graph(Some(&underprivileged_auth), request)
                 .await,
             Err(RpcError::PermissionDenied(_))
         ));

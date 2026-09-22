@@ -584,7 +584,10 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
-pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("migration-0002-release-ability-graphs.sql"),
+];
 
 /// Identifies the production migration lineage independently of its version.
 ///
@@ -1740,10 +1743,51 @@ pub struct IndexedPackageDocumentation {
     pub platform: String,
     /// Signed artifact locator.
     pub artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
+    /// Checked package ability reference used to derive release-wide graph reads.
+    pub ability_reference: aos_doc_model::PackageAbilityReference,
     /// Disposable search rows derived from the canonical document.
     pub search: Vec<aos_doc_model::SearchDocument>,
     /// Structural option paths and compact types for the release-wide tree.
     pub options: Vec<IndexedDocumentationOption>,
+}
+
+#[cfg(test)]
+pub(crate) fn test_package_ability_reference(
+    package: &str,
+    version: &str,
+) -> aos_doc_model::PackageAbilityReference {
+    aos_doc_model::PackageAbilityReference {
+        schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
+        required_features: vec![
+            aos_ability_model::RequiredFeature::new("abilities-v1").expect("valid test feature"),
+        ],
+        package: aos_ability_model::LocalKey::new(package).expect("valid test package"),
+        version: version.to_string(),
+        manifest_sha256: aos_contract::Sha256Digest::of_bytes(b"test manifest"),
+        package_digest: aos_contract::Sha256Digest::of_bytes(b"test package"),
+        interfaces: std::collections::BTreeMap::new(),
+        guarantees: std::collections::BTreeMap::new(),
+        option_declarations: Vec::new(),
+        implementations: Vec::new(),
+        exports: Vec::new(),
+        requirements: Vec::new(),
+        handlers: Vec::new(),
+    }
+}
+
+/// One retained release-wide ability graph and its authenticated selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseAbilityGraphProjection {
+    /// Published release selecting the source commit.
+    pub release: String,
+    /// Exact registry commit from which the graph was derived.
+    pub source_commit: String,
+    /// Platform shared by every package in the graph.
+    pub platform: String,
+    /// Canonical generated graph bytes.
+    pub canonical_json: Vec<u8>,
+    /// SHA-256 digest of `canonical_json`.
+    pub content_digest: String,
 }
 
 /// One option's structural navigation metadata, derived from verified bytes.
@@ -27223,6 +27267,7 @@ requires-features = ["image-artifact-contract-v1"]
             "image_snapshot_references",
             "image_snapshot_leases",
             "registry_publication_object_evidence",
+            "release_ability_graphs",
         ] {
             let present: i64 = connection
                 .query_row(
@@ -27281,6 +27326,39 @@ requires-features = ["image-artifact-contract-v1"]
             )
             .unwrap();
         assert_eq!(public_boundary, (1, "active".to_string()));
+    }
+
+    #[tokio::test]
+    async fn release_ability_graph_schema_upgrades_from_the_production_baseline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hub.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection
+            .execute("INSERT INTO schema_version VALUES (1)", [])
+            .unwrap();
+        drop(connection);
+
+        drop(Database::open(&path).await.unwrap());
+
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        let graph_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'release_ability_graphs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert_eq!(graph_table, 1);
     }
 
     #[test]
@@ -27586,6 +27664,7 @@ requires-features = ["image-artifact-contract-v1"]
             package_name: "curl".into(),
             package_version: "8.5.0".into(),
             platform: "x86_64-linux".into(),
+            ability_reference: test_package_ability_reference("curl", "8.5.0"),
             artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
                 format: aos_doc_model::DOCUMENT_FORMAT.into(),
                 store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-docs.json".into(),

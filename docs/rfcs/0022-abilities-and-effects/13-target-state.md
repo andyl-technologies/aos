@@ -619,6 +619,14 @@ separately authorized plan and observation inputs. Native and Worker
 implementations share the same bounded decoder and view semantics; they do not
 maintain package or interface switch statements.
 
+For each indexed release platform, Hub derives one bounded canonical graph
+from the verified package references. Exact interface documents appear once;
+package exports and consumed requirements refer to those identities, and
+requirement matches account for interface selectors, required methods, and
+required guarantees. The graph is a disposable release-index projection used
+unchanged by the Connect API, REST API, CLI, and web renderer. It never becomes
+an authored catalog or an independent package-contract authority.
+
 Release verification walks the declarations in the published package document.
 It derives required artifacts, handlers, interfaces, and qualification subjects
 from that document. It does not compare against a checked-in copy of the

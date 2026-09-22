@@ -419,6 +419,7 @@ async fn browse_dispatch(
         Some(api) => match api {
             "registry" => browse::api_registry(&svc, &slug).await,
             "packages" => browse::api_packages(&svc, &slug).await,
+            "abilities" => browse::api_release_ability_graph(&svc, &slug, &q).await,
             "docs/search" => browse::api_documentation_search(&svc, &slug, &q).await,
             "docs/schema" => browse::api_documentation_schema(&svc, &slug).await,
             "channels" => browse::api_channels(&svc, &slug).await,
@@ -474,6 +475,7 @@ async fn browse_dispatch(
         None => match rest.as_str() {
             "" => browse::registry_home(&svc, &headers, &slug).await,
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
+            "abilities" => browse::abilities(&svc, &headers, &slug, &q).await,
             "docs/children" => {
                 crate::web::documentation_browser::browse(&svc, &headers, &slug, &q, true).await
             }
@@ -2695,6 +2697,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.DocumentationService/GetPackageAbilityReference",
         get_package_ability_reference
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetReleaseAbilityGraph",
+        get_release_ability_graph
     );
     r = rpc_route!(
         r,

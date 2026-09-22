@@ -1879,6 +1879,13 @@
          "service" : "DocumentationService"
       },
       {
+         "method" : "GetReleaseAbilityGraph",
+         "path" : "aos.hub.v1.DocumentationService/GetReleaseAbilityGraph",
+         "request" : "GetReleaseAbilityGraphRequest",
+         "response" : "GetReleaseAbilityGraphResponse",
+         "service" : "DocumentationService"
+      },
+      {
          "method" : "SearchPackageDocumentation",
          "path" : "aos.hub.v1.DocumentationService/SearchPackageDocumentation",
          "request" : "SearchPackageDocumentationRequest",
