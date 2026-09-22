@@ -8,16 +8,18 @@
 //! Unresolved prior-process session history remains fail-closed; a new request
 //! identity is not a substitute for exact transport recovery.
 //!
-//! The first production tranche deliberately exposes only the read-only
-//! public feature registry and `GetNodeCapabilities` diagnostic RPCs to root
-//! on a local Unix socket. An opt-in public Unix endpoint offers the same
-//! discovery data to explicitly registered mutually authenticated TLS clients;
-//! socket credentials or request headers do not identify those clients.
-//! UID 0 is trusted here as the local administrator, not as another node
-//! service role. The responses contain no catalog rows, resources, credentials,
-//! operation state, or mutation surface. The feature registry describes the
-//! closed public protocol vocabulary; the node-capability response advertises
-//! none of those features until their production implementations are active.
+//! The root-only local socket exposes the read-only public feature registry,
+//! `GetNodeCapabilities`, and restart-stable `GetOperation` observations. The
+//! operation query crosses a bounded command channel to the sole journal owner;
+//! the asynchronous server never opens or shares the journal. An opt-in public
+//! Unix endpoint offers discovery data only to explicitly registered mutually
+//! authenticated TLS clients; socket credentials or request headers do not
+//! identify those clients. UID 0 is trusted here as the local administrator,
+//! not as another node service role. Discovery responses contain no catalog
+//! rows, credentials, operation state, or mutation surface. The feature
+//! registry describes the closed public protocol vocabulary; the node-capability
+//! response advertises none of those features until their production
+//! implementations are active.
 //! Assignment compilation, Guardian plan signing, and every broker Apply path
 //! return explicit unavailable results; their absence can never be mistaken
 //! for mutation authority.
@@ -27,14 +29,14 @@ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _}
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::v1::{
     CancelOperationRequest, CancelOperationResponse, DiscoveryService, DiscoveryServiceExt, Event,
     GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
     GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
-    GetPublicFeatureRegistryResponse, NodeCapabilities, OperationService, OperationServiceExt,
-    Timestamp, WatchRequest,
+    GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
+    OperationServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_linux::Error as LinuxError;
@@ -73,6 +75,8 @@ const JOURNAL_NAME: &str = "controller.journal";
 const DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const NODE_ID_CREDENTIAL: &str = "node-id";
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
+const CONTROLLER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const CONTROLLER_COMMAND_CAPACITY: usize = 64;
 const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
 
@@ -85,6 +89,22 @@ struct ControllerBrokerSessions {
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
     network: Option<crate::DormantNetworkLifecycleInventoryOwnerV1>,
+}
+
+enum ControllerCommand {
+    GetOperation {
+        operation_id: OperationId,
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<Option<Operation>>>,
+    },
+}
+
+type ControllerCommandResponse<T> = Result<T, ControllerCommandFailure>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ControllerCommandFailure {
+    DeadlineExceeded,
+    ControllerUnavailable,
 }
 
 /// Composes explicitly supplied controller and public-client dependencies without activation.
@@ -148,17 +168,29 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     };
     let capabilities = Arc::new(Mutex::new(CapabilityState::starting(node_id)));
     let (events_tx, events_rx) = mpsc::channel();
+    let (commands_tx, commands_rx) = mpsc::sync_channel(CONTROLLER_COMMAND_CAPACITY);
     let worker_capabilities = Arc::clone(&capabilities);
 
     std::thread::Builder::new()
         .name("aos-sandboxd-reconciler".to_owned())
-        .spawn(move || controller_worker(controller, node_id, worker_capabilities, events_tx))
+        .spawn(move || {
+            controller_worker(
+                controller,
+                node_id,
+                worker_capabilities,
+                commands_rx,
+                events_tx,
+            )
+        })
         .map_err(ControllerRuntimeError::WorkerSpawn)?;
 
     wait_for_initial_readiness(&events_rx)?;
     SystemdReadyNotifier::from_environment()?.notify_ready()?;
 
-    let service = Arc::new(CapabilityService { capabilities });
+    let service = Arc::new(CapabilityService {
+        capabilities,
+        commands: commands_tx,
+    });
     let public_application = axum::Router::new().fallback_service(
         DiscoveryServiceExt::register(Arc::clone(&service), connectrpc::Router::new())
             .into_axum_service(),
@@ -273,45 +305,95 @@ fn controller_worker(
     mut controller: ProductionController,
     node_id: [u8; 16],
     capabilities: Arc<Mutex<CapabilityState>>,
+    commands: mpsc::Receiver<ControllerCommand>,
     events: mpsc::Sender<WorkerEvent>,
 ) {
     let mut ready = false;
     let mut sessions = ControllerBrokerSessions::default();
+    let mut next_cycle = Instant::now();
     loop {
-        match run_controller_cycle(&mut controller, node_id, &mut sessions) {
-            Ok(catalog) => {
-                let update = capabilities
-                    .lock()
-                    .map_err(|_| "capability status lock is poisoned".to_owned())
-                    .map(|mut state| state.record_success(catalog.generation, catalog.digest));
-                if let Err(message) = update {
+        if Instant::now() >= next_cycle {
+            match run_controller_cycle(&mut controller, node_id, &mut sessions) {
+                Ok(catalog) => {
+                    let update = capabilities
+                        .lock()
+                        .map_err(|_| "capability status lock is poisoned".to_owned())
+                        .map(|mut state| state.record_success(catalog.generation, catalog.digest));
+                    if let Err(message) = update {
+                        let _ = events.send(WorkerEvent::Fatal(message));
+                        return;
+                    }
+                    if !ready {
+                        if events.send(WorkerEvent::Ready).is_err() {
+                            return;
+                        }
+                        ready = true;
+                    }
+                }
+                Err(CycleFailure::Retryable(message)) => {
+                    if let Ok(mut state) = capabilities.lock() {
+                        state.record_retryable_failure(message.clone());
+                    } else {
+                        let _ = events.send(WorkerEvent::Fatal(
+                            "capability status lock is poisoned".to_owned(),
+                        ));
+                        return;
+                    }
+                    eprintln!("aos-sandboxd: reconciliation pending: {message}");
+                }
+                Err(CycleFailure::Fatal(message)) => {
                     let _ = events.send(WorkerEvent::Fatal(message));
                     return;
                 }
-                if !ready {
-                    if events.send(WorkerEvent::Ready).is_err() {
-                        return;
-                    }
-                    ready = true;
-                }
             }
-            Err(CycleFailure::Retryable(message)) => {
-                if let Ok(mut state) = capabilities.lock() {
-                    state.record_retryable_failure(message.clone());
-                } else {
-                    let _ = events.send(WorkerEvent::Fatal(
-                        "capability status lock is poisoned".to_owned(),
-                    ));
+            next_cycle = Instant::now() + RECONCILIATION_INTERVAL;
+        }
+
+        let wait = next_cycle.saturating_duration_since(Instant::now());
+        match commands.recv_timeout(wait) {
+            Ok(command) => {
+                if let Err(message) = handle_controller_command(&mut controller, command) {
+                    let _ = events.send(WorkerEvent::Fatal(message));
                     return;
                 }
-                eprintln!("aos-sandboxd: reconciliation pending: {message}");
             }
-            Err(CycleFailure::Fatal(message)) => {
-                let _ = events.send(WorkerEvent::Fatal(message));
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = events.send(WorkerEvent::Fatal(
+                    "controller command channel disconnected".to_owned(),
+                ));
                 return;
             }
         }
-        std::thread::sleep(RECONCILIATION_INTERVAL);
+    }
+}
+
+fn handle_controller_command(
+    controller: &mut ProductionController,
+    command: ControllerCommand,
+) -> Result<(), String> {
+    match command {
+        ControllerCommand::GetOperation {
+            operation_id,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            match controller.public_operation(operation_id) {
+                Ok(operation) => {
+                    let _ = reply.send(Ok(operation));
+                    Ok(())
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    Err(message)
+                }
+            }
+        }
     }
 }
 
@@ -1025,6 +1107,7 @@ fn timestamp(value: rustix::time::Timespec) -> Result<Timestamp, ConnectError> {
 
 struct CapabilityService {
     capabilities: Arc<Mutex<CapabilityState>>,
+    commands: mpsc::SyncSender<ControllerCommand>,
 }
 
 /// Carries the generated service's owned server-streaming responses.
@@ -1070,15 +1153,87 @@ impl CapabilityService {
         }
         capabilities.response()
     }
+
+    async fn operation(&self, request: &[u8]) -> Result<GetOperationResponse, ConnectError> {
+        let operation_id: [u8; 16] = request.try_into().map_err(|_| {
+            ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "operation identity must contain exactly 16 bytes",
+            )
+        })?;
+        if operation_id == [0; 16] {
+            return Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "operation identity must be nonzero",
+            ));
+        }
+
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::GetOperation {
+                operation_id: OperationId::from_bytes(operation_id),
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => ConnectError::new(
+                    ErrorCode::ResourceExhausted,
+                    "controller command capacity is exhausted",
+                ),
+                mpsc::TrySendError::Disconnected(_) => {
+                    ConnectError::new(ErrorCode::Unavailable, "controller worker is unavailable")
+                }
+            })?;
+        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
+            .await
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "controller operation lookup timed out",
+                )
+            })?
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::Unavailable,
+                    "controller worker ended before replying",
+                )
+            })?;
+        let operation = match result {
+            Ok(Some(operation)) => operation,
+            Ok(None) => {
+                return Err(ConnectError::new(
+                    ErrorCode::NotFound,
+                    "operation was not found",
+                ));
+            }
+            Err(ControllerCommandFailure::DeadlineExceeded) => {
+                return Err(ConnectError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "controller operation lookup expired",
+                ));
+            }
+            Err(ControllerCommandFailure::ControllerUnavailable) => {
+                return Err(ConnectError::new(
+                    ErrorCode::Unavailable,
+                    "controller operation state is unavailable",
+                ));
+            }
+        };
+
+        Ok(GetOperationResponse {
+            operation: Some(operation).into(),
+            ..Default::default()
+        })
+    }
 }
 
 impl OperationService for CapabilityService {
     async fn get_operation<'a>(
         &'a self,
         _context: RequestContext,
-        _request: ServiceRequest<'_, GetOperationRequest>,
+        request: ServiceRequest<'_, GetOperationRequest>,
     ) -> ServiceResult<impl Encodable<GetOperationResponse> + Send + use<'a>> {
-        Err::<Response<GetOperationResponse>, _>(mutation_unavailable())
+        Response::ok(self.operation(request.view().operation_id).await?)
     }
 
     async fn cancel_operation<'a>(
@@ -1301,8 +1456,10 @@ mod tests {
 
         let mut state = CapabilityState::starting([7; 16]);
         state.record_success(9, ObjectDigest::from_bytes([8; 32]));
+        let (commands, _command_receiver) = mpsc::sync_channel(1);
         let service = CapabilityService {
             capabilities: Arc::new(Mutex::new(state)),
+            commands,
         };
 
         let registry_body: axum::body::Bytes = GetPublicFeatureRegistryRequest::default()
@@ -1356,6 +1513,65 @@ mod tests {
         let capabilities = capabilities_response.capabilities.as_option().unwrap();
         assert_eq!(capabilities.node_id, [7; 16]);
         assert!(capabilities.capabilities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn operation_lookup_crosses_the_bounded_worker_channel() {
+        let (commands, receiver) = mpsc::sync_channel(1);
+        let service = CapabilityService {
+            capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
+            commands,
+        };
+        let operation_id = [0x42; 16];
+        let worker = std::thread::spawn(move || {
+            let ControllerCommand::GetOperation {
+                operation_id,
+                expires_at,
+                reply,
+            } = receiver.recv().unwrap();
+            assert_eq!(operation_id.as_bytes(), &[0x42; 16]);
+            assert!(expires_at > Instant::now());
+            reply
+                .send(Ok(Some(Operation {
+                    operation_id: operation_id.into_bytes().to_vec(),
+                    ..Default::default()
+                })))
+                .unwrap();
+        });
+
+        let response = service.operation(&operation_id).await.unwrap();
+        assert_eq!(
+            response.operation.as_option().unwrap().operation_id,
+            operation_id
+        );
+        worker.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn operation_lookup_rejects_invalid_identity_and_channel_saturation() {
+        let (commands, receiver) = mpsc::sync_channel(1);
+        let service = CapabilityService {
+            capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
+            commands: commands.clone(),
+        };
+
+        let invalid = service.operation(&[1; 15]).await.unwrap_err();
+        assert_eq!(invalid.code, ErrorCode::InvalidArgument);
+        let zero = service.operation(&[0; 16]).await.unwrap_err();
+        assert_eq!(zero.code, ErrorCode::InvalidArgument);
+
+        let (reply, _response) = tokio::sync::oneshot::channel();
+        commands
+            .try_send(ControllerCommand::GetOperation {
+                operation_id: OperationId::from_bytes([0x43; 16]),
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .unwrap();
+        let saturated = service.operation(&[0x44; 16]).await.unwrap_err();
+        assert_eq!(saturated.code, ErrorCode::ResourceExhausted);
+
+        drop(receiver);
     }
 
     #[test]
