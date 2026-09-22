@@ -5272,6 +5272,31 @@ where
         Ok(projections)
     }
 
+    /// Loads every checked public projection linked to one operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError`] for corrupt projection or operation
+    /// state, including any project mismatch.
+    pub fn public_operation_projections(
+        &mut self,
+        operation: OperationId,
+    ) -> Result<
+        Vec<crate::controller_service::public_projection::PublicProjectionRecordV1>,
+        ControllerServiceError,
+    > {
+        let projections =
+            crate::controller_service::public_projection::PublicProjectionStoreV1::new(
+                self.reconciler.journal_mut(),
+            )
+            .list_operation(operation)?;
+        for projection in &projections {
+            self.validate_public_projection_operation(projection)?;
+        }
+
+        Ok(projections)
+    }
+
     fn validate_public_projection_operation(
         &mut self,
         projection: &crate::controller_service::public_projection::PublicProjectionRecordV1,

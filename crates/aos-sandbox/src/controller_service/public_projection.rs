@@ -493,6 +493,41 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
         }
         Ok(records)
     }
+
+    /// Lists every projection atomically linked to one admitted operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicProjectionError`] when any retained projection is
+    /// malformed or the operation identity is zero.
+    pub fn list_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<Vec<PublicProjectionRecordV1>, PublicProjectionError> {
+        if operation.as_bytes() == &[0; 16] {
+            return Err(PublicProjectionError::InvalidIdentity);
+        }
+        let mut records = Vec::new();
+        for (key, value) in self.journal.records(RecordNamespace::DesiredState) {
+            if key.starts_with(PROJECTION_KEY_PREFIX) {
+                let record = decode_record(key, value)?;
+                if record.operation == operation {
+                    records.push(record);
+                }
+            }
+        }
+        records.sort_by(|left, right| {
+            left.resource
+                .kind()
+                .cmp(&right.resource.kind())
+                .then_with(|| {
+                    left.resource
+                        .resource_id()
+                        .cmp(right.resource.resource_id())
+                })
+        });
+        Ok(records)
+    }
 }
 
 /// Reports a rejected public projection or corrupt retained record.

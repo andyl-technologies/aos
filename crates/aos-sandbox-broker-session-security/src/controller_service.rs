@@ -61,15 +61,15 @@ use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
 };
 use aos_sandbox::controller_service::public_projection::{
-    AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1,
+    AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1, PublicProjectionRecordV1,
 };
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::{
-    ActivatedOperationCompiler, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
-    EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
+    AcceptOutcome, ActivatedOperationCompiler, ControllerRequestScopeV1, ControllerServiceError,
+    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
     HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
     NodeControllerLimits, OperationCompilationError, OperationPlan, Reconciler,
     ResourceInventoryError, SingleNodeEffectExecutor,
@@ -142,6 +142,18 @@ enum ControllerCommand {
             ControllerCommandResponse<Option<AuthorizedPublicProjectionReadV1>>,
         >,
     },
+    AdmitPublicMutation {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        capability_id: CapabilityId,
+        canonical_request: Vec<u8>,
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<AdmittedPublicMutationV1>>,
+    },
+}
+
+struct AdmittedPublicMutationV1 {
+    operation: Operation,
+    projections: Vec<PublicProjectionRecordV1>,
 }
 
 type ControllerCommandResponse<T> = Result<T, ControllerCommandFailure>;
@@ -150,6 +162,8 @@ type ControllerCommandResponse<T> = Result<T, ControllerCommandFailure>;
 enum ControllerCommandFailure {
     DeadlineExceeded,
     ControllerUnavailable,
+    InvalidRequest,
+    Rejected,
 }
 
 /// Composes explicitly supplied controller and public-client dependencies without activation.
@@ -556,6 +570,69 @@ fn handle_controller_command(
                     Err(message)
                 }
             }
+        }
+        ControllerCommand::AdmitPublicMutation {
+            peer,
+            capability_id,
+            canonical_request,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            let operation_id =
+                match controller.admit_public(&peer, capability_id, &canonical_request) {
+                    Ok(AcceptOutcome::Accepted(operation) | AcceptOutcome::Replay(operation)) => {
+                        operation
+                    }
+                    Err(
+                        ControllerServiceError::EmptyRequest
+                        | ControllerServiceError::RequestTooLarge
+                        | ControllerServiceError::Compilation(OperationCompilationError::Malformed),
+                    ) => {
+                        let _ = reply.send(Err(ControllerCommandFailure::InvalidRequest));
+                        return Ok(());
+                    }
+                    Err(ControllerServiceError::Compilation(
+                        OperationCompilationError::Rejected,
+                    )) => {
+                        let _ = reply.send(Err(ControllerCommandFailure::Rejected));
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                        return Err(message);
+                    }
+                };
+            let operation = match controller.public_operation(operation_id) {
+                Ok(Some(operation)) => operation,
+                Ok(None) => {
+                    let message = "accepted public mutation has no public operation".to_owned();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    return Err(message);
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    return Err(message);
+                }
+            };
+            let projections = match controller.public_operation_projections(operation_id) {
+                Ok(projections) => projections,
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    return Err(message);
+                }
+            };
+            let _ = reply.send(Ok(AdmittedPublicMutationV1 {
+                operation,
+                projections,
+            }));
+            Ok(())
         }
     }
 }
@@ -1375,6 +1452,14 @@ impl CapabilityService {
                 ErrorCode::Unavailable,
                 "controller public resource state is unavailable",
             )),
+            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "public resource request is invalid",
+            )),
+            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public resource read was rejected",
+            )),
         }
     }
 
@@ -1445,6 +1530,80 @@ impl CapabilityService {
             Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
                 ErrorCode::Unavailable,
                 "controller authorization state is unavailable",
+            )),
+            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "public read request is invalid",
+            )),
+            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public read was rejected",
+            )),
+        }
+    }
+
+    async fn admit_public_mutation(
+        &self,
+        context: &RequestContext,
+        canonical_request: Vec<u8>,
+    ) -> Result<AdmittedPublicMutationV1, ConnectError> {
+        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public mutations are unavailable on the diagnostic endpoint",
+            ));
+        }
+        let peer = context
+            .extensions()
+            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
+            .ok_or_else(|| {
+                ConnectError::new(
+                    ErrorCode::Unauthenticated,
+                    "public mutation requires registered TLS peer evidence",
+                )
+            })?;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::AdmitPublicMutation {
+                peer: peer.clone(),
+                capability_id: public_capability_id(context)?,
+                canonical_request,
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(controller_command_send_error)?;
+        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
+            .await
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "controller public mutation admission timed out",
+                )
+            })?
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::Unavailable,
+                    "controller worker ended before replying",
+                )
+            })?;
+
+        match result {
+            Ok(admitted) => Ok(admitted),
+            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
+                ErrorCode::DeadlineExceeded,
+                "controller public mutation admission expired",
+            )),
+            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "public mutation request is invalid",
+            )),
+            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public mutation was rejected",
+            )),
+            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "controller public mutation state is unavailable",
             )),
         }
     }
@@ -1561,6 +1720,18 @@ impl CapabilityService {
                     "controller operation state is unavailable",
                 ));
             }
+            Err(ControllerCommandFailure::InvalidRequest) => {
+                return Err(ConnectError::new(
+                    ErrorCode::InvalidArgument,
+                    "operation lookup request is invalid",
+                ));
+            }
+            Err(ControllerCommandFailure::Rejected) => {
+                return Err(ConnectError::new(
+                    ErrorCode::PermissionDenied,
+                    "operation lookup was rejected",
+                ));
+            }
         };
 
         Ok(GetOperationResponse {
@@ -1596,10 +1767,21 @@ impl OperationService for CapabilityService {
 
     async fn cancel_operation<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, CancelOperationRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, CancelOperationRequest>,
     ) -> ServiceResult<impl Encodable<CancelOperationResponse> + Send + use<'a>> {
-        Err::<Response<CancelOperationResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::CancelOperation,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(CancelOperationResponse {
+            operation: Some(admitted.operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn watch(

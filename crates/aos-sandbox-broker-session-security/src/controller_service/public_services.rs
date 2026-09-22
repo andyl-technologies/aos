@@ -15,17 +15,20 @@ use aos_proto::aos::sandbox::v1::{
     ListAncestorsResponse, ListChildrenRequest, ListChildrenResponse, ListDescendantsRequest,
     ListDescendantsResponse, ListExecutionsRequest, ListExecutionsResponse, ListSandboxesRequest,
     ListSandboxesResponse, ListSnapshotsRequest, ListSnapshotsResponse, ListViewsRequest,
-    ListViewsResponse, PageInfo, PinCacheObjectRequest, PinCacheObjectResponse,
-    PlanCreateSandboxRequest, PlanCreateSandboxResponse, PlanSandboxPolicyRequest,
-    PlanSandboxPolicyResponse, ReleaseViewRequest, ReleaseViewResponse, RenewCapabilityRequest,
-    RenewCapabilityResponse, ReplaceAttachmentRequest, ReplaceAttachmentResponse,
-    RestoreSnapshotRequest, RestoreSnapshotResponse, RevokeCapabilityRequest,
-    RevokeCapabilityResponse, SandboxLifecycleRequest, SandboxLifecycleResponse, SandboxService,
-    SnapshotService, UnpinCacheObjectRequest, UnpinCacheObjectResponse, UpdateSandboxPolicyRequest,
+    ListViewsResponse, Operation as PublicOperation, PageInfo, PinCacheObjectRequest,
+    PinCacheObjectResponse, PlanCreateSandboxRequest, PlanCreateSandboxResponse,
+    PlanSandboxPolicyRequest, PlanSandboxPolicyResponse, ReleaseViewRequest, ReleaseViewResponse,
+    RenewCapabilityRequest, RenewCapabilityResponse, ReplaceAttachmentRequest,
+    ReplaceAttachmentResponse, RestoreSnapshotRequest, RestoreSnapshotResponse,
+    RevokeCapabilityRequest, RevokeCapabilityResponse, Sandbox as PublicSandbox,
+    SandboxLifecycleRequest, SandboxLifecycleResponse, SandboxService, SnapshotService,
+    UnpinCacheObjectRequest, UnpinCacheObjectResponse, UpdateSandboxPolicyRequest,
     UpdateSandboxPolicyResponse,
 };
 use aos_sandbox::cli_model::MAXIMUM_CLI_PAGE_SIZE;
-use aos_sandbox::cli_model::{AuditAuthorizationV1, PublicApiAuditMethodV1};
+use aos_sandbox::cli_model::{
+    AuditAuthorizationV1, PublicApiAuditMethodV1, PublicMutationRequestV1,
+};
 use aos_sandbox::client_state::MAXIMUM_PAGE_BYTES;
 use aos_sandbox::controller_query::{
     NormalizedQueryDigestV1, QUERY_BINDING_TRANSPORT_BYTES, QueryBindingV1, QueryFilterDigestV1,
@@ -41,11 +44,58 @@ use connectrpc::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::{CapabilityService, mutation_unavailable};
+use super::{AdmittedPublicMutationV1, CapabilityService, mutation_unavailable};
 
 const QUERY_BINDING_HEADER: &str = "aos-query-binding-v1";
 const PAGE_TOKEN_MAGIC: &[u8; 8] = b"AOSPGT01";
 const PAGE_TOKEN_BYTES: usize = 8 + QUERY_BINDING_TRANSPORT_BYTES + 32 + 16 + 32;
+
+impl CapabilityService {
+    pub(super) async fn admit_public_command(
+        &self,
+        context: &RequestContext,
+        method: PublicApiAuditMethodV1,
+        protobuf_body: &[u8],
+    ) -> Result<AdmittedPublicMutationV1, ConnectError> {
+        let request = PublicMutationRequestV1::new(method, protobuf_body).map_err(|_| {
+            ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "public mutation request envelope is invalid",
+            )
+        })?;
+
+        self.admit_public_mutation(context, request.encode()).await
+    }
+
+    async fn admit_sandbox_command(
+        &self,
+        context: &RequestContext,
+        method: PublicApiAuditMethodV1,
+        protobuf_body: &[u8],
+    ) -> Result<(PublicOperation, PublicSandbox), ConnectError> {
+        let admitted = self
+            .admit_public_command(context, method, protobuf_body)
+            .await?;
+        let (operation, resource) = admitted_projection(admitted, PublicProjectionKindV1::Sandbox)?;
+        let PublicProjectionResourceV1::Sandbox(sandbox) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Ok((operation, sandbox))
+    }
+}
+
+fn admitted_projection(
+    admitted: AdmittedPublicMutationV1,
+    expected_kind: PublicProjectionKindV1,
+) -> Result<(PublicOperation, PublicProjectionResourceV1), ConnectError> {
+    let record = single_record(admitted.projections)?;
+    if record.resource().kind() != expected_kind {
+        return Err(projection_mismatch());
+    }
+
+    Ok((admitted.operation, record.resource().clone()))
+}
 
 impl PublicCapabilityService for CapabilityService {
     async fn attenuate<'a>(
@@ -97,10 +147,27 @@ impl PublicCapabilityService for CapabilityService {
 
     async fn revoke<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, RevokeCapabilityRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, RevokeCapabilityRequest>,
     ) -> ServiceResult<impl Encodable<RevokeCapabilityResponse> + Send + use<'a>> {
-        Err::<Response<RevokeCapabilityResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::RevokeCapability,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::Capability)?;
+        let PublicProjectionResourceV1::Capability(capability) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(RevokeCapabilityResponse {
+            operation: Some(operation).into(),
+            capability: Some(capability).into(),
+            ..Default::default()
+        })
     }
 }
 
@@ -164,18 +231,40 @@ impl PublicCacheService for CapabilityService {
 
     async fn pin_object<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, PinCacheObjectRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, PinCacheObjectRequest>,
     ) -> ServiceResult<impl Encodable<PinCacheObjectResponse> + Send + use<'a>> {
-        Err::<Response<PinCacheObjectResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::PinCacheObject,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(PinCacheObjectResponse {
+            operation: Some(admitted.operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn unpin_object<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, UnpinCacheObjectRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, UnpinCacheObjectRequest>,
     ) -> ServiceResult<impl Encodable<UnpinCacheObjectResponse> + Send + use<'a>> {
-        Err::<Response<UnpinCacheObjectResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::UnpinCacheObject,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(UnpinCacheObjectResponse {
+            operation: Some(admitted.operation).into(),
+            ..Default::default()
+        })
     }
 }
 
@@ -190,10 +279,26 @@ impl SandboxService for CapabilityService {
 
     async fn create_sandbox<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, CreateSandboxRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, CreateSandboxRequest>,
     ) -> ServiceResult<impl Encodable<CreateSandboxResponse> + Send + use<'a>> {
-        Err::<Response<CreateSandboxResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::CreateSandbox,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) = admitted_projection(admitted, PublicProjectionKindV1::Sandbox)?;
+        let PublicProjectionResourceV1::Sandbox(sandbox) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(CreateSandboxResponse {
+            sandbox: Some(sandbox).into(),
+            operation: Some(operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn get_sandbox<'a>(
@@ -322,60 +427,153 @@ impl SandboxService for CapabilityService {
 
     async fn update_policy<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, UpdateSandboxPolicyRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, UpdateSandboxPolicyRequest>,
     ) -> ServiceResult<impl Encodable<UpdateSandboxPolicyResponse> + Send + use<'a>> {
-        Err::<Response<UpdateSandboxPolicyResponse>, _>(mutation_unavailable())
+        let (operation, sandbox) = self
+            .admit_sandbox_command(
+                &context,
+                PublicApiAuditMethodV1::UpdatePolicy,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(UpdateSandboxPolicyResponse {
+            operation: Some(operation).into(),
+            sandbox: Some(sandbox).into(),
+            ..Default::default()
+        })
     }
 
     async fn start<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, SandboxLifecycleRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, SandboxLifecycleRequest>,
     ) -> ServiceResult<impl Encodable<SandboxLifecycleResponse> + Send + use<'a>> {
-        Err::<Response<SandboxLifecycleResponse>, _>(mutation_unavailable())
+        let (operation, sandbox) = self
+            .admit_sandbox_command(
+                &context,
+                PublicApiAuditMethodV1::StartSandbox,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(SandboxLifecycleResponse {
+            operation: Some(operation).into(),
+            sandbox: Some(sandbox).into(),
+            ..Default::default()
+        })
     }
 
     async fn stop<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, SandboxLifecycleRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, SandboxLifecycleRequest>,
     ) -> ServiceResult<impl Encodable<SandboxLifecycleResponse> + Send + use<'a>> {
-        Err::<Response<SandboxLifecycleResponse>, _>(mutation_unavailable())
+        let (operation, sandbox) = self
+            .admit_sandbox_command(
+                &context,
+                PublicApiAuditMethodV1::StopSandbox,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(SandboxLifecycleResponse {
+            operation: Some(operation).into(),
+            sandbox: Some(sandbox).into(),
+            ..Default::default()
+        })
     }
 
     async fn suspend<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, SandboxLifecycleRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, SandboxLifecycleRequest>,
     ) -> ServiceResult<impl Encodable<SandboxLifecycleResponse> + Send + use<'a>> {
-        Err::<Response<SandboxLifecycleResponse>, _>(mutation_unavailable())
+        let (operation, sandbox) = self
+            .admit_sandbox_command(
+                &context,
+                PublicApiAuditMethodV1::SuspendSandbox,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(SandboxLifecycleResponse {
+            operation: Some(operation).into(),
+            sandbox: Some(sandbox).into(),
+            ..Default::default()
+        })
     }
 
     async fn resume<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, SandboxLifecycleRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, SandboxLifecycleRequest>,
     ) -> ServiceResult<impl Encodable<SandboxLifecycleResponse> + Send + use<'a>> {
-        Err::<Response<SandboxLifecycleResponse>, _>(mutation_unavailable())
+        let (operation, sandbox) = self
+            .admit_sandbox_command(
+                &context,
+                PublicApiAuditMethodV1::ResumeSandbox,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(SandboxLifecycleResponse {
+            operation: Some(operation).into(),
+            sandbox: Some(sandbox).into(),
+            ..Default::default()
+        })
     }
 
     async fn delete_sandbox<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, DeleteSandboxRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, DeleteSandboxRequest>,
     ) -> ServiceResult<impl Encodable<DeleteSandboxResponse> + Send + use<'a>> {
-        Err::<Response<DeleteSandboxResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::DeleteSandbox,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) = admitted_projection(admitted, PublicProjectionKindV1::Sandbox)?;
+        let PublicProjectionResourceV1::Sandbox(sandbox) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(DeleteSandboxResponse {
+            operation: Some(operation).into(),
+            sandbox: Some(sandbox).into(),
+            ..Default::default()
+        })
     }
 }
 
 impl ExecutionService for CapabilityService {
     async fn create_execution<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, CreateExecutionRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, CreateExecutionRequest>,
     ) -> ServiceResult<impl Encodable<CreateExecutionResponse> + Send + use<'a>> {
-        Err::<Response<CreateExecutionResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::CreateExecution,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::Execution)?;
+        let PublicProjectionResourceV1::Execution(execution) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(CreateExecutionResponse {
+            execution: Some(execution).into(),
+            operation: Some(operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn get_execution<'a>(
@@ -477,28 +675,72 @@ impl ExecutionService for CapabilityService {
 
     async fn control_execution<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, ExecutionControlRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, ExecutionControlRequest>,
     ) -> ServiceResult<impl Encodable<ExecutionControlResult> + Send + use<'a>> {
-        Err::<Response<ExecutionControlResult>, _>(mutation_unavailable())
+        let execution_id = request.view().execution_id.to_vec();
+        let action = request.view().action;
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::ControlExecution,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(ExecutionControlResult {
+            execution_id,
+            action,
+            accepted: true,
+            operation: Some(admitted.operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn cancel_execution<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, CancelExecutionRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, CancelExecutionRequest>,
     ) -> ServiceResult<impl Encodable<CancelExecutionResponse> + Send + use<'a>> {
-        Err::<Response<CancelExecutionResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::CancelExecution,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(CancelExecutionResponse {
+            operation: Some(admitted.operation).into(),
+            ..Default::default()
+        })
     }
 }
 
 impl FilesystemViewService for CapabilityService {
     async fn create_view<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, CreateViewRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, CreateViewRequest>,
     ) -> ServiceResult<impl Encodable<CreateViewResponse> + Send + use<'a>> {
-        Err::<Response<CreateViewResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::CreateView,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::FilesystemView)?;
+        let PublicProjectionResourceV1::FilesystemView(view) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(CreateViewResponse {
+            view: Some(view).into(),
+            operation: Some(operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn get_view<'a>(
@@ -624,44 +866,129 @@ impl FilesystemViewService for CapabilityService {
 
     async fn attach_view<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, AttachViewRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, AttachViewRequest>,
     ) -> ServiceResult<impl Encodable<AttachViewResponse> + Send + use<'a>> {
-        Err::<Response<AttachViewResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::AttachView,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::Attachment)?;
+        let PublicProjectionResourceV1::Attachment(attachment) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(AttachViewResponse {
+            attachment: Some(attachment).into(),
+            operation: Some(operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn replace_attachment<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, ReplaceAttachmentRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, ReplaceAttachmentRequest>,
     ) -> ServiceResult<impl Encodable<ReplaceAttachmentResponse> + Send + use<'a>> {
-        Err::<Response<ReplaceAttachmentResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::ReplaceAttachment,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::Attachment)?;
+        let PublicProjectionResourceV1::Attachment(attachment) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(ReplaceAttachmentResponse {
+            operation: Some(operation).into(),
+            attachment: Some(attachment).into(),
+            ..Default::default()
+        })
     }
 
     async fn detach_view<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, DetachViewRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, DetachViewRequest>,
     ) -> ServiceResult<impl Encodable<DetachViewResponse> + Send + use<'a>> {
-        Err::<Response<DetachViewResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::DetachView,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::Attachment)?;
+        let PublicProjectionResourceV1::Attachment(attachment) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(DetachViewResponse {
+            operation: Some(operation).into(),
+            attachment: Some(attachment).into(),
+            ..Default::default()
+        })
     }
 
     async fn release_view<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, ReleaseViewRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, ReleaseViewRequest>,
     ) -> ServiceResult<impl Encodable<ReleaseViewResponse> + Send + use<'a>> {
-        Err::<Response<ReleaseViewResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::ReleaseView,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::FilesystemView)?;
+        let PublicProjectionResourceV1::FilesystemView(view) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(ReleaseViewResponse {
+            operation: Some(operation).into(),
+            view: Some(view).into(),
+            ..Default::default()
+        })
     }
 }
 
 impl SnapshotService for CapabilityService {
     async fn create_snapshot<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, CreateSnapshotRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, CreateSnapshotRequest>,
     ) -> ServiceResult<impl Encodable<CreateSnapshotResponse> + Send + use<'a>> {
-        Err::<Response<CreateSnapshotResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::CreateSnapshot,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::Snapshot)?;
+        let PublicProjectionResourceV1::Snapshot(snapshot) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(CreateSnapshotResponse {
+            snapshot: Some(snapshot).into(),
+            operation: Some(operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn get_snapshot<'a>(
@@ -773,26 +1100,67 @@ impl SnapshotService for CapabilityService {
 
     async fn restore_snapshot<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, RestoreSnapshotRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, RestoreSnapshotRequest>,
     ) -> ServiceResult<impl Encodable<RestoreSnapshotResponse> + Send + use<'a>> {
-        Err::<Response<RestoreSnapshotResponse>, _>(mutation_unavailable())
+        let (operation, sandbox) = self
+            .admit_sandbox_command(
+                &context,
+                PublicApiAuditMethodV1::RestoreSnapshot,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(RestoreSnapshotResponse {
+            operation: Some(operation).into(),
+            sandbox: Some(sandbox).into(),
+            ..Default::default()
+        })
     }
 
     async fn fork_snapshot<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, ForkSnapshotRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, ForkSnapshotRequest>,
     ) -> ServiceResult<impl Encodable<ForkSnapshotResponse> + Send + use<'a>> {
-        Err::<Response<ForkSnapshotResponse>, _>(mutation_unavailable())
+        let (operation, sandbox) = self
+            .admit_sandbox_command(
+                &context,
+                PublicApiAuditMethodV1::ForkSnapshot,
+                request.bytes(),
+            )
+            .await?;
+
+        Response::ok(ForkSnapshotResponse {
+            sandbox: Some(sandbox).into(),
+            operation: Some(operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn delete_snapshot<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, DeleteSnapshotRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, DeleteSnapshotRequest>,
     ) -> ServiceResult<impl Encodable<DeleteSnapshotResponse> + Send + use<'a>> {
-        Err::<Response<DeleteSnapshotResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::DeleteSnapshot,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::Snapshot)?;
+        let PublicProjectionResourceV1::Snapshot(snapshot) = resource else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(DeleteSnapshotResponse {
+            operation: Some(operation).into(),
+            snapshot: Some(snapshot).into(),
+            ..Default::default()
+        })
     }
 }
 

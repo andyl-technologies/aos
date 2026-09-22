@@ -17,6 +17,8 @@ pub mod observation_adapter;
 pub mod output;
 pub mod proto_json;
 pub mod provenance;
+#[cfg(target_os = "linux")]
+pub mod public_mutation;
 pub mod requests;
 pub mod routing;
 
@@ -27,5 +29,7 @@ pub use observation_adapter::*;
 pub use output::*;
 pub use proto_json::*;
 pub use provenance::*;
+#[cfg(target_os = "linux")]
+pub use public_mutation::*;
 pub use requests::*;
 pub use routing::*;
