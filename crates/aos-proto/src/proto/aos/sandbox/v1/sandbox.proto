@@ -848,14 +848,20 @@ message UpdateSandboxPolicyRequest {
   MutationContext mutation = 4;
 }
 
-message UpdateSandboxPolicyResponse { Operation operation = 1; }
+message UpdateSandboxPolicyResponse {
+  Operation operation = 1;
+  Sandbox sandbox = 2; // Accepted desired-state projection for bounded-wait output.
+}
 
 message SandboxLifecycleRequest {
   bytes sandbox_id = 1;
   MutationContext mutation = 2;
 }
 
-message SandboxLifecycleResponse { Operation operation = 1; }
+message SandboxLifecycleResponse {
+  Operation operation = 1;
+  Sandbox sandbox = 2; // Accepted desired-state projection for bounded-wait output.
+}
 
 message DeleteSandboxRequest {
   bytes sandbox_id = 1;
@@ -865,7 +871,10 @@ message DeleteSandboxRequest {
   bool force = 5;
 }
 
-message DeleteSandboxResponse { Operation operation = 1; }
+message DeleteSandboxResponse {
+  Operation operation = 1;
+  Sandbox sandbox = 2; // Authorized deletion/tombstone projection.
+}
 
 service SandboxService {
   rpc PlanCreate(PlanCreateSandboxRequest) returns (PlanCreateSandboxResponse);
@@ -1013,21 +1022,30 @@ message ReplaceAttachmentRequest {
   MutationContext mutation = 4;
 }
 
-message ReplaceAttachmentResponse { Operation operation = 1; }
+message ReplaceAttachmentResponse {
+  Operation operation = 1;
+  Attachment attachment = 2;
+}
 
 message DetachViewRequest {
   bytes attachment_id = 1;
   MutationContext mutation = 2;
 }
 
-message DetachViewResponse { Operation operation = 1; }
+message DetachViewResponse {
+  Operation operation = 1;
+  Attachment attachment = 2; // Authorized detachment/tombstone projection.
+}
 
 message ReleaseViewRequest {
   bytes view_id = 1;
   MutationContext mutation = 2;
 }
 
-message ReleaseViewResponse { Operation operation = 1; }
+message ReleaseViewResponse {
+  Operation operation = 1;
+  FilesystemView view = 2; // Authorized release/tombstone projection.
+}
 
 service FilesystemViewService {
   rpc CreateView(CreateViewRequest) returns (CreateViewResponse);
@@ -1073,7 +1091,10 @@ message RestoreSnapshotRequest {
   MutationContext mutation = 4;
 }
 
-message RestoreSnapshotResponse { Operation operation = 1; }
+message RestoreSnapshotResponse {
+  Operation operation = 1;
+  Sandbox sandbox = 2;
+}
 
 message ForkSnapshotRequest {
   bytes snapshot_id = 1;
@@ -1097,7 +1118,10 @@ message DeleteSnapshotRequest {
   MutationContext mutation = 2;
 }
 
-message DeleteSnapshotResponse { Operation operation = 1; }
+message DeleteSnapshotResponse {
+  Operation operation = 1;
+  Snapshot snapshot = 2; // Authorized deletion/tombstone projection.
+}
 
 service SnapshotService {
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
@@ -1133,6 +1157,7 @@ message RenewCapabilityRequest {
 message RenewCapabilityResponse {
   Capability capability = 1;
   bytes capability_handle = 2;
+  Operation operation = 3;
 }
 
 message RevokeCapabilityRequest {
@@ -1140,7 +1165,10 @@ message RevokeCapabilityRequest {
   MutationContext mutation = 2;
 }
 
-message RevokeCapabilityResponse { Operation operation = 1; }
+message RevokeCapabilityResponse {
+  Operation operation = 1;
+  Capability capability = 2; // Redacted revocation projection; never a bearer handle.
+}
 
 service CapabilityService {
   rpc Attenuate(AttenuateCapabilityRequest) returns (AttenuateCapabilityResponse);

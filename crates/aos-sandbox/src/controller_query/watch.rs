@@ -419,6 +419,38 @@ fn validate_request_shape(wire: &WatchRequest) -> Result<(), ObservationWatchErr
     }
 }
 
+/// Commits normalized watch semantics while excluding the typed resume cursor.
+///
+/// # Errors
+///
+/// Returns [`ObservationWatchError::InvalidRequest`] when the request is not a
+/// canonical bounded watch query.
+pub fn checked_watch_request_commitment_v1(
+    wire: &WatchRequest,
+) -> Result<WatchRequestCommitmentV1, ObservationWatchError> {
+    validate_request_shape(wire)?;
+
+    let mut canonical = Vec::new();
+    canonical.extend_from_slice(&wire.project_id);
+    canonical.push(u8::from(wire.audit_only));
+    canonical.extend_from_slice(&(wire.resource_types.len() as u32).to_be_bytes());
+    for resource_type in &wire.resource_types {
+        canonical.extend_from_slice(&(resource_type.len() as u32).to_be_bytes());
+        canonical.extend_from_slice(resource_type.as_bytes());
+    }
+    canonical.extend_from_slice(&(wire.resource_id.len() as u32).to_be_bytes());
+    canonical.extend_from_slice(&wire.resource_id);
+    canonical.extend_from_slice(&(wire.observation_features.len() as u32).to_be_bytes());
+    for feature in &wire.observation_features {
+        canonical.extend_from_slice(&(feature.namespace.len() as u32).to_be_bytes());
+        canonical.extend_from_slice(feature.namespace.as_bytes());
+        canonical.extend_from_slice(&feature.major.to_be_bytes());
+        canonical.extend_from_slice(&feature.minor.to_be_bytes());
+    }
+
+    Ok(WatchRequestCommitmentV1::commit(&canonical))
+}
+
 fn exact_nonzero_id(value: &[u8]) -> Option<[u8; 16]> {
     let identifier: [u8; 16] = value.try_into().ok()?;
     (identifier != [0; 16]).then_some(identifier)

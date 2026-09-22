@@ -75,6 +75,28 @@ impl WatchResumePointV1 {
         Self { cursor, sequence }
     }
 
+    /// Reconstructs a typed resume point from a validated CLI continuation.
+    ///
+    /// The cursor remains continuation metadata rather than authority. A
+    /// resumed request must still be authenticated by the server under the
+    /// same complete query binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WatchError::InvalidResponse`] for a zero sequence or invalid
+    /// opaque cursor.
+    pub fn from_cli_continuation(
+        binding: QueryBindingV1,
+        cursor: Vec<u8>,
+        sequence: u64,
+    ) -> Result<Self, WatchError> {
+        if sequence == 0 {
+            return Err(WatchError::InvalidResponse);
+        }
+        let cursor = BoundWatchCursorV1::from_checkpoint(binding, cursor)?;
+        Ok(Self { cursor, sequence })
+    }
+
     /// Returns the complete normalized query binding.
     #[must_use]
     pub const fn binding(&self) -> QueryBindingV1 {

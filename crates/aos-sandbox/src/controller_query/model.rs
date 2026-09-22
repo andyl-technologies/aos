@@ -14,6 +14,8 @@ use sha2::{Digest as _, Sha256};
 pub const MAXIMUM_OPAQUE_RESPONSE_BYTES: usize = 4 * 1024;
 /// Maximum encoded bytes in one checked public API resource.
 pub const MAXIMUM_PUBLIC_RESOURCE_BYTES: usize = 4 * 1024 * 1024;
+/// Exact byte length of the seven SHA-256 commitments in a query binding.
+pub const QUERY_BINDING_TRANSPORT_BYTES: usize = 7 * 32;
 
 /// Reports invalid query bindings or response primitives.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -30,6 +32,9 @@ pub enum InvalidQueryModel {
     /// An encoded item exceeds the per-resource allocation ceiling.
     #[error("public resource exceeds its encoded byte ceiling")]
     ResourceTooLarge,
+    /// A serialized query binding has the wrong size or a zero commitment.
+    #[error("serialized query binding is invalid")]
+    InvalidBindingEncoding,
 }
 
 macro_rules! define_binding_commitment {
@@ -193,6 +198,70 @@ impl QueryBindingV1 {
     #[must_use]
     pub const fn schema(self) -> ObservationSchemaDigestV1 {
         self.schema
+    }
+
+    /// Encodes the complete binding for an authenticated transport response.
+    ///
+    /// The fixed representation is the seven commitment digests in constructor
+    /// order. It is metadata, not authority: callers must still obtain it from
+    /// the authenticated response that produced the associated values.
+    #[must_use]
+    pub fn to_transport_bytes(self) -> [u8; QUERY_BINDING_TRANSPORT_BYTES] {
+        let mut encoded = [0_u8; QUERY_BINDING_TRANSPORT_BYTES];
+        for (index, digest) in self.transport_digests().into_iter().enumerate() {
+            let start = index * 32;
+            encoded[start..start + 32].copy_from_slice(digest.as_bytes());
+        }
+        encoded
+    }
+
+    /// Decodes a complete binding received with an authenticated response.
+    ///
+    /// This validates only the closed representation. The caller remains
+    /// responsible for authenticating the transport and correlating the
+    /// metadata with the response body before using it for opaque state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidQueryModel::InvalidBindingEncoding`] when the byte
+    /// length differs or any commitment uses the all-zero sentinel.
+    pub fn from_transport_bytes(bytes: &[u8]) -> Result<Self, InvalidQueryModel> {
+        if bytes.len() != QUERY_BINDING_TRANSPORT_BYTES {
+            return Err(InvalidQueryModel::InvalidBindingEncoding);
+        }
+
+        let mut digests = [ObjectDigest::from_bytes([0; 32]); 7];
+        for (index, chunk) in bytes.chunks_exact(32).enumerate() {
+            let exact: [u8; 32] = chunk
+                .try_into()
+                .map_err(|_| InvalidQueryModel::InvalidBindingEncoding)?;
+            if exact == [0; 32] {
+                return Err(InvalidQueryModel::InvalidBindingEncoding);
+            }
+            digests[index] = ObjectDigest::from_bytes(exact);
+        }
+
+        Ok(Self::new(
+            NormalizedQueryDigestV1::from_digest(digests[0]),
+            QueryFilterDigestV1::from_digest(digests[1]),
+            QuerySortDigestV1::from_digest(digests[2]),
+            QueryPrincipalDigestV1::from_digest(digests[3]),
+            QueryVisibilityDigestV1::from_digest(digests[4]),
+            AuthorizationRevisionDigestV1::from_digest(digests[5]),
+            ObservationSchemaDigestV1::from_digest(digests[6]),
+        ))
+    }
+
+    fn transport_digests(self) -> [ObjectDigest; 7] {
+        [
+            self.query.digest(),
+            self.filters.digest(),
+            self.sort.digest(),
+            self.principal.digest(),
+            self.visibility.digest(),
+            self.authorization.digest(),
+            self.schema.digest(),
+        ]
     }
 }
 

@@ -45,6 +45,7 @@ aos-profile = { workspace = true }
 aos-sandbox = { workspace = true }
 aos-sandbox-core = { workspace = true }
 aos-proto = { workspace = true }
+buffa = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 connectrpc = { workspace = true }

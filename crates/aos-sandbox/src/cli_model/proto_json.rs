@@ -3,7 +3,7 @@
 use std::fmt;
 
 use aos_proto::aos::sandbox::v1::{
-    CacheStatus, ExecutionControlResult, ListAncestorsResponse, ListChildrenResponse,
+    CacheStatus, Event, ExecutionControlResult, ListAncestorsResponse, ListChildrenResponse,
     ListDescendantsRequest, ListDescendantsResponse, ListExecutionsResponse, ListSandboxesResponse,
     ListSnapshotsResponse, ListViewsResponse, OperatorRecoveryResult, PageInfo, PolicyPlan,
     PublicFeatureRegistry, SandboxTreePreorderState,
@@ -11,6 +11,7 @@ use aos_proto::aos::sandbox::v1::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_query::audit_event::CheckedAuditWatchEventV1;
 use crate::controller_query::event::CheckedWatchEventV1;
 use crate::controller_query::model::MAXIMUM_OPAQUE_RESPONSE_BYTES;
 use crate::controller_query::portable_resource::{
@@ -20,6 +21,8 @@ use crate::controller_query::portable_resource::{
 use crate::controller_query::resource::{
     CheckedOperationResourceV1, CheckedSandboxResourceV1, InvalidPublicResource,
 };
+
+use super::continuation::DormantWatchContinuationV1;
 
 /// Maximum bytes in one checked structured output document.
 pub const MAXIMUM_PROTO_JSON_BYTES: usize = 16 * 1024 * 1024;
@@ -844,8 +847,26 @@ impl EstablishedProtoJson for CheckedWatchEventV1 {
     }
 
     fn render_established(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self.as_proto())
+        serde_json::to_string(&cli_watch_event(self, self.as_proto()))
     }
+}
+
+impl sealed::Sealed for CheckedAuditWatchEventV1 {}
+
+impl EstablishedProtoJson for CheckedAuditWatchEventV1 {
+    fn output_schema(&self) -> StructuredOutputSchemaV1 {
+        StructuredOutputSchemaV1::Event
+    }
+
+    fn render_established(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&cli_watch_event(self.event(), self.as_proto()))
+    }
+}
+
+fn cli_watch_event(checked: &CheckedWatchEventV1, wire: &Event) -> Event {
+    let mut wire = wire.clone();
+    wire.resume_cursor = DormantWatchContinuationV1::from_checked_event(checked).encode();
+    wire
 }
 
 /// Reports failed, oversized, or structurally invalid established ProtoJSON.

@@ -22,6 +22,7 @@ use http::{HeaderValue, Uri};
 use crate::cli::Cli;
 use crate::cli::sandbox::SandboxArgs;
 
+mod public_client;
 mod public_transport;
 
 const NODE_DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
@@ -31,8 +32,9 @@ const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
 
 /// Builds and routes one parsed sandbox request.
 ///
-/// Completion generation stays local. Read-only discovery uses the protected
-/// controller socket; request families whose authenticated production
+/// Completion generation stays local. Root diagnostics expose only discovery
+/// and operation lookup; other read-only commands use generated clients over
+/// the registered mutual-TLS public endpoint. Effect routes whose production
 /// transport is not active continue to fail closed.
 ///
 /// # Errors
@@ -47,7 +49,30 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
     } else {
         DormantSandboxOutputV1::Human
     };
-    let request = crate::cli::sandbox::routed_request(args, output)?;
+    let (request, expected_capability_id) = match crate::cli::sandbox::routed_request(args, output)
+    {
+        Ok(request) => (request, None),
+        Err(original_error) if args.public_api => {
+            let credentials = args
+                .public_credentials
+                .as_deref()
+                .context("--public-api requires --public-credentials")?;
+            let capability_id = public_transport::load_capability_id(credentials)?;
+            let authorization =
+                DormantPublicApiAuthorizationV1::new(capability_id.to_string().into_bytes())
+                    .context("invalid public capability authorization context")?;
+            let request =
+                crate::cli::sandbox::routed_request_with_authorization(args, output, authorization)
+                    .with_context(|| {
+                        format!(
+                            "authenticated public route was rejected after initial routing failed: \
+                     {original_error}"
+                        )
+                    })?;
+            (request, Some(capability_id))
+        }
+        Err(error) => return Err(error),
+    };
     if let DormantSandboxRequestKindV1::Completions(shell) = request.kind() {
         crate::commands::completions::run(completion_shell(*shell));
         return Ok(());
@@ -87,7 +112,7 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
             return Ok(());
         }
         DormantSandboxRequestKindV1::GetOperation(request_message) => {
-            let client = operation_client(args).await?;
+            let client = operation_client(args, expected_capability_id).await?;
             let response = client
                 .get_operation(request_message.clone())
                 .await
@@ -106,6 +131,16 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
         _ => {}
     }
 
+    if public_client::dispatch_read(args, &request, output, expected_capability_id).await? {
+        return Ok(());
+    }
+    if public_client::dispatch_mutation(args, &request, output, expected_capability_id).await? {
+        return Ok(());
+    }
+    if public_client::dispatch_watch(args, &request, output, expected_capability_id).await? {
+        return Ok(());
+    }
+
     let mut executor = DormantSandboxCommandExecutorV1::new(DormantValidatedRequestSinkV1);
     let _deferred = executor.execute(request)?;
     Err(DormantSandboxRoutingErrorV1::TransportRejected.into())
@@ -113,8 +148,11 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
 
 async fn operation_client(
     args: &SandboxArgs,
+    expected_capability_id: Option<aos_sandbox_core::CapabilityId>,
 ) -> Result<OperationServiceClient<SharedHttp2Connection>> {
     if args.public_api {
+        let expected_capability_id = expected_capability_id
+            .context("authenticated operation read has no protected capability identity")?;
         let credentials = args
             .public_credentials
             .as_deref()
@@ -125,7 +163,10 @@ async fn operation_client(
             .context("--public-api requires --public-server-name")?;
         let (connection, authority, capability_id) =
             public_transport::connect_authorized(credentials, server_name).await?;
-        let config = authorized_operation_config(authority, capability_id)?;
+        if expected_capability_id != capability_id {
+            anyhow::bail!("public capability identity changed before dispatch");
+        }
+        let config = authorized_public_config(authority, capability_id)?;
         return Ok(OperationServiceClient::new(connection.shared(8), config));
     }
 
@@ -141,7 +182,7 @@ async fn operation_client(
     Ok(OperationServiceClient::new(connection, config))
 }
 
-fn authorized_operation_config(
+pub(super) fn authorized_public_config(
     authority: Uri,
     capability_id: aos_sandbox_core::CapabilityId,
 ) -> Result<ClientConfig> {

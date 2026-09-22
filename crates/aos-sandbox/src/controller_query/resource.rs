@@ -61,7 +61,8 @@ impl From<InvalidQueryModel> for InvalidPublicResource {
             InvalidQueryModel::ResourceTooLarge => Self::ResourceTooLarge,
             InvalidQueryModel::InvalidOpaqueValue
             | InvalidQueryModel::UnspecifiedCommitment
-            | InvalidQueryModel::BindingMismatch => Self::Unspecified,
+            | InvalidQueryModel::BindingMismatch
+            | InvalidQueryModel::InvalidBindingEncoding => Self::Unspecified,
         }
     }
 }

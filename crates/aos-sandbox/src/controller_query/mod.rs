@@ -41,8 +41,8 @@ pub use metrics::{
 pub use model::{
     AuthorizationRevisionDigestV1, ClientStateItem, InvalidQueryModel,
     MAXIMUM_OPAQUE_RESPONSE_BYTES, MAXIMUM_PUBLIC_RESOURCE_BYTES, NormalizedQueryDigestV1,
-    ObservationSchemaDigestV1, QueryBindingV1, QueryFilterDigestV1, QueryPrincipalDigestV1,
-    QuerySortDigestV1, QueryVisibilityDigestV1, WatchRequestCommitmentV1,
+    ObservationSchemaDigestV1, QUERY_BINDING_TRANSPORT_BYTES, QueryBindingV1, QueryFilterDigestV1,
+    QueryPrincipalDigestV1, QuerySortDigestV1, QueryVisibilityDigestV1, WatchRequestCommitmentV1,
 };
 pub use observability::*;
 pub use observation::{
@@ -98,6 +98,7 @@ pub use watch::{
     AuthenticatedWatchReadBatchV1, AuthenticatedWatchReadRequestV1, CheckedObservationWatchInputV1,
     CheckedWatchRequestV1, MAXIMUM_AUTHENTICATED_WATCH_INPUTS, ObservationWatchAdvanceV1,
     ObservationWatchContinuationV1, ObservationWatchError, WatchSurfaceV1,
+    checked_watch_request_commitment_v1,
 };
 pub use watch_resource::{
     CheckedWatchSnapshotResourceV1, InvalidWatchSnapshotResource, PublicWatchSnapshotResourceRefV1,

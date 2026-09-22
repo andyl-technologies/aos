@@ -159,6 +159,19 @@ fn load_authorized_bundle(path: &Path) -> Result<(CredentialBundle, CapabilityId
     Ok((bundle, capability))
 }
 
+/// Loads the protected capability lookup key without opening a connection.
+///
+/// # Errors
+///
+/// Rejects an absent, unsafe, malformed, noncanonical, or zero capability
+/// identity credential.
+pub(super) fn load_capability_id(path: &Path) -> Result<CapabilityId> {
+    let uid = rustix::process::geteuid().as_raw();
+    let directory = open_protected_directory(path, uid)?;
+    let capability = read_credential(&directory, uid, CAPABILITY_ID, true)?;
+    parse_capability_id(&capability)
+}
+
 fn parse_capability_id(bytes: &[u8]) -> Result<CapabilityId> {
     let capability = std::str::from_utf8(bytes)
         .context("sandbox public capability identity is not UTF-8")?

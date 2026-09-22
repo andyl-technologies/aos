@@ -150,6 +150,15 @@ impl CheckedAuditWatchEventV1 {
         &self.event
     }
 
+    /// Returns the complete audit event after strict provenance validation.
+    ///
+    /// Callers must keep this projection on the separately authorized audit
+    /// surface. Ordinary public event rendering uses the redacted base event.
+    #[must_use]
+    pub const fn as_proto(&self) -> &Event {
+        self.event.full_proto()
+    }
+
     /// Returns the event resource version.
     #[must_use]
     pub const fn resource_version(&self) -> &OpaqueResponseBytesV1 {

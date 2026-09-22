@@ -290,6 +290,45 @@ impl<T> PaginationReducerV1<T> {
         })
     }
 
+    /// Resumes from a CLI-retained binding, immutable revision, and token.
+    ///
+    /// These values are continuation metadata, not authority. The next
+    /// authenticated response must carry the same complete binding and exact
+    /// immutable revision, while the server independently authenticates the
+    /// opaque token before returning any page.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PaginationError`] for invalid bounds, empty or oversized
+    /// opaque values, or a malformed retained continuation.
+    pub fn resume(
+        binding: QueryBindingV1,
+        immutable_revision: Vec<u8>,
+        page_token: Vec<u8>,
+        maximum_items: usize,
+        maximum_bytes: usize,
+    ) -> Result<Self, PaginationError> {
+        let mut reducer = Self::new(binding, maximum_items, maximum_bytes)?;
+        let revision = ImmutableListRevisionV1 {
+            binding,
+            bytes: OpaqueResponseBytesV1::from_response(
+                immutable_revision,
+                OpaqueResponseKindV1::ImmutableListRevision,
+            )?,
+        };
+        let token_bytes =
+            OpaqueResponseBytesV1::from_response(page_token, OpaqueResponseKindV1::PageToken)?;
+        let token = PageTokenV1 {
+            binding,
+            revision: revision.clone(),
+            bytes: token_bytes.clone(),
+        };
+        reducer.revision = Some(revision);
+        reducer.expected_token = Some(token);
+        reducer.seen_tokens.insert(token_bytes);
+        Ok(reducer)
+    }
+
     /// Returns the only valid request for the next response page.
     #[must_use]
     pub fn request(&self) -> Option<PageRequestV1> {
