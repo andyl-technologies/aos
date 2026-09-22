@@ -2736,6 +2736,23 @@ pub(crate) fn recovered_public_operation_resource_v1(
     )))
 }
 
+/// Reads one established public operation directly from protected journal state.
+///
+/// This read-only entry point is intended for a production effect executor that
+/// already holds the controller journal through [`SingleNodeEffectExecutor`]'s
+/// journal-custody hook. It grants no mutation or effect authority.
+///
+/// # Errors
+///
+/// Returns [`ReconcilerError`] when protected authority is absent or the
+/// operation or any referenced effect record is corrupt.
+pub fn public_operation_resource_from_journal_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<aos_proto::aos::sandbox::v1::Operation>, ReconcilerError> {
+    recovered_public_operation_resource_v1(journal, operation_id)
+}
+
 fn transition_operation(
     operation: OperationRecord,
     state: OperationState,

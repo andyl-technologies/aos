@@ -135,11 +135,17 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::ExecutionControl(_)
         | Request::CancelExec(_)
-        | Request::CancelOperation(_)
         | Request::CachePin(_)
         | Request::CacheUnpin(_) => {
             mutation_intent(operation_id, request.operation_method(), canonical_request)
         }
+        Request::CancelOperation(value) => cancel_operation_intent(
+            journal,
+            peer.project(),
+            operation_id,
+            canonical_request,
+            value,
+        )?,
         Request::ViewCreate(value) => create_view_projection(
             journal,
             peer.project(),
@@ -1135,6 +1141,37 @@ fn validate_resource_mutation(
     } else {
         Err(OperationCompilationError::Rejected)
     }
+}
+
+fn cancel_operation_intent(
+    journal: &Journal,
+    project: ProjectId,
+    operation: OperationId,
+    canonical_request: &[u8],
+    request: &aos_proto::aos::sandbox::v1::CancelOperationRequest,
+) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
+    let target = OperationId::from_bytes(exact_id(&request.operation_id)?);
+    let target_operation =
+        crate::reconciler::recovered_public_operation_resource_v1(journal, target)
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .ok_or(OperationCompilationError::Rejected)?;
+    let authorization =
+        crate::reconciler::recovered_public_operation_authorization_v1(journal, target)
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .ok_or(OperationCompilationError::Rejected)?;
+    if authorization.project() != project {
+        return Err(OperationCompilationError::Rejected);
+    }
+    validate_resource_mutation(
+        &target_operation.resource_version,
+        request.mutation.as_option(),
+    )?;
+
+    Ok(mutation_intent(
+        operation,
+        PublicOperationMethodV1::CancelOperation,
+        canonical_request,
+    ))
 }
 
 fn next_generation(current: u64) -> Result<u64, OperationCompilationError> {

@@ -40,9 +40,9 @@ use aos_proto::aos::sandbox::v1::{
     DiscoveryService, DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
     GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
     GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
-    GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
-    OperationServiceExt, OperatorServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt,
-    Timestamp, WatchRequest,
+    GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationPhase,
+    OperationService, OperationServiceExt, OperatorServiceExt, PolicyPlan, SandboxServiceExt,
+    SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{
     CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId, RawClockProvenance,
@@ -52,6 +52,7 @@ use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
+use buffa::Message as _;
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
 };
@@ -63,7 +64,9 @@ use rustix::net::{
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
-use aos_sandbox::cli_model::{AuditAuthorizationV1, PublicApiAuditMethodV1};
+use aos_sandbox::cli_model::{
+    AuditAuthorizationV1, PublicApiAuditMethodV1, PublicMutationRequestV1,
+};
 use aos_sandbox::controller::DormantControllerCompositionV1;
 use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
@@ -75,6 +78,12 @@ use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox::lifecycle::{
+    LifecycleCancelIdempotencyDigestV1, LifecycleProgressCommitOutcomeV1,
+    LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
+    LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedCancellationResolutionV1,
+    LifecycleTimeV1,
+};
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::production_operation_compiler::ProductionOperationCompilerV1;
 use aos_sandbox::public_policy_planner::PublicPolicyPlanningErrorV1;
@@ -85,7 +94,7 @@ use aos_sandbox::{
     HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
     NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1,
     PublicMutationEffectV1, Reconciler, ResourceInventoryError, SingleNodeEffectExecutor,
-    ValidatedAuthorityEffectReceiptV1,
+    ValidatedAuthorityEffectReceiptV1, public_operation_resource_from_journal_v1,
 };
 
 mod public_api;
@@ -1377,6 +1386,19 @@ struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     process_start: Option<([u8; 16], u64)>,
+    pending_source_commit: Option<PendingSourceCommit>,
+}
+
+struct PendingSourceCommit {
+    operation_id: OperationId,
+    receipt: EffectReceipt,
+    pending: LifecycleProgressOutcomeUnknownV1,
+}
+
+struct ProductionCancellationRequest {
+    target_operation: OperationId,
+    idempotency: LifecycleCancelIdempotencyDigestV1,
+    requested_at: LifecycleTimeV1,
 }
 
 impl ProductionEffectExecutor {
@@ -1393,6 +1415,7 @@ impl ProductionEffectExecutor {
             sessions,
             source_domains,
             process_start: current_boot_and_boottime(),
+            pending_source_commit: None,
         })
     }
 
@@ -1412,6 +1435,180 @@ impl ProductionEffectExecutor {
                     "controller effect lacks authenticated admission context".to_owned(),
                 )
             })
+    }
+
+    fn cancellation_request(
+        context: &PublicMutationEffectV1,
+    ) -> Result<ProductionCancellationRequest, EffectFailure> {
+        let envelope = PublicMutationRequestV1::decode(context.canonical_request())
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        if envelope.method() != PublicApiAuditMethodV1::CancelOperation {
+            return Err(EffectFailure::Permanent(
+                "controller cancellation effect has the wrong public method".to_owned(),
+            ));
+        }
+        let request =
+            CancelOperationRequest::decode_from_slice(envelope.protobuf_body()).map_err(|_| {
+                EffectFailure::Permanent(
+                    "controller cancellation effect has invalid protobuf".to_owned(),
+                )
+            })?;
+        if request.encode_to_vec() != envelope.protobuf_body() {
+            return Err(EffectFailure::Permanent(
+                "controller cancellation effect is not canonical".to_owned(),
+            ));
+        }
+        let target: [u8; 16] = request.operation_id.as_slice().try_into().map_err(|_| {
+            EffectFailure::Permanent(
+                "controller cancellation target identity is invalid".to_owned(),
+            )
+        })?;
+        let mutation = request.mutation.as_option().ok_or_else(|| {
+            EffectFailure::Permanent("controller cancellation has no mutation context".to_owned())
+        })?;
+        let accepted_seconds = u64::try_from(context.accepted_wall_seconds()).map_err(|_| {
+            EffectFailure::Permanent("controller cancellation time is invalid".to_owned())
+        })?;
+        let accepted_nanoseconds =
+            accepted_seconds.checked_mul(1_000_000_000).ok_or_else(|| {
+                EffectFailure::Permanent("controller cancellation time overflows".to_owned())
+            })?;
+
+        Ok(ProductionCancellationRequest {
+            target_operation: OperationId::from_bytes(target),
+            idempotency: LifecycleCancelIdempotencyDigestV1::commit(&mutation.idempotency_key),
+            requested_at: LifecycleTimeV1::new(accepted_nanoseconds).map_err(|_| {
+                EffectFailure::Permanent("controller cancellation time is invalid".to_owned())
+            })?,
+        })
+    }
+
+    fn cancellation_receipt(
+        resolution: &LifecycleProtectedCancellationResolutionV1,
+    ) -> Result<EffectReceipt, EffectFailure> {
+        let mut bytes = Vec::with_capacity(40);
+        bytes.extend_from_slice(b"AOSCAN01");
+        bytes.extend_from_slice(resolution.receipt().as_bytes());
+        EffectReceipt::new(bytes).map_err(|error| EffectFailure::Permanent(error.to_string()))
+    }
+
+    fn terminal_public_operation_receipt(
+        journal: &Journal,
+        target: OperationId,
+    ) -> Result<Option<EffectReceipt>, EffectFailure> {
+        let operation = public_operation_resource_from_journal_v1(journal, target)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            .ok_or_else(|| {
+                EffectFailure::Permanent("controller cancellation target is unknown".to_owned())
+            })?;
+        if !matches!(
+            operation.phase.as_known(),
+            Some(
+                OperationPhase::OPERATION_PHASE_SUCCEEDED
+                    | OperationPhase::OPERATION_PHASE_FAILED_BEFORE_COMMIT
+                    | OperationPhase::OPERATION_PHASE_CANCELED_BEFORE_COMMIT
+                    | OperationPhase::OPERATION_PHASE_COMMITTED_WITH_RESIDUAL_CLEANUP
+                    | OperationPhase::OPERATION_PHASE_PERMANENTLY_BLOCKED
+            )
+        ) {
+            return Ok(None);
+        }
+        let receipt: [u8; 32] = Sha256::new()
+            .chain_update(b"aos.sandbox.controller.cancel-terminal-operation.v1\0")
+            .chain_update(target.as_bytes())
+            .chain_update((operation.resource_version.len() as u64).to_be_bytes())
+            .chain_update(&operation.resource_version)
+            .finalize()
+            .into();
+        EffectReceipt::new([b"AOSCAT01".as_slice(), receipt.as_slice()].concat())
+            .map(Some)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))
+    }
+
+    fn recover_pending_source_commit(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<Option<EffectObservation>, EffectFailure> {
+        let Some(pending) = self.pending_source_commit.take() else {
+            return Ok(None);
+        };
+        if pending.operation_id != operation_id {
+            self.pending_source_commit = Some(pending);
+            return Err(EffectFailure::Retryable(
+                "another protected source commit still requires recovery".to_owned(),
+            ));
+        }
+
+        let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+            &mut self.source_domains,
+        )
+        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        match owner
+            .recover_effect_progress(pending.pending)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        {
+            LifecycleProgressRecoveryV1::Applied(_) => {
+                Ok(Some(EffectObservation::Applied(pending.receipt)))
+            }
+            LifecycleProgressRecoveryV1::Retry(prepared) => {
+                match owner
+                    .commit_effect_progress(prepared)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                {
+                    LifecycleProgressCommitOutcomeV1::Applied(_) => {
+                        Ok(Some(EffectObservation::Applied(pending.receipt)))
+                    }
+                    LifecycleProgressCommitOutcomeV1::OutcomeUnknown {
+                        pending: retained, ..
+                    } => {
+                        self.pending_source_commit = Some(PendingSourceCommit {
+                            pending: retained,
+                            ..pending
+                        });
+                        Err(EffectFailure::Retryable(
+                            "protected cancellation durability is still unknown".to_owned(),
+                        ))
+                    }
+                }
+            }
+            LifecycleProgressRecoveryV1::Diverged(retained) => {
+                self.pending_source_commit = Some(PendingSourceCommit {
+                    pending: retained,
+                    ..pending
+                });
+                Err(EffectFailure::Permanent(
+                    "protected cancellation commit diverged".to_owned(),
+                ))
+            }
+        }
+    }
+
+    fn settle_cancellation_admission(
+        &mut self,
+        operation_id: OperationId,
+        admission: LifecycleProtectedCancellationAdmissionV1,
+    ) -> Result<EffectReceipt, EffectFailure> {
+        match admission {
+            LifecycleProtectedCancellationAdmissionV1::Existing(resolution) => {
+                Self::cancellation_receipt(&resolution)
+            }
+            LifecycleProtectedCancellationAdmissionV1::Admitted { resolution, commit } => {
+                let receipt = Self::cancellation_receipt(&resolution)?;
+                match commit {
+                    LifecycleProgressCommitOutcomeV1::Applied(_) => Ok(receipt),
+                    LifecycleProgressCommitOutcomeV1::OutcomeUnknown { pending, .. } => {
+                        self.pending_source_commit = Some(PendingSourceCommit {
+                            operation_id,
+                            receipt,
+                            pending,
+                        });
+                        Err(EffectFailure::Retryable(
+                            "protected cancellation durability is unknown".to_owned(),
+                        ))
+                    }
+                }
+            }
+        }
     }
 
     fn prepared_in_this_process(&self, prepared: &PreparedAuthorityEffectV1) -> bool {
@@ -1462,23 +1659,102 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
 
     fn observe_controller(
         &mut self,
-        _operation_id: OperationId,
+        operation_id: OperationId,
         _step: u32,
         plan: &EffectPlan,
-        _journal: &mut Journal,
+        journal: &mut Journal,
     ) -> Result<EffectObservation, EffectFailure> {
-        let _context = self.public_mutation_context(plan)?;
+        if let Some(observation) = self.recover_pending_source_commit(operation_id)? {
+            return Ok(observation);
+        }
+        let context = self.public_mutation_context(plan)?;
+        if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
+        {
+            let cancellation = Self::cancellation_request(&context)?;
+            let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if let Some(resolution) = owner
+                .cancellation_resolution(
+                    context.caller(),
+                    context.project(),
+                    cancellation.target_operation,
+                    cancellation.idempotency,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            {
+                return Self::cancellation_receipt(&resolution).map(EffectObservation::Applied);
+            }
+            drop(owner);
+            if let Some(receipt) =
+                Self::terminal_public_operation_receipt(journal, cancellation.target_operation)?
+            {
+                return Ok(EffectObservation::Applied(receipt));
+            }
+        }
         Ok(EffectObservation::Absent)
     }
 
     fn apply_controller(
         &mut self,
-        _operation_id: OperationId,
+        operation_id: OperationId,
         _step: u32,
         plan: &EffectPlan,
-        _journal: &mut Journal,
+        journal: &mut Journal,
     ) -> Result<EffectReceipt, EffectFailure> {
-        let _context = self.public_mutation_context(plan)?;
+        if let Some(observation) = self.recover_pending_source_commit(operation_id)? {
+            return match observation {
+                EffectObservation::Applied(receipt) => Ok(receipt),
+                EffectObservation::Absent => Err(EffectFailure::Retryable(
+                    "protected source commit recovery is incomplete".to_owned(),
+                )),
+            };
+        }
+        let context = self.public_mutation_context(plan)?;
+        if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
+        {
+            let cancellation = Self::cancellation_request(&context)?;
+            let admission = {
+                let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                    &mut self.source_domains,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                if owner
+                    .current_operation_by_id(cancellation.target_operation)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                    .is_none()
+                {
+                    None
+                } else {
+                    Some(
+                        owner
+                            .admit_cancellation(
+                                operation_id,
+                                context.caller(),
+                                context.project(),
+                                cancellation.target_operation,
+                                cancellation.idempotency,
+                                cancellation.requested_at,
+                            )
+                            .map_err(|error| EffectFailure::Permanent(error.to_string()))?,
+                    )
+                }
+            };
+            if let Some(admission) = admission {
+                return self.settle_cancellation_admission(operation_id, admission);
+            }
+            if let Some(receipt) =
+                Self::terminal_public_operation_receipt(journal, cancellation.target_operation)?
+            {
+                return Ok(receipt);
+            }
+            return Err(EffectFailure::Retryable(
+                "cancellation target is awaiting protected lifecycle admission".to_owned(),
+            ));
+        }
         Err(EffectFailure::Retryable(
             CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
         ))

@@ -242,7 +242,7 @@ pub use reconciler::{
     PublicMutationEffectV1, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
     ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
     UnfinishedOperationStateV1, ValidatedAuthorityEffectReceiptV1, ValidatedHostEffectReceiptV1,
-    ValidatedUnfinishedOperationV1,
+    ValidatedUnfinishedOperationV1, public_operation_resource_from_journal_v1,
 };
 #[cfg(target_os = "linux")]
 pub use resource_inventory::{
