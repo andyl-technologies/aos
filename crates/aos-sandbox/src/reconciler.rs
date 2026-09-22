@@ -62,8 +62,8 @@ pub use effect::{
 use effect::{
     EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
 };
-pub use public_operation::PublicOperationAdmissionV1;
 use public_operation::{DurablePublicOperationV1, PUBLIC_OPERATION_RECORD_BYTES};
+pub use public_operation::{PublicOperationAdmissionV1, PublicOperationAuthorizationV1};
 
 const RECORD_VERSION_V1: u8 = 1;
 const RECORD_VERSION_V2: u8 = 2;
@@ -226,13 +226,16 @@ impl OperationPlan {
     ///
     /// # Errors
     ///
-    /// Returns an error for an ungated plan, more than 4091 effects, or revocation
-    /// not bound to exactly one canonical Host Stop effect for this assignment.
+    /// Returns an error for an ungated plan, an admission that exceeds the
+    /// journal transaction bound, or revocation not bound to exactly one
+    /// canonical Host Stop effect for this assignment.
     pub fn with_runtime_authority(
         mut self,
         intent: RuntimeAuthorityIntentV1,
     ) -> Result<Self, ReconcilerError> {
-        if self.ownership_gate.is_none() || self.effects.len() > MAXIMUM_GATED_EFFECTS - 1 {
+        let maximum_effects =
+            MAXIMUM_GATED_EFFECTS - 1 - usize::from(self.public_operation.is_some());
+        if self.ownership_gate.is_none() || self.effects.len() > maximum_effects {
             return Err(ReconcilerError::InvalidPlan(
                 "runtime authority intent requires a bounded ownership-gated Host Apply plan",
             ));
@@ -262,14 +265,19 @@ impl OperationPlan {
     /// # Errors
     ///
     /// Returns [`ReconcilerError::InvalidPlan`] when metadata was already
-    /// attached to the plan.
+    /// attached or its extra atomic record would exceed admission bounds.
     pub fn with_public_operation(
         mut self,
         public_operation: PublicOperationAdmissionV1,
     ) -> Result<Self, ReconcilerError> {
-        if self.public_operation.is_some() {
+        let maximum_effects = if self.ownership_gate.is_some() {
+            MAXIMUM_GATED_EFFECTS - 1 - usize::from(self.runtime_authority.is_some())
+        } else {
+            MAXIMUM_EFFECTS - 1
+        };
+        if self.public_operation.is_some() || self.effects.len() > maximum_effects {
             return Err(ReconcilerError::InvalidPlan(
-                "public operation metadata is already present",
+                "public operation metadata is duplicate or exceeds admission bounds",
             ));
         }
         self.public_operation = Some(public_operation);
@@ -967,11 +975,30 @@ where
         {
             IdempotencyOutcome::Replay(operation_id) => {
                 self.validate_operation_gate_relation(operation_id)?;
-                if self.load_operation(operation_id)?.runtime_intent_digest
+                let recorded = self.load_operation(operation_id)?;
+                let recorded_authorization = self
+                    .journal
+                    .get(
+                        RecordNamespace::PublicOperationAuthorization,
+                        operation_id.as_bytes(),
+                    )
+                    .map(PublicOperationAuthorizationV1::decode)
+                    .transpose()?;
+                if recorded.runtime_intent_digest
                     != plan
                         .runtime_authority
                         .as_ref()
                         .map(RuntimeAuthorityIntentV1::digest)
+                    || recorded.public_operation
+                        != plan
+                            .public_operation
+                            .as_ref()
+                            .map(PublicOperationAdmissionV1::durable)
+                    || recorded_authorization.as_ref()
+                        != plan
+                            .public_operation
+                            .as_ref()
+                            .map(PublicOperationAdmissionV1::authorization)
                 {
                     return Err(ReconcilerError::IdempotencyConflict);
                 }
@@ -996,8 +1023,12 @@ where
 
         let effect_count = u32::try_from(plan.effects.len())
             .map_err(|_| ReconcilerError::InvalidPlan("too many effects"))?;
-        let mut records =
-            Vec::with_capacity(plan.effects.len() + 3 + usize::from(plan.ownership_gate.is_some()));
+        let mut records = Vec::with_capacity(
+            plan.effects.len()
+                + 3
+                + usize::from(plan.ownership_gate.is_some())
+                + usize::from(plan.public_operation.is_some()),
+        );
         records.push(JournalRecord::put(
             RecordNamespace::DesiredState,
             plan.desired_key.clone(),
@@ -1020,7 +1051,8 @@ where
                     .map(RuntimeAuthorityIntentV1::digest),
                 public_operation: plan
                     .public_operation
-                    .map(PublicOperationAdmissionV1::into_durable),
+                    .as_ref()
+                    .map(PublicOperationAdmissionV1::durable),
             }),
         ));
         records.push(JournalRecord::idempotency(
@@ -1028,6 +1060,13 @@ where
             plan.request_digest,
             plan.operation_id,
         ));
+        if let Some(public) = &plan.public_operation {
+            records.push(JournalRecord::put(
+                RecordNamespace::PublicOperationAuthorization,
+                plan.operation_id.into_bytes().to_vec(),
+                public.authorization().encode()?,
+            ));
+        }
         if let Some(gate) = &plan.ownership_gate {
             if plan.runtime_authority.is_none()
                 && self
@@ -1207,6 +1246,29 @@ where
             operation_bytes,
             &effect_records,
         )))
+    }
+
+    /// Loads the immutable current-authorization scope for a public operation.
+    ///
+    /// V2 observations recovered from before this scope was introduced return
+    /// `None` and remain available only through protected diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError`] when the ledger or authorization binding is
+    /// malformed or refers to a non-public operation.
+    pub fn public_operation_authorization(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<Option<PublicOperationAuthorizationV1>, ReconcilerError> {
+        self.ensure_ledger_validated_read_only()?;
+        self.journal
+            .get(
+                RecordNamespace::PublicOperationAuthorization,
+                operation_id.as_bytes(),
+            )
+            .map(PublicOperationAuthorizationV1::decode)
+            .transpose()
     }
 
     /// Advances one operation by at most one durable transition or effect.
@@ -1469,6 +1531,29 @@ where
         Ok(())
     }
 
+    fn validate_public_operation_authorizations(&self) -> Result<(), ReconcilerError> {
+        for (key, value) in self
+            .journal
+            .records(RecordNamespace::PublicOperationAuthorization)
+        {
+            let operation_id = decode_operation_key(key)?;
+            let operation = self.load_operation(operation_id).map_err(|error| {
+                if matches!(error, ReconcilerError::OperationNotFound) {
+                    ReconcilerError::CorruptLedger("orphan public operation authorization binding")
+                } else {
+                    error
+                }
+            })?;
+            if operation.public_operation.is_none() {
+                return Err(ReconcilerError::CorruptLedger(
+                    "authorization binding refers to a non-public operation",
+                ));
+            }
+            PublicOperationAuthorizationV1::decode(value)?;
+        }
+        Ok(())
+    }
+
     fn ensure_ledger_validated(&mut self) -> Result<(), ReconcilerError> {
         self.ensure_ledger_validated_for(true)
     }
@@ -1492,6 +1577,7 @@ where
                 ReconcilerError::CorruptLedger("authority publication namespace is corrupt")
             })?;
             self.validate_all_ownership_gates(validate_current_boot)?;
+            self.validate_public_operation_authorizations()?;
             validate_runtime_authority_operations(&self.journal)?;
             if self
                 .journal
@@ -2750,7 +2836,10 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{
         ApplyRuntimeRequest, RuntimeObservation, RuntimeState,
     };
-    use aos_sandbox_core::{LeaseAssignment, NodeId, RawClockProvenance, RawPairedClockSample};
+    use aos_sandbox_core::{
+        LeaseAssignment, NodeId, ProjectId, RawClockProvenance, RawPairedClockSample, ResourceId,
+        ResourceKind, Selector,
+    };
     use buffa::Message as _;
 
     use super::*;
@@ -2939,6 +3028,17 @@ mod tests {
                 EffectPlan::new(EffectDomain::Storage, b"create".to_vec()).unwrap(),
                 EffectPlan::new(EffectDomain::Host, b"start".to_vec()).unwrap(),
             ],
+        )
+        .unwrap()
+    }
+
+    fn public_operation_authorization() -> PublicOperationAuthorizationV1 {
+        PublicOperationAuthorizationV1::new(
+            ProjectId::from_bytes([0x91; 16]),
+            ResourceKind::Sandbox,
+            Selector::Resource {
+                resource: ResourceId::from_bytes([0x92; 16]),
+            },
         )
         .unwrap()
     }
@@ -4901,6 +5001,7 @@ mod tests {
                     7,
                     [0xa1; 16],
                     100,
+                    public_operation_authorization(),
                 )
                 .unwrap(),
             )
@@ -4909,6 +5010,40 @@ mod tests {
         let mut reconciler = Reconciler::new(journal, Executor::default());
 
         reconciler.accept(&plan).unwrap();
+        assert_eq!(
+            reconciler.accept(&plan).unwrap(),
+            AcceptOutcome::Replay(operation_id)
+        );
+        let mismatched_scope = PublicOperationAuthorizationV1::new(
+            ProjectId::from_bytes([0x91; 16]),
+            ResourceKind::Sandbox,
+            Selector::Resource {
+                resource: ResourceId::from_bytes([0x93; 16]),
+            },
+        )
+        .unwrap();
+        let mismatched_plan = operation()
+            .with_public_operation(
+                PublicOperationAdmissionV1::new(
+                    PublicOperationMethodV1::StartSandbox,
+                    7,
+                    [0xa1; 16],
+                    100,
+                    mismatched_scope,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            reconciler.accept(&mismatched_plan),
+            Err(ReconcilerError::IdempotencyConflict)
+        ));
+        assert_eq!(
+            reconciler
+                .public_operation_authorization(operation_id)
+                .unwrap(),
+            Some(public_operation_authorization())
+        );
         let accepted = reconciler.public_operation(operation_id).unwrap().unwrap();
         let accepted_version = accepted.resource_version.clone();
         CheckedOperationResourceV1::try_from(accepted.clone()).unwrap();
@@ -4950,6 +5085,12 @@ mod tests {
         drop(reconciler);
         let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let mut reopened = Reconciler::new(journal, Executor::default());
+        assert_eq!(
+            reopened
+                .public_operation_authorization(operation_id)
+                .unwrap(),
+            Some(public_operation_authorization())
+        );
         let recovered = reopened.public_operation(operation_id).unwrap().unwrap();
         let checked = CheckedOperationObservationV1::try_from(recovered).unwrap();
         assert_eq!(
@@ -5000,9 +5141,10 @@ mod tests {
             9,
             [0xb1; 16],
             200,
+            public_operation_authorization(),
         )
         .unwrap()
-        .into_durable();
+        .durable();
         let operation = OperationRecord {
             state: OperationState::Accepted,
             effect_count: 1,
@@ -5024,6 +5166,19 @@ mod tests {
         assert!(matches!(
             transition_operation(operation, OperationState::Applying, Some(199)),
             Err(ReconcilerError::PublicOperationClock)
+        ));
+
+        let authorization = public_operation_authorization();
+        let mut authorization_bytes = authorization.encode().unwrap();
+        assert_eq!(
+            PublicOperationAuthorizationV1::decode(&authorization_bytes).unwrap(),
+            authorization
+        );
+        let last = authorization_bytes.len() - 1;
+        authorization_bytes[last] ^= 1;
+        assert!(matches!(
+            PublicOperationAuthorizationV1::decode(&authorization_bytes),
+            Err(ReconcilerError::CorruptLedger(_))
         ));
     }
 

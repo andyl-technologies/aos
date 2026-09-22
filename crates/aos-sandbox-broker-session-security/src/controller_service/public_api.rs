@@ -1,4 +1,4 @@
-//! Serves registered mutual-TLS discovery on the fixed public Unix endpoint.
+//! Serves registered mutual-TLS discovery and authorized operation reads.
 //!
 //! Socket access is not identity evidence. Only a completed protected TLS
 //! handshake creates connection metadata; request headers cannot replace it.
@@ -56,7 +56,7 @@ async fn bind_at(
 #[cfg(all(test, feature = "kernel-tests"))]
 mod qualification_tests;
 
-/// Serves authenticated discovery, or remains pending when explicitly disabled.
+/// Serves authenticated public APIs, or remains pending when explicitly disabled.
 ///
 /// # Errors
 ///

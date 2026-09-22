@@ -12,11 +12,12 @@
 //! `GetNodeCapabilities`, and restart-stable `GetOperation` observations. The
 //! operation query crosses a bounded command channel to the sole journal owner;
 //! the asynchronous server never opens or shares the journal. An opt-in public
-//! Unix endpoint offers discovery data only to explicitly registered mutually
-//! authenticated TLS clients; socket credentials or request headers do not
-//! identify those clients. UID 0 is trusted here as the local administrator,
-//! not as another node service role. Discovery responses contain no catalog
-//! rows, credentials, operation state, or mutation surface. The feature
+//! Unix endpoint offers discovery and capability-authorized operation reads to
+//! explicitly registered mutually authenticated TLS clients; socket credentials
+//! or request headers do not identify those clients or grant authority. UID 0
+//! is trusted here as the local administrator, not as another node service
+//! role. Discovery responses contain no catalog rows, credentials, operation
+//! state, or mutation surface. The feature
 //! registry describes the closed public protocol vocabulary; the node-capability
 //! response advertises none of those features until their production
 //! implementations are active.
@@ -38,7 +39,7 @@ use aos_proto::aos::sandbox::v1::{
     GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
     OperationServiceExt, Timestamp, WatchRequest,
 };
-use aos_sandbox_core::{ObjectDigest, OperationId};
+use aos_sandbox_core::{CapabilityId, ObjectDigest, OperationId};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use connectrpc::{
@@ -77,6 +78,7 @@ const NODE_ID_CREDENTIAL: &str = "node-id";
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
 const CONTROLLER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROLLER_COMMAND_CAPACITY: usize = 64;
+const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
 const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
 
@@ -94,6 +96,14 @@ struct ControllerBrokerSessions {
 enum ControllerCommand {
     GetOperation {
         operation_id: OperationId,
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<Option<Operation>>>,
+    },
+    GetAuthorizedOperation {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        operation_id: OperationId,
+        protobuf_body: Vec<u8>,
         expires_at: Instant,
         reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<Option<Operation>>>,
     },
@@ -140,8 +150,9 @@ where
 ///
 /// Positional arguments are the fixed decimal controller UID and GID. The
 /// optional `--public-api` flag requires all four protected public TLS credentials
-/// and enables registered-client discovery at the fixed public socket. The node
-/// identity is read from `CREDENTIALS_DIRECTORY/node-id`; broker endpoints,
+/// and enables registered-client discovery and authorized operation reads at the
+/// fixed public socket. The node identity is read from
+/// `CREDENTIALS_DIRECTORY/node-id`; broker endpoints,
 /// cgroups, journal location, and root-only diagnostic socket are fixed
 /// production paths.
 ///
@@ -187,16 +198,24 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     wait_for_initial_readiness(&events_rx)?;
     SystemdReadyNotifier::from_environment()?.notify_ready()?;
 
-    let service = Arc::new(CapabilityService {
+    let public_service = Arc::new(CapabilityService {
+        capabilities: Arc::clone(&capabilities),
+        commands: commands_tx.clone(),
+        endpoint: ControllerEndpoint::RegisteredPublic,
+    });
+    let diagnostic_service = Arc::new(CapabilityService {
         capabilities,
         commands: commands_tx,
+        endpoint: ControllerEndpoint::RootDiagnostic,
     });
-    let public_application = axum::Router::new().fallback_service(
-        DiscoveryServiceExt::register(Arc::clone(&service), connectrpc::Router::new())
-            .into_axum_service(),
-    );
-    let connect = DiscoveryServiceExt::register(Arc::clone(&service), connectrpc::Router::new());
-    let connect = OperationServiceExt::register(service, connect).into_axum_service();
+    let public_connect =
+        DiscoveryServiceExt::register(Arc::clone(&public_service), connectrpc::Router::new());
+    let public_connect =
+        OperationServiceExt::register(public_service, public_connect).into_axum_service();
+    let public_application = axum::Router::new().fallback_service(public_connect);
+    let connect =
+        DiscoveryServiceExt::register(Arc::clone(&diagnostic_service), connectrpc::Router::new());
+    let connect = OperationServiceExt::register(diagnostic_service, connect).into_axum_service();
     let application = axum::Router::new().fallback_service(connect);
     let result = runtime.block_on(serve_until_worker_failure(
         listener,
@@ -383,6 +402,35 @@ fn handle_controller_command(
                 return Ok(());
             }
             match controller.public_operation(operation_id) {
+                Ok(operation) => {
+                    let _ = reply.send(Ok(operation));
+                    Ok(())
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    Err(message)
+                }
+            }
+        }
+        ControllerCommand::GetAuthorizedOperation {
+            peer,
+            capability_id,
+            operation_id,
+            protobuf_body,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            match controller.authorized_public_operation(
+                &peer,
+                capability_id,
+                operation_id,
+                &protobuf_body,
+            ) {
                 Ok(operation) => {
                     let _ = reply.send(Ok(operation));
                     Ok(())
@@ -1108,6 +1156,13 @@ fn timestamp(value: rustix::time::Timespec) -> Result<Timestamp, ConnectError> {
 struct CapabilityService {
     capabilities: Arc<Mutex<CapabilityState>>,
     commands: mpsc::SyncSender<ControllerCommand>,
+    endpoint: ControllerEndpoint,
+}
+
+#[derive(Clone, Copy)]
+enum ControllerEndpoint {
+    RootDiagnostic,
+    RegisteredPublic,
 }
 
 /// Carries the generated service's owned server-streaming responses.
@@ -1154,8 +1209,13 @@ impl CapabilityService {
         capabilities.response()
     }
 
-    async fn operation(&self, request: &[u8]) -> Result<GetOperationResponse, ConnectError> {
-        let operation_id: [u8; 16] = request.try_into().map_err(|_| {
+    async fn operation(
+        &self,
+        context: &RequestContext,
+        operation_identity: &[u8],
+        protobuf_body: &[u8],
+    ) -> Result<GetOperationResponse, ConnectError> {
+        let operation_id: [u8; 16] = operation_identity.try_into().map_err(|_| {
             ConnectError::new(
                 ErrorCode::InvalidArgument,
                 "operation identity must contain exactly 16 bytes",
@@ -1169,12 +1229,36 @@ impl CapabilityService {
         }
 
         let (reply, response) = tokio::sync::oneshot::channel();
-        self.commands
-            .try_send(ControllerCommand::GetOperation {
-                operation_id: OperationId::from_bytes(operation_id),
-                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+        let operation_id = OperationId::from_bytes(operation_id);
+        let expires_at = Instant::now() + CONTROLLER_COMMAND_TIMEOUT;
+        let command = match self.endpoint {
+            ControllerEndpoint::RootDiagnostic => ControllerCommand::GetOperation {
+                operation_id,
+                expires_at,
                 reply,
-            })
+            },
+            ControllerEndpoint::RegisteredPublic => {
+                let peer = context
+                    .extensions()
+                    .get::<aos_sandbox::public_api_session::PublicApiPeer>()
+                    .ok_or_else(|| {
+                        ConnectError::new(
+                            ErrorCode::Unauthenticated,
+                            "public operation lookup requires registered TLS peer evidence",
+                        )
+                    })?;
+                ControllerCommand::GetAuthorizedOperation {
+                    peer: peer.clone(),
+                    capability_id: public_capability_id(context)?,
+                    operation_id,
+                    protobuf_body: protobuf_body.to_vec(),
+                    expires_at,
+                    reply,
+                }
+            }
+        };
+        self.commands
+            .try_send(command)
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => ConnectError::new(
                     ErrorCode::ResourceExhausted,
@@ -1230,10 +1314,13 @@ impl CapabilityService {
 impl OperationService for CapabilityService {
     async fn get_operation<'a>(
         &'a self,
-        _context: RequestContext,
+        context: RequestContext,
         request: ServiceRequest<'_, GetOperationRequest>,
     ) -> ServiceResult<impl Encodable<GetOperationResponse> + Send + use<'a>> {
-        Response::ok(self.operation(request.view().operation_id).await?)
+        Response::ok(
+            self.operation(&context, request.view().operation_id, request.bytes())
+                .await?,
+        )
     }
 
     async fn cancel_operation<'a>(
@@ -1259,6 +1346,42 @@ impl OperationService for CapabilityService {
     ) -> ServiceResult<impl Encodable<GetNodeCapabilitiesResponse> + Send + use<'a>> {
         Response::ok(self.node_capabilities(request.view())?)
     }
+}
+
+fn public_capability_id(context: &RequestContext) -> Result<CapabilityId, ConnectError> {
+    let mut values = context.headers().get_all(PUBLIC_CAPABILITY_HEADER).iter();
+    let value = values.next().ok_or_else(|| {
+        ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public operation lookup requires a capability identity",
+        )
+    })?;
+    if values.next().is_some() {
+        return Err(ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public operation lookup requires exactly one capability identity",
+        ));
+    }
+    let value = value.to_str().map_err(|_| {
+        ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public capability identity is not valid text",
+        )
+    })?;
+    let capability_id: CapabilityId = value.parse().map_err(|_| {
+        ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public capability identity is not canonical",
+        )
+    })?;
+    if capability_id.as_bytes() == &[0; 16] {
+        return Err(ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public capability identity must be nonzero",
+        ));
+    }
+
+    Ok(capability_id)
 }
 
 fn mutation_unavailable() -> ConnectError {
@@ -1460,6 +1583,7 @@ mod tests {
         let service = CapabilityService {
             capabilities: Arc::new(Mutex::new(state)),
             commands,
+            endpoint: ControllerEndpoint::RootDiagnostic,
         };
 
         let registry_body: axum::body::Bytes = GetPublicFeatureRegistryRequest::default()
@@ -1521,14 +1645,20 @@ mod tests {
         let service = CapabilityService {
             capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
             commands,
+            endpoint: ControllerEndpoint::RootDiagnostic,
         };
         let operation_id = [0x42; 16];
         let worker = std::thread::spawn(move || {
-            let ControllerCommand::GetOperation {
-                operation_id,
-                expires_at,
-                reply,
-            } = receiver.recv().unwrap();
+            let (operation_id, expires_at, reply) = match receiver.recv().unwrap() {
+                ControllerCommand::GetOperation {
+                    operation_id,
+                    expires_at,
+                    reply,
+                } => (operation_id, expires_at, reply),
+                ControllerCommand::GetAuthorizedOperation { .. } => {
+                    panic!("root diagnostics must not enter public authorization")
+                }
+            };
             assert_eq!(operation_id.as_bytes(), &[0x42; 16]);
             assert!(expires_at > Instant::now());
             reply
@@ -1539,7 +1669,10 @@ mod tests {
                 .unwrap();
         });
 
-        let response = service.operation(&operation_id).await.unwrap();
+        let response = service
+            .operation(&RequestContext::default(), &operation_id, &[])
+            .await
+            .unwrap();
         assert_eq!(
             response.operation.as_option().unwrap().operation_id,
             operation_id
@@ -1553,11 +1686,18 @@ mod tests {
         let service = CapabilityService {
             capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
             commands: commands.clone(),
+            endpoint: ControllerEndpoint::RootDiagnostic,
         };
 
-        let invalid = service.operation(&[1; 15]).await.unwrap_err();
+        let invalid = service
+            .operation(&RequestContext::default(), &[1; 15], &[])
+            .await
+            .unwrap_err();
         assert_eq!(invalid.code, ErrorCode::InvalidArgument);
-        let zero = service.operation(&[0; 16]).await.unwrap_err();
+        let zero = service
+            .operation(&RequestContext::default(), &[0; 16], &[])
+            .await
+            .unwrap_err();
         assert_eq!(zero.code, ErrorCode::InvalidArgument);
 
         let (reply, _response) = tokio::sync::oneshot::channel();
@@ -1568,10 +1708,69 @@ mod tests {
                 reply,
             })
             .unwrap();
-        let saturated = service.operation(&[0x44; 16]).await.unwrap_err();
+        let saturated = service
+            .operation(&RequestContext::default(), &[0x44; 16], &[])
+            .await
+            .unwrap_err();
         assert_eq!(saturated.code, ErrorCode::ResourceExhausted);
 
         drop(receiver);
+    }
+
+    #[test]
+    fn public_capability_header_requires_one_canonical_nonzero_identity() {
+        let missing = public_capability_id(&RequestContext::default()).unwrap_err();
+        assert_eq!(missing.code, ErrorCode::Unauthenticated);
+
+        for invalid in [
+            "NOT-A-UUID",
+            "00112233-4455-6677-8899-AABBCCDDEEFF",
+            "00000000-0000-0000-0000-000000000000",
+        ] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(PUBLIC_CAPABILITY_HEADER, invalid.parse().unwrap());
+            let error = public_capability_id(&RequestContext::new(headers)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unauthenticated);
+        }
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            PUBLIC_CAPABILITY_HEADER,
+            "00112233-4455-6677-8899-aabbccddeeff".parse().unwrap(),
+        );
+        let capability_id = public_capability_id(&RequestContext::new(headers)).unwrap();
+        assert_eq!(
+            capability_id.to_string(),
+            "00112233-4455-6677-8899-aabbccddeeff"
+        );
+
+        let mut duplicate_headers = axum::http::HeaderMap::new();
+        duplicate_headers.append(
+            PUBLIC_CAPABILITY_HEADER,
+            "00112233-4455-6677-8899-aabbccddeeff".parse().unwrap(),
+        );
+        duplicate_headers.append(
+            PUBLIC_CAPABILITY_HEADER,
+            "11112233-4455-6677-8899-aabbccddeeff".parse().unwrap(),
+        );
+        let duplicate = public_capability_id(&RequestContext::new(duplicate_headers)).unwrap_err();
+        assert_eq!(duplicate.code, ErrorCode::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn public_operation_lookup_never_falls_back_to_root_diagnostics() {
+        let (commands, _receiver) = mpsc::sync_channel(1);
+        let service = CapabilityService {
+            capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
+            commands,
+            endpoint: ControllerEndpoint::RegisteredPublic,
+        };
+
+        let error = service
+            .operation(&RequestContext::default(), &[0x42; 16], &[0x0a, 0x10])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unauthenticated);
     }
 
     #[test]

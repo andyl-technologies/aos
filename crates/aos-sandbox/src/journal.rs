@@ -201,6 +201,8 @@ pub enum RecordNamespace {
     OperatorRecovery = 49,
     /// Protected canonical filesystem-worker passthrough registration snapshots.
     FilesystemWorkerRegistration = 50,
+    /// Immutable public-operation project and capability-selector bindings.
+    PublicOperationAuthorization = 51,
 }
 
 impl RecordNamespace {
@@ -256,6 +258,7 @@ impl RecordNamespace {
             48 => Ok(Self::CliAuthorizationTime),
             49 => Ok(Self::OperatorRecovery),
             50 => Ok(Self::FilesystemWorkerRegistration),
+            51 => Ok(Self::PublicOperationAuthorization),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -3639,13 +3642,14 @@ mod tests {
             RecordNamespace::CliAuthorizationTime,
             RecordNamespace::OperatorRecovery,
             RecordNamespace::FilesystemWorkerRegistration,
+            RecordNamespace::PublicOperationAuthorization,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 51, 255] {
+        for code in [0, 52, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

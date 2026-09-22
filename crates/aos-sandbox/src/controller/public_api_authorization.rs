@@ -2,21 +2,58 @@
 //!
 //! The TLS registration supplies principal and project, while the journal
 //! supplies capability claims and current policy. Neither a request header nor
-//! a certificate registration alone grants authority. RPC admission must pass
-//! the exact canonical authorization envelope received on the retained stream.
+//! a certificate registration alone grants authority. RPC admission constructs
+//! its canonical authorization envelope from the exact body received on the
+//! retained stream.
 
 use aos_sandbox_core::CapabilityId;
 
 use super::{
-    AuthenticatedCliChannelEvidenceV1, AuthenticatedCliIdentityEvidenceV1,
+    AuditAuthorizationV1, AuthenticatedCliChannelEvidenceV1, AuthenticatedCliIdentityEvidenceV1,
     AuthenticatedCliSessionEvidenceV1, CliAuthorizationAdapterError,
     CurrentProtectedCliAuthorizationV1, DORMANT_CLI_OBSERVATION_SCHEMA_V1,
     DecodedAuthenticatedCliRequestV1, DormantAuthenticatedCliRequestV1,
     DormantCliAuthorizationOwnerV1, PublisherAuthorityLimits, PublisherPolicyLimits,
 };
+use crate::PublicOperationAuthorizationV1;
+use crate::cli_model::authorization_adapter::{
+    PublicApiAuditMethodV1, canonical_public_audit_request_v2,
+};
 use crate::public_api_session::PublicApiPeer;
 
 impl DormantCliAuthorizationOwnerV1<'_> {
+    /// Reauthorizes an exact public operation read against its admitted scope.
+    ///
+    /// The server, rather than the caller, supplies the immutable operation
+    /// scope. The canonical authorization envelope commits the registered RPC
+    /// method and exact decoded protobuf buffer, preventing a capability lookup
+    /// header from being reused as authority for another request.
+    ///
+    /// # Errors
+    ///
+    /// Rejects project substitution, malformed request bytes, stale transport
+    /// evidence, or any current capability, policy, expiry, or revocation
+    /// failure.
+    pub(crate) fn authorize_public_operation_read(
+        &mut self,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        scope: &PublicOperationAuthorizationV1,
+        protobuf_body: &[u8],
+    ) -> Result<AuditAuthorizationV1, CliAuthorizationAdapterError> {
+        if peer.project() != scope.project() {
+            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+        }
+        let authorization_request = canonical_public_audit_request_v2(
+            PublicApiAuditMethodV1::GetOperation,
+            scope.resource_kind(),
+            scope.selector().clone(),
+            protobuf_body,
+        )?;
+        self.authenticate_public_request(peer, capability_id, &authorization_request)?
+            .authorize_audit()
+    }
+
     /// Authenticates one exact public request against current protected authority.
     ///
     /// The caller must obtain `canonical_request` from the HTTP/2 request on

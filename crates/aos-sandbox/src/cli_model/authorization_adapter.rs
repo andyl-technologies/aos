@@ -33,6 +33,7 @@ const SESSION_EVIDENCE_DOMAIN: &[u8] = b"aos.sandbox.cli.authenticated-session.v
 const CHANNEL_EVIDENCE_DOMAIN: &[u8] = b"aos.sandbox.cli.authenticated-channel.v1\0";
 const REQUEST_SEMANTICS_DOMAIN: &[u8] = b"aos.sandbox.cli.request-semantics.v1\0";
 const CANONICAL_AUTHORIZATION_REQUEST_VERSION_V1: u16 = 1;
+const CANONICAL_AUTHORIZATION_REQUEST_VERSION_V2: u16 = 2;
 const TIME_FLOOR_REVISION_MAGIC: &[u8; 8] = b"AOSCTFR1";
 const TIME_FLOOR_HEAD_MAGIC: &[u8; 8] = b"AOSCTFH1";
 const TIME_FLOOR_CURRENT_KEY: &[u8] = b"cli-authorization-time/current";
@@ -109,6 +110,51 @@ struct CanonicalCliAuthorizationRequestWireV1 {
     selector: Selector,
     #[serde(skip_serializing_if = "Option::is_none")]
     mutation_identity_fence: Option<[u8; 32]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_rpc: Option<CanonicalPublicRpcBindingWireV1>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalPublicRpcBindingWireV1 {
+    method: PublicApiAuditMethodV1,
+    body_sha256: [u8; 32],
+}
+
+/// Selects one public audit RPC whose exact body can be authorized.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum PublicApiAuditMethodV1 {
+    /// Reads one durable operation resource.
+    #[serde(rename = "/aos.sandbox.v1.OperationService/GetOperation")]
+    GetOperation,
+}
+
+/// Constructs a canonical authorization envelope bound to one exact public RPC.
+///
+/// # Errors
+///
+/// Returns [`CliAuthorizationAdapterError`] when the protobuf body is empty or
+/// exceeds the authenticated-evidence bound, or canonical encoding fails.
+pub(crate) fn canonical_public_audit_request_v2(
+    method: PublicApiAuditMethodV1,
+    resource_kind: ResourceKind,
+    selector: Selector,
+    protobuf_body: &[u8],
+) -> Result<Vec<u8>, CliAuthorizationAdapterError> {
+    let protobuf_body = checked_authenticated_bytes(protobuf_body)?;
+    serde_json::to_vec(&CanonicalCliAuthorizationRequestWireV1 {
+        version: CANONICAL_AUTHORIZATION_REQUEST_VERSION_V2,
+        surface: CliAuthorizedSurfaceWireV1::AuditRead,
+        resource_kind,
+        operation: OperationWireV1::MetadataRead,
+        selector,
+        mutation_identity_fence: None,
+        public_rpc: Some(CanonicalPublicRpcBindingWireV1 {
+            method,
+            body_sha256: Sha256::digest(protobuf_body).into(),
+        }),
+    })
+    .map_err(|_| CliAuthorizationAdapterError::InvalidCanonicalAuthorizationRequest)
 }
 
 /// Carries the only typed authorization meaning admitted from an authenticated payload.
@@ -141,9 +187,17 @@ impl DecodedAuthenticatedCliRequestV1 {
                 .map_err(|_| CliAuthorizationAdapterError::InvalidCanonicalAuthorizationRequest)?;
         let canonical = serde_json::to_vec(&wire)
             .map_err(|_| CliAuthorizationAdapterError::InvalidCanonicalAuthorizationRequest)?;
-        if wire.version != CANONICAL_AUTHORIZATION_REQUEST_VERSION_V1
-            || canonical != authenticated_payload
-        {
+        let version_matches = match wire.version {
+            CANONICAL_AUTHORIZATION_REQUEST_VERSION_V1 => wire.public_rpc.is_none(),
+            CANONICAL_AUTHORIZATION_REQUEST_VERSION_V2 => {
+                wire.public_rpc.is_some()
+                    && wire.surface == CliAuthorizedSurfaceWireV1::AuditRead
+                    && wire.operation == OperationWireV1::MetadataRead
+                    && wire.mutation_identity_fence.is_none()
+            }
+            _ => false,
+        };
+        if !version_matches || canonical != authenticated_payload {
             return Err(CliAuthorizationAdapterError::InvalidCanonicalAuthorizationRequest);
         }
 
@@ -500,6 +554,7 @@ fn require_authenticated_project(
 #[cfg(test)]
 mod project_binding_tests {
     use super::*;
+    use aos_sandbox_core::ResourceId;
 
     #[test]
     fn accepts_only_the_nonzero_authenticated_project() {
@@ -516,6 +571,39 @@ mod project_binding_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn public_audit_envelope_binds_method_and_exact_protobuf_body() {
+        let selector = Selector::Resource {
+            resource: ResourceId::from_bytes([42; 16]),
+        };
+        let first = canonical_public_audit_request_v2(
+            PublicApiAuditMethodV1::GetOperation,
+            ResourceKind::Sandbox,
+            selector.clone(),
+            &[0x0a, 0x10, 0x42],
+        )
+        .unwrap();
+        let second = canonical_public_audit_request_v2(
+            PublicApiAuditMethodV1::GetOperation,
+            ResourceKind::Sandbox,
+            selector,
+            &[0x0a, 0x10, 0x43],
+        )
+        .unwrap();
+
+        assert_ne!(first, second);
+        let decoded = DecodedAuthenticatedCliRequestV1::decode_authenticated(&first).unwrap();
+        assert_eq!(decoded.resource_kind, ResourceKind::Sandbox);
+        assert_eq!(decoded.operation, Operation::MetadataRead);
+        assert_eq!(decoded.surface, CliAuthorizedSurfaceV1::AuditRead);
+
+        let mut downgraded: CanonicalCliAuthorizationRequestWireV1 =
+            serde_json::from_slice(&first).unwrap();
+        downgraded.version = CANONICAL_AUTHORIZATION_REQUEST_VERSION_V1;
+        let downgraded = serde_json::to_vec(&downgraded).unwrap();
+        assert!(DecodedAuthenticatedCliRequestV1::decode_authenticated(&downgraded).is_err());
     }
 }
 

@@ -8,7 +8,7 @@
 use aos_proto::aos::sandbox::v1::{
     Operation, OperationPhase, OperationProgress, RetryClass, Timestamp,
 };
-use aos_sandbox_core::OperationId;
+use aos_sandbox_core::{OperationId, ProjectId, ResourceKind, Selector};
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_query::PublicOperationMethodV1;
@@ -18,17 +18,173 @@ use super::{OperationState, ReconcilerError};
 pub(super) const PUBLIC_OPERATION_RECORD_BYTES: usize = 64;
 const PUBLIC_OPERATION_RESOURCE_VERSION_DOMAIN: &[u8] =
     b"aos.sandbox.public-operation-resource-version.v1\0";
+const PUBLIC_OPERATION_AUTHORIZATION_MAGIC: &[u8; 8] = b"AOSOPAU1";
+const PUBLIC_OPERATION_AUTHORIZATION_VERSION: u16 = 1;
+const PUBLIC_OPERATION_AUTHORIZATION_DIGEST_DOMAIN: &[u8] =
+    b"aos.sandbox.public-operation-authorization.v1\0";
+const PUBLIC_OPERATION_AUTHORIZATION_FIXED_BYTES: usize = 68;
+const MAXIMUM_AUTHORIZATION_SELECTOR_BYTES: usize = 64 * 1024;
 const NO_COMPLETION_TIMESTAMP: i64 = i64::MIN;
 const MINIMUM_PROTO_SECONDS: i64 = -62_135_596_800;
 const MAXIMUM_PROTO_SECONDS: i64 = 253_402_300_799;
 
 /// Supplies immutable public fields when admitting an operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicOperationAdmissionV1 {
     method: PublicOperationMethodV1,
     accepted_generation: u64,
     audit_id: [u8; 16],
     accepted_wall_seconds: i64,
+    authorization: PublicOperationAuthorizationV1,
+}
+
+/// Binds a public operation to its project and capability selector.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicOperationAuthorizationV1 {
+    project: ProjectId,
+    resource_kind: ResourceKind,
+    selector: Selector,
+}
+
+impl PublicOperationAuthorizationV1 {
+    /// Constructs an immutable current-authorization scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidPlan`] for a zero project identity or
+    /// a selector whose canonical JSON encoding exceeds the durable bound.
+    pub fn new(
+        project: ProjectId,
+        resource_kind: ResourceKind,
+        selector: Selector,
+    ) -> Result<Self, ReconcilerError> {
+        if project.as_bytes() == &[0; 16] {
+            return Err(ReconcilerError::InvalidPlan(
+                "public operation authorization has a zero project",
+            ));
+        }
+        let encoded = serde_json::to_vec(&selector).map_err(|_| {
+            ReconcilerError::InvalidPlan("public operation selector cannot be encoded")
+        })?;
+        if encoded.is_empty() || encoded.len() > MAXIMUM_AUTHORIZATION_SELECTOR_BYTES {
+            return Err(ReconcilerError::InvalidPlan(
+                "public operation selector exceeds its durable bound",
+            ));
+        }
+
+        Ok(Self {
+            project,
+            resource_kind,
+            selector,
+        })
+    }
+
+    /// Returns the project boundary fixed at operation admission.
+    #[must_use]
+    pub const fn project(&self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the closed capability resource kind.
+    #[must_use]
+    pub const fn resource_kind(&self) -> ResourceKind {
+        self.resource_kind
+    }
+
+    /// Returns the exact logical capability selector.
+    #[must_use]
+    pub const fn selector(&self) -> &Selector {
+        &self.selector
+    }
+
+    pub(super) fn encode(&self) -> Result<Vec<u8>, ReconcilerError> {
+        let selector = serde_json::to_vec(&self.selector).map_err(|_| {
+            ReconcilerError::InvalidPlan("public operation selector cannot be encoded")
+        })?;
+        if selector.is_empty() || selector.len() > MAXIMUM_AUTHORIZATION_SELECTOR_BYTES {
+            return Err(ReconcilerError::InvalidPlan(
+                "public operation selector exceeds its durable bound",
+            ));
+        }
+        let selector_length = u32::try_from(selector.len()).map_err(|_| {
+            ReconcilerError::InvalidPlan("public operation selector exceeds its durable bound")
+        })?;
+        let mut bytes =
+            Vec::with_capacity(PUBLIC_OPERATION_AUTHORIZATION_FIXED_BYTES + selector.len());
+        bytes.extend_from_slice(PUBLIC_OPERATION_AUTHORIZATION_MAGIC);
+        bytes.extend_from_slice(&PUBLIC_OPERATION_AUTHORIZATION_VERSION.to_be_bytes());
+        bytes.extend_from_slice(&[0; 2]);
+        bytes.extend_from_slice(self.project.as_bytes());
+        bytes.push(resource_kind_code(self.resource_kind));
+        bytes.extend_from_slice(&[0; 3]);
+        bytes.extend_from_slice(&selector_length.to_be_bytes());
+        bytes.extend_from_slice(&selector);
+        let digest: [u8; 32] = Sha256::new()
+            .chain_update(PUBLIC_OPERATION_AUTHORIZATION_DIGEST_DOMAIN)
+            .chain_update(&bytes)
+            .finalize()
+            .into();
+        bytes.extend_from_slice(&digest);
+        Ok(bytes)
+    }
+
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, ReconcilerError> {
+        if bytes.len() < PUBLIC_OPERATION_AUTHORIZATION_FIXED_BYTES
+            || &bytes[..8] != PUBLIC_OPERATION_AUTHORIZATION_MAGIC
+            || u16::from_be_bytes(read_array(&bytes[8..10])?)
+                != PUBLIC_OPERATION_AUTHORIZATION_VERSION
+            || bytes[10..12] != [0; 2]
+            || bytes[29..32] != [0; 3]
+        {
+            return Err(ReconcilerError::CorruptLedger(
+                "invalid public operation authorization header",
+            ));
+        }
+        let project = ProjectId::from_bytes(read_array(&bytes[12..28])?);
+        let resource_kind = resource_kind_from_code(bytes[28]).ok_or(
+            ReconcilerError::CorruptLedger("unknown public operation resource kind"),
+        )?;
+        let selector_length = u32::from_be_bytes(read_array(&bytes[32..36])?) as usize;
+        let expected_length = PUBLIC_OPERATION_AUTHORIZATION_FIXED_BYTES
+            .checked_add(selector_length)
+            .ok_or(ReconcilerError::CorruptLedger(
+                "public operation authorization length overflow",
+            ))?;
+        if selector_length == 0
+            || selector_length > MAXIMUM_AUTHORIZATION_SELECTOR_BYTES
+            || bytes.len() != expected_length
+        {
+            return Err(ReconcilerError::CorruptLedger(
+                "invalid public operation authorization length",
+            ));
+        }
+        let selector_end = 36 + selector_length;
+        let selector_bytes = &bytes[36..selector_end];
+        let selector: Selector = serde_json::from_slice(selector_bytes)
+            .map_err(|_| ReconcilerError::CorruptLedger("invalid public operation selector"))?;
+        let canonical = serde_json::to_vec(&selector)
+            .map_err(|_| ReconcilerError::CorruptLedger("invalid public operation selector"))?;
+        let recorded_digest = &bytes[selector_end..];
+        let expected_digest: [u8; 32] = Sha256::new()
+            .chain_update(PUBLIC_OPERATION_AUTHORIZATION_DIGEST_DOMAIN)
+            .chain_update(&bytes[..selector_end])
+            .finalize()
+            .into();
+        if project.as_bytes() == &[0; 16]
+            || canonical != selector_bytes
+            || recorded_digest != expected_digest
+        {
+            return Err(ReconcilerError::CorruptLedger(
+                "invalid public operation authorization binding",
+            ));
+        }
+
+        Ok(Self {
+            project,
+            resource_kind,
+            selector,
+        })
+    }
 }
 
 impl PublicOperationAdmissionV1 {
@@ -46,6 +202,7 @@ impl PublicOperationAdmissionV1 {
         accepted_generation: u64,
         audit_id: [u8; 16],
         accepted_wall_seconds: i64,
+        authorization: PublicOperationAuthorizationV1,
     ) -> Result<Self, ReconcilerError> {
         if accepted_generation == 0
             || audit_id == [0; 16]
@@ -61,10 +218,15 @@ impl PublicOperationAdmissionV1 {
             accepted_generation,
             audit_id,
             accepted_wall_seconds,
+            authorization,
         })
     }
 
-    pub(super) const fn into_durable(self) -> DurablePublicOperationV1 {
+    pub(super) const fn authorization(&self) -> &PublicOperationAuthorizationV1 {
+        &self.authorization
+    }
+
+    pub(super) const fn durable(&self) -> DurablePublicOperationV1 {
         DurablePublicOperationV1 {
             method: self.method,
             accepted_generation: self.accepted_generation,
@@ -282,4 +444,35 @@ fn read_i64(bytes: &[u8]) -> Result<i64, ReconcilerError> {
     Ok(i64::from_le_bytes(bytes.try_into().map_err(|_| {
         ReconcilerError::CorruptLedger("invalid public operation timestamp")
     })?))
+}
+
+fn read_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ReconcilerError> {
+    bytes
+        .try_into()
+        .map_err(|_| ReconcilerError::CorruptLedger("truncated public operation authorization"))
+}
+
+const fn resource_kind_code(kind: ResourceKind) -> u8 {
+    kind as u8
+}
+
+const fn resource_kind_from_code(value: u8) -> Option<ResourceKind> {
+    match value {
+        0 => Some(ResourceKind::Sandbox),
+        1 => Some(ResourceKind::Execution),
+        2 => Some(ResourceKind::Snapshot),
+        3 => Some(ResourceKind::Tree),
+        4 => Some(ResourceKind::LiveExport),
+        5 => Some(ResourceKind::PrivateDelta),
+        6 => Some(ResourceKind::Secret),
+        7 => Some(ResourceKind::Device),
+        8 => Some(ResourceKind::NetworkEndpoint),
+        9 => Some(ResourceKind::IpcService),
+        10 => Some(ResourceKind::CacheRead),
+        11 => Some(ResourceKind::CachePublish),
+        12 => Some(ResourceKind::Environment),
+        13 => Some(ResourceKind::AttachmentSlot),
+        14 => Some(ResourceKind::ChildDelegation),
+        _ => None,
+    }
 }

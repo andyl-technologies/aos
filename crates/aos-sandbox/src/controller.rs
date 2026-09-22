@@ -5049,6 +5049,45 @@ where
             .map_err(ControllerServiceError::Reconciler)
     }
 
+    /// Reauthorizes and loads one public operation over a live registered peer.
+    ///
+    /// Absence, legacy observations without an admitted authorization scope,
+    /// project mismatch, revocation, expiry, and insufficient capability grants
+    /// all return `None` so the caller can preserve concealment. The exact
+    /// protobuf body is committed into current channel authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError`] when durable operation state is
+    /// corrupt or the fixed controller clock cannot be opened.
+    #[cfg(target_os = "linux")]
+    pub fn authorized_public_operation(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        operation_id: OperationId,
+        protobuf_body: &[u8],
+    ) -> Result<Option<aos_proto::aos::sandbox::v1::Operation>, ControllerServiceError> {
+        let Some(scope) = self
+            .reconciler
+            .public_operation_authorization(operation_id)?
+        else {
+            return Ok(None);
+        };
+        if peer.project() != scope.project() {
+            return Ok(None);
+        }
+        let authorization = self
+            .dormant_cli_authorization()
+            .map_err(|_| ControllerServiceError::PublicAuthorizationUnavailable)?
+            .authorize_public_operation_read(peer, capability_id, &scope, protobuf_body);
+        if authorization.is_err() {
+            return Ok(None);
+        }
+
+        self.public_operation(operation_id)
+    }
+
     /// Returns one validated durable operation that still requires active work.
     ///
     /// This audit performs no admission, durable transition, or executor call.
@@ -5119,6 +5158,9 @@ pub enum ControllerServiceError {
     /// The compiler substituted the service-computed request identity.
     #[error("operation compiler returned a substituted request digest")]
     CompilerDigestMismatch,
+    /// The fixed controller clock required for current public authorization failed.
+    #[error("current public authorization is unavailable")]
+    PublicAuthorizationUnavailable,
     /// Durable admission or reconciliation failed.
     #[error(transparent)]
     Reconciler(#[from] ReconcilerError),

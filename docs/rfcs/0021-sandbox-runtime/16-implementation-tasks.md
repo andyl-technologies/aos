@@ -338,7 +338,15 @@ the outstanding work concrete:
   Production qualification must exercise both roles concurrently; readiness
   polling and round-robin unit checks alone do not qualify the deployed path.
 - That service registers `DiscoveryService` and `OperationService` only.
-  Operation get, cancel, and watch return unavailable errors. Register and
+  Root diagnostics expose restart-stable `GetOperation`. The registered TLS
+  endpoint also exposes `GetOperation`, but only after the sole controller
+  worker loads the operation's immutable admission scope and rechecks current
+  capability, policy, revocation, clock, project, registered principal,
+  certificate key, TLS-exporter, exact method, and exact protobuf-body binding.
+  The `aos-capability-id` header is a canonical lookup key, never bearer proof;
+  absent or unauthorized scoped observations are concealed. Older operation
+  observations without an admission scope remain root-diagnostic-only.
+  `CancelOperation` and `Watch` still return unavailable errors. Register and
   connect the remaining public services to their authorized controller
   handlers; protobuf declarations alone do not implement RPCs.
 - `crates/aos/src/commands/sandbox.rs::run` supports local completions and
@@ -356,7 +364,8 @@ the outstanding work concrete:
   to current protected capabilities and independently checks the authenticated
   project, but has no production mutation RPC caller. The opt-in
   `controllerService.publicApi.enable` endpoint at
-  `/run/aos/sandboxd/public.sock` connects this transport to discovery only.
+  `/run/aos/sandboxd/public.sock` connects this transport to discovery and the
+  currently authorized `GetOperation` read.
   Activation requires all four public TLS credentials before readiness;
   connection metadata comes from the accepted TLS stream and is rechecked per
   request. Admission is bounded to 32 connections and eight concurrent

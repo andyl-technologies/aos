@@ -1,16 +1,18 @@
 # Sandbox controller endpoints
 
 The packaged controller currently publishes broker inventory and exposes
-discovery. It does not yet admit or execute public mutations. Controller
-readiness confirms its initial authenticated catalog cycle, not completion of
-RFC-0021 or readiness to run sandboxes.
+discovery plus authorized reads of durable operation observations. It does not
+yet admit or execute public mutations. Controller readiness confirms its
+initial authenticated catalog cycle, not completion of RFC-0021 or readiness
+to run sandboxes.
 
 ## Registered TLS discovery
 
 The optional endpoint is `/run/aos/sandboxd/public.sock`. It carries TLS 1.3
 with mandatory client certificates and HTTP/2 ALPN; it is not a plaintext Unix
-HTTP endpoint. Only `DiscoveryService` is registered there. The existing
-`diagnostics.sock` remains restricted to root by kernel peer credentials.
+HTTP endpoint. `DiscoveryService` and `OperationService` are registered there,
+but only `GetOperation` is active on the latter. The existing `diagnostics.sock`
+remains restricted to root by kernel peer credentials.
 
 After configuring the controller, its node identity, and all four broker
 sessions, enable public discovery with external system credentials:
@@ -50,7 +52,18 @@ credential is limited to 1 MiB.
 Registration identifies a client; it grants no capability or mutation
 authority. A trusted certificate without an exact registration is rejected.
 Request identity headers cannot replace connection metadata. The service
-rechecks the registered peer before and after each discovery handler.
+rechecks the registered peer before and after each public handler.
+
+`GetOperation` additionally requires `aos-capability-id` containing one
+canonical lowercase, hyphenated, nonzero capability UUID. This value is only a
+lookup key: the controller loads the current protected capability, policy,
+revocation head, and clock state, then binds them to the registered principal,
+project, certificate key, live TLS exporter, exact RPC method, exact protobuf
+request bytes, and the operation's immutable admitted project/resource
+selector. Authority is rechecked for every read. Missing, legacy, cross-project,
+revoked, expired, or insufficiently authorized operation observations are
+concealed as not found; malformed or missing capability identities are rejected
+as unauthenticated. Root diagnostics may still inspect legacy observations.
 
 ## Activation and rotation
 
@@ -68,7 +81,10 @@ external credential mechanism and restart the controller. Before restarting,
 reconcile pending protected broker-session history; never erase its journal to
 bypass recovery.
 
-The public endpoint has no mutation handlers; CLI integration is discovery-only.
+The public endpoint has no active mutation handlers, and packaged CLI
+integration is still discovery-only. Direct public API clients may use the
+authorized `GetOperation` read described above. `CancelOperation` and `Watch`
+remain unavailable.
 The service-UID VM qualification exercises protected credential loading,
 registered and rejected TLS clients, real HTTP/2 discovery, credential
 rotation, and permanent retirement of stale peer evidence. Installed systemd
