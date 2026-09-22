@@ -21,10 +21,11 @@
 //! registry describes the closed public protocol vocabulary; the node-capability
 //! response advertises none of those features until their production
 //! implementations are active.
-//! Assignment compilation and Guardian plan signing remain unavailable, so
-//! public mutation admission fails explicitly. Authority-bound effects already
-//! present in the durable controller journal execute through their exact
-//! authenticated broker sessions without manufacturing replacement identity.
+//! Controller-local capability revocation is compiled and committed atomically.
+//! Assignment-bound mutations still require the separately protected assignment
+//! compiler and Guardian signer; authority-bound effects already present in the
+//! durable controller journal execute through their exact authenticated broker
+//! sessions without manufacturing replacement identity.
 
 use std::io::IoSlice;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
@@ -74,13 +75,14 @@ use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
+use aos_sandbox::production_operation_compiler::ProductionOperationCompilerV1;
 use aos_sandbox::public_policy_planner::PublicPolicyPlanningErrorV1;
 use aos_sandbox::{
     AcceptOutcome, ActivatedOperationCompiler, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
     EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
     HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
-    NodeControllerLimits, OperationCompilationError, OperationPlan, PreparedAuthorityEffectV1,
+    NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1,
     Reconciler, ResourceInventoryError, SingleNodeEffectExecutor,
     ValidatedAuthorityEffectReceiptV1,
 };
@@ -101,7 +103,7 @@ const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
 const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
 
-type ProductionController = NodeController<UnavailableCompiler, ProductionEffectExecutor>;
+type ProductionController = NodeController<ProductionOperationCompilerV1, ProductionEffectExecutor>;
 type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
 
 /// Retains authenticated transports and their durable sequence owners across cycles.
@@ -1242,7 +1244,7 @@ fn controller_from_journal(
     Ok(NodeController::new(
         scope,
         limits,
-        UnavailableCompiler,
+        ProductionOperationCompilerV1,
         Reconciler::new(journal, ProductionEffectExecutor::new(sessions)),
     ))
 }
@@ -1362,19 +1364,6 @@ fn parse_identity(
         .ok_or(ControllerRuntimeError::InvalidArguments(label))?
         .parse()
         .map_err(|_| ControllerRuntimeError::InvalidArguments(label))
-}
-
-struct UnavailableCompiler;
-
-impl ActivatedOperationCompiler for UnavailableCompiler {
-    fn compile(
-        &mut self,
-        _journal: &mut Journal,
-        _canonical_request: &[u8],
-        _request_digest: [u8; 32],
-    ) -> Result<OperationPlan, OperationCompilationError> {
-        Err(OperationCompilationError::Rejected)
-    }
 }
 
 struct ProductionEffectExecutor {

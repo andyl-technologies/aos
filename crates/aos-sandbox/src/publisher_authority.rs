@@ -241,6 +241,26 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         self.install_encoded(transaction_id, capability, None, None)
     }
 
+    /// Prepares one fresh administrative capability record for a larger atomic commit.
+    ///
+    /// The returned record has passed the same namespace, identity, size, and
+    /// canonical-encoding checks as [`Self::install_from_trusted_controller`].
+    /// It grants no authority until the caller commits it through the same
+    /// exclusively owned protected journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherAuthorityError`] when protected authority is absent,
+    /// the capability is invalid or already retained, or registry limits would
+    /// be exceeded.
+    pub(crate) fn prepare_install_from_trusted_controller(
+        &self,
+        capability: CapabilityRecord,
+    ) -> Result<JournalRecord, PublisherAuthorityError> {
+        self.prepare_install_encoded(capability, None, None)
+            .map(|prepared| prepared.record)
+    }
+
     /// Durably installs a local-session capability with immutable issuance evidence.
     ///
     /// Decision and capability IDs intentionally use identical bytes so audit
@@ -298,6 +318,20 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
         runtime: Option<RuntimeIssuanceEvidenceV1>,
     ) -> Result<CommitResult, PublisherAuthorityError> {
+        let prepared = self.prepare_install_encoded(capability, issuance, runtime)?;
+        let transaction = JournalTransaction::new(transaction_id, vec![prepared.record])?;
+        let result = self.journal.commit(&transaction)?;
+        self.entries += 1;
+        self.materialized_bytes = prepared.next_materialized_bytes;
+        Ok(result)
+    }
+
+    fn prepare_install_encoded(
+        &self,
+        capability: CapabilityRecord,
+        issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
+        runtime: Option<RuntimeIssuanceEvidenceV1>,
+    ) -> Result<PreparedCapabilityInstallV1, PublisherAuthorityError> {
         self.journal.ensure_protected_authority()?;
         let id = capability.id();
         if id.as_bytes() == &[0; 16] {
@@ -329,18 +363,10 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         if next_materialized_bytes > self.limits.maximum_materialized_bytes {
             return Err(PublisherAuthorityError::LimitExceeded("materialized bytes"));
         }
-        let transaction = JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(
-                RecordNamespace::PublisherAuthority,
-                key.to_vec(),
-                value,
-            )],
-        )?;
-        let result = self.journal.commit(&transaction)?;
-        self.entries += 1;
-        self.materialized_bytes = next_materialized_bytes;
-        Ok(result)
+        Ok(PreparedCapabilityInstallV1 {
+            record: JournalRecord::put(RecordNamespace::PublisherAuthority, key.to_vec(), value),
+            next_materialized_bytes,
+        })
     }
 
     /// Resolves immutable issuance audit evidence by capability ID.
@@ -429,6 +455,85 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         self.materialized_bytes = next_materialized_bytes;
         Ok(result)
     }
+
+    /// Prepares an irreversible tombstone for a larger atomic controller commit.
+    ///
+    /// The returned record is bound to the exact current active capability and
+    /// has passed the same replay, encoding, and capacity checks as
+    /// [`Self::revoke_from_trusted_controller`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherAuthorityError`] when protected authority is absent,
+    /// the capability is unknown or already revoked, its record is corrupt, or
+    /// registry limits would be exceeded.
+    pub(crate) fn prepare_revoke_from_trusted_controller(
+        &self,
+        id: CapabilityId,
+    ) -> Result<JournalRecord, PublisherAuthorityError> {
+        self.journal.ensure_protected_authority()?;
+        let key = capability_key(id);
+        let current = self
+            .journal
+            .get(RecordNamespace::PublisherAuthority, &key)
+            .ok_or(PublisherAuthorityError::UnknownCapability)?;
+        let current_length = current.len();
+        let record = decode_record(&key, current, self.limits.maximum_record_bytes)?;
+        if record.state == DurableCapabilityStateV1::Revoked {
+            return Err(PublisherAuthorityError::Revoked);
+        }
+        let value = encode_record(
+            DurableCapabilityStateV1::Revoked,
+            &record.capability,
+            record.issuance.as_ref(),
+            record.runtime.as_ref(),
+            self.limits.maximum_record_bytes,
+        )?;
+        let next_materialized_bytes = self
+            .materialized_bytes
+            .checked_sub(current_length)
+            .and_then(|bytes| bytes.checked_add(value.len()))
+            .ok_or(PublisherAuthorityError::LimitExceeded("materialized bytes"))?;
+        if next_materialized_bytes > self.limits.maximum_materialized_bytes {
+            return Err(PublisherAuthorityError::LimitExceeded("materialized bytes"));
+        }
+
+        Ok(JournalRecord::put(
+            RecordNamespace::PublisherAuthority,
+            key.to_vec(),
+            value,
+        ))
+    }
+
+    /// Reconstructs the exact retained authority record for idempotent admission replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherAuthorityError`] when protected authority is absent
+    /// or the retained capability record is missing or corrupt.
+    pub(crate) fn retained_record_for_atomic_replay(
+        &self,
+        id: CapabilityId,
+    ) -> Result<JournalRecord, PublisherAuthorityError> {
+        self.journal.ensure_protected_authority()?;
+        let key = capability_key(id);
+        let value = self
+            .journal
+            .get(RecordNamespace::PublisherAuthority, &key)
+            .ok_or(PublisherAuthorityError::UnknownCapability)?;
+        decode_record(&key, value, self.limits.maximum_record_bytes)?;
+
+        Ok(JournalRecord::put(
+            RecordNamespace::PublisherAuthority,
+            key.to_vec(),
+            value.to_vec(),
+        ))
+    }
+}
+
+struct PreparedCapabilityInstallV1 {
+    record: JournalRecord,
+    next_materialized_bytes: usize,
 }
 
 /// Reports a durable publisher capability registry failure.

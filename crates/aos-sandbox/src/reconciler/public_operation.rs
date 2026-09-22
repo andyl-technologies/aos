@@ -237,6 +237,18 @@ impl PublicOperationAdmissionV1 {
             completed_wall_seconds: None,
         }
     }
+
+    pub(super) const fn durable_completed(&self) -> DurablePublicOperationV1 {
+        DurablePublicOperationV1 {
+            method: self.method,
+            accepted_generation: self.accepted_generation,
+            observation_sequence: 1,
+            audit_id: self.audit_id,
+            accepted_wall_seconds: self.accepted_wall_seconds,
+            last_reconciliation_wall_seconds: self.accepted_wall_seconds,
+            completed_wall_seconds: Some(self.accepted_wall_seconds),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -251,6 +263,19 @@ pub(super) struct DurablePublicOperationV1 {
 }
 
 impl DurablePublicOperationV1 {
+    pub(super) const fn into_admission(
+        self,
+        authorization: PublicOperationAuthorizationV1,
+    ) -> PublicOperationAdmissionV1 {
+        PublicOperationAdmissionV1 {
+            method: self.method,
+            accepted_generation: self.accepted_generation,
+            audit_id: self.audit_id,
+            accepted_wall_seconds: self.accepted_wall_seconds,
+            authorization,
+        }
+    }
+
     pub(super) fn advance(
         self,
         state: OperationState,

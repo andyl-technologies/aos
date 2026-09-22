@@ -96,6 +96,7 @@ pub struct OperationPlan {
     ownership_gate: Option<OwnershipGatePlanV1>,
     runtime_authority: Option<RuntimeAuthorityIntentV1>,
     public_operation: Option<PublicOperationAdmissionV1>,
+    local_records: Vec<JournalRecord>,
 }
 
 impl OperationPlan {
@@ -132,6 +133,68 @@ impl OperationPlan {
             ownership_gate: None,
             runtime_authority: None,
             public_operation: None,
+            local_records: Vec::new(),
+        })
+    }
+
+    /// Constructs an atomically completed controller-local mutation.
+    ///
+    /// This path is intentionally crate-private. It exists for state owned by
+    /// the controller journal itself, such as publisher capability authority,
+    /// and cannot be used to represent a privileged or externally observed
+    /// effect. The supplied records commit in the same transaction as desired
+    /// state, idempotency, and public operation metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidPlan`] when the operation identity,
+    /// desired state, authority records, or atomic transaction bounds are
+    /// invalid.
+    pub(crate) fn completed_local(
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        request_digest: [u8; 32],
+        desired_key: Vec<u8>,
+        desired_value: Vec<u8>,
+        local_records: Vec<JournalRecord>,
+    ) -> Result<Self, ReconcilerError> {
+        if operation_id.as_bytes() == &[0; 16]
+            || desired_key.is_empty()
+            || desired_value.is_empty()
+            || local_records.is_empty()
+            || local_records.len() > MAXIMUM_EFFECTS
+            || local_records.iter().any(|record| {
+                record.namespace() != RecordNamespace::PublisherAuthority
+                    || record.key().is_empty()
+                    || record.value().is_none()
+            })
+        {
+            return Err(ReconcilerError::InvalidPlan(
+                "invalid completed local operation plan",
+            ));
+        }
+        for (index, record) in local_records.iter().enumerate() {
+            if local_records[..index]
+                .iter()
+                .any(|prior| prior.namespace() == record.namespace() && prior.key() == record.key())
+            {
+                return Err(ReconcilerError::InvalidPlan(
+                    "completed local operation contains duplicate records",
+                ));
+            }
+        }
+
+        Ok(Self {
+            operation_id,
+            idempotency_key,
+            request_digest,
+            desired_key,
+            desired_value,
+            effects: Vec::new(),
+            ownership_gate: None,
+            runtime_authority: None,
+            public_operation: None,
+            local_records,
         })
     }
 
@@ -203,6 +266,7 @@ impl OperationPlan {
             ownership_gate: None,
             runtime_authority: None,
             public_operation: None,
+            local_records: Vec::new(),
         };
         plan.ownership_gate = Some(OwnershipGatePlanV1::new(
             operation_id,
@@ -276,7 +340,14 @@ impl OperationPlan {
         } else {
             MAXIMUM_EFFECTS - 1
         };
-        if self.public_operation.is_some() || self.effects.len() > maximum_effects {
+        let atomic_records = self
+            .effects
+            .len()
+            .checked_add(self.local_records.len())
+            .ok_or(ReconcilerError::InvalidPlan(
+                "public operation metadata exceeds admission bounds",
+            ))?;
+        if self.public_operation.is_some() || atomic_records > maximum_effects {
             return Err(ReconcilerError::InvalidPlan(
                 "public operation metadata is duplicate or exceeds admission bounds",
             ));
@@ -985,16 +1056,19 @@ where
                     )
                     .map(PublicOperationAuthorizationV1::decode)
                     .transpose()?;
+                let planned_public_operation = plan.public_operation.as_ref().map(|public| {
+                    if plan.local_records.is_empty() {
+                        public.durable()
+                    } else {
+                        public.durable_completed()
+                    }
+                });
                 if recorded.runtime_intent_digest
                     != plan
                         .runtime_authority
                         .as_ref()
                         .map(RuntimeAuthorityIntentV1::digest)
-                    || recorded.public_operation
-                        != plan
-                            .public_operation
-                            .as_ref()
-                            .map(PublicOperationAdmissionV1::durable)
+                    || recorded.public_operation != planned_public_operation
                     || recorded_authorization.as_ref()
                         != plan
                             .public_operation
@@ -1002,6 +1076,18 @@ where
                             .map(PublicOperationAdmissionV1::authorization)
                 {
                     return Err(ReconcilerError::IdempotencyConflict);
+                }
+                let recorded_local_completion = recorded.effect_count == 0
+                    && recorded.state == OperationState::Succeeded
+                    && !recorded.ownership_gated
+                    && recorded.runtime_intent_digest.is_none();
+                if recorded_local_completion != !plan.local_records.is_empty() {
+                    return Err(ReconcilerError::IdempotencyConflict);
+                }
+                for local in &plan.local_records {
+                    if self.journal.get(local.namespace(), local.key()) != local.value() {
+                        return Err(ReconcilerError::IdempotencyConflict);
+                    }
                 }
                 return Ok(AcceptOutcome::Replay(operation_id));
             }
@@ -1026,6 +1112,7 @@ where
             .map_err(|_| ReconcilerError::InvalidPlan("too many effects"))?;
         let mut records = Vec::with_capacity(
             plan.effects.len()
+                + plan.local_records.len()
                 + 3
                 + usize::from(plan.ownership_gate.is_some())
                 + usize::from(plan.public_operation.is_some()),
@@ -1039,7 +1126,9 @@ where
             RecordNamespace::Operation,
             plan.operation_id.into_bytes().to_vec(),
             encode_operation_record(OperationRecord {
-                state: if plan.ownership_gate.is_some() {
+                state: if !plan.local_records.is_empty() {
+                    OperationState::Succeeded
+                } else if plan.ownership_gate.is_some() {
                     OperationState::OwnershipPending
                 } else {
                     OperationState::Accepted
@@ -1050,10 +1139,13 @@ where
                     .runtime_authority
                     .as_ref()
                     .map(RuntimeAuthorityIntentV1::digest),
-                public_operation: plan
-                    .public_operation
-                    .as_ref()
-                    .map(PublicOperationAdmissionV1::durable),
+                public_operation: plan.public_operation.as_ref().map(|public| {
+                    if plan.local_records.is_empty() {
+                        public.durable()
+                    } else {
+                        public.durable_completed()
+                    }
+                }),
             }),
         ));
         records.push(JournalRecord::idempotency(
@@ -1106,6 +1198,7 @@ where
                 );
             }
         }
+        records.extend(plan.local_records.iter().cloned());
         for (index, effect) in plan.effects.iter().enumerate() {
             let step = u32::try_from(index)
                 .map_err(|_| ReconcilerError::InvalidPlan("too many effects"))?;
@@ -2461,6 +2554,32 @@ where
     }
 }
 
+pub(crate) fn recovered_public_operation_admission_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<PublicOperationAdmissionV1>, ReconcilerError> {
+    let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+    else {
+        return Ok(None);
+    };
+    let operation = decode_operation(operation_bytes)?;
+    let Some(public) = operation.public_operation else {
+        return Ok(None);
+    };
+    let authorization = journal
+        .get(
+            RecordNamespace::PublicOperationAuthorization,
+            operation_id.as_bytes(),
+        )
+        .map(PublicOperationAuthorizationV1::decode)
+        .transpose()?
+        .ok_or(ReconcilerError::CorruptLedger(
+            "public operation has no authorization scope",
+        ))?;
+
+    Ok(Some(public.into_admission(authorization)))
+}
+
 fn transition_operation(
     operation: OperationRecord,
     state: OperationState,
@@ -2575,7 +2694,9 @@ fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, ReconcilerError> {
             .map_err(|_| ReconcilerError::CorruptLedger("invalid effect count"))?,
     );
     let ownership_gated = flags & OPERATION_FLAG_OWNERSHIP_GATED != 0;
-    if effect_count == 0 || effect_count as usize > MAXIMUM_EFFECTS {
+    if effect_count as usize > MAXIMUM_EFFECTS
+        || (effect_count == 0 && (state != OperationState::Succeeded || ownership_gated))
+    {
         return Err(ReconcilerError::CorruptLedger("invalid effect count"));
     }
     if ownership_gated && effect_count as usize > MAXIMUM_GATED_EFFECTS {
@@ -2593,6 +2714,11 @@ fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, ReconcilerError> {
         .map_err(|_| ReconcilerError::CorruptLedger("invalid runtime intent digest"))?;
     let runtime_intent_digest = (digest != [0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES])
         .then(|| ObjectDigest::from_bytes(digest));
+    if effect_count == 0 && runtime_intent_digest.is_some() {
+        return Err(ReconcilerError::CorruptLedger(
+            "completed local operation has runtime authority",
+        ));
+    }
     if runtime_intent_digest.is_some()
         && (!ownership_gated || effect_count as usize > MAXIMUM_GATED_EFFECTS - 1)
     {
