@@ -1944,7 +1944,7 @@ impl ProductionEffectExecutor {
             let transaction_id =
                 lifecycle_initial_reservation_transaction_id(operation_id, current_record.digest());
             let prepared = owner
-                .prepare_initial_effect_reservation(&current_key, transaction_id, started_at)
+                .prepare_initial_lifecycle_progress(&current_key, transaction_id, started_at)
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             owner
                 .commit_effect_progress(prepared)

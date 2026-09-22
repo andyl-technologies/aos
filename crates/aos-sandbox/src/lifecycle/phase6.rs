@@ -1901,7 +1901,10 @@ impl LifecycleBrokerRequestCompilerV1 {
         effect: LifecycleEffectRequestV1,
         request: &AuthenticatedBrokerMethodRequestV1,
     ) -> Result<LifecycleCompiledBrokerRequestV1, LifecyclePhase6ErrorV1> {
-        if super::LifecycleStepRequestDigestV1::commit(request.exact_body())
+        // The lifecycle request commits the stable AOSLFX02 body. The broker
+        // request is a separately authenticated, method-specific protobuf;
+        // equating their digests would make every valid dispatch impossible.
+        if super::LifecycleStepRequestDigestV1::commit(&effect.canonical_body())
             != effect.logical_request()
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);

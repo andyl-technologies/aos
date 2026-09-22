@@ -58,6 +58,7 @@ impl LifecycleOperationV1 {
             || matches!(
                 (self.phase(), phase),
                 (LifecyclePhaseV1::Accepted, LifecyclePhaseV1::Preparing)
+                    | (LifecyclePhaseV1::Accepted, LifecyclePhaseV1::Prepared)
                     | (LifecyclePhaseV1::Accepted, LifecyclePhaseV1::Compensating)
                     | (LifecyclePhaseV1::Accepted, LifecyclePhaseV1::Terminal)
                     | (LifecyclePhaseV1::Preparing, LifecyclePhaseV1::Prepared)

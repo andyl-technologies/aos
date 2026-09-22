@@ -1895,19 +1895,21 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         Ok(PreparedLifecycleProgressV1 { prepared })
     }
 
-    /// Plans the first durable attempt for one fully bound lifecycle plan.
+    /// Plans the first durable progress for one fully bound lifecycle plan.
     ///
     /// The operation must still be accepted, must contain no provisional plan
-    /// commitments, and must begin with reversible preparation. The admission
-    /// commitment is derived from the protected predecessor and transaction;
-    /// callers cannot select or reuse effect authority.
+    /// commitments, and must not have started. A reversible prefix receives its
+    /// first durable reservation. A plan containing only post-commit actions
+    /// instead enters `Prepared` without releasing any effect authority. The
+    /// admission commitment is derived from the protected predecessor and
+    /// transaction; callers cannot select or reuse effect authority.
     ///
     /// # Errors
     ///
     /// Returns an error for a stale key, an unbound or already-started plan, a
-    /// post-commit first action, a sentinel transaction or time, or failed
+    /// malformed step partition, a sentinel transaction or time, or failed
     /// protected-journal planning.
-    pub fn prepare_initial_effect_reservation(
+    pub fn prepare_initial_lifecycle_progress(
         &self,
         current_key: &LifecycleProtectedJournalKeyV1,
         transaction_id: [u8; 16],
@@ -1936,27 +1938,31 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             .steps()
             .first()
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        if first.class() != LifecycleStepClassV1::PreCommitReversible
-            || first.state() != LifecycleStepStateV1::Planned
-        {
+        if first.state() != LifecycleStepStateV1::Planned {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
 
-        let admission = effect_admission_digest(
-            operation.operation_id(),
-            current.record(),
-            transaction_id,
-            first.index(),
-            LifecycleEffectDirectionV1::Forward,
-            1,
-            started_at,
-        );
         let mut steps = operation.steps().to_vec();
-        steps[0] = reserve_forward_step(first, admission, started_at)?;
+        let phase = match first.class() {
+            LifecycleStepClassV1::PreCommitReversible => {
+                let admission = effect_admission_digest(
+                    operation.operation_id(),
+                    current.record(),
+                    transaction_id,
+                    first.index(),
+                    LifecycleEffectDirectionV1::Forward,
+                    1,
+                    started_at,
+                );
+                steps[0] = reserve_forward_step(first, admission, started_at)?;
+                LifecyclePhaseV1::Preparing
+            }
+            LifecycleStepClassV1::PostCommitForward => LifecyclePhaseV1::Prepared,
+        };
         let successor = operation
             .successor(
                 current.record(),
-                LifecyclePhaseV1::Preparing,
+                phase,
                 0,
                 0,
                 steps,
