@@ -471,6 +471,23 @@ impl ProtectedBrokerSessionOwnerV1 {
             .client_request_coordinates(transcript, now_boottime_nanoseconds)
     }
 
+    pub(crate) fn client_request_limits(
+        &mut self,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<
+        (
+            u64,
+            u32,
+            ProtocolVersion,
+            aos_proto::aos::sandbox::local::v1::Audience,
+        ),
+        BrokerSessionSecurityError,
+    > {
+        self.journal
+            .client_request_limits(transcript, now_boottime_nanoseconds)
+    }
+
     pub(crate) fn prepare_client_request(
         &mut self,
         message: aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope,
@@ -978,14 +995,38 @@ impl ProtectedBrokerSessionJournalV1 {
         ),
         BrokerSessionSecurityError,
     > {
-        let context = self.current_context(transcript)?;
+        let (deadline, maximum_response_bytes, protocol_version, audience) =
+            self.client_request_limits(transcript, now_boottime_nanoseconds)?;
         let request_id = self.endpoint.fresh_client_request_id()?;
+
+        Ok((
+            request_id,
+            deadline,
+            maximum_response_bytes,
+            protocol_version,
+            audience,
+        ))
+    }
+
+    pub(crate) fn client_request_limits(
+        &mut self,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<
+        (
+            u64,
+            u32,
+            ProtocolVersion,
+            aos_proto::aos::sandbox::local::v1::Audience,
+        ),
+        BrokerSessionSecurityError,
+    > {
+        let context = self.current_context(transcript)?;
         let deadline = now_boottime_nanoseconds
             .checked_add(10_000_000_000)
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         let maximum_response_bytes = transcript.negotiated_maximum_response_bytes();
         Ok((
-            request_id,
             deadline,
             maximum_response_bytes,
             ProtocolVersion::new(context.protocol_major(), context.protocol_minor()),

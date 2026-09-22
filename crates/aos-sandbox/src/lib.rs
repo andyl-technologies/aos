@@ -236,10 +236,11 @@ pub use reconciler::{
     AcceptOutcome, AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
     EffectReceipt, OperationPlan, OwnershipGateActivationOutcome, OwnershipGatePlanV1,
-    OwnershipGateStatusV1, PreparedAuthorityEffectV1, PublicOperationAdmissionV1,
-    PublicOperationAuthorizationV1, ReconcileOutcome, Reconciler, ReconcilerError,
-    SingleNodeEffectExecutor, UnfinishedOperationStateV1, ValidatedAuthorityEffectReceiptV1,
-    ValidatedHostEffectReceiptV1, ValidatedUnfinishedOperationV1,
+    OwnershipGateStatusV1, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
+    PublicOperationAdmissionV1, PublicOperationAuthorizationV1, ReconcileOutcome, Reconciler,
+    ReconcilerError, SingleNodeEffectExecutor, UnfinishedOperationStateV1,
+    ValidatedAuthorityEffectReceiptV1, ValidatedHostEffectReceiptV1,
+    ValidatedUnfinishedOperationV1,
 };
 #[cfg(target_os = "linux")]
 pub use resource_inventory::{

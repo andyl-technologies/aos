@@ -21,9 +21,10 @@
 //! registry describes the closed public protocol vocabulary; the node-capability
 //! response advertises none of those features until their production
 //! implementations are active.
-//! Assignment compilation, Guardian plan signing, and every broker Apply path
-//! return explicit unavailable results; their absence can never be mistaken
-//! for mutation authority.
+//! Assignment compilation and Guardian plan signing remain unavailable, so
+//! public mutation admission fails explicitly. Authority-bound effects already
+//! present in the durable controller journal execute through their exact
+//! authenticated broker sessions without manufacturing replacement identity.
 
 use std::io::IoSlice;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
@@ -32,6 +33,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_proto::aos::sandbox::v1::{
     CacheServiceExt, CancelOperationRequest, CancelOperationResponse, CapabilityServiceExt,
     DiscoveryService, DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
@@ -41,9 +43,13 @@ use aos_proto::aos::sandbox::v1::{
     OperationServiceExt, OperatorServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt,
     Timestamp, WatchRequest,
 };
-use aos_sandbox_core::{CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId};
+use aos_sandbox_core::{
+    CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId, RawClockProvenance,
+    RawPairedClockSample,
+};
 use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
+use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
@@ -70,11 +76,13 @@ use aos_sandbox::host_catalog_publication::{
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::public_policy_planner::PublicPolicyPlanningErrorV1;
 use aos_sandbox::{
-    AcceptOutcome, ActivatedOperationCompiler, ControllerRequestScopeV1, ControllerServiceError,
-    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
+    AcceptOutcome, ActivatedOperationCompiler, AuthorityEffectAttemptTimingV1,
+    AuthorityEffectObservationV1, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
+    EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
     HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
-    NodeControllerLimits, OperationCompilationError, OperationPlan, Reconciler,
-    ResourceInventoryError, SingleNodeEffectExecutor,
+    NodeControllerLimits, OperationCompilationError, OperationPlan, PreparedAuthorityEffectV1,
+    Reconciler, ResourceInventoryError, SingleNodeEffectExecutor,
+    ValidatedAuthorityEffectReceiptV1,
 };
 
 mod public_api;
@@ -93,7 +101,8 @@ const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
 const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
 
-type ProductionController = NodeController<UnavailableCompiler, UnavailableExecutor>;
+type ProductionController = NodeController<UnavailableCompiler, ProductionEffectExecutor>;
+type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
 
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
@@ -232,7 +241,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     configuration.validate_process_identity()?;
     let node_id = read_node_id()?;
     let listener = bind_diagnostic_socket(&configuration)?;
-    let controller = open_controller(&configuration, node_id)?;
+    let sessions = Arc::new(Mutex::new(ControllerBrokerSessions::default()));
+    let controller = open_controller(&configuration, node_id, Arc::clone(&sessions))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -255,6 +265,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
                 controller,
                 node_id,
                 worker_capabilities,
+                sessions,
                 commands_rx,
                 events_tx,
             )
@@ -399,15 +410,15 @@ fn controller_worker(
     mut controller: ProductionController,
     node_id: [u8; 16],
     capabilities: Arc<Mutex<CapabilityState>>,
+    sessions: SharedControllerBrokerSessions,
     commands: mpsc::Receiver<ControllerCommand>,
     events: mpsc::Sender<WorkerEvent>,
 ) {
     let mut ready = false;
-    let mut sessions = ControllerBrokerSessions::default();
     let mut next_cycle = Instant::now();
     loop {
         if Instant::now() >= next_cycle {
-            match run_controller_cycle(&mut controller, node_id, &mut sessions) {
+            match run_controller_cycle(&mut controller, node_id, &sessions) {
                 Ok(catalog) => {
                     let update = capabilities
                         .lock()
@@ -760,8 +771,14 @@ fn wait_for_initial_readiness(
 fn run_controller_cycle(
     controller: &mut ProductionController,
     node_id: [u8; 16],
-    sessions: &mut ControllerBrokerSessions,
+    sessions: &SharedControllerBrokerSessions,
 ) -> Result<CatalogStatus, CycleFailure> {
+    {
+        let mut sessions = sessions
+            .lock()
+            .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
+        ensure_controller_broker_sessions(node_id, &mut sessions)?;
+    }
     let mut state = (controller, sessions);
     pending_first_reconciliation_cycle(
         &mut state,
@@ -771,7 +788,10 @@ fn run_controller_cycle(
                 .map_err(|error| CycleFailure::Fatal(error.to_string()))
         },
         |(controller, sessions), pending| {
-            publish_pending(controller, pending, node_id, sessions).map(|_| ())
+            let mut sessions = sessions
+                .lock()
+                .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
+            publish_pending(controller, pending, node_id, &mut sessions).map(|_| ())
         },
         |(controller, _)| {
             controller
@@ -779,7 +799,12 @@ fn run_controller_cycle(
                 .map(|_| ())
                 .map_err(|error| CycleFailure::Fatal(error.to_string()))
         },
-        |(controller, sessions)| refresh_catalog(controller, node_id, sessions),
+        |(controller, sessions)| {
+            let mut sessions = sessions
+                .lock()
+                .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
+            refresh_catalog(controller, node_id, &mut sessions)
+        },
     )
 }
 
@@ -796,6 +821,66 @@ fn pending_first_reconciliation_cycle<State, Pending, Status, Error>(
 
     reconcile(state)?;
     continue_cycle(state)
+}
+
+fn ensure_controller_broker_sessions(
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
+) -> Result<(), CycleFailure> {
+    if sessions.host.is_none() {
+        sessions.host = Some(ControllerHostPublication::new(connect_controller_session(
+            crate::ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient,
+            node_id,
+        )?));
+    }
+    if sessions.mount.is_none() {
+        sessions.mount = Some(
+            crate::DormantMountLifecycleInventoryOwnerV1::from_protected_session(
+                connect_controller_session(
+                    crate::ProtectedBrokerSessionFixedEndpointV1::ControllerMountClient,
+                    node_id,
+                )?,
+            ),
+        );
+    }
+    if sessions.storage.is_none() {
+        sessions.storage = Some(
+            crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(
+                connect_controller_session(
+                    crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
+                    node_id,
+                )?,
+            ),
+        );
+    }
+    if sessions.network.is_none() {
+        sessions.network = Some(
+            crate::DormantNetworkLifecycleInventoryOwnerV1::from_protected_session(
+                connect_controller_session(
+                    crate::ProtectedBrokerSessionFixedEndpointV1::ControllerNetworkClient,
+                    node_id,
+                )?,
+            ),
+        );
+    }
+    Ok(())
+}
+
+fn connect_controller_session(
+    endpoint: crate::ProtectedBrokerSessionFixedEndpointV1,
+    node_id: [u8; 16],
+) -> Result<crate::DormantAuthenticatedBrokerSessionV1, CycleFailure> {
+    let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(endpoint)
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    let deadline = crate::production_deadline_after(Duration::from_secs(10))
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    let mut session = custody
+        .connect_production_client_session(deadline)
+        .map_err(classify_protected_handshake_error)?;
+    session
+        .require_current_node(node_id)
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    Ok(session)
 }
 
 fn refresh_catalog(
@@ -1127,6 +1212,7 @@ fn classified_failure(error_is_retryable: bool, error: impl ToString) -> CycleFa
 fn open_controller(
     configuration: &RuntimeConfiguration,
     node_id: [u8; 16],
+    sessions: SharedControllerBrokerSessions,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     let (journal, _) = Journal::open_protected_at_for_uid(
         &configuration.state_directory,
@@ -1135,12 +1221,13 @@ fn open_controller(
         configuration.uid,
     )?;
 
-    controller_from_journal(journal, node_id)
+    controller_from_journal(journal, node_id, sessions)
 }
 
 fn controller_from_journal(
     mut journal: Journal,
     node_id: [u8; 16],
+    sessions: SharedControllerBrokerSessions,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
@@ -1149,7 +1236,7 @@ fn controller_from_journal(
         scope,
         limits,
         UnavailableCompiler,
-        Reconciler::new(journal, UnavailableExecutor),
+        Reconciler::new(journal, ProductionEffectExecutor::new(sessions)),
     ))
 }
 
@@ -1283,9 +1370,37 @@ impl ActivatedOperationCompiler for UnavailableCompiler {
     }
 }
 
-struct UnavailableExecutor;
+struct ProductionEffectExecutor {
+    sessions: SharedControllerBrokerSessions,
+    process_start: Option<([u8; 16], u64)>,
+}
 
-impl SingleNodeEffectExecutor for UnavailableExecutor {
+impl ProductionEffectExecutor {
+    fn new(sessions: SharedControllerBrokerSessions) -> Self {
+        Self {
+            sessions,
+            process_start: current_boot_and_boottime(),
+        }
+    }
+
+    fn prepared_in_this_process(&self, prepared: &PreparedAuthorityEffectV1) -> bool {
+        self.process_start
+            .is_some_and(|(host_boot_id, started_at)| {
+                prepared.preparation_host_boot_id() == host_boot_id
+                    && prepared.preparation_boottime_nanoseconds() >= started_at
+            })
+    }
+}
+
+impl SingleNodeEffectExecutor for ProductionEffectExecutor {
+    fn authority_effect_timing(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+    ) -> Option<AuthorityEffectAttemptTimingV1> {
+        production_authority_effect_timing()
+    }
+
     fn observe(
         &mut self,
         _operation_id: OperationId,
@@ -1303,6 +1418,155 @@ impl SingleNodeEffectExecutor for UnavailableExecutor {
     ) -> Result<EffectReceipt, EffectFailure> {
         Err(EffectFailure::Retryable(UNAVAILABLE_REASON.to_owned()))
     }
+
+    fn observe_authority(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        prepared: &PreparedAuthorityEffectV1,
+    ) -> Result<AuthorityEffectObservationV1, EffectFailure> {
+        let method = prepared
+            .broker_request()
+            .map_err(|_| {
+                EffectFailure::Permanent("durable authority effect is malformed".to_owned())
+            })?
+            .method();
+        let retained = {
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+            })?;
+            resume_controller_authority_effect(&mut sessions, method, prepared)?
+        };
+        if let Some(receipt) = retained {
+            return Ok(AuthorityEffectObservationV1::Applied(receipt));
+        }
+        if self.prepared_in_this_process(prepared) {
+            return Ok(AuthorityEffectObservationV1::Absent);
+        }
+        Err(EffectFailure::Retryable(
+            "durable authority effect requires authenticated restart observation".to_owned(),
+        ))
+    }
+
+    fn apply_authority(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        prepared: &PreparedAuthorityEffectV1,
+    ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+        let method = prepared
+            .broker_request()
+            .map_err(|_| {
+                EffectFailure::Permanent("durable authority effect is malformed".to_owned())
+            })?
+            .method();
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| EffectFailure::Retryable("broker session lock is poisoned".to_owned()))?;
+        apply_controller_authority_effect(&mut sessions, method, prepared)
+    }
+}
+
+fn production_authority_effect_timing() -> Option<AuthorityEffectAttemptTimingV1> {
+    let (host_boot_id, boottime_nanoseconds) = current_boot_and_boottime()?;
+    let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+    let deadline = boottime_nanoseconds.checked_add(5_000_000_000)?;
+    let provenance = RawClockProvenance::new_untrusted(*b"aos-kernel-clock").ok()?;
+    let clock = RawPairedClockSample::new_untrusted(
+        provenance,
+        host_boot_id,
+        realtime.tv_sec,
+        boottime_nanoseconds,
+    )
+    .ok()?;
+    Some(AuthorityEffectAttemptTimingV1::new(clock, deadline))
+}
+
+fn current_boot_and_boottime() -> Option<([u8; 16], u64)> {
+    let boot_before = KernelBootId::current().ok()?.into_bytes();
+    let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let boot_after = KernelBootId::current().ok()?.into_bytes();
+    if boot_before != boot_after {
+        return None;
+    }
+    let boottime_nanoseconds = u64::try_from(boottime.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(boottime.tv_nsec).ok()?)?;
+
+    Some((boot_before, boottime_nanoseconds))
+}
+
+fn apply_controller_authority_effect(
+    sessions: &mut ControllerBrokerSessions,
+    method: BrokerMethod,
+    prepared: &PreparedAuthorityEffectV1,
+) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+    match method {
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => sessions
+            .host
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .apply_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_STORAGE_APPLY => sessions
+            .storage
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .apply_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY => sessions
+            .mount
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .apply_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => sessions
+            .network
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .apply_authority_effect(prepared),
+        _ => Err(EffectFailure::Permanent(
+            "durable authority effect selected a non-Apply method".to_owned(),
+        )),
+    }
+}
+
+fn resume_controller_authority_effect(
+    sessions: &mut ControllerBrokerSessions,
+    method: BrokerMethod,
+    prepared: &PreparedAuthorityEffectV1,
+) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
+    let retained = match method {
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => sessions
+            .host
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .resume_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_STORAGE_APPLY => sessions
+            .storage
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .resume_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY => sessions
+            .mount
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .resume_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => sessions
+            .network
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .resume_authority_effect(prepared),
+        _ => {
+            return Err(EffectFailure::Permanent(
+                "durable authority effect selected a non-Apply method".to_owned(),
+            ));
+        }
+    };
+    retained.transpose()
+}
+
+fn missing_broker_session() -> EffectFailure {
+    EffectFailure::Retryable("authenticated broker session is unavailable".to_owned())
 }
 
 #[derive(Clone, Copy)]

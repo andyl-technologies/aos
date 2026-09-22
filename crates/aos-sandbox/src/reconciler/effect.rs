@@ -5,8 +5,13 @@
 //! dispatch identity and therefore cannot be sent to a broker. Authority-bound
 //! dispatches retain the Host boot identity paired with their BOOTTIME value.
 
-use aos_proto::aos::sandbox::local::v1::BrokerMethod;
-use aos_sandbox_core::{BrokerAudience, ObjectDigest, OperationId, RawPairedClockSample};
+use aos_proto::aos::sandbox::local::v1::{
+    ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest, ApplyStorageRequest, Audience,
+    BrokerMethod, BrokerRequestEnvelope, RequestHeader,
+};
+use aos_sandbox_core::{
+    BrokerAudience, ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample,
+};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
@@ -370,6 +375,66 @@ pub struct PreparedAuthorityEffectV1 {
     attempt: BrokerDispatchAttemptV1,
 }
 
+/// Carries one exact durable authority request into authenticated session custody.
+///
+/// This value can only be recovered from a reconciler-prepared effect. Its
+/// request identity is therefore the identity made durable before transport,
+/// rather than a caller-selected replacement generated at send time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedAuthorityBrokerRequestV1 {
+    envelope: BrokerRequestEnvelope,
+    method: BrokerMethod,
+    request_id: [u8; 16],
+    deadline_boottime_nanoseconds: u64,
+    maximum_response_bytes: u32,
+    protocol_version: ProtocolVersion,
+    audience: Audience,
+}
+
+impl PreparedAuthorityBrokerRequestV1 {
+    /// Returns the exact closed broker method.
+    #[must_use]
+    pub const fn method(&self) -> BrokerMethod {
+        self.method
+    }
+
+    /// Returns the exact durable request identifier.
+    #[must_use]
+    pub const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+
+    /// Returns the absolute durable attempt deadline.
+    #[must_use]
+    pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.deadline_boottime_nanoseconds
+    }
+
+    /// Returns the request-specific response ceiling.
+    #[must_use]
+    pub const fn maximum_response_bytes(&self) -> u32 {
+        self.maximum_response_bytes
+    }
+
+    /// Returns the exact protocol version carried by the method body.
+    #[must_use]
+    pub const fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+    }
+
+    /// Returns the exact session audience carried by the method body.
+    #[must_use]
+    pub const fn audience(&self) -> Audience {
+        self.audience
+    }
+
+    /// Consumes the binding and returns its canonical unsigned envelope.
+    #[must_use]
+    pub fn into_envelope(self) -> BrokerRequestEnvelope {
+        self.envelope
+    }
+}
+
 impl PreparedAuthorityEffectV1 {
     pub(crate) const fn new(
         binding_digest: ObjectDigest,
@@ -471,6 +536,63 @@ impl PreparedAuthorityEffectV1 {
         })
     }
 
+    /// Recovers the exact durable request for authenticated session admission.
+    ///
+    /// The returned envelope still lacks its session authentication carrier.
+    /// Session custody may add that carrier, but it must preserve the exact
+    /// method body and all request coordinates exposed by the returned value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidExecutorOutput`] when the durable
+    /// envelope or method body is noncanonical, incomplete, or inconsistent
+    /// with the attempt deadline.
+    pub fn broker_request(&self) -> Result<PreparedAuthorityBrokerRequestV1, ReconcilerError> {
+        let envelope = self.attempt_envelope()?;
+        let method = envelope
+            .method
+            .as_known()
+            .ok_or(ReconcilerError::InvalidExecutorOutput(
+                "authority effect method is unknown",
+            ))?;
+        let header = decode_authority_apply_header(method, self.attempt.body())?;
+        let request_id: [u8; 16] = header.request_id.as_slice().try_into().map_err(|_| {
+            ReconcilerError::InvalidExecutorOutput("authority effect request ID is invalid")
+        })?;
+        let protocol_major = u16::try_from(header.protocol_major).map_err(|_| {
+            ReconcilerError::InvalidExecutorOutput("authority effect protocol version is invalid")
+        })?;
+        let protocol_minor = u16::try_from(header.protocol_minor).map_err(|_| {
+            ReconcilerError::InvalidExecutorOutput("authority effect protocol version is invalid")
+        })?;
+        let audience = header
+            .audience
+            .as_known()
+            .ok_or(ReconcilerError::InvalidExecutorOutput(
+                "authority effect audience is unknown",
+            ))?;
+        if request_id == [0; 16]
+            || header.deadline_boottime_nanoseconds != self.attempt.deadline_boottime_nanoseconds()
+            || !(aos_sandbox_protocol::MINIMUM_RESPONSE_BYTES
+                ..=aos_sandbox_protocol::MAXIMUM_RESPONSE_BYTES)
+                .contains(&header.maximum_response_bytes)
+        {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect request coordinates are invalid",
+            ));
+        }
+
+        Ok(PreparedAuthorityBrokerRequestV1 {
+            envelope,
+            method,
+            request_id,
+            deadline_boottime_nanoseconds: header.deadline_boottime_nanoseconds,
+            maximum_response_bytes: header.maximum_response_bytes,
+            protocol_version: ProtocolVersion::new(protocol_major, protocol_minor),
+            audience,
+        })
+    }
+
     pub(crate) fn validate_durable_receipt(&self, bytes: &[u8]) -> Result<(), ReconcilerError> {
         if bytes.is_empty() || bytes.len() > MAXIMUM_RECEIPT_BYTES {
             return Err(ReconcilerError::InvalidExecutorOutput(
@@ -489,12 +611,19 @@ impl PreparedAuthorityEffectV1 {
     }
 
     fn attempt_method(&self) -> Result<BrokerMethod, ReconcilerError> {
-        let packet = aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope::decode_from_slice(
-            self.attempt.packet(),
-        )
-        .map_err(|_| {
-            ReconcilerError::InvalidExecutorOutput("authority effect request is malformed")
-        })?;
+        self.attempt_envelope()?
+            .method
+            .as_known()
+            .ok_or(ReconcilerError::InvalidExecutorOutput(
+                "authority effect method is unknown",
+            ))
+    }
+
+    fn attempt_envelope(&self) -> Result<BrokerRequestEnvelope, ReconcilerError> {
+        let packet =
+            BrokerRequestEnvelope::decode_from_slice(self.attempt.packet()).map_err(|_| {
+                ReconcilerError::InvalidExecutorOutput("authority effect request is malformed")
+            })?;
         if !packet.__buffa_unknown_fields.is_empty()
             || packet.encode_to_vec() != self.attempt.packet()
             || packet.body.as_slice() != self.attempt.body()
@@ -503,12 +632,8 @@ impl PreparedAuthorityEffectV1 {
                 "authority effect request is not canonical",
             ));
         }
-        packet
-            .method
-            .as_known()
-            .ok_or(ReconcilerError::InvalidExecutorOutput(
-                "authority effect method is unknown",
-            ))
+
+        Ok(packet)
     }
 
     pub(crate) const fn binding_digest(&self) -> ObjectDigest {
@@ -535,13 +660,59 @@ impl PreparedAuthorityEffectV1 {
         self.preparation_wall_seconds
     }
 
-    pub(crate) const fn preparation_boottime_nanoseconds(&self) -> u64 {
+    /// Returns the monotonic clock value at which this attempt became durable.
+    #[must_use]
+    pub const fn preparation_boottime_nanoseconds(&self) -> u64 {
         self.preparation_boottime_nanoseconds
     }
 
-    pub(crate) const fn preparation_host_boot_id(&self) -> [u8; 16] {
+    /// Returns the host boot in which this attempt became durable.
+    #[must_use]
+    pub const fn preparation_host_boot_id(&self) -> [u8; 16] {
         self.preparation_host_boot_id
     }
+}
+
+fn decode_authority_apply_header(
+    method: BrokerMethod,
+    body: &[u8],
+) -> Result<RequestHeader, ReconcilerError> {
+    macro_rules! decode_header {
+        ($message:ty) => {{
+            let request = <$message>::decode_from_slice(body).map_err(|_| {
+                ReconcilerError::InvalidExecutorOutput("authority effect body is malformed")
+            })?;
+            if !request.__buffa_unknown_fields.is_empty() || request.encode_to_vec() != body {
+                return Err(ReconcilerError::InvalidExecutorOutput(
+                    "authority effect body is not canonical",
+                ));
+            }
+            request
+                .header
+                .as_option()
+                .cloned()
+                .ok_or(ReconcilerError::InvalidExecutorOutput(
+                    "authority effect header is missing",
+                ))
+        }};
+    }
+
+    let header = match method {
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => decode_header!(ApplyRuntimeRequest),
+        BrokerMethod::BROKER_METHOD_STORAGE_APPLY => decode_header!(ApplyStorageRequest),
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY => decode_header!(ApplyMountRequest),
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => decode_header!(ApplyNetworkRequest),
+        _ => Err(ReconcilerError::InvalidExecutorOutput(
+            "authority effect method is not an Apply method",
+        )),
+    }?;
+    if !header.__buffa_unknown_fields.is_empty() {
+        return Err(ReconcilerError::InvalidExecutorOutput(
+            "authority effect header is not canonical",
+        ));
+    }
+
+    Ok(header)
 }
 
 /// Carries a broker completion receipt validated against one exact persisted Apply.

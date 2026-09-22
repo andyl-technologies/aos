@@ -11,10 +11,12 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
+use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
 use buffa::Message as _;
 
+use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
     DormantBrokerDescriptorRequestPreparationV1, DormantBrokerDescriptorRequestSendProgressV1,
@@ -27,6 +29,7 @@ use crate::{
 pub(crate) struct ControllerHostPublication {
     session: DormantAuthenticatedBrokerSessionV1,
     pending: Option<PendingPublication>,
+    authority_effects: ControllerAuthorityEffectExchangeV1,
     poisoned: bool,
 }
 
@@ -62,8 +65,30 @@ impl ControllerHostPublication {
         Self {
             session,
             pending: None,
+            authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             poisoned: false,
         }
+    }
+
+    /// Applies or resumes one exact Host authority effect on this same session.
+    pub(crate) fn apply_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+        if self.pending.is_some() || self.poisoned {
+            return Err(EffectFailure::Retryable(
+                "Host session has retained catalog publication work".to_owned(),
+            ));
+        }
+        self.authority_effects.apply(&mut self.session, effect)
+    }
+
+    /// Resumes matching retained Host effect custody without issuing a new Apply.
+    pub(crate) fn resume_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+        self.authority_effects.resume(&mut self.session, effect)
     }
 
     /// Completes a publication without replacing any retained request identity.
@@ -71,7 +96,8 @@ impl ControllerHostPublication {
         &mut self,
         draft: &HostCatalogPublicationDraftV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerHostPublicationError> {
-        if self.poisoned
+        if self.authority_effects.has_pending()
+            || self.poisoned
             || self
                 .pending
                 .as_ref()

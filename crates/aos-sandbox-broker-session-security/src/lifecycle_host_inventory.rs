@@ -22,10 +22,12 @@ use aos_sandbox::lifecycle::{
     LifecycleBootBootstrapEndpointV1, LifecycleBootInventoryBootstrapChallengeV1,
     LifecyclePhase6ErrorV1,
 };
+use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use buffa::Message as _;
 
+use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
     DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
@@ -188,7 +190,24 @@ macro_rules! domain_inventory_owner {
                 Self(DormantLifecycleInventorySessionV1 {
                     session,
                     pending: None,
+                    authority_effects: ControllerAuthorityEffectExchangeV1::default(),
                 })
+            }
+
+            /// Applies or resumes one exact authority effect on this session.
+            pub(crate) fn apply_authority_effect(
+                &mut self,
+                effect: &PreparedAuthorityEffectV1,
+            ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+                self.0.apply_authority_effect(effect)
+            }
+
+            /// Resumes matching retained effect custody without issuing a new Apply.
+            pub(crate) fn resume_authority_effect(
+                &mut self,
+                effect: &PreparedAuthorityEffectV1,
+            ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+                self.0.resume_authority_effect(effect)
             }
 
             /// Resumes retained inventory transport or durable commit custody.
@@ -317,6 +336,7 @@ pub enum DormantLifecycleInventoryQueryProgressV1 {
 struct DormantLifecycleInventorySessionV1 {
     session: DormantAuthenticatedBrokerSessionV1,
     pending: Option<DormantLifecycleInventoryQueryRecoveryV1>,
+    authority_effects: ControllerAuthorityEffectExchangeV1,
 }
 
 impl DormantLifecycleInventorySessionV1 {
@@ -324,6 +344,9 @@ impl DormantLifecycleInventorySessionV1 {
         &mut self,
         method: LifecycleInventoryMethodV1,
     ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
+        if self.authority_effects.has_pending() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
         let prepared = self
             .session
             .prepare_authenticated_request(method.method(), |coordinates| {
@@ -364,6 +387,25 @@ impl DormantLifecycleInventorySessionV1 {
             }
         };
         self.send_query(method, prepared)
+    }
+
+    fn apply_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+        if self.pending.is_some() {
+            return Err(EffectFailure::Retryable(
+                "broker session has retained inventory work".to_owned(),
+            ));
+        }
+        self.authority_effects.apply(&mut self.session, effect)
+    }
+
+    fn resume_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+        self.authority_effects.resume(&mut self.session, effect)
     }
 
     fn send_query(
@@ -615,7 +657,24 @@ impl DormantHostRuntimeInventoryOwnerV1 {
         Self(DormantLifecycleInventorySessionV1 {
             session,
             pending: None,
+            authority_effects: ControllerAuthorityEffectExchangeV1::default(),
         })
+    }
+
+    /// Applies or resumes one exact Host authority effect on this session.
+    pub(crate) fn apply_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+        self.0.apply_authority_effect(effect)
+    }
+
+    /// Resumes matching retained Host effect custody without issuing a new Apply.
+    pub(crate) fn resume_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+        self.0.resume_authority_effect(effect)
     }
 
     /// Resumes a retained Host inventory exchange without rebuilding its request.
@@ -745,12 +804,29 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         Ok(outcome)
     }
 
+    /// Applies or resumes one exact Storage authority effect on this session.
+    pub(crate) fn apply_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+        self.0.apply_authority_effect(effect)
+    }
+
+    /// Resumes matching retained Storage effect custody without issuing a new Apply.
+    pub(crate) fn resume_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+        self.0.resume_authority_effect(effect)
+    }
+
     /// Couples a completed fixed-custody session to Storage lifecycle queries.
     #[must_use]
     pub fn from_protected_session(session: DormantAuthenticatedBrokerSessionV1) -> Self {
         Self(DormantLifecycleInventorySessionV1 {
             session,
             pending: None,
+            authority_effects: ControllerAuthorityEffectExchangeV1::default(),
         })
     }
 

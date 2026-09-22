@@ -1298,6 +1298,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.owner.client_request_coordinates(&self.transcript, now)
     }
 
+    pub(super) fn client_request_limits(
+        &mut self,
+    ) -> Result<
+        (
+            u64,
+            u32,
+            aos_sandbox_core::ProtocolVersion,
+            aos_proto::aos::sandbox::local::v1::Audience,
+        ),
+        BrokerSessionSecurityError,
+    > {
+        let now = protected_boottime_nanoseconds()?;
+        self.owner.client_request_limits(&self.transcript, now)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_client_request(
         &mut self,

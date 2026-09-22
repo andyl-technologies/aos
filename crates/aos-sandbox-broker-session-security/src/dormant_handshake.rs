@@ -13,6 +13,7 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerDescriptorRole, BrokerError, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
     BrokerResponseEnvelope, HostCatalogPublicationStatus, PublishHostCatalogResponse,
 };
+use aos_sandbox::PreparedAuthorityEffectV1;
 use aos_sandbox_broker_session_protocol::{
     AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, ProtectedBrokerSessionVerificationContextV1,
     decode_canonical_response_v1,
@@ -4708,6 +4709,90 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     error,
                     recovery,
                     request: DormantUnconfirmedBrokerRequestV1(request),
+                }
+            }
+        })
+    }
+
+    /// Signs and durably reserves one exact reconciler-prepared authority effect.
+    ///
+    /// Unlike the ordinary builder API, this path preserves the request ID and
+    /// deadline already committed to the reconciler ledger. It accepts only an
+    /// opaque [`PreparedAuthorityEffectV1`], bounds its deadline by the fixed
+    /// production request window, and requires its body coordinates to match
+    /// the negotiated authenticated session before journal admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable effect is malformed, expired, outside
+    /// the negotiated session bounds, semantically invalid for this endpoint,
+    /// or cannot be committed to protected session history.
+    pub fn prepare_authenticated_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let request = effect.broker_request().map_err(|_| {
+            BrokerSessionSecurityError::manifest("durable authority effect request")
+        })?;
+        let (maximum_deadline, negotiated_response_bytes, protocol_version, audience) =
+            self.0.client_request_limits()?;
+        if request.deadline_boottime_nanoseconds() > maximum_deadline
+            || request.maximum_response_bytes() > negotiated_response_bytes
+            || request.protocol_version() != protocol_version
+            || request.audience() != audience
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "durable authority effect session coordinates",
+            ));
+        }
+
+        let method = request.method();
+        let request_id = request.request_id();
+        let deadline = request.deadline_boottime_nanoseconds();
+        let maximum_response_bytes = request.maximum_response_bytes();
+        let expected_body = effect.attempt().body();
+        let envelope = request.into_envelope();
+        let (authenticated, initialize) = self.0.prepare_client_request(
+            envelope,
+            method,
+            0,
+            request_id,
+            deadline,
+            maximum_response_bytes,
+        )?;
+        if authenticated.exact_body() != expected_body {
+            return Err(BrokerSessionSecurityError::manifest(
+                "durable authority effect body binding",
+            ));
+        }
+
+        let prepared = DormantPreparedBrokerRequestV1(authenticated.clone());
+        if initialize {
+            return Ok(
+                match self.0.initialize_authenticated_request(&authenticated)? {
+                    ProtectedBrokerSessionInitializationResultV1::Initialized => {
+                        DormantBrokerRequestPreparationV1::Prepared(prepared)
+                    }
+                    ProtectedBrokerSessionInitializationResultV1::RecoveryRequired {
+                        error,
+                        recovery,
+                    } => DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
+                        error,
+                        recovery,
+                        request: DormantUnconfirmedBrokerRequestV1(authenticated),
+                    },
+                },
+            );
+        }
+        Ok(match self.0.append_authenticated_request(&authenticated)? {
+            ProtectedBrokerRequestCommitResultV1::Committed => {
+                DormantBrokerRequestPreparationV1::Prepared(prepared)
+            }
+            ProtectedBrokerRequestCommitResultV1::RecoveryRequired { error, recovery } => {
+                DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
+                    error,
+                    recovery,
+                    request: DormantUnconfirmedBrokerRequestV1(authenticated),
                 }
             }
         })
