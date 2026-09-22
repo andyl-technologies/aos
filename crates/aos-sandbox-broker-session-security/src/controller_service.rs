@@ -78,10 +78,11 @@ use aos_sandbox::host_catalog_publication::{
 };
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::lifecycle::{
-    LifecycleCancelIdempotencyDigestV1, LifecycleProgressCommitOutcomeV1,
-    LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
-    LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedCancellationResolutionV1,
-    LifecycleTimeV1, lifecycle_public_mutation_admission_v1,
+    LifecycleCancelIdempotencyDigestV1, LifecycleOperationAdmissionV1, LifecycleOperationV1,
+    LifecycleProgressCommitOutcomeV1, LifecycleProgressOutcomeUnknownV1,
+    LifecycleProgressRecoveryV1, LifecycleProtectedCancellationAdmissionV1,
+    LifecycleProtectedCancellationResolutionV1, LifecycleTimeV1,
+    lifecycle_operation_from_public_mutation_v1, lifecycle_public_mutation_admission_v1,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::production_operation_compiler::ProductionOperationCompilerV1;
@@ -1391,7 +1392,7 @@ struct ProductionEffectExecutor {
 
 struct PendingSourceCommit {
     operation_id: OperationId,
-    receipt: EffectReceipt,
+    receipt: Option<EffectReceipt>,
     pending: LifecycleProgressOutcomeUnknownV1,
 }
 
@@ -1540,7 +1541,7 @@ impl ProductionEffectExecutor {
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
         {
             LifecycleProgressRecoveryV1::Applied(_) => {
-                Ok(Some(EffectObservation::Applied(pending.receipt)))
+                Ok(pending.receipt.map(EffectObservation::Applied))
             }
             LifecycleProgressRecoveryV1::Retry(prepared) => {
                 match owner
@@ -1548,7 +1549,7 @@ impl ProductionEffectExecutor {
                     .map_err(|error| EffectFailure::Permanent(error.to_string()))?
                 {
                     LifecycleProgressCommitOutcomeV1::Applied(_) => {
-                        Ok(Some(EffectObservation::Applied(pending.receipt)))
+                        Ok(pending.receipt.map(EffectObservation::Applied))
                     }
                     LifecycleProgressCommitOutcomeV1::OutcomeUnknown {
                         pending: retained, ..
@@ -1591,7 +1592,7 @@ impl ProductionEffectExecutor {
                     LifecycleProgressCommitOutcomeV1::OutcomeUnknown { pending, .. } => {
                         self.pending_source_commit = Some(PendingSourceCommit {
                             operation_id,
-                            receipt,
+                            receipt: Some(receipt),
                             pending,
                         });
                         Err(EffectFailure::Retryable(
@@ -1617,20 +1618,54 @@ impl ProductionEffectExecutor {
         context: &PublicMutationEffectV1,
         request: &DormantSandboxRequestKindV1,
         journal: &mut Journal,
-    ) -> Result<(), EffectFailure> {
+    ) -> Result<LifecycleOperationV1, EffectFailure> {
         if !is_lifecycle_mutation(request) {
-            return Ok(());
+            return Err(EffectFailure::Permanent(
+                "public mutation does not use lifecycle admission".to_owned(),
+            ));
         }
 
-        lifecycle_public_mutation_admission_v1(
+        let admission = lifecycle_public_mutation_admission_v1(
             journal,
             operation,
             context.project(),
             self.node,
             request,
         )
-        .map(|_| ())
+        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        lifecycle_operation_from_public_mutation_v1(
+            operation,
+            context.caller(),
+            context.project(),
+            context.accepted_wall_seconds(),
+            context.canonical_request(),
+            request,
+            admission,
+        )
         .map_err(|error| EffectFailure::Permanent(error.to_string()))
+    }
+
+    fn settle_lifecycle_admission(
+        &mut self,
+        operation_id: OperationId,
+        admission: LifecycleOperationAdmissionV1,
+    ) -> Result<(), EffectFailure> {
+        match admission {
+            LifecycleOperationAdmissionV1::Replay(_) => Ok(()),
+            LifecycleOperationAdmissionV1::Admitted { outcome, .. } => match outcome {
+                LifecycleProgressCommitOutcomeV1::Applied(_) => Ok(()),
+                LifecycleProgressCommitOutcomeV1::OutcomeUnknown { pending, .. } => {
+                    self.pending_source_commit = Some(PendingSourceCommit {
+                        operation_id,
+                        receipt: None,
+                        pending,
+                    });
+                    Err(EffectFailure::Retryable(
+                        "protected lifecycle admission durability is unknown".to_owned(),
+                    ))
+                }
+            },
+        }
     }
 }
 
@@ -1818,7 +1853,18 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         let request = context
             .validated_request()
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-        self.validate_lifecycle_admission(operation_id, &context, &request, journal)?;
+        let operation =
+            self.validate_lifecycle_admission(operation_id, &context, &request, journal)?;
+        let admission = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            owner
+                .admit_operation(operation)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        };
+        self.settle_lifecycle_admission(operation_id, admission)?;
         Err(EffectFailure::Retryable(
             CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
         ))

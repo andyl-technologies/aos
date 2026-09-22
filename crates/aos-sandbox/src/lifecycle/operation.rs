@@ -121,15 +121,18 @@ impl LifecycleOperationV1 {
             }
             (None, None) => true,
         };
-        let steps_are_monotone = steps.len() == self.steps().len()
-            && steps
-                .iter()
-                .zip(self.steps())
-                .all(|(current, previous)| current.can_follow(previous));
         let binds_unbound_plan = self.steps().iter().all(LifecycleStepV1::is_unbound);
+        let steps_are_monotone = if binds_unbound_plan {
+            steps.iter().all(|step| !step.has_unbound_commitment())
+        } else {
+            steps.len() == self.steps().len()
+                && steps
+                    .iter()
+                    .zip(self.steps())
+                    .all(|(current, previous)| current.can_follow(previous))
+        };
         let binding_is_atomic = !binds_unbound_plan
             || (phase == LifecyclePhaseV1::Accepted
-                && steps.iter().all(|step| !step.has_unbound_commitment())
                 && forward_progress == self.forward_progress()
                 && compensation_progress == self.compensation_progress()
                 && semantic_commit.as_ref() == self.method_semantic_commit()

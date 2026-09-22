@@ -62,9 +62,10 @@ impl LifecycleStepV1 {
     /// Constructs one canonical action skeleton before late authority exists.
     ///
     /// An unbound step commits its stable index, class, domain, and logical
-    /// request, but cannot reserve an attempt. Every step in an Accepted
-    /// operation must be either unbound or fully bound; mixed plans are
-    /// rejected so one protected successor binds the complete action sequence.
+    /// request, but cannot reserve an attempt. An Accepted operation may use
+    /// one or more such steps as its provisional action skeleton. One protected
+    /// successor replaces the complete skeleton with the exact bound action
+    /// sequence after late coordination state is available.
     ///
     /// # Errors
     ///

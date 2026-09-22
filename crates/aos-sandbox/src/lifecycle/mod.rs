@@ -30,6 +30,7 @@ pub(crate) mod protected_journal_adapter;
 pub mod protected_journal_join;
 mod protected_owner;
 mod public_admission;
+mod public_operation;
 mod recovery;
 mod replay_validation;
 mod runtime_admission;
@@ -172,6 +173,9 @@ pub use protected_owner::{
 pub use public_admission::{
     LifecyclePublicMutationAdmissionErrorV1, LifecyclePublicMutationAdmissionV1,
     lifecycle_public_mutation_admission_v1,
+};
+pub use public_operation::{
+    LifecyclePublicOperationErrorV1, lifecycle_operation_from_public_mutation_v1,
 };
 pub use recovery::{LifecycleRecoveryActionV1, classify_operation_recovery_v1};
 pub use runtime_admission::{
