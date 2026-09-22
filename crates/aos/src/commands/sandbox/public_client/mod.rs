@@ -37,6 +37,81 @@ mod watch;
 pub(super) use reads::dispatch_read;
 pub(super) use watch::dispatch_watch;
 
+/// Selects the one execution boundary for every typed sandbox command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PublicClientRouteV1 {
+    /// A command handled locally without a controller connection.
+    Local,
+    /// Public protocol or node discovery.
+    Discovery,
+    /// Direct operation lookup over the selected controller endpoint.
+    OperationRead,
+    /// An authenticated unary public read.
+    Read,
+    /// An authenticated public mutation.
+    Mutation,
+    /// An authenticated public watch stream.
+    Watch,
+}
+
+/// Classifies every typed request without a wildcard fallback.
+///
+/// Keeping this match exhaustive makes a newly added CLI command fail to
+/// compile until its transport boundary is selected deliberately.
+#[must_use]
+pub(super) const fn route(kind: &DormantSandboxRequestKindV1) -> PublicClientRouteV1 {
+    use DormantSandboxRequestKindV1 as R;
+
+    match kind {
+        R::Completions(_) => PublicClientRouteV1::Local,
+        R::CapabilitiesPublicApi(_) | R::CapabilitiesNode(_) => PublicClientRouteV1::Discovery,
+        R::GetOperation(_) => PublicClientRouteV1::OperationRead,
+        R::PlanCreate(_)
+        | R::GetSandbox(_)
+        | R::GetExecution(_)
+        | R::GetView(_)
+        | R::GetAttachment(_)
+        | R::GetSnapshot(_)
+        | R::ListSandboxes(_)
+        | R::ListExecutions(_)
+        | R::ListSnapshots(_)
+        | R::Tree(_)
+        | R::Children(_)
+        | R::Ancestors(_)
+        | R::PlanPolicy(_)
+        | R::ViewList(_)
+        | R::CacheStatus(_)
+        | R::CapabilityInspect(_) => PublicClientRouteV1::Read,
+        R::Create(_)
+        | R::UpdatePolicy(_)
+        | R::Start(_)
+        | R::Stop(_)
+        | R::Suspend(_)
+        | R::Resume(_)
+        | R::Exec(_)
+        | R::ExecutionControl(_)
+        | R::CancelExec(_)
+        | R::CancelOperation(_)
+        | R::Snapshot(_)
+        | R::DeleteSnapshot(_)
+        | R::Restore(_)
+        | R::Fork(_)
+        | R::Delete(_)
+        | R::ViewCreate(_)
+        | R::ViewAttach(_)
+        | R::ViewReplace(_)
+        | R::ViewDetach(_)
+        | R::ViewRelease(_)
+        | R::CachePin(_)
+        | R::CacheUnpin(_)
+        | R::CapabilityAttenuate(_)
+        | R::CapabilityRenew(_)
+        | R::CapabilityRevoke(_)
+        | R::OperatorRecover(_) => PublicClientRouteV1::Mutation,
+        R::Events(_) => PublicClientRouteV1::Watch,
+    }
+}
+
 const OPERATION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const QUERY_BINDING_HEADER: &str = "aos-query-binding-v1";
 
@@ -730,55 +805,9 @@ fn terminal_operation(
 }
 
 const fn is_supported_mutation(kind: &DormantSandboxRequestKindV1) -> bool {
-    matches!(
-        kind,
-        DormantSandboxRequestKindV1::Create(_)
-            | DormantSandboxRequestKindV1::UpdatePolicy(_)
-            | DormantSandboxRequestKindV1::Start(_)
-            | DormantSandboxRequestKindV1::Stop(_)
-            | DormantSandboxRequestKindV1::Suspend(_)
-            | DormantSandboxRequestKindV1::Resume(_)
-            | DormantSandboxRequestKindV1::Delete(_)
-            | DormantSandboxRequestKindV1::Exec(_)
-            | DormantSandboxRequestKindV1::ExecutionControl(_)
-            | DormantSandboxRequestKindV1::CancelExec(_)
-            | DormantSandboxRequestKindV1::CancelOperation(_)
-            | DormantSandboxRequestKindV1::Snapshot(_)
-            | DormantSandboxRequestKindV1::DeleteSnapshot(_)
-            | DormantSandboxRequestKindV1::Restore(_)
-            | DormantSandboxRequestKindV1::Fork(_)
-            | DormantSandboxRequestKindV1::ViewCreate(_)
-            | DormantSandboxRequestKindV1::ViewAttach(_)
-            | DormantSandboxRequestKindV1::ViewReplace(_)
-            | DormantSandboxRequestKindV1::ViewDetach(_)
-            | DormantSandboxRequestKindV1::ViewRelease(_)
-            | DormantSandboxRequestKindV1::CachePin(_)
-            | DormantSandboxRequestKindV1::CacheUnpin(_)
-            | DormantSandboxRequestKindV1::CapabilityAttenuate(_)
-            | DormantSandboxRequestKindV1::CapabilityRenew(_)
-            | DormantSandboxRequestKindV1::CapabilityRevoke(_)
-            | DormantSandboxRequestKindV1::OperatorRecover(_)
-    )
+    matches!(route(kind), PublicClientRouteV1::Mutation)
 }
 
 const fn is_supported_read(kind: &DormantSandboxRequestKindV1) -> bool {
-    matches!(
-        kind,
-        DormantSandboxRequestKindV1::PlanCreate(_)
-            | DormantSandboxRequestKindV1::GetSandbox(_)
-            | DormantSandboxRequestKindV1::ListSandboxes(_)
-            | DormantSandboxRequestKindV1::Children(_)
-            | DormantSandboxRequestKindV1::Ancestors(_)
-            | DormantSandboxRequestKindV1::Tree(_)
-            | DormantSandboxRequestKindV1::PlanPolicy(_)
-            | DormantSandboxRequestKindV1::GetExecution(_)
-            | DormantSandboxRequestKindV1::ListExecutions(_)
-            | DormantSandboxRequestKindV1::GetView(_)
-            | DormantSandboxRequestKindV1::GetAttachment(_)
-            | DormantSandboxRequestKindV1::ViewList(_)
-            | DormantSandboxRequestKindV1::GetSnapshot(_)
-            | DormantSandboxRequestKindV1::ListSnapshots(_)
-            | DormantSandboxRequestKindV1::CacheStatus(_)
-            | DormantSandboxRequestKindV1::CapabilityInspect(_)
-    )
+    matches!(route(kind), PublicClientRouteV1::Read)
 }

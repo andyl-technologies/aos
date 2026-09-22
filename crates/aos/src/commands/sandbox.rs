@@ -73,13 +73,14 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
         }
         Err(error) => return Err(error),
     };
-    if let DormantSandboxRequestKindV1::Completions(shell) = request.kind() {
-        crate::commands::completions::run(completion_shell(*shell));
-        return Ok(());
-    }
+    use public_client::PublicClientRouteV1 as Route;
 
-    match request.kind() {
-        DormantSandboxRequestKindV1::CapabilitiesPublicApi(request_message) => {
+    match (public_client::route(request.kind()), request.kind()) {
+        (Route::Local, DormantSandboxRequestKindV1::Completions(shell)) => {
+            crate::commands::completions::run(completion_shell(*shell));
+            Ok(())
+        }
+        (Route::Discovery, DormantSandboxRequestKindV1::CapabilitiesPublicApi(request_message)) => {
             let client = discovery_client(args).await?;
             let response = client
                 .get_public_feature_registry(request_message.clone())
@@ -93,9 +94,9 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
             let checked = CheckedPublicFeatureRegistryV1::try_from(registry)
                 .context("controller returned an invalid public feature registry")?;
             render_checked(output, &checked)?;
-            return Ok(());
+            Ok(())
         }
-        DormantSandboxRequestKindV1::CapabilitiesNode(request_message) => {
+        (Route::Discovery, DormantSandboxRequestKindV1::CapabilitiesNode(request_message)) => {
             let client = discovery_client(args).await?;
             let response = client
                 .get_node_capabilities(request_message.clone())
@@ -109,9 +110,9 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
             let checked = CheckedNodeCapabilitiesV1::try_from(capabilities)
                 .context("controller returned invalid node capabilities")?;
             render_checked(output, &checked)?;
-            return Ok(());
+            Ok(())
         }
-        DormantSandboxRequestKindV1::GetOperation(request_message) => {
+        (Route::OperationRead, DormantSandboxRequestKindV1::GetOperation(request_message)) => {
             let client = operation_client(args, expected_capability_id).await?;
             let response = client
                 .get_operation(request_message.clone())
@@ -126,24 +127,37 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
                 .context("controller returned an invalid operation observation")?
                 .into_resource();
             render_checked(output, &checked)?;
-            return Ok(());
+            Ok(())
         }
-        _ => {}
+        (Route::Read, _) if args.public_api => require_dispatched(
+            public_client::dispatch_read(args, &request, output, expected_capability_id).await?,
+        ),
+        (Route::Mutation, _) if args.public_api => require_dispatched(
+            public_client::dispatch_mutation(args, &request, output, expected_capability_id)
+                .await?,
+        ),
+        (Route::Watch, _) if args.public_api => require_dispatched(
+            public_client::dispatch_watch(args, &request, output, expected_capability_id).await?,
+        ),
+        (Route::Read | Route::Mutation | Route::Watch, _) => {
+            let mut executor = DormantSandboxCommandExecutorV1::new(DormantValidatedRequestSinkV1);
+            let _deferred = executor.execute(request)?;
+            Err(DormantSandboxRoutingErrorV1::TransportRejected.into())
+        }
+        _ => Err(anyhow::anyhow!(
+            "sandbox command route classification is inconsistent"
+        )),
     }
+}
 
-    if public_client::dispatch_read(args, &request, output, expected_capability_id).await? {
-        return Ok(());
+fn require_dispatched(dispatched: bool) -> Result<()> {
+    if dispatched {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "sandbox public command route classification is inconsistent"
+        ))
     }
-    if public_client::dispatch_mutation(args, &request, output, expected_capability_id).await? {
-        return Ok(());
-    }
-    if public_client::dispatch_watch(args, &request, output, expected_capability_id).await? {
-        return Ok(());
-    }
-
-    let mut executor = DormantSandboxCommandExecutorV1::new(DormantValidatedRequestSinkV1);
-    let _deferred = executor.execute(request)?;
-    Err(DormantSandboxRoutingErrorV1::TransportRejected.into())
 }
 
 async fn operation_client(
