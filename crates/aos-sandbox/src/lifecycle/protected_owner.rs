@@ -180,6 +180,22 @@ fn latest_applied_post_commit_step(
         .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
 }
 
+const fn operation_record_kind(phase: super::LifecyclePhaseV1) -> LifecycleProtectedRecordKindV1 {
+    match phase {
+        super::LifecyclePhaseV1::Accepted => LifecycleProtectedRecordKindV1::Intent,
+        super::LifecyclePhaseV1::ReadyToCommit
+        | super::LifecyclePhaseV1::Committed
+        | super::LifecyclePhaseV1::Terminal
+        | super::LifecyclePhaseV1::PermanentlyBlocked => LifecycleProtectedRecordKindV1::Operation,
+        super::LifecyclePhaseV1::Preparing
+        | super::LifecyclePhaseV1::Prepared
+        | super::LifecyclePhaseV1::Completing
+        | super::LifecyclePhaseV1::Compensating
+        | super::LifecyclePhaseV1::RetryWaiting
+        | super::LifecyclePhaseV1::Residual => LifecycleProtectedRecordKindV1::Effect,
+    }
+}
+
 /// Owns a cold-replayed, dormant lifecycle adapter and its custody verifier.
 pub struct LifecycleProtectedJournalOwnerV1<'journal> {
     journal: LifecycleProtectedJournalV1<'journal>,
@@ -250,12 +266,11 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
                     | LifecycleProtectedRecordKindV1::Effect
             )
         }) {
-            let reducer =
-                decode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
-                    envelope.key(),
-                    envelope.payload(),
-                    &self.verifier,
-                )?;
+            let reducer = decode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
+                envelope.key(),
+                envelope.payload(),
+                &self.verifier,
+            )?;
             let current = decode_operation_record_v1(reducer.body())
                 .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
             if current.caller() != operation.caller()
@@ -1538,6 +1553,90 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         Ok(PreparedLifecycleProgressV1 { prepared })
     }
 
+    /// Plans one canonical lifecycle successor across protected record families.
+    ///
+    /// The lifecycle phase selects the destination family. A phase change may
+    /// therefore append the successor under a different protected key than the
+    /// current record. The current operation record remains the semantic
+    /// predecessor, while the destination envelope independently extends its
+    /// own protected-key CAS lineage.
+    ///
+    /// This primitive only persists a fully constructed model successor. It
+    /// grants no broker authority and does not manufacture effect evidence.
+    /// Callers remain responsible for obtaining the successor from the
+    /// method-specific reducer and authenticated observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale current key, changed immutable admission,
+    /// a non-adjacent model successor, an invalid destination family, or failed
+    /// protected-journal planning.
+    pub fn prepare_operation_progress(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        successor: LifecycleOperationV1,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        if transaction_id == [0; 16] {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let (latest_key, latest) = self
+            .current_operation_by_id(successor.operation_id())?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if &latest_key != current_key {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let current = latest.operation();
+        let reconstructed = current
+            .successor(
+                latest.record(),
+                successor.phase(),
+                successor.forward_progress(),
+                successor.compensation_progress(),
+                successor.steps().to_vec(),
+                successor.method_semantic_commit().cloned(),
+                successor.failure(),
+                successor.retry(),
+                successor.terminal_result(),
+                successor.finished_at(),
+            )
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if reconstructed != successor {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+
+        let kind = operation_record_kind(successor.phase());
+        let subject = ResourceId::from_bytes(super::protected_journal::lifecycle_journal_subject(
+            successor.intent(),
+        ));
+        let destination = super::lifecycle_protected_key_v1(
+            kind,
+            successor.project(),
+            subject,
+            successor.operation_id(),
+        )?;
+        let projection = self.journal.replay()?;
+        let previous = projection
+            .records()
+            .iter()
+            .find(|record| record.key() == &destination);
+        let revision = previous.map_or(1, |record| {
+            record.revision().checked_add(1).unwrap_or(u64::MAX)
+        });
+        if revision == u64::MAX {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let envelope = lifecycle_reducer_envelope_v1(
+            destination,
+            revision,
+            previous.map(|record| record.digest()),
+            LifecycleReducerRecordV1::Operation(&successor),
+            &self.verifier,
+        )?;
+        let prepared = self.journal.plan(transaction_id, vec![envelope])?;
+        Ok(PreparedLifecycleProgressV1 { prepared })
+    }
+
     /// Plans the atomic readmission of one exact durable Residual cursor.
     ///
     /// The successor must append one Reserved attempt to the same failed step.
@@ -1754,6 +1853,97 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
                 .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?,
             projection.root(),
         )))
+    }
+
+    /// Finds the unique latest protected record for one lifecycle operation.
+    ///
+    /// Lifecycle progress can move between the intent, effect, and operation
+    /// record families as its semantic phase changes. This lookup considers
+    /// all three families and selects the greatest lifecycle record revision,
+    /// while rejecting duplicate revisions or changed immutable admission
+    /// fields. The returned key is therefore the key that must be fenced by the
+    /// next progress transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when replay is unhealthy, operation-bearing records
+    /// disagree, or more than one protected record claims the latest revision.
+    pub fn current_operation_by_id(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<
+        Option<(
+            LifecycleProtectedJournalKeyV1,
+            CurrentLifecycleOperationV1<'_>,
+        )>,
+        LifecycleProtectedJournalErrorV1,
+    > {
+        if operation_id.as_bytes() == &[0; 16] {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+
+        let projection = self.journal.replay()?;
+        let mut selected: Option<(
+            LifecycleProtectedJournalKeyV1,
+            LifecycleOperationV1,
+            LifecycleRecordDigestV1,
+        )> = None;
+        for envelope in projection.records().iter().filter(|envelope| {
+            matches!(
+                envelope.key().kind(),
+                LifecycleProtectedRecordKindV1::Intent
+                    | LifecycleProtectedRecordKindV1::Operation
+                    | LifecycleProtectedRecordKindV1::Effect
+            ) && envelope.key().identity()[32..48] == operation_id.as_bytes()[..]
+        }) {
+            let reducer = decode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
+                envelope.key(),
+                envelope.payload(),
+                &self.verifier,
+            )?;
+            let operation = decode_operation_record_v1(reducer.body())
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+            if operation.operation_id() != operation_id
+                || !super::format::operation_record_matches_canonical_encoding(
+                    &operation,
+                    reducer.body(),
+                )
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
+            {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            let record = super::format::record_digest(reducer.body())
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
+            let Some((_, current, _)) = selected.as_ref() else {
+                selected = Some((envelope.key().clone(), operation, record));
+                continue;
+            };
+            if current.caller() != operation.caller()
+                || current.project() != operation.project()
+                || current.idempotency() != operation.idempotency()
+                || current.normalized_request() != operation.normalized_request()
+                || current.intent() != operation.intent()
+                || current.accepted_at() != operation.accepted_at()
+                || current.record_revision() == operation.record_revision()
+            {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            if operation.record_revision() > current.record_revision() {
+                selected = Some((envelope.key().clone(), operation, record));
+            }
+        }
+
+        Ok(selected.map(|(key, operation, record)| {
+            (
+                key,
+                CurrentLifecycleOperationV1::from_protected_current(
+                    operation,
+                    record,
+                    projection.root(),
+                ),
+            )
+        }))
     }
 
     /// Borrows one current verifier-owned memory-suspend observation.
