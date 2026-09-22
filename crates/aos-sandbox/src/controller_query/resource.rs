@@ -114,77 +114,140 @@ impl PublicConditionCodeV1 {
 
 /// Identifies one closed public operation method.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum PublicOperationMethodV1 {
     /// Creates a sandbox.
-    CreateSandbox,
+    CreateSandbox = 0,
     /// Updates a sandbox policy.
-    UpdatePolicy,
+    UpdatePolicy = 1,
     /// Starts a sandbox.
-    StartSandbox,
+    StartSandbox = 2,
     /// Stops a sandbox.
-    StopSandbox,
+    StopSandbox = 3,
     /// Suspends a sandbox.
-    SuspendSandbox,
+    SuspendSandbox = 4,
     /// Resumes a sandbox.
-    ResumeSandbox,
+    ResumeSandbox = 5,
     /// Deletes a sandbox.
-    DeleteSandbox,
+    DeleteSandbox = 6,
     /// Creates an execution.
-    CreateExecution,
+    CreateExecution = 7,
     /// Cancels an execution.
-    CancelExecution,
+    CancelExecution = 8,
     /// Creates a filesystem view.
-    CreateView,
+    CreateView = 9,
     /// Attaches a filesystem view.
-    AttachView,
+    AttachView = 10,
     /// Replaces an attachment.
-    ReplaceAttachment,
+    ReplaceAttachment = 11,
     /// Detaches a filesystem view.
-    DetachView,
+    DetachView = 12,
     /// Releases a filesystem view.
-    ReleaseView,
+    ReleaseView = 13,
     /// Creates a snapshot.
-    CreateSnapshot,
+    CreateSnapshot = 14,
     /// Restores a snapshot.
-    RestoreSnapshot,
+    RestoreSnapshot = 15,
     /// Forks a snapshot.
-    ForkSnapshot,
+    ForkSnapshot = 16,
     /// Deletes a snapshot.
-    DeleteSnapshot,
+    DeleteSnapshot = 17,
     /// Renews a capability.
-    RenewCapability,
+    RenewCapability = 18,
     /// Revokes a capability.
-    RevokeCapability,
+    RevokeCapability = 19,
     /// Requests cancellation of an accepted operation.
-    CancelOperation,
+    CancelOperation = 20,
 }
 
 impl PublicOperationMethodV1 {
-    fn parse(value: &str) -> Option<Self> {
+    const ALL: [Self; 21] = [
+        Self::CreateSandbox,
+        Self::UpdatePolicy,
+        Self::StartSandbox,
+        Self::StopSandbox,
+        Self::SuspendSandbox,
+        Self::ResumeSandbox,
+        Self::DeleteSandbox,
+        Self::CreateExecution,
+        Self::CancelExecution,
+        Self::CreateView,
+        Self::AttachView,
+        Self::ReplaceAttachment,
+        Self::DetachView,
+        Self::ReleaseView,
+        Self::CreateSnapshot,
+        Self::RestoreSnapshot,
+        Self::ForkSnapshot,
+        Self::DeleteSnapshot,
+        Self::RenewCapability,
+        Self::RevokeCapability,
+        Self::CancelOperation,
+    ];
+
+    /// Returns the stable public registry spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateSandbox => "sandbox.create",
+            Self::UpdatePolicy => "sandbox.update-policy",
+            Self::StartSandbox => "sandbox.start",
+            Self::StopSandbox => "sandbox.stop",
+            Self::SuspendSandbox => "sandbox.suspend",
+            Self::ResumeSandbox => "sandbox.resume",
+            Self::DeleteSandbox => "sandbox.delete",
+            Self::CreateExecution => "execution.create",
+            Self::CancelExecution => "execution.cancel",
+            Self::CreateView => "view.create",
+            Self::AttachView => "view.attach",
+            Self::ReplaceAttachment => "attachment.replace",
+            Self::DetachView => "attachment.detach",
+            Self::ReleaseView => "view.release",
+            Self::CreateSnapshot => "snapshot.create",
+            Self::RestoreSnapshot => "snapshot.restore",
+            Self::ForkSnapshot => "snapshot.fork",
+            Self::DeleteSnapshot => "snapshot.delete",
+            Self::RenewCapability => "capability.renew",
+            Self::RevokeCapability => "capability.revoke",
+            Self::CancelOperation => "operation.cancel",
+        }
+    }
+
+    pub(crate) const fn from_record_code(value: u8) -> Option<Self> {
         match value {
-            "sandbox.create" => Some(Self::CreateSandbox),
-            "sandbox.update-policy" => Some(Self::UpdatePolicy),
-            "sandbox.start" => Some(Self::StartSandbox),
-            "sandbox.stop" => Some(Self::StopSandbox),
-            "sandbox.suspend" => Some(Self::SuspendSandbox),
-            "sandbox.resume" => Some(Self::ResumeSandbox),
-            "sandbox.delete" => Some(Self::DeleteSandbox),
-            "execution.create" => Some(Self::CreateExecution),
-            "execution.cancel" => Some(Self::CancelExecution),
-            "view.create" => Some(Self::CreateView),
-            "view.attach" => Some(Self::AttachView),
-            "attachment.replace" => Some(Self::ReplaceAttachment),
-            "attachment.detach" => Some(Self::DetachView),
-            "view.release" => Some(Self::ReleaseView),
-            "snapshot.create" => Some(Self::CreateSnapshot),
-            "snapshot.restore" => Some(Self::RestoreSnapshot),
-            "snapshot.fork" => Some(Self::ForkSnapshot),
-            "snapshot.delete" => Some(Self::DeleteSnapshot),
-            "capability.renew" => Some(Self::RenewCapability),
-            "capability.revoke" => Some(Self::RevokeCapability),
-            "operation.cancel" => Some(Self::CancelOperation),
+            0 => Some(Self::CreateSandbox),
+            1 => Some(Self::UpdatePolicy),
+            2 => Some(Self::StartSandbox),
+            3 => Some(Self::StopSandbox),
+            4 => Some(Self::SuspendSandbox),
+            5 => Some(Self::ResumeSandbox),
+            6 => Some(Self::DeleteSandbox),
+            7 => Some(Self::CreateExecution),
+            8 => Some(Self::CancelExecution),
+            9 => Some(Self::CreateView),
+            10 => Some(Self::AttachView),
+            11 => Some(Self::ReplaceAttachment),
+            12 => Some(Self::DetachView),
+            13 => Some(Self::ReleaseView),
+            14 => Some(Self::CreateSnapshot),
+            15 => Some(Self::RestoreSnapshot),
+            16 => Some(Self::ForkSnapshot),
+            17 => Some(Self::DeleteSnapshot),
+            18 => Some(Self::RenewCapability),
+            19 => Some(Self::RevokeCapability),
+            20 => Some(Self::CancelOperation),
             _ => None,
         }
+    }
+
+    pub(crate) const fn record_code(self) -> u8 {
+        self as u8
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|method| method.as_str() == value)
     }
 }
 
@@ -1041,5 +1104,27 @@ pub(crate) fn validate_resource_size<T: buffa::Message>(
         Err(InvalidPublicResource::ResourceTooLarge)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PublicOperationMethodV1;
+
+    #[test]
+    fn public_operation_method_record_registry_round_trips() {
+        for (code, method) in PublicOperationMethodV1::ALL.into_iter().enumerate() {
+            assert_eq!(method.record_code() as usize, code);
+            assert_eq!(
+                PublicOperationMethodV1::from_record_code(method.record_code()),
+                Some(method)
+            );
+            assert_eq!(
+                PublicOperationMethodV1::parse(method.as_str()),
+                Some(method)
+            );
+        }
+        assert_eq!(PublicOperationMethodV1::from_record_code(21), None);
+        assert_eq!(PublicOperationMethodV1::parse("sandbox.unknown"), None);
     }
 }

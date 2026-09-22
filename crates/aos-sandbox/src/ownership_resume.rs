@@ -272,7 +272,7 @@ where
         .bind_lease(plan.claim(), signed)?;
     let activation = AuthorityPublicationStore::new(reconciler.journal_mut())
         .prepare_gate_activation(plan.publication_draft(), &prepared)?;
-    match reconciler.activate_ownership_gate(operation_id, activation)? {
+    match reconciler.activate_ownership_gate_at(operation_id, activation, clock.wall_seconds())? {
         OwnershipGateActivationOutcome::Activated => Ok(OwnershipResumeOutcomeV1::Activated),
         OwnershipGateActivationOutcome::Replay => Ok(OwnershipResumeOutcomeV1::Replay),
     }

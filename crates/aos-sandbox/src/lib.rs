@@ -38,8 +38,6 @@ pub mod controller_query;
 #[cfg(target_os = "linux")]
 pub mod controller_service;
 #[cfg(target_os = "linux")]
-pub mod public_api_session;
-#[cfg(target_os = "linux")]
 pub mod destination_slot_effect;
 #[cfg(target_os = "linux")]
 pub mod destination_slot_inventory;
@@ -77,6 +75,8 @@ pub mod ownership_authority;
 pub mod ownership_resume;
 pub mod ownership_service;
 pub mod policy_compiler;
+#[cfg(target_os = "linux")]
+pub mod public_api_session;
 pub mod publication;
 pub mod publisher_admission;
 pub mod publisher_authority;
@@ -232,8 +232,8 @@ pub use reconciler::{
     AcceptOutcome, AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
     EffectReceipt, OperationPlan, OwnershipGateActivationOutcome, OwnershipGatePlanV1,
-    OwnershipGateStatusV1, PreparedAuthorityEffectV1, ReconcileOutcome, Reconciler,
-    ReconcilerError, SingleNodeEffectExecutor, UnfinishedOperationStateV1,
+    OwnershipGateStatusV1, PreparedAuthorityEffectV1, PublicOperationAdmissionV1, ReconcileOutcome,
+    Reconciler, ReconcilerError, SingleNodeEffectExecutor, UnfinishedOperationStateV1,
     ValidatedHostEffectReceiptV1, ValidatedUnfinishedOperationV1,
 };
 #[cfg(target_os = "linux")]

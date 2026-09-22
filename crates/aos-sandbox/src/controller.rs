@@ -5002,6 +5002,53 @@ where
         Ok(ControllerQuantumReport { steps, idle })
     }
 
+    /// Advances one bounded quantum under a paired controller clock sample.
+    ///
+    /// The sample is used only for public observation timestamps. Authority
+    /// checks continue to consume their own freshly rechecked protected clock
+    /// observations at the effect boundary. The sample grants no authority;
+    /// activated services must source it from their protected clock adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError::Reconciler`] for the same failures as
+    /// [`Self::reconcile_quantum`] or for a nonmonotone public timestamp.
+    pub fn reconcile_quantum_at(
+        &mut self,
+        clock: RawPairedClockSample,
+    ) -> Result<ControllerQuantumReport, ControllerServiceError> {
+        let mut steps = Vec::with_capacity(self.limits.reconciliation_quantum);
+        let mut idle = false;
+        for _ in 0..self.limits.reconciliation_quantum {
+            let Some((operation_id, outcome)) =
+                self.reconciler.reconcile_next_at(clock.wall_seconds())?
+            else {
+                idle = true;
+                break;
+            };
+            steps.push(ControllerReconciliationStep {
+                operation_id,
+                outcome,
+            });
+        }
+        Ok(ControllerQuantumReport { steps, idle })
+    }
+
+    /// Loads one established public operation resource from the durable ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError::Reconciler`] when the operation or its
+    /// effect ledger fails read-only validation.
+    pub fn public_operation(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<Option<aos_proto::aos::sandbox::v1::Operation>, ControllerServiceError> {
+        self.reconciler
+            .public_operation(operation_id)
+            .map_err(ControllerServiceError::Reconciler)
+    }
+
     /// Returns one validated durable operation that still requires active work.
     ///
     /// This audit performs no admission, durable transition, or executor call.

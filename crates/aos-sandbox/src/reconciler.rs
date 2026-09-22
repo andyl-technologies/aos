@@ -13,15 +13,18 @@
 //! Runtime-holder admission additionally commits an exact intent digest in the
 //! operation record. Activation commits its binding and current head in the
 //! same transaction as the ownership publication and gate release. The durable
-//! operation format is one closed schema:
+//! operation formats are closed schemas:
 //!
 //! ```text
 //! V1 = version:u8 || state:u8 || flags:u8 || reserved:u8
 //!      || effect_count:u32le || runtime_intent_digest_or_zero:32bytes
+//! V2 = V1-header-with-version-2-and-public-flag || public_metadata:64bytes
 //! ```
 //!
 //! The zero digest slot denotes an operation without a holder intent. Runtime
-//! authority records require and cross-check the exact nonzero digest.
+//! authority records require and cross-check the exact nonzero digest. V1
+//! remains the canonical encoding for internal operations; V2 adds immutable
+//! public identity and restart-stable observation metadata.
 
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
@@ -40,6 +43,7 @@ use crate::publication::{
 };
 
 mod effect;
+mod public_operation;
 mod runtime_authority;
 
 use crate::runtime_authority::{
@@ -58,11 +62,16 @@ pub use effect::{
 use effect::{
     EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
 };
+pub use public_operation::PublicOperationAdmissionV1;
+use public_operation::{DurablePublicOperationV1, PUBLIC_OPERATION_RECORD_BYTES};
 
-const RECORD_VERSION: u8 = 1;
+const RECORD_VERSION_V1: u8 = 1;
+const RECORD_VERSION_V2: u8 = 2;
 const OPERATION_FLAG_OWNERSHIP_GATED: u8 = 1;
+const OPERATION_FLAG_PUBLIC: u8 = 2;
 const OPERATION_RUNTIME_INTENT_DIGEST_BYTES: usize = 32;
-const OPERATION_RECORD_BYTES: usize = 8 + OPERATION_RUNTIME_INTENT_DIGEST_BYTES;
+const OPERATION_RECORD_V1_BYTES: usize = 8 + OPERATION_RUNTIME_INTENT_DIGEST_BYTES;
+const OPERATION_RECORD_V2_BYTES: usize = OPERATION_RECORD_V1_BYTES + PUBLIC_OPERATION_RECORD_BYTES;
 const OPERATION_KEY_BYTES: usize = 16;
 const EFFECT_KEY_BYTES: usize = 20;
 // The default journal transaction bound is 4096 records. Admission also
@@ -85,6 +94,7 @@ pub struct OperationPlan {
     effects: Vec<EffectPlan>,
     ownership_gate: Option<OwnershipGatePlanV1>,
     runtime_authority: Option<RuntimeAuthorityIntentV1>,
+    public_operation: Option<PublicOperationAdmissionV1>,
 }
 
 impl OperationPlan {
@@ -120,6 +130,7 @@ impl OperationPlan {
             effects,
             ownership_gate: None,
             runtime_authority: None,
+            public_operation: None,
         })
     }
 
@@ -190,6 +201,7 @@ impl OperationPlan {
             effects,
             ownership_gate: None,
             runtime_authority: None,
+            public_operation: None,
         };
         plan.ownership_gate = Some(OwnershipGatePlanV1::new(
             operation_id,
@@ -238,6 +250,29 @@ impl OperationPlan {
             &self.effects,
         )?;
         self.runtime_authority = Some(intent);
+        Ok(self)
+    }
+
+    /// Adds immutable public observation metadata to this admission.
+    ///
+    /// The accepted desired state is the semantic commit boundary, so public
+    /// operations produced by this reconciler are noncancelable and begin in
+    /// the committed/reconciling phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidPlan`] when metadata was already
+    /// attached to the plan.
+    pub fn with_public_operation(
+        mut self,
+        public_operation: PublicOperationAdmissionV1,
+    ) -> Result<Self, ReconcilerError> {
+        if self.public_operation.is_some() {
+            return Err(ReconcilerError::InvalidPlan(
+                "public operation metadata is already present",
+            ));
+        }
+        self.public_operation = Some(public_operation);
         Ok(self)
     }
 
@@ -652,6 +687,12 @@ pub enum ReconcilerError {
     /// An executor returned unbounded or empty evidence.
     #[error("effect executor violated its output contract: {0}")]
     InvalidExecutorOutput(&'static str),
+    /// A public operation transition lacks a valid monotone wall-clock sample.
+    #[error("public operation clock observation is missing or invalid")]
+    PublicOperationClock,
+    /// A public operation exhausted its monotone observation sequence.
+    #[error("public operation observation sequence is exhausted")]
+    PublicOperationSequenceExhausted,
     /// Current publication selection or attempt attenuation failed.
     #[error("authority-bound effect preparation failed: {0}")]
     AuthorityPublication(#[from] crate::AuthorityPublicationError),
@@ -673,6 +714,7 @@ struct OperationRecord {
     effect_count: u32,
     ownership_gated: bool,
     runtime_intent_digest: Option<ObjectDigest>,
+    public_operation: Option<DurablePublicOperationV1>,
 }
 
 impl OperationState {
@@ -685,6 +727,10 @@ impl OperationState {
             5 => Ok(Self::OwnershipPending),
             _ => Err(ReconcilerError::CorruptLedger("unknown operation state")),
         }
+    }
+
+    const fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::PermanentlyBlocked)
     }
 }
 
@@ -760,6 +806,24 @@ where
         &mut self,
         operation_id: OperationId,
         activation: AuthorityPublicationActivationV1,
+    ) -> Result<OwnershipGateActivationOutcome, ReconcilerError> {
+        self.activate_ownership_gate_inner(operation_id, activation, None)
+    }
+
+    pub(crate) fn activate_ownership_gate_at(
+        &mut self,
+        operation_id: OperationId,
+        activation: AuthorityPublicationActivationV1,
+        wall_seconds: i64,
+    ) -> Result<OwnershipGateActivationOutcome, ReconcilerError> {
+        self.activate_ownership_gate_inner(operation_id, activation, Some(wall_seconds))
+    }
+
+    fn activate_ownership_gate_inner(
+        &mut self,
+        operation_id: OperationId,
+        activation: AuthorityPublicationActivationV1,
+        wall_seconds: Option<i64>,
     ) -> Result<OwnershipGateActivationOutcome, ReconcilerError> {
         self.ensure_ledger_validated()?;
         let AuthorityPublicationActivationPartsV1 {
@@ -847,15 +911,11 @@ where
         };
         let mut records = Vec::from(publication_records);
         records.extend(runtime_records);
+        let operation = transition_operation(operation, OperationState::Accepted, wall_seconds)?;
         records.push(JournalRecord::put(
             RecordNamespace::Operation,
             operation_id.into_bytes().to_vec(),
-            encode_operation(
-                OperationState::Accepted,
-                operation.effect_count,
-                true,
-                operation.runtime_intent_digest,
-            ),
+            encode_operation_record(operation),
         ));
         records.push(JournalRecord::put(
             RecordNamespace::OwnershipGate,
@@ -946,18 +1006,22 @@ where
         records.push(JournalRecord::put(
             RecordNamespace::Operation,
             plan.operation_id.into_bytes().to_vec(),
-            encode_operation(
-                if plan.ownership_gate.is_some() {
+            encode_operation_record(OperationRecord {
+                state: if plan.ownership_gate.is_some() {
                     OperationState::OwnershipPending
                 } else {
                     OperationState::Accepted
                 },
                 effect_count,
-                plan.ownership_gate.is_some(),
-                plan.runtime_authority
+                ownership_gated: plan.ownership_gate.is_some(),
+                runtime_intent_digest: plan
+                    .runtime_authority
                     .as_ref()
                     .map(RuntimeAuthorityIntentV1::digest),
-            ),
+                public_operation: plan
+                    .public_operation
+                    .map(PublicOperationAdmissionV1::into_durable),
+            }),
         ));
         records.push(JournalRecord::idempotency(
             &plan.idempotency_key,
@@ -1073,6 +1137,78 @@ where
         Ok(first)
     }
 
+    /// Loads one restart-stable established public operation resource.
+    ///
+    /// Internal V1 operations deliberately return `None`; their ledger lacks
+    /// the public method, generation, audit identity, and timestamps required
+    /// to construct a truthful established resource.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError`] when the recovered ledger or any referenced
+    /// effect record is corrupt.
+    pub fn public_operation(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<Option<aos_proto::aos::sandbox::v1::Operation>, ReconcilerError> {
+        self.ensure_ledger_validated_read_only()?;
+        let Some(operation_bytes) = self
+            .journal
+            .get(RecordNamespace::Operation, operation_id.as_bytes())
+        else {
+            return Ok(None);
+        };
+        let operation = decode_operation(operation_bytes)?;
+        let Some(public) = operation.public_operation else {
+            return Ok(None);
+        };
+
+        let mut applied_effects = 0_u32;
+        let mut applying_effects = 0_u32;
+        let mut blocked_effects = 0_u32;
+        let mut effect_records = Vec::with_capacity(operation.effect_count as usize);
+        for step in 0..operation.effect_count {
+            let bytes = self
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(operation_id, step))
+                .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
+            let effect = decode_effect(bytes)?;
+            match effect.state {
+                EffectState::Applied { .. } => increment_effect_count(&mut applied_effects)?,
+                EffectState::Applying { .. } => increment_effect_count(&mut applying_effects)?,
+                EffectState::PermanentlyBlocked { .. } => {
+                    increment_effect_count(&mut blocked_effects)?;
+                }
+                EffectState::Planned => {}
+            }
+            effect_records.push(bytes);
+        }
+        let state_matches_effects = match operation.state {
+            OperationState::OwnershipPending | OperationState::Accepted => {
+                applied_effects == 0 && applying_effects == 0 && blocked_effects == 0
+            }
+            OperationState::Applying => {
+                applying_effects + applied_effects != 0 && blocked_effects == 0
+            }
+            OperationState::Succeeded => applied_effects == operation.effect_count,
+            OperationState::PermanentlyBlocked => blocked_effects != 0,
+        };
+        if !state_matches_effects {
+            return Err(ReconcilerError::CorruptLedger(
+                "public operation state contradicts its effects",
+            ));
+        }
+
+        Ok(Some(public.project(
+            operation_id,
+            operation.state,
+            operation.effect_count,
+            applied_effects,
+            operation_bytes,
+            &effect_records,
+        )))
+    }
+
     /// Advances one operation by at most one durable transition or effect.
     ///
     /// # Errors
@@ -1082,6 +1218,34 @@ where
     pub fn reconcile_once(
         &mut self,
         operation_id: OperationId,
+    ) -> Result<ReconcileOutcome, ReconcilerError> {
+        self.reconcile_once_inner(operation_id, None)
+    }
+
+    /// Advances one operation using its caller's wall-clock observation.
+    ///
+    /// Public operations require this entry point so every durable observation
+    /// transition receives an atomic, monotone reconciliation timestamp. This
+    /// low-level value grants no authority; activated controllers must source
+    /// it through their protected clock boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::reconcile_once`], plus
+    /// [`ReconcilerError::PublicOperationClock`] if the supplied wall time
+    /// moves backward or is outside the protobuf timestamp range.
+    pub fn reconcile_once_at(
+        &mut self,
+        operation_id: OperationId,
+        wall_seconds: i64,
+    ) -> Result<ReconcileOutcome, ReconcilerError> {
+        self.reconcile_once_inner(operation_id, Some(wall_seconds))
+    }
+
+    fn reconcile_once_inner(
+        &mut self,
+        operation_id: OperationId,
+        wall_seconds: Option<i64>,
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         self.ensure_ledger_validated()?;
         let operation = self.load_operation(operation_id)?;
@@ -1109,6 +1273,7 @@ where
                         operation_id,
                         OperationState::PermanentlyBlocked,
                         operation.effect_count,
+                        wall_seconds,
                     )?;
                     return Ok(ReconcileOutcome::PermanentlyBlocked);
                 }
@@ -1160,7 +1325,13 @@ where
                         },
                         dispatch,
                     };
-                    self.store_effect(operation_id, step, &applying, Some(operation.effect_count))?;
+                    self.store_effect(
+                        operation_id,
+                        step,
+                        &applying,
+                        Some(operation.effect_count),
+                        wall_seconds,
+                    )?;
                     return Ok(ReconcileOutcome::Progressed);
                 }
                 EffectState::Applying { attempt, .. } => {
@@ -1179,6 +1350,7 @@ where
                             }) => Some((plan.claim().assignment().sandbox(), *publication_digest)),
                             _ => None,
                         },
+                        wall_seconds,
                     );
                 }
             }
@@ -1188,6 +1360,7 @@ where
             operation_id,
             OperationState::Succeeded,
             operation.effect_count,
+            wall_seconds,
         )?;
         Ok(ReconcileOutcome::Succeeded)
     }
@@ -1204,6 +1377,26 @@ where
     /// journal and executor failures as [`Self::reconcile_once`].
     pub fn reconcile_next(
         &mut self,
+    ) -> Result<Option<(OperationId, ReconcileOutcome)>, ReconcilerError> {
+        self.reconcile_next_inner(None)
+    }
+
+    /// Advances one fairly selected operation at a caller-supplied wall time.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::reconcile_next`] and rejects a
+    /// nonmonotone public-operation timestamp.
+    pub fn reconcile_next_at(
+        &mut self,
+        wall_seconds: i64,
+    ) -> Result<Option<(OperationId, ReconcileOutcome)>, ReconcilerError> {
+        self.reconcile_next_inner(Some(wall_seconds))
+    }
+
+    fn reconcile_next_inner(
+        &mut self,
+        wall_seconds: Option<i64>,
     ) -> Result<Option<(OperationId, ReconcileOutcome)>, ReconcilerError> {
         self.ensure_ledger_validated()?;
         let mut first = None;
@@ -1232,7 +1425,7 @@ where
             return Ok(None);
         };
         self.scheduling_cursor = Some(operation_id);
-        let outcome = self.reconcile_once(operation_id)?;
+        let outcome = self.reconcile_once_inner(operation_id, wall_seconds)?;
         Ok(Some((operation_id, outcome)))
     }
 
@@ -1883,6 +2076,7 @@ where
         plan: EffectPlan,
         dispatch: Option<PreparedAuthorityEffectV1>,
         authority_gate: Option<(SandboxId, ObjectDigest)>,
+        wall_seconds: Option<i64>,
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         let receipt = if let Some(prepared) = dispatch.as_ref() {
             let observed = match self
@@ -1899,6 +2093,7 @@ where
                         plan,
                         dispatch.clone(),
                         failure,
+                        wall_seconds,
                     );
                 }
             };
@@ -1952,7 +2147,7 @@ where
                     };
                     // This commit is the crash boundary: no Apply may use the
                     // fresh packet until its exact replacement is durable.
-                    self.store_effect(operation_id, step, &refreshed, None)?;
+                    self.store_effect(operation_id, step, &refreshed, None, wall_seconds)?;
                     match self.executor.apply_authority(operation_id, step, &fresh) {
                         Ok(receipt) => {
                             let receipt = receipt.into_effect_receipt_for(&fresh)?;
@@ -1964,7 +2159,7 @@ where
                                 },
                                 dispatch: Some(fresh),
                             };
-                            self.store_effect(operation_id, step, &applied, None)?;
+                            self.store_effect(operation_id, step, &applied, None, wall_seconds)?;
                             return Ok(ReconcileOutcome::EffectApplied);
                         }
                         Err(failure) => {
@@ -1976,6 +2171,7 @@ where
                                 plan,
                                 Some(fresh),
                                 failure,
+                                wall_seconds,
                             );
                         }
                     }
@@ -1993,6 +2189,7 @@ where
                         plan,
                         None,
                         failure,
+                        wall_seconds,
                     );
                 }
             };
@@ -2009,6 +2206,7 @@ where
                             plan,
                             None,
                             failure,
+                            wall_seconds,
                         );
                     }
                 },
@@ -2019,7 +2217,7 @@ where
             state: EffectState::Applied { attempt, receipt },
             dispatch,
         };
-        self.store_effect(operation_id, step, &applied, None)?;
+        self.store_effect(operation_id, step, &applied, None, wall_seconds)?;
         Ok(ReconcileOutcome::EffectApplied)
     }
 
@@ -2033,6 +2231,7 @@ where
         plan: EffectPlan,
         dispatch: Option<PreparedAuthorityEffectV1>,
         failure: EffectFailure,
+        wall_seconds: Option<i64>,
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         failure.validate()?;
         match failure {
@@ -2051,7 +2250,7 @@ where
                     },
                     dispatch,
                 };
-                self.store_effect(operation_id, step, &applying, None)?;
+                self.store_effect(operation_id, step, &applying, None, wall_seconds)?;
                 Ok(ReconcileOutcome::RetryPending)
             }
             EffectFailure::Permanent(diagnostic) => {
@@ -2063,7 +2262,13 @@ where
                     },
                     dispatch,
                 };
-                self.store_effect(operation_id, step, &blocked, Some(effect_count))?;
+                self.store_effect(
+                    operation_id,
+                    step,
+                    &blocked,
+                    Some(effect_count),
+                    wall_seconds,
+                )?;
                 Ok(ReconcileOutcome::PermanentlyBlocked)
             }
         }
@@ -2085,6 +2290,7 @@ where
         operation_id: OperationId,
         state: OperationState,
         effect_count: u32,
+        wall_seconds: Option<i64>,
     ) -> Result<(), ReconcilerError> {
         let operation = self.load_operation(operation_id)?;
         if operation.effect_count != effect_count {
@@ -2092,15 +2298,11 @@ where
                 "operation effect count changed during transition",
             ));
         }
+        let operation = transition_operation(operation, state, wall_seconds)?;
         let record = JournalRecord::put(
             RecordNamespace::Operation,
             operation_id.into_bytes().to_vec(),
-            encode_operation(
-                state,
-                effect_count,
-                operation.ownership_gated,
-                operation.runtime_intent_digest,
-            ),
+            encode_operation_record(operation),
         );
         self.commit_records(vec![record])
     }
@@ -2111,14 +2313,15 @@ where
         step: u32,
         record: &EffectLedgerRecord,
         operation_effect_count: Option<u32>,
+        wall_seconds: Option<i64>,
     ) -> Result<(), ReconcilerError> {
         let mut records = vec![JournalRecord::put(
             RecordNamespace::Effect,
             effect_key(operation_id, step).to_vec(),
             encode_effect(record)?,
         )];
+        let operation = self.load_operation(operation_id)?;
         if let Some(effect_count) = operation_effect_count {
-            let operation = self.load_operation(operation_id)?;
             if operation.effect_count != effect_count {
                 return Err(ReconcilerError::CorruptLedger(
                     "operation effect count changed during transition",
@@ -2133,15 +2336,18 @@ where
                     ));
                 }
             };
+            let operation = transition_operation(operation, state, wall_seconds)?;
             records.push(JournalRecord::put(
                 RecordNamespace::Operation,
                 operation_id.into_bytes().to_vec(),
-                encode_operation(
-                    state,
-                    effect_count,
-                    operation.ownership_gated,
-                    operation.runtime_intent_digest,
-                ),
+                encode_operation_record(operation),
+            ));
+        } else if operation.public_operation.is_some() {
+            let operation = transition_operation(operation, operation.state, wall_seconds)?;
+            records.push(JournalRecord::put(
+                RecordNamespace::Operation,
+                operation_id.into_bytes().to_vec(),
+                encode_operation_record(operation),
             ));
         }
         self.commit_records(records)
@@ -2152,6 +2358,33 @@ where
         self.journal.commit(&transaction)?;
         Ok(())
     }
+}
+
+fn transition_operation(
+    operation: OperationRecord,
+    state: OperationState,
+    wall_seconds: Option<i64>,
+) -> Result<OperationRecord, ReconcilerError> {
+    let public_operation = operation
+        .public_operation
+        .map(|public| {
+            let wall_seconds = wall_seconds.ok_or(ReconcilerError::PublicOperationClock)?;
+            public.advance(state, wall_seconds)
+        })
+        .transpose()?;
+
+    Ok(OperationRecord {
+        state,
+        public_operation,
+        ..operation
+    })
+}
+
+fn increment_effect_count(count: &mut u32) -> Result<(), ReconcilerError> {
+    *count = count
+        .checked_add(1)
+        .ok_or(ReconcilerError::CorruptLedger("effect count overflow"))?;
+    Ok(())
 }
 
 fn effect_key(operation_id: OperationId, step: u32) -> [u8; EFFECT_KEY_BYTES] {
@@ -2177,37 +2410,70 @@ fn encode_operation(
     ownership_gated: bool,
     runtime_intent_digest: Option<ObjectDigest>,
 ) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(OPERATION_RECORD_BYTES);
-    bytes.push(RECORD_VERSION);
-    bytes.push(state as u8);
-    bytes.push(u8::from(ownership_gated) * OPERATION_FLAG_OWNERSHIP_GATED);
+    encode_operation_record(OperationRecord {
+        state,
+        effect_count,
+        ownership_gated,
+        runtime_intent_digest,
+        public_operation: None,
+    })
+}
+
+fn encode_operation_record(operation: OperationRecord) -> Vec<u8> {
+    let public = operation.public_operation;
+    let mut bytes = Vec::with_capacity(if public.is_some() {
+        OPERATION_RECORD_V2_BYTES
+    } else {
+        OPERATION_RECORD_V1_BYTES
+    });
+    bytes.push(if public.is_some() {
+        RECORD_VERSION_V2
+    } else {
+        RECORD_VERSION_V1
+    });
+    bytes.push(operation.state as u8);
+    bytes.push(
+        u8::from(operation.ownership_gated) * OPERATION_FLAG_OWNERSHIP_GATED
+            | u8::from(public.is_some()) * OPERATION_FLAG_PUBLIC,
+    );
     bytes.push(0);
-    bytes.extend_from_slice(&effect_count.to_le_bytes());
-    match runtime_intent_digest {
+    bytes.extend_from_slice(&operation.effect_count.to_le_bytes());
+    match operation.runtime_intent_digest {
         Some(digest) => bytes.extend_from_slice(digest.as_bytes()),
         None => bytes.extend_from_slice(&[0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES]),
+    }
+    if let Some(public) = public {
+        public.encode(&mut bytes);
     }
     bytes
 }
 
 fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, ReconcilerError> {
-    let bytes: &[u8; OPERATION_RECORD_BYTES] = bytes.try_into().map_err(|_| {
-        ReconcilerError::CorruptLedger("invalid operation record version, flags, or length")
-    })?;
-    let [version, state, flags, reserved, fields @ ..] = bytes;
-    if *version != RECORD_VERSION || *flags & !OPERATION_FLAG_OWNERSHIP_GATED != 0 || *reserved != 0
+    if bytes.len() != OPERATION_RECORD_V1_BYTES && bytes.len() != OPERATION_RECORD_V2_BYTES {
+        return Err(ReconcilerError::CorruptLedger(
+            "invalid operation record version, flags, or length",
+        ));
+    }
+    let version = bytes[0];
+    let state = OperationState::from_byte(bytes[1])?;
+    let flags = bytes[2];
+    let public = flags & OPERATION_FLAG_PUBLIC != 0;
+    if bytes[3] != 0
+        || flags & !(OPERATION_FLAG_OWNERSHIP_GATED | OPERATION_FLAG_PUBLIC) != 0
+        || (version == RECORD_VERSION_V1 && (bytes.len() != OPERATION_RECORD_V1_BYTES || public))
+        || (version == RECORD_VERSION_V2 && (bytes.len() != OPERATION_RECORD_V2_BYTES || !public))
+        || !matches!(version, RECORD_VERSION_V1 | RECORD_VERSION_V2)
     {
         return Err(ReconcilerError::CorruptLedger(
             "invalid operation record version, flags, or length",
         ));
     }
-    let state = OperationState::from_byte(*state)?;
     let effect_count = u32::from_le_bytes(
-        fields[..4]
+        bytes[4..8]
             .try_into()
             .map_err(|_| ReconcilerError::CorruptLedger("invalid effect count"))?,
     );
-    let ownership_gated = *flags & OPERATION_FLAG_OWNERSHIP_GATED != 0;
+    let ownership_gated = flags & OPERATION_FLAG_OWNERSHIP_GATED != 0;
     if effect_count == 0 || effect_count as usize > MAXIMUM_EFFECTS {
         return Err(ReconcilerError::CorruptLedger("invalid effect count"));
     }
@@ -2221,7 +2487,7 @@ fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, ReconcilerError> {
             "ownership-pending operation lacks gated provenance",
         ));
     }
-    let digest: [u8; OPERATION_RUNTIME_INTENT_DIGEST_BYTES] = fields[4..]
+    let digest: [u8; OPERATION_RUNTIME_INTENT_DIGEST_BYTES] = bytes[8..40]
         .try_into()
         .map_err(|_| ReconcilerError::CorruptLedger("invalid runtime intent digest"))?;
     let runtime_intent_digest = (digest != [0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES])
@@ -2233,11 +2499,15 @@ fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, ReconcilerError> {
             "invalid runtime operation provenance",
         ));
     }
+    let public_operation = public
+        .then(|| DurablePublicOperationV1::decode(&bytes[40..], state))
+        .transpose()?;
     Ok(OperationRecord {
         state,
         effect_count,
         ownership_gated,
         runtime_intent_digest,
+        public_operation,
     })
 }
 
@@ -4507,8 +4777,8 @@ mod tests {
     #[test]
     fn operation_record_v1_is_fixed_and_rejects_noncanonical_headers() {
         let bytes = encode_operation(OperationState::Accepted, 1, false, None);
-        assert_eq!(bytes.len(), OPERATION_RECORD_BYTES);
-        assert_eq!(&bytes[..8], &[RECORD_VERSION, 1, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(bytes.len(), OPERATION_RECORD_V1_BYTES);
+        assert_eq!(&bytes[..8], &[RECORD_VERSION_V1, 1, 0, 0, 1, 0, 0, 0]);
         assert_eq!(&bytes[8..], &[0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES]);
         assert_eq!(
             decode_operation(&bytes).unwrap(),
@@ -4517,6 +4787,7 @@ mod tests {
                 effect_count: 1,
                 ownership_gated: false,
                 runtime_intent_digest: None,
+                public_operation: None,
             }
         );
 
@@ -4553,7 +4824,7 @@ mod tests {
     fn operation_record_v1_binds_only_gated_bounded_intent_provenance() {
         let intent = ObjectDigest::from_bytes([0x81; 32]);
         let bytes = encode_operation(OperationState::OwnershipPending, 1, true, Some(intent));
-        assert_eq!(bytes[0], RECORD_VERSION);
+        assert_eq!(bytes[0], RECORD_VERSION_V1);
         assert_eq!(&bytes[8..], intent.as_bytes());
         assert_eq!(
             decode_operation(&bytes).unwrap().runtime_intent_digest,
@@ -4612,6 +4883,148 @@ mod tests {
         ] {
             assert!(decode_operation(&malformed).is_err());
         }
+    }
+
+    #[test]
+    fn public_operation_v2_survives_restart_and_tracks_atomic_progress() {
+        use crate::controller_query::{
+            CheckedOperationObservationV1, CheckedOperationPhaseV1, CheckedOperationResourceV1,
+            PublicOperationMethodV1,
+        };
+
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let plan = operation()
+            .with_public_operation(
+                PublicOperationAdmissionV1::new(
+                    PublicOperationMethodV1::StartSandbox,
+                    7,
+                    [0xa1; 16],
+                    100,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let operation_id = plan.operation_id();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+
+        reconciler.accept(&plan).unwrap();
+        let accepted = reconciler.public_operation(operation_id).unwrap().unwrap();
+        let accepted_version = accepted.resource_version.clone();
+        CheckedOperationResourceV1::try_from(accepted.clone()).unwrap();
+        let checked = CheckedOperationObservationV1::try_from(accepted).unwrap();
+        assert_eq!(
+            checked.resource().phase(),
+            CheckedOperationPhaseV1::Committed
+        );
+        assert_eq!(checked.resource().progress(), (0, 2));
+        assert_eq!(checked.observation_sequence(), 1);
+        assert!(!checked.resource().cancelable());
+
+        assert!(matches!(
+            reconciler.reconcile_once(operation_id),
+            Err(ReconcilerError::PublicOperationClock)
+        ));
+        assert_eq!(
+            reconciler
+                .public_operation(operation_id)
+                .unwrap()
+                .unwrap()
+                .resource_version,
+            accepted_version
+        );
+
+        assert_eq!(
+            reconciler.reconcile_once_at(operation_id, 101).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        assert_eq!(
+            reconciler.reconcile_once_at(operation_id, 102).unwrap(),
+            ReconcileOutcome::EffectApplied
+        );
+        let first_applied = reconciler.public_operation(operation_id).unwrap().unwrap();
+        let checked = CheckedOperationObservationV1::try_from(first_applied).unwrap();
+        assert_eq!(checked.resource().progress(), (1, 2));
+        assert_eq!(checked.observation_sequence(), 3);
+
+        drop(reconciler);
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reopened = Reconciler::new(journal, Executor::default());
+        let recovered = reopened.public_operation(operation_id).unwrap().unwrap();
+        let checked = CheckedOperationObservationV1::try_from(recovered).unwrap();
+        assert_eq!(
+            checked.resource().method(),
+            PublicOperationMethodV1::StartSandbox
+        );
+        assert_eq!(checked.resource().progress(), (1, 2));
+        assert_eq!(checked.observation_sequence(), 3);
+
+        assert_eq!(
+            reopened.reconcile_once_at(operation_id, 103).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        assert_eq!(
+            reopened.reconcile_once_at(operation_id, 104).unwrap(),
+            ReconcileOutcome::EffectApplied
+        );
+        assert_eq!(
+            reopened.reconcile_once_at(operation_id, 105).unwrap(),
+            ReconcileOutcome::Succeeded
+        );
+        let completed = reopened.public_operation(operation_id).unwrap().unwrap();
+        let checked = CheckedOperationObservationV1::try_from(completed).unwrap();
+        assert_eq!(
+            checked.resource().phase(),
+            CheckedOperationPhaseV1::Succeeded
+        );
+        assert_eq!(checked.resource().progress(), (2, 2));
+        assert_eq!(checked.observation_sequence(), 6);
+        assert_eq!(
+            checked
+                .resource()
+                .as_proto()
+                .completed_at
+                .as_option()
+                .unwrap()
+                .seconds,
+            105
+        );
+    }
+
+    #[test]
+    fn public_operation_v2_rejects_corrupt_metadata_and_backward_time() {
+        use crate::controller_query::PublicOperationMethodV1;
+
+        let metadata = PublicOperationAdmissionV1::new(
+            PublicOperationMethodV1::CreateView,
+            9,
+            [0xb1; 16],
+            200,
+        )
+        .unwrap()
+        .into_durable();
+        let operation = OperationRecord {
+            state: OperationState::Accepted,
+            effect_count: 1,
+            ownership_gated: false,
+            runtime_intent_digest: None,
+            public_operation: Some(metadata),
+        };
+        let bytes = encode_operation_record(operation);
+        assert_eq!(bytes.len(), OPERATION_RECORD_V2_BYTES);
+        assert_eq!(decode_operation(&bytes).unwrap(), operation);
+
+        let mut reserved = bytes.clone();
+        reserved[41] = 1;
+        assert!(matches!(
+            decode_operation(&reserved),
+            Err(ReconcilerError::CorruptLedger(_))
+        ));
+
+        assert!(matches!(
+            transition_operation(operation, OperationState::Applying, Some(199)),
+            Err(ReconcilerError::PublicOperationClock)
+        ));
     }
 
     #[test]
