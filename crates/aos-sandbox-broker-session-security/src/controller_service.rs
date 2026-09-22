@@ -78,6 +78,7 @@ use aos_sandbox::{
 mod public_api;
 mod public_hierarchy;
 mod public_services;
+mod public_watch;
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const JOURNAL_NAME: &str = "controller.journal";
@@ -1603,10 +1604,10 @@ impl OperationService for CapabilityService {
 
     async fn watch(
         &self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, WatchRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, WatchRequest>,
     ) -> ServiceResult<ResponseStream<impl Encodable<Event> + Send + use<>>> {
-        Err::<Response<ResponseStream<Event>>, _>(mutation_unavailable())
+        self.watch_response(&context, request).await
     }
 
     async fn get_node_capabilities<'a>(
