@@ -1259,6 +1259,8 @@ impl CurrentLifecycleEffectV1<'_> {
             || plan.operation() != self.operation()
             || request.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             || request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || request.session_binding() == [0; 32]
+            || request.signed_request_digest() == [0; 32]
             || request.authorization().is_none()
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
