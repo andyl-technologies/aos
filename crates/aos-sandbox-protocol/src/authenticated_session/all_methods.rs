@@ -40,7 +40,8 @@ use crate::semantics::{
 use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedBrokerError,
     ValidatedBrokerRequestEnvelope, ValidatedHeader, decode_acquire_mount_source_request,
-    decode_acquire_mount_source_response, decode_destination_slot_inventory_request,
+    decode_acquire_mount_source_response, decode_atomic_storage_snapshot_request,
+    decode_atomic_storage_snapshot_response, decode_destination_slot_inventory_request,
     decode_destination_slot_inventory_response, decode_destination_slot_request,
     decode_inventory_runtime_request_v1, decode_mount_inventory_request,
     decode_mount_inventory_response, decode_mount_request, decode_mount_result_for_apply,
@@ -246,6 +247,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     StoragePrepareCatalog,
     /// Storage workspace-pin repair.
     StorageRepairWorkspacePin,
+    /// One complete grouped Storage dataset snapshot.
+    StorageAtomicSnapshot,
     /// Mount source acquisition.
     MountAcquireSource,
     /// Mount source-acquisition release.
@@ -367,8 +370,10 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
             AuthenticatedBrokerMethodSemanticsV1::MountInventorySourceAcquisitions
         }
-        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
-        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
+            AuthenticatedBrokerMethodSemanticsV1::StorageAtomicSnapshot
+        }
+        BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     Some(AuthenticatedBrokerMethodAdapterV1 { profile, semantics })
 }
@@ -1221,8 +1226,16 @@ fn validate_request_semantics(
             decode_mount_source_acquisition_inventory_request(body, peer, policy, now)?,
             None,
         ),
-        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
-        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
+            let request = decode_atomic_storage_snapshot_request(body, peer, policy, now)?;
+            let commitment = request.argument_commitment();
+            (
+                AuthenticatedBrokerMethodSemanticsV1::StorageAtomicSnapshot,
+                *request.header(),
+                Some(*commitment.digest().as_bytes()),
+            )
+        }
+        BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
     };
@@ -1464,8 +1477,10 @@ fn validate_success_semantics(
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
             decode_mount_source_acquisition_inventory_response_with_maximum(body, maximum)?;
         }
-        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
-        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
+            decode_atomic_storage_snapshot_response(body)?;
+        }
+        BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
     }

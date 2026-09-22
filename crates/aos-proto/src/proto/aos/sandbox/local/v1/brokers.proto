@@ -397,6 +397,7 @@ message ApplyStorageRequest {
 message ApplyAtomicStorageSnapshotRequest {
   RequestHeader header = 1;
   bytes canonical_plan = 2; // Versioned lifecycle plan, at most 600,000 bytes.
+  AssignmentFence fence = 3; // Root assignment authorizing this exact closure.
 }
 
 message AtomicStorageSnapshotResponse {

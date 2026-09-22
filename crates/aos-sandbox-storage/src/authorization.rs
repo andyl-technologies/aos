@@ -24,7 +24,10 @@ use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
-use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+use aos_sandbox_protocol::{
+    PeerCredentials, PeerPolicy, ValidatedAtomicStorageSnapshotRequestV1,
+    decode_atomic_storage_snapshot_request,
+};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
@@ -390,6 +393,75 @@ impl StorageAuthorityV1 {
             current_clock,
             prior_fence,
         )
+    }
+
+    /// Reopens exact group semantics before admitting its assignment-scoped grant.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_atomic_snapshot(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &ValidatedAtomicStorageSnapshotRequestV1,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedBrokerAdmission, StorageAdmissionError> {
+        let decoded = decode_atomic_storage_snapshot_request(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        if &decoded != request || decoded.header().protocol_version() != protocol_version {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        let fence = decoded.fence();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes(*fence.sandbox_id()),
+            IncarnationId::from_bytes(*fence.incarnation_id()),
+            AssignmentEpoch::new(fence.assignment_epoch()),
+            DesiredGeneration::new(fence.desired_generation()),
+            ObjectDigest::from_bytes(*fence.assignment_digest()),
+        )
+        .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        let admission = self.0.admit(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Storage,
+                protocol: ProtocolId::StorageBroker,
+                protocol_version,
+                assignment,
+                request_id: *decoded.header().request_id(),
+                request_body,
+                descriptor_count: 0,
+                verb: decoded.broker_verb(),
+                target: decoded.grant_target(),
+                argument_commitment: decoded.argument_commitment(),
+                request_deadline_boottime_nanoseconds: decoded
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )?;
+        if admission.fence.assignment() != assignment
+            || admission.effect.status() != BrokerEffectStatusV1::Pending
+            || admission.effect.verb() != BrokerVerb::StorageAtomicSnapshot
+            || admission.effect.target() != BrokerGrantTarget::Assignment
+            || admission.effect.request_id() != decoded.header().request_id()
+            || admission.effect.transport_request_digest()
+                != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            || admission.effect.request_digest() != decoded.argument_commitment().digest()
+            || admission.effect.plan_digest() != admission.fence.plan_digest()
+            || admission.effect.lease_digest()
+                != admission.fence.local_lease_record().lease_digest()
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        Ok(admission)
     }
 
     pub(crate) fn admit_preparation(

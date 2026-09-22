@@ -817,6 +817,7 @@ impl DormantAtomicStorageInventoryPredecessorV1 {
 #[must_use = "resume the exact post-effect query with its protected predecessor"]
 pub struct DormantAtomicStorageInventoryFinishRecoveryV1 {
     previous: DormantAtomicStorageInventoryPredecessorV1,
+    group: AuthenticatedBrokerMethodOutcomeV1,
     query: DormantLifecycleInventoryQueryRecoveryV1,
 }
 
@@ -985,7 +986,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         Ok(DormantAtomicStorageInventoryPredecessorV1 { outcome, inventory })
     }
 
-    /// Captures and verifies the exact adjacent post-group Storage inventory.
+    /// Captures the immediate inventory after one authenticated group outcome.
     ///
     /// # Errors
     ///
@@ -999,6 +1000,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         program: aos_sandbox_core::ObjectDigest,
         observation: aos_sandbox_core::ObjectDigest,
         previous: DormantAtomicStorageInventoryPredecessorV1,
+        group: AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<DormantAtomicStorageInventoryFinishProgressV1, LifecyclePhase6ErrorV1> {
         if self.0.pending.is_some() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
@@ -1014,12 +1016,17 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
                 program,
                 observation,
                 previous,
+                group,
                 outcome,
                 currentness,
             ),
             DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(query) => Ok(
                 DormantAtomicStorageInventoryFinishProgressV1::RecoveryRequired(
-                    DormantAtomicStorageInventoryFinishRecoveryV1 { previous, query },
+                    DormantAtomicStorageInventoryFinishRecoveryV1 {
+                        previous,
+                        group,
+                        query,
+                    },
                 ),
             ),
         }
@@ -1040,7 +1047,12 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         observation: aos_sandbox_core::ObjectDigest,
         recovery: DormantAtomicStorageInventoryFinishRecoveryV1,
     ) -> Result<DormantAtomicStorageInventoryFinishProgressV1, LifecyclePhase6ErrorV1> {
-        match self.0.resume_query(recovery.query)? {
+        let DormantAtomicStorageInventoryFinishRecoveryV1 {
+            previous,
+            group,
+            query,
+        } = recovery;
+        match self.0.resume_query(query)? {
             DormantLifecycleInventoryQueryProgressV1::Complete {
                 outcome,
                 currentness,
@@ -1050,14 +1062,16 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
                 plan,
                 program,
                 observation,
-                recovery.previous,
+                previous,
+                group,
                 outcome,
                 currentness,
             ),
             DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(query) => Ok(
                 DormantAtomicStorageInventoryFinishProgressV1::RecoveryRequired(
                     DormantAtomicStorageInventoryFinishRecoveryV1 {
-                        previous: recovery.previous,
+                        previous,
+                        group,
                         query,
                     },
                 ),
@@ -1074,11 +1088,16 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         program: aos_sandbox_core::ObjectDigest,
         observation: aos_sandbox_core::ObjectDigest,
         previous: DormantAtomicStorageInventoryPredecessorV1,
+        group: AuthenticatedBrokerMethodOutcomeV1,
         current: AuthenticatedBrokerMethodOutcomeV1,
         currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<DormantAtomicStorageInventoryFinishProgressV1, LifecyclePhase6ErrorV1> {
         self.0.recheck(currentness)?;
-        let message = challenge.storage_transition_signing_message(&previous.outcome, &current)?;
+        let message = challenge.storage_atomic_snapshot_signing_message(
+            &previous.outcome,
+            &group,
+            &current,
+        )?;
         let signature = self
             .0
             .session
@@ -1092,6 +1111,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
                 program,
                 observation,
                 &previous.outcome,
+                &group,
                 &current,
                 signature,
             )?;

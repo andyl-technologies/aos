@@ -153,6 +153,8 @@ pub enum BrokerVerb {
     StoragePrepareCatalog,
     /// Repairs an absent root pin for an exact existing workspace.
     StorageRepairWorkspacePin,
+    /// Snapshots one closed owned dataset group in a single Storage mutation.
+    StorageAtomicSnapshot,
     /// Prepares assignment networking and mints its network handle.
     NetworkPrepare,
     /// Arms the ownership-lease gate for an existing network.
@@ -214,6 +216,7 @@ impl BrokerVerb {
             34 => Ok(Self::GuardianArm),
             35 => Ok(Self::MountAcquireSource),
             36 => Ok(Self::MountReleaseSourceAcquisition),
+            37 => Ok(Self::StorageAtomicSnapshot),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -258,6 +261,7 @@ impl BrokerVerb {
             Self::GuardianArm => 34,
             Self::MountAcquireSource => 35,
             Self::MountReleaseSourceAcquisition => 36,
+            Self::StorageAtomicSnapshot => 37,
         }
     }
 
@@ -293,7 +297,8 @@ impl BrokerVerb {
             | Self::StorageDestroy
             | Self::StorageInventory
             | Self::StoragePrepareCatalog
-            | Self::StorageRepairWorkspacePin => BrokerAudience::Storage,
+            | Self::StorageRepairWorkspacePin
+            | Self::StorageAtomicSnapshot => BrokerAudience::Storage,
             Self::NetworkPrepare
             | Self::NetworkArmLease
             | Self::NetworkRenewLease
@@ -316,6 +321,7 @@ impl BrokerVerb {
             | Self::StorageCreateWorkspace
             | Self::StorageInventory
             | Self::StoragePrepareCatalog
+            | Self::StorageAtomicSnapshot
             | Self::NetworkPrepare
             | Self::NetworkInventory
             | Self::GuardianArm => BrokerGrantTargetShape::Assignment,

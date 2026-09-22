@@ -34,6 +34,7 @@ pub mod semantics;
 pub mod session;
 mod source_binding;
 mod source_realization;
+pub mod storage_atomic_snapshot;
 pub mod storage_inventory;
 pub mod terminal_commit;
 
@@ -101,6 +102,11 @@ pub use source_realization::{
     MountSourcePhysicalProofV1, MountSourceProofClassV1, MountSourceProviderHistoryV1,
     mount_source_physical_proof_digest_v1, mount_source_proof_class_from_provider_v1,
     mount_source_provider_history_is_valid_v1, mount_source_realization_handle_v1,
+};
+pub use storage_atomic_snapshot::{
+    MAXIMUM_ATOMIC_STORAGE_SNAPSHOT_PLAN_BYTES, ValidatedAtomicStorageSnapshotRequestV1,
+    ValidatedAtomicStorageSnapshotResponseV1, decode_atomic_storage_snapshot_request,
+    decode_atomic_storage_snapshot_response,
 };
 pub use storage_inventory::{
     MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS, ValidatedStorageInventory,

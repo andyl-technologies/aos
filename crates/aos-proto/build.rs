@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x4e8d_f4da_a58d_e9d0;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xbabc_417f_1631_ab66;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -154,7 +154,11 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     verify_scoped_declarations(
         &source_declarations,
         "message ApplyAtomicStorageSnapshotRequest {",
-        &["RequestHeader header = 1;", "bytes canonical_plan = 2;"],
+        &[
+            "RequestHeader header = 1;",
+            "bytes canonical_plan = 2;",
+            "AssignmentFence fence = 3;",
+        ],
     )?;
     verify_scoped_declarations(
         &source_declarations,

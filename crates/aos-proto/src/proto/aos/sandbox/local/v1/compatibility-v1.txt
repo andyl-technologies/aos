@@ -30,6 +30,7 @@ BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;
 message ApplyAtomicStorageSnapshotRequest {
 RequestHeader header = 1;
 bytes canonical_plan = 2;
+AssignmentFence fence = 3;
 message AtomicStorageSnapshotResponse {
 bytes program_digest = 1;
 bytes observation_digest = 2;

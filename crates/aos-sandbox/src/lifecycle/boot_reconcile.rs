@@ -1,8 +1,9 @@
 //! LIFE-06 complete boot inventory aggregation and exact recovery planning.
 
 use aos_proto::aos::sandbox::local::v1::{
-    BrokerMethod, InventoryRuntimeResponse, InventoryStorageResourcesResponse, RuntimeState,
-    StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
+    ApplyAtomicStorageSnapshotRequest, BrokerMethod, InventoryRuntimeResponse,
+    InventoryStorageResourcesResponse, RuntimeState, StorageLifecycleInventoryRecord,
+    StorageLifecycleTransitionRecord,
 };
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, SandboxId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
@@ -192,37 +193,54 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
             .into())
     }
 
-    /// Derives a signed message for one exact adjacent Storage state change.
+    /// Derives a signed message for one exact authenticated Storage group change.
     ///
     /// # Errors
     ///
-    /// Returns [`LifecyclePhase6ErrorV1`] unless both outcomes are complete
-    /// Storage inventories from one session with exact next traffic sequences
-    /// and unchanged catalog generation/source.
-    pub fn storage_transition_signing_message(
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the group effect is the exact
+    /// intervening successful outcome between adjacent complete inventories.
+    pub fn storage_atomic_snapshot_signing_message(
         &self,
         previous: &AuthenticatedBrokerMethodOutcomeV1,
+        effect: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<[u8; 32], LifecyclePhase6ErrorV1> {
         let previous_packet_digest = Sha256::digest(previous.canonical_packet());
+        let effect_packet_digest = Sha256::digest(effect.canonical_packet());
         let current_packet_digest = Sha256::digest(current.canonical_packet());
         let previous =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(previous)?;
         let current =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(current)?;
-        let expected_client = previous
+        let effect_client = previous
             .client_generation
             .checked_add(1)
             .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let expected_broker = previous
+        let effect_broker = previous
             .broker_generation
+            .checked_add(1)
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let expected_client = effect_client
+            .checked_add(1)
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let expected_broker = effect_broker
             .checked_add(1)
             .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
         let expected_catalog = previous
             .generation
             .checked_add(1)
             .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
-        if current.session != previous.session
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = effect.result() else {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        };
+        aos_sandbox_protocol::decode_atomic_storage_snapshot_response(exact_body)
+            .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+        if effect.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || effect.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            || ObjectDigest::from_bytes(effect.request().session_binding()) != previous.session
+            || effect.request().client_sequence() != effect_client
+            || effect.broker_sequence() != effect_broker
+            || current.session != previous.session
             || current.client_generation != expected_client
             || current.broker_generation != expected_broker
             || current.generation != expected_catalog
@@ -231,13 +249,14 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
         Ok(Sha256::new()
-            .chain_update(b"aos.sandbox.lifecycle.boot-storage-transition-attestation.v1\0")
+            .chain_update(b"aos.sandbox.lifecycle.boot-storage-atomic-snapshot-attestation.v1\0")
             .chain_update(self.nonce)
             .chain_update(self.operation.as_bytes())
             .chain_update(self.operation_record.digest().as_bytes())
             .chain_update(self.projection_root.as_bytes())
             .chain_update(self.host_boot)
             .chain_update(previous_packet_digest)
+            .chain_update(effect_packet_digest)
             .chain_update(current_packet_digest)
             .chain_update(previous.commitment.as_bytes())
             .chain_update(current.commitment.as_bytes())
@@ -1022,7 +1041,7 @@ pub struct LifecycleAuthenticatedAtomicStorageSuccessorV1 {
 }
 
 impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
-    /// Verifies an exact adjacent whole-inventory transition for one group.
+    /// Verifies one authenticated group effect between exact whole inventories.
     ///
     /// # Errors
     ///
@@ -1037,13 +1056,15 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
         program: ObjectDigest,
         observation: ObjectDigest,
         previous: &AuthenticatedBrokerMethodOutcomeV1,
+        group: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         signature: [u8; 64],
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
         if program.as_bytes() == &[0; 32] || observation.as_bytes() == &[0; 32] {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
-        let message = challenge.storage_transition_signing_message(previous, current)?;
+        let message =
+            challenge.storage_atomic_snapshot_signing_message(previous, group, current)?;
         verify_fixed_bootstrap_signature(
             LifecycleBootBootstrapEndpointV1::Storage,
             &message,
@@ -1082,17 +1103,40 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
         {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
+        let request =
+            ApplyAtomicStorageSnapshotRequest::decode_from_slice(group.request().exact_body())
+                .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+        if !request.__buffa_unknown_fields.is_empty()
+            || request.encode_to_vec() != group.request().exact_body()
+            || request.canonical_plan != plan.canonical_wire_bytes()?
+            || !request
+                .fence
+                .as_option()
+                .is_some_and(|fence| fence.sandbox_id.as_slice() == effect.target().as_slice())
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        };
+        let result = aos_sandbox_protocol::decode_atomic_storage_snapshot_response(exact_body)
+            .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+        if result.program().as_slice() != program.as_bytes()
+            || result.observation().as_slice() != observation.as_bytes()
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
         let previous =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(previous)?;
         let current =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(current)?;
         let expected_client = previous
             .client_generation
-            .checked_add(1)
+            .checked_add(2)
             .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
         let expected_broker = previous
             .broker_generation
-            .checked_add(1)
+            .checked_add(2)
             .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
         let expected_catalog = previous
             .generation
