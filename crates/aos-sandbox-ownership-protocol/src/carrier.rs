@@ -663,7 +663,8 @@ mod tests {
     use super::*;
     fn hello() -> OwnershipClientHelloV1 {
         let authority = KeyReference::new(
-            StableKeyId::new("ownership-carrier-test".to_owned()).unwrap(),
+            StableKeyId::new("ownership-carrier-test".to_owned())
+                .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}")),
             7,
             ObjectDigest::from_bytes([8; 32]),
             KeyUsage::OwnershipLease,
@@ -680,7 +681,7 @@ mod tests {
             methods,
             MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
         )
-        .unwrap()
+        .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"))
     }
 
     fn session() -> NegotiatedOwnershipSessionV1 {
@@ -691,7 +692,7 @@ mod tests {
             hello.expected_authority().clone(),
             hello.required_methods().to_vec(),
         )
-        .unwrap()
+        .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"))
     }
 
     fn claim() -> OwnershipClaimV1 {
@@ -701,7 +702,7 @@ mod tests {
             AssignmentEpoch::new(3),
             ObjectDigest::from_bytes([4; 32]),
         )
-        .unwrap();
+        .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
         OwnershipClaimV1::acquire(
             [5; 16],
             assignment,
@@ -709,7 +710,7 @@ mod tests {
             NodeId::from_bytes([7; 16]),
             60,
         )
-        .unwrap()
+        .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"))
     }
 
     #[test]
@@ -717,7 +718,8 @@ mod tests {
         let hello = hello();
         let session = session();
         let client_record = encode_client_hello_v1(&hello);
-        let server_record = encode_server_hello_v1(&hello, [10; 32], &session).unwrap();
+        let server_record = encode_server_hello_v1(&hello, [10; 32], &session)
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
 
         assert_eq!(decode_client_hello_v1(&client_record), Ok(hello.clone()));
         assert_eq!(decode_server_hello_v1(&hello, &server_record), Ok(session));
@@ -772,8 +774,9 @@ mod tests {
         let session = session();
         let request = session
             .request(OwnershipRequestBodyV1::Begin(Box::new(claim())))
-            .unwrap();
-        let encoded = encode_request_v1(&session, &request).unwrap();
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
+        let encoded = encode_request_v1(&session, &request)
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
         assert_eq!(decode_request_v1(&session, &encoded), Ok(request.clone()));
 
         let mut wrong_method = encoded.clone();
@@ -807,14 +810,14 @@ mod tests {
             .request(OwnershipRequestBodyV1::Query(
                 OwnershipTransactionReferenceV1::from_claim(&claim()),
             ))
-            .unwrap();
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
         let artifacts = UnverifiedOwnershipLeaseResponse::from_transport(
             vec![1; 128],
             vec![2; 64],
             vec![3; 96],
             vec![4; 64],
         )
-        .unwrap();
+        .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
         let response = session
             .response(
                 &request,
@@ -822,8 +825,9 @@ mod tests {
                     artifacts,
                 )),
             )
-            .unwrap();
-        let encoded = encode_response_v1(&session, &request, &response).unwrap();
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
+        let encoded = encode_response_v1(&session, &request, &response)
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
         assert_eq!(
             decode_response_v1(&session, &request, &encoded),
             Ok(response)
@@ -852,10 +856,10 @@ mod tests {
         let reference = OwnershipTransactionReferenceV1::from_claim(&claim());
         let query = session
             .request(OwnershipRequestBodyV1::Query(reference))
-            .unwrap();
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
         let begin = session
             .request(OwnershipRequestBodyV1::Begin(Box::new(claim())))
-            .unwrap();
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
 
         for status in [
             OwnershipTransactionStatusV1::Absent,
@@ -863,8 +867,9 @@ mod tests {
         ] {
             let response = session
                 .response(&query, OwnershipResponseOutcomeV1::Status(status))
-                .unwrap();
-            let encoded = encode_response_v1(&session, &query, &response).unwrap();
+                .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
+            let encoded = encode_response_v1(&session, &query, &response)
+                .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
             assert_eq!(decode_response_v1(&session, &query, &encoded), Ok(response));
         }
 
@@ -873,8 +878,9 @@ mod tests {
                 &begin,
                 OwnershipResponseOutcomeV1::Error(OwnershipProtocolErrorCodeV1::AlreadyOwned),
             )
-            .unwrap();
-        let encoded = encode_response_v1(&session, &begin, &response).unwrap();
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
+        let encoded = encode_response_v1(&session, &begin, &response)
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
         assert_eq!(decode_response_v1(&session, &begin, &encoded), Ok(response));
 
         let mut invalid_begin_absent = encoded;
@@ -896,7 +902,7 @@ mod tests {
             .request(OwnershipRequestBodyV1::Query(
                 OwnershipTransactionReferenceV1::from_claim(&claim()),
             ))
-            .unwrap();
+            .unwrap_or_else(|error| panic!("ownership carrier test failed: {error}"));
 
         assert_eq!(
             decode_request_v1(&session, &request),

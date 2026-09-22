@@ -27,8 +27,11 @@
 //!
 //! [`protocol`] defines bounded transport-neutral V1 transaction semantics.
 //! [`carrier`] provides canonical session-record bytes without selecting a
-//! socket, authenticating a peer, or providing a remote transport.
+//! socket or authenticating a peer. [`authenticated`] binds those records to
+//! a provisioned local secret and session transcript; socket identity and
+//! deployment policy remain the concrete transport's responsibility.
 
+pub mod authenticated;
 pub mod carrier;
 pub mod protocol;
 
