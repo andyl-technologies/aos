@@ -81,10 +81,9 @@ external credential mechanism and restart the controller. Before restarting,
 reconcile pending protected broker-session history; never erase its journal to
 bypass recovery.
 
-The public endpoint has no active mutation handlers, and packaged CLI
-integration is still discovery-only. Direct public API clients may use the
-authorized `GetOperation` read described above. `CancelOperation` and `Watch`
-remain unavailable.
+The public endpoint has no active mutation handlers. The packaged CLI and
+direct public API clients may use the authorized `GetOperation` read described
+above. `CancelOperation` and `Watch` remain unavailable.
 The service-UID VM qualification exercises protected credential loading,
 registered and rejected TLS clients, real HTTP/2 discovery, credential
 rotation, and permanent retirement of stale peer evidence. Installed systemd
@@ -110,5 +109,23 @@ world-writable. It contains `sandbox-server-ca`, `sandbox-client-cert`, and
 file; symlinks and files larger than 1 MiB are rejected. The CA and certificate
 must not be group- or world-writable, and the key must have no group or other
 permissions. The client requires TLS 1.3, HTTP/2, the configured server
-identity, and its client certificate. These options do not activate mutation
-routes that the controller has not registered.
+identity, and its client certificate.
+
+An authorized public operation read additionally requires
+`sandbox-capability-id` in the same directory. It is an exact canonical
+lowercase hyphenated UUID with no trailing newline, stored as a user-owned,
+single-link mode-0600 regular file. The value is sent as the
+`aos-capability-id` lookup header; it is not bearer authority. For example,
+where the operation argument is its 16-byte lowercase hexadecimal identity:
+
+```text
+aos sandbox \
+  --public-api \
+  --public-server-name sandbox-controller.example \
+  --public-credentials /absolute/private/credential-directory \
+  get --resource operation 00112233445566778899aabbccddeeff
+```
+
+Without `--public-api`, the same `get --resource operation` command uses the
+root-only diagnostic socket and does not load a capability credential. These
+options do not activate mutation routes that the controller has not registered.

@@ -8,6 +8,9 @@
 //! sandbox-client-key
 //! ```
 //!
+//! Authorized operation reads additionally load `sandbox-capability-id`, whose
+//! canonical UUID is a protected lookup key rather than bearer authority.
+//!
 //! Ancestors must not be group- or world-writable, the ownership chain cannot
 //! return to root after entering user custody, and the private key is accepted
 //! only as a private single-link regular file.
@@ -21,6 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+use aos_sandbox_core::CapabilityId;
 use connectrpc::client::Http2Connection;
 use http::Uri;
 use rustix::fs::{Mode, OFlags, open, openat};
@@ -32,6 +36,7 @@ const PUBLIC_SOCKET: &str = "/run/aos/sandboxd/public.sock";
 const SERVER_CA: &str = "sandbox-server-ca";
 const CLIENT_CERTIFICATE: &str = "sandbox-client-cert";
 const CLIENT_KEY: &str = "sandbox-client-key";
+const CAPABILITY_ID: &str = "sandbox-capability-id";
 const MAXIMUM_CREDENTIAL_BYTES: u64 = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -51,8 +56,30 @@ pub(super) async fn connect(
     credentials: &Path,
     server_name: &str,
 ) -> Result<(Http2Connection, Uri)> {
+    connect_bundle(load_bundle(credentials)?, server_name).await
+}
+
+/// Establishes the public connection and loads its protected capability lookup key.
+///
+/// # Errors
+///
+/// Rejects the ordinary public transport failures or an absent, unsafe,
+/// malformed, noncanonical, or zero capability identity credential.
+pub(super) async fn connect_authorized(
+    credentials: &Path,
+    server_name: &str,
+) -> Result<(Http2Connection, Uri, CapabilityId)> {
+    let (bundle, capability_id) = load_authorized_bundle(credentials)?;
+    let (connection, authority) = connect_bundle(bundle, server_name).await?;
+    Ok((connection, authority, capability_id))
+}
+
+async fn connect_bundle(
+    bundle: CredentialBundle,
+    server_name: &str,
+) -> Result<(Http2Connection, Uri)> {
     let (server_name, authority) = server_identity(server_name)?;
-    let configuration = Arc::new(tls_configuration(load_bundle(credentials)?)?);
+    let configuration = Arc::new(tls_configuration(bundle)?);
     let connector = tower::service_fn(move |_uri: Uri| {
         let configuration = Arc::clone(&configuration);
         let server_name = server_name.clone();
@@ -119,10 +146,36 @@ fn server_identity(value: &str) -> Result<(ServerName<'static>, Uri)> {
 fn load_bundle(path: &Path) -> Result<CredentialBundle> {
     let uid = rustix::process::geteuid().as_raw();
     let directory = open_protected_directory(path, uid)?;
+    load_bundle_from(&directory, uid)
+}
+
+fn load_authorized_bundle(path: &Path) -> Result<(CredentialBundle, CapabilityId)> {
+    let uid = rustix::process::geteuid().as_raw();
+    let directory = open_protected_directory(path, uid)?;
+    let bundle = load_bundle_from(&directory, uid)?;
+    let capability = read_credential(&directory, uid, CAPABILITY_ID, true)?;
+    let capability = parse_capability_id(&capability)?;
+
+    Ok((bundle, capability))
+}
+
+fn parse_capability_id(bytes: &[u8]) -> Result<CapabilityId> {
+    let capability = std::str::from_utf8(bytes)
+        .context("sandbox public capability identity is not UTF-8")?
+        .parse::<CapabilityId>()
+        .context("sandbox public capability identity is not canonical")?;
+    if capability.as_bytes() == &[0; 16] {
+        bail!("sandbox public capability identity must be nonzero");
+    }
+
+    Ok(capability)
+}
+
+fn load_bundle_from(directory: &OwnedFd, uid: u32) -> Result<CredentialBundle> {
     Ok(CredentialBundle {
-        server_ca: read_credential(&directory, uid, SERVER_CA, false)?,
-        client_certificate: read_credential(&directory, uid, CLIENT_CERTIFICATE, false)?,
-        client_key: Zeroizing::new(read_credential(&directory, uid, CLIENT_KEY, true)?),
+        server_ca: read_credential(directory, uid, SERVER_CA, false)?,
+        client_certificate: read_credential(directory, uid, CLIENT_CERTIFICATE, false)?,
+        client_key: Zeroizing::new(read_credential(directory, uid, CLIENT_KEY, true)?),
     })
 }
 
@@ -365,5 +418,22 @@ mod tests {
 
         assert!(server_identity("sandbox-controller.example:443").is_err());
         assert!(server_identity("[sandbox-controller.example]").is_err());
+    }
+
+    #[test]
+    fn capability_identity_is_exact_canonical_nonzero_text() {
+        let capability = parse_capability_id(b"00112233-4455-6677-8899-aabbccddeeff").unwrap();
+        assert_eq!(
+            capability.to_string(),
+            "00112233-4455-6677-8899-aabbccddeeff"
+        );
+        for invalid in [
+            b"00112233-4455-6677-8899-AABBCCDDEEFF".as_slice(),
+            b"00112233-4455-6677-8899-aabbccddeeff\n".as_slice(),
+            b"00000000-0000-0000-0000-000000000000".as_slice(),
+            &[0xff],
+        ] {
+            assert!(parse_capability_id(invalid).is_err());
+        }
     }
 }

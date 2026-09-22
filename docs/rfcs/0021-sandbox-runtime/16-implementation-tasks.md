@@ -349,13 +349,16 @@ the outstanding work concrete:
   `CancelOperation` and `Watch` still return unavailable errors. Register and
   connect the remaining public services to their authorized controller
   handlers; protobuf declarations alone do not implement RPCs.
-- `crates/aos/src/commands/sandbox.rs::run` supports local completions and
-  discovery. Discovery can use either the root-only diagnostic socket or the
-  registered mutual-TLS public socket with a protected client credential
-  bundle. Other command families use `DormantValidatedRequestSinkV1` and
-  return `TransportRejected`. Connect those commands to the authenticated
-  public API, including operation waits, structured output, watch, and the
-  separately authorized execution data plane.
+- `crates/aos/src/commands/sandbox.rs::run` supports local completions,
+  discovery, and validated `GetOperation` output. Discovery can use either the
+  root-only diagnostic socket or the registered mutual-TLS public socket with a
+  protected client credential bundle. Operation reads use the root diagnostic
+  socket by default; public reads additionally load an exact canonical
+  capability ID from the protected credential directory and send it only as
+  the controller's lookup header. Other command families use
+  `DormantValidatedRequestSinkV1` and return `TransportRejected`. Connect those
+  commands to the authenticated public API, including operation waits,
+  structured output, watch, and the separately authorized execution data plane.
 - The root-only diagnostic socket is not a project authentication mechanism.
   `aos-sandbox::public_api_session` supplies a TLS 1.3/HTTP/2 transport
   foundation with mandatory client certificates, protected explicit

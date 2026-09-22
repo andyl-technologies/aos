@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use aos_proto::aos::sandbox::v1::DiscoveryServiceClient;
+use aos_proto::aos::sandbox::v1::{DiscoveryServiceClient, OperationServiceClient};
 use aos_sandbox::cli_model::{
     CheckedProtoJsonV1, CheckedPublicFeatureRegistryV1, DormantCompletionShellV1,
     DormantPublicApiAuthorizationV1, DormantPublicApiClientV1, DormantPublicApiWireTransportV1,
@@ -13,10 +13,11 @@ use aos_sandbox::cli_model::{
     DormantSandboxRoutingErrorV1, DormantValidatedRequestSinkV1, EstablishedProtoJson,
 };
 use aos_sandbox::controller_query::CheckedNodeCapabilitiesV1;
+use aos_sandbox::controller_query::CheckedOperationObservationV1;
 use clap_complete::Shell;
 use connectrpc::Protocol;
 use connectrpc::client::{ClientConfig, Http2Connection, SharedHttp2Connection};
-use http::Uri;
+use http::{HeaderValue, Uri};
 
 use crate::cli::Cli;
 use crate::cli::sandbox::SandboxArgs;
@@ -26,6 +27,7 @@ mod public_transport;
 const NODE_DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAXIMUM_DISCOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
 
 /// Builds and routes one parsed sandbox request.
 ///
@@ -84,12 +86,70 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
             render_checked(output, &checked)?;
             return Ok(());
         }
+        DormantSandboxRequestKindV1::GetOperation(request_message) => {
+            let client = operation_client(args).await?;
+            let response = client
+                .get_operation(request_message.clone())
+                .await
+                .context("controller rejected operation lookup")?
+                .into_owned();
+            let operation = response
+                .operation
+                .into_option()
+                .ok_or_else(|| anyhow::anyhow!("controller omitted the operation resource"))?;
+            let checked = CheckedOperationObservationV1::try_from(operation)
+                .context("controller returned an invalid operation observation")?
+                .into_resource();
+            render_checked(output, &checked)?;
+            return Ok(());
+        }
         _ => {}
     }
 
     let mut executor = DormantSandboxCommandExecutorV1::new(DormantValidatedRequestSinkV1);
     let _deferred = executor.execute(request)?;
     Err(DormantSandboxRoutingErrorV1::TransportRejected.into())
+}
+
+async fn operation_client(
+    args: &SandboxArgs,
+) -> Result<OperationServiceClient<SharedHttp2Connection>> {
+    if args.public_api {
+        let credentials = args
+            .public_credentials
+            .as_deref()
+            .context("--public-api requires --public-credentials")?;
+        let server_name = args
+            .public_server_name
+            .as_deref()
+            .context("--public-api requires --public-server-name")?;
+        let (connection, authority, capability_id) =
+            public_transport::connect_authorized(credentials, server_name).await?;
+        let config = authorized_operation_config(authority, capability_id)?;
+        return Ok(OperationServiceClient::new(connection.shared(8), config));
+    }
+
+    let socket = Path::new(NODE_DIAGNOSTIC_SOCKET);
+    let authority: Uri = "http://localhost"
+        .parse()
+        .context("invalid built-in controller authority")?;
+    let connection = Http2Connection::connect_unix(socket, authority.clone())
+        .await
+        .with_context(|| format!("cannot connect to controller socket {}", socket.display()))?
+        .shared(8);
+    let config = discovery_config(authority);
+    Ok(OperationServiceClient::new(connection, config))
+}
+
+fn authorized_operation_config(
+    authority: Uri,
+    capability_id: aos_sandbox_core::CapabilityId,
+) -> Result<ClientConfig> {
+    let mut headers = http::HeaderMap::new();
+    let capability_value = HeaderValue::try_from(capability_id.to_string())
+        .context("invalid public capability identity header")?;
+    headers.insert(PUBLIC_CAPABILITY_HEADER, capability_value);
+    Ok(discovery_config(authority).with_default_headers(headers))
 }
 
 async fn discovery_client(
