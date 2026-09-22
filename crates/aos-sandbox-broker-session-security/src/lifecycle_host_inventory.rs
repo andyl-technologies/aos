@@ -577,13 +577,21 @@ impl DormantLifecycleInventorySessionV1 {
         &mut self,
         currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<(), LifecyclePhase6ErrorV1> {
+        self.recheck_retained(currentness).map(|_| ())
+    }
+
+    fn recheck_retained(
+        &mut self,
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<ProtectedBrokerOutcomeCurrentnessOwnerV1, LifecyclePhase6ErrorV1> {
         let mut current = self
             .session
             .revalidate_broker_outcome(currentness)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
         current
             .revalidate()
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        Ok(current.into_currentness_owner())
     }
 
     fn query_complete(
@@ -803,6 +811,7 @@ pub struct DormantStorageLifecycleInventoryOwnerV1(DormantLifecycleInventorySess
 pub struct DormantAtomicStorageInventoryPredecessorV1 {
     outcome: AuthenticatedBrokerMethodOutcomeV1,
     inventory: LifecycleAuthenticatedStorageInventoryV1,
+    currentness: Option<ProtectedBrokerOutcomeCurrentnessOwnerV1>,
 }
 
 impl DormantAtomicStorageInventoryPredecessorV1 {
@@ -845,7 +854,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         &mut self,
         lifecycle: &CurrentLifecycleEffectV1<'_>,
         plan: &LifecycleAtomicDatasetSnapshotPlanV1,
-        previous: &DormantAtomicStorageInventoryPredecessorV1,
+        previous: &mut DormantAtomicStorageInventoryPredecessorV1,
         fence: LiveRuntimeFenceV1,
         authority: &PreparedAuthorityEffectV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
@@ -853,6 +862,14 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             return Err(EffectFailure::Permanent(
                 "Storage group plan differs from its retained predecessor inventory".to_owned(),
             ));
+        }
+        if !self.0.authority_effects.has_pending() {
+            let currentness = previous.currentness.take().ok_or_else(|| {
+                EffectFailure::Permanent("Storage predecessor currentness was lost".to_owned())
+            })?;
+            previous.currentness = Some(self.0.recheck_retained(currentness).map_err(|_| {
+                EffectFailure::Permanent("Storage predecessor is no longer current".to_owned())
+            })?);
         }
         self.0.authority_effects.atomic_storage(
             &mut self.0.session,
@@ -1012,10 +1029,14 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         &mut self,
     ) -> Result<DormantAtomicStorageInventoryPredecessorV1, LifecyclePhase6ErrorV1> {
         let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
-        self.0.recheck(currentness)?;
+        let currentness = self.0.recheck_retained(currentness)?;
         let inventory =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(&outcome)?;
-        Ok(DormantAtomicStorageInventoryPredecessorV1 { outcome, inventory })
+        Ok(DormantAtomicStorageInventoryPredecessorV1 {
+            outcome,
+            inventory,
+            currentness: Some(currentness),
+        })
     }
 
     /// Captures the immediate inventory after one authenticated group outcome.
