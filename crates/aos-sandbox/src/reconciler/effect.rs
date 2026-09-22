@@ -7,6 +7,10 @@
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_core::{BrokerAudience, ObjectDigest, OperationId, RawPairedClockSample};
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
+};
+use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{EffectReceipt, ReconcilerError};
@@ -271,10 +275,25 @@ impl AuthorityBoundEffectPlanV1 {
         &self.plan.request
     }
 
-    pub(super) fn is_supported_host_apply(&self) -> bool {
-        matches!(self.audience, BrokerAudience::Host)
-            && matches!(self.plan.authority.as_ref(), Some(binding) if matches!(binding.method, BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME))
-            && self.descriptor_free
+    pub(super) fn is_supported_authority_apply(&self) -> bool {
+        let method_matches_audience = matches!(
+            (self.audience, self.plan.method),
+            (
+                BrokerAudience::Host,
+                Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME)
+            ) | (
+                BrokerAudience::Storage,
+                Some(BrokerMethod::BROKER_METHOD_STORAGE_APPLY)
+            ) | (
+                BrokerAudience::Mount,
+                Some(BrokerMethod::BROKER_METHOD_MOUNT_APPLY)
+            ) | (
+                BrokerAudience::Network,
+                Some(BrokerMethod::BROKER_METHOD_NETWORK_APPLY)
+            )
+        );
+
+        method_matches_audience && self.descriptor_free
     }
 
     pub(super) fn into_inner(
@@ -386,7 +405,7 @@ impl PreparedAuthorityEffectV1 {
         }
     }
 
-    /// Validates Host completion bytes against this exact persisted Apply.
+    /// Validates a Host completion body against this exact persisted Apply.
     ///
     /// # Errors
     ///
@@ -406,11 +425,90 @@ impl PreparedAuthorityEffectV1 {
             self.attempt.body(),
         )
         .map_err(|_| ReconcilerError::InvalidExecutorOutput("invalid Host effect receipt"))?;
-        Ok(ValidatedHostEffectReceiptV1 {
+        Ok(ValidatedAuthorityEffectReceiptV1 {
             bytes,
             binding_digest: self.binding_digest,
             attempt_digest: attempt_token_digest(&self.attempt),
         })
+    }
+
+    /// Extracts one method-specific success body from an authenticated outcome.
+    ///
+    /// The authenticated protocol layer has already decoded and correlated the
+    /// method-specific result. This final bridge additionally binds it to this
+    /// reconciler's exact durable method and request body before the receipt can
+    /// be committed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidExecutorOutput`] for a different
+    /// method or request, a signed broker error, or an oversized success body.
+    pub fn validate_authenticated_outcome(
+        &self,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<ValidatedAuthorityEffectReceiptV1, ReconcilerError> {
+        let method = self.attempt_method()?;
+        if outcome.method() != method || outcome.request().exact_body() != self.attempt.body() {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect outcome belongs to another durable attempt",
+            ));
+        }
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect returned a terminal broker error",
+            ));
+        };
+        if exact_body.is_empty() || exact_body.len() > MAXIMUM_RECEIPT_BYTES {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "invalid authority effect receipt length",
+            ));
+        }
+
+        Ok(ValidatedAuthorityEffectReceiptV1 {
+            bytes: exact_body.clone(),
+            binding_digest: self.binding_digest,
+            attempt_digest: attempt_token_digest(&self.attempt),
+        })
+    }
+
+    pub(crate) fn validate_durable_receipt(&self, bytes: &[u8]) -> Result<(), ReconcilerError> {
+        if bytes.is_empty() || bytes.len() > MAXIMUM_RECEIPT_BYTES {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "invalid authority effect receipt length",
+            ));
+        }
+        if self.attempt_method()? == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
+            aos_sandbox_protocol::validate_runtime_effect_receipt_for_apply(
+                bytes,
+                self.attempt.body(),
+            )
+            .map_err(|_| ReconcilerError::InvalidExecutorOutput("invalid Host effect receipt"))?;
+        }
+
+        Ok(())
+    }
+
+    fn attempt_method(&self) -> Result<BrokerMethod, ReconcilerError> {
+        let packet = aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope::decode_from_slice(
+            self.attempt.packet(),
+        )
+        .map_err(|_| {
+            ReconcilerError::InvalidExecutorOutput("authority effect request is malformed")
+        })?;
+        if !packet.__buffa_unknown_fields.is_empty()
+            || packet.encode_to_vec() != self.attempt.packet()
+            || packet.body.as_slice() != self.attempt.body()
+        {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect request is not canonical",
+            ));
+        }
+        packet
+            .method
+            .as_known()
+            .ok_or(ReconcilerError::InvalidExecutorOutput(
+                "authority effect method is unknown",
+            ))
     }
 
     pub(crate) const fn binding_digest(&self) -> ObjectDigest {
@@ -446,15 +544,15 @@ impl PreparedAuthorityEffectV1 {
     }
 }
 
-/// Carries a Host completion receipt validated against one exact persisted Apply.
+/// Carries a broker completion receipt validated against one exact persisted Apply.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ValidatedHostEffectReceiptV1 {
+pub struct ValidatedAuthorityEffectReceiptV1 {
     bytes: Vec<u8>,
     binding_digest: ObjectDigest,
     attempt_digest: ObjectDigest,
 }
 
-impl ValidatedHostEffectReceiptV1 {
+impl ValidatedAuthorityEffectReceiptV1 {
     pub(super) fn into_effect_receipt_for(
         self,
         prepared: &PreparedAuthorityEffectV1,
@@ -463,22 +561,25 @@ impl ValidatedHostEffectReceiptV1 {
             || self.attempt_digest != attempt_token_digest(prepared.attempt())
         {
             return Err(ReconcilerError::InvalidExecutorOutput(
-                "Host effect receipt belongs to another durable attempt",
+                "authority effect receipt belongs to another durable attempt",
             ));
         }
         Ok(EffectReceipt(self.bytes))
     }
 }
 
-/// Reports authenticated Host observation for one exact persisted Apply.
+/// Preserves the original Host-specific receipt name for compatible callers.
+pub type ValidatedHostEffectReceiptV1 = ValidatedAuthorityEffectReceiptV1;
+
+/// Reports authenticated broker observation for one exact persisted Apply.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorityEffectObservationV1 {
-    /// The Host durably proves the exact request is absent.
+    /// The broker durably proves the exact request is absent.
     Absent,
-    /// The Host has admitted the exact request but has not completed it.
+    /// The broker has admitted the exact request but has not completed it.
     Pending,
-    /// The Host completed the exact request with validated receipt bytes.
-    Applied(ValidatedHostEffectReceiptV1),
+    /// The broker completed the exact request with validated receipt bytes.
+    Applied(ValidatedAuthorityEffectReceiptV1),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -706,11 +807,27 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         let semantic_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
         let digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
         let descriptor_free = take_array::<1>(bytes, &mut cursor)?[0];
+        let expected_domain = EffectDomain::from_audience(audience)
+            .map_err(|_| ReconcilerError::CorruptLedger("invalid authority effect audience"))?;
         if take_array::<1>(bytes, &mut cursor)? != [0]
             || descriptor_free != 1
-            || domain != EffectDomain::Host
-            || audience != BrokerAudience::Host
-            || authority_method != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            || domain != expected_domain
+            || !matches!(
+                (audience, authority_method),
+                (
+                    BrokerAudience::Host,
+                    BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+                ) | (
+                    BrokerAudience::Storage,
+                    BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+                ) | (
+                    BrokerAudience::Mount,
+                    BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+                ) | (
+                    BrokerAudience::Network,
+                    BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+                )
+            )
             || method.is_some_and(|method| method != authority_method)
         {
             return Err(ReconcilerError::CorruptLedger(
@@ -726,7 +843,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
             template_digest,
             body_digest,
             semantic_digest,
-            descriptor_free: true,
+            descriptor_free: descriptor_free == 1,
             digest,
         };
         let dispatch_present = take_array::<1>(bytes, &mut cursor)?[0];

@@ -57,7 +57,8 @@ pub(crate) use runtime_authority::{
 
 pub use effect::{
     AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
-    EffectDomain, EffectPlan, PreparedAuthorityEffectV1, ValidatedHostEffectReceiptV1,
+    EffectDomain, EffectPlan, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1,
+    ValidatedHostEffectReceiptV1,
 };
 use effect::{
     EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
@@ -164,11 +165,11 @@ impl OperationPlan {
             ));
         }
         if effects.iter().any(|effect| {
-            !effect.is_supported_host_apply()
+            !effect.is_supported_authority_apply()
                 || effect.source_draft_digest() != publication_draft.digest()
         }) {
             return Err(ReconcilerError::InvalidPlan(
-                "ownership-gated effects must be descriptor-free Host Apply templates",
+                "ownership-gated effects must be descriptor-free broker Apply templates",
             ));
         }
         let effects: Vec<EffectPlan> = effects
@@ -546,7 +547,7 @@ pub trait SingleNodeEffectExecutor {
         _operation_id: OperationId,
         _step: u32,
         _prepared: &PreparedAuthorityEffectV1,
-    ) -> Result<ValidatedHostEffectReceiptV1, EffectFailure> {
+    ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
         Err(EffectFailure::Permanent(
             "authority-bound effect execution is unsupported".to_owned(),
         ))
@@ -2067,7 +2068,7 @@ where
                         })?;
                         if let EffectState::Applied { receipt, .. } = &effect.state {
                             dispatch
-                                .validate_host_receipt(receipt.as_bytes().to_vec())
+                                .validate_durable_receipt(receipt.as_bytes())
                                 .map_err(|_| {
                                     ReconcilerError::CorruptLedger(
                                         "authority effect receipt is malformed or substituted",
@@ -4654,26 +4655,27 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_free_non_host_authority_effect_is_rejected_at_admission() {
+    fn descriptor_free_mount_authority_effect_is_admitted() {
         let (draft, _) = descriptor_free_mount_activation_fixture();
         let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
-        assert!(matches!(
-            OperationPlan::ownership_gated(
-                OperationId::from_bytes([0xa3; 16]),
-                IdempotencyKey::new(b"mount-gated".to_vec()).unwrap(),
-                [0xa4; 32],
-                b"mount-sandbox".to_vec(),
-                b"pending".to_vec(),
-                vec![effect],
-                activation_claim(&draft, 1),
-                draft,
-            ),
-            Err(ReconcilerError::InvalidPlan(_))
-        ));
+        let plan = OperationPlan::ownership_gated(
+            OperationId::from_bytes([0xa3; 16]),
+            IdempotencyKey::new(b"mount-gated".to_vec()).unwrap(),
+            [0xa4; 32],
+            b"mount-sandbox".to_vec(),
+            b"pending".to_vec(),
+            vec![effect],
+            activation_claim(&draft, 1),
+            draft,
+        )
+        .unwrap();
+
+        assert_eq!(plan.effects.len(), 1);
+        assert_eq!(plan.effects[0].domain(), EffectDomain::Mount);
     }
 
     #[test]
-    fn crafted_non_host_v1_planned_and_applying_records_fail_before_executor_io() {
+    fn crafted_audience_method_mismatches_fail_before_executor_io() {
         for applying in [false, true] {
             let directory = TestDirectory::new();
             let (journal, _) =
