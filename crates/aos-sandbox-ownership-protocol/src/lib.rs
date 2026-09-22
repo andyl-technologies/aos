@@ -25,9 +25,11 @@
 //! lease-size:u64be || lease-digest:32
 //! ```
 //!
-//! [`protocol`] defines the bounded transport-neutral V1 transaction
-//! semantics. It intentionally defines no socket framing or remote carrier.
+//! [`protocol`] defines bounded transport-neutral V1 transaction semantics.
+//! [`carrier`] provides canonical session-record bytes without selecting a
+//! socket, authenticating a peer, or providing a remote transport.
 
+pub mod carrier;
 pub mod protocol;
 
 use aos_sandbox_core::format::{decode_signature, encode_signature};
