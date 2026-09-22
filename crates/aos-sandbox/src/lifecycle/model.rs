@@ -1038,6 +1038,15 @@ impl LifecycleOperationV1 {
     pub fn steps(&self) -> &[LifecycleStepV1] {
         &self.steps
     }
+    /// Reports whether every action still carries its provisional plan marker.
+    ///
+    /// An accepted operation exposes this state until its one-time protected
+    /// plan-binding transaction commits. A mixed bound/unbound plan is never a
+    /// valid lifecycle record.
+    #[must_use]
+    pub fn plan_is_unbound(&self) -> bool {
+        self.steps.iter().all(LifecycleStepV1::is_unbound)
+    }
     /// Returns coordinator phase.
     #[must_use]
     pub const fn phase(&self) -> LifecyclePhaseV1 {

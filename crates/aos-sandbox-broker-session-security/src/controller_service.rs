@@ -81,7 +81,7 @@ use aos_sandbox::lifecycle::{
     LifecycleCancelIdempotencyDigestV1, LifecycleOperationAdmissionV1, LifecycleOperationV1,
     LifecycleProgressCommitOutcomeV1, LifecycleProgressOutcomeUnknownV1,
     LifecycleProgressRecoveryV1, LifecycleProtectedCancellationAdmissionV1,
-    LifecycleProtectedCancellationResolutionV1, LifecycleTimeV1,
+    LifecycleProtectedCancellationResolutionV1, LifecycleSuspensionPlanV1, LifecycleTimeV1,
     lifecycle_operation_from_public_mutation_v1, lifecycle_public_mutation_admission_v1,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
@@ -1667,6 +1667,82 @@ impl ProductionEffectExecutor {
             },
         }
     }
+
+    fn bind_lifecycle_plan(&mut self, operation_id: OperationId) -> Result<(), EffectFailure> {
+        let outcome = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (current_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "admitted lifecycle operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            if !current.operation().plan_is_unbound() {
+                return Ok(());
+            }
+
+            let steps = match current.operation().intent() {
+                aos_sandbox::lifecycle::LifecycleIntentV1::SuspendMemory { .. } => {
+                    LifecycleSuspensionPlanV1::planned_memory_suspend_steps(&current)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                }
+                _ => return Ok(()),
+            };
+            let transaction_id =
+                lifecycle_plan_binding_transaction_id(operation_id, current.record().digest());
+            let prepared = owner
+                .prepare_plan_binding(&current_key, transaction_id, steps)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            owner
+                .commit_effect_progress(prepared)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        };
+
+        self.settle_lifecycle_progress(operation_id, outcome)
+    }
+
+    fn settle_lifecycle_progress(
+        &mut self,
+        operation_id: OperationId,
+        outcome: LifecycleProgressCommitOutcomeV1,
+    ) -> Result<(), EffectFailure> {
+        match outcome {
+            LifecycleProgressCommitOutcomeV1::Applied(_) => Ok(()),
+            LifecycleProgressCommitOutcomeV1::OutcomeUnknown { pending, .. } => {
+                self.pending_source_commit = Some(PendingSourceCommit {
+                    operation_id,
+                    receipt: None,
+                    pending,
+                });
+                Err(EffectFailure::Retryable(
+                    "protected lifecycle progress durability is unknown".to_owned(),
+                ))
+            }
+        }
+    }
+}
+
+fn lifecycle_plan_binding_transaction_id(
+    operation: OperationId,
+    current_record: ObjectDigest,
+) -> [u8; 16] {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.lifecycle.plan-binding-transaction.v1\0")
+        .chain_update(operation.as_bytes())
+        .chain_update(current_record.as_bytes())
+        .finalize()
+        .into();
+    let mut transaction = [0_u8; 16];
+    transaction.copy_from_slice(&digest[..16]);
+    if transaction == [0; 16] {
+        transaction[15] = 1;
+    }
+    transaction
 }
 
 const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
@@ -1866,6 +1942,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             };
             self.settle_lifecycle_admission(operation_id, admission)?;
+            self.bind_lifecycle_plan(operation_id)?;
         }
         Err(EffectFailure::Retryable(
             CONTROLLER_ORCHESTRATION_PENDING.to_owned(),

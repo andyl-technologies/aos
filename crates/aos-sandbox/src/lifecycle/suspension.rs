@@ -6,8 +6,9 @@ use sha2::{Digest as _, Sha256};
 use super::{
     CurrentLifecycleEffectV1, CurrentLifecycleOperationV1, CurrentLifecycleRuntimeLivenessV1,
     CurrentLifecycleSuspendObservationV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
-    LifecycleIntentV1, LifecycleMethodV1, LifecyclePhase6ErrorV1, LifecycleSnapshotBarrierV1,
-    LiveRuntimeFenceV1,
+    LifecycleIntentV1, LifecycleMethodV1, LifecyclePhase6EffectPlanV1, LifecyclePhase6ErrorV1,
+    LifecyclePhaseV1, LifecycleSnapshotBarrierV1, LifecycleStepClassV1, LifecycleStepV1,
+    LiveRuntimeFenceV1, lifecycle_phase6_planned_step_v1,
 };
 
 /// Selects the exact suspend or resume protocol.
@@ -65,6 +66,111 @@ pub struct LifecycleSuspensionPlanV1 {
 }
 
 impl LifecycleSuspensionPlanV1 {
+    /// Compiles the immutable four-step memory-suspension plan.
+    ///
+    /// The first three actions are reversible preparation. Recording the
+    /// protected suspension observation is post-commit forward work. Each
+    /// effect body is the exact body later reconstructed by [`Self::next_effect`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless `current` is an accepted,
+    /// wholly unbound memory-suspension operation with a matching runtime
+    /// fence, or when a canonical step cannot be constructed.
+    pub fn planned_memory_suspend_steps(
+        current: &CurrentLifecycleOperationV1<'_>,
+    ) -> Result<Vec<LifecycleStepV1>, LifecyclePhase6ErrorV1> {
+        current.require_method(&[LifecycleMethodV1::SuspendMemory])?;
+        let (sandbox, fence) = match current.operation().intent() {
+            LifecycleIntentV1::SuspendMemory { sandbox, fence } => (*sandbox, *fence),
+            _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
+        };
+        require_unbound_admission(current)?;
+        if fence.sandbox() != sandbox {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+
+        let actions = [
+            LifecycleSuspensionActionV1::CloseAdmission,
+            LifecycleSuspensionActionV1::Quiesce,
+            LifecycleSuspensionActionV1::FreezeRuntime,
+            LifecycleSuspensionActionV1::RecordSuspension,
+        ];
+        actions
+            .into_iter()
+            .enumerate()
+            .map(|(index, action)| {
+                let class = if action == LifecycleSuspensionActionV1::RecordSuspension {
+                    LifecycleStepClassV1::PostCommitForward
+                } else {
+                    LifecycleStepClassV1::PreCommitReversible
+                };
+                planned_suspension_step(
+                    current.operation().operation_id(),
+                    u32::try_from(index).map_err(|_| LifecyclePhase6ErrorV1::Capacity)?,
+                    class,
+                    LifecycleSuspensionModeV1::MemorySuspend,
+                    action,
+                    sandbox,
+                    fence,
+                    None,
+                    None,
+                    None,
+                )
+            })
+            .collect()
+    }
+
+    /// Compiles the immutable one-step same-incarnation resume plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the accepted operation,
+    /// protected suspension observation, and fresh runtime liveness record all
+    /// identify the same live suspended incarnation.
+    pub fn planned_memory_resume_steps(
+        current: &CurrentLifecycleOperationV1<'_>,
+        protected_observation: &CurrentLifecycleSuspendObservationV1<'_>,
+        liveness: &CurrentLifecycleRuntimeLivenessV1<'_>,
+    ) -> Result<Vec<LifecycleStepV1>, LifecyclePhase6ErrorV1> {
+        current.require_method(&[LifecycleMethodV1::Resume])?;
+        let (sandbox, fence) = match current.operation().intent() {
+            LifecycleIntentV1::Resume {
+                sandbox,
+                source: super::LifecycleResumeSourceV1::Memory { fence },
+            } => (*sandbox, *fence),
+            _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
+        };
+        require_unbound_admission(current)?;
+        let observation = protected_observation.observation();
+        if protected_observation.projection_root() != current.projection_root()
+            || liveness.projection_root() != current.projection_root()
+            || liveness.operation() != current.operation().operation_id()
+            || liveness.operation_record() != current.record()
+            || observation.fence() != fence
+            || observation.host_boot() != liveness.host_boot()
+            || liveness.fence() != fence
+            || liveness.host_boot() == [0; 16]
+            || liveness.inventory().as_bytes() == &[0; 32]
+            || fence.sandbox() != sandbox
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+
+        Ok(vec![planned_suspension_step(
+            current.operation().operation_id(),
+            0,
+            LifecycleStepClassV1::PostCommitForward,
+            LifecycleSuspensionModeV1::MemoryResume,
+            LifecycleSuspensionActionV1::ResumeRuntime,
+            sandbox,
+            fence,
+            Some(liveness.host_boot()),
+            Some(liveness.inventory()),
+            None,
+        )?])
+    }
+
     /// Plans memory suspension or hibernation for an exact live incarnation.
     ///
     /// # Errors
@@ -458,22 +564,41 @@ impl LifecycleSuspensionPlanV1 {
 }
 
 fn suspension_digest(value: &LifecycleSuspensionPlanV1) -> ObjectDigest {
-    let barrier = value.hibernation_barrier.as_ref().map_or_else(
+    suspension_digest_parts(
+        value.mode,
+        value.action,
+        value.sandbox,
+        value.fence,
+        value.host_boot,
+        value.runtime_inventory,
+        value.hibernation_barrier.as_ref(),
+    )
+}
+
+fn suspension_digest_parts(
+    mode: LifecycleSuspensionModeV1,
+    action: LifecycleSuspensionActionV1,
+    sandbox: SandboxId,
+    fence: LiveRuntimeFenceV1,
+    host_boot: Option<[u8; 16]>,
+    runtime_inventory: Option<ObjectDigest>,
+    hibernation_barrier: Option<&LifecycleSnapshotBarrierV1>,
+) -> ObjectDigest {
+    let barrier = hibernation_barrier.map_or_else(
         || ObjectDigest::from_bytes([0; 32]),
         |barrier| barrier.plan_identity(),
     );
     ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(b"aos.sandbox.lifecycle.suspension-plan.v1\0")
-            .chain_update([value.mode as u8, value.action as u8])
-            .chain_update(value.sandbox.as_bytes())
-            .chain_update(value.fence.incarnation().as_bytes())
-            .chain_update(value.fence.assignment_epoch().get().to_be_bytes())
-            .chain_update(value.fence.namespace_generation().get().to_be_bytes())
-            .chain_update(value.host_boot.unwrap_or([0; 16]))
+            .chain_update([mode as u8, action as u8])
+            .chain_update(sandbox.as_bytes())
+            .chain_update(fence.incarnation().as_bytes())
+            .chain_update(fence.assignment_epoch().get().to_be_bytes())
+            .chain_update(fence.namespace_generation().get().to_be_bytes())
+            .chain_update(host_boot.unwrap_or([0; 16]))
             .chain_update(
-                value
-                    .runtime_inventory
+                runtime_inventory
                     .unwrap_or_else(|| ObjectDigest::from_bytes([0; 32]))
                     .as_bytes(),
             )
@@ -481,6 +606,78 @@ fn suspension_digest(value: &LifecycleSuspensionPlanV1) -> ObjectDigest {
             .finalize()
             .into(),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn planned_suspension_step(
+    operation: aos_sandbox_core::OperationId,
+    index: u32,
+    class: LifecycleStepClassV1,
+    mode: LifecycleSuspensionModeV1,
+    action: LifecycleSuspensionActionV1,
+    sandbox: SandboxId,
+    fence: LiveRuntimeFenceV1,
+    host_boot: Option<[u8; 16]>,
+    runtime_inventory: Option<ObjectDigest>,
+    hibernation_barrier: Option<&LifecycleSnapshotBarrierV1>,
+) -> Result<LifecycleStepV1, LifecyclePhase6ErrorV1> {
+    let domain = match action {
+        LifecycleSuspensionActionV1::CloseAdmission
+        | LifecycleSuspensionActionV1::Quiesce
+        | LifecycleSuspensionActionV1::RecordSuspension => LifecycleEffectDomainV1::Controller,
+        LifecycleSuspensionActionV1::FreezeRuntime
+        | LifecycleSuspensionActionV1::StopRuntime
+        | LifecycleSuspensionActionV1::ResumeRuntime
+        | LifecycleSuspensionActionV1::CompensateOuterThaw => LifecycleEffectDomainV1::Runtime,
+        LifecycleSuspensionActionV1::DetachEphemeral => LifecycleEffectDomainV1::Mount,
+        LifecycleSuspensionActionV1::ReleaseReservations => LifecycleEffectDomainV1::Network,
+        LifecycleSuspensionActionV1::Snapshot | LifecycleSuspensionActionV1::Complete => {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+    };
+    let prerequisite = runtime_inventory.unwrap_or_else(|| suspension_fence_digest(fence));
+    let plan = suspension_digest_parts(
+        mode,
+        action,
+        sandbox,
+        fence,
+        host_boot,
+        runtime_inventory,
+        hibernation_barrier,
+    );
+    let forward = LifecyclePhase6EffectPlanV1::new(
+        domain,
+        action as u32,
+        *sandbox.as_bytes(),
+        prerequisite,
+        plan,
+    )?;
+    let compensation = if class == LifecycleStepClassV1::PreCommitReversible {
+        Some(LifecyclePhase6EffectPlanV1::new(
+            domain,
+            action as u32,
+            *sandbox.as_bytes(),
+            prerequisite,
+            plan,
+        )?)
+    } else {
+        None
+    };
+
+    lifecycle_phase6_planned_step_v1(operation, index, class, forward, compensation)
+}
+
+fn require_unbound_admission(
+    current: &CurrentLifecycleOperationV1<'_>,
+) -> Result<(), LifecyclePhase6ErrorV1> {
+    let operation = current.operation();
+    if operation.phase() != LifecyclePhaseV1::Accepted
+        || operation.steps().is_empty()
+        || !operation.steps().iter().all(LifecycleStepV1::is_unbound)
+    {
+        return Err(LifecyclePhase6ErrorV1::InvalidTransition);
+    }
+    Ok(())
 }
 
 fn suspension_fence_digest(fence: LiveRuntimeFenceV1) -> ObjectDigest {
