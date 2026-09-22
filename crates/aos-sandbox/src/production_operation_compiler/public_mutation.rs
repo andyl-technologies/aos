@@ -491,6 +491,32 @@ fn lifecycle_projection(
         .desired
         .as_option()
         .ok_or(OperationCompilationError::Rejected)?;
+    // An invalid transition must fail before its new desired generation is durable.
+    let valid_predecessor = matches!(
+        (method, desired.lifecycle.as_known()),
+        (
+            PublicOperationMethodV1::StartSandbox,
+            Some(DesiredLifecycle::DESIRED_LIFECYCLE_STOPPED)
+        ) | (
+            PublicOperationMethodV1::StopSandbox,
+            Some(
+                DesiredLifecycle::DESIRED_LIFECYCLE_RUNNING
+                    | DesiredLifecycle::DESIRED_LIFECYCLE_SUSPENDED_MEMORY
+            )
+        ) | (
+            PublicOperationMethodV1::SuspendSandbox,
+            Some(DesiredLifecycle::DESIRED_LIFECYCLE_RUNNING)
+        ) | (
+            PublicOperationMethodV1::ResumeSandbox,
+            Some(
+                DesiredLifecycle::DESIRED_LIFECYCLE_SUSPENDED_MEMORY
+                    | DesiredLifecycle::DESIRED_LIFECYCLE_HIBERNATED
+            )
+        )
+    );
+    if !valid_predecessor {
+        return Err(OperationCompilationError::Rejected);
+    }
     let generation = desired
         .generation
         .checked_add(1)
