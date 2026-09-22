@@ -15,7 +15,8 @@ use aos_proto::aos::sandbox::v1::{
     ListAncestorsResponse, ListChildrenRequest, ListChildrenResponse, ListDescendantsRequest,
     ListDescendantsResponse, ListExecutionsRequest, ListExecutionsResponse, ListSandboxesRequest,
     ListSandboxesResponse, ListSnapshotsRequest, ListSnapshotsResponse, ListViewsRequest,
-    ListViewsResponse, Operation as PublicOperation, PageInfo, PinCacheObjectRequest,
+    ListViewsResponse, Operation as PublicOperation, OperatorRecoveryRequest,
+    OperatorRecoveryResponse, OperatorService, PageInfo, PinCacheObjectRequest,
     PinCacheObjectResponse, PlanCreateSandboxRequest, PlanCreateSandboxResponse,
     PlanSandboxPolicyRequest, PlanSandboxPolicyResponse, ReleaseViewRequest, ReleaseViewResponse,
     RenewCapabilityRequest, RenewCapabilityResponse, ReplaceAttachmentRequest,
@@ -299,6 +300,31 @@ impl PublicCacheService for CapabilityService {
 
         Response::ok(UnpinCacheObjectResponse {
             operation: Some(admitted.operation).into(),
+            ..Default::default()
+        })
+    }
+}
+
+impl OperatorService for CapabilityService {
+    async fn recover<'a>(
+        &'a self,
+        context: RequestContext,
+        request: ServiceRequest<'_, OperatorRecoveryRequest>,
+    ) -> ServiceResult<impl Encodable<OperatorRecoveryResponse> + Send + use<'a>> {
+        let envelope =
+            PublicMutationRequestV1::new(PublicApiAuditMethodV1::OperatorRecover, request.bytes())
+                .map_err(|_| {
+                    ConnectError::new(
+                        ErrorCode::InvalidArgument,
+                        "operator-recovery request envelope is invalid",
+                    )
+                })?;
+        let operation = self
+            .admit_public_operator_recovery(&context, envelope.encode())
+            .await?;
+
+        Response::ok(OperatorRecoveryResponse {
+            operation: Some(operation).into(),
             ..Default::default()
         })
     }

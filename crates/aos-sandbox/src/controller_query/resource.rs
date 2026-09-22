@@ -167,10 +167,12 @@ pub enum PublicOperationMethodV1 {
     PinCacheObject = 23,
     /// Removes an object pin from the project cache.
     UnpinCacheObject = 24,
+    /// Performs one explicitly requested operator recovery action.
+    OperatorRecover = 25,
 }
 
 impl PublicOperationMethodV1 {
-    const ALL: [Self; 25] = [
+    const ALL: [Self; 26] = [
         Self::CreateSandbox,
         Self::UpdatePolicy,
         Self::StartSandbox,
@@ -196,6 +198,7 @@ impl PublicOperationMethodV1 {
         Self::AttenuateCapability,
         Self::PinCacheObject,
         Self::UnpinCacheObject,
+        Self::OperatorRecover,
     ];
 
     /// Returns the stable public registry spelling.
@@ -227,6 +230,7 @@ impl PublicOperationMethodV1 {
             Self::AttenuateCapability => "capability.attenuate",
             Self::PinCacheObject => "cache.pin",
             Self::UnpinCacheObject => "cache.unpin",
+            Self::OperatorRecover => "operator.recover",
         }
     }
 
@@ -257,6 +261,7 @@ impl PublicOperationMethodV1 {
             22 => Some(Self::AttenuateCapability),
             23 => Some(Self::PinCacheObject),
             24 => Some(Self::UnpinCacheObject),
+            25 => Some(Self::OperatorRecover),
             _ => None,
         }
     }

@@ -275,6 +275,9 @@ pub enum PublicApiAuditMethodV1 {
     /// Unpins one cache object.
     #[serde(rename = "/aos.sandbox.v1.CacheService/UnpinObject")]
     UnpinCacheObject,
+    /// Performs one explicitly requested operator recovery action.
+    #[serde(rename = "/aos.sandbox.v1.OperatorService/Recover")]
+    OperatorRecover,
 }
 
 /// Constructs a canonical mutation authorization envelope for one exact public RPC.

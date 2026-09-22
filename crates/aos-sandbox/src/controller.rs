@@ -206,6 +206,33 @@ pub trait ActivatedOperationCompiler {
         Err(OperationCompilationError::Rejected)
     }
 
+    /// Compiles one public operator-recovery request under current protected state.
+    ///
+    /// Operator recovery is separate because its request identifies either a
+    /// sandbox or an operation without accepting a caller-selected resource
+    /// kind. Implementations must decode the canonical envelope, require the
+    /// `OperatorService/Recover` method, resolve the current resource kind from
+    /// `journal`, authorize that exact kind, selector, method, and body against
+    /// `peer`, and enforce the recovery evidence and resource-version fence.
+    /// The default rejects and never falls back to ordinary public compilation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationCompilationError`] for malformed input, unsupported
+    /// recovery, or rejected current authentication, authorization, evidence,
+    /// policy, and concurrency checks.
+    #[cfg(target_os = "linux")]
+    fn compile_public_operator_recovery(
+        &mut self,
+        _journal: &mut crate::Journal,
+        _peer: &crate::public_api_session::PublicApiPeer,
+        _capability_id: aos_sandbox_core::CapabilityId,
+        _canonical_request: &[u8],
+        _request_digest: [u8; 32],
+    ) -> Result<OperationPlan, OperationCompilationError> {
+        Err(OperationCompilationError::Rejected)
+    }
+
     /// Computes one pure policy plan from a currently authorized public request.
     ///
     /// The controller constructs `request` only after exact request validation,
@@ -4981,6 +5008,53 @@ where
             canonical_request,
         );
         let plan = self.compiler.compile_public(
+            self.reconciler.journal_mut(),
+            peer,
+            capability_id,
+            canonical_request,
+            request_digest,
+        )?;
+
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        self.accept_compiled_plan(plan, request_digest)
+    }
+
+    /// Admits one public operator-recovery request with live transport evidence.
+    ///
+    /// The specialized compiler hook must derive whether the target is a
+    /// sandbox or operation from protected current state. This prevents an
+    /// untrusted request from selecting the capability resource kind used for
+    /// authorization. No ordinary public compiler fallback is permitted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty or oversized input, stale peer evidence, unsupported
+    /// recovery, authorization or fence failure, digest mismatch, and durable
+    /// admission failure.
+    #[cfg(target_os = "linux")]
+    pub fn admit_public_operator_recovery(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+    ) -> Result<AcceptOutcome, ControllerServiceError> {
+        if canonical_request.is_empty() {
+            return Err(ControllerServiceError::EmptyRequest);
+        }
+        if canonical_request.len() > self.limits.maximum_request_bytes {
+            return Err(ControllerServiceError::RequestTooLarge);
+        }
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+
+        let request_digest = public_controller_request_digest(
+            self.scope,
+            peer.principal(),
+            peer.project(),
+            canonical_request,
+        );
+        let plan = self.compiler.compile_public_operator_recovery(
             self.reconciler.journal_mut(),
             peer,
             capability_id,

@@ -38,8 +38,8 @@ use aos_proto::aos::sandbox::v1::{
     GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
     GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
     GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
-    OperationServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt, Timestamp,
-    WatchRequest,
+    OperationServiceExt, OperatorServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt,
+    Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId};
 use aos_sandbox_core::{ResourceKind, Selector};
@@ -151,6 +151,13 @@ enum ControllerCommand {
         protobuf_body: Vec<u8>,
         expires_at: Instant,
         reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<PolicyPlan>>,
+    },
+    AdmitPublicOperatorRecovery {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        capability_id: CapabilityId,
+        canonical_request: Vec<u8>,
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<Operation>>,
     },
     AdmitPublicMutation {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
@@ -277,6 +284,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let public_connect =
         CapabilityServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect = CacheServiceExt::register(Arc::clone(&public_service), public_connect);
+    let public_connect = OperatorServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect =
         OperationServiceExt::register(public_service, public_connect).into_axum_service();
     let public_application = axum::Router::new().fallback_service(public_connect);
@@ -612,6 +620,60 @@ fn handle_controller_command(
                 }
                 Err(PublicPolicyPlanningErrorV1::InvalidPlan) => {
                     let message = "public policy planner returned an invalid plan".to_owned();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    Err(message)
+                }
+            }
+        }
+        ControllerCommand::AdmitPublicOperatorRecovery {
+            peer,
+            capability_id,
+            canonical_request,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            let operation_id = match controller.admit_public_operator_recovery(
+                &peer,
+                capability_id,
+                &canonical_request,
+            ) {
+                Ok(AcceptOutcome::Accepted(operation) | AcceptOutcome::Replay(operation)) => {
+                    operation
+                }
+                Err(
+                    ControllerServiceError::EmptyRequest
+                    | ControllerServiceError::RequestTooLarge
+                    | ControllerServiceError::Compilation(OperationCompilationError::Malformed),
+                ) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::InvalidRequest));
+                    return Ok(());
+                }
+                Err(ControllerServiceError::Compilation(OperationCompilationError::Rejected)) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::Rejected));
+                    return Ok(());
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    return Err(message);
+                }
+            };
+            match controller.public_operation(operation_id) {
+                Ok(Some(operation)) => {
+                    let _ = reply.send(Ok(operation));
+                    Ok(())
+                }
+                Ok(None) => {
+                    let message = "accepted operator recovery has no public operation".to_owned();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    Err(message)
+                }
+                Err(error) => {
+                    let message = error.to_string();
                     let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
                     Err(message)
                 }
@@ -1652,6 +1714,72 @@ impl CapabilityService {
             Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
                 ErrorCode::Unavailable,
                 "controller public policy planner is unavailable",
+            )),
+        }
+    }
+
+    async fn admit_public_operator_recovery(
+        &self,
+        context: &RequestContext,
+        canonical_request: Vec<u8>,
+    ) -> Result<Operation, ConnectError> {
+        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "operator recovery is unavailable on the diagnostic endpoint",
+            ));
+        }
+        let peer = context
+            .extensions()
+            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
+            .ok_or_else(|| {
+                ConnectError::new(
+                    ErrorCode::Unauthenticated,
+                    "operator recovery requires registered TLS peer evidence",
+                )
+            })?;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::AdmitPublicOperatorRecovery {
+                peer: peer.clone(),
+                capability_id: public_capability_id(context)?,
+                canonical_request,
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(controller_command_send_error)?;
+        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
+            .await
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "controller operator-recovery admission timed out",
+                )
+            })?
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::Unavailable,
+                    "controller worker ended before replying",
+                )
+            })?;
+
+        match result {
+            Ok(operation) => Ok(operation),
+            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
+                ErrorCode::DeadlineExceeded,
+                "controller operator-recovery admission expired",
+            )),
+            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "operator-recovery request is invalid",
+            )),
+            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "operator-recovery request was rejected",
+            )),
+            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "controller operator-recovery state is unavailable",
             )),
         }
     }

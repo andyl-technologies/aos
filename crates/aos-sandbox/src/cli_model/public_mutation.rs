@@ -166,6 +166,7 @@ impl PublicMutationRequestV1 {
             M::CancelOperation => decode!(wire::CancelOperationRequest, CancelOperation),
             M::PinCacheObject => decode!(wire::PinCacheObjectRequest, CachePin),
             M::UnpinCacheObject => decode!(wire::UnpinCacheObjectRequest, CacheUnpin),
+            M::OperatorRecover => decode!(wire::OperatorRecoveryRequest, OperatorRecover),
             _ => return Err(PublicMutationRequestError::UnsupportedMethod),
         };
         let authorization = DormantPublicApiAuthorizationV1::new(vec![1])
@@ -230,6 +231,7 @@ fn mutation_method_code(method: PublicApiAuditMethodV1) -> Result<u16, PublicMut
         M::CancelOperation => Ok(23),
         M::PinCacheObject => Ok(24),
         M::UnpinCacheObject => Ok(25),
+        M::OperatorRecover => Ok(26),
         _ => Err(PublicMutationRequestError::UnsupportedMethod),
     }
 }
@@ -263,6 +265,7 @@ fn mutation_method(code: u16) -> Result<PublicApiAuditMethodV1, PublicMutationRe
         23 => Ok(M::CancelOperation),
         24 => Ok(M::PinCacheObject),
         25 => Ok(M::UnpinCacheObject),
+        26 => Ok(M::OperatorRecover),
         _ => Err(PublicMutationRequestError::UnsupportedMethod),
     }
 }
