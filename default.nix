@@ -1347,7 +1347,33 @@ in {
       };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
-      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
+      # aos-testing leaves signing to the release finalizer, so Nix has no
+      # final image for the signed-artifact budget check. Keep the exemption
+      # explicit: any other missing check must stop whole-check evaluation.
+      imageBudgetExemptSystemNames = ["aos-testing"];
+      systemsMissingImageBudgets = builtins.filter (
+        name: !(discoverSystems.${name}.checks ? image-budget)
+      ) (builtins.attrNames discoverSystems);
+      invalidImageBudgetExemptions =
+        builtins.filter (
+          name:
+            !discoverSystems.${name}.config.aos.boot.secureBoot.externalFinalization.enable
+            || discoverSystems.${name}.build.unsignedImageAssembly == null
+        )
+        imageBudgetExemptSystemNames;
+      imageBudgetSystems =
+        if systemsMissingImageBudgets != imageBudgetExemptSystemNames
+        then
+          throw ''
+            golden image budget inventory mismatch: expected exemptions ${builtins.toJSON imageBudgetExemptSystemNames}, found ${builtins.toJSON systemsMissingImageBudgets}
+          ''
+        else if invalidImageBudgetExemptions != []
+        then
+          throw ''
+            golden image budget exemptions must produce an external-finalization assembly: ${builtins.toJSON invalidImageBudgetExemptions}
+          ''
+        else builtins.removeAttrs discoverSystems imageBudgetExemptSystemNames;
+      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) imageBudgetSystems;
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary;
