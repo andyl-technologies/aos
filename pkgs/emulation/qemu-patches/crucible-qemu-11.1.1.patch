@@ -1,4 +1,4 @@
-From 6b5bb45f9e7d95ab445b58faaaea7b0a7f126b16 Mon Sep 17 00:00:00 2001
+From 806b8cc19cc9f5afd7fa61e2f258f0f081a1625a Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -15023,19 +15023,20 @@ index 49c03a5bceef38412a82779b49c0b686954eb935..07ed82543a70a2e63026f84abaace49d
      device_class_set_props(dc, apic_properties_common);
      dc->realize = apic_common_realize;
 diff --git a/hw/intc/arm_gic.c b/hw/intc/arm_gic.c
-index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..178e5d86404b0aa251394aafe5da4bc9c1fe7015 100644
+index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..fac991f13e3c1dc7ac00db3efed277a3d008fd5e 100644
 --- a/hw/intc/arm_gic.c
 +++ b/hw/intc/arm_gic.c
-@@ -19,6 +19,8 @@
+@@ -19,6 +19,9 @@
   */
  
  #include "qemu/osdep.h"
++#include "qemu/accel.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
  #include "hw/core/irq.h"
  #include "hw/core/sysbus.h"
  #include "gic_internal.h"
-@@ -94,9 +96,12 @@ static inline void gic_get_best_irq(GICState *s, int cpu,
+@@ -94,9 +97,12 @@ static inline void gic_get_best_irq(GICState *s, int cpu,
      for (irq = 0; irq < s->num_irq; irq++) {
          if (GIC_DIST_TEST_ENABLED(irq, cm) && gic_test_pending(s, irq, cm) &&
              (!GIC_DIST_TEST_ACTIVE(irq, cm)) &&
@@ -15051,7 +15052,7 @@ index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..178e5d86404b0aa251394aafe5da4bc9
                  *best_irq = irq;
              }
          }
-@@ -389,6 +394,10 @@ static void gic_set_irq(void *opaque, int irq, int level)
+@@ -389,6 +395,10 @@ static void gic_set_irq(void *opaque, int irq, int level)
       */
      GICState *s = (GICState *)opaque;
      int cm, target;
@@ -15062,7 +15063,7 @@ index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..178e5d86404b0aa251394aafe5da4bc9
      if (irq < (s->num_irq - GIC_INTERNAL)) {
          /* The first external input line is internal interrupt 32.  */
          cm = ALL_CPU_MASK;
-@@ -408,6 +417,21 @@ static void gic_set_irq(void *opaque, int irq, int level)
+@@ -408,6 +418,21 @@ static void gic_set_irq(void *opaque, int irq, int level)
      if (level == GIC_DIST_TEST_LEVEL(irq, cm)) {
          return;
      }
@@ -15084,7 +15085,7 @@ index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..178e5d86404b0aa251394aafe5da4bc9
  
      if (s->revision == REV_11MPCORE) {
          gic_set_irq_11mpcore(s, irq, level, cm, target);
-@@ -596,9 +620,72 @@ static inline uint32_t gic_clear_pending_sgi(GICState *s, int irq, int cpu)
+@@ -596,9 +621,72 @@ static inline uint32_t gic_clear_pending_sgi(GICState *s, int irq, int cpu)
      return ret;
  }
  
@@ -15157,7 +15158,7 @@ index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..178e5d86404b0aa251394aafe5da4bc9
  
      /* gic_get_current_pending_irq() will return 1022 or 1023 appropriately
       * for the case where this GIC supports grouping and the pending interrupt
-@@ -618,6 +705,110 @@ uint32_t gic_acknowledge_irq(GICState *s, int cpu, MemTxAttrs attrs)
+@@ -618,6 +706,110 @@ uint32_t gic_acknowledge_irq(GICState *s, int cpu, MemTxAttrs attrs)
          return 1023;
      }
  
@@ -15268,7 +15269,7 @@ index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..178e5d86404b0aa251394aafe5da4bc9
      gic_activate_irq(s, cpu, irq);
  
      if (s->revision == REV_11MPCORE) {
-@@ -640,6 +831,9 @@ uint32_t gic_acknowledge_irq(GICState *s, int cpu, MemTxAttrs attrs)
+@@ -640,6 +832,9 @@ uint32_t gic_acknowledge_irq(GICState *s, int cpu, MemTxAttrs attrs)
      } else {
          gic_update(s);
      }
@@ -15278,7 +15279,7 @@ index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..178e5d86404b0aa251394aafe5da4bc9
      DPRINTF("ACK %d\n", irq);
      return ret;
  }
-@@ -2104,6 +2298,7 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+@@ -2104,6 +2299,7 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
      SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
      ARMGICClass *agc = ARM_GIC_GET_CLASS(s);
      Error *local_err = NULL;
@@ -15286,57 +15287,62 @@ index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..178e5d86404b0aa251394aafe5da4bc9
  
      agc->parent_realize(dev, &local_err);
      if (local_err) {
-@@ -2132,6 +2327,54 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+@@ -2132,6 +2328,59 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
       * interface (s->vifaceiomem[0]) and virtual CPU interface).
       */
      gic_init_irqs_and_mmio(s, gic_set_irq, gic_ops, gic_virt_ops);
-+    if (!qemu_crucible_fault_interrupt_register_injector(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
-+            gic_crucible_interrupt_inject, s) ||
-+        !qemu_crucible_fault_interrupt_register_injector(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
-+            gic_crucible_interrupt_inject, s) ||
-+        !qemu_crucible_fault_interrupt_register_injector(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
-+            gic_crucible_interrupt_inject, s) ||
-+        !qemu_crucible_fault_interrupt_register_injector(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
-+            gic_crucible_interrupt_inject, s) ||
-+        !qemu_crucible_fault_interrupt_register_route_validator(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
-+            gic_crucible_interrupt_route_validate, s) ||
-+        !qemu_crucible_fault_interrupt_register_route_validator(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
-+            gic_crucible_interrupt_route_validate, s) ||
-+        !qemu_crucible_fault_interrupt_register_route_validator(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
-+            gic_crucible_interrupt_route_validate, s) ||
-+        !qemu_crucible_fault_interrupt_register_route_validator(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
-+            gic_crucible_interrupt_route_validate, s)) {
-+        error_setg(errp, "conflicting Crucible AArch64 interrupt injector");
-+        return;
-+    }
-+    controller_version = g_strdup_printf(
-+        "qemu-11.1.1-gicv%u-crucible-v1", s->revision);
-+    if (!qemu_crucible_fault_interrupt_register_family(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
-+            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
-+            controller_version, 15, s->num_cpu) ||
-+        !qemu_crucible_fault_interrupt_register_family(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
-+            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
-+            controller_version, 31, s->num_cpu) ||
-+        !qemu_crucible_fault_interrupt_register_family(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
-+            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
-+            controller_version, s->num_irq - 1, s->num_cpu) ||
-+        !qemu_crucible_fault_interrupt_register_family(
-+            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
-+            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
-+            controller_version, 31, s->num_cpu)) {
-+        error_setg(errp, "conflicting Crucible GICv2 family realization");
-+        return;
++    if (strcmp(current_accel_name(), "sim") == 0) {
++        if (!qemu_crucible_fault_interrupt_register_injector(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
++                gic_crucible_interrupt_inject, s) ||
++            !qemu_crucible_fault_interrupt_register_injector(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
++                gic_crucible_interrupt_inject, s) ||
++            !qemu_crucible_fault_interrupt_register_injector(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
++                gic_crucible_interrupt_inject, s) ||
++            !qemu_crucible_fault_interrupt_register_injector(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
++                gic_crucible_interrupt_inject, s) ||
++            !qemu_crucible_fault_interrupt_register_route_validator(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
++                gic_crucible_interrupt_route_validate, s) ||
++            !qemu_crucible_fault_interrupt_register_route_validator(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
++                gic_crucible_interrupt_route_validate, s) ||
++            !qemu_crucible_fault_interrupt_register_route_validator(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
++                gic_crucible_interrupt_route_validate, s) ||
++            !qemu_crucible_fault_interrupt_register_route_validator(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
++                gic_crucible_interrupt_route_validate, s)) {
++            error_setg(errp,
++                       "conflicting Crucible AArch64 interrupt injector");
++            return;
++        }
++
++        controller_version = g_strdup_printf(
++            "qemu-11.1.1-gicv%u-crucible-v1", s->revision);
++        if (!qemu_crucible_fault_interrupt_register_family(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
++                1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++                controller_version, 15, s->num_cpu) ||
++            !qemu_crucible_fault_interrupt_register_family(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_PPI,
++                1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++                controller_version, 31, s->num_cpu) ||
++            !qemu_crucible_fault_interrupt_register_family(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SPI,
++                1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++                controller_version, s->num_irq - 1, s->num_cpu) ||
++            !qemu_crucible_fault_interrupt_register_family(
++                QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER,
++                1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
++                controller_version, 31, s->num_cpu)) {
++            error_setg(errp,
++                       "conflicting Crucible GICv2 family realization");
++            return;
++        }
 +    }
  
      /* Extra core-specific regions for the CPU interfaces. This is
@@ -15559,19 +15565,20 @@ index 304d89cf56219bf76eeeb24e55dbfe60be23ba43..4eaa189d31ed986d795c0fd311c6322d
      dc->realize = arm_gic_common_realize;
      device_class_set_props(dc, arm_gic_common_properties);
 diff --git a/hw/intc/arm_gicv3.c b/hw/intc/arm_gicv3.c
-index e93c1df5b4e48238a56153fcce5d20beb640c47f..bfac260afc242fd2f6263a6182d0aee89df955cc 100644
+index e93c1df5b4e48238a56153fcce5d20beb640c47f..13442f8418579a41af812fca3c5409a79fe711e7 100644
 --- a/hw/intc/arm_gicv3.c
 +++ b/hw/intc/arm_gicv3.c
-@@ -17,6 +17,8 @@
+@@ -17,6 +17,9 @@
  
  #include "qemu/osdep.h"
  #include "qapi/error.h"
++#include "qemu/accel.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
  #include "qemu/module.h"
  #include "hw/intc/arm_gicv3.h"
  #include "gicv3_internal.h"
-@@ -164,9 +166,14 @@ static bool gicv3_get_priority(GICv3CPUState *cs, bool is_redist, int irq,
+@@ -164,9 +167,14 @@ static bool gicv3_get_priority(GICv3CPUState *cs, bool is_redist, int irq,
      }
  
      if (is_redist) {
@@ -15588,7 +15595,7 @@ index e93c1df5b4e48238a56153fcce5d20beb640c47f..bfac260afc242fd2f6263a6182d0aee8
      }
  
      return false;
-@@ -280,7 +287,9 @@ static void gicv3_update_noirqset(GICv3State *s, int start, int len)
+@@ -280,7 +288,9 @@ static void gicv3_update_noirqset(GICv3State *s, int start, int len)
          if (!(pend & (1 << (i & 0x1f)))) {
              continue;
          }
@@ -15599,7 +15606,7 @@ index e93c1df5b4e48238a56153fcce5d20beb640c47f..bfac260afc242fd2f6263a6182d0aee8
          if (!cs) {
              /* Interrupts targeting no implemented CPU should remain pending
               * and not be forwarded to any CPU.
-@@ -382,6 +391,15 @@ static void gicv3_set_irq(void *opaque, int irq, int level)
+@@ -382,6 +392,15 @@ static void gicv3_set_irq(void *opaque, int irq, int level)
  
      if (irq < (s->num_irq - GIC_INTERNAL)) {
          /* external interrupt (SPI) */
@@ -15615,7 +15622,7 @@ index e93c1df5b4e48238a56153fcce5d20beb640c47f..bfac260afc242fd2f6263a6182d0aee8
          gicv3_dist_set_irq(s, irq + GIC_INTERNAL, level);
      } else {
          /* per-cpu interrupt (PPI) */
-@@ -395,10 +413,158 @@ static void gicv3_set_irq(void *opaque, int irq, int level)
+@@ -395,10 +414,158 @@ static void gicv3_set_irq(void *opaque, int irq, int level)
           * model wires up interrupts.
           */
          assert(irq >= GIC_NR_SGIS);
@@ -15774,7 +15781,7 @@ index e93c1df5b4e48238a56153fcce5d20beb640c47f..bfac260afc242fd2f6263a6182d0aee8
  static void arm_gicv3_post_load(GICv3State *s)
  {
      int i;
-@@ -440,6 +606,8 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+@@ -440,6 +607,8 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
      GICv3State *s = ARM_GICV3(dev);
      ARMGICv3Class *agc = ARM_GICV3_GET_CLASS(s);
      Error *local_err = NULL;
@@ -15783,7 +15790,7 @@ index e93c1df5b4e48238a56153fcce5d20beb640c47f..bfac260afc242fd2f6263a6182d0aee8
  
      agc->parent_realize(dev, &local_err);
      if (local_err) {
-@@ -449,7 +617,68 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+@@ -449,7 +618,73 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
  
      gicv3_init_irqs_and_mmio(s, gicv3_set_irq, gic_ops);
  
@@ -15791,6 +15798,11 @@ index e93c1df5b4e48238a56153fcce5d20beb640c47f..bfac260afc242fd2f6263a6182d0aee8
 +    gicv3_init_cpuif(s, &local_err);
 +    if (local_err) {
 +        error_propagate(errp, local_err);
++        return;
++    }
++
++    /* Crucible interrupt families are defined only for deterministic sim. */
++    if (strcmp(current_accel_name(), "sim") != 0) {
 +        return;
 +    }
 +
@@ -94678,6 +94690,19 @@ index 56ff860e216c8f37105b56839447b54cd05712de..a5114635e2227b01983182228354611d
 +    suite: ['qtest', 'qtest-aarch64'],
 +  )
 +endif
+diff --git a/tests/qtest/qmp-cmd-test.c b/tests/qtest/qmp-cmd-test.c
+index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..eea527109ac27fd232edc1abd41b8cf3c821bfdd 100644
+--- a/tests/qtest/qmp-cmd-test.c
++++ b/tests/qtest/qmp-cmd-test.c
+@@ -46,6 +46,8 @@ static int query_error_class(const char *cmd)
+         { "query-balloon", ERROR_CLASS_DEVICE_NOT_ACTIVE },
+         { "query-hotpluggable-cpus", ERROR_CLASS_GENERIC_ERROR },
+         { "query-hv-balloon-status-report", ERROR_CLASS_GENERIC_ERROR },
++        { "query-crucible-selectable-reply-boundary",
++          ERROR_CLASS_GENERIC_ERROR },
+         { "query-vm-generation-id", ERROR_CLASS_GENERIC_ERROR },
+         /* Only valid with a USB bus added */
+         { "x-query-usb", ERROR_CLASS_GENERIC_ERROR },
 diff --git a/tests/tcg/plugins/crucible-exact-tb-exit.c b/tests/tcg/plugins/crucible-exact-tb-exit.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..d622a5548c4d850037867543e302a28961c022dd
