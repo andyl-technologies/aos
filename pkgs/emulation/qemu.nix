@@ -28,6 +28,17 @@
   libisoburn,
   mtools,
   socat,
+  coreutils,
+  diffutils,
+  e2fsprogs,
+  fakeroot,
+  findutils,
+  gawk,
+  grep,
+  kmod,
+  linux,
+  sed,
+  util-linux,
   stdenv,
   zstd,
   buildPackages,
@@ -37,6 +48,7 @@
   enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
   testOnlyNonDistributable ? false,
   fullUpstreamTestSuiteOnly ? false,
+  qemuTestRunner ? null,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
 }: let
   _testArtifactPolicy =
@@ -46,6 +58,12 @@
   _fullTestSuitePolicy =
     if fullUpstreamTestSuiteOnly && (!applyCruciblePatch || !testOnlyNonDistributable)
     then throw "the full patched-QEMU test suite must be a non-distributable Crucible test artifact"
+    else null;
+  _fullTestVmPolicy =
+    if fullUpstreamTestSuiteOnly && (stdenv.isCross || !stdenv.hostPlatform.isLinux)
+    then throw "the full patched-QEMU test suite requires a native Linux KVM builder"
+    else if fullUpstreamTestSuiteOnly && qemuTestRunner == null
+    then throw "the full patched-QEMU test suite requires an explicit generic QEMU runner"
     else null;
   version = atomicPatch.qemuVersion;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -97,6 +115,16 @@
     if stdenv.isCross
     then buildPackages.zstd
     else zstd;
+  fullUpstreamTestTools = [
+    buildPygdbmi
+    buildBash
+    buildPerl
+    buildGnutls
+    buildLibisoburn
+    buildMtools
+    buildSocat
+    buildZstd
+  ];
   darwinSigner =
     if isDarwinCross
     then
@@ -306,6 +334,45 @@
     ]
     ++ lib.optional stdenv.hostPlatform.isLinux gcc-libs;
   qemuRuntimeRpath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") qemuRuntimeDeps);
+  fullUpstreamTestGuestRoots =
+    [
+      gnumake
+      pkg-config
+      meson
+      ninja
+      python3
+      setuptools
+      distlib
+      glib.dev
+      glib.tools
+      coreutils
+      diffutils
+      findutils
+      gawk
+      grep
+      kmod
+      sed
+      util-linux
+      linux
+      stdenv.cc
+    ]
+    ++ stdenv.initialPath
+    ++ qemuRuntimeDeps
+    ++ fullUpstreamTestTools;
+  fullUpstreamTestGuestPath = builtins.concatStringsSep ":" (
+    builtins.concatMap (dependency: [
+      "${dependency}/bin"
+      "${dependency}/sbin"
+    ])
+    fullUpstreamTestGuestRoots
+  );
+  fullUpstreamTestGuestGraph =
+    lib.concatLists
+    (lib.imap (index: dependency: [
+        "qemu-full-test-closure-${builtins.toString index}"
+        dependency
+      ])
+      fullUpstreamTestGuestRoots);
   fullUpstreamTestHarnessMutationMaterial = ''
     mutation_version=1
     mutation_scope=post-build-test-harness-only
@@ -315,6 +382,8 @@
     vfio_guest_temp_policy=/tmp
     guest_shebang_allowlist=tests/functional/aarch64/test_device_passthrough.py:20,60:/bin/bash;tests/lcitool/libvirt-ci/lcitool/ansible/playbooks/update/templates/gitlab-runner.j2:1:/bin/sh
     remaining_var_tmp_allowlist=tests/docker/Makefile.include:container-mount-only
+    meson_thorough_report=build/meson-logs/check-report-thorough.junit.xml
+    meson_report_compatibility=build/meson-logs/check-report.junit.xml:absolute-symlink-for-generated-make-target
     test_shebang_scope=all-files-under-tests-python-scripts
     test_python=build/pyvenv/bin/python3
     test_perl=${buildPerl}/bin/perl
@@ -368,6 +437,7 @@
 in
   assert _testArtifactPolicy == null;
   assert _fullTestSuitePolicy == null;
+  assert _fullTestVmPolicy == null;
     mkDerivation {
       inherit pname;
       inherit version;
@@ -393,16 +463,7 @@ in
             buildPackages.glib.tools
             buildPackages.dtc
           ]
-          ++ lib.optionals fullUpstreamTestSuiteOnly [
-            buildPygdbmi
-            buildBash
-            buildPerl
-            buildGnutls
-            buildLibisoburn
-            buildMtools
-            buildSocat
-            buildZstd
-          ]
+          ++ lib.optionals fullUpstreamTestSuiteOnly fullUpstreamTestTools
           ++ lib.optional isDarwinCross darwinSigner
         else
           [
@@ -416,18 +477,21 @@ in
             glib.dev
             glib.tools
           ]
-          ++ lib.optionals fullUpstreamTestSuiteOnly [
-            buildPygdbmi
-            buildBash
-            buildPerl
-            buildGnutls
-            buildLibisoburn
-            buildMtools
-            buildSocat
-            buildZstd
-          ];
+          ++ lib.optionals fullUpstreamTestSuiteOnly (
+            fullUpstreamTestTools
+            ++ [
+              e2fsprogs
+              fakeroot
+              qemuTestRunner
+            ]
+          );
       runtimeDeps = qemuRuntimeDeps ++ lib.optional enableLinuxUser bash;
       propagatedDeps = [];
+      exportReferencesGraph =
+        if fullUpstreamTestSuiteOnly
+        then fullUpstreamTestGuestGraph
+        else [];
+      requiredSystemFeatures = lib.optional fullUpstreamTestSuiteOnly "kvm";
       # The Darwin install is finalized and signed below. Either generic
       # mutating pass would invalidate the resulting Mach-O code signatures.
       dontStrip = lib.optionalString isDarwinCross "1";
@@ -801,9 +865,112 @@ in
                 "$docker_makefile_hash" "$docker_makefile_hash" \
                 '/var/tmp/qemu' 'container mount path; unchanged and not host-executed' \
                 >> "$mutation_manifest"
+              printf 'compatibility-symlink\t%s\t%s\t%s\t%s\t%s\n' \
+                build/meson-logs/check-report.junit.xml \
+                absent generated-by-meson absent \
+                'absolute link to setup-suffixed report; test selection unchanged' \
+                >> "$mutation_manifest"
 
               mutation_manifest_hash=$(sha256sum "$mutation_manifest" | cut -d ' ' -f 1)
               test -n "$mutation_manifest_hash"
+
+              # Preserve the exact configured and compiled tree at the path
+              # embedded by Meson. The host filesystem is deliberately only
+              # an input to mkfs.ext4; every test executes against the guest's
+              # writable ext4 root.
+              guest_root="$TMPDIR/qemu-full-test-root"
+              mkdir -p \
+                "$guest_root/bin" \
+                "$guest_root/build" \
+                "$guest_root/dev" \
+                "$guest_root/dev/pts" \
+                "$guest_root/dev/shm" \
+                "$guest_root/etc" \
+                "$guest_root/nix/store" \
+                "$guest_root/proc" \
+                "$guest_root/results" \
+                "$guest_root/run" \
+                "$guest_root/sbin" \
+                "$guest_root/sys" \
+                "$guest_root/tmp" \
+                "$guest_root/var/tmp"
+              chmod 1777 "$guest_root/tmp" "$guest_root/var/tmp"
+
+              grep -h '^/nix/store/' qemu-full-test-closure-* \
+                | LC_ALL=C sort -u > "$TMPDIR/qemu-full-test-closure-paths"
+              test -s "$TMPDIR/qemu-full-test-closure-paths"
+              while IFS= read -r closure_path; do
+                test -e "$closure_path"
+                cp -a "$closure_path" "$guest_root/nix/store/"
+                test -e "$guest_root$closure_path"
+              done < "$TMPDIR/qemu-full-test-closure-paths"
+
+              cp -a "$PWD" "$guest_root/build/qemu-${version}"
+              ln -s ${buildBash}/bin/bash "$guest_root/bin/bash"
+              ln -s ${buildBash}/bin/bash "$guest_root/bin/sh"
+
+              cat > "$guest_root/etc/passwd" <<'PASSWD'
+              root:x:0:0:root:/root:/bin/bash
+              nobody:x:65534:65534:Nobody:/:/bin/sh
+              PASSWD
+              cat > "$guest_root/etc/group" <<'GROUP'
+              root:x:0:
+              nobody:x:65534:
+              GROUP
+              cat > "$guest_root/etc/nsswitch.conf" <<'NSSWITCH'
+              passwd: files
+              group: files
+              shadow: files
+              hosts: files
+              NSSWITCH
+              cat > "$guest_root/etc/hosts" <<'HOSTS'
+              127.0.0.1 localhost
+              ::1 localhost
+              HOSTS
+
+              cat > "$guest_root/qemu-full-test-suite" <<'GUEST_TEST'
+              #!${buildBash}/bin/bash
+              set -eu
+
+              export PATH="/bin:/sbin:${fullUpstreamTestGuestPath}"
+              export HOME=/tmp
+              export CONFIG_SHELL=${buildBash}/bin/bash
+              export NIX_BUILD_CORES=8
+              export PYTHONPATH="${buildPygdbmi}/lib/python3.14/site-packages:${buildPython}/lib/python3.14/ensurepip/_bundled/pip-25.3-py3-none-any.whl:${buildSetuptools}/lib/python3.14/site-packages/setuptools/_vendor:${buildMeson}/lib/python3/site-packages:${buildDistlib}/lib/python3.14/site-packages:${buildSetuptools}/lib/python3.14/site-packages"
+
+              cd /build/qemu-${version}
+              test "$PWD" = /build/qemu-${version}
+              out=/results/output
+              mutation_manifest=full-upstream-test-suite.mutations.tsv
+              mutation_manifest_hash=$(sha256sum "$mutation_manifest" | cut -d ' ' -f 1)
+              test -n "$mutation_manifest_hash"
+
+              test_python="$PWD/build/pyvenv/bin/python3"
+              test -x "$test_python"
+              "$test_python" - <<'PYTHON'
+              import os
+              from pathlib import Path
+
+              probe = Path("build/.aos-ext4-xattr-probe")
+              probe.write_bytes(b"ext4-xattr-probe")
+              os.setxattr(probe, b"user.aos.qemu-test", b"supported")
+              if os.getxattr(probe, b"user.aos.qemu-test") != b"supported":
+                  raise SystemExit("ext4 user xattr round trip failed")
+              probe.unlink()
+
+              master_fd, slave_fd = os.openpty()
+              os.close(master_fd)
+              os.close(slave_fd)
+
+              shm_probe = Path("/dev/shm/aos-qemu-test")
+              shm_probe.write_bytes(b"posix-shm-probe")
+              shm_probe.unlink()
+              PYTHON
+              build_identity_object=build/libsystem.a.p/plugins_crucible-fault-vmstate.c.o
+              test -f "$build_identity_object"
+              strings "$build_identity_object" | grep -F -x -q '${qemuBuildIdentity}'
+              test -f build/meson-info/intro-tests.json
+              test -f build/Makefile.mtest
 
               # QEMU 11's check target is generated from Meson's complete
               # configured test inventory. Thorough mode includes the slow,
@@ -812,6 +979,11 @@ in
               # source or build tree; absent upstream assets remain explicit
               # skips in the JUnit evidence.
               export QEMU_TEST_NO_DOWNLOAD=1
+              thorough_junit=build/meson-logs/check-report-thorough.junit.xml
+              compatibility_junit=build/meson-logs/check-report.junit.xml
+              test ! -e "$compatibility_junit"
+              test ! -L "$compatibility_junit"
+              ln -s "$PWD/$thorough_junit" "$compatibility_junit"
               if make -j$NIX_BUILD_CORES V=1 SPEED=thorough \
                 check-report.junit.xml > full-upstream-test-suite.log 2>&1; then
                 suite_status=0
@@ -824,17 +996,23 @@ in
                 exit "$suite_status"
               fi
 
-              junit=build/check-report.junit.xml
+              test -L "$compatibility_junit"
+              test "$(readlink "$compatibility_junit")" = "$PWD/$thorough_junit"
+              test build/check-report.junit.xml -ef "$thorough_junit"
+              junit=$thorough_junit
               test -s "$junit"
               ${buildPython}/bin/python3 - "$junit" \
                 full-upstream-test-suite.summary \
-                full-upstream-test-suite.skipped <<'PYTHON'
+                full-upstream-test-suite.skipped \
+                full-upstream-test-suite.top-level-skipped <<'PYTHON'
+              import hashlib
               import sys
               import xml.etree.ElementTree as ET
 
-              junit_path, summary_path, skipped_path = sys.argv[1:]
+              junit_path, summary_path, skipped_path, top_skipped_path = sys.argv[1:]
               root = ET.parse(junit_path).getroot()
               cases = list(root.iter("testcase"))
+              suites = root.findall("testsuite")
 
               failed = []
               errored = []
@@ -855,23 +1033,77 @@ in
 
               if not cases:
                   raise SystemExit("QEMU test report contains no test cases")
+              if not suites:
+                  raise SystemExit("QEMU test report contains no test suites")
               if failed or errored:
                   raise SystemExit(
                       "QEMU test report is not green: "
                       f"{len(failed)} failed, {len(errored)} errored"
                   )
 
-              passed = len(cases) - len(skipped)
+              # Meson groups tests without TAP subcases in the common `qemu`
+              # suite. Every other suite represents one of the 1,548
+              # configured top-level test invocations, even when it contains
+              # multiple TAP subcases.
+              top_level_tests = 0
+              top_level_skipped = []
+              for suite in suites:
+                  suite_name = suite.get("name", "<unnamed-suite>")
+                  suite_cases = suite.findall("testcase")
+                  if not suite_cases:
+                      raise SystemExit(f"QEMU test suite has no cases: {suite_name}")
+
+                  if suite_name == "qemu":
+                      top_level_tests += len(suite_cases)
+                      top_level_skipped.extend(
+                          f"qemu::{case.get('name', '<unnamed>')}"
+                          for case in suite_cases
+                          if case.find("skipped") is not None
+                      )
+                  else:
+                      top_level_tests += 1
+                      if all(case.find("skipped") is not None for case in suite_cases):
+                          top_level_skipped.append(suite_name)
+
+              top_level_skipped.sort()
+              skip_inventory = "".join(f"{name}\n" for name in top_level_skipped)
+              skip_inventory_hash = hashlib.sha256(skip_inventory.encode()).hexdigest()
+              if top_level_tests != 1548:
+                  raise SystemExit(
+                      "QEMU configured test count drifted: "
+                      f"expected 1548, observed {top_level_tests}"
+                  )
+              if len(top_level_skipped) != 367:
+                  raise SystemExit(
+                      "QEMU top-level skip count drifted: "
+                      f"expected 367, observed {len(top_level_skipped)}"
+                  )
+              expected_skip_hash = (
+                  "b3f8b91542145297fe8accd5778855086512c71c74dd3f4e83bc3ca345414142"
+              )
+              if skip_inventory_hash != expected_skip_hash:
+                  raise SystemExit(
+                      "QEMU top-level skip inventory drifted: "
+                      f"expected {expected_skip_hash}, observed {skip_inventory_hash}"
+                  )
+
+              passed = top_level_tests - len(top_level_skipped)
               with open(summary_path, "w", encoding="utf-8") as summary:
-                  print(f"tests={len(cases)}", file=summary)
+                  print(f"tests={top_level_tests}", file=summary)
                   print(f"passed={passed}", file=summary)
                   print(f"failed={len(failed)}", file=summary)
                   print(f"errors={len(errored)}", file=summary)
-                  print(f"skipped={len(skipped)}", file=summary)
+                  print(f"skipped={len(top_level_skipped)}", file=summary)
+                  print(f"subtests={len(cases)}", file=summary)
+                  print(f"subtests_skipped={len(skipped)}", file=summary)
+                  print(f"skip_inventory_sha256={skip_inventory_hash}", file=summary)
 
               with open(skipped_path, "w", encoding="utf-8") as skipped_file:
                   for qualified_name, reason in sorted(skipped):
                       print(f"{qualified_name}\t{reason}", file=skipped_file)
+
+              with open(top_skipped_path, "w", encoding="utf-8") as top_skipped_file:
+                  top_skipped_file.write(skip_inventory)
               PYTHON
               cat full-upstream-test-suite.summary
 
@@ -882,9 +1114,11 @@ in
                 "$out/share/aos/crucible/full-upstream-test-suite.summary"
               cp full-upstream-test-suite.skipped \
                 "$out/share/aos/crucible/full-upstream-test-suite.skipped"
-              cp build/check-report.junit.xml \
+              cp full-upstream-test-suite.top-level-skipped \
+                "$out/share/aos/crucible/full-upstream-test-suite.top-level-skipped"
+              cp "$junit" \
                 "$out/share/aos/crucible/full-upstream-test-suite.junit.xml"
-              cp build/meson-logs/check-report.txt \
+              cp build/meson-logs/check-report-thorough.txt \
                 "$out/share/aos/crucible/full-upstream-test-suite.meson-log.txt"
               cp build/meson-info/intro-tests.json \
                 "$out/share/aos/crucible/configured-tests.json"
@@ -915,6 +1149,9 @@ in
               meson_test_setup=thorough
               selection=all-configured-tests
               functional_asset_policy=no-download
+              filesystem=ext4
+              execution_environment=qemu-kvm-vm
+              outer_qemu=${qemuTestRunner}
               qemu_test_harness_mutation_hash=${fullUpstreamTestHarnessMutationHash}
               qemu_build_id=${qemuBuildIdentity}
               qemu_version=${version}
@@ -932,6 +1169,193 @@ in
               corresponding_source_required=false
               publishable=false
               RELEASE_POLICY
+
+              (
+                cd "$out"
+                find . -type f ! -name result-artifacts.sha256 -print0 \
+                  | LC_ALL=C sort -z \
+                  | xargs -0 sha256sum > result-artifacts.sha256
+              )
+              GUEST_TEST
+              chmod 0555 "$guest_root/qemu-full-test-suite"
+
+              mkdir -p "$guest_root/lib"
+              ln -s ${linux}/lib/modules "$guest_root/lib/modules"
+
+              cat > "$guest_root/poweroff.c" <<'POWEROFF_C'
+              #include <linux/reboot.h>
+              #include <stdio.h>
+              #include <sys/reboot.h>
+              #include <unistd.h>
+
+              int main(void)
+              {
+                  sync();
+                  if (reboot(LINUX_REBOOT_CMD_POWER_OFF) != 0) {
+                      perror("reboot poweroff");
+                      return 1;
+                  }
+                  return 0;
+              }
+              POWEROFF_C
+              cc "$guest_root/poweroff.c" -o "$guest_root/sbin/poweroff"
+              rm "$guest_root/poweroff.c"
+
+              cat > "$guest_root/init" <<'INIT'
+              #!${buildBash}/bin/bash
+              set -eu
+
+              export PATH="/bin:/sbin:${fullUpstreamTestGuestPath}"
+              export HOME=/tmp
+
+              mount -t proc proc /proc
+              mount -t sysfs sysfs /sys
+              mount -t devtmpfs devtmpfs /dev
+              mkdir -p /dev/pts /dev/shm
+              mount -t devpts devpts /dev/pts
+              mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+              mount -t tmpfs tmpfs /run
+              modprobe kvm_intel 2>/dev/null || modprobe kvm_amd 2>/dev/null
+              test -c /dev/kvm
+              mkdir -p /results
+              mount -t ext4 /dev/vdb /results
+
+              test_status=0
+              /qemu-full-test-suite || test_status=$?
+              printf '%s\n' "$test_status" > /results/guest-test-status
+              sync
+              umount /results
+
+              if [ "$test_status" -eq 0 ]; then
+                  echo 'QEMU_FULL_TEST_VM_RESULT:PASS'
+              else
+                  echo "QEMU_FULL_TEST_VM_RESULT:FAIL:$test_status"
+              fi
+              sleep 1
+              /sbin/poweroff
+              INIT
+              chmod 0555 "$guest_root/init"
+
+              kernel_config=${linux}/boot/config-${linux.version}
+              test -f "$kernel_config"
+              for required_kernel_option in \
+                CONFIG_DEVTMPFS=y \
+                CONFIG_DEVTMPFS_MOUNT=y \
+                CONFIG_EXT4_FS=y \
+                CONFIG_EXT4_FS_POSIX_ACL=y \
+                CONFIG_EXT4_FS_SECURITY=y \
+                CONFIG_TMPFS=y \
+                CONFIG_TMPFS_POSIX_ACL=y \
+                CONFIG_TMPFS_XATTR=y \
+                CONFIG_UNIX98_PTYS=y \
+                CONFIG_VIRTIO_BLK=y \
+                CONFIG_VIRTIO_PCI=y; do
+                grep -F -x -q "$required_kernel_option" "$kernel_config"
+              done
+              grep -E -x -q 'CONFIG_KVM=(y|m)' "$kernel_config"
+              grep -E -x -q 'CONFIG_KVM_(INTEL|AMD)=(y|m)' "$kernel_config"
+
+              # mkfs.ext4 materializes sparse inputs, so size from apparent
+              # bytes rather than the host filesystem's allocated blocks.
+              root_used_kib=$(du -sk --apparent-size "$guest_root" | cut -f 1)
+              root_image_mib=$((root_used_kib / 1024 + 10240))
+              if [ "$root_image_mib" -lt 12288 ]; then
+                root_image_mib=12288
+              fi
+              if [ "$root_image_mib" -gt 24576 ]; then
+                echo "QEMU full-test root image exceeds 24 GiB bound: $root_image_mib MiB" >&2
+                exit 1
+              fi
+
+              root_image="$TMPDIR/qemu-full-test-root.ext4"
+              results_image="$TMPDIR/qemu-full-test-results.ext4"
+              ${fakeroot}/bin/fakeroot -- \
+                ${e2fsprogs}/sbin/mkfs.ext4 -F -d "$guest_root" \
+                -L qemu-full-test-root -m 0 -q \
+                "$root_image" "''${root_image_mib}M"
+              mkdir -p "$TMPDIR/qemu-full-test-results"
+              ${fakeroot}/bin/fakeroot -- \
+                ${e2fsprogs}/sbin/mkfs.ext4 -F \
+                -d "$TMPDIR/qemu-full-test-results" \
+                -L qemu-full-test-results -m 0 -q "$results_image" 1024M
+
+              runner_identity=${qemuTestRunner}/share/aos/crucible/qemu-build-identity.env
+              test -f "$runner_identity"
+              grep -F -x -q 'qemu_crucible_atomic_patch_applied=false' "$runner_identity"
+              grep -F -x -q 'qemu_sim_capability=none' "$runner_identity"
+              ! grep -F -x -q 'qemu_build_id=${qemuBuildIdentity}' "$runner_identity"
+              test -x ${qemuTestRunner}/bin/qemu-system-x86_64
+              test -c /dev/kvm
+
+              kernel_image=${linux}/boot/vmlinuz-${linux.version}
+              test -f "$kernel_image"
+              serial_log="$TMPDIR/qemu-full-test-vm.serial.log"
+              qemu_log="$TMPDIR/qemu-full-test-vm.qemu.log"
+              if ${qemuTestRunner}/bin/qemu-system-x86_64 \
+                -machine q35,accel=kvm \
+                -cpu host \
+                -m 16384 \
+                -smp 8 \
+                -nographic \
+                -kernel "$kernel_image" \
+                -append 'console=ttyS0 reboot=k panic=1 root=/dev/vda rw rootwait init=/init' \
+                -drive file="$root_image",format=raw,if=virtio,cache=unsafe \
+                -drive file="$results_image",format=raw,if=virtio,cache=unsafe \
+                -no-reboot \
+                > "$serial_log" 2> "$qemu_log"; then
+                vm_status=0
+              else
+                vm_status=$?
+              fi
+              cat -v "$serial_log"
+              if [ "$vm_status" -ne 0 ]; then
+                cat "$qemu_log" >&2
+                echo "generic QEMU test VM failed with status $vm_status" >&2
+                exit "$vm_status"
+              fi
+              grep -F -q 'QEMU_FULL_TEST_VM_RESULT:PASS' "$serial_log"
+              ! grep -F -q 'QEMU_FULL_TEST_VM_RESULT:FAIL:' "$serial_log"
+
+              mkdir -p "$out"
+              ${e2fsprogs}/sbin/debugfs \
+                -R "rdump /output $TMPDIR" "$results_image" >/dev/null
+              cp -a "$TMPDIR/output/." "$out/"
+              guest_test_status=$(${e2fsprogs}/sbin/debugfs \
+                -R 'cat /guest-test-status' "$results_image" 2>/dev/null)
+              test "$guest_test_status" = 0
+              test -s "$out/result"
+              grep -F -x -q PASS "$out/result"
+              grep -F -x -q 'tests=1548' "$out/result"
+              grep -F -x -q 'failed=0' "$out/result"
+              grep -F -x -q 'errors=0' "$out/result"
+              grep -F -x -q 'skipped=367' "$out/result"
+              grep -F -x -q \
+                'skip_inventory_sha256=b3f8b91542145297fe8accd5778855086512c71c74dd3f4e83bc3ca345414142' \
+                "$out/result"
+              grep -F -x -q 'filesystem=ext4' "$out/result"
+              grep -F -x -q 'execution_environment=qemu-kvm-vm' "$out/result"
+              (
+                cd "$out"
+                sha256sum -c result-artifacts.sha256
+              )
+
+              evidence_dir="$out/share/aos/crucible"
+              cp "$serial_log" \
+                "$evidence_dir/full-upstream-test-suite.vm-serial.log"
+              cp "$qemu_log" \
+                "$evidence_dir/full-upstream-test-suite.vm-qemu.log"
+              cp "$runner_identity" \
+                "$evidence_dir/full-upstream-test-suite.outer-qemu-identity.env"
+              (
+                cd "$out"
+                sha256sum \
+                  share/aos/crucible/full-upstream-test-suite.vm-serial.log \
+                  share/aos/crucible/full-upstream-test-suite.vm-qemu.log \
+                  share/aos/crucible/full-upstream-test-suite.outer-qemu-identity.env \
+                  > share/aos/crucible/full-upstream-test-suite.vm-envelope.sha256
+                sha256sum -c \
+                  share/aos/crucible/full-upstream-test-suite.vm-envelope.sha256
+              )
             ''
             else ''
               true
