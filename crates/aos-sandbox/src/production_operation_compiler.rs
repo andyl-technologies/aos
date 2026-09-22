@@ -4,9 +4,21 @@
 //! protected journal. Mutations that require placement, ownership, or broker
 //! effects remain outside this local lowering path and must be supplied by the
 //! assignment compiler rather than represented by a synthetic effect.
+//!
+//! Capability attenuation bytes use canonical compact JSON with this shape:
+//!
+//! ```text
+//! {"version":1,"sandbox":null,"incarnation":null,"grants":[...],
+//!  "assignment_epoch":null,"not_before":0,"expires_at":1,
+//!  "delegation":{...},"delegation_selector":{...}}
+//! ```
 
 use aos_proto::aos::sandbox::v1::{Capability, ObjectDescriptor, Timestamp};
-use aos_sandbox_core::{AuditId, CapabilityId, CapabilityRecord, OperationId};
+use aos_sandbox_core::{
+    AssignmentEpoch, AttenuationRequest, AuditId, CapabilityId, CapabilityRecord, ChannelBinding,
+    DelegationLimits, Grant, IncarnationId, OperationId, SandboxId, Selector,
+};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_service::public_projection::{
@@ -23,6 +35,37 @@ use crate::{
 
 const CAPABILITY_RESOURCE_VERSION_DOMAIN: &[u8] =
     b"aos.sandbox.public-capability-resource-version.v1\0";
+/// Selects the canonical public capability-attenuation schema.
+pub const CAPABILITY_ATTENUATION_VERSION: u16 = 1;
+const MAXIMUM_CAPABILITY_ATTENUATION_BYTES: usize = 4 * 1024 * 1024;
+
+/// Canonical JSON carried by `AttenuateCapabilityRequest.attenuation`.
+///
+/// Controller-owned identity, audience, holder, channel, project, policy,
+/// revocation, and audit fields are deliberately absent. The authenticated
+/// request and current parent capability supply those values.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicCapabilityAttenuationV1 {
+    /// Selects [`CAPABILITY_ATTENUATION_VERSION`].
+    pub version: u16,
+    /// Optionally narrows project authority to one sandbox.
+    pub sandbox: Option<SandboxId>,
+    /// Pairs exactly with `sandbox` when runtime scope is requested.
+    pub incarnation: Option<IncarnationId>,
+    /// Supplies the strictly covered child grant set.
+    pub grants: Vec<Grant>,
+    /// Optionally narrows authority to one assignment epoch.
+    pub assignment_epoch: Option<AssignmentEpoch>,
+    /// Selects the inclusive child validity start in Unix seconds.
+    pub not_before: i64,
+    /// Selects the exclusive child expiry in Unix seconds.
+    pub expires_at: i64,
+    /// Supplies strictly narrower descendant delegation ceilings.
+    pub delegation: DelegationLimits,
+    /// Selects the parent grant used to authorize delegation.
+    pub delegation_selector: Selector,
+}
 
 /// Lowers authenticated public requests into durable production operation plans.
 #[derive(Clone, Copy, Debug, Default)]
@@ -64,6 +107,13 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
         use crate::cli_model::DormantSandboxRequestKindV1 as Request;
 
         match request.request() {
+            Request::CapabilityAttenuate(attenuate) => compile_capability_attenuation(
+                journal,
+                peer,
+                &authorized,
+                attenuate,
+                request_digest,
+            ),
             Request::CapabilityRenew(renew) => {
                 compile_capability_renewal(journal, peer, &authorized, renew, request_digest)
             }
@@ -73,6 +123,212 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
             _ => Err(OperationCompilationError::Rejected),
         }
     }
+}
+
+fn compile_capability_attenuation(
+    journal: &mut Journal,
+    peer: &crate::public_api_session::PublicApiPeer,
+    authorized: &AuthorizedPublicMutationRequestV1,
+    attenuate: &aos_proto::aos::sandbox::v1::AttenuateCapabilityRequest,
+    request_digest: [u8; 32],
+) -> Result<OperationPlan, OperationCompilationError> {
+    let request = authorized.request();
+    let parent_id = CapabilityId::from_bytes(
+        attenuate
+            .parent_capability_handle
+            .as_slice()
+            .try_into()
+            .map_err(|_| OperationCompilationError::Malformed)?,
+    );
+    let holder_binding: [u8; 32] = attenuate
+        .holder_channel_binding
+        .as_slice()
+        .try_into()
+        .map_err(|_| OperationCompilationError::Malformed)?;
+    if holder_binding == [0; 32]
+        || attenuate.attenuation.is_empty()
+        || attenuate.attenuation.len() > MAXIMUM_CAPABILITY_ATTENUATION_BYTES
+    {
+        return Err(OperationCompilationError::Malformed);
+    }
+    let attenuation: PublicCapabilityAttenuationV1 = serde_json::from_slice(&attenuate.attenuation)
+        .map_err(|_| OperationCompilationError::Malformed)?;
+    if attenuation.version != CAPABILITY_ATTENUATION_VERSION
+        || serde_json::to_vec(&attenuation).map_err(|_| OperationCompilationError::Malformed)?
+            != attenuate.attenuation
+    {
+        return Err(OperationCompilationError::Malformed);
+    }
+
+    match journal.check_idempotency(request.idempotency_key(), request_digest) {
+        IdempotencyOutcome::Replay(operation_id) => {
+            return replay_capability_attenuation(
+                journal,
+                operation_id,
+                request.idempotency_key().clone(),
+                request_digest,
+            );
+        }
+        IdempotencyOutcome::Conflict => return Err(OperationCompilationError::Rejected),
+        IdempotencyOutcome::Vacant => {}
+    }
+
+    let parent = PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())
+        .and_then(|registry| registry.resolve_current(parent_id))
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    if parent.claims().project != peer.project()
+        || attenuate.expected_parent_resource_version
+            != capability_resource_version(&parent, false)?
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+
+    let (controller, revocation, policy) = {
+        let store = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        let controller = store
+            .controller_head()
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .ok_or(OperationCompilationError::Rejected)?;
+        let revocation = store
+            .revocation_head(parent.claims().revocation_scope)
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .ok_or(OperationCompilationError::Rejected)?;
+        let policy = store
+            .current_policy(peer.project())
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .ok_or(OperationCompilationError::Rejected)?;
+        (controller, revocation, policy)
+    };
+    let claims = parent.claims();
+    if controller.principal != claims.audience
+        || revocation.scope != claims.revocation_scope
+        || revocation.generation != claims.revocation_generation.get()
+        || policy.descriptor().digest() != claims.policy_digest
+        || authorized.accepted_wall_seconds() < policy.not_before()
+        || authorized.accepted_wall_seconds() >= policy.expires_at()
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+
+    let operation_id = OperationId::new();
+    let context = aos_sandbox_core::AuthorizationContext {
+        now: authorized.accepted_wall_seconds(),
+        audience: controller.principal,
+        holder: peer.principal(),
+        channel_binding: peer.key_binding(),
+        project: peer.project(),
+        sandbox: claims.sandbox,
+        incarnation: claims.incarnation,
+        assignment_epoch: claims.assignment_epoch,
+        revocation_generation: claims.revocation_generation,
+    };
+    let child = parent
+        .attenuate(
+            &context,
+            AttenuationRequest {
+                id: CapabilityId::new(),
+                audience: controller.principal,
+                holder: peer.principal(),
+                channel_binding: ChannelBinding::new(holder_binding),
+                sandbox: attenuation.sandbox,
+                incarnation: attenuation.incarnation,
+                grants: attenuation.grants,
+                assignment_epoch: attenuation.assignment_epoch,
+                not_before: attenuation.not_before,
+                expires_at: attenuation.expires_at,
+                delegation: attenuation.delegation,
+                delegation_selector: attenuation.delegation_selector,
+                parent_decision: AuditId::from_bytes(operation_id.into_bytes()),
+            },
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let authority_record =
+        PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())
+            .and_then(|registry| {
+                registry.prepare_attenuation_from_trusted_controller(parent_id, child.clone())
+            })
+            .map_err(|_| OperationCompilationError::Rejected)?;
+
+    let projection = capability_projection(&child, policy.descriptor(), false)?;
+    let projection = PublicProjectionPlanV1::new(
+        peer.project(),
+        operation_id,
+        PublicProjectionResourceV1::Capability(projection),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let (desired_key, desired_value) = projection.into_desired_state();
+    let plan = OperationPlan::completed_local(
+        operation_id,
+        request.idempotency_key().clone(),
+        request_digest,
+        desired_key,
+        desired_value,
+        vec![authority_record],
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+
+    attach_public_operation(plan, authorized, peer.project(), operation_id)
+}
+
+fn replay_capability_attenuation(
+    journal: &mut Journal,
+    operation_id: OperationId,
+    idempotency_key: crate::IdempotencyKey,
+    request_digest: [u8; 32],
+) -> Result<OperationPlan, OperationCompilationError> {
+    let projections = PublicProjectionStoreV1::new(journal)
+        .list_operation(operation_id)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let [projection] = projections.as_slice() else {
+        return Err(OperationCompilationError::Rejected);
+    };
+    let PublicProjectionResourceV1::Capability(projected_child) = projection.resource() else {
+        return Err(OperationCompilationError::Rejected);
+    };
+    if projected_child.revoked {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let child_id = CapabilityId::from_bytes(
+        projected_child
+            .capability_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| OperationCompilationError::Rejected)?,
+    );
+    let desired = PublicProjectionPlanV1::new(
+        projection.project(),
+        operation_id,
+        projection.resource().clone(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let registry = PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let child = registry
+        .resolve_current(child_id)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    if capability_resource_version(&child, false)? != projected_child.resource_version {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let authority_record = registry
+        .retained_record_for_atomic_replay(child_id)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let public = crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .ok_or(OperationCompilationError::Rejected)?;
+    let (desired_key, desired_value) = desired.into_desired_state();
+
+    OperationPlan::completed_local(
+        operation_id,
+        idempotency_key,
+        request_digest,
+        desired_key,
+        desired_value,
+        vec![authority_record],
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?
+    .with_public_operation(public)
+    .map_err(|_| OperationCompilationError::Rejected)
 }
 
 fn compile_capability_revoke(

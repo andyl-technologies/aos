@@ -659,7 +659,7 @@ pub struct NodeArgs {
 pub struct AttenuateArgs {
     #[arg(long, value_parser = nonempty_hex)]
     parent_capability_handle: HexValue,
-    #[arg(long, value_parser = digest_hex)]
+    #[arg(long, value_parser = nonempty_hex)]
     attenuation: HexValue,
     #[arg(long, value_parser = digest_hex)]
     holder_channel_binding: HexValue,

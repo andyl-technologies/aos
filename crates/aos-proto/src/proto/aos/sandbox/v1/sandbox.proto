@@ -1134,7 +1134,7 @@ service SnapshotService {
 
 message AttenuateCapabilityRequest {
   bytes parent_capability_handle = 1;
-  bytes attenuation = 2; // Canonical controller-defined attenuation request.
+  bytes attenuation = 2; // Canonical compact JSON PublicCapabilityAttenuationV1.
   bytes holder_channel_binding = 3;
   bytes idempotency_key = 4;
   bytes expected_parent_resource_version = 5;

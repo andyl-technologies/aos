@@ -103,7 +103,12 @@ impl Grant {
         self.delegable
     }
 
-    fn covers(&self, child: &Self) -> bool {
+    /// Reports whether this delegable grant covers one child grant.
+    ///
+    /// Coverage requires the same resource kind, a subset of operations, and
+    /// a selector contained by this grant's selector.
+    #[must_use]
+    pub fn covers_attenuation(&self, child: &Self) -> bool {
         self.delegable
             && self.resource_kind == child.resource_kind
             && child.operations.is_subset_of(self.operations)
@@ -335,8 +340,17 @@ impl CapabilityRecord {
         if request.sandbox.is_some() != request.incarnation.is_some() {
             return Err(AttenuationError::PartialRuntimeScope);
         }
+        if parent.sandbox.is_some()
+            && (request.sandbox != parent.sandbox || request.incarnation != parent.incarnation)
+        {
+            return Err(AttenuationError::RuntimeScopeWidened);
+        }
         for child in &request.grants {
-            if !parent.grants.iter().any(|grant| grant.covers(child)) {
+            if !parent
+                .grants
+                .iter()
+                .any(|grant| grant.covers_attenuation(child))
+            {
                 return Err(AttenuationError::GrantWidened { grant: child.id });
             }
         }
@@ -511,6 +525,9 @@ pub enum AttenuationError {
     /// Child sandbox and incarnation bindings were not paired.
     #[error("child sandbox and incarnation bindings must appear together")]
     PartialRuntimeScope,
+    /// A runtime-bound parent was rebound to another sandbox or incarnation.
+    #[error("child runtime scope widens or changes the parent scope")]
+    RuntimeScopeWidened,
     /// No delegable parent grant covers one child grant.
     #[error("child grant {grant} is not covered by a delegable parent grant")]
     GrantWidened {

@@ -115,6 +115,7 @@ fn issuance_survives_revocation_compaction_and_restart() {
         &record,
         Some(&(evidence.clone(), digest)),
         None,
+        None,
         MAXIMUM_RECORD_BYTES,
     )
     .unwrap();
@@ -168,6 +169,7 @@ fn issuance_record_rejects_crosslink_substitution_unknown_fields_and_size_excess
         &record,
         Some(&(evidence.clone(), digest)),
         None,
+        None,
         MAXIMUM_RECORD_BYTES,
     )
     .unwrap();
@@ -178,6 +180,7 @@ fn issuance_record_rejects_crosslink_substitution_unknown_fields_and_size_excess
             DurableCapabilityStateV1::Active,
             &record,
             Some(&(evidence.clone(), digest)),
+            None,
             None,
             canonical.len() - 1,
         ),
@@ -202,12 +205,13 @@ fn issuance_record_rejects_crosslink_substitution_unknown_fields_and_size_excess
 
     let wrong_resource = metadata(21, 22);
     let wire = DurableCapabilityRecordRefV1 {
-        version: RECORD_VERSION,
+        version: RECORD_VERSION_V1,
         state: 0,
         capability: &record,
         issuance: Some(&wrong_resource),
         claims_digest: Some(digest),
         runtime: None,
+        parent: None,
     };
     let substituted = serde_json::to_vec(&wire).unwrap();
     assert!(matches!(

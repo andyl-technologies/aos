@@ -13,12 +13,17 @@
 //! establish revocation currentness, or create a publication completion permit.
 //!
 //! Namespace records use the binary key `"capability/" || capability_id` and
-//! one strict canonical V1 JSON value:
+//! one strict canonical JSON value. Version 1 stores a root record; version 2
+//! adds a mandatory immutable `parent` identity for an attenuated child:
 //!
 //! ```text
 //! {"version":1,"state":0,"capability":{...complete CapabilityRecord...},
 //!  "issuance":null|{...immutable local issuance metadata...},
 //!  "claims_digest":null|[...],"runtime":null|{...historical provenance...}}
+//! {"version":2,"state":0,"capability":{...complete CapabilityRecord...},
+//!  "issuance":null|{...immutable local issuance metadata...},
+//!  "claims_digest":null|[...],"runtime":null|{...historical provenance...},
+//!  "parent":[...capability identity...]}
 //! ```
 //!
 //! Issuance metadata and its domain-separated claims digest are either both
@@ -34,6 +39,7 @@
 //! maintenance remains an external provisioning requirement; a revocation is
 //! never reported before its commit.
 
+use std::collections::BTreeMap;
 use std::io;
 
 use aos_sandbox_core::{CapabilityId, CapabilityRecord};
@@ -50,7 +56,8 @@ pub use issuance::{
 };
 pub use runtime_issuance::RuntimeIssuanceEvidenceV1;
 
-const RECORD_VERSION: u16 = 1;
+const RECORD_VERSION_V1: u16 = 1;
+const RECORD_VERSION_V2: u16 = 2;
 const RECORD_FAMILY: &[u8] = b"capability/";
 const RECORD_KEY_BYTES: usize = RECORD_FAMILY.len() + 16;
 const MAXIMUM_ENTRIES: usize = 65_536;
@@ -152,6 +159,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         let mut entries = 0_usize;
         let mut materialized_bytes = 0_usize;
         let mut has_runtime_issuance = false;
+        let mut child_counts = BTreeMap::<CapabilityId, u32>::new();
         for (key, value) in journal.records(RecordNamespace::PublisherAuthority) {
             entries = entries
                 .checked_add(1)
@@ -172,6 +180,31 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             }
             let record = decode_record(key, value, limits.maximum_record_bytes)?;
             has_runtime_issuance |= record.runtime.is_some();
+            if let Some(parent) = record.parent {
+                let parent_key = capability_key(parent);
+                let parent_bytes = journal
+                    .get(RecordNamespace::PublisherAuthority, &parent_key)
+                    .ok_or(PublisherAuthorityError::InvalidParentLink)?;
+                let parent_record =
+                    decode_record(&parent_key, parent_bytes, limits.maximum_record_bytes)?;
+                validate_parent_link(&parent_record.capability, &record.capability)?;
+
+                let count = child_counts.entry(parent).or_default();
+                *count = count
+                    .checked_add(1)
+                    .ok_or(PublisherAuthorityError::LimitExceeded("parent fanout"))?;
+            }
+        }
+
+        for (parent_id, child_count) in child_counts {
+            let key = capability_key(parent_id);
+            let parent = journal
+                .get(RecordNamespace::PublisherAuthority, &key)
+                .ok_or(PublisherAuthorityError::InvalidParentLink)?;
+            let parent = decode_record(&key, parent, limits.maximum_record_bytes)?;
+            if child_count > parent.capability.claims().delegation.maximum_fanout() {
+                return Err(PublisherAuthorityError::FanoutExceeded);
+            }
         }
 
         if has_runtime_issuance {
@@ -257,7 +290,47 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         &self,
         capability: CapabilityRecord,
     ) -> Result<JournalRecord, PublisherAuthorityError> {
-        self.prepare_install_encoded(capability, None, None)
+        self.prepare_install_encoded(capability, None, None, None)
+            .map(|prepared| prepared.record)
+    }
+
+    /// Prepares one durably parent-linked attenuated child capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherAuthorityError`] when the parent is absent or
+    /// revoked, the child is not a strict structural attenuation, the durable
+    /// fanout ceiling is exhausted, or ordinary installation checks fail.
+    pub(crate) fn prepare_attenuation_from_trusted_controller(
+        &self,
+        parent_id: CapabilityId,
+        child: CapabilityRecord,
+    ) -> Result<JournalRecord, PublisherAuthorityError> {
+        let parent_key = capability_key(parent_id);
+        let parent_bytes = self
+            .journal
+            .get(RecordNamespace::PublisherAuthority, &parent_key)
+            .ok_or(PublisherAuthorityError::UnknownCapability)?;
+        let parent = decode_record(&parent_key, parent_bytes, self.limits.maximum_record_bytes)?;
+        if parent.state == DurableCapabilityStateV1::Revoked {
+            return Err(PublisherAuthorityError::Revoked);
+        }
+        validate_parent_link(&parent.capability, &child)?;
+
+        let mut child_count = 0_u32;
+        for (key, value) in self.journal.records(RecordNamespace::PublisherAuthority) {
+            let retained = decode_record(key, value, self.limits.maximum_record_bytes)?;
+            if retained.parent == Some(parent_id) {
+                child_count = child_count
+                    .checked_add(1)
+                    .ok_or(PublisherAuthorityError::FanoutExceeded)?;
+            }
+        }
+        if child_count >= parent.capability.claims().delegation.maximum_fanout() {
+            return Err(PublisherAuthorityError::FanoutExceeded);
+        }
+
+        self.prepare_install_encoded(child, None, None, Some(parent_id))
             .map(|prepared| prepared.record)
     }
 
@@ -318,7 +391,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
         runtime: Option<RuntimeIssuanceEvidenceV1>,
     ) -> Result<CommitResult, PublisherAuthorityError> {
-        let prepared = self.prepare_install_encoded(capability, issuance, runtime)?;
+        let prepared = self.prepare_install_encoded(capability, issuance, runtime, None)?;
         let transaction = JournalTransaction::new(transaction_id, vec![prepared.record])?;
         let result = self.journal.commit(&transaction)?;
         self.entries += 1;
@@ -331,6 +404,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         capability: CapabilityRecord,
         issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
         runtime: Option<RuntimeIssuanceEvidenceV1>,
+        parent: Option<CapabilityId>,
     ) -> Result<PreparedCapabilityInstallV1, PublisherAuthorityError> {
         self.journal.ensure_protected_authority()?;
         let id = capability.id();
@@ -353,6 +427,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             &capability,
             issuance.as_ref(),
             runtime.as_ref(),
+            parent,
             self.limits.maximum_record_bytes,
         )?;
         let next_materialized_bytes = self
@@ -433,6 +508,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             &record.capability,
             record.issuance.as_ref(),
             record.runtime.as_ref(),
+            record.parent,
             self.limits.maximum_record_bytes,
         )?;
         let next_materialized_bytes = self
@@ -487,6 +563,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             &record.capability,
             record.issuance.as_ref(),
             record.runtime.as_ref(),
+            record.parent,
             self.limits.maximum_record_bytes,
         )?;
         let next_materialized_bytes = self
@@ -590,6 +667,12 @@ pub enum PublisherAuthorityError {
     /// An immutable capability ID already has an active record or tombstone.
     #[error("publisher capability ID was already used")]
     CapabilityIdAlreadyUsed,
+    /// A retained child does not name a valid durable parent capability.
+    #[error("publisher capability parent linkage is invalid")]
+    InvalidParentLink,
+    /// A parent has already issued its maximum durable direct-child count.
+    #[error("publisher capability parent fanout is exhausted")]
+    FanoutExceeded,
     /// No durable record exists for the requested capability ID.
     #[error("publisher capability is unknown")]
     UnknownCapability,
@@ -616,6 +699,8 @@ struct DurableCapabilityRecordWireV1 {
     issuance: Option<IssuanceDecisionMetadataV1>,
     claims_digest: Option<aos_sandbox_core::ObjectDigest>,
     runtime: Option<RuntimeIssuanceEvidenceV1>,
+    #[serde(default)]
+    parent: Option<CapabilityId>,
 }
 
 struct DecodedCapabilityRecordV1 {
@@ -623,6 +708,7 @@ struct DecodedCapabilityRecordV1 {
     capability: CapabilityRecord,
     issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
     runtime: Option<RuntimeIssuanceEvidenceV1>,
+    parent: Option<CapabilityId>,
 }
 
 #[derive(Serialize)]
@@ -634,6 +720,51 @@ struct DurableCapabilityRecordRefV1<'a> {
     issuance: Option<&'a IssuanceDecisionMetadataV1>,
     claims_digest: Option<aos_sandbox_core::ObjectDigest>,
     runtime: Option<&'a RuntimeIssuanceEvidenceV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<CapabilityId>,
+}
+
+fn validate_parent_link(
+    parent: &CapabilityRecord,
+    child: &CapabilityRecord,
+) -> Result<(), PublisherAuthorityError> {
+    let parent_claims = parent.claims();
+    let child_claims = child.claims();
+    let runtime_scope_is_narrower = parent_claims.sandbox.is_none()
+        || (child_claims.sandbox == parent_claims.sandbox
+            && child_claims.incarnation == parent_claims.incarnation);
+    let assignment_is_narrower = parent_claims.assignment_epoch.is_none()
+        || child_claims.assignment_epoch == parent_claims.assignment_epoch;
+    let grants_are_narrower = child_claims.grants.iter().all(|child_grant| {
+        parent_claims
+            .grants
+            .iter()
+            .any(|parent_grant| parent_grant.covers_attenuation(child_grant))
+    });
+    if parent.id() == child.id()
+        || child_claims.issuer != parent_claims.holder
+        || child_claims.audience != parent_claims.audience
+        || child_claims.root_subject != parent_claims.root_subject
+        || child_claims.project != parent_claims.project
+        || child_claims.policy_digest != parent_claims.policy_digest
+        || child_claims.revocation_scope != parent_claims.revocation_scope
+        || child_claims.revocation_generation != parent_claims.revocation_generation
+        || !runtime_scope_is_narrower
+        || !assignment_is_narrower
+        || child_claims.not_before < parent_claims.not_before
+        || child_claims.expires_at > parent_claims.expires_at
+        || child_claims.delegation.remaining_depth() >= parent_claims.delegation.remaining_depth()
+        || child_claims.delegation.maximum_fanout() > parent_claims.delegation.maximum_fanout()
+        || !child_claims
+            .delegation
+            .resources()
+            .is_within(parent_claims.delegation.resources())
+        || !grants_are_narrower
+    {
+        return Err(PublisherAuthorityError::InvalidParentLink);
+    }
+
+    Ok(())
 }
 
 fn capability_key(id: CapabilityId) -> [u8; RECORD_KEY_BYTES] {
@@ -666,8 +797,13 @@ fn decode_record(
     }
     let decoded: DurableCapabilityRecordWireV1 =
         serde_json::from_slice(bytes).map_err(|_| PublisherAuthorityError::MalformedRecord)?;
-    if decoded.version != RECORD_VERSION {
+    if !matches!(decoded.version, RECORD_VERSION_V1 | RECORD_VERSION_V2) {
         return Err(PublisherAuthorityError::UnsupportedVersion(decoded.version));
+    }
+    if (decoded.version == RECORD_VERSION_V1 && decoded.parent.is_some())
+        || (decoded.version == RECORD_VERSION_V2 && decoded.parent.is_none())
+    {
+        return Err(PublisherAuthorityError::InvalidParentLink);
     }
     let state = match decoded.state {
         0 => DurableCapabilityStateV1::Active,
@@ -698,6 +834,7 @@ fn decode_record(
         &decoded.capability,
         issuance.as_ref(),
         decoded.runtime.as_ref(),
+        decoded.parent,
         maximum_bytes,
     )?;
     if canonical != bytes {
@@ -708,6 +845,7 @@ fn decode_record(
         capability: decoded.capability,
         issuance,
         runtime: decoded.runtime,
+        parent: decoded.parent,
     })
 }
 
@@ -716,6 +854,7 @@ fn encode_record(
     capability: &CapabilityRecord,
     issuance: Option<&(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
     runtime: Option<&RuntimeIssuanceEvidenceV1>,
+    parent: Option<CapabilityId>,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, PublisherAuthorityError> {
     if runtime.is_some() && issuance.is_none() {
@@ -725,12 +864,17 @@ fn encode_record(
         .map(|(metadata, claims_digest)| (Some(metadata), Some(*claims_digest)))
         .unwrap_or((None, None));
     let record = DurableCapabilityRecordRefV1 {
-        version: RECORD_VERSION,
+        version: if parent.is_some() {
+            RECORD_VERSION_V2
+        } else {
+            RECORD_VERSION_V1
+        },
         state: state.wire_value(),
         capability,
         issuance: metadata,
         claims_digest,
         runtime,
+        parent,
     };
     let mut writer = BoundedWriter::new(maximum_bytes);
     if serde_json::to_writer(&mut writer, &record).is_err() {
@@ -970,6 +1114,7 @@ pub(crate) mod tests {
             &original,
             None,
             None,
+            None,
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode exact-limit record: {error}"));
@@ -1020,6 +1165,7 @@ pub(crate) mod tests {
         let canonical = encode_record(
             DurableCapabilityStateV1::Active,
             &record,
+            None,
             None,
             None,
             MAXIMUM_RECORD_BYTES,
@@ -1153,6 +1299,7 @@ pub(crate) mod tests {
             &zero,
             None,
             None,
+            None,
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode zero-ID record: {error}"));
@@ -1180,6 +1327,7 @@ pub(crate) mod tests {
         let encoded = encode_record(
             DurableCapabilityStateV1::Active,
             &record,
+            None,
             None,
             None,
             MAXIMUM_RECORD_BYTES,
@@ -1224,6 +1372,7 @@ pub(crate) mod tests {
         let second_value = encode_record(
             DurableCapabilityStateV1::Active,
             &second,
+            None,
             None,
             None,
             MAXIMUM_RECORD_BYTES,
