@@ -48,6 +48,8 @@ pub enum ResourceKind {
     AttachmentSlot = 13,
     /// Authority to create or delegate to a child sandbox.
     ChildDelegation = 14,
+    /// A controller-owned online capability record.
+    Capability = 15,
 }
 
 /// Identifies one closed v1 operation bit.

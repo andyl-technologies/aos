@@ -33,12 +33,12 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::v1::{
-    CancelOperationRequest, CancelOperationResponse, DiscoveryService, DiscoveryServiceExt, Event,
-    ExecutionServiceExt, FilesystemViewServiceExt, GetNodeCapabilitiesRequest,
-    GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse, GetOperationRequest,
-    GetOperationResponse, GetPublicFeatureRegistryRequest, GetPublicFeatureRegistryResponse,
-    NodeCapabilities, Operation, OperationService, OperationServiceExt, SandboxServiceExt,
-    SnapshotServiceExt, Timestamp, WatchRequest,
+    CancelOperationRequest, CancelOperationResponse, CapabilityServiceExt, DiscoveryService,
+    DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
+    GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
+    GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
+    GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
+    OperationServiceExt, SandboxServiceExt, SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId};
 use aos_sandbox_core::{ResourceKind, Selector};
@@ -249,6 +249,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let public_connect =
         FilesystemViewServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect = SnapshotServiceExt::register(Arc::clone(&public_service), public_connect);
+    let public_connect =
+        CapabilityServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect =
         OperationServiceExt::register(public_service, public_connect).into_axum_service();
     let public_application = axum::Router::new().fallback_service(public_connect);

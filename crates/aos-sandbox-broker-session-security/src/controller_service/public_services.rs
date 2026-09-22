@@ -1,7 +1,8 @@
 //! Registered public resource services backed by the sole controller worker.
 
 use aos_proto::aos::sandbox::v1::{
-    AttachViewRequest, AttachViewResponse, CancelExecutionRequest, CancelExecutionResponse,
+    AttachViewRequest, AttachViewResponse, AttenuateCapabilityRequest, AttenuateCapabilityResponse,
+    CancelExecutionRequest, CancelExecutionResponse, CapabilityService as PublicCapabilityService,
     CreateExecutionRequest, CreateExecutionResponse, CreateSandboxRequest, CreateSandboxResponse,
     CreateSnapshotRequest, CreateSnapshotResponse, CreateViewRequest, CreateViewResponse,
     DeleteSandboxRequest, DeleteSandboxResponse, DeleteSnapshotRequest, DeleteSnapshotResponse,
@@ -9,13 +10,15 @@ use aos_proto::aos::sandbox::v1::{
     ExecutionService, FilesystemViewService, ForkSnapshotRequest, ForkSnapshotResponse,
     GetAttachmentRequest, GetAttachmentResponse, GetExecutionRequest, GetExecutionResponse,
     GetSandboxRequest, GetSandboxResponse, GetSnapshotRequest, GetSnapshotResponse, GetViewRequest,
-    GetViewResponse, ListAncestorsRequest, ListAncestorsResponse, ListChildrenRequest,
-    ListChildrenResponse, ListDescendantsRequest, ListDescendantsResponse, ListExecutionsRequest,
-    ListExecutionsResponse, ListSandboxesRequest, ListSandboxesResponse, ListSnapshotsRequest,
-    ListSnapshotsResponse, ListViewsRequest, ListViewsResponse, PageInfo, PlanCreateSandboxRequest,
-    PlanCreateSandboxResponse, PlanSandboxPolicyRequest, PlanSandboxPolicyResponse,
-    ReleaseViewRequest, ReleaseViewResponse, ReplaceAttachmentRequest, ReplaceAttachmentResponse,
-    RestoreSnapshotRequest, RestoreSnapshotResponse, SandboxLifecycleRequest,
+    GetViewResponse, InspectCapabilityRequest, InspectCapabilityResponse, ListAncestorsRequest,
+    ListAncestorsResponse, ListChildrenRequest, ListChildrenResponse, ListDescendantsRequest,
+    ListDescendantsResponse, ListExecutionsRequest, ListExecutionsResponse, ListSandboxesRequest,
+    ListSandboxesResponse, ListSnapshotsRequest, ListSnapshotsResponse, ListViewsRequest,
+    ListViewsResponse, PageInfo, PlanCreateSandboxRequest, PlanCreateSandboxResponse,
+    PlanSandboxPolicyRequest, PlanSandboxPolicyResponse, ReleaseViewRequest, ReleaseViewResponse,
+    RenewCapabilityRequest, RenewCapabilityResponse, ReplaceAttachmentRequest,
+    ReplaceAttachmentResponse, RestoreSnapshotRequest, RestoreSnapshotResponse,
+    RevokeCapabilityRequest, RevokeCapabilityResponse, SandboxLifecycleRequest,
     SandboxLifecycleResponse, SandboxService, SnapshotService, UpdateSandboxPolicyRequest,
     UpdateSandboxPolicyResponse,
 };
@@ -41,6 +44,63 @@ use super::{CapabilityService, mutation_unavailable};
 const QUERY_BINDING_HEADER: &str = "aos-query-binding-v1";
 const PAGE_TOKEN_MAGIC: &[u8; 8] = b"AOSPGT01";
 const PAGE_TOKEN_BYTES: usize = 8 + QUERY_BINDING_TRANSPORT_BYTES + 32 + 16 + 32;
+
+impl PublicCapabilityService for CapabilityService {
+    async fn attenuate<'a>(
+        &'a self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, AttenuateCapabilityRequest>,
+    ) -> ServiceResult<impl Encodable<AttenuateCapabilityResponse> + Send + use<'a>> {
+        Err::<Response<AttenuateCapabilityResponse>, _>(mutation_unavailable())
+    }
+
+    async fn inspect<'a>(
+        &'a self,
+        context: RequestContext,
+        request: ServiceRequest<'_, InspectCapabilityRequest>,
+    ) -> ServiceResult<impl Encodable<InspectCapabilityResponse> + Send + use<'a>> {
+        let resource_id = exact_resource_id(request.view().capability_handle, "capability handle")?;
+        let read = self
+            .read_public_projection(
+                &context,
+                PublicApiAuditMethodV1::InspectCapability,
+                ResourceKind::Capability,
+                Operation::MetadataRead,
+                resource_selector(resource_id),
+                request.bytes(),
+                PublicProjectionQueryV1::One {
+                    kind: PublicProjectionKindV1::Capability,
+                    resource_id,
+                },
+            )
+            .await?;
+        let record = single_record(read.into_parts().1)?;
+        let PublicProjectionResourceV1::Capability(capability) = record.resource().clone() else {
+            return Err(projection_mismatch());
+        };
+
+        Response::ok(InspectCapabilityResponse {
+            capability: Some(capability).into(),
+            ..Default::default()
+        })
+    }
+
+    async fn renew<'a>(
+        &'a self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, RenewCapabilityRequest>,
+    ) -> ServiceResult<impl Encodable<RenewCapabilityResponse> + Send + use<'a>> {
+        Err::<Response<RenewCapabilityResponse>, _>(mutation_unavailable())
+    }
+
+    async fn revoke<'a>(
+        &'a self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, RevokeCapabilityRequest>,
+    ) -> ServiceResult<impl Encodable<RevokeCapabilityResponse> + Send + use<'a>> {
+        Err::<Response<RevokeCapabilityResponse>, _>(mutation_unavailable())
+    }
+}
 
 impl SandboxService for CapabilityService {
     async fn plan_create<'a>(
