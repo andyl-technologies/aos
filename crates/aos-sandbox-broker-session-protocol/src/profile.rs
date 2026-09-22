@@ -51,7 +51,7 @@ const HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition
     [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
 
 /// Lists every authenticated broker method in canonical numeric order.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 23] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 22] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -74,7 +74,6 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 23] = [
     BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
     BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
     BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS,
-    BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -340,8 +339,9 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
-        | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
-        | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => BrokerSessionProtocolV1::Storage,
+        | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
+            BrokerSessionProtocolV1::Storage
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
@@ -357,7 +357,10 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
             BrokerSessionProtocolV1::Network
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
+        // The broker implementation remains dormant until the controller
+        // persists the exact group attempt and its adjacent inventory proof.
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     let (major, minor) = supported_broker_session_version_v1(protocol);
     let audience = if matches!(method, BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE) {
@@ -374,7 +377,6 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
-            | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
             | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
