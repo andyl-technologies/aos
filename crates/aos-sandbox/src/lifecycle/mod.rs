@@ -150,7 +150,7 @@ pub use phase6::{
     CurrentLifecycleTargetAssignmentV1, LifecycleAuthenticatedBrokerEffectV1,
     LifecycleDeferredEffectCursorV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
     LifecycleMethodCompletionV1, LifecycleMethodPlanV1, LifecyclePersistedEffectCursorV1,
-    LifecyclePhase6ErrorV1, lifecycle_phase6_effect_body_commitment_v1,
+    LifecyclePhase6ErrorV1, lifecycle_phase6_effect_body_commitment_v2,
     lifecycle_phase6_plan_commitment_v1,
 };
 pub use projection::{

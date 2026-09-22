@@ -2071,9 +2071,8 @@ impl LifecycleEffectRequestV1 {
             return Err(LifecyclePhase6ErrorV1::InvalidTransition);
         }
 
-        let body = lifecycle_effect_body_v1(
+        let body = lifecycle_effect_body_v2(
             current.operation().operation_id(),
-            current.operation().record_revision(),
             domain,
             ordinal,
             cursor.step(),
@@ -2186,9 +2185,8 @@ impl LifecycleEffectRequestV1 {
     }
 
     pub(super) fn canonical_body(self) -> [u8; 122] {
-        lifecycle_effect_body_v1(
+        lifecycle_effect_body_v2(
             self.operation,
-            self.operation_revision,
             self.domain,
             self.ordinal,
             self.step,
@@ -2236,9 +2234,8 @@ fn active_step_attempt(
     attempt.map(|attempt| (step.index(), direction, attempt, request, body, plan))
 }
 
-fn lifecycle_effect_body_v1(
+fn lifecycle_effect_body_v2(
     operation: OperationId,
-    operation_revision: Revision,
     domain: LifecycleEffectDomainV1,
     ordinal: u32,
     step: u32,
@@ -2248,9 +2245,12 @@ fn lifecycle_effect_body_v1(
     plan: ObjectDigest,
 ) -> [u8; 122] {
     let mut body = [0; 122];
-    body[..8].copy_from_slice(b"AOSLFX01");
+    body[..8].copy_from_slice(b"AOSLFX02");
     body[8..24].copy_from_slice(operation.as_bytes());
-    body[24..32].copy_from_slice(&operation_revision.get().to_be_bytes());
+    // The operation revision advances when this immutable step is reserved,
+    // observed, or retried. Current protected authority binds that revision
+    // outside the stable step body; committing it here would make every later
+    // record unable to reproduce the admitted body.
     body[32] = domain as u8;
     body[33] = direction as u8;
     body[34..38].copy_from_slice(&ordinal.to_be_bytes());
@@ -2268,10 +2268,13 @@ fn lifecycle_effect_body_v1(
 /// Returns [`LifecyclePhase6ErrorV1`] for sentinel target, prerequisite, or
 /// plan fields. The returned digest is suitable for the selected lifecycle
 /// step direction's persisted request body.
+///
+/// The immutable body deliberately does not commit the mutable operation
+/// revision. Dispatch authority binds the exact current revision independently
+/// through [`CurrentLifecycleEffectV1`].
 #[allow(clippy::too_many_arguments)]
-pub fn lifecycle_phase6_effect_body_commitment_v1(
+pub fn lifecycle_phase6_effect_body_commitment_v2(
     operation: OperationId,
-    operation_revision: Revision,
     domain: LifecycleEffectDomainV1,
     ordinal: u32,
     step: u32,
@@ -2284,9 +2287,8 @@ pub fn lifecycle_phase6_effect_body_commitment_v1(
         return Err(LifecyclePhase6ErrorV1::InvalidInput);
     }
     Ok(LifecycleStepBodyDigestV1::commit(
-        &lifecycle_effect_body_v1(
+        &lifecycle_effect_body_v2(
             operation,
-            operation_revision,
             domain,
             ordinal,
             step,
