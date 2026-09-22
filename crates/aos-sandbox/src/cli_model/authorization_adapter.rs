@@ -200,6 +200,127 @@ pub enum PublicApiAuditMethodV1 {
     /// Streams authorized project events.
     #[serde(rename = "/aos.sandbox.v1.OperationService/Watch")]
     Watch,
+    /// Creates one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/CreateSandbox")]
+    CreateSandbox,
+    /// Updates one sandbox policy.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/UpdatePolicy")]
+    UpdatePolicy,
+    /// Starts one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/Start")]
+    StartSandbox,
+    /// Stops one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/Stop")]
+    StopSandbox,
+    /// Suspends one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/Suspend")]
+    SuspendSandbox,
+    /// Resumes one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/Resume")]
+    ResumeSandbox,
+    /// Deletes one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/DeleteSandbox")]
+    DeleteSandbox,
+    /// Creates one command execution.
+    #[serde(rename = "/aos.sandbox.v1.ExecutionService/CreateExecution")]
+    CreateExecution,
+    /// Controls one command execution.
+    #[serde(rename = "/aos.sandbox.v1.ExecutionService/ControlExecution")]
+    ControlExecution,
+    /// Cancels one command execution.
+    #[serde(rename = "/aos.sandbox.v1.ExecutionService/CancelExecution")]
+    CancelExecution,
+    /// Creates one filesystem view.
+    #[serde(rename = "/aos.sandbox.v1.FilesystemViewService/CreateView")]
+    CreateView,
+    /// Attaches one filesystem view.
+    #[serde(rename = "/aos.sandbox.v1.FilesystemViewService/AttachView")]
+    AttachView,
+    /// Replaces one filesystem-view attachment.
+    #[serde(rename = "/aos.sandbox.v1.FilesystemViewService/ReplaceAttachment")]
+    ReplaceAttachment,
+    /// Detaches one filesystem view.
+    #[serde(rename = "/aos.sandbox.v1.FilesystemViewService/DetachView")]
+    DetachView,
+    /// Releases one filesystem view.
+    #[serde(rename = "/aos.sandbox.v1.FilesystemViewService/ReleaseView")]
+    ReleaseView,
+    /// Creates one snapshot.
+    #[serde(rename = "/aos.sandbox.v1.SnapshotService/CreateSnapshot")]
+    CreateSnapshot,
+    /// Restores one snapshot.
+    #[serde(rename = "/aos.sandbox.v1.SnapshotService/RestoreSnapshot")]
+    RestoreSnapshot,
+    /// Forks one snapshot.
+    #[serde(rename = "/aos.sandbox.v1.SnapshotService/ForkSnapshot")]
+    ForkSnapshot,
+    /// Deletes one snapshot.
+    #[serde(rename = "/aos.sandbox.v1.SnapshotService/DeleteSnapshot")]
+    DeleteSnapshot,
+    /// Attenuates one capability.
+    #[serde(rename = "/aos.sandbox.v1.CapabilityService/Attenuate")]
+    AttenuateCapability,
+    /// Renews one capability.
+    #[serde(rename = "/aos.sandbox.v1.CapabilityService/Renew")]
+    RenewCapability,
+    /// Revokes one capability.
+    #[serde(rename = "/aos.sandbox.v1.CapabilityService/Revoke")]
+    RevokeCapability,
+    /// Cancels one accepted operation before its semantic commit point.
+    #[serde(rename = "/aos.sandbox.v1.OperationService/CancelOperation")]
+    CancelOperation,
+    /// Pins one cache object.
+    #[serde(rename = "/aos.sandbox.v1.CacheService/PinObject")]
+    PinCacheObject,
+    /// Unpins one cache object.
+    #[serde(rename = "/aos.sandbox.v1.CacheService/UnpinObject")]
+    UnpinCacheObject,
+}
+
+/// Constructs a canonical mutation authorization envelope for one exact public RPC.
+///
+/// The mutation fence is a purpose-separated commitment to the method and exact
+/// protobuf body. Endpoint compilers must still decode the body, validate every
+/// typed concurrency field, and derive broker-specific requests.
+///
+/// # Errors
+///
+/// Returns [`CliAuthorizationAdapterError`] for empty or oversized bodies or
+/// canonical serialization failure.
+pub(crate) fn canonical_public_mutation_request_v2(
+    method: PublicApiAuditMethodV1,
+    resource_kind: ResourceKind,
+    operation: Operation,
+    selector: Selector,
+    protobuf_body: &[u8],
+) -> Result<(Vec<u8>, ObjectDigest), CliAuthorizationAdapterError> {
+    let protobuf_body = checked_authenticated_bytes(protobuf_body)?;
+    let mutation_fence =
+        ObjectDigest::from_bytes(
+            Sha256::new()
+                .chain_update(b"aos.sandbox.public-mutation-fence.v1\0")
+                .chain_update(serde_json::to_vec(&method).map_err(|_| {
+                    CliAuthorizationAdapterError::InvalidCanonicalAuthorizationRequest
+                })?)
+                .chain_update(Sha256::digest(protobuf_body))
+                .finalize()
+                .into(),
+        );
+    let canonical = serde_json::to_vec(&CanonicalCliAuthorizationRequestWireV1 {
+        version: CANONICAL_AUTHORIZATION_REQUEST_VERSION_V2,
+        surface: CliAuthorizedSurfaceWireV1::Mutation,
+        resource_kind,
+        operation: operation.into(),
+        selector,
+        mutation_identity_fence: Some(*mutation_fence.as_bytes()),
+        public_rpc: Some(CanonicalPublicRpcBindingWireV1 {
+            method,
+            body_sha256: Sha256::digest(protobuf_body).into(),
+        }),
+    })
+    .map_err(|_| CliAuthorizationAdapterError::InvalidCanonicalAuthorizationRequest)?;
+
+    Ok((canonical, mutation_fence))
 }
 
 /// Constructs a canonical authorization envelope bound to one exact public RPC.
@@ -265,8 +386,11 @@ impl DecodedAuthenticatedCliRequestV1 {
             CANONICAL_AUTHORIZATION_REQUEST_VERSION_V1 => wire.public_rpc.is_none(),
             CANONICAL_AUTHORIZATION_REQUEST_VERSION_V2 => {
                 wire.public_rpc.is_some()
-                    && wire.surface == CliAuthorizedSurfaceWireV1::AuditRead
-                    && wire.mutation_identity_fence.is_none()
+                    && match (wire.surface, wire.mutation_identity_fence) {
+                        (CliAuthorizedSurfaceWireV1::AuditRead, None) => true,
+                        (CliAuthorizedSurfaceWireV1::Mutation, Some(fence)) => fence != [0; 32],
+                        _ => false,
+                    }
             }
             _ => false,
         };
@@ -823,6 +947,27 @@ impl DormantAuthenticatedCliRequestV1 {
         }
 
         Ok(AuditAuthorizationV1::from_authorized(self.provenance))
+    }
+
+    /// Consumes exact public mutation authorization for an endpoint-validated fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliAuthorizationAdapterError`] when the protected request was
+    /// not a mutation or its exact method/body fence differs.
+    pub(crate) fn authorize_public_mutation(
+        self,
+        expected_fence: ObjectDigest,
+    ) -> Result<super::PublicMutationAuthorizationV1, CliAuthorizationAdapterError> {
+        if self.decoded.surface != CliAuthorizedSurfaceV1::Mutation
+            || self.decoded.mutation_identity_fence != Some(expected_fence)
+        {
+            return Err(CliAuthorizationAdapterError::MutationBindingMismatch);
+        }
+
+        Ok(super::PublicMutationAuthorizationV1::from_authorized(
+            self.provenance,
+        ))
     }
 }
 

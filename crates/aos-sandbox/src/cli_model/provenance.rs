@@ -227,3 +227,23 @@ impl fmt::Debug for AuditAuthorizationV1 {
         formatter.write_str("AuditAuthorizationV1(<redacted>)")
     }
 }
+
+/// Proves mutation authorization for one exact public RPC without exposing provenance.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct PublicMutationAuthorizationV1(RequestProvenanceV1);
+
+impl PublicMutationAuthorizationV1 {
+    pub(crate) const fn from_authorized(provenance: RequestProvenanceV1) -> Self {
+        Self(provenance)
+    }
+
+    pub(crate) const fn provenance(self) -> RequestProvenanceV1 {
+        self.0
+    }
+}
+
+impl fmt::Debug for PublicMutationAuthorizationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PublicMutationAuthorizationV1(<redacted>)")
+    }
+}

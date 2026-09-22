@@ -16,8 +16,9 @@ use super::{
     DormantCliAuthorizationOwnerV1, PublisherAuthorityLimits, PublisherPolicyLimits,
 };
 use crate::PublicOperationAuthorizationV1;
+use crate::cli_model::PublicMutationAuthorizationV1;
 use crate::cli_model::authorization_adapter::{
-    PublicApiAuditMethodV1, canonical_public_audit_request_v2,
+    PublicApiAuditMethodV1, canonical_public_audit_request_v2, canonical_public_mutation_request_v2,
 };
 use crate::public_api_session::PublicApiPeer;
 
@@ -86,6 +87,39 @@ impl DormantCliAuthorizationOwnerV1<'_> {
         )?;
         self.authenticate_public_request(peer, capability_id, &authorization_request)?
             .authorize_audit()
+    }
+
+    /// Reauthorizes one exact public mutation for a typed endpoint compiler.
+    ///
+    /// The endpoint supplies closed resource semantics after decoding the exact
+    /// protobuf body. Successful authorization does not admit desired state or
+    /// dispatch an effect; the compiler must consume it while constructing one
+    /// atomic [`crate::OperationPlan`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale transport evidence, malformed input, project substitution,
+    /// or any current capability, policy, expiry, revocation, or grant failure.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn authorize_public_mutation(
+        &mut self,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        method: PublicApiAuditMethodV1,
+        resource_kind: aos_sandbox_core::ResourceKind,
+        operation: aos_sandbox_core::Operation,
+        selector: aos_sandbox_core::Selector,
+        protobuf_body: &[u8],
+    ) -> Result<PublicMutationAuthorizationV1, CliAuthorizationAdapterError> {
+        let (authorization_request, mutation_fence) = canonical_public_mutation_request_v2(
+            method,
+            resource_kind,
+            operation,
+            selector,
+            protobuf_body,
+        )?;
+        self.authenticate_public_request(peer, capability_id, &authorization_request)?
+            .authorize_public_mutation(mutation_fence)
     }
 
     /// Authenticates one exact public request against current protected authority.

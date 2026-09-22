@@ -473,6 +473,7 @@ const fn resource_kind_from_code(value: u8) -> Option<ResourceKind> {
         12 => Some(ResourceKind::Environment),
         13 => Some(ResourceKind::AttachmentSlot),
         14 => Some(ResourceKind::ChildDelegation),
+        15 => Some(ResourceKind::Capability),
         _ => None,
     }
 }
