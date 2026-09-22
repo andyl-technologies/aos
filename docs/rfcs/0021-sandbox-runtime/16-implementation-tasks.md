@@ -342,7 +342,9 @@ the outstanding work concrete:
   connect the remaining public services to their authorized controller
   handlers; protobuf declarations alone do not implement RPCs.
 - `crates/aos/src/commands/sandbox.rs::run` supports local completions and
-  discovery. Other command families use `DormantValidatedRequestSinkV1` and
+  discovery. Discovery can use either the root-only diagnostic socket or the
+  registered mutual-TLS public socket with a protected client credential
+  bundle. Other command families use `DormantValidatedRequestSinkV1` and
   return `TransportRejected`. Connect those commands to the authenticated
   public API, including operation waits, structured output, watch, and the
   separately authorized execution data plane.
@@ -359,7 +361,8 @@ the outstanding work concrete:
   connection metadata comes from the accepted TLS stream and is rechecked per
   request. Admission is bounded to 32 connections and eight concurrent
   handshakes. Socket access and identity headers grant no authority. Mutation
-  services and the CLI transport remain unconnected. Credential formats and
+  services remain unconnected; the packaged CLI public transport is selected
+  only for discovery until those services exist. Credential formats and
   activation constraints are documented in the
   [controller deployment notes](../../sandbox-controller.md). Shared
   production TLS configuration has in-memory client/server handshake coverage

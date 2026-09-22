@@ -68,10 +68,31 @@ external credential mechanism and restart the controller. Before restarting,
 reconcile pending protected broker-session history; never erase its journal to
 bypass recovery.
 
-The public endpoint has no CLI client integration or mutation handlers yet.
+The public endpoint has no mutation handlers; CLI integration is discovery-only.
 The service-UID VM qualification exercises protected credential loading,
 registered and rejected TLS clients, real HTTP/2 discovery, credential
 rotation, and permanent retirement of stale peer evidence. Installed systemd
 activation and restart recovery still require qualification. See the
 [production integration audit](rfcs/0021-sandbox-runtime/16-implementation-tasks.md#production-integration-audit)
 for the remaining work.
+
+The packaged CLI can use the registered-client endpoint for either discovery
+command:
+
+```text
+aos sandbox \
+  --public-api \
+  --public-server-name sandbox-controller.example \
+  --public-credentials /absolute/private/credential-directory \
+  capabilities public-api
+```
+
+The credential directory must be user-owned with no group or other permissions
+and reached only through root- or user-owned ancestors that are not group- or
+world-writable. It contains `sandbox-server-ca`, `sandbox-client-cert`, and
+`sandbox-client-key`. Each must be a nonempty, user-owned, single-link regular
+file; symlinks and files larger than 1 MiB are rejected. The CA and certificate
+must not be group- or world-writable, and the key must have no group or other
+permissions. The client requires TLS 1.3, HTTP/2, the configured server
+identity, and its client certificate. These options do not activate mutation
+routes that the controller has not registered.

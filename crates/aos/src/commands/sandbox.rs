@@ -21,6 +21,8 @@ use http::Uri;
 use crate::cli::Cli;
 use crate::cli::sandbox::SandboxArgs;
 
+mod public_transport;
+
 const NODE_DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAXIMUM_DISCOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -51,7 +53,7 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
 
     match request.kind() {
         DormantSandboxRequestKindV1::CapabilitiesPublicApi(request_message) => {
-            let client = discovery_client(Path::new(NODE_DIAGNOSTIC_SOCKET)).await?;
+            let client = discovery_client(args).await?;
             let response = client
                 .get_public_feature_registry(request_message.clone())
                 .await
@@ -67,7 +69,7 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
             return Ok(());
         }
         DormantSandboxRequestKindV1::CapabilitiesNode(request_message) => {
-            let client = discovery_client(Path::new(NODE_DIAGNOSTIC_SOCKET)).await?;
+            let client = discovery_client(args).await?;
             let response = client
                 .get_node_capabilities(request_message.clone())
                 .await
@@ -90,7 +92,24 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
     Err(DormantSandboxRoutingErrorV1::TransportRejected.into())
 }
 
-async fn discovery_client(socket: &Path) -> Result<DiscoveryServiceClient<SharedHttp2Connection>> {
+async fn discovery_client(
+    args: &SandboxArgs,
+) -> Result<DiscoveryServiceClient<SharedHttp2Connection>> {
+    if args.public_api {
+        let credentials = args
+            .public_credentials
+            .as_deref()
+            .context("--public-api requires --public-credentials")?;
+        let server_name = args
+            .public_server_name
+            .as_deref()
+            .context("--public-api requires --public-server-name")?;
+        let (connection, authority) = public_transport::connect(credentials, server_name).await?;
+        let config = discovery_config(authority);
+        return Ok(DiscoveryServiceClient::new(connection.shared(8), config));
+    }
+
+    let socket = Path::new(NODE_DIAGNOSTIC_SOCKET);
     let authority: Uri = "http://localhost"
         .parse()
         .context("invalid built-in controller authority")?;
@@ -98,12 +117,16 @@ async fn discovery_client(socket: &Path) -> Result<DiscoveryServiceClient<Shared
         .await
         .with_context(|| format!("cannot connect to controller socket {}", socket.display()))?
         .shared(8);
-    let config = ClientConfig::new(authority)
-        .with_protocol(Protocol::Grpc)
-        .with_default_timeout(DISCOVERY_TIMEOUT)
-        .with_default_max_message_size(MAXIMUM_DISCOVERY_RESPONSE_BYTES);
+    let config = discovery_config(authority);
 
     Ok(DiscoveryServiceClient::new(connection, config))
+}
+
+fn discovery_config(authority: Uri) -> ClientConfig {
+    ClientConfig::new(authority)
+        .with_protocol(Protocol::Grpc)
+        .with_default_timeout(DISCOVERY_TIMEOUT)
+        .with_default_max_message_size(MAXIMUM_DISCOVERY_RESPONSE_BYTES)
 }
 
 fn render_checked<T>(output: DormantSandboxOutputV1, checked: &T) -> Result<()>

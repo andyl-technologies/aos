@@ -1,5 +1,6 @@
 //! Fully typed parser grammar for the dormant RFC-0021 sandbox surface.
 
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
@@ -32,6 +33,21 @@ pub struct SandboxArgs {
     /// Emit one JSON document per response record.
     #[arg(long, conflicts_with = "json")]
     pub json_lines: bool,
+
+    /// Use the registered-client public endpoint instead of root diagnostics.
+    #[arg(
+        long,
+        requires_all = ["public_server_name", "public_credentials"]
+    )]
+    pub public_api: bool,
+
+    /// Verify the public endpoint against this DNS name or IP address.
+    #[arg(long, requires = "public_api", value_name = "NAME")]
+    pub public_server_name: Option<String>,
+
+    /// Load the protected public-client credential bundle from this directory.
+    #[arg(long, requires = "public_api", value_name = "DIRECTORY")]
+    pub public_credentials: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: SandboxSubcommand,
@@ -1502,4 +1518,62 @@ pub fn routed_request_with_authorization(
             authorization,
         )?,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::cli::{Cli, Commands};
+    use clap::Parser as _;
+
+    #[test]
+    fn public_transport_options_are_complete_or_rejected() {
+        let parsed = Cli::try_parse_from([
+            "aos",
+            "sandbox",
+            "--public-api",
+            "--public-server-name",
+            "sandbox-controller.example",
+            "--public-credentials",
+            "/private/sandbox-client",
+            "capabilities",
+            "public-api",
+        ])
+        .unwrap();
+        let Commands::Sandbox(arguments) = parsed.command else {
+            panic!("sandbox command was not preserved");
+        };
+        assert!(arguments.public_api);
+        assert_eq!(
+            arguments.public_server_name.as_deref(),
+            Some("sandbox-controller.example")
+        );
+        assert_eq!(
+            arguments.public_credentials.as_deref(),
+            Some(Path::new("/private/sandbox-client"))
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "sandbox",
+                "--public-api",
+                "capabilities",
+                "public-api",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "sandbox",
+                "--public-server-name",
+                "sandbox-controller.example",
+                "capabilities",
+                "public-api",
+            ])
+            .is_err()
+        );
+    }
 }
