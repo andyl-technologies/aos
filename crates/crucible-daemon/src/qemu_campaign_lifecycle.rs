@@ -563,6 +563,19 @@ impl QemuFreshAttemptLifecycle<'_> {
     pub fn pending_network_output_count(&self) -> usize {
         self.owner.pending_network_output_count()
     }
+
+    /// Samples one node's concrete execution fingerprint at the current boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node is absent or its stopped state
+    /// cannot be read consistently.
+    pub fn sample_fingerprint(
+        &mut self,
+        node: NodeId,
+    ) -> Result<FingerprintSample, SchedulerError> {
+        self.owner.sample_fingerprint(node)
+    }
 }
 
 /// Validated modeled control for one selected continuation boundary.
@@ -1940,6 +1953,11 @@ fn apply_replayed_guest_selectables<F, D>(
         let expected_selection = replay_context
             .start
             .replay_selection(replayed.schedule.len());
+        let fingerprint = if context.guest_selectable_boundary_diagnostic_sample_permitted() {
+            lifecycle.sample_fingerprint(pending.node().clone()).ok()
+        } else {
+            None
+        };
         record_guest_selectable_boundary_diagnostic(
             context,
             replay_context.attempt,
@@ -1949,6 +1967,7 @@ fn apply_replayed_guest_selectables<F, D>(
             pending.pending(),
             &discovery,
             expected_selection,
+            fingerprint,
         );
         let validation = match selection.origin() {
             SelectionOrigin::Default | SelectionOrigin::LockedReplay => {

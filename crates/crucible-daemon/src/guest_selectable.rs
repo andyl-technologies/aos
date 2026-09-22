@@ -7,7 +7,7 @@
 //! replies from already validated selections. It performs no QEMU operation or
 //! repository write.
 
-use crucible::{NodeId, ScenarioDefForm};
+use crucible::{FingerprintSample, NodeId, ScenarioDefForm};
 use crucible_campaign::{
     Attempt, AttemptId, CampaignCodecError, CampaignHash, ChoiceCoordinate, ChoiceDiscovery,
     ChoiceDomain, ChoiceOpportunity, ConfigurationId, ResolvedSelection, ScenarioDefId,
@@ -40,6 +40,7 @@ pub(crate) fn record_guest_selectable_boundary_diagnostic(
     pending: &SelectablePlanPendingRequest,
     discovery: &ChoiceDiscovery,
     expected: Option<&ResolvedSelection>,
+    fingerprint: Option<FingerprintSample>,
 ) {
     if !context.guest_selectable_boundary_diagnostics_enabled() {
         return;
@@ -69,6 +70,7 @@ pub(crate) fn record_guest_selectable_boundary_diagnostic(
         discovery.opportunity().coordinate(),
         expected_opportunity,
         expected_coordinate,
+        fingerprint,
     );
     context.record_guest_selectable_boundary_diagnostic(&event);
 }

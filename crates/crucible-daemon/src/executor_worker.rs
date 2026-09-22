@@ -735,6 +735,10 @@ impl AttemptExecutionContext {
         self.guest_selectable_diagnostics.is_enabled()
     }
 
+    pub(crate) fn guest_selectable_boundary_diagnostic_sample_permitted(&self) -> bool {
+        self.guest_selectable_diagnostics.sample_permitted()
+    }
+
     pub(crate) const fn diagnostic_execution_id(&self) -> Option<ExecutionId> {
         match self.runtime_basis {
             Some(basis) => Some(basis.execution()),
