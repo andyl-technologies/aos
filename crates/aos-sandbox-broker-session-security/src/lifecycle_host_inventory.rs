@@ -11,16 +11,16 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryStorageRequest, RequestHeader,
 };
 use aos_sandbox::lifecycle::{
-    CurrentLifecycleBootInventoryV1, LifecycleAtomicDatasetSnapshotPlanV1,
-    LifecycleAuthenticatedAtomicStorageSuccessorV1,
+    CurrentLifecycleBootInventoryV1, CurrentLifecycleOperationV1,
+    LifecycleAtomicDatasetSnapshotPlanV1, LifecycleAuthenticatedAtomicStorageSuccessorV1,
     LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
     LifecycleAuthenticatedBrokerDomainInventorySuccessorV1, LifecycleAuthenticatedBrokerEffectV1,
     LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
     LifecycleAuthenticatedRuntimeInventorySuccessorV1,
     LifecycleAuthenticatedStorageInventoryBootstrapV1,
-    LifecycleAuthenticatedStorageInventorySuccessorV1, LifecycleAuthenticatedStorageReadbackV1,
-    LifecycleBootBootstrapEndpointV1, LifecycleBootInventoryBootstrapChallengeV1,
-    LifecyclePhase6ErrorV1,
+    LifecycleAuthenticatedStorageInventorySuccessorV1, LifecycleAuthenticatedStorageInventoryV1,
+    LifecycleAuthenticatedStorageReadbackV1, LifecycleBootBootstrapEndpointV1,
+    LifecycleBootInventoryBootstrapChallengeV1, LifecyclePhase6ErrorV1,
 };
 use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
 use aos_sandbox_linux::boot::KernelBootId;
@@ -802,6 +802,15 @@ pub struct DormantStorageLifecycleInventoryOwnerV1(DormantLifecycleInventorySess
 #[must_use = "the predecessor must be consumed by the matching post-effect query"]
 pub struct DormantAtomicStorageInventoryPredecessorV1 {
     outcome: AuthenticatedBrokerMethodOutcomeV1,
+    inventory: LifecycleAuthenticatedStorageInventoryV1,
+}
+
+impl DormantAtomicStorageInventoryPredecessorV1 {
+    /// Borrows the exact authenticated inventory used to derive the group plan.
+    #[must_use]
+    pub const fn inventory(&self) -> &LifecycleAuthenticatedStorageInventoryV1 {
+        &self.inventory
+    }
 }
 
 /// Retains both sides of a post-atomic Storage inventory ambiguity.
@@ -959,6 +968,9 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
 
     /// Captures the protected complete Storage predecessor before an atomic group.
     ///
+    /// The group plan must be derived from the returned predecessor's inventory;
+    /// another query has a different authenticated request commitment.
+    ///
     /// # Errors
     ///
     /// Returns [`LifecyclePhase6ErrorV1`] unless a fresh complete inventory is
@@ -968,7 +980,9 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     ) -> Result<DormantAtomicStorageInventoryPredecessorV1, LifecyclePhase6ErrorV1> {
         let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
         self.0.recheck(currentness)?;
-        Ok(DormantAtomicStorageInventoryPredecessorV1 { outcome })
+        let inventory =
+            LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(&outcome)?;
+        Ok(DormantAtomicStorageInventoryPredecessorV1 { outcome, inventory })
     }
 
     /// Captures and verifies the exact adjacent post-group Storage inventory.
@@ -980,7 +994,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     pub fn finish_atomic_snapshot_inventory(
         &mut self,
         challenge: &LifecycleBootInventoryBootstrapChallengeV1,
-        boot: &CurrentLifecycleBootInventoryV1<'_>,
+        operation: &CurrentLifecycleOperationV1<'_>,
         plan: &LifecycleAtomicDatasetSnapshotPlanV1,
         program: aos_sandbox_core::ObjectDigest,
         observation: aos_sandbox_core::ObjectDigest,
@@ -995,7 +1009,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
                 currentness,
             } => self.complete_atomic_snapshot_inventory(
                 challenge,
-                boot,
+                operation,
                 plan,
                 program,
                 observation,
@@ -1020,7 +1034,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     pub fn resume_atomic_snapshot_inventory(
         &mut self,
         challenge: &LifecycleBootInventoryBootstrapChallengeV1,
-        boot: &CurrentLifecycleBootInventoryV1<'_>,
+        operation: &CurrentLifecycleOperationV1<'_>,
         plan: &LifecycleAtomicDatasetSnapshotPlanV1,
         program: aos_sandbox_core::ObjectDigest,
         observation: aos_sandbox_core::ObjectDigest,
@@ -1032,7 +1046,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
                 currentness,
             } => self.complete_atomic_snapshot_inventory(
                 challenge,
-                boot,
+                operation,
                 plan,
                 program,
                 observation,
@@ -1055,7 +1069,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     fn complete_atomic_snapshot_inventory(
         &mut self,
         challenge: &LifecycleBootInventoryBootstrapChallengeV1,
-        boot: &CurrentLifecycleBootInventoryV1<'_>,
+        operation: &CurrentLifecycleOperationV1<'_>,
         plan: &LifecycleAtomicDatasetSnapshotPlanV1,
         program: aos_sandbox_core::ObjectDigest,
         observation: aos_sandbox_core::ObjectDigest,
@@ -1073,7 +1087,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         let successor =
             LifecycleAuthenticatedAtomicStorageSuccessorV1::from_fixed_endpoint_attestation(
                 challenge,
-                boot,
+                operation,
                 plan,
                 program,
                 observation,

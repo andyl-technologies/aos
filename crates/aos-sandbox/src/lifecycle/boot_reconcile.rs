@@ -1027,12 +1027,12 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
     /// # Errors
     ///
     /// Returns [`LifecyclePhase6ErrorV1`] unless the predecessor is anchored by
-    /// the current boot root and the successor contains exactly one committed
-    /// Snapshot transition for every protected plan member.
+    /// the protected pre-commit operation and the successor contains exactly
+    /// one committed Snapshot transition for every protected plan member.
     #[cfg(target_os = "linux")]
     pub fn from_fixed_endpoint_attestation(
         challenge: &LifecycleBootInventoryBootstrapChallengeV1,
-        boot: &super::CurrentLifecycleBootInventoryV1<'_>,
+        operation: &super::CurrentLifecycleOperationV1<'_>,
         plan: &super::LifecycleAtomicDatasetSnapshotPlanV1,
         program: ObjectDigest,
         observation: ObjectDigest,
@@ -1049,10 +1049,36 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             &message,
             signature,
         )?;
-        if challenge.operation() != boot.inventory().operation()
-            || challenge.operation_record() != boot.inventory().operation_record()
-            || challenge.projection_root() != boot.projection_root()
-            || challenge.host_boot() != boot.inventory().host_boot()
+        let host_boot = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if challenge.operation() != operation.operation().operation_id()
+            || challenge.operation_record() != operation.record()
+            || challenge.projection_root() != operation.projection_root()
+            || challenge.host_boot() != host_boot
+            || plan.operation() != operation.operation().operation_id()
+        {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let effect = plan.lifecycle_effect();
+        let cursor = operation
+            .persisted_effect_cursor()?
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        if !matches!(
+            operation.operation().intent().method(),
+            super::LifecycleMethodV1::Snapshot | super::LifecycleMethodV1::Hibernate
+        ) || effect.operation_revision() != operation.operation().record_revision()
+            || effect.domain() != LifecycleEffectDomainV1::Storage
+            || effect.ordinal() != 4
+            || effect.direction() != super::LifecycleEffectDirectionV1::Forward
+            || cursor.state() != super::LifecycleAttemptStateV1::Reserved
+            || cursor.step() != effect.step()
+            || cursor.direction() != effect.direction()
+            || cursor.attempt() != effect.attempt()
+            || cursor.admission() != effect.admission()
+            || cursor.request() != effect.logical_request()
+            || cursor.body() != super::LifecycleStepBodyDigestV1::commit(&effect.canonical_body())
+            || cursor.plan() != effect.plan()
         {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
@@ -1072,8 +1098,7 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             .generation
             .checked_add(1)
             .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
-        if previous.commitment != boot.inventory().domains().storage()
-            || previous.commitment != plan.inventory()
+        if previous.commitment != plan.inventory()
             || previous.generation != plan.inventory_generation()
             || previous.source != plan.inventory_source()
             || current.session != previous.session
@@ -1192,7 +1217,7 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
     ///
     /// Returns [`LifecyclePhase6ErrorV1`] unless the signed outcome contains a
     /// canonical, bounded, complete five-family projection.
-    pub(crate) fn from_authenticated_outcome(
+    pub fn from_authenticated_outcome(
         outcome: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
         if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
