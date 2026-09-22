@@ -473,6 +473,35 @@ impl NixRunner {
         self.instantiate_inner(attr, Some(target))
     }
 
+    /// Instantiates every derivation returned by a target-specific list.
+    ///
+    /// This registers the derivations in the local Nix store without realizing
+    /// their outputs. An empty list is valid and returns no paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if instantiation fails, or another error
+    /// if `nix-instantiate` cannot be spawned.
+    pub fn instantiate_all_for_target(&self, attr: &str, target: &str) -> Result<Vec<PathBuf>> {
+        if !target_platform_name_is_safe(target) {
+            anyhow::bail!("invalid target platform '{target}'");
+        }
+
+        let mut args = vec![
+            self.default_nix().to_string_lossy().to_string(),
+            "-A".to_string(),
+            attr.to_string(),
+        ];
+        add_cross_system_arg(&mut args, Some(target));
+
+        let output = self.run_nix("nix-instantiate", &args)?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(strip_nix_output_selector(line.trim())))
+            .collect())
+    }
+
     fn instantiate_inner(&self, attr: &str, cross_system: Option<&str>) -> Result<PathBuf> {
         let mut args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
@@ -743,6 +772,12 @@ fn target_platform_name_is_safe(target: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
+/// Removes the output selector that `nix-instantiate` prints for a non-default output.
+fn strip_nix_output_selector(path: &str) -> &str {
+    path.split_once('!')
+        .map_or(path, |(derivation, _)| derivation)
+}
+
 /// Returns the Nix function used to select platform-supported target roots.
 fn target_packages_expression() -> &'static str {
     "{ defaultNix, target }: let aos = import (builtins.toPath defaultNix) { crossSystem = target; }; in builtins.attrValues (aos.pkgs.targetPackagesFor target)"
@@ -750,7 +785,7 @@ fn target_packages_expression() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_cross_system_arg, target_packages_expression};
+    use super::{add_cross_system_arg, strip_nix_output_selector, target_packages_expression};
 
     #[test]
     fn cross_system_argument_uses_canonical_nix_spelling() {
@@ -788,5 +823,17 @@ mod tests {
         assert!(expression.contains("{ crossSystem = target; }"));
         assert!(expression.contains("aos.pkgs.targetPackagesFor target"));
         assert!(!expression.contains("builtins.attrValues aos.pkgs"));
+    }
+
+    #[test]
+    fn instantiated_output_selectors_are_removed() {
+        assert_eq!(
+            strip_nix_output_selector("/nix/store/example.drv!config"),
+            "/nix/store/example.drv"
+        );
+        assert_eq!(
+            strip_nix_output_selector("/nix/store/example.drv"),
+            "/nix/store/example.drv"
+        );
     }
 }

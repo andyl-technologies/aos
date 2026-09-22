@@ -1321,6 +1321,12 @@ in {
     configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
     configurationSources = [./lib ./modules ./systems/server.nix];
   };
+  releasePackageDerivationRoots = pkgs.platformSupport.releaseDerivationRoots {
+    system = hostPlatform.system;
+    packages = pkgs;
+    names = pkgs.allPackageNames;
+    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+  };
 
   # Pure package-maintenance content. Git and local-clone identities are added
   # only by the local controller after strict canonical evaluation.
