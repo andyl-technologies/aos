@@ -206,15 +206,14 @@ in
   assert requires "complete_controller_catalog_cycles_reach_a_bounded_reopen_stable_fixed_point" catalogReconciliationSource;
   assert requires "maximum_valid_storage_inventory_does_not_regrow_the_journal" resourceInventorySource;
   assert requires "pending_host_catalog" runtimeSource;
-  assert requires "pending_first_read_only_cycle" runtimeSource;
-  assert requires "validated_unfinished_operation" runtimeSource;
+  assert requires "pending_first_reconciliation_cycle" runtimeSource;
+  assert requires ".reconcile_quantum()" runtimeSource;
   assert requires "into_async_authenticated_listener(listener, 0)" runtimeSource;
   assert requires ''/run/aos/sandboxd/diagnostics.sock'' runtimeSource;
   assert requires "root_diagnostic_response_discloses_no_catalog_or_resource_detail" runtimeSource;
   assert requires "durable_first_bind_is_idempotent_after_an_ambiguous_process_exit" journalSource;
   assert requires "unbound_preexisting_state_has_no_automatic_identity_migration" journalSource;
   assert requires "ErrorCode::Unimplemented" runtimeSource;
-  assert requiresAbsent "reconcile_quantum(" runtimeSource;
   assert requiresAbsent "SemanticCapability" runtimeSource;
   assert requiresAbsent "aos.sandbox.controller.observation" runtimeSource;
   assert requires ''--frozen --offline'' packageSource;

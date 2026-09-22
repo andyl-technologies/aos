@@ -763,7 +763,7 @@ fn run_controller_cycle(
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<CatalogStatus, CycleFailure> {
     let mut state = (controller, sessions);
-    pending_first_read_only_cycle(
+    pending_first_reconciliation_cycle(
         &mut state,
         |(controller, _)| {
             controller
@@ -773,37 +773,29 @@ fn run_controller_cycle(
         |(controller, sessions), pending| {
             publish_pending(controller, pending, node_id, sessions).map(|_| ())
         },
-        |(controller, _)| validate_read_only_ledger(controller),
+        |(controller, _)| {
+            controller
+                .reconcile_quantum()
+                .map(|_| ())
+                .map_err(|error| CycleFailure::Fatal(error.to_string()))
+        },
         |(controller, sessions)| refresh_catalog(controller, node_id, sessions),
     )
 }
 
-fn pending_first_read_only_cycle<State, Pending, Status, Error>(
+fn pending_first_reconciliation_cycle<State, Pending, Status, Error>(
     state: &mut State,
     recover: impl FnOnce(&mut State) -> Result<Option<Pending>, Error>,
     publish: impl FnOnce(&mut State, Pending) -> Result<(), Error>,
-    validate_idle: impl FnOnce(&mut State) -> Result<(), Error>,
+    reconcile: impl FnOnce(&mut State) -> Result<(), Error>,
     continue_cycle: impl FnOnce(&mut State) -> Result<Status, Error>,
 ) -> Result<Status, Error> {
     if let Some(pending) = recover(state)? {
         publish(state, pending)?;
     }
 
-    validate_idle(state)?;
+    reconcile(state)?;
     continue_cycle(state)
-}
-
-fn validate_read_only_ledger(controller: &mut ProductionController) -> Result<(), CycleFailure> {
-    let unfinished = controller
-        .validated_unfinished_operation()
-        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-    if unfinished.is_some() {
-        return Err(CycleFailure::Fatal(
-            "durable operation ledger contains unfinished mutation work".to_owned(),
-        ));
-    }
-
-    Ok(())
 }
 
 fn refresh_catalog(
@@ -2495,7 +2487,7 @@ mod tests {
         }
 
         let mut calls = Calls::default();
-        let status = pending_first_read_only_cycle(
+        let status = pending_first_reconciliation_cycle(
             &mut calls,
             |calls| {
                 calls.order.push("recovery");
@@ -2507,7 +2499,7 @@ mod tests {
                 Ok::<_, ()>(())
             },
             |calls| {
-                calls.order.push("read-only ledger audit");
+                calls.order.push("bounded reconciliation");
                 Ok::<_, ()>(())
             },
             |calls| {
@@ -2523,7 +2515,7 @@ mod tests {
             [
                 "recovery",
                 "pending publication",
-                "read-only ledger audit",
+                "bounded reconciliation",
                 "fresh broker inventories",
             ]
         );
@@ -2538,7 +2530,7 @@ mod tests {
         }
 
         let mut calls = Calls::default();
-        let result: Result<&str, &str> = pending_first_read_only_cycle(
+        let result: Result<&str, &str> = pending_first_reconciliation_cycle(
             &mut calls,
             |_| Ok::<_, &'static str>(Some("durable pending catalog")),
             |calls, _| {
@@ -2559,36 +2551,35 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_operation_closes_readiness_before_active_or_broker_work() {
+    fn reconciliation_failure_closes_readiness_before_broker_inventory() {
         #[derive(Default)]
         struct Calls {
-            compiler: usize,
-            executor: usize,
             reconciliation: usize,
             broker_inventory: usize,
         }
 
         let mut calls = Calls::default();
-        let result = pending_first_read_only_cycle(
+        let result = pending_first_reconciliation_cycle(
             &mut calls,
             |_| Ok::<_, &'static str>(None::<()>),
             |_, _| Ok(()),
-            |_| Err("unfinished operation"),
             |calls| {
-                calls.compiler += 1;
-                calls.executor += 1;
                 calls.reconciliation += 1;
+                Err("reconciliation failed")
+            },
+            |calls| {
                 calls.broker_inventory += 1;
                 Ok("ready")
             },
         );
 
-        assert!(matches!(result, Err("unfinished operation")));
-        assert_eq!(calls.compiler, 0);
-        assert_eq!(calls.executor, 0);
-        assert_eq!(calls.reconciliation, 0);
+        assert!(matches!(result, Err("reconciliation failed")));
+        assert_eq!(calls.reconciliation, 1);
         assert_eq!(calls.broker_inventory, 0);
-        assert!(result.is_err(), "unfinished work must not open readiness");
+        assert!(
+            result.is_err(),
+            "failed reconciliation must not open readiness"
+        );
     }
 
     #[test]
