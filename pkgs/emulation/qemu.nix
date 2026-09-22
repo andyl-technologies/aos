@@ -1539,9 +1539,15 @@ in
                       rr.index("static void rr_crucible_sim_finish_main_loop_handoff")
                   )
               ]
+              deferred_reset_handoff_start = rr.index(
+                  "static bool rr_crucible_sim_service_deferred_reset_handoff"
+              )
               deferred_reset_handoff = rr[
-                  rr.index("static bool rr_crucible_sim_service_deferred_reset_handoff"):
-                  rr.index("static bool rr_crucible_sim_main_loop_dispatch_pending")
+                  deferred_reset_handoff_start:
+                  rr.index(
+                      "static bool rr_crucible_sim_main_loop_dispatch_pending",
+                      deferred_reset_handoff_start
+                  )
               ]
               run_tcg_batch = rr[
                   rr.index("static bool rr_crucible_sim_run_tcg_batch"):
@@ -3323,6 +3329,19 @@ in
                    r"qemu_event_wait\(&rr_dispatch_ceiling_event\);\s*"
                    r"rr_replay_mutex_lock\(\);\s*"
                    r"bql_lock\(\);", 1),
+                  ("deferred reset rearms consumed main-loop work",
+                   deferred_reset_handoff,
+                   r"qatomic_store_release\(\s*"
+                   r"&rr_deferred_reset_dispatch_generation, 0\);\s*"
+                   r"qatomic_store_release\("
+                   r"&rr_deferred_reset_handoff_ready, false\);\s*"
+                   r"if \(rr_crucible_sim_main_loop_dispatch_pending\(\)\) "
+                   r"\{\s*"
+                   r"generation = rr_crucible_sim_begin_main_loop_handoff\(\);"
+                   r"\s*/\*.*?wake was consumed by reset handling.*?\*/\s*"
+                   r"qemu_notify_event\(\);\s*"
+                   r"rr_crucible_sim_finish_main_loop_handoff\(generation\);",
+                   1),
                   ("hot-fork rejects an in-flight main-loop pass", hot_fork,
                    r"rr_replay_mutex_owned \|\|\s*"
                    r"qatomic_load_acquire\(&rr_main_loop_dispatch_requested\)"
