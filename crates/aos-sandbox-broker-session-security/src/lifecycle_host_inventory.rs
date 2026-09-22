@@ -210,6 +210,14 @@ macro_rules! domain_inventory_owner {
                 self.0.resume_authority_effect(effect)
             }
 
+            /// Recovers this exact Apply from prior-process terminal history.
+            pub(crate) fn recover_terminal_authority_effect(
+                &mut self,
+                effect: &PreparedAuthorityEffectV1,
+            ) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
+                self.0.recover_terminal_authority_effect(effect)
+            }
+
             /// Resumes retained inventory transport or durable commit custody.
             ///
             /// # Errors
@@ -406,6 +414,18 @@ impl DormantLifecycleInventorySessionV1 {
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
         self.authority_effects.resume(&mut self.session, effect)
+    }
+
+    fn recover_terminal_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
+        if self.pending.is_some() || self.authority_effects.has_pending() {
+            return Err(EffectFailure::Retryable(
+                "broker session has retained recovery work".to_owned(),
+            ));
+        }
+        self.session.recover_terminal_authority_effect(effect)
     }
 
     fn send_query(
@@ -818,6 +838,14 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
         self.0.resume_authority_effect(effect)
+    }
+
+    /// Recovers this exact Apply from prior-process terminal history.
+    pub(crate) fn recover_terminal_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
+        self.0.recover_terminal_authority_effect(effect)
     }
 
     /// Couples a completed fixed-custody session to Storage lifecycle queries.

@@ -13,6 +13,7 @@ use owner::JournalOwnerV1;
 
 use std::path::{Path, PathBuf};
 
+use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES, BrokerSessionDurableEndpointV1,
@@ -57,6 +58,14 @@ const STABLE_ENDPOINT_IDENTITY_DOMAIN: &[u8] =
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.journal-transaction.v2\0";
 const MAXIMUM_PROTOCOL_RECORDS: usize = 4;
 const PROTECTED_SESSION_JOURNAL: &str = "session.journal";
+
+/// Carries one terminal client exchange recovered from protected history.
+pub(crate) struct ProtectedPriorTerminalExchangeV1 {
+    pub(crate) method: BrokerMethod,
+    pub(crate) request_id: [u8; 16],
+    pub(crate) request_body: Vec<u8>,
+    pub(crate) result: Result<Vec<u8>, String>,
+}
 
 /// Classifies a broker-side packet before request installation or effect dispatch.
 pub(crate) enum ProtectedBrokerReceivedRequestAdmissionV1 {
@@ -361,6 +370,26 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Recovers an exact completed client exchange before session rollover.
+    pub(crate) fn prior_terminal_exchange(
+        &mut self,
+        method: BrokerMethod,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<Option<ProtectedPriorTerminalExchangeV1>, BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let exchange = self.journal.prior_terminal_exchange(
+            method,
+            request_id,
+            request_body,
+            transcript.protocol(),
+        )?;
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(exchange)
+    }
+
     pub(crate) fn require_current_node(
         &mut self,
         expected_node: [u8; 16],
@@ -955,6 +984,55 @@ fn reconstruct_retained_server_request(
 }
 
 impl ProtectedBrokerSessionJournalV1 {
+    fn prior_terminal_exchange(
+        &mut self,
+        method: BrokerMethod,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        protocol: BrokerSessionProtocolV1,
+    ) -> Result<Option<ProtectedPriorTerminalExchangeV1>, BrokerSessionSecurityError> {
+        let Some(stored) = self.read_optional(protocol)? else {
+            return Ok(None);
+        };
+        let history = stored.history_model()?;
+        for record in history.records().iter().rev() {
+            if record.endpoint() != BrokerSessionDurableEndpointV1::Client
+                || record.phase() != BrokerSessionDurablePhaseV1::Terminal
+                || record.method() != method
+                || record.request_id() != request_id
+            {
+                continue;
+            }
+            let request = decode_canonical_request_v1(record.request_packet())
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            if request.message().body.as_slice() != request_body {
+                continue;
+            }
+            let outcome_packet = record
+                .outcome_packet()
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let outcome = decode_canonical_response_v1(outcome_packet)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let message = outcome.message();
+            if message.request_id.as_slice() != request_id
+                || message.method.as_known() != Some(method)
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let result = match message.error.as_option() {
+                None => Ok(message.body.clone()),
+                Some(error) => Err(error.safe_message.clone()),
+            };
+            return Ok(Some(ProtectedPriorTerminalExchangeV1 {
+                method,
+                request_id,
+                request_body: request.message().body.clone(),
+                result,
+            }));
+        }
+        Ok(None)
+    }
+
     pub(crate) fn sign_broker_outcome(
         &mut self,
         request: &AuthenticatedBrokerMethodRequestV1,

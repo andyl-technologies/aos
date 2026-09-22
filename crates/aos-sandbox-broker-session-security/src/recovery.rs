@@ -49,6 +49,7 @@ pub use journal::{
 };
 pub(crate) use journal::{
     ProtectedBrokerReceivedRequestAdmissionV1, ProtectedBrokerSessionOwnerV1,
+    ProtectedPriorTerminalExchangeV1,
 };
 
 const PEER_BINDING_DOMAIN: &[u8] = b"aos-sandbox-broker-session-peer-binding-v1\0";

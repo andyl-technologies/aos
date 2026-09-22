@@ -94,6 +94,19 @@ impl ControllerHostPublication {
         self.authority_effects.resume(&mut self.session, effect)
     }
 
+    /// Recovers this exact Apply from prior-process terminal history.
+    pub(crate) fn recover_terminal_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
+        if self.pending.is_some() || self.authority_effects.has_pending() || self.poisoned {
+            return Err(EffectFailure::Retryable(
+                "Host session has retained recovery work".to_owned(),
+            ));
+        }
+        self.session.recover_terminal_authority_effect(effect)
+    }
+
     /// Queries Host for one exact prior-process authority effect.
     pub(crate) fn query_authority_effect(
         &mut self,

@@ -24,7 +24,9 @@ use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
 };
 
-use crate::recovery::{FixedEndpointCustodyV1, ProtectedBrokerSessionOwnerV1};
+use crate::recovery::{
+    FixedEndpointCustodyV1, ProtectedBrokerSessionOwnerV1, ProtectedPriorTerminalExchangeV1,
+};
 use crate::{
     BrokerSessionSecurityError, ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1,
     ProtectedBrokerSessionFixedCustodyV1,
@@ -1203,6 +1205,21 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn prior_terminal_exchange(
+        &mut self,
+        method: aos_proto::aos::sandbox::local::v1::BrokerMethod,
+        request_id: [u8; 16],
+        request_body: &[u8],
+    ) -> Result<Option<ProtectedPriorTerminalExchangeV1>, BrokerSessionSecurityError> {
+        self.owner.prior_terminal_exchange(
+            method,
+            request_id,
+            request_body,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
     pub(super) fn require_current_node(
         &mut self,
         expected_node: [u8; 16],

@@ -14,7 +14,7 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerResponseEnvelope, HostCatalogPublicationStatus, PublishHostCatalogResponse,
     QueryRuntimeEffectRequest, RequestHeader,
 };
-use aos_sandbox::PreparedAuthorityEffectV1;
+use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
 use aos_sandbox_broker_session_protocol::{
     AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, ProtectedBrokerSessionVerificationContextV1,
     decode_canonical_response_v1,
@@ -1270,6 +1270,57 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Recovers this exact Apply from protected terminal session history.
+    ///
+    /// The lookup happens before a new initial request can roll over the prior
+    /// process history. A nonmatching or pending history returns absence; a
+    /// matching terminal broker rejection remains a permanent effect failure.
+    pub(crate) fn recover_terminal_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
+        let request = effect.broker_request().map_err(|_| {
+            EffectFailure::Permanent("durable authority effect is malformed".to_owned())
+        })?;
+        let recovered = self
+            .0
+            .prior_terminal_exchange(
+                request.method(),
+                request.request_id(),
+                effect.attempt().body(),
+            )
+            .map_err(|_| {
+                EffectFailure::Retryable(
+                    "protected terminal session history is unavailable".to_owned(),
+                )
+            })?;
+        let Some(recovered) = recovered else {
+            return Ok(None);
+        };
+        let receipt = recovered.result.map_err(|message| {
+            let diagnostic = if message.is_empty() {
+                "broker rejected the durable authority effect".to_owned()
+            } else {
+                format!("broker rejected the durable authority effect: {message}")
+            };
+            EffectFailure::Permanent(diagnostic)
+        })?;
+        effect
+            .validate_protected_terminal_receipt(
+                recovered.method,
+                recovered.request_id,
+                &recovered.request_body,
+                receipt,
+            )
+            .map(Some)
+            .map_err(|_| {
+                EffectFailure::Permanent(
+                    "protected session history contains a contradictory authority receipt"
+                        .to_owned(),
+                )
+            })
+    }
+
     /// Checks the fixed protected session against the controller's bound node.
     ///
     /// No identity is inferred from a socket path or an inventory response.

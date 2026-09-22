@@ -1450,6 +1450,15 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 None => Ok(AuthorityEffectObservationV1::Absent),
             };
         }
+        let recovered = {
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+            })?;
+            recover_controller_terminal_authority_effect(&mut sessions, method, prepared)?
+        };
+        if let Some(receipt) = recovered {
+            return Ok(AuthorityEffectObservationV1::Applied(receipt));
+        }
         if method == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
@@ -1589,6 +1598,38 @@ fn resume_controller_authority_effect(
         }
     };
     retained.transpose()
+}
+
+fn recover_controller_terminal_authority_effect(
+    sessions: &mut ControllerBrokerSessions,
+    method: BrokerMethod,
+    prepared: &PreparedAuthorityEffectV1,
+) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
+    match method {
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => sessions
+            .host
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .recover_terminal_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_STORAGE_APPLY => sessions
+            .storage
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .recover_terminal_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY => sessions
+            .mount
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .recover_terminal_authority_effect(prepared),
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => sessions
+            .network
+            .as_mut()
+            .ok_or_else(missing_broker_session)?
+            .recover_terminal_authority_effect(prepared),
+        _ => Err(EffectFailure::Permanent(
+            "durable authority effect selected a non-Apply method".to_owned(),
+        )),
+    }
 }
 
 fn missing_broker_session() -> EffectFailure {

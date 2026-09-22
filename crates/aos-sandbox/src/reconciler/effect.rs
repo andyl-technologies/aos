@@ -537,6 +537,50 @@ impl PreparedAuthorityEffectV1 {
         })
     }
 
+    /// Validates a protected terminal exchange recovered from session history.
+    ///
+    /// The broker-session owner has already authenticated and cross-linked the
+    /// retained request and outcome packets. This final bridge prevents a
+    /// terminal result for another Apply from satisfying this reconciler
+    /// attempt and re-applies the Host receipt's method-specific validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidExecutorOutput`] when the recovered
+    /// method, request identifier, request body, or receipt does not belong to
+    /// this exact durable attempt.
+    pub fn validate_protected_terminal_receipt(
+        &self,
+        method: BrokerMethod,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        receipt: Vec<u8>,
+    ) -> Result<ValidatedAuthorityEffectReceiptV1, ReconcilerError> {
+        let request = self.broker_request()?;
+        if method != request.method()
+            || request_id != request.request_id()
+            || request_body != self.attempt.body()
+        {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "protected terminal exchange belongs to another durable attempt",
+            ));
+        }
+        if receipt.is_empty() || receipt.len() > MAXIMUM_RECEIPT_BYTES {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "invalid protected terminal receipt length",
+            ));
+        }
+        if method == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
+            return self.validate_host_receipt(receipt);
+        }
+
+        Ok(ValidatedAuthorityEffectReceiptV1 {
+            bytes: receipt,
+            binding_digest: self.binding_digest,
+            attempt_digest: attempt_token_digest(&self.attempt),
+        })
+    }
+
     /// Validates one authenticated Host query for this exact durable Apply.
     ///
     /// # Errors
