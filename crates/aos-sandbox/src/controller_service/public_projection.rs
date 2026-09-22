@@ -26,7 +26,7 @@ use crate::controller_query::{
     CheckedFilesystemViewResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
     InvalidPublicResource, MAXIMUM_PUBLIC_RESOURCE_BYTES,
 };
-use crate::{Journal, RecordNamespace};
+use crate::{Journal, JournalRecord, RecordNamespace};
 
 const PROJECTION_MAGIC: &[u8; 8] = b"AOSPRJ01";
 const PROJECTION_VERSION: u16 = 1;
@@ -337,6 +337,41 @@ impl PublicProjectionPlanV1 {
     pub fn into_desired_state(self) -> (Vec<u8>, Vec<u8>) {
         (self.desired_key, self.desired_value)
     }
+}
+
+/// Prepares removal of one superseded public projection in an atomic local mutation.
+///
+/// # Errors
+///
+/// Returns [`PublicProjectionError::InvalidIdentity`] for a zero resource identity.
+pub(crate) fn public_projection_deletion_record_v1(
+    kind: PublicProjectionKindV1,
+    resource_id: [u8; 16],
+) -> Result<JournalRecord, PublicProjectionError> {
+    if resource_id == [0; 16] {
+        return Err(PublicProjectionError::InvalidIdentity);
+    }
+
+    Ok(JournalRecord::delete(
+        RecordNamespace::DesiredState,
+        projection_key(kind, resource_id),
+    ))
+}
+
+/// Reports whether a journal record is one exact public-projection deletion.
+pub(crate) fn is_public_projection_deletion_record_v1(record: &JournalRecord) -> bool {
+    if record.namespace() != RecordNamespace::DesiredState || record.value().is_some() {
+        return false;
+    }
+    let key = record.key();
+    if key.len() != PROJECTION_KEY_PREFIX.len() + 1 + 16
+        || !key.starts_with(PROJECTION_KEY_PREFIX)
+        || PublicProjectionKindV1::from_byte(key[PROJECTION_KEY_PREFIX.len()]).is_err()
+    {
+        return false;
+    }
+
+    key[PROJECTION_KEY_PREFIX.len() + 1..] != [0; 16]
 }
 
 /// Stores one replay-validated durable public projection.

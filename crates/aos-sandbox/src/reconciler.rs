@@ -164,9 +164,13 @@ impl OperationPlan {
             || local_records.is_empty()
             || local_records.len() > MAXIMUM_EFFECTS
             || local_records.iter().any(|record| {
-                record.namespace() != RecordNamespace::PublisherAuthority
+                (record.namespace() != RecordNamespace::PublisherAuthority
+                    && !crate::controller_service::public_projection::is_public_projection_deletion_record_v1(record))
                     || record.key().is_empty()
-                    || record.value().is_none()
+                    || (record.namespace() == RecordNamespace::PublisherAuthority
+                        && record.value().is_none())
+                    || (record.namespace() == RecordNamespace::DesiredState
+                        && record.key() == desired_key)
             })
         {
             return Err(ReconcilerError::InvalidPlan(
@@ -1082,6 +1086,14 @@ where
                     && !recorded.ownership_gated
                     && recorded.runtime_intent_digest.is_none();
                 if recorded_local_completion != !plan.local_records.is_empty() {
+                    return Err(ReconcilerError::IdempotencyConflict);
+                }
+                if recorded_local_completion
+                    && self
+                        .journal
+                        .get(RecordNamespace::DesiredState, &plan.desired_key)
+                        != Some(plan.desired_value.as_slice())
+                {
                     return Err(ReconcilerError::IdempotencyConflict);
                 }
                 for local in &plan.local_records {

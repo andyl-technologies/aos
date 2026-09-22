@@ -505,6 +505,27 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         ))
     }
 
+    /// Prepares atomic predecessor revocation and fresh successor installation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherAuthorityError`] when the predecessor is absent or
+    /// revoked, the successor is invalid or already retained, or protected
+    /// registry limits would be exceeded.
+    pub(crate) fn prepare_renewal_from_trusted_controller(
+        &self,
+        predecessor: CapabilityId,
+        successor: CapabilityRecord,
+    ) -> Result<[JournalRecord; 2], PublisherAuthorityError> {
+        if predecessor == successor.id() {
+            return Err(PublisherAuthorityError::CapabilityIdAlreadyUsed);
+        }
+        let revoke = self.prepare_revoke_from_trusted_controller(predecessor)?;
+        let install = self.prepare_install_from_trusted_controller(successor)?;
+
+        Ok([revoke, install])
+    }
+
     /// Reconstructs the exact retained authority record for idempotent admission replay.
     ///
     /// # Errors
