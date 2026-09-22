@@ -144,7 +144,7 @@ impl ControllerHostPublication {
         effect: CurrentLifecycleEffectV1<'lifecycle>,
         fence: LiveRuntimeFenceV1,
         action: RuntimeAction,
-        build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
+        authority: &PreparedAuthorityEffectV1,
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
@@ -159,7 +159,7 @@ impl ControllerHostPublication {
             .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
         let mut owner = crate::DormantLifecycleDomainEffectOwnerV1::from_protected_session(session);
         let result = owner
-            .observe_runtime(challenge, effect, fence, action, build)
+            .observe_runtime(challenge, effect, fence, action, authority)
             .and_then(|progress| owner.complete_blocking(progress));
         self.session = Some(owner.into_protected_session());
         if result.is_err() {

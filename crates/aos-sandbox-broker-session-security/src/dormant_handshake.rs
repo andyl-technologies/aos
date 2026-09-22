@@ -4783,6 +4783,26 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        self.prepare_authenticated_authority_effect_checked(effect, |_| true)
+    }
+
+    /// Signs and reserves one exact durable authority request after validation.
+    ///
+    /// `validate` receives the fully decoded and authenticated request before
+    /// either the initial session record or its successor is written. This
+    /// allows a protected higher-level protocol to bind the authority-bearing
+    /// body to its own exact operation cursor without rebuilding the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable request exceeds negotiated session
+    /// limits, differs from its authority attempt, fails `validate`, or cannot
+    /// be committed to protected session history.
+    pub fn prepare_authenticated_authority_effect_checked(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+        validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
         let request = effect.broker_request().map_err(|_| {
             BrokerSessionSecurityError::manifest("durable authority effect request")
         })?;
@@ -4815,6 +4835,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         if authenticated.exact_body() != expected_body {
             return Err(BrokerSessionSecurityError::manifest(
                 "durable authority effect body binding",
+            ));
+        }
+        if !validate(&authenticated) {
+            return Err(BrokerSessionSecurityError::manifest(
+                "protected authority effect binding",
             ));
         }
 

@@ -10,6 +10,7 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryNetworksRequest, InventoryRuntimeRequest, InventoryStorageRequest, RequestHeader,
     RuntimeAction,
 };
+use aos_sandbox::PreparedAuthorityEffectV1;
 use aos_sandbox::lifecycle::{
     CurrentLifecycleEffectV1, LifecycleBootBootstrapEndpointV1,
     LifecycleBootInventoryBootstrapChallengeV1, LifecycleEffectObservationV1,
@@ -131,22 +132,26 @@ impl DormantLifecycleDomainEffectOwnerV1 {
         effect: CurrentLifecycleEffectV1<'lifecycle>,
         fence: LiveRuntimeFenceV1,
         action: RuntimeAction,
-        build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
+        authority: &PreparedAuthorityEffectV1,
     ) -> Result<DormantLifecycleDomainEffectProgressV1<'lifecycle>, LifecyclePhase6ErrorV1> {
         let exchange = ExchangeStageV1::Effect {
             challenge,
             endpoint: LifecycleBootBootstrapEndpointV1::Host,
             effect,
         };
-        self.prepare_query_checked(
-            exchange,
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-            build,
-            move |effect, request| {
-                effect
+        let prepared = self
+            .session
+            .prepare_authenticated_authority_effect_checked(authority, |request| {
+                exchange
+                    .effect()
                     .validate_authenticated_runtime_request(request, fence, action)
                     .is_ok()
-            },
+            })
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        self.continue_prepared(
+            exchange,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            prepared,
         )
     }
 
@@ -477,6 +482,15 @@ impl DormantLifecycleDomainEffectOwnerV1 {
                 !exchange.is_effect() || validate(exchange.effect(), request)
             })
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        self.continue_prepared(exchange, method, prepared)
+    }
+
+    fn continue_prepared<'lifecycle>(
+        &mut self,
+        exchange: ExchangeStageV1<'lifecycle>,
+        method: BrokerMethod,
+        prepared: DormantBrokerRequestPreparationV1,
+    ) -> Result<DormantLifecycleDomainEffectProgressV1<'lifecycle>, LifecyclePhase6ErrorV1> {
         match prepared {
             DormantBrokerRequestPreparationV1::Prepared(prepared) => {
                 self.send_query(exchange, method, prepared)

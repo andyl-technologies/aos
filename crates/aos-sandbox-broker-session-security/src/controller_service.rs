@@ -34,10 +34,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use aos_proto::aos::sandbox::local::v1::{
-    ApplyRuntimeRequest, AssignmentFence, BrokerMethod, BrokerRequestEnvelope, RequestHeader,
-    RuntimeAction,
-};
+use aos_proto::aos::sandbox::local::v1::{BrokerMethod, RuntimeAction};
 use aos_proto::aos::sandbox::v1::{
     CacheServiceExt, CancelOperationRequest, CancelOperationResponse, CapabilityServiceExt,
     DiscoveryService, DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
@@ -55,7 +52,6 @@ use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
-use buffa::Message as _;
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
 };
@@ -100,7 +96,8 @@ use aos_sandbox::{
     HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
     NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1,
     PublicMutationEffectV1, Reconciler, ResourceInventoryError, SingleNodeEffectExecutor,
-    ValidatedAuthorityEffectReceiptV1, public_operation_resource_from_journal_v1,
+    ValidatedAuthorityEffectReceiptV1, prepare_runtime_lifecycle_authority_effect_v1,
+    public_operation_resource_from_journal_v1,
 };
 
 mod public_api;
@@ -2084,6 +2081,7 @@ impl ProductionEffectExecutor {
     fn advance_runtime_lifecycle_effect(
         &mut self,
         operation_id: OperationId,
+        journal: &mut Journal,
     ) -> Result<bool, EffectFailure> {
         let (current_key, current_record, observation, observed_at, publish_coordination) = {
             let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
@@ -2217,7 +2215,19 @@ impl ProductionEffectExecutor {
             let challenge = owner
                 .begin_boot_inventory_bootstrap(&current_key, &boot_inventory_key)
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-            let desired = fence.desired();
+            let timing = production_authority_effect_timing().ok_or_else(|| {
+                EffectFailure::Retryable(
+                    "current clock cannot safely attenuate lifecycle authority".to_owned(),
+                )
+            })?;
+            let authority = prepare_runtime_lifecycle_authority_effect_v1(
+                journal,
+                self.node,
+                fence,
+                runtime_action,
+                timing,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
             })?;
@@ -2228,48 +2238,7 @@ impl ProductionEffectExecutor {
                 ));
             }
             let observation = host
-                .apply_lifecycle_runtime(
-                    challenge,
-                    effect,
-                    fence,
-                    runtime_action,
-                    move |coordinates| {
-                        let version = coordinates.protocol_version();
-                        let request = ApplyRuntimeRequest {
-                            header: Some(RequestHeader {
-                                protocol_major: version.major().into(),
-                                protocol_minor: version.minor().into(),
-                                request_id: coordinates.request_id().to_vec(),
-                                audience: coordinates.audience().into(),
-                                deadline_boottime_nanoseconds: coordinates
-                                    .deadline_boottime_nanoseconds(),
-                                maximum_response_bytes: coordinates.maximum_response_bytes(),
-                                ..Default::default()
-                            })
-                            .into(),
-                            fence: Some(AssignmentFence {
-                                sandbox_id: fence.sandbox().as_bytes().to_vec(),
-                                incarnation_id: fence.incarnation().as_bytes().to_vec(),
-                                assignment_epoch: fence.assignment_epoch().get(),
-                                desired_generation: desired.expected_generation().get(),
-                                assignment_digest: desired
-                                    .resource_state()
-                                    .digest()
-                                    .as_bytes()
-                                    .to_vec(),
-                                ..Default::default()
-                            })
-                            .into(),
-                            action: runtime_action.into(),
-                            ..Default::default()
-                        };
-                        BrokerRequestEnvelope {
-                            method: BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME.into(),
-                            body: request.encode_to_vec(),
-                            ..Default::default()
-                        }
-                    },
-                )
+                .apply_lifecycle_runtime(challenge, effect, fence, runtime_action, &authority)
                 .map_err(|error| {
                     // Once request custody begins, retrying from the lifecycle
                     // cursor could mint a different authenticated identity.
@@ -3138,7 +3107,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
                 ));
             }
-            if self.advance_runtime_lifecycle_effect(operation_id)? {
+            if self.advance_runtime_lifecycle_effect(operation_id, journal)? {
                 return Err(EffectFailure::Retryable(
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
                 ));

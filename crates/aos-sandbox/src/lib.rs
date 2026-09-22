@@ -52,6 +52,7 @@ pub mod host_catalog_publication;
 pub mod host_catalog_reconciliation;
 pub mod journal;
 pub mod lifecycle;
+mod lifecycle_authority;
 #[cfg(target_os = "linux")]
 mod local_channel;
 #[cfg(target_os = "linux")]
@@ -187,6 +188,7 @@ pub use journal::{
     PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalPreflight,
     ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
+pub use lifecycle_authority::prepare_runtime_lifecycle_authority_effect_v1;
 #[cfg(target_os = "linux")]
 pub use mount_attempt::{
     CompletedCurrentMountAttemptV1, CurrentMountInventoryReconciliationV1,

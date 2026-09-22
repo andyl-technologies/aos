@@ -666,11 +666,11 @@ impl AuthorityEffectAttemptTimingV1 {
         }
     }
 
-    pub(super) const fn clock(self) -> RawPairedClockSample {
+    pub(crate) const fn clock(self) -> RawPairedClockSample {
         self.clock
     }
 
-    pub(super) const fn deadline(self) -> u64 {
+    pub(crate) const fn deadline(self) -> u64 {
         self.deadline_boottime_nanoseconds
     }
 }
