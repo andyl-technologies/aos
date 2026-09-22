@@ -454,7 +454,10 @@ fn typed_choice_product_checkpoint_uses_the_packaged_campaign_flight() -> Result
         return Err("typed-choice product checkpoint must be automated".into());
     };
 
-    assert_eq!(nix_attr, "checks.crucible.phase4.packagedCampaignChoiceVm");
+    assert_eq!(
+        nix_attr,
+        "checks.crucible.phase2.gates.typedChoiceProductCheckpoint"
+    );
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].package, "crucible-cli");
     let CampaignGateTargetKind::IntegrationExact {

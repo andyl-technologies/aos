@@ -621,7 +621,7 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                 ignored: true,
             },
         }],
-        "checks.crucible.phase4.packagedCampaignChoiceVm",
+        "checks.crucible.phase2.gates.typedChoiceProductCheckpoint",
     ),
     automated(
         "gate:world-fork-atomicity",
