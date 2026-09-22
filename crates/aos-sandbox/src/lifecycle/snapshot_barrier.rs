@@ -184,7 +184,6 @@ impl LifecycleSnapshotBarrierV1 {
     /// agree exactly, or when a canonical step cannot be constructed.
     pub fn planned_snapshot_steps(
         current: &CurrentLifecycleOperationV1<'_>,
-        closure: &LifecycleControllerDependencySnapshotV1,
         protected_transaction: &CurrentLifecycleCoordinationV1<'_>,
     ) -> Result<Vec<LifecycleStepV1>, LifecyclePhase6ErrorV1> {
         current.require_method(&[LifecycleMethodV1::Snapshot])?;
@@ -202,7 +201,6 @@ impl LifecycleSnapshotBarrierV1 {
             || !current.operation().plan_is_unbound()
             || protected_transaction.projection_root() != current.projection_root()
             || transaction.sandbox() != sandbox
-            || transaction.dependency_snapshot() != closure.digest()
             || transaction.live_fence() != intent_fence
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);

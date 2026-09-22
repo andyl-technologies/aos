@@ -159,10 +159,9 @@ pub use phase6::{
 pub use projection::{
     LifecycleModelError, LifecycleOperationClaimV1, LifecycleTerminalProjectionV1,
 };
-pub(crate) use protected_journal::lifecycle_protected_key_v1;
 pub use protected_journal::{
     AppliedLifecycleJournalTransactionV1, LifecycleProtectedJournalErrorV1,
-    LifecycleProtectedJournalKeyV1,
+    LifecycleProtectedJournalKeyV1, LifecycleProtectedRecordKindV1, lifecycle_protected_key_v1,
 };
 pub use protected_owner::{
     LifecycleCurrentAuxiliaryPublicationV1, LifecycleOperationAdmissionV1,

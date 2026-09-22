@@ -46,7 +46,7 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox_core::{
     CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId,
-    RawClockProvenance, RawPairedClockSample,
+    RawClockProvenance, RawPairedClockSample, ResourceId,
 };
 use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
@@ -78,11 +78,13 @@ use aos_sandbox::host_catalog_publication::{
 };
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::lifecycle::{
-    LifecycleCancelIdempotencyDigestV1, LifecycleOperationAdmissionV1, LifecycleOperationV1,
-    LifecycleProgressCommitOutcomeV1, LifecycleProgressOutcomeUnknownV1,
-    LifecycleProgressRecoveryV1, LifecycleProtectedCancellationAdmissionV1,
-    LifecycleProtectedCancellationResolutionV1, LifecycleSuspensionPlanV1, LifecycleTimeV1,
-    lifecycle_operation_from_public_mutation_v1, lifecycle_public_mutation_admission_v1,
+    LifecycleCancelIdempotencyDigestV1, LifecycleCurrentAuxiliaryPublicationV1,
+    LifecycleOperationAdmissionV1, LifecycleOperationV1, LifecycleProgressCommitOutcomeV1,
+    LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
+    LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedCancellationResolutionV1,
+    LifecycleProtectedRecordKindV1, LifecycleSnapshotBarrierV1, LifecycleSuspensionPlanV1,
+    LifecycleTimeV1, lifecycle_operation_from_public_mutation_v1, lifecycle_protected_key_v1,
+    lifecycle_public_mutation_admission_v1,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::production_operation_compiler::ProductionOperationCompilerV1;
@@ -1396,6 +1398,12 @@ struct PendingSourceCommit {
     pending: LifecycleProgressOutcomeUnknownV1,
 }
 
+enum AuxiliaryPublicationDisposition {
+    Current,
+    OutcomeUnknown(LifecycleProgressOutcomeUnknownV1),
+    Diverged(LifecycleProgressOutcomeUnknownV1),
+}
+
 struct ProductionCancellationRequest {
     target_operation: OperationId,
     idempotency: LifecycleCancelIdempotencyDigestV1,
@@ -1668,7 +1676,176 @@ impl ProductionEffectExecutor {
         }
     }
 
+    fn ensure_snapshot_retention_ledger(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<(), EffectFailure> {
+        let disposition = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (operation_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "snapshot operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            let project = current.operation().project();
+            let operation_lineage = lifecycle_plan_resource_id(operation_id, b"operation-lineage");
+            let retention_lineage = lifecycle_plan_resource_id(operation_id, b"retention-lineage");
+            let retention_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                project,
+                retention_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if owner
+                .current_retention_ledger(&retention_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .is_some()
+            {
+                AuxiliaryPublicationDisposition::Current
+            } else {
+                drop(current);
+                let publication = owner
+                    .publish_initial_retention_ledger(
+                        &operation_key,
+                        &retention_key,
+                        lifecycle_plan_transaction_id(operation_id, b"retention-publication"),
+                        lifecycle_plan_resource_id(operation_id, b"retention-atomic-join"),
+                        operation_lineage,
+                        retention_lineage,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                auxiliary_publication_disposition(publication)
+            }
+        };
+
+        self.settle_auxiliary_publication(operation_id, disposition, "retention ledger")
+    }
+
+    fn ensure_snapshot_coordination(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<(), EffectFailure> {
+        let disposition = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (operation_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "snapshot operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            let project = current.operation().project();
+            let operation_lineage = lifecycle_plan_resource_id(operation_id, b"operation-lineage");
+            let retention_lineage = lifecycle_plan_resource_id(operation_id, b"retention-lineage");
+            let coordination_lineage =
+                lifecycle_plan_resource_id(operation_id, b"coordination-lineage");
+            let retention_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                project,
+                retention_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let coordination_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                project,
+                coordination_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if owner
+                .current_coordination(&coordination_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .is_some()
+            {
+                AuxiliaryPublicationDisposition::Current
+            } else {
+                drop(current);
+                let publication = owner
+                    .publish_coordination_admission(
+                        &operation_key,
+                        &retention_key,
+                        &coordination_key,
+                        lifecycle_plan_transaction_id(operation_id, b"coordination-publication"),
+                        lifecycle_plan_resource_id(operation_id, b"coordination-atomic-join"),
+                        operation_lineage,
+                        coordination_lineage,
+                        lifecycle_plan_resource_id(operation_id, b"coordination-transaction"),
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                auxiliary_publication_disposition(publication)
+            }
+        };
+
+        self.settle_auxiliary_publication(operation_id, disposition, "snapshot coordination")
+    }
+
+    fn settle_auxiliary_publication(
+        &mut self,
+        operation_id: OperationId,
+        disposition: AuxiliaryPublicationDisposition,
+        subject: &str,
+    ) -> Result<(), EffectFailure> {
+        match disposition {
+            AuxiliaryPublicationDisposition::Current => Ok(()),
+            AuxiliaryPublicationDisposition::OutcomeUnknown(pending) => {
+                self.pending_source_commit = Some(PendingSourceCommit {
+                    operation_id,
+                    receipt: None,
+                    pending,
+                });
+                Err(EffectFailure::Retryable(format!(
+                    "protected {subject} durability is unknown"
+                )))
+            }
+            AuxiliaryPublicationDisposition::Diverged(pending) => {
+                self.pending_source_commit = Some(PendingSourceCommit {
+                    operation_id,
+                    receipt: None,
+                    pending,
+                });
+                Err(EffectFailure::Permanent(format!(
+                    "protected {subject} publication diverged"
+                )))
+            }
+        }
+    }
+
     fn bind_lifecycle_plan(&mut self, operation_id: OperationId) -> Result<(), EffectFailure> {
+        let snapshot = {
+            let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (_, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "admitted lifecycle operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            matches!(
+                current.operation().intent(),
+                aos_sandbox::lifecycle::LifecycleIntentV1::Snapshot { .. }
+            ) && current.operation().plan_is_unbound()
+        };
+        if snapshot {
+            self.ensure_snapshot_retention_ledger(operation_id)?;
+            self.ensure_snapshot_coordination(operation_id)?;
+        }
+
         let outcome = {
             let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
                 &mut self.source_domains,
@@ -1689,6 +1866,29 @@ impl ProductionEffectExecutor {
             let steps = match current.operation().intent() {
                 aos_sandbox::lifecycle::LifecycleIntentV1::SuspendMemory { .. } => {
                     LifecycleSuspensionPlanV1::planned_memory_suspend_steps(&current)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                }
+                aos_sandbox::lifecycle::LifecycleIntentV1::Snapshot { .. } => {
+                    let project = current.operation().project();
+                    let coordination_lineage =
+                        lifecycle_plan_resource_id(operation_id, b"coordination-lineage");
+                    let coordination_key = lifecycle_protected_key_v1(
+                        LifecycleProtectedRecordKindV1::Auxiliary,
+                        project,
+                        coordination_lineage,
+                        operation_id,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    let coordination = owner
+                        .current_coordination(&coordination_key)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                        .ok_or_else(|| {
+                            EffectFailure::Permanent(
+                                "snapshot coordination is absent after protected publication"
+                                    .to_owned(),
+                            )
+                        })?;
+                    LifecycleSnapshotBarrierV1::planned_snapshot_steps(&current, &coordination)
                         .map_err(|error| EffectFailure::Permanent(error.to_string()))?
                 }
                 _ => return Ok(()),
@@ -1725,6 +1925,54 @@ impl ProductionEffectExecutor {
             }
         }
     }
+}
+
+fn auxiliary_publication_disposition<Current>(
+    publication: LifecycleCurrentAuxiliaryPublicationV1<Current>,
+) -> AuxiliaryPublicationDisposition {
+    match publication {
+        LifecycleCurrentAuxiliaryPublicationV1::Current(_) => {
+            AuxiliaryPublicationDisposition::Current
+        }
+        LifecycleCurrentAuxiliaryPublicationV1::OutcomeUnknown { pending, .. } => {
+            AuxiliaryPublicationDisposition::OutcomeUnknown(pending)
+        }
+        LifecycleCurrentAuxiliaryPublicationV1::Diverged(pending) => {
+            AuxiliaryPublicationDisposition::Diverged(pending)
+        }
+    }
+}
+
+fn lifecycle_plan_resource_id(operation: OperationId, purpose: &[u8]) -> ResourceId {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.lifecycle.plan-resource.v1\0")
+        .chain_update(operation.as_bytes())
+        .chain_update((purpose.len() as u64).to_be_bytes())
+        .chain_update(purpose)
+        .finalize()
+        .into();
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&digest[..16]);
+    if identity == [0; 16] {
+        identity[15] = 1;
+    }
+    ResourceId::from_bytes(identity)
+}
+
+fn lifecycle_plan_transaction_id(operation: OperationId, purpose: &[u8]) -> [u8; 16] {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.lifecycle.plan-transaction.v1\0")
+        .chain_update(operation.as_bytes())
+        .chain_update((purpose.len() as u64).to_be_bytes())
+        .chain_update(purpose)
+        .finalize()
+        .into();
+    let mut transaction = [0; 16];
+    transaction.copy_from_slice(&digest[..16]);
+    if transaction == [0; 16] {
+        transaction[15] = 1;
+    }
+    transaction
 }
 
 fn lifecycle_plan_binding_transaction_id(
