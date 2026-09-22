@@ -91,6 +91,15 @@ pub fn section(
         urlencode(&panel.locator.platform),
         urlencode(&panel.release),
     );
+    let _ = write!(
+        html,
+        "<p><a href=\"/{}/-/abilities?release={}&amp;platform={}#package-{}-{}\">Browse this release's providers and consumers →</a></p>",
+        escape(slug),
+        urlencode(&panel.release),
+        urlencode(&panel.locator.platform),
+        urlencode(&reference.package.as_str().replace('.', "-")),
+        urlencode(&reference.version.replace('.', "-")),
+    );
 
     html.push_str(&checked_graph);
 
@@ -461,6 +470,12 @@ mod tests {
         let html = section("demo", Some(&panel()), false, None, false);
 
         assert!(html.contains("href=\"/demo/-/releases/1.2.3\""));
+        assert!(html.contains(
+            "href=\"/demo/-/api/v1/packages/demo/abilities?version=1.2.3&amp;platform=x86_64-linux&amp;release=1.2.3\""
+        ));
+        assert!(html.contains(
+            "href=\"/demo/-/abilities?release=1.2.3&amp;platform=x86_64-linux#package-demo-1-2-3\""
+        ));
         assert!(html.contains("Declared export <code>server</code>"));
         assert!(html.contains("<code>aos.test.service</code> ABI 1"));
         assert!(html.contains("internal-interface"));

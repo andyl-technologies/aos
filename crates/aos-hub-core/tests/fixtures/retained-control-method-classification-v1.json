@@ -4009,6 +4009,11 @@
     "class": { "class": "read" }, "external_effects": false
   },
   {
+    "service": "DocumentationService", "method": "GetReleaseAbilityGraph",
+    "exposure": "public", "durability": "read_only",
+    "class": { "class": "read" }, "external_effects": false
+  },
+  {
     "service": "DocumentationService", "method": "SearchPackageDocumentation",
     "exposure": "public", "durability": "read_only",
     "class": { "class": "read" }, "external_effects": false

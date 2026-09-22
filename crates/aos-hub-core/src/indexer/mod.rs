@@ -2594,6 +2594,7 @@ async fn verify_package_documentation(
                     package_version: version.version.clone(),
                     platform: platform.clone(),
                     artifact: artifact.clone(),
+                    ability_reference: document.ability_reference.clone(),
                     search: document.search_documents(),
                     options: document
                         .options()

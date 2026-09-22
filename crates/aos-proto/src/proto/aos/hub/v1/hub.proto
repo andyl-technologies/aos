@@ -334,6 +334,7 @@ service PackageService {
 service DocumentationService {
   rpc GetPackageDocumentation(GetPackageDocumentationRequest) returns (GetPackageDocumentationResponse);
   rpc GetPackageAbilityReference(GetPackageAbilityReferenceRequest) returns (GetPackageAbilityReferenceResponse);
+  rpc GetReleaseAbilityGraph(GetReleaseAbilityGraphRequest) returns (GetReleaseAbilityGraphResponse);
   rpc SearchPackageDocumentation(SearchPackageDocumentationRequest) returns (SearchPackageDocumentationResponse);
   rpc ListPackageOptions(ListPackageOptionsRequest) returns (ListPackageOptionsResponse);
   rpc GetPackageOption(GetPackageOptionRequest) returns (GetPackageOptionResponse);
@@ -644,6 +645,25 @@ message PackageAbilityReferenceIdentity {
 
 message GetPackageAbilityReferenceResponse {
   PackageAbilityReferenceIdentity identity = 1;
+  bytes canonical_json = 2;
+  string etag = 3;
+}
+
+message GetReleaseAbilityGraphRequest {
+  string registry = 1;
+  string release = 2;
+  string platform = 3;
+}
+
+message ReleaseAbilityGraphIdentity {
+  string registry_commit = 1;
+  string release = 2;
+  string platform = 3;
+  string graph_sha256 = 4;
+}
+
+message GetReleaseAbilityGraphResponse {
+  ReleaseAbilityGraphIdentity identity = 1;
   bytes canonical_json = 2;
   string etag = 3;
 }

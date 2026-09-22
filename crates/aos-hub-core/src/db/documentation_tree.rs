@@ -737,6 +737,7 @@ mod tests {
             package_name: "config".into(),
             package_version: "1.0.0".into(),
             platform: "x86_64-linux".into(),
+            ability_reference: crate::db::test_package_ability_reference("config", "1.0.0"),
             artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
                 format: aos_doc_model::DOCUMENT_FORMAT.into(),
                 store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-config-docs".into(),
@@ -806,6 +807,8 @@ mod tests {
         let digest = package.artifact.document_sha256.as_str();
         let mut other = document(1);
         other.package_name = "other".into();
+        other.ability_reference =
+            crate::db::test_package_ability_reference("other", "1.0.0");
         other.artifact.document_sha256 = format!("sha256:{}", "d".repeat(64));
         other.options[0].type_signature = "string".into();
         other.search[0].summary = "Unrelated package".into();

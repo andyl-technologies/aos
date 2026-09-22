@@ -255,6 +255,17 @@ pub enum HubCmd {
 
 #[derive(Subcommand)]
 pub enum HubDocumentationCmd {
+    /// Browse package providers and consumers across one release
+    Abilities {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        release: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+    },
     /// Search package documentation
     Search {
         #[command(flatten)]

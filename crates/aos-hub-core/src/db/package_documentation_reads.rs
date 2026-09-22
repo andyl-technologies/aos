@@ -165,6 +165,10 @@ mod tests {
                 package_name: documentation.package_name.clone(),
                 package_version: documentation.package_version.clone(),
                 platform: documentation.platform.clone(),
+                ability_reference: crate::db::test_package_ability_reference(
+                    &documentation.package_name,
+                    &documentation.package_version,
+                ),
                 artifact: artifact.clone(),
                 search: Vec::new(),
             }],

@@ -24,6 +24,7 @@
 //! /{slug}/-/                       registry home (HTML)
 //! /{slug}/-/packages               package index (HTML; ?filter/?sort/?page)
 //! /{slug}/-/packages/{name}        package detail (HTML)
+//! /{slug}/-/abilities              release ability graph (HTML; ?release/?platform)
 //! /{slug}/-/images                 signed system-image downloads (HTML)
 //! /{slug}/-/containers             public OCI repository index (HTML)
 //! /{slug}/-/containers/repository  repository and tags (?repository=)
@@ -36,6 +37,7 @@
 //! /{slug}/-/api/registry           registry meta + index (JSON)
 //! /{slug}/-/api/packages           package list (JSON)
 //! /{slug}/-/api/packages/{name}    package detail (JSON)
+//! /{slug}/-/api/v1/abilities       canonical release ability graph (JSON)
 //! /{slug}/-/api/channels           channel list (JSON)
 //! /{slug}/-/api/releases           releases (JSON)
 //! ```
@@ -738,6 +740,87 @@ pub async fn packages(
         &session,
     )
     .await
+}
+
+/// The release-wide ability contract, provider, and consumer browser.
+pub async fn abilities(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let context = match super::release_browse::ReleaseContext::load(
+        &svc.db,
+        registry.id,
+        query.release.as_deref(),
+        false,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if let Some(redirect) = query.pin_release(&format!("/{slug}/-/abilities"), &context) {
+        return redirect;
+    }
+    let Some(release) = context.selected() else {
+        return Rendered::NotFound;
+    };
+    let projection = match svc
+        .db
+        .release_ability_graph(
+            registry.id,
+            release,
+            query.platform.as_deref().unwrap_or_default(),
+        )
+        .await
+    {
+        Ok(Some(projection)) => projection,
+        Ok(None) if query.platform.is_some() => return Rendered::NotFound,
+        Ok(None) => {
+            return Rendered::Html(super::release_browse::unavailable_page(
+                &registry,
+                status.as_ref(),
+                &context,
+                "abilities",
+                "The ability graph for this release is still indexing or has no published package references.",
+                started,
+                &session_indicator(svc, headers).await,
+            ));
+        }
+        Err(_) => return Rendered::ServiceUnavailable,
+    };
+    let graph =
+        match aos_doc_model::ReleaseAbilityGraph::from_canonical_json(&projection.canonical_json) {
+            Ok(graph) => graph,
+            Err(_) => return Rendered::ServiceUnavailable,
+        };
+    let platforms = match svc
+        .db
+        .release_ability_graph_platforms(registry.id, release)
+        .await
+    {
+        Ok(platforms) => platforms,
+        Err(_) => return Rendered::ServiceUnavailable,
+    };
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(super::ability_graph_page::page(
+        &registry,
+        status.as_ref(),
+        &context,
+        &graph,
+        &platforms,
+        &projection.content_digest,
+        started,
+        &session,
+    ))
 }
 
 /// The signed system-image catalog and direct-download page.
@@ -2276,6 +2359,34 @@ pub async fn api_package_ability_reference(
                 version: query.version.clone().unwrap_or_default(),
                 platform: query.platform.clone().unwrap_or_default(),
                 release: query.release.clone().unwrap_or_default(),
+            },
+        )
+        .await,
+    ) else {
+        return Rendered::NotFound;
+    };
+    match String::from_utf8(response.canonical_json) {
+        Ok(body) => Rendered::RevalidatedJson {
+            body,
+            etag: response.etag,
+        },
+        Err(_) => Rendered::NotFound,
+    }
+}
+
+/// `GET /{slug}/-/api/v1/abilities` — canonical release ability graph JSON.
+pub async fn api_release_ability_graph(
+    svc: &RpcService,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    let Some(response) = or_not_found(
+        svc.get_release_ability_graph(
+            None,
+            pb::GetReleaseAbilityGraphRequest {
+                registry: slug.to_string(),
+                release: query.release.clone().unwrap_or_default(),
+                platform: query.platform.clone().unwrap_or_default(),
             },
         )
         .await,

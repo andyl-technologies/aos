@@ -5,6 +5,9 @@
 //! projection derived from the checked package fixed point. Search rows,
 //! options, and method presentations are derived when read instead of stored
 //! as parallel machine facts.
+//! [`ReleaseAbilityGraph`] is the corresponding disposable release-index view:
+//! it deduplicates exact interface contracts and resolves package providers and
+//! consumers without becoming another authored authority.
 //!
 //! A canonical reference is a single UTF-8 JSON file. Unknown fields are
 //! rejected by Serde, floating-point literals and Nix store references are
@@ -26,6 +29,7 @@ pub use aos_ability_model::{
 };
 
 mod ability_deployment;
+mod ability_graph;
 mod ability_nar;
 mod ability_reference;
 mod ability_render;
@@ -37,6 +41,12 @@ pub use ability_deployment::{
     AbilityDeploymentPlanState, MAX_ABILITY_DEPLOYMENT_OVERLAY_BYTES,
     MAX_ABILITY_DEPLOYMENT_VALID_FOR_SECONDS, PackageAbilityDeploymentOverlay,
     ability_deployment_supported_features,
+};
+pub use ability_graph::{
+    MAX_RELEASE_ABILITY_GRAPH_BYTES, RELEASE_ABILITY_GRAPH_SCHEMA, ReleaseAbilityGraph,
+    ReleaseAbilityInterface, ReleaseAbilityPackage, ReleaseAbilityPackageId,
+    ReleaseAbilityProvider, ReleaseAbilityProviderId, ReleaseAbilityRequirement,
+    ReleaseAbilityRequirementId,
 };
 pub use ability_nar::{
     MAX_PACKAGE_ABILITY_NAR_BYTES, PackageAbilityDocuments, decode_package_ability_nar,

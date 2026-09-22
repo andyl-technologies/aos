@@ -173,6 +173,23 @@ whether hosted natively or in a Worker. A deployment-aware view requires a
 separate authenticated connection and must distinguish private deployment
 state from public registry documentation.
 
+Release indexing derives one canonical ability graph per platform from the
+verified package references already selected by the signed release. The graph
+deduplicates exact interface documents and relates public exports to package-
+and implementation-level requirements through the same interface selectors,
+methods, and guarantees used by the checked contracts. Unresolved and
+multi-provider requirements remain explicit. The retained graph is a
+disposable read projection, not a second declaration authority.
+
+Native Hub, Worker Hub, the REST read surface, and `aos hub docs abilities`
+serve or decode those same canonical graph bytes. The Hub page links
+interface contracts, provider packages, and consumer packages inside the exact
+release and platform context; package pages link back into that graph.
+
+```text
+aos hub docs abilities --registry core --release 2026.09 --platform x86_64-linux
+```
+
 `aos docs`, APM, native Hub, Worker Hub, and the editor consume one shared
 serializable view constructed from the checked package module projection and,
 where available, the final deployment projection. They do not own package to
