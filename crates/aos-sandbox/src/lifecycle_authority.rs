@@ -8,7 +8,9 @@
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, BrokerMethod, RuntimeAction,
 };
-use aos_sandbox_core::{BrokerAudience, NodeId};
+use aos_sandbox_core::{
+    BrokerArgumentCommitment, BrokerAudience, BrokerGrantTarget, BrokerVerb, NodeId,
+};
 use buffa::Message as _;
 
 use crate::lifecycle::{LifecycleAtomicDatasetSnapshotPlanV1, LiveRuntimeFenceV1};
@@ -161,6 +163,7 @@ pub fn prepare_atomic_storage_lifecycle_authority_effect_v1(
     let canonical_plan = plan
         .canonical_wire_bytes()
         .map_err(|_| ReconcilerError::InvalidPlan("Storage group plan is invalid"))?;
+    let argument_commitment = BrokerArgumentCommitment::for_canonical_bytes(&canonical_plan);
     let binding = RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())?
         .current(fence.sandbox())?
         .ok_or(ReconcilerError::InvalidPlan(
@@ -200,6 +203,9 @@ pub fn prepare_atomic_storage_lifecycle_authority_effect_v1(
         if template.audience() != BrokerAudience::Storage
             || template.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             || !template.descriptor_roles().is_empty()
+            || template.semantics().verb() != BrokerVerb::StorageAtomicSnapshot
+            || template.semantics().target() != BrokerGrantTarget::Assignment
+            || template.semantics().argument_commitment() != argument_commitment
         {
             return false;
         }
