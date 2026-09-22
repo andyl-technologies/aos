@@ -301,6 +301,11 @@ the outstanding work concrete:
   attempts inventory publication but rejects pending mutation work.
   Replace those unavailable dependencies with the authenticated request
   compiler and durable effect dispatcher, including restart recovery.
+  Newly admitted generic effects now retain an exact closed broker method and
+  reject a method from another fixed domain. Legacy opaque V1 effects remain
+  readable but block before executor I/O; they are never assigned an inferred
+  method. The production compiler and dispatcher still need to consume that
+  method-explicit V2 boundary.
   Admission now lends the reconciler's sole journal writer to the compiler
   for current authorization and precondition checks. Compilation must not
   create a second journal owner or independently commit desired/effect

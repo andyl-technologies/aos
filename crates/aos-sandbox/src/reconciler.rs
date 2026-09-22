@@ -2264,6 +2264,20 @@ where
                 }
             }
         } else {
+            if plan.method().is_none() {
+                return self.handle_failure(
+                    operation_id,
+                    step,
+                    effect_count,
+                    attempt,
+                    plan,
+                    None,
+                    EffectFailure::Permanent(
+                        "legacy effect has no authenticated broker method".to_owned(),
+                    ),
+                    wall_seconds,
+                );
+            }
             let observed = match self.executor.observe(operation_id, step, &plan) {
                 Ok(value) => value,
                 Err(failure) => {
@@ -2834,7 +2848,7 @@ mod tests {
     use std::path::PathBuf;
 
     use aos_proto::aos::sandbox::local::v1::{
-        ApplyRuntimeRequest, RuntimeObservation, RuntimeState,
+        ApplyRuntimeRequest, BrokerMethod, RuntimeObservation, RuntimeState,
     };
     use aos_sandbox_core::{
         LeaseAssignment, NodeId, ProjectId, RawClockProvenance, RawPairedClockSample, ResourceId,
@@ -3025,8 +3039,18 @@ mod tests {
             b"sandbox".to_vec(),
             b"running".to_vec(),
             vec![
-                EffectPlan::new(EffectDomain::Storage, b"create".to_vec()).unwrap(),
-                EffectPlan::new(EffectDomain::Host, b"start".to_vec()).unwrap(),
+                EffectPlan::new(
+                    EffectDomain::Storage,
+                    BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+                    b"create".to_vec(),
+                )
+                .unwrap(),
+                EffectPlan::new(
+                    EffectDomain::Host,
+                    BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                    b"start".to_vec(),
+                )
+                .unwrap(),
             ],
         )
         .unwrap()
@@ -3114,6 +3138,51 @@ mod tests {
         )
         .unwrap()
         .0
+    }
+
+    #[test]
+    fn opaque_legacy_effect_is_blocked_before_executor_io() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let operation = operation();
+        reconciler.accept(&operation).unwrap();
+
+        let legacy = EffectLedgerRecord {
+            plan: EffectPlan {
+                domain: EffectDomain::Storage,
+                method: None,
+                request: b"legacy".to_vec(),
+                authority: None,
+            },
+            state: EffectState::Planned,
+            dispatch: None,
+        };
+        reconciler
+            .journal_mut()
+            .commit(
+                &JournalTransaction::new(
+                    [0xa7; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        effect_key(operation.operation_id(), 0).to_vec(),
+                        encode_effect(&legacy).unwrap(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            reconciler.reconcile_once(operation.operation_id()).unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        assert_eq!(
+            reconciler.reconcile_once(operation.operation_id()).unwrap(),
+            ReconcileOutcome::PermanentlyBlocked
+        );
+        assert_eq!(reconciler.executor.observe_calls, 0);
+        assert_eq!(reconciler.executor.apply_calls, 0);
     }
 
     #[test]
@@ -5324,7 +5393,12 @@ mod tests {
             let mut reconciler = Reconciler::new(journal, Executor::default());
             let (gated, draft, prepared) = gated_operation_with_publication(1);
             reconciler.accept(&gated).unwrap();
-            let effect = EffectPlan::new(EffectDomain::Guardian, b"arm".to_vec()).unwrap();
+            let effect = EffectPlan::new(
+                EffectDomain::Host,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                b"arm".to_vec(),
+            )
+            .unwrap();
             let record = match corruption {
                 0 => JournalRecord::delete(
                     RecordNamespace::Effect,

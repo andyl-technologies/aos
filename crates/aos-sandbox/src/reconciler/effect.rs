@@ -1,7 +1,8 @@
 //! Durable generic and authority-bound effect records.
 //!
-//! The sole V1 schema uses a closed header flag to distinguish the original
-//! byte-exact generic body from an authority-bound body. Authority-bound
+//! V2 records bind every dispatchable effect to one exact closed broker method.
+//! The decoder retains V1 compatibility, but an opaque V1 generic effect has no
+//! dispatch identity and therefore cannot be sent to a broker. Authority-bound
 //! dispatches retain the Host boot identity paired with their BOOTTIME value.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
@@ -14,7 +15,8 @@ use crate::{BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1};
 pub(super) const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 pub(super) const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
 pub(super) const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
-const EFFECT_VERSION: u8 = 1;
+const LEGACY_EFFECT_VERSION: u8 = 1;
+const EFFECT_VERSION: u8 = 2;
 const AUTHORITY_BOUND_FLAG: u8 = 1;
 const MAXIMUM_DISPATCH_PACKET_BYTES: usize = MAXIMUM_REQUEST_BYTES;
 const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v1\0";
@@ -65,28 +67,105 @@ impl EffectDomain {
     }
 }
 
+fn validate_broker_method_domain(
+    domain: EffectDomain,
+    method: BrokerMethod,
+) -> Result<(), ReconcilerError> {
+    let expected = match method {
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => EffectDomain::Host,
+        BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+        | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => EffectDomain::Storage,
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
+        | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
+        | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+        | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => EffectDomain::Mount,
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
+        | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => EffectDomain::Network,
+        _ => {
+            return Err(ReconcilerError::InvalidPlan("unknown broker effect method"));
+        }
+    };
+    if domain != expected {
+        return Err(ReconcilerError::InvalidPlan(
+            "broker effect method crosses its fixed domain",
+        ));
+    }
+
+    Ok(())
+}
+
+const fn broker_method_from_code(value: i32) -> Option<BrokerMethod> {
+    Some(match value {
+        1 => BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+        2 => BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+        3 => BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+        4 => BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+        6 => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+        7 => BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+        9 => BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+        10 => BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY,
+        11 => BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+        12 => BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+        13 => BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE,
+        14 => BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+        15 => BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
+        16 => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+        17 => BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG,
+        18 => BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+        19 => BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+        20 => BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+        21 => BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
+        22 => BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+        23 => BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+        24 => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS,
+        _ => return None,
+    })
+}
+
 /// Defines one ordered, idempotent request to a fixed effect boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectPlan {
     pub(super) domain: EffectDomain,
+    pub(super) method: Option<BrokerMethod>,
     pub(super) request: Vec<u8>,
     pub(super) authority: Option<AuthorityEffectBindingV1>,
 }
 
 impl EffectPlan {
-    /// Constructs a bounded generic effect plan from validated request bytes.
+    /// Constructs a bounded generic broker effect from validated request bytes.
     ///
     /// # Errors
     ///
-    /// Returns [`ReconcilerError::InvalidPlan`] for an empty or oversized request.
-    pub fn new(domain: EffectDomain, request: Vec<u8>) -> Result<Self, ReconcilerError> {
+    /// Returns [`ReconcilerError::InvalidPlan`] for an unknown or cross-domain
+    /// method, or for an empty or oversized request.
+    pub fn new(
+        domain: EffectDomain,
+        method: BrokerMethod,
+        request: Vec<u8>,
+    ) -> Result<Self, ReconcilerError> {
         if request.is_empty() || request.len() > MAXIMUM_REQUEST_BYTES {
             return Err(ReconcilerError::InvalidPlan(
                 "invalid effect request length",
             ));
         }
+        validate_broker_method_domain(domain, method)?;
+
         Ok(Self {
             domain,
+            method: Some(method),
             request,
             authority: None,
         })
@@ -96,6 +175,12 @@ impl EffectPlan {
     #[must_use]
     pub const fn domain(&self) -> EffectDomain {
         self.domain
+    }
+
+    /// Returns the exact broker method, or `None` for an opaque legacy V1 effect.
+    #[must_use]
+    pub const fn method(&self) -> Option<BrokerMethod> {
+        self.method
     }
 
     /// Returns the exact idempotent request bytes sent to the executor.
@@ -140,6 +225,7 @@ impl AuthorityBoundEffectPlanV1 {
         Ok(Self {
             plan: EffectPlan {
                 domain,
+                method: Some(method),
                 request: body.to_vec(),
                 authority: Some(AuthorityEffectBindingV1 {
                     source_draft_digest,
@@ -464,10 +550,20 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     } else {
         0
     };
+    let version = if record.plan.method.is_some() {
+        EFFECT_VERSION
+    } else {
+        LEGACY_EFFECT_VERSION
+    };
+    let header_length = if version == EFFECT_VERSION { 22 } else { 18 };
     let mut bytes = Vec::with_capacity(
-        18 + authority_length + record.plan.request.len() + receipt.len() + diagnostic.len(),
+        header_length
+            + authority_length
+            + record.plan.request.len()
+            + receipt.len()
+            + diagnostic.len(),
     );
-    bytes.push(EFFECT_VERSION);
+    bytes.push(version);
     bytes.push(record.plan.domain as u8);
     bytes.push(state);
     bytes.push(if record.plan.authority.is_some() {
@@ -479,6 +575,9 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     bytes.extend_from_slice(&request_length.to_le_bytes());
     bytes.extend_from_slice(&receipt_length.to_le_bytes());
     bytes.extend_from_slice(&diagnostic_length.to_le_bytes());
+    if let Some(method) = record.plan.method {
+        bytes.extend_from_slice(&(method as i32).to_be_bytes());
+    }
     if let Some(binding) = &record.plan.authority {
         bytes.extend_from_slice(binding.operation_id.as_bytes());
         bytes.extend_from_slice(&binding.step.to_be_bytes());
@@ -538,7 +637,7 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
 
 pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, ReconcilerError> {
     if bytes.len() < 18
-        || bytes[0] != EFFECT_VERSION
+        || !matches!(bytes[0], LEGACY_EFFECT_VERSION | EFFECT_VERSION)
         || !matches!(bytes[3], 0 | AUTHORITY_BOUND_FLAG)
     {
         return Err(ReconcilerError::CorruptLedger(
@@ -569,6 +668,16 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
             .map_err(|_| ReconcilerError::CorruptLedger("invalid diagnostic length"))?,
     ) as usize;
     let mut cursor = 18;
+    let method = if bytes[0] == EFFECT_VERSION {
+        let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
+        Some(
+            broker_method_from_code(method_code).ok_or(ReconcilerError::CorruptLedger(
+                "unknown broker effect method",
+            ))?,
+        )
+    } else {
+        None
+    };
     let (authority, dispatch) = if authority_bound {
         let operation_bytes = take_array(bytes, &mut cursor)?;
         if operation_bytes == [0; 16] {
@@ -581,7 +690,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         let source_draft_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
         let audience = audience_from_code(take_array::<1>(bytes, &mut cursor)?[0])?;
         let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
-        let method = match method_code {
+        let authority_method = match method_code {
             1 => BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
             4 => BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
             7 => BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
@@ -601,7 +710,8 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
             || descriptor_free != 1
             || domain != EffectDomain::Host
             || audience != BrokerAudience::Host
-            || method != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            || authority_method != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            || method.is_some_and(|method| method != authority_method)
         {
             return Err(ReconcilerError::CorruptLedger(
                 "invalid authority effect binding",
@@ -612,7 +722,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
             step,
             source_draft_digest,
             audience,
-            method,
+            method: authority_method,
             template_digest,
             body_digest,
             semantic_digest,
@@ -690,6 +800,11 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
     } else {
         (None, None)
     };
+    let method = method.or_else(|| authority.as_ref().map(|binding| binding.method));
+    if let Some(method) = method {
+        validate_broker_method_domain(domain, method)
+            .map_err(|_| ReconcilerError::CorruptLedger("broker effect method/domain mismatch"))?;
+    }
     let expected = cursor
         .checked_add(request_length)
         .and_then(|n| n.checked_add(receipt_length))
@@ -748,6 +863,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
     Ok(EffectLedgerRecord {
         plan: EffectPlan {
             domain,
+            method,
             request,
             authority,
         },
@@ -782,6 +898,23 @@ fn validate_lengths(
         || diagnostic.len() > MAXIMUM_DIAGNOSTIC_BYTES
     {
         return Err(ReconcilerError::InvalidPlan("effect record exceeds bounds"));
+    }
+    if let Some(method) = plan.method {
+        validate_broker_method_domain(plan.domain, method)?;
+    }
+    if plan
+        .authority
+        .as_ref()
+        .is_some_and(|binding| plan.method != Some(binding.method))
+    {
+        return Err(ReconcilerError::InvalidPlan(
+            "authority effect method does not match its dispatch method",
+        ));
+    }
+    if plan.authority.is_some() && plan.method.is_none() {
+        return Err(ReconcilerError::InvalidPlan(
+            "authority effect has no dispatch method",
+        ));
     }
     Ok(())
 }
@@ -948,7 +1081,8 @@ mod tests {
 
         let invalid_record = EffectLedgerRecord {
             plan: EffectPlan {
-                domain: EffectDomain::Guardian,
+                domain: EffectDomain::Host,
+                method: Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
                 request: b"guardian".to_vec(),
                 authority: Some(AuthorityEffectBindingV1 {
                     operation_id: OperationId::from_bytes([3; 16]),
@@ -986,7 +1120,7 @@ mod tests {
     #[test]
     fn generic_v1_effect_bytes_remain_exact_in_every_state() {
         let record = EffectLedgerRecord {
-            plan: EffectPlan::new(EffectDomain::Host, b"abc".to_vec()).unwrap(),
+            plan: legacy_effect_plan(b"abc"),
             state: EffectState::Planned,
             dispatch: None,
         };
@@ -1029,7 +1163,7 @@ mod tests {
         ];
         for (state, expected) in cases {
             let record = EffectLedgerRecord {
-                plan: EffectPlan::new(EffectDomain::Host, b"abc".to_vec()).unwrap(),
+                plan: legacy_effect_plan(b"abc"),
                 state,
                 dispatch: None,
             };
@@ -1039,7 +1173,68 @@ mod tests {
     }
 
     #[test]
-    fn authority_bound_v1_effect_has_fixed_binding_and_record_digests() {
+    fn generic_v2_effect_binds_the_exact_broker_method() {
+        let record = EffectLedgerRecord {
+            plan: EffectPlan::new(
+                EffectDomain::Storage,
+                BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+                b"abc".to_vec(),
+            )
+            .unwrap(),
+            state: EffectState::Planned,
+            dispatch: None,
+        };
+        let expected = vec![
+            2, 2, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, b'a', b'b', b'c',
+        ];
+        assert_eq!(encode_effect(&record).unwrap(), expected);
+        assert_eq!(decode_effect(&expected).unwrap(), record);
+
+        let mut unknown_method = expected.clone();
+        unknown_method[18..22].copy_from_slice(&5_i32.to_be_bytes());
+        assert!(matches!(
+            decode_effect(&unknown_method),
+            Err(ReconcilerError::CorruptLedger(
+                "unknown broker effect method"
+            ))
+        ));
+
+        let mut cross_domain = expected;
+        cross_domain[18..22].copy_from_slice(
+            &(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME as i32).to_be_bytes(),
+        );
+        assert!(matches!(
+            decode_effect(&cross_domain),
+            Err(ReconcilerError::CorruptLedger(
+                "broker effect method/domain mismatch"
+            ))
+        ));
+    }
+
+    #[test]
+    fn new_effect_rejects_unspecified_and_cross_domain_methods() {
+        assert!(matches!(
+            EffectPlan::new(
+                EffectDomain::Host,
+                BrokerMethod::BROKER_METHOD_UNSPECIFIED,
+                b"body".to_vec(),
+            ),
+            Err(ReconcilerError::InvalidPlan("unknown broker effect method"))
+        ));
+        assert!(matches!(
+            EffectPlan::new(
+                EffectDomain::Storage,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                b"body".to_vec(),
+            ),
+            Err(ReconcilerError::InvalidPlan(
+                "broker effect method crosses its fixed domain"
+            ))
+        ));
+    }
+
+    #[test]
+    fn authority_bound_v2_effect_has_fixed_binding_and_record_digests() {
         let record = EffectLedgerRecord {
             plan: authority_bound_plan(),
             state: EffectState::Planned,
@@ -1056,7 +1251,7 @@ mod tests {
         );
 
         let bytes = encode_effect(&record).unwrap();
-        assert_eq!(bytes.len(), 396);
+        assert_eq!(bytes.len(), 400);
         assert_eq!(bytes[0], EFFECT_VERSION);
         assert_eq!(bytes[3], AUTHORITY_BOUND_FLAG);
         assert_eq!(decode_effect(&bytes).unwrap(), record);
@@ -1064,17 +1259,40 @@ mod tests {
         assert_eq!(
             record_digest,
             [
-                0x85, 0x53, 0x90, 0x13, 0xcd, 0x20, 0x28, 0x54, 0x96, 0xc5, 0x51, 0xb7, 0x00, 0xd6,
-                0xce, 0x4b, 0xb0, 0x88, 0x20, 0x52, 0x3d, 0xd7, 0xda, 0xaa, 0x10, 0x4d, 0xeb, 0x18,
-                0xea, 0xc1, 0xa2, 0x04,
+                0x08, 0x44, 0x42, 0xef, 0x5f, 0x24, 0xfc, 0x96, 0xf3, 0xa3, 0xd4, 0x30, 0x65, 0x84,
+                0x33, 0xae, 0xbb, 0x49, 0x72, 0xb3, 0x66, 0xfd, 0x2f, 0x89, 0x89, 0xfc, 0xc4, 0xf5,
+                0x7a, 0xd4, 0x6c, 0xd7,
             ]
         );
     }
 
     #[test]
-    fn effect_decoder_accepts_only_v1_and_closed_flags() {
+    fn authority_bound_v1_record_recovers_its_method_from_the_binding() {
+        let record = EffectLedgerRecord {
+            plan: authority_bound_plan(),
+            state: EffectState::Planned,
+            dispatch: None,
+        };
+        let mut legacy = encode_effect(&record).unwrap();
+        legacy[0] = LEGACY_EFFECT_VERSION;
+        legacy.drain(18..22);
+
+        assert_eq!(decode_effect(&legacy).unwrap(), record);
+        assert_eq!(
+            encode_effect(&decode_effect(&legacy).unwrap()).unwrap()[0],
+            2
+        );
+    }
+
+    #[test]
+    fn effect_decoder_accepts_only_known_versions_and_closed_flags() {
         let generic = encode_effect(&EffectLedgerRecord {
-            plan: EffectPlan::new(EffectDomain::Host, b"generic".to_vec()).unwrap(),
+            plan: EffectPlan::new(
+                EffectDomain::Host,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                b"generic".to_vec(),
+            )
+            .unwrap(),
             state: EffectState::Planned,
             dispatch: None,
         })
@@ -1086,12 +1304,12 @@ mod tests {
         })
         .unwrap();
 
-        for version in [0, 2, 3, u8::MAX] {
+        for version in [0, 3, u8::MAX] {
             for canonical in [&generic, &authority] {
-                let mut non_v1 = canonical.clone();
-                non_v1[0] = version;
+                let mut unknown_version = canonical.clone();
+                unknown_version[0] = version;
                 assert!(matches!(
-                    decode_effect(&non_v1),
+                    decode_effect(&unknown_version),
                     Err(ReconcilerError::CorruptLedger(
                         "invalid effect record header"
                     ))
@@ -1114,7 +1332,7 @@ mod tests {
 
     #[test]
     fn authority_dispatch_requires_a_nonzero_preparation_host_boot() {
-        const HOST_BOOT_OFFSET: usize = 369;
+        const HOST_BOOT_OFFSET: usize = 373;
         const HOST_BOOT_BYTES: usize = 16;
 
         let plan = authority_bound_plan();
@@ -1189,6 +1407,7 @@ mod tests {
 
         EffectPlan {
             domain: EffectDomain::Host,
+            method: Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
             request: b"abc".to_vec(),
             authority: Some(AuthorityEffectBindingV1 {
                 operation_id,
@@ -1202,6 +1421,15 @@ mod tests {
                 descriptor_free: true,
                 digest,
             }),
+        }
+    }
+
+    fn legacy_effect_plan(request: &[u8]) -> EffectPlan {
+        EffectPlan {
+            domain: EffectDomain::Host,
+            method: None,
+            request: request.to_vec(),
+            authority: None,
         }
     }
 }

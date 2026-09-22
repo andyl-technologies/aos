@@ -401,22 +401,29 @@ that exact current publication or a valid successor. Renewal may change only
 the lease-bound artifacts for the same authority and source draft at an
 unchanged assignment epoch and desired generation.
 
-The effect ledger uses one V1 encoding for generic and authority-bound effects.
-Its fourth header byte is a closed flags field: zero selects the byte-exact
-generic body and `AUTHORITY_BOUND=1` selects the authority body. Unknown
-versions, unknown flags, and a record variant that does not match its operation
-provenance are corrupt state. An ownership-gated operation requires an
-authority-bound record for every step. Its V1 binding is constructed only from
-a template in the gate's exact publication draft; it records and recomputes the
-source-draft digest, broker audience and method, template digest, deadline-free
-request body digest, and portable semantic-identity commitment. The binding
-digest also commits the operation ID and ordered step, preventing valid values
-from being exchanged between journal keys. Callers cannot provide those fields
-independently. The binding currently admits only descriptor-free Host
-`ApplyRuntime`; Mount, Storage, Network, Guardian, Guest, other methods, and
-every descriptor-bearing template are rejected before journal admission.
-Recovery rejects a missing or extra effect, a template absent from the gate
-draft, and any substituted body or semantic commitment.
+The effect ledger writes V2 records for generic and authority-bound effects.
+Its fourth header byte remains a closed flags field: zero selects the
+byte-exact generic body and `AUTHORITY_BOUND=1` selects the authority body. V2
+adds the exact closed broker-method tag after the fixed length fields, and the
+tag must belong to the record's fixed domain. The decoder retains V1 records
+for recovery compatibility. An authority-bound V1 record recovers its method
+from its authenticated binding; an opaque generic V1 record has no such method
+and is permanently blocked before executor I/O rather than reinterpreted.
+Unknown versions, methods, flags, cross-domain methods, and a record variant
+that does not match its operation provenance are corrupt state.
+
+An ownership-gated operation requires an authority-bound record for every
+step. Its binding is constructed only from a template in the gate's exact
+publication draft; it records and recomputes the source-draft digest, broker
+audience and method, template digest, deadline-free request body digest, and
+portable semantic-identity commitment. The outer V2 method and bound method
+must match. The binding digest also commits the operation ID and ordered step,
+preventing valid values from being exchanged between journal keys. Callers
+cannot provide those fields independently. The binding currently admits only
+descriptor-free Host `ApplyRuntime`; Mount, Storage, Network, Guardian, Guest,
+other methods, and every descriptor-bearing template are rejected before
+journal admission. Recovery rejects a missing or extra effect, a template
+absent from the gate draft, and any substituted body or semantic commitment.
 
 Before the first external broker call, the sole journal-owning reconciler
 selects the current publication. It accepts the activated publication or a
@@ -438,7 +445,7 @@ and durably replaces the dispatch record before issuing its Apply. A crash at
 that boundary therefore recovers by querying the replacement rather than
 replaying an unrecorded request.
 
-The authority-bound V1 variant carries the complete binding and a fixed
+The authority-bound variant carries the complete binding and a fixed
 dispatch slot. A `Planned` record has no dispatch and requires every byte of
 that slot to be zero. `Applying`, `Applied`, and `PermanentlyBlocked` records
 require a dispatch with a nonzero preparation Host boot ID in addition to the

@@ -5210,6 +5210,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
+    use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+
     use crate::{
         EffectDomain, EffectFailure, EffectObservation, EffectPlan, EffectReceipt, IdempotencyKey,
         Journal, JournalLimits,
@@ -5313,8 +5315,12 @@ mod tests {
                 vec![discriminator],
                 b"desired".to_vec(),
                 vec![
-                    EffectPlan::new(EffectDomain::Host, b"apply".to_vec())
-                        .map_err(|_| OperationCompilationError::Rejected)?,
+                    EffectPlan::new(
+                        EffectDomain::Host,
+                        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                        b"apply".to_vec(),
+                    )
+                    .map_err(|_| OperationCompilationError::Rejected)?,
                 ],
             )
             .map_err(|_| OperationCompilationError::Rejected)
