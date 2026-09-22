@@ -23,7 +23,10 @@ use aos_sandbox_protocol::semantics::storage::StorageOperation;
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
-use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+use aos_sandbox_protocol::{
+    PeerCredentials, PeerPolicy, ValidatedAtomicStorageSnapshotRequestV1,
+    decode_atomic_storage_snapshot_request,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::{StorageAuthorityV1, decode_assignment};
@@ -471,13 +474,242 @@ impl StorageAdmissionCoordinator {
             .map_err(Into::into)
     }
 
-    pub(crate) fn prepare_atomic_dataset_snapshot(
+    pub(crate) fn authenticate_atomic_snapshot_records(&self) -> Result<(), StorageBrokerError> {
+        for record in self.transactions.atomic_dataset_snapshot_inventory()? {
+            let operation = record.program().operation();
+            let sandbox_id = record.sandbox_id();
+            let request_id = record.request_id();
+            let operation_fence_bytes = self
+                .transactions
+                .authority_record(RecordNamespace::AuthorityPublication, &operation)?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            let operation_fence = self
+                .authority
+                .open_operation_fence(&operation, operation_fence_bytes)
+                .map_err(|_| StorageBrokerError::Authority)?;
+            let effect_bytes = self
+                .transactions
+                .authority_record(RecordNamespace::Effect, &request_id)?
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+            let effect = self
+                .authority
+                .open_admission_intent(&request_id, effect_bytes)
+                .map_err(|_| StorageBrokerError::Authority)?;
+            if operation_fence.assignment().sandbox().as_bytes() != &sandbox_id
+                || effect.status() != BrokerEffectStatusV1::Pending
+                || effect.verb() != BrokerVerb::StorageAtomicSnapshot
+                || effect.target() != BrokerGrantTarget::Assignment
+                || effect.request_id() != &request_id
+                || effect.request_digest() != record.semantic_digest()
+                || effect.transport_request_digest() != record.transport_digest()
+                || effect.plan_digest() != operation_fence.plan_digest()
+                || effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
+            {
+                return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+            }
+            self.authority
+                .check_current_fence(&operation_fence)
+                .map_err(|_| StorageBrokerError::Authority)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_new_atomic_dataset_snapshot(
         &mut self,
-        program: crate::DormantAtomicDatasetSnapshotV1,
-    ) -> Result<(), StorageBrokerError> {
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<crate::DormantAtomicDatasetSnapshotV1, StorageBrokerError> {
+        self.transactions.ensure_authority_readable()?;
+        let request = decode_atomic_storage_snapshot_request(request_body, peer, policy, 0)
+            .map_err(|_| StorageBrokerError::Request)?;
+        if request.header().protocol_version() != protocol_version {
+            return Err(StorageBrokerError::Request);
+        }
+        let plan = aos_sandbox::lifecycle::LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(
+            request.canonical_plan(),
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        if request.operation() != plan.operation().into_bytes() {
+            return Err(StorageBrokerError::Request);
+        }
+        if let Some((_, program, _)) = self
+            .transactions
+            .existing_atomic_dataset_snapshot(request.operation())?
+        {
+            self.authenticate_atomic_snapshot_history(&request, request_body, &plan, &program)?;
+            return Ok(program);
+        }
+        let program =
+            crate::lifecycle_atomic_snapshot::prepare_atomic_dataset_snapshot(self, &plan)
+                .map_err(|_| StorageBrokerError::Request)?;
+        let sandbox_id = *request.fence().sandbox_id();
+        let request_id = *request.header().request_id();
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?;
+        let admission = self
+            .authority
+            .admit_atomic_snapshot(
+                artifacts,
+                &request,
+                request_body,
+                protocol_version,
+                peer,
+                policy,
+                current_clock,
+                prior_fence,
+            )
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let sealed = self
+            .authority
+            .seal(&sandbox_id, &request_id, &request.operation(), &admission)
+            .map_err(|_| StorageBrokerError::Authority)?;
         self.transactions
-            .prepare_atomic_dataset_snapshot(program)
-            .map_err(Into::into)
+            .prepare_authorized_atomic_dataset_snapshot(
+                program.clone(),
+                sandbox_id,
+                request_id,
+                request.argument_commitment().digest(),
+                ObjectDigest::from_bytes(Sha256::digest(request_body).into()),
+                sealed,
+            )?;
+        Ok(program)
+    }
+
+    fn authenticate_atomic_snapshot_history(
+        &self,
+        request: &ValidatedAtomicStorageSnapshotRequestV1,
+        request_body: &[u8],
+        plan: &aos_sandbox::lifecycle::LifecycleAtomicDatasetSnapshotPlanV1,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+    ) -> Result<(), StorageBrokerError> {
+        let operation = request.operation();
+        let request_id = *request.header().request_id();
+        let operation_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &operation)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let operation_fence = self
+            .authority
+            .open_operation_fence(&operation, operation_fence_bytes)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let effect_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &request_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let effect = self
+            .authority
+            .open_admission_intent(&request_id, effect_bytes)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let assignment = operation_fence.assignment();
+        if program.plan() != plan.commitment()
+            || program.snapshot() != plan.snapshot().into_bytes()
+            || program.effect() != plan.effect_commitment()
+            || program.catalog_generation() != plan.inventory_generation()
+            || program.catalog_source() != plan.inventory_source()
+            || assignment.sandbox().as_bytes() != request.fence().sandbox_id()
+            || assignment.incarnation().as_bytes() != request.fence().incarnation_id()
+            || assignment.epoch().get() != request.fence().assignment_epoch()
+            || assignment.desired_generation().get() != request.fence().desired_generation()
+            || assignment.digest().as_bytes() != request.fence().assignment_digest()
+            || effect.status() != BrokerEffectStatusV1::Pending
+            || effect.verb() != BrokerVerb::StorageAtomicSnapshot
+            || effect.target() != BrokerGrantTarget::Assignment
+            || effect.request_id() != &request_id
+            || effect.transport_request_digest()
+                != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            || effect.request_digest() != request.argument_commitment().digest()
+            || effect.plan_digest() != operation_fence.plan_digest()
+            || effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        self.authority
+            .check_current_fence(&operation_fence)
+            .map_err(|_| StorageBrokerError::Authority)
+    }
+
+    pub(crate) fn authorize_atomic_snapshot_dispatch<F>(
+        &self,
+        request: &ValidatedAtomicStorageSnapshotRequestV1,
+        request_body: &[u8],
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        trusted_clock: &mut F,
+    ) -> Result<(), StorageBrokerError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        let operation = request.operation();
+        let sandbox_id = *request.fence().sandbox_id();
+        let request_id = *request.header().request_id();
+        let (phase, retained, observation) = self
+            .transactions
+            .atomic_dataset_snapshot_recovery(operation)?;
+        let plan = aos_sandbox::lifecycle::LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(
+            request.canonical_plan(),
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        if phase != crate::state::AtomicDatasetSnapshotPhaseV1::Prepared
+            || observation.is_some()
+            || retained.commitment() != program.commitment()
+            || retained.plan() != plan.commitment()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        let operation_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::AuthorityPublication, &operation)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let operation_fence = self
+            .authority
+            .open_operation_fence(&operation, operation_fence_bytes)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let current_fence_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let current_fence = self
+            .authority
+            .open_fence(&sandbox_id, current_fence_bytes)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let effect_bytes = self
+            .transactions
+            .authority_record(RecordNamespace::Effect, &request_id)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let effect = self
+            .authority
+            .open_admission_intent(&request_id, effect_bytes)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let assignment = operation_fence.assignment();
+        if current_fence != operation_fence
+            || assignment.sandbox().as_bytes() != &sandbox_id
+            || assignment.incarnation().as_bytes() != request.fence().incarnation_id()
+            || assignment.epoch().get() != request.fence().assignment_epoch()
+            || assignment.desired_generation().get() != request.fence().desired_generation()
+            || assignment.digest().as_bytes() != request.fence().assignment_digest()
+            || effect.status() != BrokerEffectStatusV1::Pending
+            || effect.verb() != BrokerVerb::StorageAtomicSnapshot
+            || effect.target() != BrokerGrantTarget::Assignment
+            || effect.request_id() != &request_id
+            || effect.transport_request_digest()
+                != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            || effect.request_digest() != request.argument_commitment().digest()
+            || effect.plan_digest() != operation_fence.plan_digest()
+            || effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
+        {
+            return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
+        }
+        self.authority
+            .check_current_fence(&operation_fence)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        self.authority
+            .check_before_effect(&effect, trusted_clock)
+            .map_err(|_| StorageBrokerError::Authority)
     }
 
     pub(crate) fn mark_atomic_dataset_snapshot_ambiguous(
@@ -503,6 +735,22 @@ impl StorageAdmissionCoordinator {
     > {
         self.transactions
             .atomic_dataset_snapshot_recovery(operation)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn existing_atomic_dataset_snapshot(
+        &self,
+        operation: [u8; 16],
+    ) -> Result<
+        Option<(
+            crate::state::AtomicDatasetSnapshotPhaseV1,
+            crate::DormantAtomicDatasetSnapshotV1,
+            Option<ObjectDigest>,
+        )>,
+        StorageBrokerError,
+    > {
+        self.transactions
+            .existing_atomic_dataset_snapshot(operation)
             .map_err(Into::into)
     }
 

@@ -22,6 +22,7 @@ use aos_sandbox_core::{
 use hmac::{Hmac, Mac as _};
 use sha2::{Digest as _, Sha256};
 
+use crate::authorization::SealedStorageAdmission;
 use crate::broker::FreshWorkspacePinAuthority;
 use crate::catalog_transition::{
     CatalogReservation, PhysicalWorkspaceProjection, StorageCatalogTransitionProvider,
@@ -66,11 +67,13 @@ const PUBLICATION_INTENT_DOMAIN: &[u8] = b"aos.sandbox.storage.publication-inten
 const PUBLICATION_INTENT_MAGIC: &[u8; 8] = b"AOSSPI01";
 const PUBLICATION_INTENT_VERSION: u16 = 1;
 const ATOMIC_SNAPSHOT_MAGIC: &[u8; 8] = b"AOSASR01";
-const ATOMIC_SNAPSHOT_VERSION: u16 = 1;
+const ATOMIC_SNAPSHOT_VERSION: u16 = 2;
 const ATOMIC_SNAPSHOT_DOMAIN: &[u8] = b"aos.sandbox.storage.atomic-snapshot-state.v1\0";
 const ATOMIC_SNAPSHOT_KEY_PREFIX: &[u8; 16] = b"atomic-snapshot/";
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
 const MAXIMUM_PREPARATION_RECORD_BYTES: usize = 128 * 1024;
+// The grouped program retains every selected source and destination name.
+const MAXIMUM_ATOMIC_SNAPSHOT_RECORD_BYTES: usize = 600_000 + 256;
 pub(crate) const MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES: usize =
     MAXIMUM_PREPARATION_RECORD_BYTES;
 const FIXED_PREFIX_BYTES: usize = 8 + 2 + 1 + 16 + 16 + 16 + 32 + 32 + 8 + 32 + 32 + 4;
@@ -82,7 +85,7 @@ const RESULT_HAS_OBJECT_GUID: u8 = 1 << 2;
 const MAXIMUM_OPERATIONS: usize = 256;
 const MATERIALIZED_RECORDS_PER_OPERATION: usize = 8;
 const GLOBAL_MATERIALIZED_RECORDS: usize = 3;
-const MAXIMUM_JOURNAL_RECORD_BYTES: usize = MAXIMUM_PREPARATION_RECORD_BYTES + 128;
+const MAXIMUM_JOURNAL_RECORD_BYTES: usize = MAXIMUM_ATOMIC_SNAPSHOT_RECORD_BYTES;
 
 /// Reports durable storage state validation or transition failure.
 #[derive(Debug, thiserror::Error)]
@@ -212,12 +215,20 @@ struct AtomicDatasetSnapshotRecordV1 {
     phase: AtomicDatasetSnapshotPhaseV1,
     program: crate::DormantAtomicDatasetSnapshotV1,
     observation: Option<ObjectDigest>,
+    sandbox_id: [u8; 16],
+    request_id: [u8; 16],
+    semantic_digest: ObjectDigest,
+    transport_digest: ObjectDigest,
 }
 
 pub(crate) struct AtomicDatasetSnapshotInventoryV1 {
     phase: AtomicDatasetSnapshotPhaseV1,
     program: crate::DormantAtomicDatasetSnapshotV1,
     observation: Option<ObjectDigest>,
+    sandbox_id: [u8; 16],
+    request_id: [u8; 16],
+    semantic_digest: ObjectDigest,
+    transport_digest: ObjectDigest,
 }
 
 impl AtomicDatasetSnapshotInventoryV1 {
@@ -227,6 +238,22 @@ impl AtomicDatasetSnapshotInventoryV1 {
 
     pub(crate) const fn program(&self) -> &crate::DormantAtomicDatasetSnapshotV1 {
         &self.program
+    }
+
+    pub(crate) const fn sandbox_id(&self) -> [u8; 16] {
+        self.sandbox_id
+    }
+
+    pub(crate) const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+
+    pub(crate) const fn semantic_digest(&self) -> ObjectDigest {
+        self.semantic_digest
+    }
+
+    pub(crate) const fn transport_digest(&self) -> ObjectDigest {
+        self.transport_digest
     }
 
     pub(crate) const fn observation(&self) -> Option<ObjectDigest> {
@@ -641,38 +668,57 @@ impl StorageTransactionStore {
                 phase: record.phase,
                 program: record.program.clone(),
                 observation: record.observation,
+                sandbox_id: record.sandbox_id,
+                request_id: record.request_id,
+                semantic_digest: record.semantic_digest,
+                transport_digest: record.transport_digest,
             })
             .collect())
     }
 
-    pub(crate) fn prepare_atomic_dataset_snapshot(
+    pub(crate) fn prepare_authorized_atomic_dataset_snapshot(
         &mut self,
         program: crate::DormantAtomicDatasetSnapshotV1,
+        sandbox_id: [u8; 16],
+        request_id: [u8; 16],
+        semantic_digest: ObjectDigest,
+        transport_digest: ObjectDigest,
+        sealed: SealedStorageAdmission,
     ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         let operation = program.operation();
-        let supplied_bytes = program
-            .canonical_bytes()
-            .map_err(|_| StorageStateError::InvalidValue)?;
-        if let Some(current) = self.atomic_snapshots.get(&operation) {
-            return if current.phase == AtomicDatasetSnapshotPhaseV1::Prepared
-                && current.program.commitment() == program.commitment()
-                && current
-                    .program
-                    .canonical_bytes()
-                    .map_err(|_| StorageStateError::CorruptRecord)?
-                    == supplied_bytes
-                && current.observation.is_none()
-            {
-                Ok(())
-            } else {
-                Err(StorageStateError::Equivocation)
-            };
+        if operation == [0; 16]
+            || sandbox_id == [0; 16]
+            || request_id == [0; 16]
+            || semantic_digest.as_bytes() == &[0; 32]
+            || transport_digest.as_bytes() == &[0; 32]
+            || self.atomic_snapshots.contains_key(&operation)
+            || self.records.contains_key(&operation)
+            || self
+                .journal
+                .get(RecordNamespace::AuthorityPublication, &operation)
+                .is_some()
+            || self
+                .journal
+                .get(RecordNamespace::Effect, &request_id)
+                .is_some()
+            || sealed.current_fence.is_empty()
+            || sealed.effect.is_empty()
+            || sealed.operation_fence.is_empty()
+            || sealed.current_fence.len() > MAXIMUM_RECORD_BYTES
+            || sealed.effect.len() > MAXIMUM_RECORD_BYTES
+            || sealed.operation_fence.len() > MAXIMUM_RECORD_BYTES
+        {
+            return Err(StorageStateError::Equivocation);
         }
         let record = AtomicDatasetSnapshotRecordV1 {
             phase: AtomicDatasetSnapshotPhaseV1::Prepared,
             program,
             observation: None,
+            sandbox_id,
+            request_id,
+            semantic_digest,
+            transport_digest,
         };
         let ambiguous = AtomicDatasetSnapshotRecordV1 {
             phase: AtomicDatasetSnapshotPhaseV1::Ambiguous,
@@ -683,12 +729,40 @@ impl StorageTransactionStore {
             observation: Some(ObjectDigest::from_bytes([1; 32])),
             ..record.clone()
         };
+        let prepared = JournalTransaction::new(
+            atomic_snapshot_transaction_id(operation, AtomicDatasetSnapshotPhaseV1::Prepared),
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    sandbox_id.to_vec(),
+                    sealed.current_fence,
+                ),
+                JournalRecord::put(RecordNamespace::Effect, request_id.to_vec(), sealed.effect),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    operation.to_vec(),
+                    sealed.operation_fence,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    atomic_snapshot_record_key(operation),
+                    encode_atomic_snapshot_record(&record, &self.key)?,
+                ),
+            ],
+        )?;
+        if prepared.records().iter().any(|record| {
+            record
+                .value()
+                .is_some_and(|value| value.len() > MAXIMUM_JOURNAL_RECORD_BYTES)
+        }) {
+            return Err(StorageStateError::InvalidValue);
+        }
         self.journal.preflight_transactions(&[
-            atomic_snapshot_transaction(&record, &self.key)?,
+            prepared.clone(),
             atomic_snapshot_transaction(&ambiguous, &self.key)?,
             atomic_snapshot_transaction(&committed, &self.key)?,
         ])?;
-        self.publish_atomic_snapshot(&record)?;
+        self.commit_journal(&prepared)?;
         self.atomic_snapshots.insert(operation, record);
         Ok(())
     }
@@ -735,6 +809,24 @@ impl StorageTransactionStore {
             .get(&operation)
             .ok_or(StorageStateError::InvalidTransition)?;
         Ok((record.phase, record.program.clone(), record.observation))
+    }
+
+    pub(crate) fn existing_atomic_dataset_snapshot(
+        &self,
+        operation: [u8; 16],
+    ) -> Result<
+        Option<(
+            AtomicDatasetSnapshotPhaseV1,
+            crate::DormantAtomicDatasetSnapshotV1,
+            Option<ObjectDigest>,
+        )>,
+        StorageStateError,
+    > {
+        self.ensure_authority_readable()?;
+        Ok(self
+            .atomic_snapshots
+            .get(&operation)
+            .map(|record| (record.phase, record.program.clone(), record.observation)))
     }
 
     pub(crate) fn commit_atomic_dataset_snapshot(
@@ -3804,6 +3896,10 @@ fn encode_atomic_snapshot_record(
     bytes.extend_from_slice(&ATOMIC_SNAPSHOT_VERSION.to_be_bytes());
     bytes.push(record.phase as u8);
     bytes.extend_from_slice(&key.key_id);
+    bytes.extend_from_slice(&record.sandbox_id);
+    bytes.extend_from_slice(&record.request_id);
+    bytes.extend_from_slice(record.semantic_digest.as_bytes());
+    bytes.extend_from_slice(record.transport_digest.as_bytes());
     bytes.extend_from_slice(&program_length.to_be_bytes());
     bytes.extend_from_slice(&program);
     bytes.extend_from_slice(
@@ -3853,6 +3949,17 @@ fn decode_atomic_snapshot_record(
     if take(&mut body, 16)? != key.key_id {
         return Err(StorageStateError::CorruptRecord);
     }
+    let sandbox_id = take_array(&mut body)?;
+    let request_id = take_array(&mut body)?;
+    let semantic_digest = ObjectDigest::from_bytes(take_array(&mut body)?);
+    let transport_digest = ObjectDigest::from_bytes(take_array(&mut body)?);
+    if sandbox_id == [0; 16]
+        || request_id == [0; 16]
+        || semantic_digest.as_bytes() == &[0; 32]
+        || transport_digest.as_bytes() == &[0; 32]
+    {
+        return Err(StorageStateError::CorruptRecord);
+    }
     let program_length = usize::try_from(u32::from_be_bytes(take_array(&mut body)?))
         .map_err(|_| StorageStateError::CorruptRecord)?;
     let program = crate::DormantAtomicDatasetSnapshotV1::from_canonical_bytes(take(
@@ -3876,6 +3983,10 @@ fn decode_atomic_snapshot_record(
         phase,
         program,
         observation,
+        sandbox_id,
+        request_id,
+        semantic_digest,
+        transport_digest,
     })
 }
 

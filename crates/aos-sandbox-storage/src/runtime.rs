@@ -251,29 +251,85 @@ impl StorageBrokerRuntime {
         crate::lifecycle_atomic_snapshot::prepare_atomic_dataset_snapshot(&self.coordinator, plan)
     }
 
-    pub(crate) fn execute_lifecycle_atomic_snapshot(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_authenticated_atomic_snapshot<F>(
         &mut self,
-        plan: &aos_sandbox::lifecycle::LifecycleAtomicDatasetSnapshotPlanV1,
-    ) -> Result<AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError> {
-        if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady
-            || !self.readiness.permits_catalog_methods()
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+    ) -> Result<AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let initial_clock = trusted_clock().map_err(|_| StorageRuntimeError::Recovery)?;
+        let request = aos_sandbox_protocol::decode_atomic_storage_snapshot_request(
+            request_body,
+            peer,
+            policy,
+            0,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        let existing = self
+            .coordinator
+            .existing_atomic_dataset_snapshot(request.operation())?;
+        if existing.is_none() && !self.readiness.permits_catalog_methods() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        if existing.as_ref().is_some_and(|(phase, _, _)| {
+            *phase == crate::state::AtomicDatasetSnapshotPhaseV1::Prepared
+        }) && !self.readiness.permits_catalog_methods()
+            && self.readiness != (StorageRuntimeReadiness::RecoveryPending { operations: 1 })
         {
             return Err(StorageRuntimeError::Recovery);
         }
-        let program = crate::lifecycle_atomic_snapshot::prepare_atomic_dataset_snapshot(
-            &self.coordinator,
-            plan,
-        )
-        .map_err(|_| StorageRuntimeError::Recovery)?;
-        let operation = program.operation();
-        let commitment = program.commitment();
-        self.coordinator
-            .prepare_atomic_dataset_snapshot(program)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let program = self
+        let admission = self.coordinator.admit_new_atomic_dataset_snapshot(
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            &initial_clock,
+        );
+        let program =
+            self.finish_live_transaction_mutation(admission, StorageRuntimeError::Admission)?;
+        match self
             .coordinator
-            .mark_atomic_dataset_snapshot_ambiguous(operation, commitment)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+            .atomic_dataset_snapshot_recovery(request.operation())?
+            .0
+        {
+            crate::state::AtomicDatasetSnapshotPhaseV1::Committed => {
+                return self.recover_lifecycle_atomic_snapshot(request.operation());
+            }
+            crate::state::AtomicDatasetSnapshotPhaseV1::Ambiguous => {
+                return self.recover_lifecycle_atomic_snapshot(request.operation());
+            }
+            crate::state::AtomicDatasetSnapshotPhaseV1::Prepared => {}
+        }
+        self.coordinator.authorize_atomic_snapshot_dispatch(
+            &request,
+            request_body,
+            &program,
+            trusted_clock,
+        )?;
+        self.dispatch_prepared_atomic_snapshot(program.operation(), program.commitment())
+    }
+
+    fn dispatch_prepared_atomic_snapshot(
+        &mut self,
+        operation: [u8; 16],
+        commitment: ObjectDigest,
+    ) -> Result<AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError> {
+        let marked = self
+            .coordinator
+            .mark_atomic_dataset_snapshot_ambiguous(operation, commitment);
+        let program =
+            self.finish_live_transaction_mutation(marked, StorageRuntimeError::Admission)?;
         self.latch_recovery_required();
         let observation = match self.helper.atomic_snapshot_once(&program, true) {
             Ok(observation) => observation,
@@ -290,6 +346,10 @@ impl StorageBrokerRuntime {
             .commit_atomic_dataset_snapshot(operation, commitment, observation)
             .is_err()
         {
+            if self.coordinator.transaction_journal_requires_reopen() {
+                self.readiness = StorageRuntimeReadiness::ReopenRequired;
+                return Err(StorageRuntimeError::ReopenRequired);
+            }
             return Ok(
                 AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
                     program: commitment,
@@ -343,6 +403,10 @@ impl StorageBrokerRuntime {
                     .commit_atomic_dataset_snapshot(operation, commitment, observation)
                     .is_err()
                 {
+                    if self.coordinator.transaction_journal_requires_reopen() {
+                        self.readiness = StorageRuntimeReadiness::ReopenRequired;
+                        return Err(StorageRuntimeError::ReopenRequired);
+                    }
                     return Ok(
                         AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
                             program: commitment,
@@ -1746,6 +1810,9 @@ pub(crate) fn authenticate_startup_authority(
         .map_err(|_| StorageRuntimeError::Recovery)?;
     coordinator
         .authenticate_catalog_preparations()
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+    coordinator
+        .authenticate_atomic_snapshot_records()
         .map_err(|_| StorageRuntimeError::Recovery)
 }
 

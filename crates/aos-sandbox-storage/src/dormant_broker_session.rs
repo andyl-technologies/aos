@@ -7,7 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
-use aos_proto::aos::sandbox::local::v1::{BrokerMethod, StorageResult};
+use aos_proto::aos::sandbox::local::v1::{
+    AtomicStorageSnapshotResponse, BrokerMethod, StorageResult,
+};
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::semantics::CanonicalStorageRepairSemanticsV1;
@@ -246,43 +248,6 @@ impl DormantStorageApplyCompositionV1 {
         self.runtime.prepare_lifecycle_atomic_snapshot(plan)
     }
 
-    /// Executes one protected atomic lifecycle dataset snapshot group.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageRuntimeError`] when protected plan resolution or the
-    /// durable pre-effect transition fails. Failures after Ambiguous are
-    /// returned as observation-required progress rather than retry authority.
-    pub fn execute_atomic_dataset_snapshot(
-        &mut self,
-        plan: &aos_sandbox::lifecycle::LifecycleAtomicDatasetSnapshotPlanV1,
-    ) -> Result<crate::AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError> {
-        self.runtime.execute_lifecycle_atomic_snapshot(plan)
-    }
-
-    /// Resolves and executes the Storage phase of a current lifecycle barrier.
-    ///
-    /// The barrier derives the exact SnapshotId, effect binding, closed member
-    /// set, and pre-effect inventory commitment. Storage then rereads its
-    /// protected catalog, persists the group, and invokes the single grouped
-    /// worker transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageRuntimeError`] when the lifecycle cursor is not the
-    /// dataset-snapshot action or either protected owner rejects currentness.
-    pub fn execute_lifecycle_snapshot_barrier(
-        &mut self,
-        barrier: &aos_sandbox::lifecycle::LifecycleSnapshotBarrierV1,
-        current: &aos_sandbox::lifecycle::CurrentLifecycleOperationV1<'_>,
-        storage: &aos_sandbox::lifecycle::LifecycleAuthenticatedStorageInventoryV1,
-    ) -> Result<crate::AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError> {
-        let plan = barrier
-            .atomic_dataset_snapshot_plan(current, storage)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        self.runtime.execute_lifecycle_atomic_snapshot(&plan)
-    }
-
     /// Recovers one retained coordinated snapshot without redispatching it.
     ///
     /// # Errors
@@ -395,6 +360,45 @@ impl DormantStorageBrokerCallsiteV1 for DormantStorageApplyCompositionV1 {
             Ok(sample)
         };
         match method {
+            BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
+                let request = aos_sandbox_protocol::decode_atomic_storage_snapshot_request(
+                    request_body,
+                    peer,
+                    policy,
+                    0,
+                )
+                .map_err(|_| DormantStorageBrokerCallErrorV1::StaleKernel)?;
+                if request.header().request_id() != &request_id
+                    || request.header().protocol_version() != protocol_version
+                {
+                    return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+                }
+                match self.runtime.execute_authenticated_atomic_snapshot(
+                    request_body,
+                    artifacts,
+                    protocol_version,
+                    peer,
+                    policy,
+                    &mut clock,
+                )? {
+                    crate::AtomicDatasetSnapshotMutationOutcomeV1::Committed {
+                        program,
+                        observation,
+                    } => Ok(AtomicStorageSnapshotResponse {
+                        program_digest: program.as_bytes().to_vec(),
+                        observation_digest: observation.as_bytes().to_vec(),
+                        observation_required: false,
+                        ..Default::default()
+                    }
+                    .encode_to_vec()),
+                    crate::AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
+                        ..
+                    }
+                    | crate::AtomicDatasetSnapshotMutationOutcomeV1::PreparedBeforeEffect {
+                        ..
+                    } => Err(DormantStorageBrokerCallErrorV1::StaleKernel),
+                }
+            }
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => self
                 .runtime
                 .prepare_catalog(

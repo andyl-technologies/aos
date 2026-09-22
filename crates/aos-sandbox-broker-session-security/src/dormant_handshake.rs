@@ -3503,6 +3503,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             request.0.method(),
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
                 | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
+                | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
         ) && adapter.matches_request(&request.0);
         let (request, context) = self.begin_execution(request, method_matches)?;
         let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());

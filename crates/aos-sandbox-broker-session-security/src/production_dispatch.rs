@@ -515,7 +515,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
         match request.method() {
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
-            | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
+            | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
+            | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
                 let Some(artifacts) = request.authorization_artifacts().cloned() else {
                     return Err(before_effect_currentness(request));
                 };
