@@ -59,6 +59,49 @@ pub struct LifecycleStepV1 {
 }
 
 impl LifecycleStepV1 {
+    /// Constructs one fully bound, unstarted action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleModelError::InvalidModel`] when compensation does
+    /// not match the selected class or any supplied commitment is reserved for
+    /// the provisional unbound-plan representation.
+    pub fn planned(
+        index: u32,
+        class: LifecycleStepClassV1,
+        domain: LifecycleStepDomainV1,
+        request: LifecycleStepRequestDigestV1,
+        request_body: LifecycleStepBodyDigestV1,
+        plan: LifecycleStepPlanDigestV1,
+        compensation_request: Option<LifecycleStepRequestDigestV1>,
+        compensation_body: Option<LifecycleStepBodyDigestV1>,
+        compensation_plan: Option<LifecycleStepPlanDigestV1>,
+    ) -> Result<Self, LifecycleModelError> {
+        let step = Self::new(
+            index,
+            class,
+            domain,
+            request,
+            request_body,
+            plan,
+            compensation_request,
+            compensation_body,
+            compensation_plan,
+            LifecycleStepStateV1::Planned,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        if step.has_unbound_commitment() {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+        Ok(step)
+    }
+
     /// Constructs one canonical action skeleton before late authority exists.
     ///
     /// An unbound step commits its stable index, class, domain, and logical

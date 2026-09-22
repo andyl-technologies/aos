@@ -1977,6 +1977,60 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         Ok(PreparedLifecycleProgressV1 { prepared })
     }
 
+    /// Plans the sole atomic binding of an admitted operation's action plan.
+    ///
+    /// The current record must remain in `Accepted` with an entirely unbound
+    /// provisional skeleton. `steps` must be the complete nonempty bound plan;
+    /// the successor stays in `Accepted`, changes no other operation field,
+    /// and cannot reserve an effect attempt. Once committed, normal immutable
+    /// step-transition rules prevent rebinding or action-list replacement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale key, a record outside the one-time
+    /// unbound state, a partial or malformed bound plan, an invalid transaction
+    /// identity, or failed protected-journal planning.
+    pub fn prepare_plan_binding(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        steps: Vec<super::LifecycleStepV1>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        let current = self
+            .current_operation(current_key)?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if current.operation().phase() != super::LifecyclePhaseV1::Accepted
+            || !current
+                .operation()
+                .steps()
+                .iter()
+                .all(super::LifecycleStepV1::is_unbound)
+            || steps.is_empty()
+            || steps
+                .iter()
+                .any(super::LifecycleStepV1::has_unbound_commitment)
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let successor = current
+            .operation()
+            .successor(
+                current.record(),
+                super::LifecyclePhaseV1::Accepted,
+                0,
+                0,
+                steps,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
+        self.prepare_operation_progress(current_key, transaction_id, successor)
+    }
+
     /// Plans the atomic readmission of one exact durable Residual cursor.
     ///
     /// The successor must append one Reserved attempt to the same failed step.
