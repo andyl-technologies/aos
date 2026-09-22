@@ -506,6 +506,11 @@ pub(super) async fn dispatch_mutation(
                 .context("controller omitted the attenuated capability")?;
             let checked = CheckedCapabilityResourceV1::try_from(resource)
                 .context("controller returned an invalid attenuated capability")?;
+            validate_capability_handle(
+                &response.capability_handle,
+                checked.as_proto().capability_id.as_slice(),
+                "attenuated capability",
+            )?;
             super::render_checked(output, &checked)?;
         }
         DormantSandboxRequestKindV1::CapabilityRenew(message) => {
@@ -521,6 +526,11 @@ pub(super) async fn dispatch_mutation(
                 .context("controller omitted the renewed capability")?;
             let checked = CheckedCapabilityResourceV1::try_from(resource)
                 .context("controller returned an invalid renewed capability")?;
+            validate_capability_handle(
+                &response.capability_handle,
+                checked.as_proto().capability_id.as_slice(),
+                "renewed capability",
+            )?;
             finish_operation(
                 &endpoint,
                 request,
@@ -687,6 +697,18 @@ async fn wait_for_operation(
             return terminal_operation(&reducer, termination);
         }
     }
+}
+
+fn validate_capability_handle(
+    handle: &[u8],
+    capability_id: &[u8],
+    operation: &'static str,
+) -> Result<()> {
+    if handle.len() != 16 || handle != capability_id {
+        anyhow::bail!("controller returned a substituted {operation} handle");
+    }
+
+    Ok(())
 }
 
 fn terminal_operation(
