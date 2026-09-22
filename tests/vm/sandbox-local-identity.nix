@@ -6,6 +6,7 @@
 }: let
   packages = [
     "aos-sandbox"
+    "aos-sandbox-broker-session-security"
     "aos-sandbox-linux"
     "aos-sandbox-host"
     "aos-sandbox-mount"
@@ -39,7 +40,7 @@
     # distinct default-feature test binaries into the same Cargo target tree.
     postBuild = ''
       mkdir kernel-fixtures
-      for crate in aos_sandbox aos_sandbox_linux aos_sandbox_host aos_sandbox_mount aos_sandbox_network; do
+      for crate in aos_sandbox aos_sandbox_broker_session_security aos_sandbox_linux aos_sandbox_host aos_sandbox_mount aos_sandbox_network; do
         count=0
         for candidate in target/debug/deps/"$crate"-*; do
           if [ -f "$candidate" ] && [ -x "$candidate" ]; then
@@ -74,6 +75,13 @@ in
       echo $$ > /sys/fs/cgroup/aos-local-identity-tests/cgroup.procs
       export AOS_CGROUP_TEST_SLEEP=${pkgs.coreutils}/bin/sleep
       export AOS_TEST_UNSHARE=${pkgs.util-linux}/bin/unshare
+      # The minimal VM mounts /run with tmpfs's permissive default. Credential
+      # custody requires the protected ancestor used by the installed service.
+      chmod 0755 /run
+      mkdir -p /run/aos/public-api-qualification
+      chmod 0700 /run/aos/public-api-qualification
+      chown 811:811 /run/aos/public-api-qualification
+      export AOS_PUBLIC_API_TEST_ROOT=/run/aos/public-api-qualification
 
       run_tests() {
         executable=$1
@@ -84,6 +92,10 @@ in
           exit 1
         fi
         case "$filter" in
+          controller_service::public_api::qualification_tests::*)
+            ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
+              "$executable" "$filter" --test-threads=1 --nocapture
+            ;;
           broker::tests::host_scope_exchange::*)
             ${pkgs.util-linux}/bin/unshare --mount --propagation private \
               "$executable" "$filter" --test-threads=1 --nocapture
@@ -109,6 +121,7 @@ in
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::host_scope_exchange::
       run_tests ${fixtures}/bin/aos_sandbox_network service::kernel_tests::controller_records_authenticated_netd_inventory_over_record_subject_session
+      run_tests ${fixtures}/bin/aos_sandbox_broker_session_security controller_service::public_api::qualification_tests::registered_public_listener_uses_protected_credentials_and_real_http2
 
       # Same-named flattened and alternate branches are decoys. This focused
       # membership check accepts only the hierarchy implied by the slice name;

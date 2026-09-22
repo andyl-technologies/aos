@@ -364,8 +364,10 @@ the outstanding work concrete:
   [controller deployment notes](../../sandbox-controller.md). Shared
   production TLS configuration has in-memory client/server handshake coverage
   for mandatory client proof, trust and certificate usage, TLS 1.3/HTTP/2,
-  disabled resumption, and fresh connection exporters. Deployed credential
-  lifecycle, registered-peer admission, and RPC qualification remain required.
+  disabled resumption, and fresh connection exporters. Service-UID VM
+  qualification now covers protected credential custody, registered-peer
+  admission, rejection paths, rotation invalidation, and real HTTP/2 discovery.
+  Installed systemd activation and restart recovery remain required.
   Production activation must preserve holder-bound sessions, current protected
   authorization, broker audience binding, ownership fencing, and independent
   Guardian enforcement. An opaque client authorization context or local UID

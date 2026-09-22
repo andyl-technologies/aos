@@ -60,12 +60,18 @@ custody or content fails startup before readiness. The endpoint admits at most
 budget; peer authorization has a five-minute BOOTTIME lifetime. Pending I/O
 also has expiry wake-ups, and every I/O poll checks BOOTTIME.
 
-Credential changes invalidate retained peer evidence. The acceptor does not
-hot-reload credentials: install replacements through the external credential
-mechanism and restart the controller. Before restarting, reconcile pending
-protected broker-session history; never erase its journal to bypass recovery.
+Credential changes invalidate retained peer evidence. Once a peer fails a
+currentness check, that connection remains retired even if the original
+credential bytes are restored; authentication requires a new TLS session.
+The acceptor does not hot-reload credentials: install replacements through the
+external credential mechanism and restart the controller. Before restarting,
+reconcile pending protected broker-session history; never erase its journal to
+bypass recovery.
 
 The public endpoint has no CLI client integration or mutation handlers yet.
-Its deployed credential lifecycle and end-to-end RPC behavior still require
-qualification. See the [production integration audit](rfcs/0021-sandbox-runtime/16-implementation-tasks.md#production-integration-audit)
-for the remaining activation work.
+The service-UID VM qualification exercises protected credential loading,
+registered and rejected TLS clients, real HTTP/2 discovery, credential
+rotation, and permanent retirement of stale peer evidence. Installed systemd
+activation and restart recovery still require qualification. See the
+[production integration audit](rfcs/0021-sandbox-runtime/16-implementation-tasks.md#production-integration-audit)
+for the remaining work.

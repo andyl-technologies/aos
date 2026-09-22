@@ -193,12 +193,22 @@ impl PublicApiPeer {
     ///
     /// This does not check capability expiry, policy, or revocation generations;
     /// those remain mandatory in the controller's protected authorization step.
+    /// A failed recheck permanently retires this connection's peer evidence;
+    /// restoring old credentials cannot revive an already rejected session.
     ///
     /// # Errors
     ///
     /// Rejects a closed/expired session, invalid certificate chain, changed
     /// protected credential files, or unavailable kernel time.
     pub fn recheck(&self) -> Result<(), PublicApiSessionError> {
+        let result = self.recheck_current();
+        if result.is_err() {
+            self.close();
+        }
+        result
+    }
+
+    fn recheck_current(&self) -> Result<(), PublicApiSessionError> {
         if !self.0.active.load(Ordering::Acquire) || boottime()? >= self.0.deadline {
             return Err(PublicApiSessionError::Stale);
         }

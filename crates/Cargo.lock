@@ -906,6 +906,8 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "hex",
+ "rcgen",
+ "reqwest",
  "rustix 1.1.4",
  "sha2 0.10.9",
  "tempfile",

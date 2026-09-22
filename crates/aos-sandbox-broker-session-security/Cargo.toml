@@ -55,6 +55,8 @@ path = "src/bin/aos-sandbox-mountd.rs"
 
 [dev-dependencies]
 hex.workspace = true
+rcgen.workspace = true
+reqwest = { workspace = true, features = ["http2"] }
 rustix = { workspace = true, features = ["net", "pipe"] }
 tempfile = "3"
 

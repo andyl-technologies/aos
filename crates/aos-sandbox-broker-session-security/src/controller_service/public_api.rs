@@ -34,9 +34,16 @@ const MAXIMUM_HANDSHAKES: usize = 8;
 ///
 /// Rejects invalid credentials, unsafe socket custody, or reactor registration failure.
 pub(super) async fn bind(uid: u32) -> Result<PublicListener, ControllerRuntimeError> {
+    bind_at(uid, std::path::Path::new(SOCKET)).await
+}
+
+async fn bind_at(
+    uid: u32,
+    path: &std::path::Path,
+) -> Result<PublicListener, ControllerRuntimeError> {
     // Validate custody before making a socket available to clients.
     let acceptor = Arc::new(PublicApiSessionAcceptor::from_systemd_credentials()?);
-    let socket = super::bind_controller_socket(std::path::Path::new(SOCKET), uid, 0o666)?;
+    let socket = super::bind_controller_socket(path, uid, 0o666)?;
     let listener = UnixListener::from_std(socket).map_err(ControllerRuntimeError::PublicServer)?;
     Ok(PublicListener {
         listener,
@@ -45,6 +52,9 @@ pub(super) async fn bind(uid: u32) -> Result<PublicListener, ControllerRuntimeEr
         handshakes: JoinSet::new(),
     })
 }
+
+#[cfg(all(test, feature = "kernel-tests"))]
+mod qualification_tests;
 
 /// Serves authenticated discovery, or remains pending when explicitly disabled.
 ///
