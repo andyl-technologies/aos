@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::v1::{
-    CancelOperationRequest, CancelOperationResponse, CapabilityServiceExt, DiscoveryService,
-    DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
+    CacheServiceExt, CancelOperationRequest, CancelOperationResponse, CapabilityServiceExt,
+    DiscoveryService, DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
     GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
     GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
     GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
@@ -251,6 +251,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let public_connect = SnapshotServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect =
         CapabilityServiceExt::register(Arc::clone(&public_service), public_connect);
+    let public_connect = CacheServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect =
         OperationServiceExt::register(public_service, public_connect).into_axum_service();
     let public_application = axum::Router::new().fallback_service(public_connect);

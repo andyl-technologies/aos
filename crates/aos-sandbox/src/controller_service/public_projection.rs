@@ -14,13 +14,13 @@
 //! broker receipts and inventory.
 
 use aos_proto::aos::sandbox::v1::{
-    Attachment, Capability, Execution, FilesystemView, Sandbox, Snapshot,
+    Attachment, CacheStatus, Capability, Execution, FilesystemView, Sandbox, Snapshot,
 };
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use crate::cli_model::AuditAuthorizationV1;
+use crate::cli_model::{AuditAuthorizationV1, CheckedCacheStatusV1};
 use crate::controller_query::{
     CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
     CheckedFilesystemViewResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
@@ -50,6 +50,10 @@ pub enum PublicProjectionKindV1 {
     Snapshot = 5,
     /// A redacted capability resource.
     Capability = 6,
+    /// Cache accounting scoped to one project.
+    ProjectCacheStatus = 7,
+    /// Cache accounting scoped to one sandbox.
+    SandboxCacheStatus = 8,
 }
 
 impl PublicProjectionKindV1 {
@@ -61,6 +65,8 @@ impl PublicProjectionKindV1 {
             4 => Ok(Self::Attachment),
             5 => Ok(Self::Snapshot),
             6 => Ok(Self::Capability),
+            7 => Ok(Self::ProjectCacheStatus),
+            8 => Ok(Self::SandboxCacheStatus),
             _ => Err(PublicProjectionError::CorruptRecord),
         }
     }
@@ -81,6 +87,20 @@ pub enum PublicProjectionResourceV1 {
     Snapshot(Snapshot),
     /// A non-secret capability projection.
     Capability(Capability),
+    /// Cache accounting for the project identified by the record key.
+    ProjectCacheStatus {
+        /// Names the project scope.
+        project_id: [u8; 16],
+        /// Carries checked public cache accounting.
+        status: CacheStatus,
+    },
+    /// Cache accounting for the sandbox identified by the record key.
+    SandboxCacheStatus {
+        /// Names the sandbox scope.
+        sandbox_id: [u8; 16],
+        /// Carries checked public cache accounting.
+        status: CacheStatus,
+    },
 }
 
 impl PublicProjectionResourceV1 {
@@ -94,6 +114,8 @@ impl PublicProjectionResourceV1 {
             Self::Attachment(_) => PublicProjectionKindV1::Attachment,
             Self::Snapshot(_) => PublicProjectionKindV1::Snapshot,
             Self::Capability(_) => PublicProjectionKindV1::Capability,
+            Self::ProjectCacheStatus { .. } => PublicProjectionKindV1::ProjectCacheStatus,
+            Self::SandboxCacheStatus { .. } => PublicProjectionKindV1::SandboxCacheStatus,
         }
     }
 
@@ -107,6 +129,8 @@ impl PublicProjectionResourceV1 {
             Self::Attachment(value) => &value.attachment_id,
             Self::Snapshot(value) => &value.snapshot_id,
             Self::Capability(value) => &value.capability_id,
+            Self::ProjectCacheStatus { project_id, .. } => project_id,
+            Self::SandboxCacheStatus { sandbox_id, .. } => sandbox_id,
         }
     }
 
@@ -142,6 +166,18 @@ impl PublicProjectionResourceV1 {
                     .map_err(PublicProjectionError::InvalidResource)?
                     .into_proto(),
             ),
+            Self::ProjectCacheStatus { project_id, status } => Self::ProjectCacheStatus {
+                project_id,
+                status: CheckedCacheStatusV1::try_from(status)
+                    .map_err(|_| PublicProjectionError::InvalidCacheStatus)?
+                    .into_proto(),
+            },
+            Self::SandboxCacheStatus { sandbox_id, status } => Self::SandboxCacheStatus {
+                sandbox_id,
+                status: CheckedCacheStatusV1::try_from(status)
+                    .map_err(|_| PublicProjectionError::InvalidCacheStatus)?
+                    .into_proto(),
+            },
         };
         let bytes = match &checked {
             Self::Sandbox(value) => value.encode_to_vec(),
@@ -150,6 +186,9 @@ impl PublicProjectionResourceV1 {
             Self::Attachment(value) => value.encode_to_vec(),
             Self::Snapshot(value) => value.encode_to_vec(),
             Self::Capability(value) => value.encode_to_vec(),
+            Self::ProjectCacheStatus { status, .. } | Self::SandboxCacheStatus { status, .. } => {
+                status.encode_to_vec()
+            }
         };
         if bytes.is_empty() || bytes.len() > MAXIMUM_PUBLIC_RESOURCE_BYTES {
             return Err(PublicProjectionError::ResourceTooLarge);
@@ -160,6 +199,7 @@ impl PublicProjectionResourceV1 {
 
     fn decode_checked(
         kind: PublicProjectionKindV1,
+        resource_id: [u8; 16],
         bytes: &[u8],
     ) -> Result<Self, PublicProjectionError> {
         macro_rules! decode {
@@ -196,6 +236,34 @@ impl PublicProjectionResourceV1 {
             }
             PublicProjectionKindV1::Capability => {
                 decode!(Capability, CheckedCapabilityResourceV1, Capability)
+            }
+            PublicProjectionKindV1::ProjectCacheStatus => {
+                let status = CacheStatus::decode_from_slice(bytes)
+                    .map_err(|_| PublicProjectionError::CorruptRecord)?;
+                if status.encode_to_vec() != bytes {
+                    return Err(PublicProjectionError::CorruptRecord);
+                }
+                let status = CheckedCacheStatusV1::try_from(status)
+                    .map_err(|_| PublicProjectionError::InvalidCacheStatus)?
+                    .into_proto();
+                Self::ProjectCacheStatus {
+                    project_id: resource_id,
+                    status,
+                }
+            }
+            PublicProjectionKindV1::SandboxCacheStatus => {
+                let status = CacheStatus::decode_from_slice(bytes)
+                    .map_err(|_| PublicProjectionError::CorruptRecord)?;
+                if status.encode_to_vec() != bytes {
+                    return Err(PublicProjectionError::CorruptRecord);
+                }
+                let status = CheckedCacheStatusV1::try_from(status)
+                    .map_err(|_| PublicProjectionError::InvalidCacheStatus)?
+                    .into_proto();
+                Self::SandboxCacheStatus {
+                    sandbox_id: resource_id,
+                    status,
+                }
             }
         })
     }
@@ -439,6 +507,9 @@ pub enum PublicProjectionError {
     /// The generated resource validator rejected the projection.
     #[error("public projection resource is invalid: {0}")]
     InvalidResource(#[source] InvalidPublicResource),
+    /// The cache accounting projection is internally inconsistent.
+    #[error("public cache-status projection is invalid")]
+    InvalidCacheStatus,
     /// A durable value violates the fixed record schema or digest.
     #[error("durable public projection record is corrupt")]
     CorruptRecord,
@@ -488,7 +559,7 @@ fn decode_record(
     {
         return Err(PublicProjectionError::CorruptRecord);
     }
-    let resource = PublicProjectionResourceV1::decode_checked(kind, protobuf)?;
+    let resource = PublicProjectionResourceV1::decode_checked(kind, resource_id, protobuf)?;
     if resource.resource_id() != resource_id || !resource_matches_project(&resource, project) {
         return Err(PublicProjectionError::CorruptRecord);
     }
@@ -508,6 +579,10 @@ fn resource_matches_project(resource: &PublicProjectionResourceV1, project: Proj
         PublicProjectionResourceV1::FilesystemView(value) => value.project_id == project.as_bytes(),
         PublicProjectionResourceV1::Snapshot(value) => value.project_id == project.as_bytes(),
         PublicProjectionResourceV1::Capability(value) => value.project_id == project.as_bytes(),
+        PublicProjectionResourceV1::ProjectCacheStatus { project_id, .. } => {
+            project_id == project.as_bytes()
+        }
+        PublicProjectionResourceV1::SandboxCacheStatus { .. } => true,
         PublicProjectionResourceV1::Execution(_) | PublicProjectionResourceV1::Attachment(_) => {
             true
         }

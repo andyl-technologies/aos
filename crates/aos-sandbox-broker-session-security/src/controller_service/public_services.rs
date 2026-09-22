@@ -2,24 +2,26 @@
 
 use aos_proto::aos::sandbox::v1::{
     AttachViewRequest, AttachViewResponse, AttenuateCapabilityRequest, AttenuateCapabilityResponse,
-    CancelExecutionRequest, CancelExecutionResponse, CapabilityService as PublicCapabilityService,
-    CreateExecutionRequest, CreateExecutionResponse, CreateSandboxRequest, CreateSandboxResponse,
-    CreateSnapshotRequest, CreateSnapshotResponse, CreateViewRequest, CreateViewResponse,
-    DeleteSandboxRequest, DeleteSandboxResponse, DeleteSnapshotRequest, DeleteSnapshotResponse,
-    DetachViewRequest, DetachViewResponse, ExecutionControlRequest, ExecutionControlResult,
-    ExecutionService, FilesystemViewService, ForkSnapshotRequest, ForkSnapshotResponse,
-    GetAttachmentRequest, GetAttachmentResponse, GetExecutionRequest, GetExecutionResponse,
+    CacheService as PublicCacheService, CancelExecutionRequest, CancelExecutionResponse,
+    CapabilityService as PublicCapabilityService, CreateExecutionRequest, CreateExecutionResponse,
+    CreateSandboxRequest, CreateSandboxResponse, CreateSnapshotRequest, CreateSnapshotResponse,
+    CreateViewRequest, CreateViewResponse, DeleteSandboxRequest, DeleteSandboxResponse,
+    DeleteSnapshotRequest, DeleteSnapshotResponse, DetachViewRequest, DetachViewResponse,
+    ExecutionControlRequest, ExecutionControlResult, ExecutionService, FilesystemViewService,
+    ForkSnapshotRequest, ForkSnapshotResponse, GetAttachmentRequest, GetAttachmentResponse,
+    GetCacheStatusRequest, GetCacheStatusResponse, GetExecutionRequest, GetExecutionResponse,
     GetSandboxRequest, GetSandboxResponse, GetSnapshotRequest, GetSnapshotResponse, GetViewRequest,
     GetViewResponse, InspectCapabilityRequest, InspectCapabilityResponse, ListAncestorsRequest,
     ListAncestorsResponse, ListChildrenRequest, ListChildrenResponse, ListDescendantsRequest,
     ListDescendantsResponse, ListExecutionsRequest, ListExecutionsResponse, ListSandboxesRequest,
     ListSandboxesResponse, ListSnapshotsRequest, ListSnapshotsResponse, ListViewsRequest,
-    ListViewsResponse, PageInfo, PlanCreateSandboxRequest, PlanCreateSandboxResponse,
-    PlanSandboxPolicyRequest, PlanSandboxPolicyResponse, ReleaseViewRequest, ReleaseViewResponse,
-    RenewCapabilityRequest, RenewCapabilityResponse, ReplaceAttachmentRequest,
-    ReplaceAttachmentResponse, RestoreSnapshotRequest, RestoreSnapshotResponse,
-    RevokeCapabilityRequest, RevokeCapabilityResponse, SandboxLifecycleRequest,
-    SandboxLifecycleResponse, SandboxService, SnapshotService, UpdateSandboxPolicyRequest,
+    ListViewsResponse, PageInfo, PinCacheObjectRequest, PinCacheObjectResponse,
+    PlanCreateSandboxRequest, PlanCreateSandboxResponse, PlanSandboxPolicyRequest,
+    PlanSandboxPolicyResponse, ReleaseViewRequest, ReleaseViewResponse, RenewCapabilityRequest,
+    RenewCapabilityResponse, ReplaceAttachmentRequest, ReplaceAttachmentResponse,
+    RestoreSnapshotRequest, RestoreSnapshotResponse, RevokeCapabilityRequest,
+    RevokeCapabilityResponse, SandboxLifecycleRequest, SandboxLifecycleResponse, SandboxService,
+    SnapshotService, UnpinCacheObjectRequest, UnpinCacheObjectResponse, UpdateSandboxPolicyRequest,
     UpdateSandboxPolicyResponse,
 };
 use aos_sandbox::cli_model::MAXIMUM_CLI_PAGE_SIZE;
@@ -99,6 +101,81 @@ impl PublicCapabilityService for CapabilityService {
         _request: ServiceRequest<'_, RevokeCapabilityRequest>,
     ) -> ServiceResult<impl Encodable<RevokeCapabilityResponse> + Send + use<'a>> {
         Err::<Response<RevokeCapabilityResponse>, _>(mutation_unavailable())
+    }
+}
+
+impl PublicCacheService for CapabilityService {
+    async fn get_status<'a>(
+        &'a self,
+        context: RequestContext,
+        request: ServiceRequest<'_, GetCacheStatusRequest>,
+    ) -> ServiceResult<impl Encodable<GetCacheStatusResponse> + Send + use<'a>> {
+        let view = request.view();
+        let (kind, scope_id) = match (view.project_id.is_empty(), view.sandbox_id.is_empty()) {
+            (false, true) => (
+                PublicProjectionKindV1::ProjectCacheStatus,
+                exact_resource_id(view.project_id, "project")?,
+            ),
+            (true, false) => (
+                PublicProjectionKindV1::SandboxCacheStatus,
+                exact_resource_id(view.sandbox_id, "sandbox")?,
+            ),
+            _ => {
+                return Err(ConnectError::new(
+                    ErrorCode::InvalidArgument,
+                    "cache status requires exactly one project or sandbox scope",
+                ));
+            }
+        };
+        let read = self
+            .read_public_projection(
+                &context,
+                PublicApiAuditMethodV1::GetCacheStatus,
+                ResourceKind::CacheRead,
+                Operation::MetadataRead,
+                resource_selector(scope_id),
+                request.bytes(),
+                PublicProjectionQueryV1::One {
+                    kind,
+                    resource_id: scope_id,
+                },
+            )
+            .await?;
+        let record = single_record(read.into_parts().1)?;
+        let status = match record.resource().clone() {
+            PublicProjectionResourceV1::ProjectCacheStatus { project_id, status }
+                if project_id == scope_id =>
+            {
+                status
+            }
+            PublicProjectionResourceV1::SandboxCacheStatus { sandbox_id, status }
+                if sandbox_id == scope_id =>
+            {
+                status
+            }
+            _ => return Err(projection_mismatch()),
+        };
+
+        Response::ok(GetCacheStatusResponse {
+            status: Some(status).into(),
+            ..Default::default()
+        })
+    }
+
+    async fn pin_object<'a>(
+        &'a self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, PinCacheObjectRequest>,
+    ) -> ServiceResult<impl Encodable<PinCacheObjectResponse> + Send + use<'a>> {
+        Err::<Response<PinCacheObjectResponse>, _>(mutation_unavailable())
+    }
+
+    async fn unpin_object<'a>(
+        &'a self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, UnpinCacheObjectRequest>,
+    ) -> ServiceResult<impl Encodable<UnpinCacheObjectResponse> + Send + use<'a>> {
+        Err::<Response<UnpinCacheObjectResponse>, _>(mutation_unavailable())
     }
 }
 

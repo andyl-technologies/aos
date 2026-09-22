@@ -712,6 +712,12 @@ impl CheckedCacheStatusV1 {
     pub const fn as_proto(&self) -> &CacheStatus {
         &self.0
     }
+
+    /// Consumes the wrapper and returns the checked cache-status message.
+    #[must_use]
+    pub fn into_proto(self) -> CacheStatus {
+        self.0
+    }
 }
 
 /// Stores one canonical public feature registry.
