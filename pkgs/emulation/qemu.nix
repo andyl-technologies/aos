@@ -28,17 +28,17 @@
   libisoburn,
   mtools,
   socat,
-  coreutils,
-  diffutils,
-  e2fsprogs,
-  fakeroot,
-  findutils,
-  gawk,
-  grep,
-  kmod,
-  linux,
-  sed,
-  util-linux,
+  coreutils ? null,
+  diffutils ? null,
+  e2fsprogs ? null,
+  fakeroot ? null,
+  findutils ? null,
+  gawk ? null,
+  grep ? null,
+  kmod ? null,
+  linux ? null,
+  sed ? null,
+  util-linux ? null,
   stdenv,
   zstd,
   buildPackages,
@@ -59,9 +59,33 @@
     if fullUpstreamTestSuiteOnly && (!applyCruciblePatch || !testOnlyNonDistributable)
     then throw "the full patched-QEMU test suite must be a non-distributable Crucible test artifact"
     else null;
+  fullTestVmInputs = {
+    inherit
+      coreutils
+      diffutils
+      e2fsprogs
+      fakeroot
+      findutils
+      gawk
+      grep
+      kmod
+      linux
+      sed
+      util-linux
+      ;
+  };
+  missingFullTestVmInputs =
+    builtins.filter
+    (name: fullTestVmInputs.${name} == null)
+    (builtins.attrNames fullTestVmInputs);
   _fullTestVmPolicy =
     if fullUpstreamTestSuiteOnly && (stdenv.isCross || !stdenv.hostPlatform.isLinux)
     then throw "the full patched-QEMU test suite requires a native Linux KVM builder"
+    else if fullUpstreamTestSuiteOnly && missingFullTestVmInputs != []
+    then
+      throw "the full patched-QEMU test suite requires explicit VM inputs: ${
+        builtins.concatStringsSep ", " missingFullTestVmInputs
+      }"
     else if fullUpstreamTestSuiteOnly && qemuTestRunner == null
     then throw "the full patched-QEMU test suite requires an explicit generic QEMU runner"
     else null;
