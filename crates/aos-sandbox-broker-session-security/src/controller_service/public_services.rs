@@ -100,10 +100,27 @@ fn admitted_projection(
 impl PublicCapabilityService for CapabilityService {
     async fn attenuate<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, AttenuateCapabilityRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, AttenuateCapabilityRequest>,
     ) -> ServiceResult<impl Encodable<AttenuateCapabilityResponse> + Send + use<'a>> {
-        Err::<Response<AttenuateCapabilityResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::AttenuateCapability,
+                request.bytes(),
+            )
+            .await?;
+        let (_, resource) = admitted_projection(admitted, PublicProjectionKindV1::Capability)?;
+        let PublicProjectionResourceV1::Capability(capability) = resource else {
+            return Err(projection_mismatch());
+        };
+        let capability_handle = capability.capability_id.clone();
+
+        Response::ok(AttenuateCapabilityResponse {
+            capability: Some(capability).into(),
+            capability_handle,
+            ..Default::default()
+        })
     }
 
     async fn inspect<'a>(
@@ -139,10 +156,29 @@ impl PublicCapabilityService for CapabilityService {
 
     async fn renew<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, RenewCapabilityRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, RenewCapabilityRequest>,
     ) -> ServiceResult<impl Encodable<RenewCapabilityResponse> + Send + use<'a>> {
-        Err::<Response<RenewCapabilityResponse>, _>(mutation_unavailable())
+        let admitted = self
+            .admit_public_command(
+                &context,
+                PublicApiAuditMethodV1::RenewCapability,
+                request.bytes(),
+            )
+            .await?;
+        let (operation, resource) =
+            admitted_projection(admitted, PublicProjectionKindV1::Capability)?;
+        let PublicProjectionResourceV1::Capability(capability) = resource else {
+            return Err(projection_mismatch());
+        };
+        let capability_handle = capability.capability_id.clone();
+
+        Response::ok(RenewCapabilityResponse {
+            capability: Some(capability).into(),
+            capability_handle,
+            operation: Some(operation).into(),
+            ..Default::default()
+        })
     }
 
     async fn revoke<'a>(
