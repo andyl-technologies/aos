@@ -17,15 +17,27 @@
 //! Response outcomes use 1 (Absent), 2 (Pending), 3 (Completed), and 4-18
 //! for the fixed error-code mapping below. Unknown codes and reserved bytes
 //! never select a compatibility fallback.
+//!
+//! ```text
+//! client-hello = "AOSOCH01" | client-nonce:32 | version:u16be,u16be |
+//!                key-reference | method-count:u8 | methods | response-max:u32be
+//! server-hello = "AOSOSH01" | server-nonce:32 | version:u16be,u16be |
+//!                key-reference | method-count:u8 | methods | request-max:u32be |
+//!                response-max:u32be | lease-max-seconds:u64be | binding:32
+//! key-reference = key-id-len:u8 | utf8-key-id | generation:u64be |
+//!                 public-key-sha256:32 | ownership-usage:5
+//! ```
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::ProtocolVersion;
+use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 
 use crate::protocol::{
     MAXIMUM_OWNERSHIP_REQUEST_BYTES, MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
-    NegotiatedOwnershipSessionV1, OwnershipMethodV1, OwnershipProtocolErrorCodeV1,
-    OwnershipProtocolValidationError, OwnershipRequestBodyV1, OwnershipRequestEnvelopeV1,
-    OwnershipResponseEnvelopeV1, OwnershipResponseOutcomeV1, OwnershipTransactionReferenceV1,
-    OwnershipTransactionStatusV1,
+    NegotiatedOwnershipSessionV1, OwnershipClientHelloV1, OwnershipMethodV1,
+    OwnershipProtocolErrorCodeV1, OwnershipProtocolValidationError, OwnershipRequestBodyV1,
+    OwnershipRequestEnvelopeV1, OwnershipResponseEnvelopeV1, OwnershipResponseOutcomeV1,
+    OwnershipTransactionReferenceV1, OwnershipTransactionStatusV1,
 };
 use crate::{
     CLAIM_BYTES, MAXIMUM_LEASE_BYTES, MAXIMUM_RECEIPT_BYTES, MAXIMUM_SIGNATURE_BYTES,
@@ -34,7 +46,11 @@ use crate::{
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSORQ01";
 const RESPONSE_MAGIC: &[u8; 8] = b"AOSORS01";
+const CLIENT_HELLO_MAGIC: &[u8; 8] = b"AOSOCH01";
+const SERVER_HELLO_MAGIC: &[u8; 8] = b"AOSOSH01";
 const HEADER_BYTES: usize = 8 + 32 + 1 + 1 + 2 + 16 + 32 + 4;
+/// Maximum complete ownership handshake record admitted before allocation.
+pub const MAXIMUM_OWNERSHIP_HELLO_BYTES: usize = 512;
 
 enum RecordKind {
     Request,
@@ -61,6 +77,225 @@ pub enum OwnershipCarrierErrorV1 {
     /// A record does not belong to the negotiated session or request.
     #[error("ownership carrier record violates session semantics: {0}")]
     Protocol(#[from] OwnershipProtocolValidationError),
+}
+
+/// Encodes a canonical client offer with its independently generated nonce.
+#[must_use]
+pub fn encode_client_hello_v1(hello: &OwnershipClientHelloV1) -> Vec<u8> {
+    let mut record = Vec::with_capacity(MAXIMUM_OWNERSHIP_HELLO_BYTES);
+    record.extend_from_slice(CLIENT_HELLO_MAGIC);
+    record.extend_from_slice(hello.client_nonce());
+    append_version(&mut record, hello.version());
+    append_key_reference(&mut record, hello.expected_authority());
+    append_methods(&mut record, hello.required_methods());
+    record.extend_from_slice(&hello.maximum_response_bytes().to_be_bytes());
+    record
+}
+
+/// Decodes a bounded client offer without granting peer identity.
+///
+/// # Errors
+///
+/// Returns [`OwnershipCarrierErrorV1`] for wrong framing, an invalid key or
+/// method set, a zero nonce, unsupported version, or a response bound outside
+/// the fixed V1 interval.
+pub fn decode_client_hello_v1(
+    record: &[u8],
+) -> Result<OwnershipClientHelloV1, OwnershipCarrierErrorV1> {
+    let mut reader = HandshakeReader::new(record, CLIENT_HELLO_MAGIC)?;
+    let nonce = reader.take::<32>()?;
+    let version = reader.version()?;
+    let authority = reader.key_reference()?;
+    let methods = reader.methods()?;
+    let response_max = u32::from_be_bytes(reader.take::<4>()?);
+    reader.finish()?;
+    Ok(OwnershipClientHelloV1::new(
+        nonce,
+        version,
+        authority,
+        methods,
+        response_max,
+    )?)
+}
+
+/// Encodes the server's independently selected nonce and negotiated contract.
+///
+/// The caller generates `server_nonce` with a CSPRNG. This function recomputes
+/// the entire contract before returning bytes; it cannot authenticate the
+/// process that sends them.
+///
+/// # Errors
+///
+/// Returns [`OwnershipCarrierErrorV1`] if `session` is not exactly the result
+/// of negotiating this client offer, server nonce, key, and method set.
+pub fn encode_server_hello_v1(
+    hello: &OwnershipClientHelloV1,
+    server_nonce: [u8; 32],
+    session: &NegotiatedOwnershipSessionV1,
+) -> Result<Vec<u8>, OwnershipCarrierErrorV1> {
+    let expected = NegotiatedOwnershipSessionV1::negotiate(
+        hello,
+        server_nonce,
+        session.authority().clone(),
+        session.methods().to_vec(),
+    )?;
+    if session != &expected {
+        return Err(OwnershipCarrierErrorV1::Malformed);
+    }
+
+    let mut record = Vec::with_capacity(MAXIMUM_OWNERSHIP_HELLO_BYTES);
+    record.extend_from_slice(SERVER_HELLO_MAGIC);
+    record.extend_from_slice(&server_nonce);
+    append_version(&mut record, session.version());
+    append_key_reference(&mut record, session.authority());
+    append_methods(&mut record, session.methods());
+    record.extend_from_slice(&session.maximum_request_bytes().to_be_bytes());
+    record.extend_from_slice(&session.maximum_response_bytes().to_be_bytes());
+    record.extend_from_slice(&session.maximum_requested_lease_seconds().to_be_bytes());
+    record.extend_from_slice(session.binding());
+    Ok(record)
+}
+
+/// Decodes and independently recomputes the server's exact selection.
+///
+/// The client must still authenticate its peer through the enclosing carrier.
+/// The echoed binding only detects substitution and negotiation mismatch.
+///
+/// # Errors
+///
+/// Returns [`OwnershipCarrierErrorV1`] for an incompatible authority epoch,
+/// malformed method set, substituted bounds, or mismatched transcript.
+pub fn decode_server_hello_v1(
+    hello: &OwnershipClientHelloV1,
+    record: &[u8],
+) -> Result<NegotiatedOwnershipSessionV1, OwnershipCarrierErrorV1> {
+    let mut reader = HandshakeReader::new(record, SERVER_HELLO_MAGIC)?;
+    let server_nonce = reader.take::<32>()?;
+    let version = reader.version()?;
+    let authority = reader.key_reference()?;
+    let methods = reader.methods()?;
+    let request_max = u32::from_be_bytes(reader.take::<4>()?);
+    let response_max = u32::from_be_bytes(reader.take::<4>()?);
+    let lease_max = u64::from_be_bytes(reader.take::<8>()?);
+    let binding = reader.take::<32>()?;
+    reader.finish()?;
+
+    let session = NegotiatedOwnershipSessionV1::negotiate(hello, server_nonce, authority, methods)?;
+    if version != session.version()
+        || request_max != session.maximum_request_bytes()
+        || response_max != session.maximum_response_bytes()
+        || lease_max != session.maximum_requested_lease_seconds()
+        || binding != *session.binding()
+    {
+        return Err(OwnershipCarrierErrorV1::Malformed);
+    }
+    Ok(session)
+}
+
+fn append_version(record: &mut Vec<u8>, version: ProtocolVersion) {
+    record.extend_from_slice(&version.major().to_be_bytes());
+    record.extend_from_slice(&version.minor().to_be_bytes());
+}
+
+fn append_key_reference(record: &mut Vec<u8>, authority: &KeyReference) {
+    let key_id = authority.stable_key_id().as_str().as_bytes();
+    record.push(key_id.len() as u8);
+    record.extend_from_slice(key_id);
+    record.extend_from_slice(&authority.generation().to_be_bytes());
+    record.extend_from_slice(authority.public_key_sha256().as_bytes());
+    record.push(5);
+}
+
+fn append_methods(record: &mut Vec<u8>, methods: &[OwnershipMethodV1]) {
+    record.push(methods.len() as u8);
+    record.extend(methods.iter().copied().map(method_code));
+}
+
+struct HandshakeReader<'a> {
+    record: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> HandshakeReader<'a> {
+    fn new(record: &'a [u8], magic: &[u8; 8]) -> Result<Self, OwnershipCarrierErrorV1> {
+        if record.len() > MAXIMUM_OWNERSHIP_HELLO_BYTES {
+            return Err(OwnershipCarrierErrorV1::Oversized);
+        }
+        if record.get(..8) != Some(magic.as_slice()) {
+            return Err(OwnershipCarrierErrorV1::Malformed);
+        }
+        Ok(Self { record, offset: 8 })
+    }
+
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], OwnershipCarrierErrorV1> {
+        let end = self
+            .offset
+            .checked_add(N)
+            .ok_or(OwnershipCarrierErrorV1::Malformed)?;
+        let bytes = self
+            .record
+            .get(self.offset..end)
+            .ok_or(OwnershipCarrierErrorV1::Malformed)?;
+        self.offset = end;
+        bytes
+            .try_into()
+            .map_err(|_| OwnershipCarrierErrorV1::Malformed)
+    }
+
+    fn version(&mut self) -> Result<ProtocolVersion, OwnershipCarrierErrorV1> {
+        let major = u16::from_be_bytes(self.take::<2>()?);
+        let minor = u16::from_be_bytes(self.take::<2>()?);
+        Ok(ProtocolVersion::new(major, minor))
+    }
+
+    fn key_reference(&mut self) -> Result<KeyReference, OwnershipCarrierErrorV1> {
+        let length = self.take::<1>()?[0] as usize;
+        if length == 0 {
+            return Err(OwnershipCarrierErrorV1::Malformed);
+        }
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(OwnershipCarrierErrorV1::Malformed)?;
+        let key_id = self
+            .record
+            .get(self.offset..end)
+            .ok_or(OwnershipCarrierErrorV1::Malformed)?;
+        self.offset = end;
+        let key_id = std::str::from_utf8(key_id).map_err(|_| OwnershipCarrierErrorV1::Malformed)?;
+        let key_id =
+            StableKeyId::new(key_id.to_owned()).map_err(|_| OwnershipCarrierErrorV1::Malformed)?;
+        let generation = u64::from_be_bytes(self.take::<8>()?);
+        let fingerprint = ObjectDigest::from_bytes(self.take::<32>()?);
+        if self.take::<1>()?[0] != 5 {
+            return Err(OwnershipCarrierErrorV1::Malformed);
+        }
+        Ok(KeyReference::new(
+            key_id,
+            generation,
+            fingerprint,
+            KeyUsage::OwnershipLease,
+        ))
+    }
+
+    fn methods(&mut self) -> Result<Vec<OwnershipMethodV1>, OwnershipCarrierErrorV1> {
+        let count = self.take::<1>()?[0] as usize;
+        if count == 0 || count > 3 {
+            return Err(OwnershipCarrierErrorV1::Malformed);
+        }
+        let mut methods = Vec::with_capacity(count);
+        for _ in 0..count {
+            methods.push(method_from_code(self.take::<1>()?[0])?);
+        }
+        Ok(methods)
+    }
+
+    fn finish(self) -> Result<(), OwnershipCarrierErrorV1> {
+        if self.offset != self.record.len() {
+            return Err(OwnershipCarrierErrorV1::Malformed);
+        }
+        Ok(())
+    }
 }
 
 /// Encodes an exact request for the already-negotiated ownership session.
@@ -426,9 +661,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::protocol::OwnershipClientHelloV1;
-
-    fn session() -> NegotiatedOwnershipSessionV1 {
+    fn hello() -> OwnershipClientHelloV1 {
         let authority = KeyReference::new(
             StableKeyId::new("ownership-carrier-test".to_owned()).unwrap(),
             7,
@@ -440,15 +673,25 @@ mod tests {
             OwnershipMethodV1::CompleteOrResume,
             OwnershipMethodV1::Query,
         ];
-        let hello = OwnershipClientHelloV1::new(
+        OwnershipClientHelloV1::new(
             [9; 32],
             ProtocolVersion::new(1, 0),
-            authority.clone(),
-            methods.clone(),
+            authority,
+            methods,
             MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
         )
-        .unwrap();
-        NegotiatedOwnershipSessionV1::negotiate(&hello, [10; 32], authority, methods).unwrap()
+        .unwrap()
+    }
+
+    fn session() -> NegotiatedOwnershipSessionV1 {
+        let hello = hello();
+        NegotiatedOwnershipSessionV1::negotiate(
+            &hello,
+            [10; 32],
+            hello.expected_authority().clone(),
+            hello.required_methods().to_vec(),
+        )
+        .unwrap()
     }
 
     fn claim() -> OwnershipClaimV1 {
@@ -467,6 +710,61 @@ mod tests {
             60,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn fresh_hello_pair_round_trips_exact_negotiation() {
+        let hello = hello();
+        let session = session();
+        let client_record = encode_client_hello_v1(&hello);
+        let server_record = encode_server_hello_v1(&hello, [10; 32], &session).unwrap();
+
+        assert_eq!(decode_client_hello_v1(&client_record), Ok(hello.clone()));
+        assert_eq!(decode_server_hello_v1(&hello, &server_record), Ok(session));
+
+        let mut wrong_nonce = server_record.clone();
+        wrong_nonce[8] ^= 1;
+        assert_eq!(
+            decode_server_hello_v1(&hello, &wrong_nonce),
+            Err(OwnershipCarrierErrorV1::Malformed)
+        );
+        let mut wrong_epoch = server_record.clone();
+        let generation_offset =
+            8 + 32 + 4 + 1 + hello.expected_authority().stable_key_id().as_str().len();
+        wrong_epoch[generation_offset + 7] ^= 1;
+        assert!(matches!(
+            decode_server_hello_v1(&hello, &wrong_epoch),
+            Err(OwnershipCarrierErrorV1::Protocol(
+                OwnershipProtocolValidationError::WrongAuthorityEpoch
+            ))
+        ));
+    }
+
+    #[test]
+    fn hello_rejects_unknown_methods_reserved_usage_and_trailing_bytes() {
+        let hello = hello();
+        let client_record = encode_client_hello_v1(&hello);
+        let key_end =
+            8 + 32 + 4 + 1 + hello.expected_authority().stable_key_id().as_str().len() + 8 + 32;
+
+        let mut wrong_usage = client_record.clone();
+        wrong_usage[key_end] = 4;
+        assert_eq!(
+            decode_client_hello_v1(&wrong_usage),
+            Err(OwnershipCarrierErrorV1::Malformed)
+        );
+        let mut wrong_method = client_record.clone();
+        wrong_method[key_end + 2] = 9;
+        assert_eq!(
+            decode_client_hello_v1(&wrong_method),
+            Err(OwnershipCarrierErrorV1::Malformed)
+        );
+        let mut trailing = client_record;
+        trailing.push(0);
+        assert_eq!(
+            decode_client_hello_v1(&trailing),
+            Err(OwnershipCarrierErrorV1::Malformed)
+        );
     }
 
     #[test]
