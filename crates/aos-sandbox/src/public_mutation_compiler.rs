@@ -344,7 +344,7 @@ fn endpoint_semantics(
             M::RestoreSnapshot,
             ResourceKind::Snapshot,
             Operation::Create,
-            &value.target_sandbox_id,
+            &value.snapshot_id,
             mutation(value.mutation.as_option())?,
         )?,
         R::Fork(value) => {

@@ -532,7 +532,7 @@ pub enum ResolvedPublicMutationV1 {
         /// Supplies complete mutation fences.
         mutation: MutationFenceV1,
     },
-    /// Restores a snapshot into an existing sandbox.
+    /// Restores a snapshot into a new caller-selected sandbox identity.
     RestoreSnapshot {
         /// Names the snapshot.
         snapshot_id: CliIdentityV1,

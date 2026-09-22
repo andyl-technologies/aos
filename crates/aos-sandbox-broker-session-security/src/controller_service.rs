@@ -1853,18 +1853,20 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         let request = context
             .validated_request()
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-        let operation =
-            self.validate_lifecycle_admission(operation_id, &context, &request, journal)?;
-        let admission = {
-            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
-                &mut self.source_domains,
-            )
-            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-            owner
-                .admit_operation(operation)
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
-        };
-        self.settle_lifecycle_admission(operation_id, admission)?;
+        if is_lifecycle_mutation(&request) {
+            let operation =
+                self.validate_lifecycle_admission(operation_id, &context, &request, journal)?;
+            let admission = {
+                let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                    &mut self.source_domains,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                owner
+                    .admit_operation(operation)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            };
+            self.settle_lifecycle_admission(operation_id, admission)?;
+        }
         Err(EffectFailure::Retryable(
             CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
         ))

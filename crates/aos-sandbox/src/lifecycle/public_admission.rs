@@ -338,6 +338,25 @@ pub fn lifecycle_public_mutation_admission_v1(
                 vec![runtime.expectation().clone(), target.0],
             )
         }
+        Request::Restore(request) => {
+            let snapshot = exact_snapshot(&request.snapshot_id)?;
+            let sandbox = exact_sandbox(&request.target_sandbox_id)?;
+            if generated_sandbox(journal, operation, project)? != sandbox {
+                return Err(LifecyclePublicMutationAdmissionErrorV1::InvalidIdentity);
+            }
+            let source_expectation = current_expectation(current_projection(
+                journal,
+                project,
+                PublicProjectionKindV1::Snapshot,
+                *snapshot.as_bytes(),
+            )?)?;
+            let target_expectation =
+                ResourceExpectationV1::absent(LifecycleResourceV1::Sandbox(sandbox))?;
+            (
+                LifecycleIntentV1::Restore { snapshot, sandbox },
+                vec![source_expectation, target_expectation],
+            )
+        }
         Request::Fork(request) => {
             let source = exact_snapshot(&request.snapshot_id)?;
             let target = generated_sandbox(journal, operation, project)?;

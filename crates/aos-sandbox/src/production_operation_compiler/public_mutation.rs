@@ -853,18 +853,19 @@ fn restore_snapshot_projection(
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
     let snapshot = load_snapshot(journal, exact_id(&request.snapshot_id)?)?;
     ensure_snapshot_ready(&snapshot, project)?;
-    let mut sandbox = load_sandbox(journal, exact_id(&request.target_sandbox_id)?)?;
-    ensure_sandbox_project(&sandbox, project)?;
+    let target = exact_id(&request.target_sandbox_id)?;
+    if PublicProjectionStoreV1::new(journal)
+        .get(PublicProjectionKindV1::Sandbox, target)
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .is_some()
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
     let mutation = request
         .mutation
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?;
-    validate_sandbox_mutation(&sandbox, mutation, false)?;
-    let desired = sandbox
-        .desired
-        .as_option()
-        .ok_or(OperationCompilationError::Rejected)?;
-    let generation = next_generation(desired.generation)?;
+    validate_project_version(journal, project, &mutation.expected_resource_version)?;
     let policy = request
         .requested_policy
         .as_option()
@@ -872,19 +873,48 @@ fn restore_snapshot_projection(
         .clone();
     super::policy_plan::validate_current_requested_policy(journal, project, &policy)
         .map_err(|_| OperationCompilationError::Rejected)?;
-    let mut next_desired = desired.clone();
-    next_desired.requested_policy = Some(policy.clone()).into();
-    next_desired.lifecycle = DesiredLifecycle::DESIRED_LIFECYCLE_STOPPED.into();
-    next_desired.generation = generation;
-    sandbox.desired = Some(next_desired).into();
-    sandbox.effective_policy = Some(policy).into();
-    sandbox.resource_version = resource_version(
-        operation,
-        PublicOperationMethodV1::RestoreSnapshot,
-        generation,
-        request_digest,
-    );
-    sandbox.updated_at = Some(timestamp(accepted_at)).into();
+
+    // Restore creates a fresh logical sandbox. The committed source snapshot
+    // supplies its portable specification until manifest lowering binds the
+    // exact immutable restore inputs.
+    let source = load_sandbox(journal, exact_id(&snapshot.source_sandbox_id)?)?;
+    ensure_sandbox_project(&source, project)?;
+    let specification = source
+        .desired
+        .as_option()
+        .and_then(|desired| desired.specification.as_option())
+        .ok_or(OperationCompilationError::Rejected)?
+        .clone();
+    let sandbox = Sandbox {
+        sandbox_id: target.to_vec(),
+        project_id: project.into_bytes().to_vec(),
+        resource_version: resource_version(
+            operation,
+            PublicOperationMethodV1::RestoreSnapshot,
+            1,
+            request_digest,
+        ),
+        desired: Some(SandboxDesiredState {
+            specification: Some(specification).into(),
+            requested_policy: Some(policy.clone()).into(),
+            lifecycle: DesiredLifecycle::DESIRED_LIFECYCLE_STOPPED.into(),
+            generation: 1,
+            ..Default::default()
+        })
+        .into(),
+        observed: Some(SandboxObservedState {
+            phase: SandboxPhase::SANDBOX_PHASE_REQUESTED.into(),
+            desired_generation: 1,
+            observation_sequence: 1,
+            last_successful_reconciliation_time: Some(timestamp(accepted_at)).into(),
+            ..Default::default()
+        })
+        .into(),
+        effective_policy: Some(policy).into(),
+        created_at: Some(timestamp(accepted_at)).into(),
+        updated_at: Some(timestamp(accepted_at)).into(),
+        ..Default::default()
+    };
     projection(
         project,
         operation,
