@@ -2441,7 +2441,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
-| `GUIDE-1..29` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
+| `GUIDE-1..32` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
 | `LAZY-1..48`, `LAZY-54` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
