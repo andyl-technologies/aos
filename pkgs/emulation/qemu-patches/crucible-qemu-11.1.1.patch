@@ -1,4 +1,4 @@
-From 16a392dfed6e24f4f12f13d64c1b6ad0ed39ecc8 Mon Sep 17 00:00:00 2001
+From e588de503c90c37c5c50767b8f2c723f73252cc5 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -2658,10 +2658,10 @@ index 0000000000000000000000000000000000000000..c6da8461684ef5790ae0755c4aafe3ad
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c053a7bf4 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..25211aecefe76bd722dc51389315cfe2bd92d82c 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,41 +27,1425 @@
+@@ -27,41 +27,1537 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -2710,6 +2710,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +static uint64_t rr_main_loop_dispatch_completed;
 +/* Keeps each admitted main-loop pass behind the RR thread's reacquisition. */
 +static uint64_t rr_main_loop_dispatch_acknowledged;
++/* Carries a reset handoff across the pause/resume boundary. */
++static uint64_t rr_deferred_reset_dispatch_generation;
++static bool rr_deferred_reset_handoff_ready;
 +static uint64_t rr_vcpu_main_loop_work_published;
 +static uint64_t rr_vcpu_main_loop_work_completed;
 +static uint64_t rr_chained_main_loop_work_published;
@@ -3095,6 +3098,39 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +    }
 +}
 +
++void rr_crucible_sim_reset_handoff_ready(void)
++{
++    if (qatomic_load_acquire(&rr_deferred_reset_dispatch_generation) == 0) {
++        return;
++    }
++
++    qatomic_store_release(&rr_deferred_reset_handoff_ready, true);
++    rr_crucible_sim_notify_dispatch_ceiling();
++}
++
++void rr_crucible_sim_reset_handoff_cancel(void)
++{
++    uint64_t generation = qatomic_load_acquire(
++        &rr_deferred_reset_dispatch_generation);
++
++    g_assert(bql_locked());
++    if (generation == 0) {
++        return;
++    }
++
++    g_assert(qatomic_load_acquire(&rr_main_loop_dispatch_requested) ==
++             generation);
++    qatomic_store_release(&rr_main_loop_dispatch_active, false);
++    qatomic_store_release(&rr_main_loop_dispatch_completed, generation);
++    qatomic_store_release(&rr_main_loop_dispatch_acknowledged, generation);
++    qatomic_store_release(&rr_main_loop_poll_priming, false);
++    qemu_event_set(&rr_main_loop_resume_event);
++
++    qatomic_store_release(&rr_deferred_reset_dispatch_generation, 0);
++    qatomic_store_release(&rr_deferred_reset_handoff_ready, false);
++    rr_crucible_sim_notify_dispatch_ceiling();
++}
++
 +void rr_crucible_sim_publish_time_advance_wake(void)
 +{
 +    CPUState *cpu;
@@ -3247,9 +3283,11 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +
  void rr_kick_vcpu_thread(CPUState *unused)
  {
--    CPUState *cpu;
-+    CPUState *cpu;
-+
+     CPUState *cpu;
+ 
+-    CPU_FOREACH(cpu) {
+-        tcg_kick_vcpu_thread(cpu);
+-    };
 +    if (rr_crucible_sim_mode() &&
 +        icount_crucible_rr_switch_quantum() != 0) {
 +        /*
@@ -3592,18 +3630,22 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 + * pass, so ordinary kick publication wakes this loop to drain the work before
 + * it waits again.
 + */
-+static void rr_crucible_sim_handoff_main_loop(void)
++static uint64_t rr_crucible_sim_begin_main_loop_handoff(void)
 +{
-+    uint64_t generation;
-+
 +    g_assert(bql_locked());
 +    g_assert(rr_replay_mutex_owned);
 +    g_assert(!qatomic_read(&rr_main_loop_dispatch_active));
 +
 +    qatomic_store_release(&rr_main_loop_dispatch_active, true);
 +
-+    generation =
-+        qatomic_fetch_inc(&rr_main_loop_dispatch_requested) + 1;
++    return qatomic_fetch_inc(&rr_main_loop_dispatch_requested) + 1;
++}
++
++static void rr_crucible_sim_finish_main_loop_handoff(uint64_t generation)
++{
++    g_assert(bql_locked());
++    g_assert(rr_replay_mutex_owned);
++    g_assert(generation != 0);
 +
 +    while (qatomic_load_acquire(&rr_main_loop_dispatch_completed) <
 +           generation) {
@@ -3638,6 +3680,66 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +        }
 +        bql_unlock();
 +        qemu_event_wait(&rr_dispatch_ceiling_event);
++        bql_lock();
++    }
++}
++
++static void rr_crucible_sim_handoff_main_loop(void)
++{
++    uint64_t generation = rr_crucible_sim_begin_main_loop_handoff();
++
++    rr_crucible_sim_finish_main_loop_handoff(generation);
++}
++
++/*
++ * A reset-spanning dispatch generation owns the RR loop until reset completes
++ * or terminal shutdown cancels it.  Only CPU stop and synchronous reset work
++ * may run while the main loop is paused inside reset handling.
++ */
++static bool rr_crucible_sim_service_deferred_reset_handoff(void)
++{
++    uint64_t generation = qatomic_load_acquire(
++        &rr_deferred_reset_dispatch_generation);
++
++    if (generation == 0) {
++        return false;
++    }
++
++    while (true) {
++        uint64_t current_generation = qatomic_load_acquire(
++            &rr_deferred_reset_dispatch_generation);
++
++        if (current_generation == 0) {
++            return true;
++        }
++        g_assert(current_generation == generation);
++
++        if (qemu_shutdown_requested_get() != SHUTDOWN_CAUSE_NONE ||
++            qemu_force_shutdown_requested()) {
++            rr_crucible_sim_reset_handoff_cancel();
++            return true;
++        }
++
++        qemu_event_reset(&rr_dispatch_ceiling_event);
++        rr_crucible_sim_drain_vcpu_work();
++
++        if (qemu_shutdown_requested_get() != SHUTDOWN_CAUSE_NONE ||
++            qemu_force_shutdown_requested()) {
++            rr_crucible_sim_reset_handoff_cancel();
++            return true;
++        }
++        if (qatomic_load_acquire(&rr_deferred_reset_handoff_ready)) {
++            rr_crucible_sim_finish_main_loop_handoff(generation);
++            qatomic_store_release(
++                &rr_deferred_reset_dispatch_generation, 0);
++            qatomic_store_release(&rr_deferred_reset_handoff_ready, false);
++            return true;
++        }
++
++        rr_replay_mutex_unlock();
++        bql_unlock();
++        qemu_event_wait(&rr_dispatch_ceiling_event);
++        rr_replay_mutex_lock();
 +        bql_lock();
 +    }
 +}
@@ -3761,10 +3863,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +{
 +    bool acquired_replay = false;
 +    int cpu_count;
- 
--    CPU_FOREACH(cpu) {
--        tcg_kick_vcpu_thread(cpu);
--    };
++
 +    if (!icount_enabled()) {
 +        return;
 +    }
@@ -3833,6 +3932,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +        uint64_t dispatch_ceiling = UINT64_MAX;
 +        uint64_t service_before;
 +        uint64_t service_after;
++        bool ready_marker_boundary_requested;
 +
 +        if (rr_crucible_sim_mode() &&
 +            qemu_plugin_time_advance_is_pending()) {
@@ -3939,6 +4039,11 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +        if (rr_crucible_sim_mode() && rr_crucible_sim_prepare_tcg()) {
 +            return true;
 +        }
++        if (rr_crucible_sim_mode() &&
++            qemu_crucible_fault_lifecycle_ready_marker_service(
++                qemu_plugin_icount_raw())) {
++            return true;
++        }
 +        service_before = qemu_plugin_icount_raw();
 +        bql_unlock();
 +        if (icount_enabled()) {
@@ -4013,6 +4118,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +        /* Serialized RR translation never carries CF_PARALLEL. */
 +        g_assert(r != EXCP_ATOMIC);
 +        service_after = qemu_plugin_icount_raw();
++        ready_marker_boundary_requested = rr_crucible_sim_mode() &&
++            qemu_crucible_fault_lifecycle_ready_marker_service(service_after);
 +        if (crucible_sim_shmem_dispatch_registered()) {
 +            g_assert(service_after <= dispatch_ceiling);
 +        }
@@ -4094,6 +4201,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +            return false;
 +        }
 +
++        if (ready_marker_boundary_requested) {
++            return true;
++        }
++
 +        if (!rr_crucible_sim_tcg_batch_continue(cpu, runs, r)) {
 +            return false;
 +        }
@@ -4104,7 +4215,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
  
  static inline int64_t rr_next_kick_time(void)
  {
-@@ -90,6 +1474,14 @@ static void rr_kick_thread(void *opaque)
+@@ -90,6 +1586,14 @@ static void rr_kick_thread(void *opaque)
  
  static void rr_start_kick_timer(void)
  {
@@ -4119,7 +4230,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
      if (!rr_kick_vcpu_timer && CPU_NEXT(first_cpu)) {
          rr_kick_vcpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                             rr_kick_thread, NULL);
-@@ -110,15 +1502,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1614,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -4253,7 +4364,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
      }
  }
  
-@@ -140,6 +1648,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +1760,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -4272,7 +4383,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +1704,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +1816,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -4281,7 +4392,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -207,38 +1729,185 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -207,38 +1841,193 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_process_cpu_events_common(cpu);
          }
      }
@@ -4364,6 +4475,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +            qatomic_load_acquire(&rr_chained_main_loop_work_completed) ||
 +        qatomic_load_acquire(&rr_external_main_loop_work_published) !=
 +            qatomic_load_acquire(&rr_external_main_loop_work_completed) ||
++        qatomic_load_acquire(&rr_deferred_reset_dispatch_generation) != 0 ||
++        qatomic_read(&rr_deferred_reset_handoff_ready) ||
 +        qatomic_read(&rr_main_loop_poll_priming) ||
 +        qatomic_read(&rr_main_loop_dispatch_active)) {
 +        return -EBUSY;
@@ -4377,7 +4490,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +            return -EBUSY;
 +        }
 +    }
-+
+ 
 +    /*
 +     * The inherited condition variable still counts the vanished parent
 +     * thread as a waiter. The dispatch event may likewise retain EV_BUSY,
@@ -4404,7 +4517,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +    }
 +    return 0;
 +}
- 
++
 +static G_NORETURN void rr_cpu_thread_loop(CPUState *cpu)
 +{
      while (1) {
@@ -4413,6 +4526,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +        bool completed_rr_quantum = false;
 +        bool partial_rr_turn = false;
 +        bool icount_retry = false;
++        bool ready_marker_pending;
++        bool reset_pending;
  
 -        if (cpu) {
 -            /*
@@ -4428,6 +4543,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +        bql_lock();
  
 -        if (icount_enabled() && all_cpu_threads_idle()) {
++        if (rr_crucible_sim_service_deferred_reset_handoff()) {
++            continue;
++        }
++
 +        if (rr_crucible_sim_quantum_dispatch_fence() &&
 +            crucible_shmem_is_active() &&
 +            qemu_plugin_crucible_wake_fd_readable() &&
@@ -4484,7 +4603,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +1923,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2043,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -4517,7 +4636,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +1965,105 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2085,105 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -4638,7 +4757,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2071,112 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2191,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -4706,14 +4825,37 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +
 +        rr_crucible_sim_advance_stalled_deadline();
 +
-+        if (completed_rr_quantum) {
++        reset_pending =
++            qemu_reset_requested_get() != SHUTDOWN_CAUSE_NONE;
++        if (reset_pending && rr_crucible_sim_quantum_dispatch_fence() &&
++            qemu_shutdown_requested_get() == SHUTDOWN_CAUSE_NONE &&
++            !qemu_force_shutdown_requested() &&
++            qatomic_load_acquire(
++                &rr_deferred_reset_dispatch_generation) == 0) {
++            uint64_t generation;
++
++            qatomic_store_release(&rr_deferred_reset_handoff_ready, false);
++            generation = rr_crucible_sim_begin_main_loop_handoff();
++            qatomic_store_release(
++                &rr_deferred_reset_dispatch_generation, generation);
++            continue;
++        }
++        if (completed_rr_quantum && !reset_pending) {
 +            if (rr_crucible_sim_main_loop_dispatch_pending()) {
 +                rr_crucible_sim_handoff_main_loop();
 +            }
 +            continue;
 +        }
 +
-+        if (partial_rr_turn) {
++        ready_marker_pending = rr_crucible_sim_mode() &&
++            qemu_crucible_fault_lifecycle_ready_marker_pending();
++        if (ready_marker_pending && !reset_pending &&
++            rr_crucible_sim_quantum_dispatch_fence()) {
++            rr_crucible_sim_handoff_main_loop();
++            continue;
++        }
++
++        if (partial_rr_turn && !ready_marker_pending && !reset_pending) {
 +            continue;
 +        }
 +
@@ -4726,6 +4868,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
 +         * remaining source of progress.
 +         */
 +        if (rr_crucible_sim_mode() &&
++            !ready_marker_pending &&
++            !reset_pending &&
 +            !rr_crucible_sim_stop_or_unplug_pending() &&
 +            cpu && cpu_work_list_empty(cpu) &&
 +            !rr_crucible_sim_all_vcpus_halted() &&
@@ -4753,7 +4897,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
      }
  
      g_assert_not_reached();
-@@ -318,13 +2185,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2330,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -4791,10 +4935,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..af7f0b081896ca7646b010eb9f7b1e7c
          single_tcg_cpu_thread = cpu->thread;
  
 diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
-index 2a76a296127e81edc61f45a59785a89705daae90..aa8160b876cf4cb9b142c1373367660ae3aa9747 100644
+index 2a76a296127e81edc61f45a59785a89705daae90..138ed318ef500e48aaad46d705be30ccbcafb03b 100644
 --- a/accel/tcg/tcg-accel-ops-rr.h
 +++ b/accel/tcg/tcg-accel-ops-rr.h
-@@ -10,12 +10,225 @@
+@@ -10,12 +10,229 @@
  #ifndef TCG_ACCEL_OPS_RR_H
  #define TCG_ACCEL_OPS_RR_H
  
@@ -4998,6 +5142,10 @@ index 2a76a296127e81edc61f45a59785a89705daae90..aa8160b876cf4cb9b142c1373367660a
  void rr_kick_vcpu_thread(CPUState *unused);
 +/* Wake a Crucible sim RR thread parked outside the BQL at a dispatch ceiling. */
 +void rr_crucible_sim_notify_dispatch_ceiling(void);
++/* Publish completion of a reset that owns a deferred main-loop handoff. */
++void rr_crucible_sim_reset_handoff_ready(void);
++/* Cancel a deferred reset handoff when terminal shutdown takes ownership. */
++void rr_crucible_sim_reset_handoff_cancel(void);
 +/* Publish the durable RR wake for a completed time advance. */
 +void rr_crucible_sim_publish_time_advance_wake(void);
 +/* Signal every RR wait object after the completed advance is released. */
@@ -23671,7 +23819,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..8211411ebe9bd9345eab9a18844852e3
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8d45c802ed4b20df385cb2dec9f91b0d2571d408 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..9106da1cfd15dca8d2d18b25c22c8ecb48a53501 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,317 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -24803,7 +24951,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8d45c802ed4b20df385cb2dec9f91b0d
  /**
   * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
-@@ -1292,6 +2400,649 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
+@@ -1292,6 +2400,659 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
  QEMU_PLUGIN_API
  bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
  
@@ -25319,19 +25467,29 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8d45c802ed4b20df385cb2dec9f91b0d
 +    struct qemu_plugin_crucible_fault_capability *out, size_t capacity);
 +
 +/**
++ * enum qemu_plugin_crucible_fault_ready_marker_status - marker admission result
++ * @QEMU_PLUGIN_CRUCIBLE_READY_MARKER_UNMATCHED: no pending policy matched
++ * @QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED: queued for an exact boundary
++ */
++enum qemu_plugin_crucible_fault_ready_marker_status {
++    QEMU_PLUGIN_CRUCIBLE_READY_MARKER_UNMATCHED = 0,
++    QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED = 1,
++};
++
++/**
 + * qemu_plugin_crucible_fault_ready_marker() - observe one guest ready marker
 + * @marker: UTF-8 marker bytes, without a trailing NUL
 + * @marker_len: exact nonzero marker length, bounded to 255 bytes
-+ * @observed_icount: exact raw icount at the control-boundary callback when the
-+ *                   marker names a pending policy
++ * @observed_icount: exact raw icount at the guest observation callback when
++ *                   the marker names a pending policy
 + *
-+ * Returns one when the marker completes a pending ready policy, zero when no
-+ * pending policy names it, or a negative errno for an invalid matching
-+ * observation. An unrelated marker is not subject to the pending policy's
-+ * coordinate constraint.
-+ * The call is effective only in deterministic sim-fault mode from the exact
-+ * control boundary scheduled after the guest observation wakes QEMU's main
-+ * loop.
++ * Returns QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED when a matching guest
++ * observation is queued for exact completion,
++ * QEMU_PLUGIN_CRUCIBLE_READY_MARKER_UNMATCHED when no pending policy names it,
++ * or a negative errno for an invalid matching observation. Unmatched guest
++ * observations are inert in any callback context. A queued match forces exit
++ * before another chained TB and completes from the following drained
++ * deterministic control boundary.
 + */
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_ready_marker(
@@ -25605,10 +25763,10 @@ index e65e90093a73aa3f917361ee6b543a6c0fed94fa..9f4ec00fd3e2b8afd8e79eea0dea56a6
   *
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..14ebffc3d9cd42e856415976ef1d9edc411823df
+index 0000000000000000000000000000000000000000..bdfa18e83a9acf851a9f6e8bc2d8a99bec27ea6d
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,710 @@
+@@ -0,0 +1,715 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -25659,6 +25817,11 @@ index 0000000000000000000000000000000000000000..14ebffc3d9cd42e856415976ef1d9edc
 +
 +void qemu_crucible_fault_vmstate_register(
 +    const QemuCrucibleFaultVmstateSection *section);
++bool qemu_crucible_fault_lifecycle_ready_marker_pending(void);
++void qemu_crucible_fault_lifecycle_ready_marker_cancel(void);
++bool qemu_crucible_fault_lifecycle_ready_marker_service(uint64_t raw_icount);
++void qemu_crucible_fault_lifecycle_ready_marker_control_boundary(
++    uint64_t raw_icount);
 +void qemu_crucible_fault_vmstate_put_u8(GByteArray *bytes, uint8_t value);
 +void qemu_crucible_fault_vmstate_put_u16(GByteArray *bytes, uint16_t value);
 +void qemu_crucible_fault_vmstate_put_u32(GByteArray *bytes, uint32_t value);
@@ -38344,7 +38507,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..2be3d8051f98dc40f9ef5ec53c6cce3f
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..33223c096ec97ff8e16426351c2cf5e25fdbdb38 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..2cee840b3471ed6f4166bbd5e6b86753a3dc721f 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -39314,7 +39477,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..33223c096ec97ff8e16426351c2cf5e2
          return &has_control;
      }
      return NULL;
-@@ -129,3 +1065,1476 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+@@ -129,3 +1065,1481 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
                           RUN_ON_CPU_HOST_ULONG(new_time));
      }
  }
@@ -39720,6 +39883,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..33223c096ec97ff8e16426351c2cf5e2
 +                          request_generation);
 +    qatomic_store_release(&qemu_plugin_rr_control_complete_generation,
 +                          request_generation);
++    qemu_crucible_fault_lifecycle_ready_marker_cancel();
 +    if (request_generation != complete_generation) {
 +        rr_crucible_sim_trace_control_boundary(
 +            "cancel", request_generation, request_generation,
@@ -40612,14 +40776,18 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..33223c096ec97ff8e16426351c2cf5e2
 +{
 +    qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_control_boundary_cb;
 +
-+    if (cb && cpu) {
++    if (cpu) {
 +        uint64_t observed_icount = qemu_plugin_icount_raw();
 +
 +        g_assert(qemu_plugin_crucible_control_boundary_depth < UINT_MAX);
 +        qemu_plugin_crucible_control_boundary_depth++;
 +        qemu_plugin_crucible_exact_boundary_enter();
-+        cb(cpu->cpu_index, observed_icount,
-+           qemu_plugin_control_boundary_userdata);
++        qemu_crucible_fault_lifecycle_ready_marker_control_boundary(
++            observed_icount);
++        if (cb) {
++            cb(cpu->cpu_index, observed_icount,
++               qemu_plugin_control_boundary_userdata);
++        }
 +        qemu_plugin_crucible_exact_boundary_leave();
 +        qemu_plugin_crucible_control_boundary_depth--;
 +    }
@@ -56265,10 +56433,10 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +}
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe4e3249aa
+index 0000000000000000000000000000000000000000..375cddbb344de1fb0cd93d04b3fc49304243b353
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,2320 @@
+@@ -0,0 +1,2589 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -56294,6 +56462,7 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +#include "qemu/main-loop.h"
 +#include "qemu/module.h"
 +#include "qemu/plugin.h"
++#include "qemu/thread.h"
 +#include "plugins/qemu-plugin.h"
 +#include "qemu/units.h"
 +#include "qobject/qlist.h"
@@ -56369,6 +56538,22 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    uint32_t vmstate_reservation_remaining;
 +} CrucibleLifecyclePendingReset;
 +
++typedef struct CrucibleLifecycleReadyMarkerAdmission {
++    /* vCPU callbacks use this copy without touching BQL-owned lifecycle state. */
++    QemuMutex lock;
++    uint8_t published_marker[UINT8_MAX];
++    uint8_t published_marker_len;
++    uint64_t generation;
++    enum {
++        CRUCIBLE_READY_MARKER_EMPTY,
++        CRUCIBLE_READY_MARKER_QUEUED,
++    } handoff_state;
++    uint8_t handoff_marker[UINT8_MAX];
++    uint8_t handoff_marker_len;
++    uint64_t handoff_generation;
++    uint64_t handoff_guest_icount;
++} CrucibleLifecycleReadyMarkerAdmission;
++
 +typedef struct CrucibleHangState {
 +    QemuCrucibleFaultRule *rule;
 +    QemuCrucibleFaultEventReservation *activation_reservation;
@@ -56404,6 +56589,8 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +} CrucibleLifecycleVmstate;
 +
 +static CrucibleLifecyclePendingReset crucible_lifecycle_pending_reset;
++static CrucibleLifecycleReadyMarkerAdmission
++    crucible_lifecycle_ready_marker_admission;
 +static bool crucible_lifecycle_node_hung;
 +static GArray *crucible_lifecycle_vcpu_hung;
 +static GPtrArray *crucible_lifecycle_hangs;
@@ -56505,9 +56692,10 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    return true;
 +}
 +
-+static void crucible_lifecycle_stage_terminal(
++static void crucible_lifecycle_stage_terminal_internal(
 +    const QemuCrucibleFaultRule *rule, uint32_t transition,
-+    const uint8_t *evidence, size_t evidence_len)
++    const uint8_t *evidence, size_t evidence_len,
++    bool stop_already_admitted)
 +{
 +    g_assert(rule && evidence && evidence_len != 0);
 +    g_assert(crucible_lifecycle_terminal_exit_code(transition) != 0);
@@ -56520,11 +56708,20 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    crucible_lifecycle_terminal_evidence_digest(
 +        evidence, evidence_len,
 +        crucible_lifecycle_terminal_evidence_sha256);
-+    if (qemu_plugin_crucible_vmstop_admit_internal() != 0) {
++    if (!stop_already_admitted &&
++        qemu_plugin_crucible_vmstop_admit_internal() != 0) {
 +        error_report("Crucible terminal lifecycle could not stop at its "
 +                     "authorized boundary");
 +        abort();
 +    }
++}
++
++static void crucible_lifecycle_stage_terminal(
++    const QemuCrucibleFaultRule *rule, uint32_t transition,
++    const uint8_t *evidence, size_t evidence_len)
++{
++    crucible_lifecycle_stage_terminal_internal(
++        rule, transition, evidence, evidence_len, false);
 +}
 +
 +int qemu_plugin_crucible_lifecycle_set_process_generation(
@@ -56903,6 +57100,33 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    return status == 0 ? close_status : status;
 +}
 +
++static void crucible_lifecycle_ready_marker_publish(
++    const CrucibleLifecyclePendingReset *pending)
++{
++    const char *marker = pending->rule && pending->waiting_ready ?
++        pending->ready_marker : NULL;
++    size_t marker_len = marker ? strlen(marker) : 0;
++
++    g_assert(marker_len <= UINT8_MAX);
++    qemu_mutex_lock(&crucible_lifecycle_ready_marker_admission.lock);
++    if (crucible_lifecycle_ready_marker_admission.generation == UINT64_MAX) {
++        error_report("Crucible lifecycle ready-marker generation overflow");
++        abort();
++    }
++    crucible_lifecycle_ready_marker_admission.generation++;
++    if (marker_len != 0) {
++        memcpy(crucible_lifecycle_ready_marker_admission.published_marker,
++               marker, marker_len);
++    }
++    crucible_lifecycle_ready_marker_admission.published_marker_len = marker_len;
++    crucible_lifecycle_ready_marker_admission.handoff_state =
++        CRUCIBLE_READY_MARKER_EMPTY;
++    crucible_lifecycle_ready_marker_admission.handoff_marker_len = 0;
++    crucible_lifecycle_ready_marker_admission.handoff_generation = 0;
++    crucible_lifecycle_ready_marker_admission.handoff_guest_icount = 0;
++    qemu_mutex_unlock(&crucible_lifecycle_ready_marker_admission.lock);
++}
++
 +static void crucible_lifecycle_pending_clear(
 +    CrucibleLifecyclePendingReset *pending)
 +{
@@ -56911,6 +57135,39 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    g_free(pending->preserved_state);
 +    g_free(pending->ready_marker);
 +    memset(pending, 0, sizeof(*pending));
++    if (pending == &crucible_lifecycle_pending_reset) {
++        crucible_lifecycle_ready_marker_publish(pending);
++    }
++}
++
++static bool crucible_lifecycle_ready_marker_matches(
++    const char *marker, size_t marker_len, uint64_t *generation)
++{
++    bool matches;
++
++    qemu_mutex_lock(&crucible_lifecycle_ready_marker_admission.lock);
++    matches =
++        crucible_lifecycle_ready_marker_admission.published_marker_len ==
++            marker_len &&
++        marker_len != 0 &&
++        memcmp(crucible_lifecycle_ready_marker_admission.published_marker,
++               marker, marker_len) == 0;
++    if (matches) {
++        *generation = crucible_lifecycle_ready_marker_admission.generation;
++    }
++    qemu_mutex_unlock(&crucible_lifecycle_ready_marker_admission.lock);
++    return matches;
++}
++
++bool qemu_crucible_fault_lifecycle_ready_marker_pending(void)
++{
++    bool pending;
++
++    qemu_mutex_lock(&crucible_lifecycle_ready_marker_admission.lock);
++    pending = crucible_lifecycle_ready_marker_admission.handoff_state !=
++        CRUCIBLE_READY_MARKER_EMPTY;
++    qemu_mutex_unlock(&crucible_lifecycle_ready_marker_admission.lock);
++    return pending;
 +}
 +
 +static int crucible_lifecycle_clear_ram_block(RAMBlock *block, void *opaque)
@@ -57113,8 +57370,9 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    return 0;
 +}
 +
-+static void crucible_lifecycle_pending_fail_closed(
-+    CrucibleLifecyclePendingReset *pending)
++static void crucible_lifecycle_pending_fail_closed_internal(
++    CrucibleLifecyclePendingReset *pending, bool stage_terminal,
++    bool stop_already_admitted)
 +{
 +    uint8_t opportunity_hash[32], after_hash[32], current_hash[32];
 +    uint8_t terminal_material[48] = { 0 };
@@ -57156,10 +57414,46 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +            pending->rule, pending->observed_icount,
 +            pending->before_hash);
 +    }
-+    crucible_lifecycle_stage_terminal(
-+        pending->rule, CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE,
-+        pending->evidence, sizeof(pending->evidence));
++    if (stage_terminal) {
++        crucible_lifecycle_stage_terminal_internal(
++            pending->rule, CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE,
++            pending->evidence, sizeof(pending->evidence),
++            stop_already_admitted);
++    }
 +    crucible_lifecycle_pending_clear(pending);
++}
++
++static void crucible_lifecycle_pending_fail_closed(
++    CrucibleLifecyclePendingReset *pending)
++{
++    crucible_lifecycle_pending_fail_closed_internal(
++        pending, true, false);
++}
++
++void qemu_crucible_fault_lifecycle_ready_marker_cancel(void)
++{
++    CrucibleLifecycleReadyMarkerAdmission *admission =
++        &crucible_lifecycle_ready_marker_admission;
++    bool queued;
++
++    qemu_mutex_lock(&admission->lock);
++    queued = admission->handoff_state == CRUCIBLE_READY_MARKER_QUEUED &&
++        admission->handoff_generation == admission->generation;
++    qemu_mutex_unlock(&admission->lock);
++    if (!queued) {
++        return;
++    }
++
++    g_assert(bql_locked());
++    if (crucible_lifecycle_pending_reset.rule) {
++        crucible_lifecycle_pending_fail_closed_internal(
++            &crucible_lifecycle_pending_reset,
++            crucible_lifecycle_terminal_transition == 0,
++            qemu_plugin_crucible_vmstop_pending());
++    } else {
++        crucible_lifecycle_ready_marker_publish(
++            &crucible_lifecycle_pending_reset);
++    }
 +}
 +
 +static bool crucible_lifecycle_pending_complete(
@@ -57237,6 +57531,7 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +        pending->ready_deadline_ns = now + pending->retry_delay;
 +        stl_le_p(pending->evidence + 196, pending->attempt);
 +        stq_le_p(pending->evidence + 216, pending->ready_deadline_ns);
++        crucible_lifecycle_ready_marker_publish(pending);
 +        return;
 +    }
 +    crucible_lifecycle_pending_complete(
@@ -57246,30 +57541,163 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +int qemu_plugin_crucible_fault_ready_marker(
 +    const char *marker, size_t marker_len, uint64_t observed_icount)
 +{
-+    CrucibleLifecyclePendingReset *pending =
-+        &crucible_lifecycle_pending_reset;
-+    bool completed;
++    CrucibleLifecycleReadyMarkerAdmission *admission =
++        &crucible_lifecycle_ready_marker_admission;
++    uint64_t queued_generation;
++    int status;
 +
 +    if (!marker || marker_len == 0 || marker_len > 255) {
 +        return -EINVAL;
 +    }
-+    if (!crucible_lifecycle_mode() ||
-+        !qemu_plugin_crucible_single_threaded_rr() ||
-+        !qemu_plugin_crucible_control_boundary_active() ||
-+        !qemu_plugin_crucible_exact_boundary_active() || !bql_locked()) {
-+        return -EPERM;
++    if (!crucible_lifecycle_ready_marker_matches(
++            marker, marker_len, &queued_generation)) {
++        return QEMU_PLUGIN_CRUCIBLE_READY_MARKER_UNMATCHED;
 +    }
-+    if (!pending->rule || !pending->waiting_ready ||
-+        strlen(pending->ready_marker) != marker_len ||
-+        memcmp(pending->ready_marker, marker, marker_len) != 0) {
-+        return 0;
++    if (!crucible_lifecycle_mode() ||
++        !qemu_plugin_crucible_single_threaded_rr()) {
++        return -EPERM;
 +    }
 +    if (observed_icount != qemu_plugin_icount_raw()) {
 +        return -EINVAL;
 +    }
++
++    /* Publish only after the callback has arranged to leave this TB. */
++    status = qemu_plugin_crucible_force_vcpu_tb_exit();
++    if (status != 0) {
++        return status;
++    }
++
++    qemu_mutex_lock(&admission->lock);
++    if (admission->generation != queued_generation ||
++        admission->published_marker_len != marker_len ||
++        memcmp(admission->published_marker, marker, marker_len) != 0) {
++        qemu_mutex_unlock(&admission->lock);
++        return QEMU_PLUGIN_CRUCIBLE_READY_MARKER_UNMATCHED;
++    }
++    if (admission->handoff_state == CRUCIBLE_READY_MARKER_EMPTY) {
++        memcpy(admission->handoff_marker, marker, marker_len);
++        admission->handoff_marker_len = marker_len;
++        admission->handoff_generation = queued_generation;
++        admission->handoff_guest_icount = observed_icount;
++        admission->handoff_state = CRUCIBLE_READY_MARKER_QUEUED;
++    }
++    qemu_mutex_unlock(&admission->lock);
++    return QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED;
++}
++
++bool qemu_crucible_fault_lifecycle_ready_marker_service(uint64_t raw_icount)
++{
++    CrucibleLifecycleReadyMarkerAdmission *admission =
++        &crucible_lifecycle_ready_marker_admission;
++    uint64_t generation = 0;
++    int status;
++
++    qemu_mutex_lock(&admission->lock);
++    if (admission->handoff_state == CRUCIBLE_READY_MARKER_QUEUED &&
++        admission->handoff_generation == admission->generation) {
++        generation = admission->handoff_generation;
++    }
++    qemu_mutex_unlock(&admission->lock);
++    if (generation == 0) {
++        return false;
++    }
++    g_assert(bql_locked());
++    if (!crucible_lifecycle_mode() ||
++        !qemu_plugin_crucible_single_threaded_rr() ||
++        qemu_plugin_icount_raw() != raw_icount) {
++        if (crucible_lifecycle_pending_reset.rule) {
++            crucible_lifecycle_pending_fail_closed(
++                &crucible_lifecycle_pending_reset);
++        } else {
++            crucible_lifecycle_ready_marker_publish(
++                &crucible_lifecycle_pending_reset);
++        }
++        return false;
++    }
++
++    qemu_plugin_crucible_exact_boundary_enter();
++    status = qemu_plugin_request_control_boundary();
++    qemu_plugin_crucible_exact_boundary_leave();
++
++    if (status != 0) {
++        if (crucible_lifecycle_pending_reset.rule) {
++            crucible_lifecycle_pending_fail_closed(
++                &crucible_lifecycle_pending_reset);
++        } else {
++            crucible_lifecycle_ready_marker_publish(
++                &crucible_lifecycle_pending_reset);
++        }
++        return false;
++    }
++    return true;
++}
++
++void qemu_crucible_fault_lifecycle_ready_marker_control_boundary(
++    uint64_t raw_icount)
++{
++    CrucibleLifecyclePendingReset *pending =
++        &crucible_lifecycle_pending_reset;
++    CrucibleLifecycleReadyMarkerAdmission *admission =
++        &crucible_lifecycle_ready_marker_admission;
++    uint8_t marker[UINT8_MAX];
++    size_t marker_len;
++    uint64_t guest_icount;
++    bool completed;
++
++    qemu_mutex_lock(&admission->lock);
++    if (admission->handoff_state != CRUCIBLE_READY_MARKER_QUEUED ||
++        admission->handoff_generation != admission->generation) {
++        qemu_mutex_unlock(&admission->lock);
++        return;
++    }
++    qemu_mutex_unlock(&admission->lock);
++
++    g_assert(bql_locked());
++    if (!crucible_lifecycle_mode() ||
++        !qemu_plugin_crucible_single_threaded_rr() ||
++        !qemu_plugin_crucible_control_boundary_active() ||
++        !qemu_plugin_crucible_exact_boundary_active()) {
++        if (pending->rule) {
++            crucible_lifecycle_pending_fail_closed(pending);
++        } else {
++            crucible_lifecycle_ready_marker_publish(pending);
++        }
++        return;
++    }
++
++    qemu_mutex_lock(&admission->lock);
++    if (admission->handoff_state != CRUCIBLE_READY_MARKER_QUEUED ||
++        admission->handoff_generation != admission->generation) {
++        qemu_mutex_unlock(&admission->lock);
++        return;
++    }
++    marker_len = admission->handoff_marker_len;
++    memcpy(marker, admission->handoff_marker, marker_len);
++    guest_icount = admission->handoff_guest_icount;
++    admission->handoff_state = CRUCIBLE_READY_MARKER_EMPTY;
++    admission->handoff_marker_len = 0;
++    qemu_mutex_unlock(&admission->lock);
++
++    if (!pending->rule || !pending->waiting_ready ||
++        !pending->ready_marker ||
++        strlen(pending->ready_marker) != marker_len ||
++        memcmp(pending->ready_marker, marker, marker_len) != 0 ||
++        qemu_plugin_icount_raw() != raw_icount ||
++        raw_icount < guest_icount) {
++        if (pending->rule) {
++            crucible_lifecycle_pending_fail_closed(pending);
++        } else {
++            crucible_lifecycle_ready_marker_publish(pending);
++        }
++        return;
++    }
++
 +    pending->waiting_ready = false;
-+    completed = crucible_lifecycle_pending_complete(pending, observed_icount);
-+    return completed ? 1 : -EIO;
++    crucible_lifecycle_ready_marker_publish(pending);
++    completed = crucible_lifecycle_pending_complete(pending, raw_icount);
++    if (!completed && pending->rule) {
++        crucible_lifecycle_pending_fail_closed(pending);
++    }
 +}
 +
 +static bool crucible_lifecycle_vcpu_exists(uint32_t target)
@@ -57844,7 +58272,8 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    if (phase == CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY &&
 +        crucible_lifecycle_mode() &&
 +        crucible_lifecycle_pending_reset.rule &&
-+        crucible_lifecycle_pending_reset.waiting_ready) {
++        crucible_lifecycle_pending_reset.waiting_ready &&
++        !qemu_crucible_fault_lifecycle_ready_marker_pending()) {
 +        CrucibleLifecyclePendingReset *pending =
 +            &crucible_lifecycle_pending_reset;
 +        int64_t ready_now = icount_get_observed();
@@ -57857,6 +58286,7 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +            if (pending->attempt < pending->maximum_attempts) {
 +                pending->attempt++;
 +                pending->waiting_ready = false;
++                crucible_lifecycle_ready_marker_publish(pending);
 +                stl_le_p(pending->evidence + 196, pending->attempt);
 +                qemu_system_reset_request(
 +                    SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET);
@@ -58052,7 +58482,8 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    }
 +    deadline = crucible_lifecycle_next_watchdog_ns;
 +    if (crucible_lifecycle_pending_reset.rule &&
-+        crucible_lifecycle_pending_reset.waiting_ready) {
++        crucible_lifecycle_pending_reset.waiting_ready &&
++        !qemu_crucible_fault_lifecycle_ready_marker_pending()) {
 +        deadline = MIN(
 +            deadline, crucible_lifecycle_pending_reset.ready_deadline_ns);
 +    }
@@ -58077,6 +58508,9 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +        crucible_lifecycle_vmstate_reservation_remaining(
 +            pending->reservation);
 +
++    if (qemu_crucible_fault_lifecycle_ready_marker_pending()) {
++        return -EBUSY;
++    }
 +    if (crucible_lifecycle_process_generation == 0 || hang_count > 4096 ||
 +        vcpu_count > 4096 || pending_reservation > UINT32_MAX ||
 +        pending->preserved_state_len >
@@ -58533,6 +58967,8 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +        memset(&crucible_lifecycle_pending_reset, 0,
 +               sizeof(crucible_lifecycle_pending_reset));
 +    }
++    crucible_lifecycle_ready_marker_publish(
++        &crucible_lifecycle_pending_reset);
 +    g_clear_pointer(&crucible_lifecycle_hangs, g_ptr_array_unref);
 +    crucible_lifecycle_hangs = g_steal_pointer(&state->hangs);
 +    g_clear_pointer(&crucible_lifecycle_vcpu_hung, g_array_unref);
@@ -58572,6 +59008,7 @@ index 0000000000000000000000000000000000000000..a98b659fafdfdcbef15e1f661d65e6fe
 +    const uint32_t boundary =
 +        1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
 +
++    qemu_mutex_init(&crucible_lifecycle_ready_marker_admission.lock);
 +    qemu_crucible_fault_node_register(
 +        CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE,
 +        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
@@ -86880,13 +87317,16 @@ index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..f37950af1dbf5a67574340a5d875d6b5
  
  static void configure_rtc_base_datetime(const char *startdate)
 diff --git a/system/runstate.c b/system/runstate.c
-index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..9386d6837535de98c7e79ab1e748fd2e11c212fc 100644
+index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..17973c85b8b3a900eb59774fc3e0fef3fddcfab2 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
-@@ -43,10 +43,12 @@
+@@ -43,10 +43,15 @@
  #include "qapi/qapi-events-run-state.h"
  #include "qemu/accel.h"
  #include "accel/accel-ops.h"
++#ifdef CONFIG_TCG
++#include "accel/tcg/tcg-accel-ops-rr.h"
++#endif
 +#include "qemu/crucible-fault.h"
  #include "qemu/error-report.h"
  #include "qemu/job.h"
@@ -86896,7 +87336,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..9386d6837535de98c7e79ab1e748fd2e
  #include "qemu/sockets.h"
  #include "qemu/timer.h"
  #include "qemu/thread.h"
-@@ -590,6 +592,10 @@ void qemu_system_reset(ShutdownCause reason)
+@@ -590,6 +595,13 @@ void qemu_system_reset(ShutdownCause reason)
      }
  
      vm_set_suspended(false);
@@ -86904,10 +87344,13 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..9386d6837535de98c7e79ab1e748fd2e
 +    qemu_plugin_crucible_exact_boundary_enter();
 +    qemu_crucible_fault_lifecycle_reset_complete();
 +    qemu_plugin_crucible_exact_boundary_leave();
++#ifdef CONFIG_TCG
++    rr_crucible_sim_reset_handoff_ready();
++#endif
  }
  
  /*
-@@ -844,6 +850,13 @@ void qemu_system_shutdown_request(ShutdownCause reason)
+@@ -844,6 +856,13 @@ void qemu_system_shutdown_request(ShutdownCause reason)
      shutdown_requested = reason;
      if (reason == SHUTDOWN_CAUSE_HOST_QMP_QUIT) {
          force_shutdown = true;
@@ -86920,6 +87363,16 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..9386d6837535de98c7e79ab1e748fd2e
 +        }
      }
      qemu_notify_event();
+ }
+@@ -856,6 +875,9 @@ static void qemu_system_powerdown(void)
+ 
+ static void qemu_system_shutdown(ShutdownCause cause)
+ {
++#ifdef CONFIG_TCG
++    rr_crucible_sim_reset_handoff_cancel();
++#endif
+     qapi_event_send_shutdown(shutdown_caused_by_guest(cause), cause);
+     notifier_list_notify(&shutdown_notifiers, &cause);
  }
 diff --git a/system/vl.c b/system/vl.c
 index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..c6f6acf80b906791b445a7d53a464208a29f5e9b 100644
@@ -91874,10 +92327,10 @@ index 0000000000000000000000000000000000000000..74f76ce9c42cee9ebd27167bc4ee13b4
 +    main()
 diff --git a/tests/qtest/crucible-fingerprint-projection.py b/tests/qtest/crucible-fingerprint-projection.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1e727093ffc2f3fb50186183e3ee16716dc5413a
+index 0000000000000000000000000000000000000000..5e35e237936ffc8278ddf282d42b8e0b58b46049
 --- /dev/null
 +++ b/tests/qtest/crucible-fingerprint-projection.py
-@@ -0,0 +1,710 @@
+@@ -0,0 +1,714 @@
 +# Copyright (c) 2026 ANDYL Technologies
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Checks live machine fingerprint projections through the control boundary."""
@@ -92218,6 +92671,10 @@ index 0000000000000000000000000000000000000000..1e727093ffc2f3fb50186183e3ee1671
 +            raise AssertionError(f"failed material transfer: {line}")
 +        if fields.get("unmatched_ready") != "0":
 +            raise AssertionError(f"unrelated ready marker was rejected: {line}")
++        if fields.get("unmatched_ready_outside") != "0":
++            raise AssertionError(
++                f"unrelated ready marker outside the boundary was rejected: {line}"
++            )
 +        if fields.get("sample") == "0" and (
 +            fields.get("paused") != "0/0" or
 +            fields.get("paused_hash") != "0/0" or
@@ -95042,10 +95499,10 @@ index 0000000000000000000000000000000000000000..d622a5548c4d850037867543e302a289
 +}
 diff --git a/tests/tcg/plugins/crucible-fingerprint-observer.c b/tests/tcg/plugins/crucible-fingerprint-observer.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c1633c777c0c92a8f353bddd70b8de45e5a17bb9
+index 0000000000000000000000000000000000000000..db286854dfc30f6efbbff961b9e0ac65b2422df1
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-fingerprint-observer.c
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,317 @@
 +/*
 + * Crucible live device fingerprint projection observer
 + *
@@ -95074,6 +95531,30 @@ index 0000000000000000000000000000000000000000..c1633c777c0c92a8f353bddd70b8de45
 +static int material_fd = -1;
 +static int wake_fd = -1;
 +static uint64_t sample_count;
++static gint unmatched_ready_outside_status = -EINPROGRESS;
++
++static void unmatched_ready_outside_exec(unsigned int vcpu_index,
++                                         void *userdata)
++{
++    static const char marker[] = "fingerprint-unrelated-outside";
++    int status;
++
++    (void)vcpu_index;
++    (void)userdata;
++    if (g_atomic_int_get(&unmatched_ready_outside_status) != -EINPROGRESS) {
++        return;
++    }
++    status = qemu_plugin_crucible_fault_ready_marker(
++        marker, sizeof(marker) - 1, UINT64_MAX);
++    g_atomic_int_set(&unmatched_ready_outside_status, status);
++}
++
++static void translate_block(struct qemu_plugin_tb *tb, void *userdata)
++{
++    (void)userdata;
++    qemu_plugin_register_vcpu_tb_exec_cb(
++        tb, unmatched_ready_outside_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
++}
 +
 +static void publish_icount(uint64_t icount, void *userdata)
 +{
@@ -95209,9 +95690,12 @@ index 0000000000000000000000000000000000000000..c1633c777c0c92a8f353bddd70b8de45
 +    int material_status = -EIO;
 +    int stop_status;
 +    int unmatched_ready_status;
++    int unmatched_ready_outside;
 +    bool paused_stable = false;
 +
 +    (void)userdata;
++    unmatched_ready_outside =
++        g_atomic_int_get(&unmatched_ready_outside_status);
 +    unmatched_ready_status = qemu_plugin_crucible_fault_ready_marker(
 +        unrelated_marker, sizeof(unrelated_marker) - 1,
 +        icount == 0 ? UINT64_MAX : icount - 1);
@@ -95274,7 +95758,8 @@ index 0000000000000000000000000000000000000000..c1633c777c0c92a8f353bddd70b8de45
 +            " capture=%d/%d hash=%d/%d stable=%s digest=%s repeat=%s"
 +            " bytes=%" PRIu64 " sections=%" PRIu64
 +            " material=%d stop=%d paused=%d/%d paused_hash=%d/%d"
-+            " paused_stable=%s unmatched_ready=%d\n",
++            " paused_stable=%s unmatched_ready=%d"
++            " unmatched_ready_outside=%d\n",
 +            sample_count++, vcpu_index, icount, first_status, second_status,
 +            first_hash_status, second_hash_status, stable ? "true" : "false",
 +            first_hex, second_hex,
@@ -95283,7 +95768,7 @@ index 0000000000000000000000000000000000000000..c1633c777c0c92a8f353bddd70b8de45
 +            material_status, stop_status, paused_first_status,
 +            paused_second_status, paused_first_hash_status,
 +            paused_second_hash_status, paused_stable ? "true" : "false",
-+            unmatched_ready_status);
++            unmatched_ready_status, unmatched_ready_outside);
 +
 +    close_material(&first);
 +    close_material(&second);
@@ -95332,6 +95817,7 @@ index 0000000000000000000000000000000000000000..c1633c777c0c92a8f353bddd70b8de45
 +        publish_icount, max_advance_icount, NULL);
 +    qemu_plugin_register_vcpu_idle_resume_cb(vcpu_idle, vcpu_resumed, NULL);
 +    qemu_plugin_register_control_boundary_cb(control_boundary, NULL);
++    qemu_plugin_register_vcpu_tb_trans_cb(id, translate_block, NULL);
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/crucible-idle-wait-liveness.c b/tests/tcg/plugins/crucible-idle-wait-liveness.c
