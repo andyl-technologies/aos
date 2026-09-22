@@ -429,6 +429,7 @@ impl NixRunner {
         for batch in paths.chunks(128) {
             let mut arguments = vec![
                 "path-info".to_string(),
+                "--json".to_string(),
                 "--json-format".to_string(),
                 "1".to_string(),
                 "--closure-size".to_string(),
