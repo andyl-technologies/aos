@@ -23,7 +23,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible_campaign::{
-    CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler, CampaignPolicy,
+    CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignHash, CampaignName, CampaignObjectProfiler,
+    CampaignPolicy, CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignServiceOperation,
 };
 use crucible_cas::content_store::{
     BlobHandle, CompressedDirectoryBlobBackend, ContentId, DirectoryBlobBackend,
@@ -32,7 +33,7 @@ use crucible_cas::content_store::{
     StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
     WriteBackRetentionAdmin,
 };
-use crucible_daemon::DirectoryCampaignGcJournal;
+use crucible_daemon::{DirectoryCampaignGcJournal, UnixPeerCampaignPolicy};
 use serde_json::Value;
 use tempfile::{NamedTempFile, TempDir};
 
@@ -55,6 +56,35 @@ mod service_diagnostics;
 use service_diagnostics::{
     append_process_diagnostics, descendant_process_commands, matching_lines_bounded,
 };
+
+#[test]
+fn packaged_guest_choice_policy_grants_only_the_required_graph_query() -> Result<(), Box<dyn Error>>
+{
+    let fixture = FlightFixture::new()?;
+    let policy = UnixPeerCampaignPolicy::from_toml_bytes(&fs::read(&fixture.peer_policy)?)?;
+    let principal = CampaignPrincipal::new(PRINCIPAL)?;
+    let campaign = CampaignName::new(CAMPAIGN)?;
+    let request_digest = CampaignHash::derive("packaged-guest-choice-policy-test", b"graph");
+
+    policy.authorize(
+        &principal,
+        CampaignServiceOperation::QueryCampaignGraph,
+        &campaign,
+        request_digest,
+    )?;
+    assert!(
+        policy
+            .authorize(
+                &principal,
+                CampaignServiceOperation::QueryCampaignFindings,
+                &campaign,
+                request_digest,
+            )
+            .is_err(),
+        "the fixture correction must not grant unrelated graph-adjacent queries"
+    );
+    Ok(())
+}
 
 #[cfg(feature = "packaged-midpoint-flight")]
 #[test]
@@ -753,6 +783,11 @@ campaign = "*"
 [[grants]]
 principal = "{PRINCIPAL}"
 operation = "get-campaign-graph-object"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "query-campaign-graph"
 campaign = "*"
 
 [[grants]]
