@@ -11,6 +11,15 @@
   stage,
 }: let
   finalStage = stage == "final";
+  # Target libraries cannot execute x86 sysroot binaries during their
+  # configure probes even when build and target CPUs match. A distinct vendor
+  # marks only those subconfigures as cross builds without changing the target.
+  runtimeBuildAliasArgument =
+    if buildPlatform.config == hostPlatform.config
+    then let
+      buildAlias = builtins.replaceStrings ["-unknown-"] ["-aosbuild-"] buildPlatform.config;
+    in "build_alias=${buildAlias} \\\n                "
+    else "";
   version = "16.2.0";
 in
   buildStdenv.mkDerivation {
@@ -136,11 +145,11 @@ in
             if finalStage
             then ''
               make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
               make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
               make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgomp \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
             ''
             else ""
           }
@@ -158,11 +167,11 @@ in
             if finalStage
             then ''
               make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3 \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
               make SHELL="$CONFIG_SHELL" install-target-libatomic \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
               make SHELL="$CONFIG_SHELL" install-target-libgomp \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
             ''
             else ""
           }

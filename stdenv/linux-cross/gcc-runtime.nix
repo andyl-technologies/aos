@@ -5,7 +5,12 @@
   hostPlatform,
   binutils,
   gcc,
-}:
+}: let
+  runtimeLibraryDirectory =
+    if buildPlatform.config == hostPlatform.config
+    then "${gcc}/lib64"
+    else "${gcc}/${hostPlatform.config}/lib64";
+in
 (builtins.derivation {
   name = "gcc-runtime-${gcc.version}-${hostPlatform.system}";
   system = buildPlatform.system;
@@ -16,7 +21,7 @@
     ''
       set -eu
 
-      source_dir=${gcc}/${hostPlatform.config}/lib64
+      source_dir=${runtimeLibraryDirectory}
       ${buildStdenv.coreutils}/bin/mkdir -p "$out/lib"
 
       for family in libatomic libgcc_s libgomp libstdc++; do
