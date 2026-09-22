@@ -93,12 +93,12 @@ use aos_sandbox::public_policy_planner::PublicPolicyPlanningErrorV1;
 use aos_sandbox::{
     AcceptOutcome, ActivatedOperationCompiler, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
-    EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
-    HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
-    NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1,
-    PublicMutationEffectV1, Reconciler, ResourceInventoryError, SingleNodeEffectExecutor,
-    ValidatedAuthorityEffectReceiptV1, prepare_runtime_lifecycle_authority_effect_v1,
-    public_operation_resource_from_journal_v1,
+    EffectObservation, EffectPlan, EffectReceipt, GuardianPlanRequestV1,
+    HostCatalogReconciliationError, HostCatalogReconciliationV1, Journal, JournalError,
+    MountAttemptError, NodeController, NodeControllerLimits, OperationCompilationError,
+    PreparedAuthorityEffectV1, PublicMutationEffectV1, Reconciler, ResourceInventoryError,
+    SignedBrokerPlan, SingleNodeEffectExecutor, ValidatedAuthorityEffectReceiptV1,
+    prepare_runtime_lifecycle_authority_effect_v1, public_operation_resource_from_journal_v1,
 };
 
 mod public_api;
@@ -3063,6 +3063,18 @@ const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
+    fn prepare_guardian_plan(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        request: &GuardianPlanRequestV1,
+    ) -> Option<SignedBrokerPlan> {
+        let signer = self.broker_plan_signer.as_ref()?;
+        let now_seconds = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;
+        let plan = request.plan_at(now_seconds).ok()?;
+        signer.sign_plan(plan, now_seconds).ok()
+    }
+
     fn authority_effect_timing(
         &mut self,
         _operation_id: OperationId,

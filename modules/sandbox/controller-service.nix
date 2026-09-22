@@ -47,8 +47,13 @@
     lib.optional (cfg.credentials.nodeId != null)
     "node-id:/run/credentials/@system/${cfg.credentials.nodeId}";
   brokerPlanCredentials =
-    lib.optional (cfg.credentials.brokerPlanSigningKey != null)
-    "broker-plan-signing-key:/run/credentials/@system/${cfg.credentials.brokerPlanSigningKey}";
+    lib.optionals (cfg.credentials.brokerPlanSigningKey != null) (
+      ["broker-plan-signing-key:/run/credentials/@system/${cfg.credentials.brokerPlanSigningKey}"]
+      ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPolicy != null)
+      "broker-plan-policy.cbor:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPolicy}"
+      ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPublicKey != null)
+      "broker-plan-public-key:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPublicKey}"
+    );
   publicCredentialNames = {
     publicApiServerCert = "public-api-server-cert";
     publicApiServerKey = "public-api-server-key";
@@ -82,7 +87,7 @@ in {
         brokerPlanSigningKey = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
-          description = "Optional external 32-byte controller broker-plan signing seed for prepared authority publications.";
+          description = "Optional external 32-byte controller broker-plan signing seed for authority publications and Guardian arm plans.";
         };
       }
       // brokerSession.mkOptions brokerSessionEndpoints
@@ -105,6 +110,13 @@ in {
         {
           assertion = brokers.hostBroker.enable;
           message = "aos.sandbox.controllerService requires aos.sandbox.hostBroker";
+        }
+        {
+          assertion = cfg.credentials.brokerPlanSigningKey == null || (
+            brokers.hostBroker.credentials.brokerPlanPolicy != null
+            && brokers.hostBroker.credentials.brokerPlanPublicKey != null
+          );
+          message = "aos.sandbox.controllerService broker-plan signing requires the Host broker's public plan policy and key";
         }
         {
           assertion = brokers.storageBroker.enable;

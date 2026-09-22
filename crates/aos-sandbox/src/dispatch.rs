@@ -19,9 +19,9 @@ use aos_proto::aos::sandbox::local::v1::{BrokerDescriptorRole, BrokerMethod, Run
 use aos_sandbox_core::format::decode_broker_authorization_plan;
 use aos_sandbox_core::model::KeyReference;
 use aos_sandbox_core::{
-    BrokerArgumentCommitment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrantTarget,
-    BrokerVerb, DecodeLimits, GuardianPlanBinding, LEASE_SAFETY_MARGIN_SECONDS, ObjectDigest,
-    OwnershipLease, ProtocolId, ProtocolVersion, RawPairedClockSample,
+    BrokerArgumentCommitment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant,
+    BrokerGrantTarget, BrokerVerb, DecodeLimits, GuardianPlanBinding, LEASE_SAFETY_MARGIN_SECONDS,
+    ObjectDigest, OwnershipLease, ProtocolId, ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_protocol::{
     AuthorizationArtifactBytes, MAXIMUM_PACKET_DESCRIPTORS, MAXIMUM_REQUEST_BYTES,
@@ -60,6 +60,10 @@ pub struct GuardianPlanRequestV1 {
     assignment: aos_sandbox_core::BrokerAssignment,
     node: aos_sandbox_core::NodeId,
     ownership_authority: KeyReference,
+    policy_commitment: ObjectDigest,
+    revocation_scope: aos_sandbox_core::RevocationScopeId,
+    not_before_seconds: i64,
+    expires_seconds: i64,
     host_boot_id: [u8; 16],
     lease_generation: u64,
     lease_digest: ObjectDigest,
@@ -87,6 +91,14 @@ impl GuardianPlanRequestV1 {
             assignment: host_plan.assignment(),
             node: host_plan.node(),
             ownership_authority: host_plan.ownership_authority().clone(),
+            policy_commitment: host_plan.policy_commitment(),
+            revocation_scope: host_plan.revocation_scope(),
+            not_before_seconds: host_plan
+                .issued_seconds()
+                .max(lease.authority_issued_seconds()),
+            expires_seconds: host_plan
+                .expires_seconds()
+                .min(lease.authority_expires_seconds()),
             host_boot_id,
             lease_generation: lease.lease_generation(),
             lease_digest,
@@ -141,6 +153,46 @@ impl GuardianPlanRequestV1 {
     #[must_use]
     pub const fn request_bytes(&self) -> u32 {
         self.request_bytes
+    }
+
+    /// Constructs the sole Guardian arm plan for this selected lease and boot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerDispatchAttemptError`] when the current wall time is
+    /// outside the intersected Host-plan and ownership-lease validity interval,
+    /// or the exact Guardian grant cannot be represented.
+    pub fn plan_at(
+        &self,
+        now_seconds: i64,
+    ) -> Result<BrokerAuthorizationPlan, BrokerDispatchAttemptError> {
+        if now_seconds < self.not_before_seconds || now_seconds >= self.expires_seconds {
+            return Err(BrokerDispatchAttemptError::GuardianContextMismatch);
+        }
+
+        let grant = BrokerGrant::new(
+            BrokerVerb::GuardianArm,
+            BrokerGrantTarget::Assignment,
+            self.commitment,
+            self.request_bytes,
+            0,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)?;
+        BrokerAuthorizationPlan::new(
+            BrokerAudience::Guardian,
+            ProtocolId::Guardian,
+            ProtocolVersion::new(1, 0),
+            self.assignment,
+            self.node,
+            self.ownership_authority.clone(),
+            vec![grant],
+            self.policy_commitment,
+            self.revocation_scope,
+            now_seconds,
+            self.expires_seconds,
+            Vec::new(),
+        )
+        .map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)
     }
 }
 
@@ -1373,7 +1425,9 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{
         ApplyRuntimeRequest, Audience, Feature, ResourceLimit, RuntimeAction,
     };
-    use aos_sandbox_core::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
+    use aos_sandbox_core::format::{
+        decode_ownership_lease, encode_ownership_lease, encode_signature, encode_trust_policy,
+    };
     use aos_sandbox_core::model::{
         KeyReference, KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
     };
@@ -1831,6 +1885,33 @@ mod tests {
             [0x0a, 0x05, 0x08, 0x01, 0x28, 0xd0]
         );
         assert!(attempt_one.body().ends_with(&[0x12, 0x02, 0xaa, 0xbb]));
+    }
+
+    #[test]
+    fn guardian_plan_request_reuses_host_policy_and_ends_with_selected_lease() {
+        let (_fixture, template, lease, _) = host_guardian_fixture();
+        let host_plan = template.signed_plan().plan();
+        let lease_model = decode_ownership_lease(lease.canonical_lease(), DecodeLimits::default())
+            .unwrap_or_else(|error| panic!("selected lease failed to decode: {error}"));
+        let request = GuardianPlanRequestV1::new(host_plan, &lease_model, lease.digest(), [8; 16])
+            .unwrap_or_else(|error| panic!("Guardian request failed: {error}"));
+        let plan = request
+            .plan_at(150)
+            .unwrap_or_else(|error| panic!("Guardian plan failed: {error}"));
+
+        assert_eq!(plan.audience(), BrokerAudience::Guardian);
+        assert_eq!(plan.assignment(), host_plan.assignment());
+        assert_eq!(plan.node(), host_plan.node());
+        assert_eq!(plan.ownership_authority(), host_plan.ownership_authority());
+        assert_eq!(plan.policy_commitment(), host_plan.policy_commitment());
+        assert_eq!(plan.revocation_scope(), host_plan.revocation_scope());
+        assert_eq!(plan.issued_seconds(), 150);
+        assert_eq!(plan.expires_seconds(), lease.authority_expires_seconds());
+        assert_eq!(plan.grants().len(), 1);
+        assert_eq!(plan.grants()[0].argument_commitment(), request.commitment());
+        assert_eq!(plan.grants()[0].maximum_descriptors(), 0);
+        assert!(request.plan_at(99).is_err());
+        assert!(request.plan_at(lease.authority_expires_seconds()).is_err());
     }
 
     #[test]
