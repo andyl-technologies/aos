@@ -1300,11 +1300,16 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
 
     /// Publishes terminal memory-suspension evidence from protected current state.
     ///
+    /// The runtime freeze precedes the post-commit controller recording step,
+    /// so its authenticated observation cannot remain current at terminal
+    /// publication. This method instead derives the observation commitment
+    /// from the exact succeeded freeze attempt retained in the terminal record.
+    ///
     /// # Errors
     ///
     /// Returns an error unless the operation is a successful terminal
-    /// `SuspendMemory`, the Runtime observation is its exact succeeded effect,
-    /// and the boot root remains current in the same projection.
+    /// `SuspendMemory`, its canonical Runtime freeze attempt succeeded, and the
+    /// boot root remains current in the same projection.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_suspend_observation<'current>(
         &'current mut self,
@@ -1315,7 +1320,6 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         atomic_join: ResourceId,
         operation_lineage: ResourceId,
         observation_lineage: ResourceId,
-        observation: LifecycleEffectObservationV1,
     ) -> Result<
         LifecycleCurrentAuxiliaryPublicationV1<CurrentLifecycleSuspendObservationV1<'current>>,
         LifecycleProtectedJournalErrorV1,
@@ -1324,15 +1328,36 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             .current_operation(operation_key)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         require_auxiliary_key(observation_key, operation.operation(), observation_lineage)?;
-        require_current_succeeded_observation(operation.operation(), observation)?;
-        let request = observation.request();
         let (sandbox, fence) = match operation.operation().intent() {
             super::LifecycleIntentV1::SuspendMemory { sandbox, fence } => (*sandbox, *fence),
             _ => return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord),
         };
-        if request.domain() != LifecycleEffectDomainV1::Runtime
-            || request.target() != *sandbox.as_bytes()
-        {
+        super::LifecycleSuspensionPlanV1::suspend(&operation, None)
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let freeze_step = operation
+            .operation()
+            .steps()
+            .get(2)
+            .filter(|step| {
+                step.index() == 2
+                    && step.domain() == super::LifecycleStepDomainV1::Host
+                    && step.state() == LifecycleStepStateV1::Applied
+            })
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let freeze_attempt = freeze_step
+            .forward_attempts()
+            .last()
+            .copied()
+            .filter(|attempt| {
+                attempt.direction() == LifecycleEffectDirectionV1::Forward
+                    && attempt.state() == LifecycleAttemptStateV1::Succeeded
+                    && attempt.result() == freeze_step.result()
+                    && attempt.inventory() == freeze_step.inventory()
+                    && attempt.failure().is_none()
+                    && attempt.retry().is_none()
+            })
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if sandbox != fence.sandbox() {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let boot = self
@@ -1351,13 +1376,32 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let digest = LifecycleSuspendObservationDigestV1::commit(
             &Sha256::new()
-                .chain_update(b"aos.sandbox.lifecycle.protected-suspend-source.v1\0")
-                .chain_update(request.payload().as_bytes())
-                .chain_update(observation.result().as_bytes())
-                .chain_update(observation.inventory().as_bytes())
-                .chain_update(observation.inventory_generation().to_be_bytes())
-                .chain_update(observation.inventory_source().as_bytes())
-                .chain_update(observation.inventory_session().as_bytes())
+                .chain_update(b"aos.sandbox.lifecycle.protected-suspend-source.v2\0")
+                .chain_update(freeze_attempt.request().digest().as_bytes())
+                .chain_update(freeze_attempt.body().digest().as_bytes())
+                .chain_update(freeze_attempt.plan().digest().as_bytes())
+                .chain_update(freeze_attempt.admission().digest().as_bytes())
+                .chain_update(
+                    freeze_attempt
+                        .result()
+                        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
+                        .digest()
+                        .as_bytes(),
+                )
+                .chain_update(
+                    freeze_attempt
+                        .inventory()
+                        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
+                        .digest()
+                        .as_bytes(),
+                )
+                .chain_update(
+                    freeze_attempt
+                        .observed_at()
+                        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
+                        .get()
+                        .to_be_bytes(),
+                )
                 .finalize(),
         );
         let prepared = self.prepare_suspend_observation_append(
