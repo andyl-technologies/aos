@@ -33,13 +33,15 @@ use super::{
     LifecycleBootInventoryDomainsV1, LifecycleBootInventoryV1, LifecycleCancelIdempotencyDigestV1,
     LifecycleCancelOutcomeV1, LifecycleCancelRequestV1, LifecycleCancellationRecordV1,
     LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1,
-    LifecycleDeferredEffectCursorV1, LifecycleDependencyEdgeV1, LifecycleEffectDomainV1,
-    LifecycleEffectObservationV1, LifecycleInventoryDigestV1, LifecycleJournalVerifierV1,
-    LifecycleOperationV1, LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
+    LifecycleDeferredEffectCursorV1, LifecycleDependencyEdgeV1, LifecycleEffectAttemptV1,
+    LifecycleEffectDirectionV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
+    LifecycleInventoryDigestV1, LifecycleJournalVerifierV1, LifecycleOperationV1, LifecyclePhaseV1,
+    LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
     LifecycleQuiesceDigestV1, LifecycleRecordDigestV1, LifecycleResourceV1,
     LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1, LifecycleRetentionPurposeV1,
-    LifecycleSnapshotManifestDigestV1, LifecycleStepResultDigestV1,
-    LifecycleSuspendObservationDigestV1, LifecycleSuspendObservationV1,
+    LifecycleSnapshotManifestDigestV1, LifecycleStepAdmissionDigestV1, LifecycleStepClassV1,
+    LifecycleStepResultDigestV1, LifecycleStepStateV1, LifecycleStepV1,
+    LifecycleSuspendObservationDigestV1, LifecycleSuspendObservationV1, LifecycleTerminalResultV1,
     LifecycleThawCompensationDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1,
     LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1, ResourceExpectedStateV1,
     bind_lifecycle_atomic_join_v1, decode_lifecycle_auxiliary_record_v1,
@@ -1893,6 +1895,199 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         Ok(PreparedLifecycleProgressV1 { prepared })
     }
 
+    /// Plans the first durable attempt for one fully bound lifecycle plan.
+    ///
+    /// The operation must still be accepted, must contain no provisional plan
+    /// commitments, and must begin with reversible preparation. The admission
+    /// commitment is derived from the protected predecessor and transaction;
+    /// callers cannot select or reuse effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale key, an unbound or already-started plan, a
+    /// post-commit first action, a sentinel transaction or time, or failed
+    /// protected-journal planning.
+    pub fn prepare_initial_effect_reservation(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        started_at: LifecycleTimeV1,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        if transaction_id == [0; 16] {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let current = self
+            .current_operation(current_key)?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let operation = current.operation();
+        if operation.phase() != LifecyclePhaseV1::Accepted
+            || operation.plan_is_unbound()
+            || operation.forward_progress() != 0
+            || operation.compensation_progress() != 0
+            || operation.semantic_commit().is_some()
+            || operation.failure().is_some()
+            || operation.retry().is_some()
+            || operation.terminal_result().is_some()
+            || operation.finished_at().is_some()
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let first = operation
+            .steps()
+            .first()
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if first.class() != LifecycleStepClassV1::PreCommitReversible
+            || first.state() != LifecycleStepStateV1::Planned
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+
+        let admission = effect_admission_digest(
+            operation.operation_id(),
+            current.record(),
+            transaction_id,
+            first.index(),
+            LifecycleEffectDirectionV1::Forward,
+            1,
+            started_at,
+        );
+        let mut steps = operation.steps().to_vec();
+        steps[0] = reserve_forward_step(first, admission, started_at)?;
+        let successor = operation
+            .successor(
+                current.record(),
+                LifecyclePhaseV1::Preparing,
+                0,
+                0,
+                steps,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
+        self.prepare_operation_progress(current_key, transaction_id, successor)
+    }
+
+    /// Plans successful refinement of one reserved forward attempt.
+    ///
+    /// An adjacent action on the same side of semantic commit is reserved in
+    /// this transaction. Finishing the reversible prefix instead enters
+    /// `Prepared` without releasing post-commit authority; finishing the final
+    /// post-commit action records terminal success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale observation authority, a non-forward or
+    /// non-reserved attempt, invalid time ordering, a malformed plan boundary,
+    /// or failed protected-journal planning.
+    pub fn prepare_successful_effect_progress(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        observation: LifecycleEffectObservationV1,
+        observed_at: LifecycleTimeV1,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        if transaction_id == [0; 16] {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let current = self
+            .current_operation(current_key)?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let operation = current.operation();
+        let request = observation.request();
+        let step_index = usize::try_from(request.step())
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let old_step = operation
+            .steps()
+            .get(step_index)
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if request.operation() != operation.operation_id()
+            || request.operation_revision() != operation.record_revision()
+            || request.direction() != LifecycleEffectDirectionV1::Forward
+            || old_step.state() != LifecycleStepStateV1::Applying
+            || u32::try_from(step_index).ok() != Some(operation.forward_progress())
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+
+        let mut steps = operation.steps().to_vec();
+        steps[step_index] = observe_forward_success(old_step, observation, observed_at)?;
+        let forward_progress = operation
+            .forward_progress()
+            .checked_add(1)
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let reversible = steps
+            .iter()
+            .take_while(|step| step.class() == LifecycleStepClassV1::PreCommitReversible)
+            .count();
+        let next_index = step_index + 1;
+        let (phase, terminal_result, finished_at) = if next_index == reversible
+            && old_step.class() == LifecycleStepClassV1::PreCommitReversible
+        {
+            (LifecyclePhaseV1::Prepared, None, None)
+        } else if next_index == steps.len() {
+            if old_step.class() != LifecycleStepClassV1::PostCommitForward
+                || operation.semantic_commit().is_none()
+            {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            (
+                LifecyclePhaseV1::Terminal,
+                Some(LifecycleTerminalResultV1::Succeeded),
+                Some(observed_at),
+            )
+        } else {
+            let next = steps
+                .get(next_index)
+                .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+            let phase = match (old_step.class(), next.class()) {
+                (
+                    LifecycleStepClassV1::PreCommitReversible,
+                    LifecycleStepClassV1::PreCommitReversible,
+                ) => LifecyclePhaseV1::Preparing,
+                (
+                    LifecycleStepClassV1::PostCommitForward,
+                    LifecycleStepClassV1::PostCommitForward,
+                ) if operation.semantic_commit().is_some() => LifecyclePhaseV1::Completing,
+                _ => return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord),
+            };
+            let next_number = u32::try_from(next.forward_attempts().len())
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+            let admission = effect_admission_digest(
+                operation.operation_id(),
+                current.record(),
+                transaction_id,
+                next.index(),
+                LifecycleEffectDirectionV1::Forward,
+                next_number,
+                observed_at,
+            );
+            steps[next_index] = reserve_forward_step(next, admission, observed_at)?;
+            (phase, None, None)
+        };
+        let successor = operation
+            .successor(
+                current.record(),
+                phase,
+                forward_progress,
+                operation.compensation_progress(),
+                steps,
+                operation.method_semantic_commit().cloned(),
+                None,
+                None,
+                terminal_result,
+                finished_at,
+            )
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
+        self.prepare_effect_progress(current_key, transaction_id, observation, successor)
+    }
+
     /// Plans one canonical lifecycle successor across protected record families.
     ///
     /// The lifecycle phase selects the destination family. A phase change may
@@ -3036,6 +3231,17 @@ fn effect_progress_is_exact(
         super::LifecycleEffectDirectionV1::Forward => request.step().checked_add(1),
         super::LifecycleEffectDirectionV1::Compensation => request.step().checked_sub(1),
     };
+    let reversible = successor
+        .steps()
+        .iter()
+        .take_while(|step| step.class() == LifecycleStepClassV1::PreCommitReversible)
+        .count();
+    let prepared_boundary = request.direction() == LifecycleEffectDirectionV1::Forward
+        && old_step.class() == LifecycleStepClassV1::PreCommitReversible
+        && successor.phase() == LifecyclePhaseV1::Prepared
+        && successor.semantic_commit().is_none()
+        && usize::try_from(successor.forward_progress()).ok() == Some(reversible)
+        && expected_next_step.and_then(|step| usize::try_from(step).ok()) == Some(reversible);
     let next_is_durable = match next_cursor {
         Some(cursor) => {
             successor.phase() != super::LifecyclePhaseV1::Terminal
@@ -3045,12 +3251,13 @@ fn effect_progress_is_exact(
                 && Some(cursor.step()) == expected_next_step
         }
         None => {
-            terminal_disposition.is_some()
-                && expected_next_step.is_none_or(|step| {
-                    usize::try_from(step)
-                        .ok()
-                        .is_none_or(|index| index >= successor.steps().len())
-                })
+            prepared_boundary
+                || (terminal_disposition.is_some()
+                    && expected_next_step.is_none_or(|step| {
+                        usize::try_from(step)
+                            .ok()
+                            .is_none_or(|index| index >= successor.steps().len())
+                    }))
         }
     };
     let changed_steps = current
@@ -3079,7 +3286,7 @@ fn effect_progress_is_exact(
                 )
         }
         None => {
-            terminal_disposition.is_some()
+            (prepared_boundary || terminal_disposition.is_some())
                 && changed_steps.len() == 1
                 && changed_steps[0] == request.step()
         }
@@ -3090,6 +3297,145 @@ fn effect_progress_is_exact(
         && exact_observed_step
         && next_is_durable
         && exact_changed_set)
+}
+
+fn effect_admission_digest(
+    operation: OperationId,
+    current_record: LifecycleRecordDigestV1,
+    transaction_id: [u8; 16],
+    step: u32,
+    direction: LifecycleEffectDirectionV1,
+    attempt: u32,
+    started_at: LifecycleTimeV1,
+) -> LifecycleStepAdmissionDigestV1 {
+    let mut bytes = [0_u8; 85];
+    bytes[..16].copy_from_slice(operation.as_bytes());
+    bytes[16..48].copy_from_slice(current_record.digest().as_bytes());
+    bytes[48..64].copy_from_slice(&transaction_id);
+    bytes[64..68].copy_from_slice(&step.to_be_bytes());
+    bytes[68] = direction as u8;
+    bytes[69..73].copy_from_slice(&attempt.to_be_bytes());
+    bytes[73..81].copy_from_slice(&started_at.get().to_be_bytes());
+    bytes[81..85].copy_from_slice(b"AOS1");
+    LifecycleStepAdmissionDigestV1::commit(&bytes)
+}
+
+fn reserve_forward_step(
+    step: &LifecycleStepV1,
+    admission: LifecycleStepAdmissionDigestV1,
+    started_at: LifecycleTimeV1,
+) -> Result<LifecycleStepV1, LifecycleProtectedJournalErrorV1> {
+    if step.state() != LifecycleStepStateV1::Planned
+        || !step.forward_attempts().is_empty()
+        || !step.compensation_attempts().is_empty()
+    {
+        return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+    }
+    let attempt = LifecycleEffectAttemptV1::new(
+        1,
+        LifecycleEffectDirectionV1::Forward,
+        step.request(),
+        step.request_body(),
+        step.plan(),
+        admission,
+        started_at,
+        LifecycleAttemptStateV1::Reserved,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    LifecycleStepV1::new(
+        step.index(),
+        step.class(),
+        step.domain(),
+        step.request(),
+        step.request_body(),
+        step.plan(),
+        step.compensation_request(),
+        step.compensation_body(),
+        step.compensation_plan(),
+        LifecycleStepStateV1::Applying,
+        vec![attempt],
+        step.compensation_attempts().to_vec(),
+        None,
+        step.compensation_result(),
+        None,
+        None,
+        None,
+    )
+    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
+}
+
+fn observe_forward_success(
+    step: &LifecycleStepV1,
+    observation: LifecycleEffectObservationV1,
+    observed_at: LifecycleTimeV1,
+) -> Result<LifecycleStepV1, LifecycleProtectedJournalErrorV1> {
+    let request = observation.request();
+    let previous = step
+        .forward_attempts()
+        .last()
+        .copied()
+        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    if step.state() != LifecycleStepStateV1::Applying
+        || previous.state() != LifecycleAttemptStateV1::Reserved
+        || previous.number() != request.attempt()
+        || previous.direction() != request.direction()
+        || previous.request() != request.logical_request()
+        || previous.body() != step.request_body()
+        || previous.plan().digest() != request.plan()
+        || previous.admission().digest() != request.admission()
+        || observed_at < previous.started_at()
+    {
+        return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+    }
+    let result = LifecycleStepResultDigestV1::commit(observation.result().as_bytes());
+    let inventory = LifecycleInventoryDigestV1::commit(observation.inventory().as_bytes());
+    let succeeded = LifecycleEffectAttemptV1::new(
+        previous.number(),
+        previous.direction(),
+        previous.request(),
+        previous.body(),
+        previous.plan(),
+        previous.admission(),
+        previous.started_at(),
+        LifecycleAttemptStateV1::Succeeded,
+        Some(result),
+        None,
+        Some(inventory),
+        None,
+        Some(observed_at),
+    )
+    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let mut forward_attempts = step.forward_attempts().to_vec();
+    let last = forward_attempts
+        .last_mut()
+        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    *last = succeeded;
+
+    LifecycleStepV1::new(
+        step.index(),
+        step.class(),
+        step.domain(),
+        step.request(),
+        step.request_body(),
+        step.plan(),
+        step.compensation_request(),
+        step.compensation_body(),
+        step.compensation_plan(),
+        LifecycleStepStateV1::Applied,
+        forward_attempts,
+        step.compensation_attempts().to_vec(),
+        Some(result),
+        step.compensation_result(),
+        Some(inventory),
+        None,
+        None,
+    )
+    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
 }
 
 fn require_current_succeeded_observation(

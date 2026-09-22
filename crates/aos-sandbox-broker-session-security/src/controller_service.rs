@@ -1916,6 +1916,44 @@ impl ProductionEffectExecutor {
         self.settle_lifecycle_progress(operation_id, outcome)
     }
 
+    fn ensure_initial_lifecycle_reservation(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<(), EffectFailure> {
+        let outcome = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (current_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "bound lifecycle operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            if current.operation().phase() != aos_sandbox::lifecycle::LifecyclePhaseV1::Accepted
+                || current.operation().plan_is_unbound()
+            {
+                return Ok(());
+            }
+            let current_record = current.record();
+            drop(current);
+            let started_at = current_lifecycle_time()?;
+            let transaction_id =
+                lifecycle_initial_reservation_transaction_id(operation_id, current_record.digest());
+            let prepared = owner
+                .prepare_initial_effect_reservation(&current_key, transaction_id, started_at)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            owner
+                .commit_effect_progress(prepared)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        };
+
+        self.settle_lifecycle_progress(operation_id, outcome)
+    }
+
     fn settle_lifecycle_progress(
         &mut self,
         operation_id: OperationId,
@@ -1996,6 +2034,24 @@ fn lifecycle_plan_binding_transaction_id(
         .finalize()
         .into();
     let mut transaction = [0_u8; 16];
+    transaction.copy_from_slice(&digest[..16]);
+    if transaction == [0; 16] {
+        transaction[15] = 1;
+    }
+    transaction
+}
+
+fn lifecycle_initial_reservation_transaction_id(
+    operation: OperationId,
+    current_record: ObjectDigest,
+) -> [u8; 16] {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.lifecycle.initial-reservation-transaction.v1\0")
+        .chain_update(operation.as_bytes())
+        .chain_update(current_record.as_bytes())
+        .finalize()
+        .into();
+    let mut transaction = [0; 16];
     transaction.copy_from_slice(&digest[..16]);
     if transaction == [0; 16] {
         transaction[15] = 1;
@@ -2201,6 +2257,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             };
             self.settle_lifecycle_admission(operation_id, admission)?;
             self.bind_lifecycle_plan(operation_id)?;
+            self.ensure_initial_lifecycle_reservation(operation_id)?;
         }
         Err(EffectFailure::Retryable(
             CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
@@ -2297,6 +2354,22 @@ fn production_authority_effect_timing() -> Option<AuthorityEffectAttemptTimingV1
     )
     .ok()?;
     Some(AuthorityEffectAttemptTimingV1::new(clock, deadline))
+}
+
+fn current_lifecycle_time() -> Result<LifecycleTimeV1, EffectFailure> {
+    let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+    let seconds = u64::try_from(realtime.tv_sec).map_err(|_| {
+        EffectFailure::Retryable("system realtime is outside the lifecycle range".to_owned())
+    })?;
+    let nanoseconds = seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(u64::try_from(realtime.tv_nsec).ok()?))
+        .ok_or_else(|| {
+            EffectFailure::Retryable("system realtime is outside the lifecycle range".to_owned())
+        })?;
+    LifecycleTimeV1::new(nanoseconds).map_err(|_| {
+        EffectFailure::Retryable("system realtime is outside the lifecycle range".to_owned())
+    })
 }
 
 fn current_boot_and_boottime() -> Option<([u8; 16], u64)> {
