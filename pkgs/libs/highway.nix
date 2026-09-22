@@ -44,7 +44,7 @@ in
                 cat > compiler/assembler-wrapper <<EOF
                 #!${buildPackages.bash}/bin/bash
                 case "\$1" in
-                  */x86_64-unknown-linux-gnu-as)
+                  */as|*/x86_64-unknown-linux-gnu-as)
                     shift
                     exec ${assembler}/bin/as "\$@"
                     ;;
