@@ -16,6 +16,11 @@
   targetOs = stdenv.hostPlatform.go.os;
   targetArch = stdenv.hostPlatform.go.arch;
   toolDirectory = "${targetOs}_${targetArch}";
+  # Go installs same-architecture commands directly in bin, even with a cross stdenv.
+  binDirectory =
+    if stdenv.buildPlatform.go.os == targetOs && stdenv.buildPlatform.go.arch == targetArch
+    then "bin"
+    else "bin/${toolDirectory}";
 in
   mkDerivation {
     inherit pname version src;
@@ -78,13 +83,13 @@ in
           ${nativeGo}/bin/go install -a std
           ${nativeGo}/bin/go install -a cmd/...
 
-          test -x "bin/${toolDirectory}/go"
-          test -x "bin/${toolDirectory}/gofmt"
+          test -x "${binDirectory}/go"
+          test -x "${binDirectory}/gofmt"
           test -d "pkg/tool/${toolDirectory}"
 
           for executable in \
-            "bin/${toolDirectory}/go" \
-            "bin/${toolDirectory}/gofmt" \
+            "${binDirectory}/go" \
+            "${binDirectory}/gofmt" \
             "pkg/tool/${toolDirectory}"/*; do
             "$OBJDUMP" --file-headers "$executable" >/dev/null
           done
@@ -95,7 +100,7 @@ in
         script = ''
           mkdir -p "$out/bin" "$out/pkg/tool"
 
-          cp -a "bin/${toolDirectory}/." "$out/bin/"
+          cp -a "${binDirectory}/." "$out/bin/"
           cp -a "pkg/tool/${toolDirectory}" "$out/pkg/tool/"
           cp -a src "$out/"
 
