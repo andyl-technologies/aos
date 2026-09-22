@@ -5,3 +5,4 @@
 
 pub mod journal;
 pub mod public_observation;
+pub mod public_projection;

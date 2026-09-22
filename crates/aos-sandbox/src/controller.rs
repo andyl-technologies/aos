@@ -5128,6 +5128,177 @@ where
         Ok(authorization.ok())
     }
 
+    /// Reauthorizes and executes one public projection read in the journal owner.
+    ///
+    /// Authorization and projection loading are sequenced in one controller
+    /// command. The async service never receives journal access, and no row can
+    /// cross the authenticated peer's project boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError`] when current authorization is
+    /// unavailable or durable projection and operation state is corrupt.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn authorized_public_projection_read(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        method: PublicApiAuditMethodV1,
+        resource_kind: aos_sandbox_core::ResourceKind,
+        operation: aos_sandbox_core::Operation,
+        selector: aos_sandbox_core::Selector,
+        protobuf_body: &[u8],
+        query: crate::controller_service::public_projection::PublicProjectionQueryV1,
+    ) -> Result<
+        Option<crate::controller_service::public_projection::AuthorizedPublicProjectionReadV1>,
+        ControllerServiceError,
+    > {
+        let Some(authorization) = self.authorize_public_read(
+            peer,
+            capability_id,
+            method,
+            resource_kind,
+            operation,
+            selector,
+            protobuf_body,
+        )?
+        else {
+            return Ok(None);
+        };
+        let records = match query {
+            crate::controller_service::public_projection::PublicProjectionQueryV1::One {
+                kind,
+                resource_id,
+            } => {
+                let Some(record) = self.public_projection(kind, resource_id)? else {
+                    return Ok(None);
+                };
+                if record.project() != peer.project() {
+                    return Ok(None);
+                }
+                vec![record]
+            }
+            crate::controller_service::public_projection::PublicProjectionQueryV1::List {
+                kind,
+                project,
+            } => {
+                if project != peer.project() {
+                    return Ok(None);
+                }
+                self.public_projections(kind, project)?
+            }
+            crate::controller_service::public_projection::PublicProjectionQueryV1::Related {
+                kind,
+                scope_kind,
+                scope_id,
+            } => {
+                let Some(scope) = self.public_projection(scope_kind, scope_id)? else {
+                    return Ok(None);
+                };
+                if scope.project() != peer.project() {
+                    return Ok(None);
+                }
+                self.public_projections(kind, scope.project())?
+            }
+        };
+
+        Ok(Some(
+            crate::controller_service::public_projection::AuthorizedPublicProjectionReadV1::new(
+                authorization,
+                records,
+            ),
+        ))
+    }
+
+    /// Loads one checked durable public resource projection.
+    ///
+    /// The linked public operation and its immutable project authorization are
+    /// validated before the projection escapes the sole journal owner. Desired
+    /// state alone therefore cannot manufacture a public observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError`] for a corrupt projection, operation
+    /// ledger, or project linkage.
+    pub fn public_projection(
+        &mut self,
+        kind: crate::controller_service::public_projection::PublicProjectionKindV1,
+        resource_id: [u8; 16],
+    ) -> Result<
+        Option<crate::controller_service::public_projection::PublicProjectionRecordV1>,
+        ControllerServiceError,
+    > {
+        let projection =
+            crate::controller_service::public_projection::PublicProjectionStoreV1::new(
+                self.reconciler.journal_mut(),
+            )
+            .get(kind, resource_id)?;
+        let Some(projection) = projection else {
+            return Ok(None);
+        };
+        self.validate_public_projection_operation(&projection)?;
+
+        Ok(Some(projection))
+    }
+
+    /// Lists one checked durable public resource kind in stable identity order.
+    ///
+    /// Every retained row must link to a valid public operation admitted for
+    /// the same project. A single corrupt row fails the complete immutable
+    /// listing rather than silently changing visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError`] for a corrupt projection, operation
+    /// ledger, or project linkage.
+    pub fn public_projections(
+        &mut self,
+        kind: crate::controller_service::public_projection::PublicProjectionKindV1,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<
+        Vec<crate::controller_service::public_projection::PublicProjectionRecordV1>,
+        ControllerServiceError,
+    > {
+        let projections =
+            crate::controller_service::public_projection::PublicProjectionStoreV1::new(
+                self.reconciler.journal_mut(),
+            )
+            .list(kind, project)?;
+        for projection in &projections {
+            self.validate_public_projection_operation(projection)?;
+        }
+
+        Ok(projections)
+    }
+
+    fn validate_public_projection_operation(
+        &mut self,
+        projection: &crate::controller_service::public_projection::PublicProjectionRecordV1,
+    ) -> Result<(), ControllerServiceError> {
+        let operation = projection.operation();
+        if self.reconciler.public_operation(operation)?.is_none() {
+            return Err(crate::ReconcilerError::CorruptLedger(
+                "public projection refers to an absent public operation",
+            )
+            .into());
+        }
+        let authorization = self
+            .reconciler
+            .public_operation_authorization(operation)?
+            .ok_or(crate::ReconcilerError::CorruptLedger(
+                "public projection operation has no authorization scope",
+            ))?;
+        if authorization.project() != projection.project() {
+            return Err(crate::ReconcilerError::CorruptLedger(
+                "public projection project differs from its operation scope",
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
     /// Returns one validated durable operation that still requires active work.
     ///
     /// This audit performs no admission, durable transition, or executor call.
@@ -5201,6 +5372,9 @@ pub enum ControllerServiceError {
     /// The fixed controller clock required for current public authorization failed.
     #[error("current public authorization is unavailable")]
     PublicAuthorizationUnavailable,
+    /// A durable public-resource projection is malformed or inconsistent.
+    #[error(transparent)]
+    PublicProjection(#[from] crate::controller_service::public_projection::PublicProjectionError),
     /// Durable admission or reconciliation failed.
     #[error(transparent)]
     Reconciler(#[from] ReconcilerError),

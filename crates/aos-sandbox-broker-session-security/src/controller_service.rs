@@ -34,10 +34,11 @@ use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::v1::{
     CancelOperationRequest, CancelOperationResponse, DiscoveryService, DiscoveryServiceExt, Event,
-    GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
-    GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
-    GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
-    OperationServiceExt, Timestamp, WatchRequest,
+    ExecutionServiceExt, FilesystemViewServiceExt, GetNodeCapabilitiesRequest,
+    GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse, GetOperationRequest,
+    GetOperationResponse, GetPublicFeatureRegistryRequest, GetPublicFeatureRegistryResponse,
+    NodeCapabilities, Operation, OperationService, OperationServiceExt, SandboxServiceExt,
+    SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId};
 use aos_sandbox_core::{ResourceKind, Selector};
@@ -59,6 +60,9 @@ use aos_sandbox::controller::DormantControllerCompositionV1;
 use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
 };
+use aos_sandbox::controller_service::public_projection::{
+    AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1,
+};
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
@@ -72,6 +76,7 @@ use aos_sandbox::{
 };
 
 mod public_api;
+mod public_services;
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const JOURNAL_NAME: &str = "controller.journal";
@@ -120,6 +125,20 @@ enum ControllerCommand {
         expires_at: Instant,
         reply:
             tokio::sync::oneshot::Sender<ControllerCommandResponse<Option<AuditAuthorizationV1>>>,
+    },
+    ReadPublicProjection {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        capability_id: CapabilityId,
+        method: PublicApiAuditMethodV1,
+        resource_kind: ResourceKind,
+        operation: CapabilityOperation,
+        selector: Selector,
+        protobuf_body: Vec<u8>,
+        query: PublicProjectionQueryV1,
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<
+            ControllerCommandResponse<Option<AuthorizedPublicProjectionReadV1>>,
+        >,
     },
 }
 
@@ -224,6 +243,11 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     });
     let public_connect =
         DiscoveryServiceExt::register(Arc::clone(&public_service), connectrpc::Router::new());
+    let public_connect = SandboxServiceExt::register(Arc::clone(&public_service), public_connect);
+    let public_connect = ExecutionServiceExt::register(Arc::clone(&public_service), public_connect);
+    let public_connect =
+        FilesystemViewServiceExt::register(Arc::clone(&public_service), public_connect);
+    let public_connect = SnapshotServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect =
         OperationServiceExt::register(public_service, public_connect).into_axum_service();
     let public_application = axum::Router::new().fallback_service(public_connect);
@@ -482,6 +506,43 @@ fn handle_controller_command(
             ) {
                 Ok(authorization) => {
                     let _ = reply.send(Ok(authorization));
+                    Ok(())
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    Err(message)
+                }
+            }
+        }
+        ControllerCommand::ReadPublicProjection {
+            peer,
+            capability_id,
+            method,
+            resource_kind,
+            operation,
+            selector,
+            protobuf_body,
+            query,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            match controller.authorized_public_projection_read(
+                &peer,
+                capability_id,
+                method,
+                resource_kind,
+                operation,
+                selector,
+                &protobuf_body,
+                query,
+            ) {
+                Ok(read) => {
+                    let _ = reply.send(Ok(read));
                     Ok(())
                 }
                 Err(error) => {
@@ -1240,6 +1301,79 @@ impl DiscoveryService for CapabilityService {
 
 impl CapabilityService {
     #[allow(clippy::too_many_arguments)]
+    async fn read_public_projection(
+        &self,
+        context: &RequestContext,
+        method: PublicApiAuditMethodV1,
+        resource_kind: ResourceKind,
+        operation: CapabilityOperation,
+        selector: Selector,
+        protobuf_body: &[u8],
+        query: PublicProjectionQueryV1,
+    ) -> Result<AuthorizedPublicProjectionReadV1, ConnectError> {
+        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public resource reads are unavailable on the diagnostic endpoint",
+            ));
+        }
+        let peer = context
+            .extensions()
+            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
+            .ok_or_else(|| {
+                ConnectError::new(
+                    ErrorCode::Unauthenticated,
+                    "public resource read requires registered TLS peer evidence",
+                )
+            })?;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::ReadPublicProjection {
+                peer: peer.clone(),
+                capability_id: public_capability_id(context)?,
+                method,
+                resource_kind,
+                operation,
+                selector,
+                protobuf_body: protobuf_body.to_vec(),
+                query,
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(controller_command_send_error)?;
+        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
+            .await
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "controller public resource read timed out",
+                )
+            })?
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::Unavailable,
+                    "controller worker ended before replying",
+                )
+            })?;
+
+        match result {
+            Ok(Some(read)) => Ok(read),
+            Ok(None) => Err(ConnectError::new(
+                ErrorCode::NotFound,
+                "authorized resource was not found",
+            )),
+            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
+                ErrorCode::DeadlineExceeded,
+                "controller public resource read expired",
+            )),
+            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "controller public resource state is unavailable",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn authorize_public_read(
         &self,
         context: &RequestContext,
@@ -1792,6 +1926,9 @@ mod tests {
                 }
                 ControllerCommand::AuthorizePublicRead { .. } => {
                     panic!("root diagnostics must not enter public read authorization")
+                }
+                ControllerCommand::ReadPublicProjection { .. } => {
+                    panic!("root diagnostics must not enter public projection reads")
                 }
             };
             assert_eq!(operation_id.as_bytes(), &[0x42; 16]);
