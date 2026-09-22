@@ -38,6 +38,9 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     create_guest_choice_campaign(&fixture, &compiled)?;
 
     let authority = write_component_authority(&fixture)?;
+    let immutable_inputs = guest_choice_immutable_inputs(&authority)?;
+    attest_guest_choice_immutable_inputs("source-discovery", &immutable_inputs, &authority)?;
+    require_empty_guest_choice_run_root("source-discovery")?;
     let mut service = start_packaged_service(&fixture, &authority)?;
     println!("\nguest_choice_rendezvous_icount={GUEST_CHOICE_RENDEZVOUS_ICOUNT}");
     grant_and_start_guest_choice_campaign(&fixture)?;
@@ -58,6 +61,9 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         &discovery_parent,
         &discovery_parent_configuration,
     )?;
+
+    attest_guest_choice_immutable_inputs("fast-replay", &immutable_inputs, &authority)?;
+    require_empty_guest_choice_run_root("fast-replay")?;
 
     let fast_submission = submit_choice(
         &fixture,
@@ -91,6 +97,9 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     )?;
     assert_eq!(retry.domain_kind, "integer");
 
+    attest_guest_choice_immutable_inputs("safe-replay", &immutable_inputs, &authority)?;
+    require_empty_guest_choice_run_root("safe-replay")?;
+
     // A second branch proves that the result marker is computed from the
     // guest's replies rather than emitted unconditionally by the fixture.
     let safe_submission = submit_choice(
@@ -120,6 +129,9 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         &safe_parent_configuration,
     )?;
     assert_eq!(safe_retry.domain_kind, "integer");
+
+    attest_guest_choice_immutable_inputs("safe-retry-replay", &immutable_inputs, &authority)?;
+    require_empty_guest_choice_run_root("safe-retry-replay")?;
 
     let safe_retry_submission = submit_choice(
         &fixture,
@@ -151,6 +163,8 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     // first branch. Restart the service before replying so its public identity
     // and the subsequent fresh-QEMU realization are both exercised.
     service.stop()?;
+    attest_guest_choice_immutable_inputs("post-restart-replay", &immutable_inputs, &authority)?;
+    require_empty_guest_choice_run_root("post-restart-replay")?;
     let mut selected_service = start_packaged_service(&fixture, &authority)?;
     let retry_after_restart = wait_for_choice(
         &fixture,
@@ -447,6 +461,84 @@ fn write_component_authority(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn
     fs::write(&authority, authority_bytes)?;
     fs::set_permissions(&authority, fs::Permissions::from_mode(0o600))?;
     Ok(authority)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GuestChoiceImmutableInput {
+    label: &'static str,
+    bytes: u64,
+    hash: ContentHash,
+}
+
+fn guest_choice_immutable_inputs(
+    authority: &Path,
+) -> Result<Vec<GuestChoiceImmutableInput>, Box<dyn Error>> {
+    let paths = [
+        ("qemu", required_path("CRUCIBLE_FLIGHT_QEMU")?),
+        ("plugin", required_path("CRUCIBLE_FLIGHT_PLUGIN")?),
+        ("kernel", required_path("CRUCIBLE_KERNEL")?),
+        ("initrd", required_path("CRUCIBLE_INITRD")?),
+        ("root-image", required_path("CRUCIBLE_ROOT_IMAGE")?),
+        (
+            "executor-deployment",
+            required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?,
+        ),
+        ("component-authority", authority.to_owned()),
+    ];
+    paths
+        .into_iter()
+        .map(|(label, path)| {
+            let file = fs::File::open(&path)?;
+            let bytes = file.metadata()?.len();
+            let hash = ContentHash::from_reader(file)?;
+            Ok(GuestChoiceImmutableInput { label, bytes, hash })
+        })
+        .collect()
+}
+
+fn attest_guest_choice_immutable_inputs(
+    stage: &str,
+    expected: &[GuestChoiceImmutableInput],
+    authority: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let observed = guest_choice_immutable_inputs(authority)?;
+    if observed != expected {
+        return Err(format!(
+            "guest-choice immutable launch inputs changed before {stage}: expected={expected:?} observed={observed:?}"
+        )
+        .into());
+    }
+
+    for input in observed {
+        println!(
+            "guest_choice_immutable_input stage={stage} input={} bytes={} hash={}",
+            input.label,
+            input.bytes,
+            input.hash.to_hex(),
+        );
+    }
+    Ok(())
+}
+
+fn require_empty_guest_choice_run_root(stage: &str) -> Result<(), Box<dyn Error>> {
+    let root = required_path("CRUCIBLE_FLIGHT_RUN_ROOT")?;
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&root)?.take(MAX_DIAGNOSTIC_ENTRIES) {
+        entries.push(entry?.file_name());
+    }
+    if !entries.is_empty() {
+        return Err(format!(
+            "guest-choice fresh run root is not empty before {stage}: root={} entries={entries:?}",
+            root.display()
+        )
+        .into());
+    }
+
+    println!(
+        "guest_choice_fresh_run_root_empty stage={stage} root={}",
+        root.display()
+    );
+    Ok(())
 }
 
 fn start_packaged_service(

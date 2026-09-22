@@ -5,6 +5,7 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crucible::FingerprintSample;
 use crucible_campaign::{
     AttemptId, CampaignHash, ChoiceCoordinate, ChoiceOpportunityId, ExecutionId,
 };
@@ -92,6 +93,7 @@ pub struct GuestSelectableBoundaryDiagnosticEvent {
     coordinate: ChoiceCoordinate,
     expected_opportunity: Option<ChoiceOpportunityId>,
     expected_coordinate: Option<ChoiceCoordinate>,
+    fingerprint: Option<FingerprintSample>,
 }
 
 impl GuestSelectableBoundaryDiagnosticEvent {
@@ -113,6 +115,7 @@ impl GuestSelectableBoundaryDiagnosticEvent {
         coordinate: ChoiceCoordinate,
         expected_opportunity: Option<ChoiceOpportunityId>,
         expected_coordinate: Option<ChoiceCoordinate>,
+        fingerprint: Option<FingerprintSample>,
     ) -> Self {
         Self {
             stage,
@@ -128,6 +131,7 @@ impl GuestSelectableBoundaryDiagnosticEvent {
             coordinate,
             expected_opportunity,
             expected_coordinate,
+            fingerprint,
         }
     }
 
@@ -208,13 +212,19 @@ impl GuestSelectableBoundaryDiagnosticEvent {
     pub const fn expected_coordinate(&self) -> Option<ChoiceCoordinate> {
         self.expected_coordinate
     }
+
+    /// Returns the read-only black-box sample captured at the stopped boundary.
+    #[must_use]
+    pub const fn fingerprint(&self) -> Option<&FingerprintSample> {
+        self.fingerprint.as_ref()
+    }
 }
 
 impl fmt::Display for GuestSelectableBoundaryDiagnosticEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 stage={} attempt={} execution={} decision_index={} node={:?} request_sequence={} trap_icount={} stopped_icount={} vcpu={} opportunity={} scheduler={} producer={} expected_opportunity={} expected_scheduler={} expected_producer={}",
+            "CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 stage={} attempt={} execution={} decision_index={} node={:?} request_sequence={} trap_icount={} stopped_icount={} vcpu={} opportunity={} scheduler={} producer={} expected_opportunity={} expected_scheduler={} expected_producer={} fingerprint_node={} fingerprint_at={} fingerprint={}",
             self.stage,
             OptionalIdentity(self.attempt.map(|value| value.to_text())),
             OptionalExecution(self.execution),
@@ -230,7 +240,47 @@ impl fmt::Display for GuestSelectableBoundaryDiagnosticEvent {
             OptionalIdentity(self.expected_opportunity.map(|value| value.to_text())),
             OptionalHash(self.expected_coordinate.map(|value| value.scheduler)),
             OptionalHash(self.expected_coordinate.map(|value| value.producer)),
+            OptionalNode(self.fingerprint.as_ref().map(|sample| &sample.node)),
+            OptionalU64(self.fingerprint.as_ref().map(|sample| sample.at.ticks)),
+            OptionalContentHash(
+                self.fingerprint
+                    .as_ref()
+                    .map(|sample| sample.fingerprint.hash),
+            ),
         )
+    }
+}
+
+struct OptionalNode<'a>(Option<&'a crucible::NodeId>);
+
+impl fmt::Display for OptionalNode<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(formatter, "{:?}", value.name),
+            None => formatter.write_str("none"),
+        }
+    }
+}
+
+struct OptionalU64(Option<u64>);
+
+impl fmt::Display for OptionalU64 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => value.fmt(formatter),
+            None => formatter.write_str("none"),
+        }
+    }
+}
+
+struct OptionalContentHash(Option<crucible::ContentHash>);
+
+impl fmt::Display for OptionalContentHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => formatter.write_str(&value.to_hex()),
+            None => formatter.write_str("none"),
+        }
     }
 }
 
@@ -304,6 +354,12 @@ enum GuestSelectableBoundaryDiagnosticDestination {
 impl GuestSelectableBoundaryDiagnosticRecorder {
     pub(crate) const fn is_enabled(&self) -> bool {
         self.state.is_some()
+    }
+
+    pub(crate) fn sample_permitted(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| state.claimed.load(Ordering::Acquire) < state.maximum_events)
     }
 
     pub(crate) fn stderr(config: GuestSelectableBoundaryDiagnosticConfig) -> Self {
@@ -505,6 +561,15 @@ mod tests {
                 scheduler: CampaignHash::from_bytes([0x91; 32]),
                 producer: CampaignHash::from_bytes([0x92; 32]),
             }),
+            Some(FingerprintSample {
+                node: crucible::NodeId {
+                    name: String::from("guest-a"),
+                },
+                at: crucible::VirtualTime { ticks: 57 },
+                fingerprint: crucible::ExecutionFingerprint {
+                    hash: crucible::ContentHash::from_bytes(b"stopped guest boundary"),
+                },
+            }),
         )
     }
 
@@ -547,6 +612,9 @@ mod tests {
             "expected_opportunity=crucible.campaign.choice-opportunity@",
             "expected_scheduler=91919191",
             "expected_producer=92929292",
+            "fingerprint_node=\"guest-a\"",
+            "fingerprint_at=57",
+            "fingerprint=",
         ] {
             assert!(line.contains(field), "missing `{field}` from `{line}`");
         }
@@ -559,8 +627,10 @@ mod tests {
         let clone = recorder.clone();
         let event = event("guest-a");
 
+        assert!(recorder.sample_permitted());
         recorder.record(&event);
         clone.record(&event);
+        assert!(!recorder.sample_permitted());
         recorder.record(&event);
         clone.record(&event);
 

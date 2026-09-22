@@ -262,6 +262,8 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         assert!(diagnostic_lines[0].contains("stage=replay"));
         assert!(diagnostic_lines[0].contains("decision_index=0"));
         assert!(diagnostic_lines[0].contains("trap_icount=41 stopped_icount=42 vcpu=0"));
+        assert!(diagnostic_lines[0].contains("fingerprint_node=\"router-a\""));
+        assert!(diagnostic_lines[0].contains("fingerprint_at=0"));
         assert!(
             diagnostic_lines[0]
                 .contains("expected_opportunity=crucible.campaign.choice-opportunity@")
