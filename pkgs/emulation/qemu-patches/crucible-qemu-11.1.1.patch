@@ -1,4 +1,4 @@
-From 806b8cc19cc9f5afd7fa61e2f258f0f081a1625a Mon Sep 17 00:00:00 2001
+From 16a392dfed6e24f4f12f13d64c1b6ad0ed39ecc8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -21208,7 +21208,7 @@ index 0000000000000000000000000000000000000000..857817ed55148c7a627df2c89eef181d
 +
 +type_init(accelerator_register_types)
 diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
-index 6f5db5fc42b72975a564201aadd39f4ab535efe9..77325d356a6c0d0b1bf3932ef27be6cb2fe29684 100644
+index 6f5db5fc42b72975a564201aadd39f4ab535efe9..142867841e3f3744edfd396ba724dea20ea57b6a 100644
 --- a/hw/virtio/virtio-pci.c
 +++ b/hw/virtio/virtio-pci.c
 @@ -16,6 +16,8 @@
@@ -21281,10 +21281,23 @@ index 6f5db5fc42b72975a564201aadd39f4ab535efe9..77325d356a6c0d0b1bf3932ef27be6cb
  static const VMStateDescription vmstate_virtio_pci_modern_queue_state = {
      .name = "virtio_pci/modern_queue_state",
      .version_id = 1,
-@@ -357,6 +413,40 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
+@@ -356,8 +412,48 @@ uint16_t virtio_pci_get_class_id(uint16_t device_id)
+ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
  {
      VirtIOPCIProxy *proxy = to_virtio_pci_proxy(d);
++    bool sim_icount = icount_enabled() &&
++                      strcmp(current_accel_name(), "sim") == 0;
++    uint16_t device_id = UINT16_MAX;
  
+-    return (proxy->flags & VIRTIO_PCI_FLAG_USE_IOEVENTFD) != 0;
++    if (sim_icount) {
++        VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
++
++        if (vdev != NULL) {
++            device_id = vdev->device_id;
++        }
++    }
++
 +    /*
 +     * Under the Crucible sim accelerator's deterministic icount, ioeventfd
 +     * would dispatch the guest's virtqueue kick asynchronously on the main
@@ -21297,7 +21310,8 @@ index 6f5db5fc42b72975a564201aadd39f4ab535efe9..77325d356a6c0d0b1bf3932ef27be6cb
 +     * deterministic icount; synchronous completion without ioeventfd is
 +     * ordinary QEMU device behaviour.  No QEMU record/replay (RFC-0010 NG-6).
 +     *
-+     * Scope this ioctl-level policy to virtio-rng, virtio-blk, and virtio-net.
++     * Scope this ioctl-level policy to virtio-rng, virtio-blk, virtio-net, and
++     * virtio-serial.
 +     * The virtio-rng entropy completion has no other deterministic anchor --
 +     * its delivery icount is the leak S6 hits.  A standard file-backed
 +     * virtio-blk guest must enter the generic notification path so the
@@ -21305,24 +21319,19 @@ index 6f5db5fc42b72975a564201aadd39f4ab535efe9..77325d356a6c0d0b1bf3932ef27be6cb
 +     * park before QEMU submits the AIO.
 +     * virtio-net must likewise preserve the guest's exact transmit icount
 +     * across a cold VMState restore instead of handing its kick to a
-+     * host-timed main-loop notifier.  All three devices preserve their
-+     * existing completion paths.
++     * host-timed main-loop notifier.  The virtio-serial control and output
++     * queues can otherwise raise their completion interrupt from that notifier
++     * and perturb RR ownership.  All four devices preserve their existing
++     * completion paths.
 +     */
-+    if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0) {
-+        VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
-+
-+        if (vdev != NULL &&
-+            (vdev->device_id == VIRTIO_ID_RNG ||
-+             vdev->device_id == VIRTIO_ID_BLOCK ||
-+             vdev->device_id == VIRTIO_ID_NET)) {
-+            return false;
-+        }
-+    }
-+
-     return (proxy->flags & VIRTIO_PCI_FLAG_USE_IOEVENTFD) != 0;
++    return virtio_pci_ioeventfd_policy(
++        (proxy->flags & VIRTIO_PCI_FLAG_USE_IOEVENTFD) != 0,
++        sim_icount,
++        device_id);
  }
  
-@@ -2632,6 +2722,9 @@ static void virtio_pci_bus_class_init(ObjectClass *klass, const void *data)
+ #define QEMU_VIRTIO_PCI_QUEUE_MEM_MULT 0x1000
+@@ -2632,6 +2728,9 @@ static void virtio_pci_bus_class_init(ObjectClass *klass, const void *data)
      bus_class->max_dev = 1;
      k->notify = virtio_pci_notify;
      k->save_config = virtio_pci_save_config;
@@ -23478,6 +23487,45 @@ index 0000000000000000000000000000000000000000..d15d5f9b17bf2a993e6ba7ecd34699c2
 +};
 +
 +#endif
+diff --git a/include/hw/virtio/virtio-pci.h b/include/hw/virtio/virtio-pci.h
+index ee50fb0d551dfdde07a8d646041f28d87a01d364..b371aa77b90fb03a2c82c49b08d1c5edbfc8f990 100644
+--- a/include/hw/virtio/virtio-pci.h
++++ b/include/hw/virtio/virtio-pci.h
+@@ -15,6 +15,7 @@
+ #ifndef QEMU_VIRTIO_PCI_H
+ #define QEMU_VIRTIO_PCI_H
+ 
++#include "standard-headers/linux/virtio_ids.h"
+ #include "hw/pci/msi.h"
+ #include "hw/virtio/virtio-bus.h"
+ #include "qom/object.h"
+@@ -49,6 +50,26 @@ enum {
+  * vcpu thread using ioeventfd for some devices. */
+ #define VIRTIO_PCI_FLAG_USE_IOEVENTFD   (1 << VIRTIO_PCI_FLAG_USE_IOEVENTFD_BIT)
+ 
++/* Keeps host-timed virtqueue dispatch out of deterministic sim+icount. */
++static inline bool virtio_pci_ioeventfd_policy(bool configured,
++                                               bool sim_icount,
++                                               uint16_t device_id)
++{
++    if (!configured || !sim_icount) {
++        return configured;
++    }
++
++    switch (device_id) {
++    case VIRTIO_ID_RNG:
++    case VIRTIO_ID_BLOCK:
++    case VIRTIO_ID_NET:
++    case VIRTIO_ID_CONSOLE:
++        return false;
++    default:
++        return true;
++    }
++}
++
+ /* have pio notification for modern device ? */
+ #define VIRTIO_PCI_FLAG_MODERN_PIO_NOTIFY \
+     (1 << VIRTIO_PCI_FLAG_MODERN_PIO_NOTIFY_BIT)
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
 index c99cb19d8865b448edee9ec2eac249807be983cd..6963744982fa8f2cfad5cb265a344bbb93a50e51 100644
 --- a/include/hw/virtio/virtio.h
@@ -94703,6 +94751,154 @@ index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..eea527109ac27fd232edc1abd41b8cf3
          { "query-vm-generation-id", ERROR_CLASS_GENERIC_ERROR },
          /* Only valid with a USB bus added */
          { "x-query-usb", ERROR_CLASS_GENERIC_ERROR },
+diff --git a/tests/qtest/virtio-serial-test.c b/tests/qtest/virtio-serial-test.c
+index 2541034822d89fba0102222634de2ed185274dde..2e259f855884a1e496ae4e7347875b11735b6765 100644
+--- a/tests/qtest/virtio-serial-test.c
++++ b/tests/qtest/virtio-serial-test.c
+@@ -10,14 +10,119 @@
+ #include "qemu/osdep.h"
+ #include "libqtest-single.h"
+ #include "qemu/module.h"
++#include "qobject/qdict.h"
++#include "hw/virtio/virtio-pci.h"
++#include "standard-headers/linux/virtio_console.h"
+ #include "libqos/virtio-serial.h"
+ 
+-/* Tests only initialization so far. TODO: Replace with functional tests */
++#define VIRTIO_SERIAL_TIMEOUT_US (10 * 1000 * 1000)
++
++/* Retain the original initialization-only coverage alongside queue tests. */
+ static void virtio_serial_nop(void *obj, void *data, QGuestAllocator *alloc)
+ {
+     /* no operation */
+ }
+ 
++static void virtio_serial_ioeventfd_policy(void)
++{
++    static const uint16_t sealed_device_ids[] = {
++        VIRTIO_ID_RNG,
++        VIRTIO_ID_BLOCK,
++        VIRTIO_ID_NET,
++        VIRTIO_ID_CONSOLE,
++    };
++    static const uint16_t unsealed_device_ids[] = {
++        VIRTIO_ID_SCSI,
++        UINT16_MAX,
++    };
++    size_t i;
++
++    for (i = 0; i < G_N_ELEMENTS(sealed_device_ids); i++) {
++        uint16_t device_id = sealed_device_ids[i];
++
++        g_assert_false(virtio_pci_ioeventfd_policy(true, true, device_id));
++        g_assert_true(virtio_pci_ioeventfd_policy(true, false, device_id));
++        g_assert_false(virtio_pci_ioeventfd_policy(false, true, device_id));
++        g_assert_false(virtio_pci_ioeventfd_policy(false, false, device_id));
++    }
++
++    for (i = 0; i < G_N_ELEMENTS(unsealed_device_ids); i++) {
++        uint16_t device_id = unsealed_device_ids[i];
++
++        g_assert_true(virtio_pci_ioeventfd_policy(true, true, device_id));
++        g_assert_true(virtio_pci_ioeventfd_policy(true, false, device_id));
++        g_assert_false(virtio_pci_ioeventfd_policy(false, true, device_id));
++        g_assert_false(virtio_pci_ioeventfd_policy(false, false, device_id));
++    }
++}
++
++static void virtio_serial_sync_output(void *obj, void *data,
++                                      QGuestAllocator *alloc)
++{
++    QVirtioSerial *serial = obj;
++    QVirtioDevice *dev = serial->vdev;
++    QTestState *qts = global_qtest;
++    QVirtQueue *output;
++    QVirtQueue *control_output;
++    struct virtio_console_control control = {
++        .id = cpu_to_le32(0),
++        .event = cpu_to_le16(VIRTIO_CONSOLE_DEVICE_READY),
++        .value = cpu_to_le16(1),
++    };
++    const char payload[] = "sync-output";
++    QDict *response;
++    uint64_t control_addr;
++    uint64_t output_addr;
++    uint64_t features;
++    uint32_t free_head;
++
++    features = qvirtio_get_features(dev);
++    features &= ~(QVIRTIO_F_BAD_FEATURE |
++                  (1ULL << VIRTIO_RING_F_INDIRECT_DESC) |
++                  (1ULL << VIRTIO_RING_F_EVENT_IDX));
++    qvirtio_set_features(dev, features);
++
++    output = qvirtqueue_setup(dev, alloc, 1);
++    control_output = qvirtqueue_setup(dev, alloc, 3);
++    qvirtio_set_driver_ok(dev);
++
++    control_addr = guest_alloc(alloc, sizeof(control));
++    memwrite(control_addr, &control, sizeof(control));
++    free_head = qvirtqueue_add(qts, control_output, control_addr,
++                               sizeof(control), false, false);
++    qvirtqueue_kick(qts, dev, control_output, free_head);
++    qvirtio_wait_used_elem(qts, dev, control_output, free_head, NULL,
++                           VIRTIO_SERIAL_TIMEOUT_US);
++
++    output_addr = guest_alloc(alloc, sizeof(payload) - 1);
++    memwrite(output_addr, payload, sizeof(payload) - 1);
++    free_head = qvirtqueue_add(qts, output, output_addr,
++                               sizeof(payload) - 1, false, false);
++    qvirtqueue_kick(qts, dev, output, free_head);
++    qvirtio_wait_used_elem(qts, dev, output, free_head, NULL,
++                           VIRTIO_SERIAL_TIMEOUT_US);
++
++    response = qtest_qmp(qts,
++                         "{ 'execute': 'ringbuf-read', 'arguments': {"
++                         " 'device': 'sync-output-ringbuf',"
++                         " 'size': %u, 'format': 'utf8' } }",
++                         (unsigned int)sizeof(payload) - 1);
++    g_assert_cmpstr(qdict_get_str(response, "return"), ==, payload);
++    qobject_unref(response);
++
++    guest_free(alloc, output_addr);
++    guest_free(alloc, control_addr);
++    qvirtqueue_cleanup(dev->bus, control_output, alloc);
++    qvirtqueue_cleanup(dev->bus, output, alloc);
++}
++
++static void *virtio_serial_sync_setup(GString *cmd_line, void *arg)
++{
++    g_string_append(cmd_line,
++                    " -global virtio-serial-pci.ioeventfd=off");
++    return arg;
++}
++
+ static void serial_hotplug(void *obj, void *data, QGuestAllocator *alloc)
+ {
+     qtest_qmp_device_add(global_qtest, "virtserialport", "hp-port", "{}");
+@@ -27,10 +132,22 @@ static void serial_hotplug(void *obj, void *data, QGuestAllocator *alloc)
+ static void register_virtio_serial_test(void)
+ {
+     QOSGraphTestOptions opts = { };
++    QOSGraphTestOptions sync_opts = {
++        .before = virtio_serial_sync_setup,
++    };
++
++    qtest_add_func("/virtio/serial/ioeventfd-policy",
++                   virtio_serial_ioeventfd_policy);
+ 
+     opts.edge.before_cmd_line = "-device virtconsole,bus=vser0.0";
+     qos_add_test("console-nop", "virtio-serial", virtio_serial_nop, &opts);
+ 
++    sync_opts.edge.before_cmd_line =
++        "-chardev ringbuf,id=sync-output-ringbuf "
++        "-device virtconsole,chardev=sync-output-ringbuf,bus=vser0.0";
++    qos_add_test("sync-output", "virtio-serial",
++                 virtio_serial_sync_output, &sync_opts);
++
+     opts.edge.before_cmd_line = "-device virtserialport,bus=vser0.0";
+     qos_add_test("serialport-nop", "virtio-serial", virtio_serial_nop, &opts);
+ 
 diff --git a/tests/tcg/plugins/crucible-exact-tb-exit.c b/tests/tcg/plugins/crucible-exact-tb-exit.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..d622a5548c4d850037867543e302a28961c022dd

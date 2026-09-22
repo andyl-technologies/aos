@@ -6,11 +6,11 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "e51eb0435097b730d664622f6eb21eb1697225beccda166ec9448499df159d29";
+  sha256 = "65ea63c5ac2307a4f41c6a41ab6078c1d317aeebc1b03df4e6b13a88cadb7f9b";
   subject = "crucible: integrate deterministic QEMU execution";
   body = "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork, asynchronous-worker, and device-fingerprint implementation as one atomic, reconstructible QEMU 11.1.1 integration boundary.";
-  commit = "806b8cc19cc9f5afd7fa61e2f258f0f081a1625a";
-  tree = "aca4d4e69e9f848c7aabb5130281e0f61d1742a4";
+  commit = "16a392dfed6e24f4f12f13d64c1b6ad0ed39ecc8";
+  tree = "7da626d8b67becd8ff384a243843cd68d26d874b";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -19,7 +19,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "e909ec5059032d78bbb7c2494e9250eb959c6206f81741ee59ff07bbdf8cd7ec";
+  bundleSha256 = "a518b1ab72d738df2d4b5ba46de8d0c0fb1c69a32d4aca8ba30c9d0fba561758";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
