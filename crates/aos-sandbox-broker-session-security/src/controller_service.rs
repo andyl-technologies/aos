@@ -82,9 +82,8 @@ use aos_sandbox::{
     AuthorityEffectObservationV1, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
     EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
     HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
-    NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1,
-    Reconciler, ResourceInventoryError, SingleNodeEffectExecutor,
-    ValidatedAuthorityEffectReceiptV1,
+    NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1, Reconciler,
+    ResourceInventoryError, SingleNodeEffectExecutor, ValidatedAuthorityEffectReceiptV1,
 };
 
 mod public_api;
@@ -102,6 +101,8 @@ const CONTROLLER_COMMAND_CAPACITY: usize = 64;
 const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
 const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
+const CONTROLLER_ORCHESTRATION_PENDING: &str =
+    "controller mutation is awaiting production orchestration lowering";
 
 type ProductionController = NodeController<ProductionOperationCompilerV1, ProductionEffectExecutor>;
 type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
@@ -1401,8 +1402,13 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         &mut self,
         _operation_id: OperationId,
         _step: u32,
-        _plan: &EffectPlan,
+        plan: &EffectPlan,
     ) -> Result<EffectObservation, EffectFailure> {
+        if plan.public_mutation_method().is_some() {
+            return Err(EffectFailure::Retryable(
+                CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+            ));
+        }
         Err(EffectFailure::Retryable(UNAVAILABLE_REASON.to_owned()))
     }
 
@@ -1410,8 +1416,13 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         &mut self,
         _operation_id: OperationId,
         _step: u32,
-        _plan: &EffectPlan,
+        plan: &EffectPlan,
     ) -> Result<EffectReceipt, EffectFailure> {
+        if plan.public_mutation_method().is_some() {
+            return Err(EffectFailure::Retryable(
+                CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+            ));
+        }
         Err(EffectFailure::Retryable(UNAVAILABLE_REASON.to_owned()))
     }
 
@@ -2671,6 +2682,11 @@ mod tests {
                 }
                 ControllerCommand::ReadPublicProjection { .. } => {
                     panic!("root diagnostics must not enter public projection reads")
+                }
+                ControllerCommand::PlanPublicPolicy { .. }
+                | ControllerCommand::AdmitPublicOperatorRecovery { .. }
+                | ControllerCommand::AdmitPublicMutation { .. } => {
+                    panic!("root diagnostics must not enter public mutation services")
                 }
             };
             assert_eq!(operation_id.as_bytes(), &[0x42; 16]);

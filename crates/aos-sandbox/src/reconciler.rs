@@ -2370,7 +2370,7 @@ where
                 }
             }
         } else {
-            if plan.method().is_none() {
+            if plan.method().is_none() && plan.public_mutation_method().is_none() {
                 return self.handle_failure(
                     operation_id,
                     step,
@@ -2378,9 +2378,7 @@ where
                     attempt,
                     plan,
                     None,
-                    EffectFailure::Permanent(
-                        "legacy effect has no authenticated broker method".to_owned(),
-                    ),
+                    EffectFailure::Permanent("effect has no closed dispatch method".to_owned()),
                     wall_seconds,
                 );
             }
@@ -3291,6 +3289,7 @@ mod tests {
             plan: EffectPlan {
                 domain: EffectDomain::Storage,
                 method: None,
+                controller_method: None,
                 request: b"legacy".to_vec(),
                 authority: None,
             },

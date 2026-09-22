@@ -27,6 +27,7 @@ pub(super) const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
 pub(super) const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
 const LEGACY_EFFECT_VERSION: u8 = 1;
 const EFFECT_VERSION: u8 = 2;
+const CONTROLLER_EFFECT_VERSION: u8 = 3;
 const AUTHORITY_BOUND_FLAG: u8 = 1;
 const MAXIMUM_DISPATCH_PACKET_BYTES: usize = MAXIMUM_REQUEST_BYTES;
 const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v1\0";
@@ -49,6 +50,8 @@ pub enum EffectDomain {
     Guardian = 5,
     /// Authenticated in-guest readiness, execution, and quiesce operations.
     Guest = 6,
+    /// Controller-owned orchestration of one authenticated public mutation.
+    Controller = 7,
 }
 
 impl EffectDomain {
@@ -60,6 +63,7 @@ impl EffectDomain {
             4 => Ok(Self::Network),
             5 => Ok(Self::Guardian),
             6 => Ok(Self::Guest),
+            7 => Ok(Self::Controller),
             _ => Err(ReconcilerError::CorruptLedger("unknown effect domain")),
         }
     }
@@ -150,6 +154,7 @@ const fn broker_method_from_code(value: i32) -> Option<BrokerMethod> {
 pub struct EffectPlan {
     pub(super) domain: EffectDomain,
     pub(super) method: Option<BrokerMethod>,
+    pub(super) controller_method: Option<crate::controller_query::PublicOperationMethodV1>,
     pub(super) request: Vec<u8>,
     pub(super) authority: Option<AuthorityEffectBindingV1>,
 }
@@ -176,6 +181,46 @@ impl EffectPlan {
         Ok(Self {
             domain,
             method: Some(method),
+            controller_method: None,
+            request,
+            authority: None,
+        })
+    }
+
+    /// Constructs a bounded controller-orchestration effect for one exact
+    /// authenticated public mutation envelope.
+    ///
+    /// The method is stored independently from the envelope and revalidated on
+    /// recovery. This keeps high-level lifecycle work out of the fixed broker
+    /// method registry while preserving one closed, restart-stable dispatch
+    /// identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidPlan`] when the envelope is malformed,
+    /// names another public method, or exceeds the effect-request bound.
+    pub fn public_mutation(
+        method: crate::controller_query::PublicOperationMethodV1,
+        request: Vec<u8>,
+    ) -> Result<Self, ReconcilerError> {
+        if request.is_empty() || request.len() > MAXIMUM_REQUEST_BYTES {
+            return Err(ReconcilerError::InvalidPlan(
+                "invalid controller effect request length",
+            ));
+        }
+        let resolved =
+            crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(&request)
+                .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
+        if resolved.operation_method() != method {
+            return Err(ReconcilerError::InvalidPlan(
+                "controller effect method does not match its request",
+            ));
+        }
+
+        Ok(Self {
+            domain: EffectDomain::Controller,
+            method: None,
+            controller_method: Some(method),
             request,
             authority: None,
         })
@@ -191,6 +236,14 @@ impl EffectPlan {
     #[must_use]
     pub const fn method(&self) -> Option<BrokerMethod> {
         self.method
+    }
+
+    /// Returns the exact public mutation handled by controller orchestration.
+    #[must_use]
+    pub const fn public_mutation_method(
+        &self,
+    ) -> Option<crate::controller_query::PublicOperationMethodV1> {
+        self.controller_method
     }
 
     /// Returns the exact idempotent request bytes sent to the executor.
@@ -236,6 +289,7 @@ impl AuthorityBoundEffectPlanV1 {
             plan: EffectPlan {
                 domain,
                 method: Some(method),
+                controller_method: None,
                 request: body.to_vec(),
                 authority: Some(AuthorityEffectBindingV1 {
                     source_draft_digest,
@@ -940,12 +994,18 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     } else {
         0
     };
-    let version = if record.plan.method.is_some() {
+    let version = if record.plan.controller_method.is_some() {
+        CONTROLLER_EFFECT_VERSION
+    } else if record.plan.method.is_some() {
         EFFECT_VERSION
     } else {
         LEGACY_EFFECT_VERSION
     };
-    let header_length = if version == EFFECT_VERSION { 22 } else { 18 };
+    let header_length = if version == LEGACY_EFFECT_VERSION {
+        18
+    } else {
+        22
+    };
     let mut bytes = Vec::with_capacity(
         header_length
             + authority_length
@@ -965,8 +1025,20 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     bytes.extend_from_slice(&request_length.to_le_bytes());
     bytes.extend_from_slice(&receipt_length.to_le_bytes());
     bytes.extend_from_slice(&diagnostic_length.to_le_bytes());
-    if let Some(method) = record.plan.method {
+    if version == EFFECT_VERSION {
+        let method = record
+            .plan
+            .method
+            .ok_or(ReconcilerError::InvalidPlan("broker effect has no method"))?;
         bytes.extend_from_slice(&(method as i32).to_be_bytes());
+    } else if version == CONTROLLER_EFFECT_VERSION {
+        let method = record
+            .plan
+            .controller_method
+            .ok_or(ReconcilerError::InvalidPlan(
+                "controller effect has no method",
+            ))?;
+        bytes.extend_from_slice(&i32::from(method.record_code()).to_be_bytes());
     }
     if let Some(binding) = &record.plan.authority {
         bytes.extend_from_slice(binding.operation_id.as_bytes());
@@ -1027,7 +1099,10 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
 
 pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, ReconcilerError> {
     if bytes.len() < 18
-        || !matches!(bytes[0], LEGACY_EFFECT_VERSION | EFFECT_VERSION)
+        || !matches!(
+            bytes[0],
+            LEGACY_EFFECT_VERSION | EFFECT_VERSION | CONTROLLER_EFFECT_VERSION
+        )
         || !matches!(bytes[3], 0 | AUTHORITY_BOUND_FLAG)
     {
         return Err(ReconcilerError::CorruptLedger(
@@ -1064,6 +1139,18 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
             broker_method_from_code(method_code).ok_or(ReconcilerError::CorruptLedger(
                 "unknown broker effect method",
             ))?,
+        )
+    } else {
+        None
+    };
+    let controller_method = if bytes[0] == CONTROLLER_EFFECT_VERSION {
+        let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
+        let method_code = u8::try_from(method_code)
+            .map_err(|_| ReconcilerError::CorruptLedger("unknown controller effect method"))?;
+        Some(
+            crate::controller_query::PublicOperationMethodV1::from_record_code(method_code).ok_or(
+                ReconcilerError::CorruptLedger("unknown controller effect method"),
+            )?,
         )
     } else {
         None
@@ -1249,6 +1336,21 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
             "authority effect binding digest mismatch",
         ));
     }
+    if let Some(method) = controller_method {
+        if domain != EffectDomain::Controller || authority.is_some() {
+            return Err(ReconcilerError::CorruptLedger(
+                "controller effect has invalid domain or authority",
+            ));
+        }
+        let resolved =
+            crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(&request)
+                .map_err(|_| ReconcilerError::CorruptLedger("invalid controller effect request"))?;
+        if resolved.operation_method() != method {
+            return Err(ReconcilerError::CorruptLedger(
+                "controller effect method/request mismatch",
+            ));
+        }
+    }
     let state = decode_state(state_code, attempt, receipt, diagnostic)?;
     let dispatch_shape_valid = if authority.is_some() {
         matches!(
@@ -1270,6 +1372,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         plan: EffectPlan {
             domain,
             method,
+            controller_method,
             request,
             authority,
         },
@@ -1307,6 +1410,25 @@ fn validate_lengths(
     }
     if let Some(method) = plan.method {
         validate_broker_method_domain(plan.domain, method)?;
+    }
+    if let Some(method) = plan.controller_method {
+        if plan.domain != EffectDomain::Controller || plan.method.is_some() {
+            return Err(ReconcilerError::InvalidPlan(
+                "controller effect has an invalid dispatch identity",
+            ));
+        }
+        let resolved =
+            crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(&plan.request)
+                .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
+        if resolved.operation_method() != method {
+            return Err(ReconcilerError::InvalidPlan(
+                "controller effect method does not match its request",
+            ));
+        }
+    } else if plan.domain == EffectDomain::Controller {
+        return Err(ReconcilerError::InvalidPlan(
+            "controller effect has no dispatch method",
+        ));
     }
     if plan
         .authority
@@ -1489,6 +1611,7 @@ mod tests {
             plan: EffectPlan {
                 domain: EffectDomain::Host,
                 method: Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
+                controller_method: None,
                 request: b"guardian".to_vec(),
                 authority: Some(AuthorityEffectBindingV1 {
                     operation_id: OperationId::from_bytes([3; 16]),
@@ -1710,7 +1833,7 @@ mod tests {
         })
         .unwrap();
 
-        for version in [0, 3, u8::MAX] {
+        for version in [0, 4, u8::MAX] {
             for canonical in [&generic, &authority] {
                 let mut unknown_version = canonical.clone();
                 unknown_version[0] = version;
@@ -1814,6 +1937,7 @@ mod tests {
         EffectPlan {
             domain: EffectDomain::Host,
             method: Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
+            controller_method: None,
             request: b"abc".to_vec(),
             authority: Some(AuthorityEffectBindingV1 {
                 operation_id,
@@ -1834,6 +1958,7 @@ mod tests {
         EffectPlan {
             domain: EffectDomain::Host,
             method: None,
+            controller_method: None,
             request: request.to_vec(),
             authority: None,
         }

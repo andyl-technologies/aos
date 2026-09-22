@@ -341,18 +341,19 @@ impl TryFrom<Snapshot> for CheckedSnapshotResourceV1 {
         exact_nonzero_id(&value.source_sandbox_id)?;
         exact_nonzero_id(&value.project_id)?;
         checked_version(&value.resource_version)?;
-        validate_descriptor_media(
-            value
-                .manifest
-                .as_option()
-                .ok_or(InvalidPublicResource::Unspecified)?,
-            "application/vnd.aos.sandbox.snapshot.v1+cbor",
-        )?;
-        value
+        let phase = value
             .phase
             .as_known()
             .filter(|phase| *phase != SnapshotPhase::SNAPSHOT_PHASE_UNSPECIFIED)
             .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
+        if let Some(manifest) = value.manifest.as_option() {
+            validate_descriptor_media(manifest, "application/vnd.aos.sandbox.snapshot.v1+cbor")?;
+        } else if matches!(
+            phase,
+            SnapshotPhase::SNAPSHOT_PHASE_READY | SnapshotPhase::SNAPSHOT_PHASE_DELETING
+        ) {
+            return Err(InvalidPublicResource::Unspecified);
+        }
         value
             .availability
             .as_known()

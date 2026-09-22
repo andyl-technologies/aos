@@ -33,6 +33,9 @@ use crate::{
     OperationPlan, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
 };
 
+mod policy_plan;
+mod public_mutation;
+
 const CAPABILITY_RESOURCE_VERSION_DOMAIN: &[u8] =
     b"aos.sandbox.public-capability-resource-version.v1\0";
 /// Selects the canonical public capability-attenuation schema.
@@ -120,8 +123,26 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
             Request::CapabilityRevoke(revoke) => {
                 compile_capability_revoke(journal, peer, &authorized, revoke, request_digest)
             }
-            _ => Err(OperationCompilationError::Rejected),
+            _ => public_mutation::compile_public_mutation(
+                journal,
+                peer,
+                &authorized,
+                canonical_request,
+                request_digest,
+            ),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn plan_public_policy(
+        &mut self,
+        journal: &mut Journal,
+        request: crate::public_policy_planner::AuthorizedPublicPolicyPlanRequestV1,
+    ) -> Result<
+        aos_proto::aos::sandbox::v1::PolicyPlan,
+        crate::public_policy_planner::PublicPolicyPlanningErrorV1,
+    > {
+        policy_plan::compile_public_policy_plan(journal, request.request())
     }
 }
 
