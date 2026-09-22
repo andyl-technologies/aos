@@ -299,9 +299,10 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
             return self.storage_effect_signing_message(outcome, inventory);
         }
         let expected_domain = match endpoint {
+            LifecycleBootBootstrapEndpointV1::Host => LifecycleEffectDomainV1::Runtime,
             LifecycleBootBootstrapEndpointV1::Mount => LifecycleEffectDomainV1::Mount,
             LifecycleBootBootstrapEndpointV1::Network => LifecycleEffectDomainV1::Network,
-            LifecycleBootBootstrapEndpointV1::Host | LifecycleBootBootstrapEndpointV1::Storage => {
+            LifecycleBootBootstrapEndpointV1::Storage => {
                 return Err(LifecyclePhase6ErrorV1::InvalidInput);
             }
         };

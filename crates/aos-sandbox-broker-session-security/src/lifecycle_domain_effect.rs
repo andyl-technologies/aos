@@ -1,4 +1,4 @@
-//! Protected Storage, Mount, and Network lifecycle effect exchanges.
+//! Protected Host, Storage, Mount, and Network lifecycle effect exchanges.
 //!
 //! This dormant adapter owns the authenticated client session from the exact
 //! effect request through its immediately adjacent complete inventory query.
@@ -7,12 +7,13 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerMethod, BrokerRequestEnvelope, InventoryMountsRequest,
-    InventoryNetworksRequest, InventoryStorageRequest, RequestHeader,
+    InventoryNetworksRequest, InventoryRuntimeRequest, InventoryStorageRequest, RequestHeader,
+    RuntimeAction,
 };
 use aos_sandbox::lifecycle::{
     CurrentLifecycleEffectV1, LifecycleBootBootstrapEndpointV1,
     LifecycleBootInventoryBootstrapChallengeV1, LifecycleEffectObservationV1,
-    LifecyclePhase6ErrorV1,
+    LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use buffa::Message as _;
@@ -109,6 +110,88 @@ impl DormantLifecycleDomainEffectOwnerV1 {
     #[must_use]
     pub fn from_protected_session(session: DormantAuthenticatedBrokerSessionV1) -> Self {
         Self { session }
+    }
+
+    /// Returns the protected session after all exchange custody has settled.
+    #[must_use]
+    pub fn into_protected_session(self) -> DormantAuthenticatedBrokerSessionV1 {
+        self.session
+    }
+
+    /// Sends one exact Host runtime Apply and immediately inventories runtimes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before observation minting for a request that differs
+    /// from the exact lifecycle action and live fence, protected recovery
+    /// failure, transport failure, or noncanonical readback.
+    pub fn observe_runtime<'lifecycle>(
+        &mut self,
+        challenge: LifecycleBootInventoryBootstrapChallengeV1,
+        effect: CurrentLifecycleEffectV1<'lifecycle>,
+        fence: LiveRuntimeFenceV1,
+        action: RuntimeAction,
+        build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
+    ) -> Result<DormantLifecycleDomainEffectProgressV1<'lifecycle>, LifecyclePhase6ErrorV1> {
+        let exchange = ExchangeStageV1::Effect {
+            challenge,
+            endpoint: LifecycleBootBootstrapEndpointV1::Host,
+            effect,
+        };
+        self.prepare_query_checked(
+            exchange,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            build,
+            move |effect, request| {
+                effect
+                    .validate_authenticated_runtime_request(request, fence, action)
+                    .is_ok()
+            },
+        )
+    }
+
+    /// Completes a retained exchange within its original signed deadline.
+    ///
+    /// Socket backpressure waits on the same protected session. Durable
+    /// initialization and commit ambiguity receive one immediate exact
+    /// readback attempt; a second ambiguity fails closed so the caller can
+    /// replace the poisoned process-local session and reopen protected history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when readiness, protected recovery, or authenticated
+    /// observation does not complete without minting replacement identity.
+    pub(crate) fn complete_blocking<'lifecycle>(
+        &mut self,
+        mut progress: DormantLifecycleDomainEffectProgressV1<'lifecycle>,
+    ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
+        let mut attempted_durable_recovery = false;
+        loop {
+            let recovery = match progress {
+                DormantLifecycleDomainEffectProgressV1::Observed(observation) => {
+                    return Ok(observation);
+                }
+                DormantLifecycleDomainEffectProgressV1::RecoveryRequired(recovery) => recovery,
+            };
+            if let Some((wants_write, deadline)) = recovery.readiness() {
+                self.session
+                    .as_fd()
+                    .and_then(|fd| {
+                        crate::dormant_handshake::wait_for_handshake_readiness(
+                            fd,
+                            wants_write,
+                            deadline,
+                        )
+                    })
+                    .and_then(|()| crate::dormant_handshake::check_production_deadline(deadline))
+                    .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+            } else if attempted_durable_recovery {
+                return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+            } else {
+                attempted_durable_recovery = true;
+            }
+            progress = self.recover(recovery)?;
+        }
     }
 
     /// Sends one exact Mount Apply and immediately queries complete Mount state.
@@ -312,6 +395,9 @@ impl DormantLifecycleDomainEffectOwnerV1 {
         outcome: AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<DormantLifecycleDomainEffectProgressV1<'lifecycle>, LifecyclePhase6ErrorV1> {
         let method = match endpoint {
+            LifecycleBootBootstrapEndpointV1::Host => {
+                BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
+            }
             LifecycleBootBootstrapEndpointV1::Storage => {
                 BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
             }
@@ -321,7 +407,6 @@ impl DormantLifecycleDomainEffectOwnerV1 {
             LifecycleBootBootstrapEndpointV1::Network => {
                 BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
             }
-            _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
         };
         let exchange = ExchangeStageV1::Inventory {
             challenge,
@@ -369,14 +454,27 @@ impl DormantLifecycleDomainEffectOwnerV1 {
         method: BrokerMethod,
         build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
     ) -> Result<DormantLifecycleDomainEffectProgressV1<'lifecycle>, LifecyclePhase6ErrorV1> {
+        self.prepare_query_checked(exchange, method, build, |effect, request| {
+            effect
+                .validate_authenticated_broker_request(request)
+                .is_ok()
+        })
+    }
+
+    fn prepare_query_checked<'lifecycle>(
+        &mut self,
+        exchange: ExchangeStageV1<'lifecycle>,
+        method: BrokerMethod,
+        build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
+        validate: impl FnOnce(
+            &CurrentLifecycleEffectV1<'_>,
+            &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        ) -> bool,
+    ) -> Result<DormantLifecycleDomainEffectProgressV1<'lifecycle>, LifecyclePhase6ErrorV1> {
         let prepared = self
             .session
             .prepare_authenticated_request_checked(method, build, |request| {
-                !exchange.is_effect()
-                    || exchange
-                        .effect()
-                        .validate_authenticated_broker_request(request)
-                        .is_ok()
+                !exchange.is_effect() || validate(exchange.effect(), request)
             })
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
         match prepared {
@@ -503,6 +601,22 @@ impl DormantLifecycleDomainEffectOwnerV1 {
     }
 }
 
+impl DormantLifecycleDomainEffectRecoveryV1<'_> {
+    fn readiness(&self) -> Option<(bool, u64)> {
+        match &self.stage {
+            RecoveryStageV1::Send { prepared, .. } => {
+                Some((true, prepared.deadline_boottime_nanoseconds()))
+            }
+            RecoveryStageV1::Receive { outstanding, .. } => {
+                Some((false, outstanding.deadline_boottime_nanoseconds()))
+            }
+            RecoveryStageV1::Initialization { .. }
+            | RecoveryStageV1::Successor { .. }
+            | RecoveryStageV1::Commit { .. } => None,
+        }
+    }
+}
+
 fn recovery_required<'lifecycle>(
     stage: RecoveryStageV1<'lifecycle>,
 ) -> DormantLifecycleDomainEffectProgressV1<'lifecycle> {
@@ -527,6 +641,14 @@ fn inventory_envelope(
     })
     .into();
     let (method, body) = match endpoint {
+        LifecycleBootBootstrapEndpointV1::Host => (
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+            InventoryRuntimeRequest {
+                header,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        ),
         LifecycleBootBootstrapEndpointV1::Storage => (
             BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
             InventoryStorageRequest {
@@ -551,7 +673,6 @@ fn inventory_envelope(
             }
             .encode_to_vec(),
         ),
-        _ => (BrokerMethod::BROKER_METHOD_UNSPECIFIED, Vec::new()),
     };
     BrokerRequestEnvelope {
         method: method.into(),

@@ -6,10 +6,14 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerDescriptorEntry, BrokerMethod, BrokerRequestEnvelope, PublishHostCatalogRequest,
-    RequestHeader,
+    RequestHeader, RuntimeAction,
 };
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
+};
+use aos_sandbox::lifecycle::{
+    CurrentLifecycleEffectV1, LifecycleBootInventoryBootstrapChallengeV1,
+    LifecycleEffectObservationV1, LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
 use aos_sandbox::{
     AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
@@ -30,7 +34,7 @@ use crate::{
 
 /// Owns one Host channel and any exact publication awaiting completion.
 pub(crate) struct ControllerHostPublication {
-    session: DormantAuthenticatedBrokerSessionV1,
+    session: Option<DormantAuthenticatedBrokerSessionV1>,
     pending: Option<PendingPublication>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
     poisoned: bool,
@@ -66,7 +70,7 @@ pub(crate) enum ControllerHostPublicationError {
 impl ControllerHostPublication {
     pub(crate) fn new(session: DormantAuthenticatedBrokerSessionV1) -> Self {
         Self {
-            session,
+            session: Some(session),
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             poisoned: false,
@@ -83,7 +87,10 @@ impl ControllerHostPublication {
                 "Host session has retained catalog publication work".to_owned(),
             ));
         }
-        self.authority_effects.apply(&mut self.session, effect)
+        let session = self.session.as_mut().ok_or_else(|| {
+            EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
+        })?;
+        self.authority_effects.apply(session, effect)
     }
 
     /// Resumes matching retained Host effect custody without issuing a new Apply.
@@ -91,7 +98,8 @@ impl ControllerHostPublication {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
-        self.authority_effects.resume(&mut self.session, effect)
+        let session = self.session.as_mut()?;
+        self.authority_effects.resume(session, effect)
     }
 
     /// Recovers this exact Apply from prior-process terminal history.
@@ -104,7 +112,12 @@ impl ControllerHostPublication {
                 "Host session has retained recovery work".to_owned(),
             ));
         }
-        self.session.recover_terminal_authority_effect(effect)
+        self.session
+            .as_mut()
+            .ok_or_else(|| {
+                EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
+            })?
+            .recover_terminal_authority_effect(effect)
     }
 
     /// Queries Host for one exact prior-process authority effect.
@@ -117,7 +130,52 @@ impl ControllerHostPublication {
                 "Host session has retained catalog publication work".to_owned(),
             ));
         }
-        self.authority_effects.query_host(&mut self.session, effect)
+        let session = self.session.as_mut().ok_or_else(|| {
+            EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
+        })?;
+        self.authority_effects.query_host(session, effect)
+    }
+
+    /// Applies one exact lifecycle runtime effect with adjacent Host inventory.
+    pub(crate) fn apply_lifecycle_runtime<'lifecycle>(
+        &mut self,
+        challenge: LifecycleBootInventoryBootstrapChallengeV1,
+        effect: CurrentLifecycleEffectV1<'lifecycle>,
+        fence: LiveRuntimeFenceV1,
+        action: RuntimeAction,
+        build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
+    ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
+        if self.pending.is_some()
+            || self.authority_effects.has_pending()
+            || self.poisoned
+            || self.session.is_none()
+        {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let session = self
+            .session
+            .take()
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let mut owner = crate::DormantLifecycleDomainEffectOwnerV1::from_protected_session(session);
+        let result = owner
+            .observe_runtime(challenge, effect, fence, action, build)
+            .and_then(|progress| owner.complete_blocking(progress));
+        self.session = Some(owner.into_protected_session());
+        if result.is_err() {
+            // Reopen durable history on a fresh transport before any new Host
+            // work; the exact request remains protected even if this process's
+            // recovery token could not settle.
+            self.poisoned = true;
+        }
+        result
+    }
+
+    /// Reports whether no other Host exchange owns this protected session.
+    pub(crate) const fn lifecycle_runtime_ready(&self) -> bool {
+        self.pending.is_none()
+            && !self.authority_effects.has_pending()
+            && !self.poisoned
+            && self.session.is_some()
     }
 
     /// Reports that the current authenticated session must be replaced.
@@ -144,11 +202,15 @@ impl ControllerHostPublication {
             // A failed preparation may follow a protected write. Never issue a
             // different request on this owner after a fatal admission error.
             self.poisoned = true;
-            let preparation = self.session.prepare_authenticated_descriptor_request(
-                BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG,
-                vec![descriptor],
-                |coordinates| publication_envelope(draft, coordinates),
-            )?;
+            let preparation = self
+                .session
+                .as_mut()
+                .ok_or(ControllerHostPublicationError::Conflict)?
+                .prepare_authenticated_descriptor_request(
+                    BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG,
+                    vec![descriptor],
+                    |coordinates| publication_envelope(draft, coordinates),
+                )?;
             self.pending = Some(PendingPublication {
                 draft: draft.clone(),
                 stage: PublicationStage::Prepare(preparation),
@@ -169,7 +231,10 @@ impl ControllerHostPublication {
                 PublicationStage::Prepare(
                     DormantBrokerDescriptorRequestPreparationV1::Prepared(request),
                 ) => PublicationStage::Send(
-                    self.session.send_authenticated_descriptor_request(request),
+                    self.session
+                        .as_mut()
+                        .ok_or(ControllerHostPublicationError::Conflict)?
+                        .send_authenticated_descriptor_request(request),
                 ),
                 PublicationStage::Prepare(preparation) => {
                     if attempted_recovery {
@@ -179,7 +244,7 @@ impl ControllerHostPublication {
                         );
                     }
                     attempted_recovery = true;
-                    let preparation = self.recover_preparation(preparation);
+                    let preparation = self.recover_preparation(preparation)?;
                     PublicationStage::Prepare(preparation)
                 }
                 PublicationStage::Send(DormantBrokerDescriptorRequestSendProgressV1::Sent(
@@ -199,7 +264,10 @@ impl ControllerHostPublication {
                         return Err(error);
                     }
                     PublicationStage::Send(
-                        self.session.send_authenticated_descriptor_request(request),
+                        self.session
+                            .as_mut()
+                            .ok_or(ControllerHostPublicationError::Conflict)?
+                            .send_authenticated_descriptor_request(request),
                     )
                 }
                 PublicationStage::Send(
@@ -218,12 +286,19 @@ impl ControllerHostPublication {
                     attempted_recovery = true;
                     PublicationStage::Send(
                         self.session
+                            .as_mut()
+                            .ok_or(ControllerHostPublicationError::Conflict)?
                             .retry_authenticated_descriptor_request(recovery),
                     )
                 }
                 PublicationStage::Receive(request) => {
                     let deadline = request.deadline_boottime_nanoseconds();
-                    match self.session.receive_authenticated_response(request)? {
+                    match self
+                        .session
+                        .as_mut()
+                        .ok_or(ControllerHostPublicationError::Conflict)?
+                        .receive_authenticated_response(request)?
+                    {
                         DormantBrokerResponseProgressV1::Pending(request) => {
                             if let Err(error) = self.wait(false, deadline) {
                                 self.retain(pending.draft, PublicationStage::Receive(request));
@@ -240,7 +315,11 @@ impl ControllerHostPublication {
                     committed,
                 )) => {
                     let (outcome, currentness) = committed.into_outcome_and_currentness();
-                    let mut current = self.session.revalidate_broker_outcome(currentness)?;
+                    let mut current = self
+                        .session
+                        .as_mut()
+                        .ok_or(ControllerHostPublicationError::Conflict)?
+                        .revalidate_broker_outcome(currentness)?;
                     current.revalidate()?;
                     crate::dormant_handshake::check_production_deadline(
                         outcome.request().deadline_boottime_nanoseconds(),
@@ -261,7 +340,12 @@ impl ControllerHostPublication {
                     else {
                         return Err(ControllerHostPublicationError::Conflict);
                     };
-                    PublicationStage::Commit(self.session.recover_broker_outcome_commit(recovery))
+                    PublicationStage::Commit(
+                        self.session
+                            .as_mut()
+                            .ok_or(ControllerHostPublicationError::Conflict)?
+                            .recover_broker_outcome_commit(recovery),
+                    )
                 }
             };
             self.retain(pending.draft, stage);
@@ -276,23 +360,23 @@ impl ControllerHostPublication {
     fn recover_preparation(
         &mut self,
         preparation: DormantBrokerDescriptorRequestPreparationV1,
-    ) -> DormantBrokerDescriptorRequestPreparationV1 {
+    ) -> Result<DormantBrokerDescriptorRequestPreparationV1, ControllerHostPublicationError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or(ControllerHostPublicationError::Conflict)?;
         match preparation {
             DormantBrokerDescriptorRequestPreparationV1::InitializationRecoveryRequired {
                 recovery,
                 request,
                 ..
-            } => self
-                .session
-                .recover_prepared_descriptor_initialization(recovery, request),
+            } => Ok(session.recover_prepared_descriptor_initialization(recovery, request)),
             DormantBrokerDescriptorRequestPreparationV1::SuccessorRecoveryRequired {
                 recovery,
                 request,
                 ..
-            } => self
-                .session
-                .recover_prepared_descriptor_successor(recovery, request),
-            prepared @ DormantBrokerDescriptorRequestPreparationV1::Prepared(_) => prepared,
+            } => Ok(session.recover_prepared_descriptor_successor(recovery, request)),
+            prepared @ DormantBrokerDescriptorRequestPreparationV1::Prepared(_) => Ok(prepared),
         }
     }
 
@@ -307,7 +391,10 @@ impl ControllerHostPublication {
 
     fn wait(&self, wants_write: bool, deadline: u64) -> Result<(), ControllerHostPublicationError> {
         crate::dormant_handshake::wait_for_handshake_readiness(
-            self.session.as_fd()?,
+            self.session
+                .as_ref()
+                .ok_or(ControllerHostPublicationError::Conflict)?
+                .as_fd()?,
             wants_write,
             deadline,
         )?;

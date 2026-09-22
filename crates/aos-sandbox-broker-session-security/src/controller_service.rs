@@ -34,7 +34,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+use aos_proto::aos::sandbox::local::v1::{
+    ApplyRuntimeRequest, AssignmentFence, BrokerMethod, BrokerRequestEnvelope, RequestHeader,
+    RuntimeAction,
+};
 use aos_proto::aos::sandbox::v1::{
     CacheServiceExt, CancelOperationRequest, CancelOperationResponse, CapabilityServiceExt,
     DiscoveryService, DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
@@ -52,6 +55,7 @@ use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
+use buffa::Message as _;
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
 };
@@ -2035,6 +2039,154 @@ impl ProductionEffectExecutor {
         Ok(true)
     }
 
+    fn advance_runtime_lifecycle_effect(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<bool, EffectFailure> {
+        let (current_key, current_record, observation, observed_at) = {
+            let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (current_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "lifecycle operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            if current.operation().phase() != aos_sandbox::lifecycle::LifecyclePhaseV1::Preparing
+                || current.operation().intent().method()
+                    != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+            {
+                return Ok(false);
+            }
+
+            let plan = LifecycleSuspensionPlanV1::suspend(&current, None)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let effect = plan
+                .next_effect(&current)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if effect.domain() != aos_sandbox::lifecycle::LifecycleEffectDomainV1::Runtime {
+                return Ok(false);
+            }
+            let fence = match current.operation().intent() {
+                aos_sandbox::lifecycle::LifecycleIntentV1::SuspendMemory { fence, .. } => *fence,
+                _ => {
+                    return Err(EffectFailure::Permanent(
+                        "runtime lifecycle effect has the wrong intent".to_owned(),
+                    ));
+                }
+            };
+            let inventory_lineage =
+                lifecycle_plan_resource_id(operation_id, b"boot-inventory-lineage");
+            let boot_inventory_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                current.operation().project(),
+                inventory_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let challenge = owner
+                .begin_boot_inventory_bootstrap(&current_key, &boot_inventory_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let desired = fence.desired();
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+            })?;
+            let host = sessions.host.as_mut().ok_or_else(missing_broker_session)?;
+            if !host.lifecycle_runtime_ready() {
+                return Err(EffectFailure::Retryable(
+                    "protected Host session is completing earlier work".to_owned(),
+                ));
+            }
+            let observation = host
+                .apply_lifecycle_runtime(
+                    challenge,
+                    effect,
+                    fence,
+                    RuntimeAction::RUNTIME_ACTION_FREEZE,
+                    move |coordinates| {
+                        let version = coordinates.protocol_version();
+                        let request = ApplyRuntimeRequest {
+                            header: Some(RequestHeader {
+                                protocol_major: version.major().into(),
+                                protocol_minor: version.minor().into(),
+                                request_id: coordinates.request_id().to_vec(),
+                                audience: coordinates.audience().into(),
+                                deadline_boottime_nanoseconds: coordinates
+                                    .deadline_boottime_nanoseconds(),
+                                maximum_response_bytes: coordinates.maximum_response_bytes(),
+                                ..Default::default()
+                            })
+                            .into(),
+                            fence: Some(AssignmentFence {
+                                sandbox_id: fence.sandbox().as_bytes().to_vec(),
+                                incarnation_id: fence.incarnation().as_bytes().to_vec(),
+                                assignment_epoch: fence.assignment_epoch().get(),
+                                desired_generation: desired.expected_generation().get(),
+                                assignment_digest: desired
+                                    .resource_state()
+                                    .digest()
+                                    .as_bytes()
+                                    .to_vec(),
+                                ..Default::default()
+                            })
+                            .into(),
+                            action: RuntimeAction::RUNTIME_ACTION_FREEZE.into(),
+                            ..Default::default()
+                        };
+                        BrokerRequestEnvelope {
+                            method: BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME.into(),
+                            body: request.encode_to_vec(),
+                            ..Default::default()
+                        }
+                    },
+                )
+                .map_err(|error| {
+                    // Once request custody begins, retrying from the lifecycle
+                    // cursor could mint a different authenticated identity.
+                    // Fail this outer operation closed instead.
+                    EffectFailure::Permanent(format!(
+                        "authenticated Host runtime lifecycle effect did not settle: {error}"
+                    ))
+                })?;
+            drop(sessions);
+            (
+                current_key,
+                current.record(),
+                observation,
+                current_lifecycle_time()?,
+            )
+        };
+
+        let outcome = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let transaction_id = lifecycle_progress_transaction_id(
+                operation_id,
+                current_record.digest(),
+                b"runtime-effect-success",
+            );
+            let prepared = owner
+                .prepare_successful_effect_progress(
+                    &current_key,
+                    transaction_id,
+                    observation,
+                    observed_at,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            owner
+                .commit_effect_progress(prepared)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        };
+        self.settle_lifecycle_progress(operation_id, outcome)?;
+        Ok(true)
+    }
+
     fn advance_lifecycle_semantic_commit(
         &mut self,
         operation_id: OperationId,
@@ -2500,6 +2652,11 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 return Ok(receipt);
             }
             if self.advance_controller_lifecycle_effect(operation_id)? {
+                return Err(EffectFailure::Retryable(
+                    CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+                ));
+            }
+            if self.advance_runtime_lifecycle_effect(operation_id)? {
                 return Err(EffectFailure::Retryable(
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
                 ));

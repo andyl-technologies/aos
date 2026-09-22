@@ -32,7 +32,7 @@ use super::{
     LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleResourceV1,
     LifecycleStepBodyDigestV1, LifecycleStepClassV1, LifecycleStepDomainV1,
     LifecycleStepRequestDigestV1, LifecycleStepStateV1, LifecycleStepV1,
-    LifecycleSuspendObservationV1, LifecycleTerminalResultV1,
+    LifecycleSuspendObservationV1, LifecycleTerminalResultV1, LiveRuntimeFenceV1,
 };
 
 /// Reports a malformed or stale method-specific lifecycle transition.
@@ -1192,6 +1192,51 @@ impl CurrentLifecycleEffectV1<'_> {
         self.authenticated_broker_effect(request).map(drop)
     }
 
+    /// Validates an exact non-launch Host runtime request against its live fence.
+    ///
+    /// This adds method semantics that cannot be recovered from the generic
+    /// lower-domain handoff alone: the complete assignment fence and the exact
+    /// runtime action selected by the lifecycle protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless `request` is the authenticated
+    /// Host request for this effect, carries every field from `fence`, selects
+    /// `action`, and contains no launch-only payload.
+    pub fn validate_authenticated_runtime_request(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        fence: LiveRuntimeFenceV1,
+        action: RuntimeAction,
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        let authenticated = self.authenticated_broker_effect(request)?;
+        let LifecycleCompiledBrokerRequestV1::Runtime(body) = &authenticated.compiled else {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        };
+        let wire_fence = body
+            .fence
+            .as_option()
+            .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;
+        let desired = fence.desired();
+        if self.domain() != LifecycleEffectDomainV1::Runtime
+            || fence.sandbox().as_bytes() != &self.target()
+            || body.action.as_known() != Some(action)
+            || action == RuntimeAction::RUNTIME_ACTION_UNSPECIFIED
+            || action == RuntimeAction::RUNTIME_ACTION_LAUNCH
+            || body.launch_plan.as_option().is_some()
+            || body.guardian_arm.as_option().is_some()
+            || wire_fence.sandbox_id.as_slice() != fence.sandbox().as_bytes()
+            || wire_fence.incarnation_id.as_slice() != fence.incarnation().as_bytes()
+            || wire_fence.assignment_epoch != fence.assignment_epoch().get()
+            || wire_fence.desired_generation != desired.expected_generation().get()
+            || wire_fence.assignment_digest.as_slice()
+                != desired.resource_state().digest().as_bytes()
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        Ok(())
+    }
+
     /// Binds this handoff to the exact authenticated request sent to its owner.
     ///
     /// # Errors
@@ -1230,7 +1275,7 @@ impl CurrentLifecycleEffectV1<'_> {
         })
     }
 
-    /// Verifies a Storage, Mount, or Network result through its fixed endpoint.
+    /// Verifies a Host, Storage, Mount, or Network result through its fixed endpoint.
     ///
     /// # Errors
     ///
@@ -1248,7 +1293,8 @@ impl CurrentLifecycleEffectV1<'_> {
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
         if !matches!(
             endpoint,
-            super::LifecycleBootBootstrapEndpointV1::Storage
+            super::LifecycleBootBootstrapEndpointV1::Host
+                | super::LifecycleBootBootstrapEndpointV1::Storage
                 | super::LifecycleBootBootstrapEndpointV1::Mount
                 | super::LifecycleBootBootstrapEndpointV1::Network
         ) || challenge.operation() != self.operation()
