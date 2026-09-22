@@ -69,7 +69,10 @@ in
         while time.monotonic() < deadline:
             if serial_log.exists():
                 transcript = serial_log.read_text(errors="replace")
-                if "AOS boot identity failure: verity root absent; /var unmounted" in transcript:
+                if (
+                    "AOS boot identity failure: verity root absent; /var unmounted" in transcript
+                    and "Reached target AOS boot identity rejected" in transcript
+                ):
                     break
             time.sleep(1)
 

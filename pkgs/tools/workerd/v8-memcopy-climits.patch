@@ -1,0 +1,10 @@
+--- a/src/base/memcopy.h
++++ b/src/base/memcopy.h
+@@ -8,6 +8,7 @@
+ #include <stdlib.h>
+ 
+ #include <atomic>
++#include <climits>
+ 
+ #include "include/v8config.h"
+ #include "src/base/base-export.h"
