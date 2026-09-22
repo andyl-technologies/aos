@@ -71,6 +71,7 @@ use aos_sandbox::controller_service::journal::{
 use aos_sandbox::controller_service::public_projection::{
     AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1, PublicProjectionRecordV1,
 };
+use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
@@ -1231,13 +1232,14 @@ fn open_controller(
         configuration.uid,
     )?;
 
-    controller_from_journal(journal, node_id, sessions)
+    controller_from_journal(journal, node_id, sessions, configuration.uid)
 }
 
 fn controller_from_journal(
     mut journal: Journal,
     node_id: [u8; 16],
     sessions: SharedControllerBrokerSessions,
+    controller_uid: u32,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
@@ -1246,7 +1248,10 @@ fn controller_from_journal(
         scope,
         limits,
         ProductionOperationCompilerV1,
-        Reconciler::new(journal, ProductionEffectExecutor::new(sessions)),
+        Reconciler::new(
+            journal,
+            ProductionEffectExecutor::open(sessions, controller_uid)?,
+        ),
     ))
 }
 
@@ -1369,15 +1374,38 @@ fn parse_identity(
 
 struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
+    source_domains: ProtectedSourceDomainJournalOwnerV1,
     process_start: Option<([u8; 16], u64)>,
 }
 
 impl ProductionEffectExecutor {
-    fn new(sessions: SharedControllerBrokerSessions) -> Self {
-        Self {
+    fn open(
+        sessions: SharedControllerBrokerSessions,
+        controller_uid: u32,
+    ) -> Result<Self, ControllerRuntimeError> {
+        let (mut source_domains, _) =
+            ProtectedSourceDomainJournalOwnerV1::open_fixed_protected_for_uid(controller_uid)?;
+        aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut source_domains)?
+            .replay()?;
+
+        Ok(Self {
             sessions,
+            source_domains,
             process_start: current_boot_and_boottime(),
-        }
+        })
+    }
+
+    fn validate_source_domains(&mut self) -> Result<(), EffectFailure> {
+        aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+            &mut self.source_domains,
+        )
+        .and_then(|owner| owner.replay())
+        .map(|_| ())
+        .map_err(|error| {
+            EffectFailure::Permanent(format!(
+                "protected source-domain replay failed: {error}"
+            ))
+        })
     }
 
     fn prepared_in_this_process(&self, prepared: &PreparedAuthorityEffectV1) -> bool {
@@ -1405,6 +1433,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         plan: &EffectPlan,
     ) -> Result<EffectObservation, EffectFailure> {
         if plan.public_mutation_method().is_some() {
+            self.validate_source_domains()?;
             return Err(EffectFailure::Retryable(
                 CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
             ));
@@ -1419,6 +1448,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         plan: &EffectPlan,
     ) -> Result<EffectReceipt, EffectFailure> {
         if plan.public_mutation_method().is_some() {
+            self.validate_source_domains()?;
             return Err(EffectFailure::Retryable(
                 CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
             ));
@@ -2492,6 +2522,11 @@ pub enum ControllerRuntimeError {
     /// The protected journal failed to open or recover.
     #[error(transparent)]
     Journal(#[from] JournalError),
+    /// The protected lifecycle source-domain projection failed cold replay.
+    #[error(transparent)]
+    LifecycleJournal(
+        #[from] aos_sandbox::lifecycle::LifecycleProtectedJournalErrorV1,
+    ),
     /// Fixed controller configuration is invalid.
     #[error(transparent)]
     Controller(#[from] ControllerServiceError),

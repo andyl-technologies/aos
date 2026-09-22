@@ -70,6 +70,29 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         Ok((Self { journal }, report))
     }
 
+    /// Opens and cold-replays the fixed shared journal for one service UID.
+    ///
+    /// The fixed path remains part of the lifecycle replay-authority
+    /// commitment. `expected_uid` only selects the exact filesystem owner that
+    /// the protected opener accepts; callers cannot redirect durable state to
+    /// another location.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError`] when the fixed root is absent or unsafe, its
+    /// ownership differs from `expected_uid`, or bounded cold replay fails.
+    pub fn open_fixed_protected_for_uid(
+        expected_uid: u32,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let (journal, report) = Journal::open_protected_at_for_uid(
+            Path::new(PROTECTED_SOURCE_DOMAIN_ROOT),
+            PROTECTED_SOURCE_DOMAIN_JOURNAL,
+            source_domain_journal_limits(),
+            expected_uid,
+        )?;
+        Ok((Self { journal }, report))
+    }
+
     pub(crate) fn journal(&mut self) -> &mut Journal {
         &mut self.journal
     }

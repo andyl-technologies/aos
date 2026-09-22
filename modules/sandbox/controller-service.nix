@@ -152,7 +152,10 @@ in {
         TimeoutStartSec = "90s";
         User = "aos-sandboxd";
         Group = "aos-sandboxd";
-        StateDirectory = "aos/sandboxd";
+        StateDirectory = [
+          "aos/sandboxd"
+          "aos/sandbox/source-domains"
+        ];
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandboxd";
         # Traversal grants no access to diagnostics or authority; the public
