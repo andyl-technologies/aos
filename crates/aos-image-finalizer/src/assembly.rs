@@ -366,7 +366,10 @@ impl UnsignedImageAssemblyV1 {
         for tool in &self.tools {
             require_identifier(&tool.id, "assembly tool id")?;
             require_store_path(&tool.executable, false)?;
-            if !tool.executable.contains("/bin/") && !tool.executable.contains("/lib/") {
+            if !tool.executable.contains("/bin/")
+                && !tool.executable.contains("/sbin/")
+                && !tool.executable.contains("/lib/")
+            {
                 bail!("assembly tool must identify an executable below a store output");
             }
             if !(tool.owner_nar_hash.starts_with("sha256:")

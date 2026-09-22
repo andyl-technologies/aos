@@ -307,10 +307,33 @@ async fn sign_tree_modules(
 
         let mode = fs::symlink_metadata(&module)?.permissions().mode();
         fs::set_permissions(&signed, fs::Permissions::from_mode(mode))?;
-        fs::rename(&signed, &module)?;
+        replace_signed_module(&signed, &module)?;
         responses.push(response);
     }
     Ok(responses)
+}
+
+fn replace_signed_module(signed: &Path, module: &Path) -> Result<()> {
+    let parent = module
+        .parent()
+        .context("kernel module has no parent directory")?;
+    let original_permissions = fs::metadata(parent)?.permissions();
+    if original_permissions.mode() & 0o200 != 0 {
+        fs::rename(signed, module)?;
+        return Ok(());
+    }
+
+    // Extracted image directories can be read-only. Change only the parent
+    // while replacing the module, then restore its exact recorded mode.
+    fs::set_permissions(
+        parent,
+        fs::Permissions::from_mode(original_permissions.mode() | 0o200),
+    )?;
+    let replacement = fs::rename(signed, module);
+    let restoration = fs::set_permissions(parent, original_permissions);
+    replacement.with_context(|| format!("replacing signed module {}", module.display()))?;
+    restoration.with_context(|| format!("restoring module directory {}", parent.display()))?;
+    Ok(())
 }
 
 fn capture_copy(
@@ -332,4 +355,53 @@ fn mebibytes(value: u64) -> Result<u64> {
 fn path_text(path: &Path) -> Result<&str> {
     path.to_str()
         .ok_or_else(|| anyhow::anyhow!("finalizer path is not UTF-8"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use anyhow::Result;
+
+    use super::replace_signed_module;
+
+    #[test]
+    fn replaces_module_in_read_only_image_directory() -> Result<()> {
+        let work = tempfile::tempdir()?;
+        let module_directory = work.path().join("modules");
+        fs::create_dir(&module_directory)?;
+        let module = module_directory.join("driver.ko");
+        let signed = work.path().join("signed.ko");
+        fs::write(&module, b"unsigned")?;
+        fs::write(&signed, b"signed")?;
+        fs::set_permissions(&module_directory, fs::Permissions::from_mode(0o555))?;
+
+        replace_signed_module(&signed, &module)?;
+
+        assert_eq!(fs::read(&module)?, b"signed");
+        assert!(!signed.exists());
+        assert_eq!(
+            fs::metadata(&module_directory)?.permissions().mode() & 0o7777,
+            0o555
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn restores_directory_mode_when_replacement_fails() -> Result<()> {
+        let work = tempfile::tempdir()?;
+        let module_directory = work.path().join("modules");
+        fs::create_dir(&module_directory)?;
+        fs::set_permissions(&module_directory, fs::Permissions::from_mode(0o555))?;
+
+        let missing_signed = work.path().join("missing-signed.ko");
+        let module = module_directory.join("driver.ko");
+        assert!(replace_signed_module(&missing_signed, &module).is_err());
+        assert_eq!(
+            fs::metadata(&module_directory)?.permissions().mode() & 0o7777,
+            0o555
+        );
+        Ok(())
+    }
 }

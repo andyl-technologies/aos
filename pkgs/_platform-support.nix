@@ -1204,6 +1204,32 @@ in rec {
     ) (releaseDerivationNames system names);
   };
 
+  # JSON evaluation intentionally discards string context from the release
+  # inventory. Expose the corresponding derivations separately so the release
+  # builder can register the exact frozen roots before asking Nix to realize
+  # their recorded paths.
+  releaseDerivationRoots = {
+    system,
+    packages,
+    names,
+    configurationBaseLib ? null,
+  }: let
+    selectedNames = releaseDerivationNames system names;
+    selectedPackages = map (name: packages.${name}) selectedNames;
+    configuredPackages =
+      builtins.filter (
+        package: (package.outputName or "out") == "out" && package ? config
+      )
+      selectedPackages;
+  in
+    selectedPackages
+    ++ map (package: package.config) configuredPackages
+    ++ (
+      if configuredPackages == []
+      then []
+      else assert configurationBaseLib != null; [configurationBaseLib]
+    );
+
   publicationMatrix = names:
     builtins.listToAttrs (
       map (system: {

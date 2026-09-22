@@ -14,6 +14,17 @@
     ];
     hash = "sha256-9P9bXrOjyuHJk3I/PqtRnFuuGIZrXl+W/hEC8MtcPlI=";
   };
+
+  # Legacy C tools retain build-compiler include paths in DWARF. Keep Go's
+  # custom ELF metadata while removing debug sections from those tools only.
+  stripCrossBootstrapDebug =
+    if stdenv.isCross
+    then ''
+      for tool in 6a 6c 6g 6l; do
+        "$OBJCOPY" --strip-debug "$out/pkg/tool/${stdenv.hostPlatform.go.os}_${stdenv.hostPlatform.go.arch}/$tool"
+      done
+    ''
+    else "";
 in
   if stdenv.hostPlatform.isDarwin
   then
@@ -64,12 +75,14 @@ in
         }
         {
           name = "install";
-          script = ''
-            mkdir -p $out/bin $out/src $out/pkg
-            cp -a bin/* $out/bin/
-            cp -a src/* $out/src/
-            cp -a pkg/* $out/pkg/
-          '';
+          script =
+            ''
+              mkdir -p $out/bin $out/src $out/pkg
+              cp -a bin/* $out/bin/
+              cp -a src/* $out/src/
+              cp -a pkg/* $out/pkg/
+            ''
+            + stripCrossBootstrapDebug;
         }
       ];
 

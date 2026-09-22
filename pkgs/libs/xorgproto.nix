@@ -27,7 +27,11 @@ in
       {
         name = "configure";
         script = ''
-          meson setup build $mesonFlags --prefix="$out" --libdir=lib --buildtype=release
+          # Keep GCC's compiler probe away from xorgproto's unrelated specs/ directory.
+          mkdir build
+          cd build
+          meson setup . .. $mesonFlags --prefix="$out" --libdir=lib --buildtype=release
+          cd ..
         '';
       }
       {

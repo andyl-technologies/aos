@@ -15,7 +15,7 @@
   imath,
   openjdk,
 }: let
-  needsAssembler = !stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64;
+  needsAssembler = stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64;
   assembler = import ./_highway-assembler.nix {inherit buildPackages fetchurl;};
   sources = callPackage ./_libjxl-sources.nix {};
   # The tools link Imath directly through OpenEXR's imported CMake targets.
@@ -52,13 +52,23 @@ in
             ${
               if needsAssembler
               then ''
-                # GCC's Highway dispatch targets include AVX10.2, which the
-                # bootstrap assembler predates. Preserve the wrapper's libc,
-                # linker, and hardening flags while preferring the newer as.
+                # GCC pins its bootstrap assembler by absolute path. Intercept
+                # only that subprocess so its other wrapper flags stay intact.
                 mkdir compiler
+                cat > compiler/assembler-wrapper <<EOF
+                #!${buildPackages.bash}/bin/bash
+                case "\$1" in
+                  */as|*/x86_64-unknown-linux-gnu-as)
+                    shift
+                    exec ${assembler}/bin/as "\$@"
+                    ;;
+                  *) exec "\$@" ;;
+                esac
+                EOF
+                chmod +x compiler/assembler-wrapper
                 for language in CC CXX; do
                   eval "compiler=\$$language"
-                  sed 's| -B| -B${assembler}/bin/ -B|' "$compiler" > "compiler/$language"
+                  sed "/^exec /s| -B| -wrapper $PWD/compiler/assembler-wrapper -B|" "$compiler" > "compiler/$language"
                   chmod +x "compiler/$language"
                 done
                 export CC="$PWD/compiler/CC" CXX="$PWD/compiler/CXX"
@@ -66,6 +76,7 @@ in
               else ""
             }
             cmake -S . -B build $cmakeFlags \
+              -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
               -DJAVA_HOME=${openjdk} \
               -DJava_JAVA_EXECUTABLE=${buildPackages.openjdk}/bin/java \
               -DJava_JAVAC_EXECUTABLE=${buildPackages.openjdk}/bin/javac \
