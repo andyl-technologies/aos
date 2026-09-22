@@ -159,10 +159,18 @@ pub enum PublicOperationMethodV1 {
     RevokeCapability = 19,
     /// Requests cancellation of an accepted operation.
     CancelOperation = 20,
+    /// Controls an admitted execution data-plane session.
+    ControlExecution = 21,
+    /// Attenuates a capability into a child grant.
+    AttenuateCapability = 22,
+    /// Pins an object in the project cache.
+    PinCacheObject = 23,
+    /// Removes an object pin from the project cache.
+    UnpinCacheObject = 24,
 }
 
 impl PublicOperationMethodV1 {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 25] = [
         Self::CreateSandbox,
         Self::UpdatePolicy,
         Self::StartSandbox,
@@ -184,6 +192,10 @@ impl PublicOperationMethodV1 {
         Self::RenewCapability,
         Self::RevokeCapability,
         Self::CancelOperation,
+        Self::ControlExecution,
+        Self::AttenuateCapability,
+        Self::PinCacheObject,
+        Self::UnpinCacheObject,
     ];
 
     /// Returns the stable public registry spelling.
@@ -211,6 +223,10 @@ impl PublicOperationMethodV1 {
             Self::RenewCapability => "capability.renew",
             Self::RevokeCapability => "capability.revoke",
             Self::CancelOperation => "operation.cancel",
+            Self::ControlExecution => "execution.control",
+            Self::AttenuateCapability => "capability.attenuate",
+            Self::PinCacheObject => "cache.pin",
+            Self::UnpinCacheObject => "cache.unpin",
         }
     }
 
@@ -237,6 +253,10 @@ impl PublicOperationMethodV1 {
             18 => Some(Self::RenewCapability),
             19 => Some(Self::RevokeCapability),
             20 => Some(Self::CancelOperation),
+            21 => Some(Self::ControlExecution),
+            22 => Some(Self::AttenuateCapability),
+            23 => Some(Self::PinCacheObject),
+            24 => Some(Self::UnpinCacheObject),
             _ => None,
         }
     }
@@ -1125,7 +1145,7 @@ mod tests {
                 Some(method)
             );
         }
-        assert_eq!(PublicOperationMethodV1::from_record_code(21), None);
+        assert_eq!(PublicOperationMethodV1::from_record_code(25), None);
         assert_eq!(PublicOperationMethodV1::parse("sandbox.unknown"), None);
     }
 }

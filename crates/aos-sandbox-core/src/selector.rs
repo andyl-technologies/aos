@@ -50,6 +50,8 @@ pub enum ResourceKind {
     ChildDelegation = 14,
     /// A controller-owned online capability record.
     Capability = 15,
+    /// A durable asynchronous operation resource.
+    Operation = 16,
 }
 
 /// Identifies one closed v1 operation bit.

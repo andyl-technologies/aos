@@ -77,6 +77,8 @@ pub mod ownership_service;
 pub mod policy_compiler;
 #[cfg(target_os = "linux")]
 pub mod public_api_session;
+#[cfg(target_os = "linux")]
+pub mod public_mutation_compiler;
 pub mod publication;
 pub mod publisher_admission;
 pub mod publisher_authority;

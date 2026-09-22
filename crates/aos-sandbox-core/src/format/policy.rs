@@ -196,7 +196,7 @@ fn decode_optimization_descriptor(
 }
 
 fn decode_resource_kind(decoder: &mut Decoder<'_>) -> Result<ResourceKind, CanonicalCborError> {
-    Ok(match decoder.closed("resource kind", 14)? {
+    Ok(match decoder.closed("resource kind", 16)? {
         0 => ResourceKind::Sandbox,
         1 => ResourceKind::Execution,
         2 => ResourceKind::Snapshot,
@@ -212,6 +212,8 @@ fn decode_resource_kind(decoder: &mut Decoder<'_>) -> Result<ResourceKind, Canon
         12 => ResourceKind::Environment,
         13 => ResourceKind::AttachmentSlot,
         14 => ResourceKind::ChildDelegation,
+        15 => ResourceKind::Capability,
+        16 => ResourceKind::Operation,
         _ => unreachable!("closed resource kind"),
     })
 }

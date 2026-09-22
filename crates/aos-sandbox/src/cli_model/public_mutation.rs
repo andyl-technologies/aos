@@ -10,7 +10,13 @@
 //! +----------------+----------------+----------------+-------------------+
 //! ```
 
-use super::PublicApiAuditMethodV1;
+use aos_proto::aos::sandbox::v1 as wire;
+use buffa::Message as _;
+
+use super::{
+    DormantClientStatePlanV1, DormantPublicApiAuthorizationV1, DormantSandboxOutputV1,
+    DormantSandboxRequestKindV1, DormantSandboxRequestV1, PublicApiAuditMethodV1,
+};
 
 const MAGIC: &[u8; 8] = b"AOSPMR01";
 const HEADER_BYTES: usize = MAGIC.len() + 2 + 4;
@@ -102,6 +108,80 @@ impl PublicMutationRequestV1 {
     pub fn protobuf_body(&self) -> &[u8] {
         &self.protobuf_body
     }
+
+    /// Decodes the exact body into the method-selected request and validates it.
+    ///
+    /// The ordinary CLI route validator remains the single source of field,
+    /// feature, descriptor, and concurrency-fence constraints. The temporary
+    /// client context used here is opaque and never becomes controller
+    /// authorization evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicMutationRequestError`] when the body is malformed,
+    /// noncanonical, inconsistent with the selected method, or fails the
+    /// established request validator.
+    pub(crate) fn decode_validated_kind(
+        &self,
+    ) -> Result<DormantSandboxRequestKindV1, PublicMutationRequestError> {
+        macro_rules! decode {
+            ($message:ty, $variant:ident) => {{
+                let message = <$message>::decode_from_slice(&self.protobuf_body)
+                    .map_err(|_| PublicMutationRequestError::InvalidProtobuf)?;
+                if message.encode_to_vec() != self.protobuf_body {
+                    return Err(PublicMutationRequestError::InvalidProtobuf);
+                }
+                DormantSandboxRequestKindV1::$variant(message)
+            }};
+        }
+
+        use PublicApiAuditMethodV1 as M;
+        let kind = match self.method {
+            M::CreateSandbox => decode!(wire::CreateSandboxRequest, Create),
+            M::UpdatePolicy => decode!(wire::UpdateSandboxPolicyRequest, UpdatePolicy),
+            M::StartSandbox => decode!(wire::SandboxLifecycleRequest, Start),
+            M::StopSandbox => decode!(wire::SandboxLifecycleRequest, Stop),
+            M::SuspendSandbox => decode!(wire::SandboxLifecycleRequest, Suspend),
+            M::ResumeSandbox => decode!(wire::SandboxLifecycleRequest, Resume),
+            M::DeleteSandbox => decode!(wire::DeleteSandboxRequest, Delete),
+            M::CreateExecution => decode!(wire::CreateExecutionRequest, Exec),
+            M::ControlExecution => decode!(wire::ExecutionControlRequest, ExecutionControl),
+            M::CancelExecution => decode!(wire::CancelExecutionRequest, CancelExec),
+            M::CreateView => decode!(wire::CreateViewRequest, ViewCreate),
+            M::AttachView => decode!(wire::AttachViewRequest, ViewAttach),
+            M::ReplaceAttachment => {
+                decode!(wire::ReplaceAttachmentRequest, ViewReplace)
+            }
+            M::DetachView => decode!(wire::DetachViewRequest, ViewDetach),
+            M::ReleaseView => decode!(wire::ReleaseViewRequest, ViewRelease),
+            M::CreateSnapshot => decode!(wire::CreateSnapshotRequest, Snapshot),
+            M::RestoreSnapshot => decode!(wire::RestoreSnapshotRequest, Restore),
+            M::ForkSnapshot => decode!(wire::ForkSnapshotRequest, Fork),
+            M::DeleteSnapshot => decode!(wire::DeleteSnapshotRequest, DeleteSnapshot),
+            M::AttenuateCapability => {
+                decode!(wire::AttenuateCapabilityRequest, CapabilityAttenuate)
+            }
+            M::RenewCapability => decode!(wire::RenewCapabilityRequest, CapabilityRenew),
+            M::RevokeCapability => decode!(wire::RevokeCapabilityRequest, CapabilityRevoke),
+            M::CancelOperation => decode!(wire::CancelOperationRequest, CancelOperation),
+            M::PinCacheObject => decode!(wire::PinCacheObjectRequest, CachePin),
+            M::UnpinCacheObject => decode!(wire::UnpinCacheObjectRequest, CacheUnpin),
+            _ => return Err(PublicMutationRequestError::UnsupportedMethod),
+        };
+        let authorization = DormantPublicApiAuthorizationV1::new(vec![1])
+            .map_err(|_| PublicMutationRequestError::InvalidProtobuf)?;
+        let client_state = DormantClientStatePlanV1::new(1, 1, None)
+            .map_err(|_| PublicMutationRequestError::InvalidProtobuf)?;
+        DormantSandboxRequestV1::from_parsed_command_with_authorization(
+            kind.clone(),
+            DormantSandboxOutputV1::Json,
+            client_state,
+            authorization,
+        )
+        .map_err(|_| PublicMutationRequestError::InvalidProtobuf)?;
+
+        Ok(kind)
+    }
 }
 
 /// Reports an invalid public mutation request envelope.
@@ -116,6 +196,9 @@ pub enum PublicMutationRequestError {
     /// The transport envelope is truncated, inconsistent, or has trailing bytes.
     #[error("public mutation envelope is malformed")]
     MalformedEnvelope,
+    /// The method-selected protobuf body is malformed, noncanonical, or invalid.
+    #[error("public mutation protobuf body is malformed or invalid")]
+    InvalidProtobuf,
 }
 
 fn mutation_method_code(method: PublicApiAuditMethodV1) -> Result<u16, PublicMutationRequestError> {
