@@ -15,9 +15,9 @@ use crucible::model::MeasurementTerminalState;
 use crucible::{
     AssertionPhase, Configuration, ContentHash, Decision, EngineError, EventLogCoverageObservation,
     FailureClusterReportDivergence, FailureClusterReportFailure, FailurePropertyViolationRecord,
-    FailureTimeoutBudgetKind, FailureTimeoutRecord, HostAssertionOutcomeKind,
-    ObservableEventPayload, OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome,
-    QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
+    FailureTimeoutBudgetKind, FailureTimeoutRecord, FingerprintSample, HostAssertionOutcomeKind,
+    NodeId, ObservableEventPayload, OfflineAssertionCheckError, OfflineAssertionChecker,
+    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerOperationalFailureClass, SchedulerQuiescence,
     SelectionDecision, VirtualTime, compare_event_log_determinism,
     coverage_fingerprint_from_event_log, try_step,
@@ -823,6 +823,14 @@ pub trait QemuModeledAttemptLifecycle {
     /// Returns the number of guest frames not yet globally committed.
     #[must_use]
     fn pending_network_output_count(&self) -> usize;
+
+    /// Samples one node's concrete execution fingerprint for diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the stopped node's live state cannot be
+    /// read consistently.
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError>;
 }
 
 impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
@@ -870,6 +878,10 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
 
     fn pending_network_output_count(&self) -> usize {
         QemuFreshAttemptLifecycle::pending_network_output_count(self)
+    }
+
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        QemuFreshAttemptLifecycle::sample_fingerprint(self, node)
     }
 }
 
@@ -1597,6 +1609,11 @@ fn resolve_pending_guest_choices_at_configuration(
         .map_err(|error| {
             AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::GuestSelectable(error))
         })?;
+        let fingerprint = if context.guest_selectable_boundary_diagnostic_sample_permitted() {
+            lifecycle.sample_fingerprint(pending.node().clone()).ok()
+        } else {
+            None
+        };
         record_guest_selectable_boundary_diagnostic(
             context,
             input.attempt(),
@@ -1606,6 +1623,7 @@ fn resolve_pending_guest_choices_at_configuration(
             pending.pending(),
             &discovery,
             None,
+            fingerprint,
         );
         discoveries
             .insert(discovery.clone())

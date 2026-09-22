@@ -156,6 +156,12 @@ impl QemuModeledAttemptLifecycle for TerminalCrossingLifecycle {
     fn pending_network_output_count(&self) -> usize {
         0
     }
+
+    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("terminal-crossing fixture has no execution fingerprint"),
+        })
+    }
 }
 
 impl QemuModeledAttemptLifecycle for RestoredFrontierLifecycle {
@@ -214,6 +220,12 @@ impl QemuModeledAttemptLifecycle for RestoredFrontierLifecycle {
 
     fn pending_network_output_count(&self) -> usize {
         0
+    }
+
+    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("restored-frontier fixture has no execution fingerprint"),
+        })
     }
 }
 
@@ -1858,7 +1870,7 @@ fn signal_fault_frontier_is_not_published_after_execution_passes_it() {
 }
 
 #[test]
-fn pending_guest_choice_at_start_stops_without_an_extra_quantum() {
+fn pending_guest_choice_diagnostic_sampling_failure_is_nonsemantic() {
     let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
     let diagnostic_config = crate::GuestSelectableBoundaryDiagnosticConfig::new(2)
@@ -1907,6 +1919,8 @@ fn pending_guest_choice_at_start_stops_without_an_extra_quantum() {
     assert!(diagnostic_lines[0].contains("attempt=crucible.campaign.attempt@"));
     assert!(diagnostic_lines[0].contains("decision_index=0"));
     assert!(diagnostic_lines[0].contains("trap_icount=41 stopped_icount=42 vcpu=0"));
+    assert!(diagnostic_lines[0].contains("fingerprint_node=none"));
+    assert!(diagnostic_lines[0].contains("fingerprint_at=none fingerprint=none"));
 }
 
 #[test]
