@@ -76,6 +76,7 @@ use aos_sandbox::{
 };
 
 mod public_api;
+mod public_hierarchy;
 mod public_services;
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";

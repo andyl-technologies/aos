@@ -117,18 +117,13 @@ impl SandboxService for CapabilityService {
             )
             .await?;
         let (authorization, records) = read.into_parts();
-        let binding = authorization.query_binding(
-            NormalizedQueryDigestV1::commit(
-                [
-                    b"/aos.sandbox.v1.SandboxService/ListSandboxes\0".as_slice(),
-                    &project_id,
-                ]
-                .concat()
-                .as_slice(),
-            ),
-            QueryFilterDigestV1::commit(b"project-only-v1"),
-            QuerySortDigestV1::commit(b"resource-id-ascending-v1"),
-            QueryVisibilityDigestV1::commit(b"sandbox-public-v1"),
+        let binding_scope = query_scope(&project_id, view.page_size);
+        let binding = list_query_binding(
+            authorization,
+            b"/aos.sandbox.v1.SandboxService/ListSandboxes",
+            &binding_scope,
+            b"project-only-v1",
+            b"sandbox-public-v1",
         );
         let page = paginate(
             PublicProjectionKindV1::Sandbox,
@@ -158,26 +153,26 @@ impl SandboxService for CapabilityService {
 
     async fn list_children<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, ListChildrenRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, ListChildrenRequest>,
     ) -> ServiceResult<impl Encodable<ListChildrenResponse> + Send + use<'a>> {
-        Err::<Response<ListChildrenResponse>, _>(mutation_unavailable())
+        self.list_children_response(&context, request).await
     }
 
     async fn list_ancestors<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, ListAncestorsRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, ListAncestorsRequest>,
     ) -> ServiceResult<impl Encodable<ListAncestorsResponse> + Send + use<'a>> {
-        Err::<Response<ListAncestorsResponse>, _>(mutation_unavailable())
+        self.list_ancestors_response(&context, request).await
     }
 
     async fn list_descendants<'a>(
         &'a self,
-        _context: RequestContext,
-        _request: ServiceRequest<'_, ListDescendantsRequest>,
+        context: RequestContext,
+        request: ServiceRequest<'_, ListDescendantsRequest>,
     ) -> ServiceResult<impl Encodable<ListDescendantsResponse> + Send + use<'a>> {
-        Err::<Response<ListDescendantsResponse>, _>(mutation_unavailable())
+        self.list_descendants_response(&context, request).await
     }
 
     async fn plan_policy<'a>(
@@ -307,10 +302,11 @@ impl ExecutionService for CapabilityService {
                     if execution.sandbox_id == sandbox_id
             )
         });
+        let binding_scope = query_scope(&sandbox_id, view.page_size);
         let binding = list_query_binding(
             authorization,
             b"/aos.sandbox.v1.ExecutionService/ListExecutions",
-            &sandbox_id,
+            &binding_scope,
             b"sandbox-executions-v1",
             b"execution-public-v1",
         );
@@ -453,10 +449,11 @@ impl FilesystemViewService for CapabilityService {
             )
             .await?;
         let (authorization, records) = read.into_parts();
+        let binding_scope = query_scope(&project_id, view.page_size);
         let binding = list_query_binding(
             authorization,
             b"/aos.sandbox.v1.FilesystemViewService/ListViews",
-            &project_id,
+            &binding_scope,
             b"project-views-v1",
             b"filesystem-view-public-v1",
         );
@@ -601,10 +598,11 @@ impl SnapshotService for CapabilityService {
             });
         }
         let scope = [project_id.as_slice(), view.sandbox_id].concat();
+        let binding_scope = query_scope(&scope, view.page_size);
         let binding = list_query_binding(
             authorization,
             b"/aos.sandbox.v1.SnapshotService/ListSnapshots",
-            &scope,
+            &binding_scope,
             b"project-sandbox-snapshots-v1",
             b"snapshot-public-v1",
         );
@@ -671,7 +669,7 @@ fn single_record(
     Ok(record)
 }
 
-fn list_query_binding(
+pub(super) fn list_query_binding(
     authorization: AuditAuthorizationV1,
     method: &[u8],
     scope: &[u8],
@@ -691,7 +689,17 @@ fn list_query_binding(
     )
 }
 
-fn exact_resource_id(bytes: &[u8], label: &'static str) -> Result<[u8; 16], ConnectError> {
+pub(super) fn query_scope(scope: &[u8], page_size: u32) -> Vec<u8> {
+    let mut binding = Vec::with_capacity(scope.len() + 4);
+    binding.extend_from_slice(scope);
+    binding.extend_from_slice(&page_size.to_be_bytes());
+    binding
+}
+
+pub(super) fn exact_resource_id(
+    bytes: &[u8],
+    label: &'static str,
+) -> Result<[u8; 16], ConnectError> {
     let identity: [u8; 16] = bytes.try_into().map_err(|_| {
         ConnectError::new(
             ErrorCode::InvalidArgument,
@@ -719,26 +727,26 @@ fn optional_resource_id(
     }
 }
 
-fn resource_selector(resource_id: [u8; 16]) -> Selector {
+pub(super) fn resource_selector(resource_id: [u8; 16]) -> Selector {
     Selector::Resource {
         resource: ResourceId::from_bytes(resource_id),
     }
 }
 
-fn projection_mismatch() -> ConnectError {
+pub(super) fn projection_mismatch() -> ConnectError {
     ConnectError::new(
         ErrorCode::Unavailable,
         "controller public resource projection is inconsistent",
     )
 }
 
-struct ProjectionPageV1 {
-    records: Vec<PublicProjectionRecordV1>,
-    revision: ObjectDigest,
-    next_page_token: Vec<u8>,
+pub(super) struct ProjectionPageV1 {
+    pub(super) records: Vec<PublicProjectionRecordV1>,
+    pub(super) revision: ObjectDigest,
+    pub(super) next_page_token: Vec<u8>,
 }
 
-fn page_info(page: &ProjectionPageV1) -> PageInfo {
+pub(super) fn page_info(page: &ProjectionPageV1) -> PageInfo {
     PageInfo {
         next_page_token: page.next_page_token.clone(),
         immutable_list_revision: page.revision.as_bytes().to_vec(),
@@ -746,7 +754,7 @@ fn page_info(page: &ProjectionPageV1) -> PageInfo {
     }
 }
 
-fn paginate(
+pub(super) fn paginate(
     kind: PublicProjectionKindV1,
     scope: &[u8],
     binding: QueryBindingV1,
@@ -766,8 +774,9 @@ fn paginate(
     } else {
         let after = decode_page_token(page_token, binding, revision)?;
         records
-            .binary_search_by(|record| record.resource().resource_id().cmp(&after))
-            .map_err(|_| {
+            .iter()
+            .position(|record| record.resource().resource_id() == after)
+            .ok_or_else(|| {
                 ConnectError::new(ErrorCode::InvalidArgument, "page token is no longer valid")
             })?
             + 1
@@ -873,7 +882,7 @@ fn invalid_page_token() -> ConnectError {
     ConnectError::new(ErrorCode::InvalidArgument, "page token is invalid")
 }
 
-fn response_with_query_binding<T>(body: T, binding: QueryBindingV1) -> ServiceResult<T> {
+pub(super) fn response_with_query_binding<T>(body: T, binding: QueryBindingV1) -> ServiceResult<T> {
     Response::new(body)
         .try_with_header(
             QUERY_BINDING_HEADER,
