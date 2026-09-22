@@ -22,6 +22,8 @@ pub enum LifecycleSuspensionModeV1 {
     MemoryResume = 2,
     /// Snapshots, stops, and releases one live incarnation.
     Hibernate = 3,
+    /// Stops one exact live incarnation after desired-state commit.
+    Stop = 4,
 }
 
 /// Selects the next action in a suspend, resume, or hibernate sequence.
@@ -67,6 +69,44 @@ pub struct LifecycleSuspensionPlanV1 {
 }
 
 impl LifecycleSuspensionPlanV1 {
+    /// Compiles the immutable one-step runtime-stop plan.
+    ///
+    /// Runtime stop is forward-only work released after the desired stopped
+    /// generation commits. A backend failure therefore remains residual
+    /// cleanup and never rolls the desired state backward.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless `current` is an accepted,
+    /// unbound Stop operation with a coherent live-runtime fence.
+    pub fn planned_stop_steps(
+        current: &CurrentLifecycleOperationV1<'_>,
+    ) -> Result<Vec<LifecycleStepV1>, LifecyclePhase6ErrorV1> {
+        current.require_method(&[LifecycleMethodV1::Stop])?;
+        let (sandbox, fence) = match current.operation().intent() {
+            LifecycleIntentV1::Stop { sandbox, fence } => (*sandbox, *fence),
+            _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
+        };
+        require_unbound_admission(current)?;
+        if fence.sandbox() != sandbox {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+
+        Ok(vec![planned_suspension_step(
+            current.operation().operation_id(),
+            0,
+            LifecycleStepClassV1::PostCommitForward,
+            LifecycleSuspensionModeV1::Stop,
+            LifecycleSuspensionActionV1::StopRuntime,
+            None,
+            sandbox,
+            fence,
+            None,
+            None,
+            None,
+        )?])
+    }
+
     /// Compiles the immutable four-step memory-suspension plan.
     ///
     /// The first three actions are reversible preparation. Recording the
@@ -319,7 +359,7 @@ impl LifecycleSuspensionPlanV1 {
         let expected_steps = match mode {
             LifecycleSuspensionModeV1::MemorySuspend => 4,
             LifecycleSuspensionModeV1::Hibernate => 11,
-            LifecycleSuspensionModeV1::MemoryResume => {
+            LifecycleSuspensionModeV1::MemoryResume | LifecycleSuspensionModeV1::Stop => {
                 return Err(LifecyclePhase6ErrorV1::InvalidInput);
             }
         };
@@ -334,6 +374,38 @@ impl LifecycleSuspensionPlanV1 {
             runtime_inventory: None,
             hibernation_barrier,
             action: LifecycleSuspensionActionV1::CloseAdmission,
+        };
+        plan.validate_method_plan(current)?;
+        plan.action = plan.persisted_action(current)?;
+        Ok(plan)
+    }
+
+    /// Reconstructs a forward-only runtime-stop plan from protected current state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the current operation retains
+    /// the exact bound Stop plan and live-runtime fence.
+    pub fn stop(current: &CurrentLifecycleOperationV1<'_>) -> Result<Self, LifecyclePhase6ErrorV1> {
+        current.require_method(&[LifecycleMethodV1::Stop])?;
+        let (sandbox, fence) = match current.operation().intent() {
+            LifecycleIntentV1::Stop { sandbox, fence } => (*sandbox, *fence),
+            _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
+        };
+        if fence.sandbox() != sandbox {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        let method_plan = super::LifecycleMethodPlanV1::from_current(current, 1)?;
+        let mut plan = Self {
+            mode: LifecycleSuspensionModeV1::Stop,
+            sandbox,
+            fence,
+            operation: current.operation().operation_id(),
+            method_plan,
+            host_boot: None,
+            runtime_inventory: None,
+            hibernation_barrier: None,
+            action: LifecycleSuspensionActionV1::StopRuntime,
         };
         plan.validate_method_plan(current)?;
         plan.action = plan.persisted_action(current)?;
@@ -430,6 +502,7 @@ impl LifecycleSuspensionPlanV1 {
                 LifecycleSuspensionModeV1::MemoryResume,
                 LifecycleSuspensionActionV1::ResumeRuntime,
             )
+            | (LifecycleSuspensionModeV1::Stop, LifecycleSuspensionActionV1::StopRuntime)
             | (
                 LifecycleSuspensionModeV1::Hibernate,
                 LifecycleSuspensionActionV1::CompensateOuterThaw,
@@ -578,6 +651,9 @@ impl LifecycleSuspensionPlanV1 {
                     LifecycleSuspensionModeV1::MemoryResume => {
                         (index == 0).then_some(LifecycleSuspensionActionV1::ResumeRuntime)
                     }
+                    LifecycleSuspensionModeV1::Stop => {
+                        (index == 0).then_some(LifecycleSuspensionActionV1::StopRuntime)
+                    }
                     LifecycleSuspensionModeV1::Hibernate => match index {
                         0 => Some(LifecycleSuspensionActionV1::CloseAdmission),
                         1 => Some(LifecycleSuspensionActionV1::Quiesce),
@@ -610,6 +686,7 @@ impl LifecycleSuspensionPlanV1 {
                     LifecycleSuspensionModeV1::MemorySuspend => &[LifecycleMethodV1::SuspendMemory],
                     LifecycleSuspensionModeV1::MemoryResume => &[LifecycleMethodV1::Resume],
                     LifecycleSuspensionModeV1::Hibernate => &[LifecycleMethodV1::Hibernate],
+                    LifecycleSuspensionModeV1::Stop => &[LifecycleMethodV1::Stop],
                 })
                 .is_ok_and(|completion| completion.plan() == self.method_plan.commitment()) =>
             {
@@ -650,6 +727,7 @@ impl LifecycleSuspensionPlanV1 {
             LifecycleSuspensionModeV1::MemoryResume => {
                 &[(0, LifecycleSuspensionActionV1::ResumeRuntime)]
             }
+            LifecycleSuspensionModeV1::Stop => &[(0, LifecycleSuspensionActionV1::StopRuntime)],
             LifecycleSuspensionModeV1::Hibernate => &[
                 (0, LifecycleSuspensionActionV1::CloseAdmission),
                 (1, LifecycleSuspensionActionV1::Quiesce),

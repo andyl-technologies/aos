@@ -256,6 +256,30 @@ impl LifecycleSnapshotBarrierV1 {
         protected_transaction: &CurrentLifecycleCoordinationV1<'_>,
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
         let transaction = protected_transaction.coordination().transaction();
+        if transaction.dependency_snapshot() != closure.digest() {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        Self::from_current_transaction(current, protected_transaction)
+    }
+
+    /// Reconstructs a barrier from its protected current transaction.
+    ///
+    /// The coordination value is accepted only through
+    /// [`CurrentLifecycleCoordinationV1`], whose constructor is private to the
+    /// protected journal verifier. This restart path therefore reuses the
+    /// verifier-authenticated closure instead of accepting caller-supplied
+    /// dependency material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the current operation and
+    /// protected coordination transaction identify the same snapshot barrier
+    /// and immutable method plan.
+    pub fn from_current_transaction(
+        current: &CurrentLifecycleOperationV1<'_>,
+        protected_transaction: &CurrentLifecycleCoordinationV1<'_>,
+    ) -> Result<Self, LifecyclePhase6ErrorV1> {
+        let transaction = protected_transaction.coordination().transaction();
         current.require_method(&[LifecycleMethodV1::Snapshot, LifecycleMethodV1::Hibernate])?;
         let (sandbox, snapshot, intent_fence) = match current.operation().intent() {
             super::LifecycleIntentV1::Snapshot {
@@ -274,7 +298,6 @@ impl LifecycleSnapshotBarrierV1 {
         };
         if protected_transaction.projection_root() != current.projection_root()
             || transaction.sandbox() != sandbox
-            || transaction.dependency_snapshot() != closure.digest()
             || transaction.live_fence() != intent_fence
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);

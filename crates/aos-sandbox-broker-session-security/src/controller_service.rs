@@ -1873,6 +1873,10 @@ impl ProductionEffectExecutor {
             }
 
             let steps = match current.operation().intent() {
+                aos_sandbox::lifecycle::LifecycleIntentV1::Stop { .. } => {
+                    LifecycleSuspensionPlanV1::planned_stop_steps(&current)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                }
                 aos_sandbox::lifecycle::LifecycleIntentV1::SuspendMemory { .. } => {
                     LifecycleSuspensionPlanV1::planned_memory_suspend_steps(&current)
                         .map_err(|error| EffectFailure::Permanent(error.to_string()))?
@@ -1983,17 +1987,51 @@ impl ProductionEffectExecutor {
                 current.operation().phase(),
                 aos_sandbox::lifecycle::LifecyclePhaseV1::Preparing
                     | aos_sandbox::lifecycle::LifecyclePhaseV1::Completing
-            ) || current.operation().intent().method()
-                != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
-            {
+            ) {
                 return Ok(false);
             }
 
-            let plan = LifecycleSuspensionPlanV1::suspend(&current, None)
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-            let effect = plan
-                .next_effect(&current)
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let effect = match current.operation().intent().method() {
+                aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory => {
+                    LifecycleSuspensionPlanV1::suspend(&current, None)
+                        .and_then(|plan| plan.next_effect(&current))
+                }
+                aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot
+                | aos_sandbox::lifecycle::LifecycleMethodV1::Hibernate => {
+                    let coordination_lineage =
+                        lifecycle_plan_resource_id(operation_id, b"coordination-lineage");
+                    let coordination_key = lifecycle_protected_key_v1(
+                        LifecycleProtectedRecordKindV1::Auxiliary,
+                        current.operation().project(),
+                        coordination_lineage,
+                        operation_id,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    let coordination = owner
+                        .current_coordination(&coordination_key)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                        .ok_or_else(|| {
+                            EffectFailure::Permanent(
+                                "snapshot coordination is absent during effect dispatch".to_owned(),
+                            )
+                        })?;
+                    let barrier = LifecycleSnapshotBarrierV1::from_current_transaction(
+                        &current,
+                        &coordination,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    if current.operation().intent().method()
+                        == aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot
+                    {
+                        barrier.next_effect(&current)
+                    } else {
+                        LifecycleSuspensionPlanV1::suspend(&current, Some(barrier))
+                            .and_then(|plan| plan.next_effect(&current))
+                    }
+                }
+                _ => return Ok(false),
+            }
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             if effect.domain() != aos_sandbox::lifecycle::LifecycleEffectDomainV1::Controller {
                 return Ok(false);
             }
@@ -2047,7 +2085,7 @@ impl ProductionEffectExecutor {
         &mut self,
         operation_id: OperationId,
     ) -> Result<bool, EffectFailure> {
-        let (current_key, current_record, observation, observed_at) = {
+        let (current_key, current_record, observation, observed_at, publish_coordination) = {
             let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
                 &mut self.source_domains,
             )
@@ -2060,29 +2098,113 @@ impl ProductionEffectExecutor {
                         "lifecycle operation is absent from protected custody".to_owned(),
                     )
                 })?;
-            if current.operation().phase() != aos_sandbox::lifecycle::LifecyclePhaseV1::Preparing
-                || current.operation().intent().method()
-                    != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
-            {
+            if !matches!(
+                current.operation().phase(),
+                aos_sandbox::lifecycle::LifecyclePhaseV1::Preparing
+                    | aos_sandbox::lifecycle::LifecyclePhaseV1::Completing
+                    | aos_sandbox::lifecycle::LifecyclePhaseV1::Compensating
+            ) {
                 return Ok(false);
             }
 
-            let plan = LifecycleSuspensionPlanV1::suspend(&current, None)
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-            let effect = plan
-                .next_effect(&current)
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let method = current.operation().intent().method();
+            let (effect, fence) = match method {
+                aos_sandbox::lifecycle::LifecycleMethodV1::Stop => {
+                    let fence = match current.operation().intent() {
+                        aos_sandbox::lifecycle::LifecycleIntentV1::Stop { fence, .. } => *fence,
+                        _ => {
+                            return Err(EffectFailure::Permanent(
+                                "stop method has a different intent".to_owned(),
+                            ));
+                        }
+                    };
+                    let effect = LifecycleSuspensionPlanV1::stop(&current)
+                        .and_then(|plan| plan.next_effect(&current))
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    (effect, fence)
+                }
+                aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory => {
+                    let fence = match current.operation().intent() {
+                        aos_sandbox::lifecycle::LifecycleIntentV1::SuspendMemory {
+                            fence, ..
+                        } => *fence,
+                        _ => {
+                            return Err(EffectFailure::Permanent(
+                                "memory-suspend method has a different intent".to_owned(),
+                            ));
+                        }
+                    };
+                    let effect = LifecycleSuspensionPlanV1::suspend(&current, None)
+                        .and_then(|plan| plan.next_effect(&current))
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    (effect, fence)
+                }
+                aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot
+                | aos_sandbox::lifecycle::LifecycleMethodV1::Hibernate => {
+                    let coordination_lineage =
+                        lifecycle_plan_resource_id(operation_id, b"coordination-lineage");
+                    let coordination_key = lifecycle_protected_key_v1(
+                        LifecycleProtectedRecordKindV1::Auxiliary,
+                        current.operation().project(),
+                        coordination_lineage,
+                        operation_id,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    let coordination = owner
+                        .current_coordination(&coordination_key)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                        .ok_or_else(|| {
+                            EffectFailure::Permanent(
+                                "snapshot coordination is absent during runtime dispatch"
+                                    .to_owned(),
+                            )
+                        })?;
+                    let fence = coordination.coordination().transaction().live_fence();
+                    let barrier = LifecycleSnapshotBarrierV1::from_current_transaction(
+                        &current,
+                        &coordination,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    let effect = if method == aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot {
+                        barrier.next_effect(&current)
+                    } else {
+                        LifecycleSuspensionPlanV1::suspend(&current, Some(barrier))
+                            .and_then(|plan| plan.next_effect(&current))
+                    }
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    (effect, fence)
+                }
+                _ => return Ok(false),
+            };
             if effect.domain() != aos_sandbox::lifecycle::LifecycleEffectDomainV1::Runtime {
                 return Ok(false);
             }
-            let fence = match current.operation().intent() {
-                aos_sandbox::lifecycle::LifecycleIntentV1::SuspendMemory { fence, .. } => *fence,
+            let runtime_action = match (method, effect.step(), effect.ordinal()) {
+                (aos_sandbox::lifecycle::LifecycleMethodV1::Stop, 0, 6) => {
+                    RuntimeAction::RUNTIME_ACTION_STOP
+                }
+                (aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory, 2, 3)
+                | (aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot, 2, 3)
+                | (aos_sandbox::lifecycle::LifecycleMethodV1::Hibernate, 2 | 5, 3) => {
+                    RuntimeAction::RUNTIME_ACTION_FREEZE
+                }
+                (aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot, 5, 6)
+                | (aos_sandbox::lifecycle::LifecycleMethodV1::Hibernate, 5, 6) => {
+                    RuntimeAction::RUNTIME_ACTION_THAW
+                }
+                (aos_sandbox::lifecycle::LifecycleMethodV1::Hibernate, 8, 6) => {
+                    RuntimeAction::RUNTIME_ACTION_STOP
+                }
                 _ => {
                     return Err(EffectFailure::Permanent(
-                        "runtime lifecycle effect has the wrong intent".to_owned(),
+                        "runtime lifecycle cursor has no broker action".to_owned(),
                     ));
                 }
             };
+            let publish_coordination = method
+                == aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot
+                || (method == aos_sandbox::lifecycle::LifecycleMethodV1::Hibernate
+                    && effect.step() == 5);
             let inventory_lineage =
                 lifecycle_plan_resource_id(operation_id, b"boot-inventory-lineage");
             let boot_inventory_key = lifecycle_protected_key_v1(
@@ -2110,7 +2232,7 @@ impl ProductionEffectExecutor {
                     challenge,
                     effect,
                     fence,
-                    RuntimeAction::RUNTIME_ACTION_FREEZE,
+                    runtime_action,
                     move |coordinates| {
                         let version = coordinates.protocol_version();
                         let request = ApplyRuntimeRequest {
@@ -2138,7 +2260,7 @@ impl ProductionEffectExecutor {
                                 ..Default::default()
                             })
                             .into(),
-                            action: RuntimeAction::RUNTIME_ACTION_FREEZE.into(),
+                            action: runtime_action.into(),
                             ..Default::default()
                         };
                         BrokerRequestEnvelope {
@@ -2162,6 +2284,7 @@ impl ProductionEffectExecutor {
                 current.record(),
                 observation,
                 current_lifecycle_time()?,
+                publish_coordination,
             )
         };
 
@@ -2188,7 +2311,68 @@ impl ProductionEffectExecutor {
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?
         };
         self.settle_lifecycle_progress(operation_id, outcome)?;
+        if publish_coordination {
+            self.publish_snapshot_coordination_observation(
+                operation_id,
+                current_record,
+                observation,
+            )?;
+        }
         Ok(true)
+    }
+
+    fn publish_snapshot_coordination_observation(
+        &mut self,
+        operation_id: OperationId,
+        predecessor: aos_sandbox::lifecycle::LifecycleRecordDigestV1,
+        observation: aos_sandbox::lifecycle::LifecycleEffectObservationV1,
+    ) -> Result<(), EffectFailure> {
+        let disposition = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (operation_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "snapshot operation is absent during coordination publication".to_owned(),
+                    )
+                })?;
+            let operation_lineage = lifecycle_plan_resource_id(operation_id, b"operation-lineage");
+            let coordination_lineage =
+                lifecycle_plan_resource_id(operation_id, b"coordination-lineage");
+            let coordination_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                current.operation().project(),
+                coordination_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            drop(current);
+            let publication = owner
+                .publish_coordination_observation(
+                    &operation_key,
+                    &coordination_key,
+                    lifecycle_progress_transaction_id(
+                        operation_id,
+                        predecessor.digest(),
+                        b"coordination-observation",
+                    ),
+                    lifecycle_progress_resource_id(
+                        operation_id,
+                        predecessor.digest(),
+                        b"coordination-observation",
+                    ),
+                    operation_lineage,
+                    coordination_lineage,
+                    observation,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            auxiliary_publication_disposition(publication)
+        };
+        self.settle_auxiliary_publication(operation_id, disposition, "snapshot coordination")
     }
 
     fn ensure_lifecycle_inventory_owners(&mut self) -> Result<(), EffectFailure> {
@@ -2464,9 +2648,11 @@ impl ProductionEffectExecutor {
             ) {
                 return Ok(false);
             }
-            if current.operation().intent().method()
-                != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
-            {
+            if !matches!(
+                current.operation().intent().method(),
+                aos_sandbox::lifecycle::LifecycleMethodV1::Stop
+                    | aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+            ) {
                 return Ok(false);
             }
             let semantic_commit =
@@ -2630,6 +2816,27 @@ fn lifecycle_plan_resource_id(operation: OperationId, purpose: &[u8]) -> Resourc
     let digest: [u8; 32] = Sha256::new()
         .chain_update(b"aos.sandbox.lifecycle.plan-resource.v1\0")
         .chain_update(operation.as_bytes())
+        .chain_update((purpose.len() as u64).to_be_bytes())
+        .chain_update(purpose)
+        .finalize()
+        .into();
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&digest[..16]);
+    if identity == [0; 16] {
+        identity[15] = 1;
+    }
+    ResourceId::from_bytes(identity)
+}
+
+fn lifecycle_progress_resource_id(
+    operation: OperationId,
+    current_record: ObjectDigest,
+    purpose: &[u8],
+) -> ResourceId {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.lifecycle.progress-resource.v1\0")
+        .chain_update(operation.as_bytes())
+        .chain_update(current_record.as_bytes())
         .chain_update((purpose.len() as u64).to_be_bytes())
         .chain_update(purpose)
         .finalize()
