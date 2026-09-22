@@ -126,6 +126,17 @@ impl LifecycleOperationV1 {
                 .iter()
                 .zip(self.steps())
                 .all(|(current, previous)| current.can_follow(previous));
+        let binds_unbound_plan = self.steps().iter().all(LifecycleStepV1::is_unbound);
+        let binding_is_atomic = !binds_unbound_plan
+            || (phase == LifecyclePhaseV1::Accepted
+                && steps.iter().all(|step| !step.has_unbound_commitment())
+                && forward_progress == self.forward_progress()
+                && compensation_progress == self.compensation_progress()
+                && semantic_commit.as_ref() == self.method_semantic_commit()
+                && failure == self.failure()
+                && retry == self.retry()
+                && terminal_result == self.terminal_result()
+                && finished_at == self.finished_at());
         let terminal_is_monotone = self
             .terminal_result()
             .is_none_or(|value| terminal_result == Some(value));
@@ -144,6 +155,7 @@ impl LifecycleOperationV1 {
         if !phase_edge
             || !commit_is_monotone
             || !steps_are_monotone
+            || !binding_is_atomic
             || !terminal_is_monotone
             || !finish_is_monotone
             || !makes_progress

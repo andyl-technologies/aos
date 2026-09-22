@@ -32,6 +32,10 @@ use aos_sandbox_core::{
 pub const MAXIMUM_LIFECYCLE_EXPECTATIONS: usize = 4_096;
 /// Maximum steps retained by one lifecycle operation.
 pub const MAXIMUM_LIFECYCLE_STEPS: usize = 4_096;
+
+const UNBOUND_STEP_BODY_MAGIC: &[u8; 8] = b"AOSLUB01";
+const UNBOUND_STEP_PLAN_MAGIC: &[u8; 8] = b"AOSLUP01";
+
 /// Retains immutable plan data and monotone progress for one step.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LifecycleStepV1 {
@@ -55,6 +59,107 @@ pub struct LifecycleStepV1 {
 }
 
 impl LifecycleStepV1 {
+    /// Constructs one canonical action skeleton before late authority exists.
+    ///
+    /// An unbound step commits its stable index, class, domain, and logical
+    /// request, but cannot reserve an attempt. Every step in an Accepted
+    /// operation must be either unbound or fully bound; mixed plans are
+    /// rejected so one protected successor binds the complete action sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleModelError::InvalidModel`] when compensation does
+    /// not match the selected step class.
+    pub fn unbound(
+        index: u32,
+        class: LifecycleStepClassV1,
+        domain: LifecycleStepDomainV1,
+        request: LifecycleStepRequestDigestV1,
+        compensation_request: Option<LifecycleStepRequestDigestV1>,
+    ) -> Result<Self, LifecycleModelError> {
+        let (request_body, plan) = unbound_step_commitments(
+            index,
+            class,
+            domain,
+            request,
+            LifecycleEffectDirectionV1::Forward,
+        );
+        let (compensation_body, compensation_plan) =
+            compensation_request.map_or((None, None), |compensation_request| {
+                let (body, plan) = unbound_step_commitments(
+                    index,
+                    class,
+                    domain,
+                    compensation_request,
+                    LifecycleEffectDirectionV1::Compensation,
+                );
+                (Some(body), Some(plan))
+            });
+
+        Self::new(
+            index,
+            class,
+            domain,
+            request,
+            request_body,
+            plan,
+            compensation_request,
+            compensation_body,
+            compensation_plan,
+            LifecycleStepStateV1::Planned,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Binds one unstarted action skeleton to exact late-derived effect data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleModelError::InvalidTransition`] unless this is a
+    /// canonical unbound Planned step and the supplied compensation shape is
+    /// exact and no longer carries an unbound marker.
+    pub fn bind(
+        &self,
+        request_body: LifecycleStepBodyDigestV1,
+        plan: LifecycleStepPlanDigestV1,
+        compensation_body: Option<LifecycleStepBodyDigestV1>,
+        compensation_plan: Option<LifecycleStepPlanDigestV1>,
+    ) -> Result<Self, LifecycleModelError> {
+        if !self.is_unbound() {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
+
+        let bound = Self::new(
+            self.index,
+            self.class,
+            self.domain,
+            self.request,
+            request_body,
+            plan,
+            self.compensation_request,
+            compensation_body,
+            compensation_plan,
+            LifecycleStepStateV1::Planned,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        if bound.has_unbound_commitment() {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
+        Ok(bound)
+    }
+
     /// Constructs a complete step snapshot under closed progress invariants.
     ///
     /// # Errors
@@ -320,6 +425,74 @@ impl LifecycleStepV1 {
         self.retry
     }
 
+    pub(super) fn is_unbound(&self) -> bool {
+        if self.state != LifecycleStepStateV1::Planned
+            || !self.forward_attempts.is_empty()
+            || !self.compensation_attempts.is_empty()
+            || self.result.is_some()
+            || self.compensation_result.is_some()
+            || self.inventory.is_some()
+            || self.failure.is_some()
+            || self.retry.is_some()
+        {
+            return false;
+        }
+
+        let (request_body, plan) = unbound_step_commitments(
+            self.index,
+            self.class,
+            self.domain,
+            self.request,
+            LifecycleEffectDirectionV1::Forward,
+        );
+        if self.request_body != request_body || self.plan != plan {
+            return false;
+        }
+
+        match (
+            self.compensation_request,
+            self.compensation_body,
+            self.compensation_plan,
+        ) {
+            (Some(request), Some(body), Some(plan)) => {
+                let expected = unbound_step_commitments(
+                    self.index,
+                    self.class,
+                    self.domain,
+                    request,
+                    LifecycleEffectDirectionV1::Compensation,
+                );
+                (body, plan) == expected
+            }
+            (None, None, None) => true,
+            _ => false,
+        }
+    }
+
+    pub(super) fn has_unbound_commitment(&self) -> bool {
+        let (request_body, plan) = unbound_step_commitments(
+            self.index,
+            self.class,
+            self.domain,
+            self.request,
+            LifecycleEffectDirectionV1::Forward,
+        );
+        if self.request_body == request_body || self.plan == plan {
+            return true;
+        }
+
+        self.compensation_request.is_some_and(|request| {
+            let (body, plan) = unbound_step_commitments(
+                self.index,
+                self.class,
+                self.domain,
+                request,
+                LifecycleEffectDirectionV1::Compensation,
+            );
+            self.compensation_body == Some(body) || self.compensation_plan == Some(plan)
+        })
+    }
+
     /// Marks one exact retryable failed forward attempt canceled.
     ///
     /// # Errors
@@ -359,6 +532,23 @@ impl LifecycleStepV1 {
     }
 
     pub(super) fn can_follow(&self, old: &Self) -> bool {
+        if old.is_unbound() && !self.is_unbound() {
+            return self.index == old.index
+                && self.class == old.class
+                && self.domain == old.domain
+                && self.request == old.request
+                && self.compensation_request == old.compensation_request
+                && self.state == LifecycleStepStateV1::Planned
+                && self.forward_attempts.is_empty()
+                && self.compensation_attempts.is_empty()
+                && self.result.is_none()
+                && self.compensation_result.is_none()
+                && self.inventory.is_none()
+                && self.failure.is_none()
+                && self.retry.is_none()
+                && !self.has_unbound_commitment();
+        }
+
         let immutable = self.index == old.index
             && self.class == old.class
             && self.domain == old.domain
@@ -449,6 +639,29 @@ impl LifecycleStepV1 {
             );
         immutable && attempts_are_monotone && edge
     }
+}
+
+fn unbound_step_commitments(
+    index: u32,
+    class: LifecycleStepClassV1,
+    domain: LifecycleStepDomainV1,
+    request: LifecycleStepRequestDigestV1,
+    direction: LifecycleEffectDirectionV1,
+) -> (LifecycleStepBodyDigestV1, LifecycleStepPlanDigestV1) {
+    let mut body = [0; 47];
+    body[..8].copy_from_slice(UNBOUND_STEP_BODY_MAGIC);
+    body[8..12].copy_from_slice(&index.to_be_bytes());
+    body[12] = class as u8;
+    body[13] = domain as u8;
+    body[14] = direction as u8;
+    body[15..47].copy_from_slice(request.digest().as_bytes());
+
+    let mut plan = body;
+    plan[..8].copy_from_slice(UNBOUND_STEP_PLAN_MAGIC);
+    (
+        LifecycleStepBodyDigestV1::commit(&body),
+        LifecycleStepPlanDigestV1::commit(&plan),
+    )
 }
 
 fn option_is_monotone<T: Copy + Eq>(old: Option<T>, new: Option<T>) -> bool {
@@ -638,6 +851,9 @@ impl LifecycleOperationV1 {
         finished_at: Option<LifecycleTimeV1>,
         predecessor_digest: Option<LifecycleRecordDigestV1>,
     ) -> Result<Self, LifecycleModelError> {
+        let contains_unbound_commitment = steps.iter().any(LifecycleStepV1::has_unbound_commitment);
+        let all_steps_are_unbound = steps.iter().all(LifecycleStepV1::is_unbound);
+
         if operation_id.as_bytes() == &[0; 16]
             || caller.as_bytes() == &[0; 16]
             || project.as_bytes() == &[0; 16]
@@ -655,6 +871,8 @@ impl LifecycleOperationV1 {
                 .enumerate()
                 .all(|(i, s)| usize::try_from(s.index()).ok() == Some(i))
             || !steps_are_partitioned(&steps)
+            || (contains_unbound_commitment
+                && (phase != LifecyclePhaseV1::Accepted || !all_steps_are_unbound))
             || steps.iter().any(|step| {
                 step.forward_attempts()
                     .iter()

@@ -121,7 +121,14 @@ impl LifecycleMethodPlanV1 {
         current: &CurrentLifecycleOperationV1<'_>,
         expected_steps: usize,
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
-        if expected_steps == 0 || current.operation().steps().len() != expected_steps {
+        if expected_steps == 0
+            || current.operation().steps().len() != expected_steps
+            || current
+                .operation()
+                .steps()
+                .iter()
+                .any(super::LifecycleStepV1::is_unbound)
+        {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
         Ok(Self {
