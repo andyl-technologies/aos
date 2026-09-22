@@ -8,7 +8,16 @@
   file = "crucible-qemu-11.1.1.patch";
   sha256 = "c3db011e1e3827bfa31d6a4be0f794728dc038066ca7fe6a35f97b8239f05614";
   subject = "crucible: integrate deterministic QEMU execution";
-  body = "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork, asynchronous-worker, and device-fingerprint implementation as one atomic, reconstructible QEMU 11.1.1 integration boundary.\n\nRearm pending main-loop work after a deferred reset consumes its original AIO wake, allowing repeated require-ready watchdog resets to complete without external QMP activity. Make the fingerprint projection test wait for an executed guest TB before checking the outside-boundary marker result.";
+  body = builtins.concatStringsSep "\n" [
+    "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
+    "asynchronous-worker, and device-fingerprint implementation as one atomic,"
+    "reconstructible QEMU 11.1.1 integration boundary."
+    ""
+    "Rearm pending main-loop work after a deferred reset consumes its original AIO"
+    "wake, allowing repeated require-ready watchdog resets to complete without"
+    "external QMP activity. Make the fingerprint projection test wait for an"
+    "executed guest TB before checking the outside-boundary marker result."
+  ];
   commit = "fd00c3942f8a5af5250022988813bf1eb653b1db";
   tree = "6e3fc84600db615f3e50cf095ab004e4a21df329";
   catalogName = "crucible-deterministic-qemu-integration";
