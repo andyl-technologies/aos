@@ -1,7 +1,7 @@
 //! LIFE-06 complete boot inventory aggregation and exact recovery planning.
 
 use aos_proto::aos::sandbox::local::v1::{
-    BrokerMethod, InventoryRuntimeResponse, InventoryStorageResourcesResponse,
+    BrokerMethod, InventoryRuntimeResponse, InventoryStorageResourcesResponse, RuntimeState,
     StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
 };
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, SandboxId};
@@ -1893,7 +1893,20 @@ pub struct LifecycleAuthenticatedRuntimeInventoryV1 {
     generation: u64,
     source: ObjectDigest,
     entries: Vec<LifecycleBootDomainEntryV1>,
+    runtime_facts: Vec<LifecycleAuthenticatedRuntimeFactV1>,
     commitment: ObjectDigest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LifecycleAuthenticatedRuntimeFactV1 {
+    sandbox: [u8; 16],
+    incarnation: [u8; 16],
+    assignment_epoch: u64,
+    desired_generation: u64,
+    assignment_digest: [u8; 32],
+    runtime_handle: ObjectDigest,
+    state: RuntimeState,
+    observation_sequence: u64,
 }
 
 /// Carries an exact adjacent pair of protected Host inventory outcomes.
@@ -1979,6 +1992,13 @@ impl LifecycleAuthenticatedRuntimeInventoryBootstrapV1 {
             self.projection_root,
             self.host_boot,
         )
+    }
+
+    pub(crate) fn frozen_runtime_liveness(
+        &self,
+        fence: super::LiveRuntimeFenceV1,
+    ) -> Result<ObjectDigest, LifecyclePhase6ErrorV1> {
+        self.current.frozen_runtime_liveness(fence)
     }
 }
 
@@ -2078,7 +2098,11 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
         }
 
         let mut entries = Vec::new();
+        let mut runtime_facts = Vec::new();
         entries
+            .try_reserve_exact(inventory.runtimes.len())
+            .map_err(|_| LifecyclePhase6ErrorV1::Capacity)?;
+        runtime_facts
             .try_reserve_exact(inventory.runtimes.len())
             .map_err(|_| LifecyclePhase6ErrorV1::Capacity)?;
         for runtime in &inventory.runtimes {
@@ -2102,6 +2126,27 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
                 resource: LifecycleResourceV1::Sandbox(SandboxId::from_bytes(sandbox_bytes)),
                 identity,
             });
+            runtime_facts.push(LifecycleAuthenticatedRuntimeFactV1 {
+                sandbox: sandbox_bytes,
+                incarnation: fence
+                    .incarnation_id
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?,
+                assignment_epoch: fence.assignment_epoch,
+                desired_generation: fence.desired_generation,
+                assignment_digest: fence
+                    .assignment_digest
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?,
+                runtime_handle: identity,
+                state: runtime
+                    .state
+                    .as_known()
+                    .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?,
+                observation_sequence: runtime.observation_sequence,
+            });
         }
         if !entries
             .windows(2)
@@ -2112,7 +2157,15 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
         let session_binding = ObjectDigest::from_bytes(outcome.request().session_binding());
         let request = ObjectDigest::from_bytes(outcome.request().signed_request_digest());
         let client_generation = outcome.request().client_sequence();
-        let source = ObjectDigest::from_bytes(Sha256::digest(exact_body).into());
+        // Host increments observation_sequence on every inventory call. The
+        // physical-state source excludes that counter, while the adjacent pair
+        // below verifies that it advanced. Other Host readers may interleave.
+        let mut stable_inventory = inventory.clone();
+        for runtime in &mut stable_inventory.runtimes {
+            runtime.observation_sequence = 0;
+        }
+        let source =
+            ObjectDigest::from_bytes(Sha256::digest(stable_inventory.encode_to_vec()).into());
         let mut generation_bytes = [0_u8; 8];
         generation_bytes.copy_from_slice(&source.as_bytes()[..8]);
         let generation = u64::from_be_bytes(generation_bytes).max(1);
@@ -2146,8 +2199,39 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
             generation,
             source,
             entries,
+            runtime_facts,
             commitment,
         })
+    }
+
+    fn frozen_runtime_liveness(
+        &self,
+        fence: super::LiveRuntimeFenceV1,
+    ) -> Result<ObjectDigest, LifecyclePhase6ErrorV1> {
+        let desired = fence.desired();
+        let mut matching = self.runtime_facts.iter().filter(|runtime| {
+            runtime.sandbox == *fence.sandbox().as_bytes()
+                && runtime.incarnation == *fence.incarnation().as_bytes()
+                && runtime.assignment_epoch == fence.assignment_epoch().get()
+                && runtime.desired_generation == desired.expected_generation().get()
+                && runtime.assignment_digest == *desired.resource_state().digest().as_bytes()
+                && runtime.state == RuntimeState::RUNTIME_STATE_FROZEN
+        });
+        let runtime = matching
+            .next()
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        if matching.next().is_some() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+
+        Ok(ObjectDigest::from_bytes(
+            Sha256::new()
+                .chain_update(b"aos.sandbox.lifecycle.authenticated-runtime-liveness.v1\0")
+                .chain_update(self.source.as_bytes())
+                .chain_update(runtime.runtime_handle.as_bytes())
+                .finalize()
+                .into(),
+        ))
     }
 
     /// Returns the stable physical-state generation of this complete set.
@@ -2210,6 +2294,21 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
             || successor.generation != self.generation
             || successor.source != self.source
             || successor.entries != self.entries
+            || successor.runtime_facts.len() != self.runtime_facts.len()
+            || !self
+                .runtime_facts
+                .iter()
+                .zip(&successor.runtime_facts)
+                .all(|(before, after)| {
+                    before.sandbox == after.sandbox
+                        && before.incarnation == after.incarnation
+                        && before.assignment_epoch == after.assignment_epoch
+                        && before.desired_generation == after.desired_generation
+                        && before.assignment_digest == after.assignment_digest
+                        && before.runtime_handle == after.runtime_handle
+                        && before.state == after.state
+                        && after.observation_sequence > before.observation_sequence
+                })
         {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }

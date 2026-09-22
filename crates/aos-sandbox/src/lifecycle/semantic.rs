@@ -1286,7 +1286,10 @@ fn method_fact_sets_are_complete(
         LifecycleIntentV1::Create { sandbox }
         | LifecycleIntentV1::Restore { sandbox, .. }
         | LifecycleIntentV1::Start { sandbox, .. }
-        | LifecycleIntentV1::Resume { sandbox, .. } => Some(*sandbox),
+        | LifecycleIntentV1::Resume {
+            sandbox,
+            source: super::LifecycleResumeSourceV1::Hibernated { .. },
+        } => Some(*sandbox),
         LifecycleIntentV1::Fork { target, .. } => Some(*target),
         _ => None,
     };

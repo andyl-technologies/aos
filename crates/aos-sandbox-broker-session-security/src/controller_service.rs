@@ -1878,6 +1878,51 @@ impl ProductionEffectExecutor {
                     LifecycleSuspensionPlanV1::planned_memory_suspend_steps(&current)
                         .map_err(|error| EffectFailure::Permanent(error.to_string()))?
                 }
+                aos_sandbox::lifecycle::LifecycleIntentV1::Resume {
+                    source: aos_sandbox::lifecycle::LifecycleResumeSourceV1::Memory { fence },
+                    ..
+                } => {
+                    let observation = owner
+                        .current_suspend_observation_for_fence(
+                            current.operation().project(),
+                            *fence,
+                        )
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                        .ok_or_else(|| {
+                            EffectFailure::Permanent(
+                                "protected suspension observation is absent".to_owned(),
+                            )
+                        })?;
+                    let inventory_lineage =
+                        lifecycle_plan_resource_id(operation_id, b"boot-inventory-lineage");
+                    let boot_inventory_key = lifecycle_protected_key_v1(
+                        LifecycleProtectedRecordKindV1::Auxiliary,
+                        current.operation().project(),
+                        inventory_lineage,
+                        operation_id,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    let challenge = owner
+                        .begin_boot_inventory_bootstrap(&current_key, &boot_inventory_key)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    let runtime = {
+                        let mut sessions = self.sessions.lock().map_err(|_| {
+                            EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+                        })?;
+                        let host = sessions.host.as_mut().ok_or_else(missing_broker_session)?;
+                        host.bootstrap_runtime_inventory(&challenge)
+                            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                    };
+                    let liveness = owner
+                        .bind_authenticated_runtime_liveness(&current_key, &runtime)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    LifecycleSuspensionPlanV1::planned_memory_resume_steps(
+                        &current,
+                        &observation,
+                        &liveness,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                }
                 aos_sandbox::lifecycle::LifecycleIntentV1::Snapshot { .. }
                 | aos_sandbox::lifecycle::LifecycleIntentV1::Hibernate { .. } => {
                     let project = current.operation().project();
@@ -2106,6 +2151,18 @@ impl ProductionEffectExecutor {
             }
 
             let method = current.operation().intent().method();
+            let inventory_lineage =
+                lifecycle_plan_resource_id(operation_id, b"boot-inventory-lineage");
+            let boot_inventory_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                current.operation().project(),
+                inventory_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let challenge = owner
+                .begin_boot_inventory_bootstrap(&current_key, &boot_inventory_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             let (effect, fence) = match method {
                 aos_sandbox::lifecycle::LifecycleMethodV1::Stop => {
                     let fence = match current.operation().intent() {
@@ -2135,6 +2192,40 @@ impl ProductionEffectExecutor {
                     let effect = LifecycleSuspensionPlanV1::suspend(&current, None)
                         .and_then(|plan| plan.next_effect(&current))
                         .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    (effect, fence)
+                }
+                aos_sandbox::lifecycle::LifecycleMethodV1::Resume => {
+                    let fence = match current.operation().intent() {
+                        aos_sandbox::lifecycle::LifecycleIntentV1::Resume {
+                            source:
+                                aos_sandbox::lifecycle::LifecycleResumeSourceV1::Memory { fence },
+                            ..
+                        } => *fence,
+                        _ => return Ok(false),
+                    };
+                    let observation = owner
+                        .current_suspend_observation_for_fence(current.operation().project(), fence)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                        .ok_or_else(|| {
+                            EffectFailure::Permanent(
+                                "protected suspension observation is absent".to_owned(),
+                            )
+                        })?;
+                    let runtime = {
+                        let mut sessions = self.sessions.lock().map_err(|_| {
+                            EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+                        })?;
+                        let host = sessions.host.as_mut().ok_or_else(missing_broker_session)?;
+                        host.bootstrap_runtime_inventory(&challenge)
+                            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                    };
+                    let liveness = owner
+                        .bind_authenticated_runtime_liveness(&current_key, &runtime)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                    let effect =
+                        LifecycleSuspensionPlanV1::resume_memory(&current, &observation, &liveness)
+                            .and_then(|plan| plan.next_effect(&current))
+                            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
                     (effect, fence)
                 }
                 aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot
@@ -2181,6 +2272,9 @@ impl ProductionEffectExecutor {
                 (aos_sandbox::lifecycle::LifecycleMethodV1::Stop, 0, 6) => {
                     RuntimeAction::RUNTIME_ACTION_STOP
                 }
+                (aos_sandbox::lifecycle::LifecycleMethodV1::Resume, 0, 9) => {
+                    RuntimeAction::RUNTIME_ACTION_THAW
+                }
                 (aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory, 2, 3)
                 | (aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot, 2, 3)
                 | (aos_sandbox::lifecycle::LifecycleMethodV1::Hibernate, 2 | 5, 3) => {
@@ -2203,18 +2297,6 @@ impl ProductionEffectExecutor {
                 == aos_sandbox::lifecycle::LifecycleMethodV1::Snapshot
                 || (method == aos_sandbox::lifecycle::LifecycleMethodV1::Hibernate
                     && effect.step() == 5);
-            let inventory_lineage =
-                lifecycle_plan_resource_id(operation_id, b"boot-inventory-lineage");
-            let boot_inventory_key = lifecycle_protected_key_v1(
-                LifecycleProtectedRecordKindV1::Auxiliary,
-                current.operation().project(),
-                inventory_lineage,
-                operation_id,
-            )
-            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-            let challenge = owner
-                .begin_boot_inventory_bootstrap(&current_key, &boot_inventory_key)
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             let timing = production_authority_effect_timing().ok_or_else(|| {
                 EffectFailure::Retryable(
                     "current clock cannot safely attenuate lifecycle authority".to_owned(),
@@ -2383,7 +2465,7 @@ impl ProductionEffectExecutor {
         Ok(())
     }
 
-    fn advance_suspend_terminal_publication(
+    fn advance_terminal_lifecycle_publication(
         &mut self,
         operation_id: OperationId,
         journal: &mut Journal,
@@ -2407,10 +2489,18 @@ impl ProductionEffectExecutor {
                         "lifecycle operation is absent from protected custody".to_owned(),
                     )
                 })?;
+            let is_memory_resume = matches!(
+                current.operation().intent(),
+                aos_sandbox::lifecycle::LifecycleIntentV1::Resume {
+                    source: aos_sandbox::lifecycle::LifecycleResumeSourceV1::Memory { .. },
+                    ..
+                }
+            );
+            let method = current.operation().intent().method();
             if current.operation().terminal_result()
                 != Some(aos_sandbox::lifecycle::LifecycleTerminalResultV1::Succeeded)
-                || current.operation().intent().method()
-                    != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+                || (method != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+                    && !is_memory_resume)
             {
                 return Ok(false);
             }
@@ -2437,10 +2527,12 @@ impl ProductionEffectExecutor {
                 .current_boot_inventory(&boot_inventory_key)
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?
                 .is_some();
-            let observation_is_current = owner
-                .current_suspend_observation(&observation_key)
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
-                .is_some();
+            let observation_is_current = method
+                == aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+                && owner
+                    .current_suspend_observation(&observation_key)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                    .is_some();
             (
                 current_key,
                 boot_inventory_key,
@@ -2568,6 +2660,31 @@ impl ProductionEffectExecutor {
             return Ok(true);
         }
 
+        let is_memory_resume = {
+            let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let current = owner
+                .current_operation(&current_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "terminal lifecycle operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            matches!(
+                current.operation().intent(),
+                aos_sandbox::lifecycle::LifecycleIntentV1::Resume {
+                    source: aos_sandbox::lifecycle::LifecycleResumeSourceV1::Memory { .. },
+                    ..
+                }
+            )
+        };
+        if is_memory_resume {
+            return Ok(false);
+        }
+
         let disposition = {
             let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
                 &mut self.source_domains,
@@ -2621,6 +2738,7 @@ impl ProductionEffectExecutor {
                 current.operation().intent().method(),
                 aos_sandbox::lifecycle::LifecycleMethodV1::Stop
                     | aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+                    | aos_sandbox::lifecycle::LifecycleMethodV1::Resume
             ) {
                 return Ok(false);
             }
@@ -2712,6 +2830,28 @@ impl ProductionEffectExecutor {
             != Some(aos_sandbox::lifecycle::LifecycleTerminalResultV1::Succeeded)
         {
             return Ok(None);
+        }
+        if matches!(
+            current.operation().intent().method(),
+            aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+                | aos_sandbox::lifecycle::LifecycleMethodV1::Resume
+        ) {
+            let boot_inventory_lineage =
+                lifecycle_plan_resource_id(operation_id, b"boot-inventory-lineage");
+            let boot_inventory_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                current.operation().project(),
+                boot_inventory_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if owner
+                .current_boot_inventory(&boot_inventory_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .is_none()
+            {
+                return Ok(None);
+            }
         }
         if current.operation().intent().method()
             == aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
@@ -3094,7 +3234,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             self.settle_lifecycle_admission(operation_id, admission)?;
             self.bind_lifecycle_plan(operation_id)?;
             self.ensure_initial_lifecycle_reservation(operation_id)?;
-            if self.advance_suspend_terminal_publication(operation_id, journal)? {
+            if self.advance_terminal_lifecycle_publication(operation_id, journal)? {
                 return Err(EffectFailure::Retryable(
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
                 ));
@@ -3117,7 +3257,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
                 ));
             }
-            if self.advance_suspend_terminal_publication(operation_id, journal)? {
+            if self.advance_terminal_lifecycle_publication(operation_id, journal)? {
                 return Err(EffectFailure::Retryable(
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
                 ));

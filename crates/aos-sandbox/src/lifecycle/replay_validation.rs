@@ -428,20 +428,51 @@ fn boot_fence_matches_commit(
     };
     let cas = commit.facts().cas();
     let desired = boot.fence().desired();
-    let exact_resources = commit
-        .facts()
-        .resources()
-        .iter()
-        .map(|resource| resource.resource())
-        .eq(boot.resources().iter().copied());
+    let memory_resume_fence = match operation.intent() {
+        super::LifecycleIntentV1::Resume {
+            source: super::LifecycleResumeSourceV1::Memory { fence },
+            ..
+        } => Some(*fence),
+        _ => None,
+    };
+    if memory_resume_fence.is_some_and(|fence| fence != boot.fence()) {
+        return false;
+    }
+    let resume_memory_fence = memory_resume_fence.is_some();
+    let resources_match = if resume_memory_fence {
+        commit
+            .facts()
+            .resources()
+            .iter()
+            .all(|resource| boot.resources().contains(&resource.resource()))
+    } else {
+        commit
+            .facts()
+            .resources()
+            .iter()
+            .map(|resource| resource.resource())
+            .eq(boot.resources().iter().copied())
+    };
+    let state_matches = commit.facts().resources().iter().any(|resource| {
+        if resource.resource() != cas.resource() {
+            return false;
+        }
+        if resume_memory_fence {
+            matches!(
+                resource.predecessor(),
+                super::ResourceExpectedStateV1::Present { revision, state_digest }
+                    if revision == desired.resource_revision()
+                        && state_digest == desired.resource_state()
+            ) && desired.expected_generation() == cas.expected_generation()
+        } else {
+            resource.successor_revision() == desired.resource_revision()
+                && resource.successor_state() == desired.resource_state()
+                && desired.expected_generation() == cas.successor_generation()
+        }
+    });
     cas.resource() == super::LifecycleResourceV1::Sandbox(sandbox)
         && boot.fence().sandbox() == sandbox
         && desired.resource() == cas.resource()
-        && desired.expected_generation() == cas.successor_generation()
-        && exact_resources
-        && commit.facts().resources().iter().any(|resource| {
-            resource.resource() == cas.resource()
-                && resource.successor_revision() == desired.resource_revision()
-                && resource.successor_state() == desired.resource_state()
-        })
+        && resources_match
+        && state_matches
 }

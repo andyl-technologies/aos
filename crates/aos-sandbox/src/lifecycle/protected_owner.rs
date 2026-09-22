@@ -2883,6 +2883,47 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         ))
     }
 
+    /// Selects the unique current suspend observation for one exact runtime fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unhealthy replay, malformed auxiliary state, or
+    /// multiple current observations claiming the same project and live fence.
+    pub fn current_suspend_observation_for_fence(
+        &self,
+        project: ProjectId,
+        fence: LiveRuntimeFenceV1,
+    ) -> Result<Option<CurrentLifecycleSuspendObservationV1<'_>>, LifecycleProtectedJournalErrorV1>
+    {
+        let projection = self.journal.replay()?;
+        let mut selected = None;
+        for envelope in projection.records().iter().filter(|envelope| {
+            envelope.key().kind() == LifecycleProtectedRecordKindV1::Auxiliary
+                && envelope.key().identity()[..16] == project.as_bytes()[..]
+        }) {
+            let Some(record) = self.current_auxiliary_record(&projection, envelope.key())? else {
+                continue;
+            };
+            let LifecycleAuxiliaryPayloadV1::SuspendObservation(observation) = record.payload()
+            else {
+                continue;
+            };
+            if observation.fence() != fence {
+                continue;
+            }
+            if selected.replace(*observation).is_some() {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+        }
+
+        Ok(selected.map(|observation| {
+            CurrentLifecycleSuspendObservationV1::from_protected_current(
+                observation,
+                projection.root(),
+            )
+        }))
+    }
+
     /// Resolves one current verifier-owned coordination transaction.
     ///
     /// # Errors
@@ -3044,6 +3085,49 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
                 .finalize()
                 .into(),
         );
+        Ok(CurrentLifecycleRuntimeLivenessV1::from_protected_current(
+            expected_fence,
+            host_boot,
+            inventory,
+            current.operation().operation_id(),
+            current.record(),
+            current.projection_root(),
+        ))
+    }
+
+    /// Binds a challenge-authenticated frozen Host runtime to current Resume.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the protected operation is a current memory
+    /// Resume and the authenticated Host inventory contains its exact frozen
+    /// runtime under the same operation and projection binding.
+    pub fn bind_authenticated_runtime_liveness<'current>(
+        &'current self,
+        operation_key: &LifecycleProtectedJournalKeyV1,
+        runtime: &'current super::LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
+    ) -> Result<CurrentLifecycleRuntimeLivenessV1<'current>, LifecycleProtectedJournalErrorV1> {
+        let current = self
+            .current_operation(operation_key)?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let expected_fence = match current.operation().intent() {
+            super::LifecycleIntentV1::Resume {
+                source: super::LifecycleResumeSourceV1::Memory { fence },
+                ..
+            } => *fence,
+            _ => return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord),
+        };
+        let (operation, operation_record, projection_root, host_boot) = runtime.binding();
+        if operation != current.operation().operation_id()
+            || operation_record != current.record()
+            || projection_root != current.projection_root()
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let inventory = runtime
+            .frozen_runtime_liveness(expected_fence)
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
         Ok(CurrentLifecycleRuntimeLivenessV1::from_protected_current(
             expected_fence,
             host_boot,

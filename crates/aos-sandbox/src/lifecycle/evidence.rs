@@ -482,14 +482,9 @@ impl LifecycleSemanticEvidenceV1 {
                     && matches!(fact.phase(), LifecycleCoordinationPhaseV1::DatasetCommitted | LifecycleCoordinationPhaseV1::Thawed)
             ),
             LifecycleIntentV1::Resume {
-                sandbox,
-                source: super::LifecycleResumeSourceV1::Memory { fence },
-            } => matches!(
-                self.coordination,
-                Some(fact) if fact.sandbox() == *sandbox
-                    && fact.fence() == *fence
-                    && fact.phase() == LifecycleCoordinationPhaseV1::Thawed
-            ),
+                source: super::LifecycleResumeSourceV1::Memory { .. },
+                ..
+            } => self.coordination.is_none(),
             _ => self.coordination.is_none(),
         };
         let retention = matches!(
@@ -500,8 +495,8 @@ impl LifecycleSemanticEvidenceV1 {
         // operation-bound terminal record belongs to auxiliary replay.
         let suspend = self.suspend.is_none();
         // Start and Resume commit desired state before any boot/reconcile
-        // observation. Memory resume instead binds the exact thaw transaction
-        // above; boot inventory belongs to post-commit step history.
+        // observation. Memory resume binds a frozen runtime at plan time;
+        // boot inventory belongs to post-commit step history.
         let boot = self.boot.is_none();
         incarnation && coordination && retention && suspend && boot
     }
