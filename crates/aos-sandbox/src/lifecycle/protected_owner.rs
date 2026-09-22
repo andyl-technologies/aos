@@ -35,12 +35,12 @@ use super::{
     LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1,
     LifecycleDeferredEffectCursorV1, LifecycleDependencyEdgeV1, LifecycleEffectAttemptV1,
     LifecycleEffectDirectionV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
-    LifecycleInventoryDigestV1, LifecycleJournalVerifierV1, LifecycleOperationV1, LifecyclePhaseV1,
-    LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
-    LifecycleQuiesceDigestV1, LifecycleRecordDigestV1, LifecycleResourceV1,
-    LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1, LifecycleRetentionPurposeV1,
-    LifecycleSnapshotManifestDigestV1, LifecycleStepAdmissionDigestV1, LifecycleStepClassV1,
-    LifecycleStepResultDigestV1, LifecycleStepStateV1, LifecycleStepV1,
+    LifecycleInventoryDigestV1, LifecycleJournalVerifierV1, LifecycleMethodSemanticCommitV1,
+    LifecycleOperationV1, LifecyclePhaseV1, LifecycleProtectedCoordinationV1,
+    LifecycleProtectedRetentionLedgerV1, LifecycleQuiesceDigestV1, LifecycleRecordDigestV1,
+    LifecycleResourceV1, LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1,
+    LifecycleRetentionPurposeV1, LifecycleSnapshotManifestDigestV1, LifecycleStepAdmissionDigestV1,
+    LifecycleStepClassV1, LifecycleStepResultDigestV1, LifecycleStepStateV1, LifecycleStepV1,
     LifecycleSuspendObservationDigestV1, LifecycleSuspendObservationV1, LifecycleTerminalResultV1,
     LifecycleThawCompensationDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1,
     LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1, ResourceExpectedStateV1,
@@ -1971,6 +1971,184 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
                 None,
                 None,
                 None,
+            )
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
+        self.prepare_operation_progress(current_key, transaction_id, successor)
+    }
+
+    /// Plans the durable boundary immediately before semantic commit.
+    ///
+    /// All reversible effects must already be observed and no post-commit
+    /// authority may exist. The successor changes only `Prepared` to
+    /// `ReadyToCommit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale custody, an incomplete reversible prefix, an
+    /// existing semantic witness, a sentinel transaction, or journal failure.
+    pub fn prepare_semantic_commit_readiness(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        if transaction_id == [0; 16] {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let current = self
+            .current_operation(current_key)?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let operation = current.operation();
+        if operation.phase() != LifecyclePhaseV1::Prepared
+            || operation.semantic_commit().is_some()
+            || super::phase6::persisted_effect_cursor_for_operation(operation)
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
+                .is_some()
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let successor = operation
+            .successor(
+                current.record(),
+                LifecyclePhaseV1::ReadyToCommit,
+                operation.forward_progress(),
+                operation.compensation_progress(),
+                operation.steps().to_vec(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
+        self.prepare_operation_progress(current_key, transaction_id, successor)
+    }
+
+    /// Plans the irreversible semantic-commit witness under protected custody.
+    ///
+    /// This transition does not reserve a post-commit effect. A later durable
+    /// successor must release that authority from the committed record, so a
+    /// crash can never expose post-commit work before the witness is durable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale custody, a non-ready operation, a witness
+    /// that does not match the immutable intent and expectations, a sentinel
+    /// transaction, or journal failure.
+    pub fn prepare_semantic_commit(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        semantic_commit: LifecycleMethodSemanticCommitV1,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        if transaction_id == [0; 16] {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let current = self
+            .current_operation(current_key)?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let operation = current.operation();
+        if operation.phase() != LifecyclePhaseV1::ReadyToCommit
+            || operation.semantic_commit().is_some()
+            || super::phase6::persisted_effect_cursor_for_operation(operation)
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
+                .is_some()
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let successor = operation
+            .successor(
+                current.record(),
+                LifecyclePhaseV1::Committed,
+                operation.forward_progress(),
+                operation.compensation_progress(),
+                operation.steps().to_vec(),
+                Some(semantic_commit),
+                None,
+                None,
+                None,
+                None,
+            )
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
+        self.prepare_operation_progress(current_key, transaction_id, successor)
+    }
+
+    /// Releases the first post-commit effect or terminalizes an empty suffix.
+    ///
+    /// The semantic witness must already be durable. When post-commit work
+    /// remains, this transaction creates its first non-caller-selected
+    /// reservation and enters `Completing`. A plan with no post-commit suffix
+    /// instead becomes successfully terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale custody, a missing semantic witness, an
+    /// invalid suffix, a sentinel transaction or time, or journal failure.
+    pub fn prepare_postcommit_progress(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        started_at: LifecycleTimeV1,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        if transaction_id == [0; 16] {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let current = self
+            .current_operation(current_key)?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let operation = current.operation();
+        if operation.phase() != LifecyclePhaseV1::Committed
+            || operation.semantic_commit().is_none()
+            || super::phase6::persisted_effect_cursor_for_operation(operation)
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
+                .is_some()
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let next_index = usize::try_from(operation.forward_progress())
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let mut steps = operation.steps().to_vec();
+        let (phase, terminal_result, finished_at) = if next_index == steps.len() {
+            (
+                LifecyclePhaseV1::Terminal,
+                Some(LifecycleTerminalResultV1::Succeeded),
+                Some(started_at),
+            )
+        } else {
+            let next = steps
+                .get(next_index)
+                .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+            if next.class() != LifecycleStepClassV1::PostCommitForward
+                || next.state() != LifecycleStepStateV1::Planned
+            {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            let admission = effect_admission_digest(
+                operation.operation_id(),
+                current.record(),
+                transaction_id,
+                next.index(),
+                LifecycleEffectDirectionV1::Forward,
+                1,
+                started_at,
+            );
+            steps[next_index] = reserve_forward_step(next, admission, started_at)?;
+            (LifecyclePhaseV1::Completing, None, None)
+        };
+        let successor = operation
+            .successor(
+                current.record(),
+                phase,
+                operation.forward_progress(),
+                operation.compensation_progress(),
+                steps,
+                operation.method_semantic_commit().cloned(),
+                None,
+                None,
+                terminal_result,
+                finished_at,
             )
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
 
