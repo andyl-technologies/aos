@@ -69,7 +69,6 @@ crucible-daemon	src/executor_server	thread::sleep	1
 crucible-daemon	src/executor_supervisor/tests	retry	1
 crucible-daemon	src/crucible_artifact/finding_replay	retry	1
 crucible-daemon	src/executor_worker/result/operations	retry	1
-crucible-daemon	src/exact_checkpoint_store/production	retry	1
 crucible-daemon	src/lib	retry	1
 crucible-daemon	src/planner_process/owner	retry	1
 crucible-daemon	src/planner_process/pipes/tests	thread::sleep	1
