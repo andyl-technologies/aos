@@ -19,7 +19,8 @@ use crate::controller_service::public_projection::{
 };
 use crate::{
     EffectPlan, IdempotencyKey, IdempotencyOutcome, Journal, OperationCompilationError,
-    OperationPlan, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
+    OperationPlan, PublicMutationEffectV1, PublicOperationAdmissionV1,
+    PublicOperationAuthorizationV1,
 };
 
 pub(super) fn compile_public_operator_recovery(
@@ -53,6 +54,7 @@ pub(super) fn compile_public_operator_recovery(
                 idempotency_key,
                 canonical_request,
                 request_digest,
+                peer,
             );
         }
         IdempotencyOutcome::Conflict => return Err(OperationCompilationError::Rejected),
@@ -82,9 +84,15 @@ pub(super) fn compile_public_operator_recovery(
         PublicOperationMethodV1::OperatorRecover,
         canonical_request,
     );
-    let effect = EffectPlan::public_mutation(
+    let effect = EffectPlan::authorized_public_mutation(
         PublicOperationMethodV1::OperatorRecover,
-        canonical_request.to_vec(),
+        PublicMutationEffectV1::new(
+            peer.principal(),
+            peer.project(),
+            authorization.accepted_wall_seconds(),
+            canonical_request.to_vec(),
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
     let plan = OperationPlan::new(
@@ -180,20 +188,30 @@ fn replay_operator_recovery(
     idempotency_key: IdempotencyKey,
     canonical_request: &[u8],
     request_digest: [u8; 32],
+    peer: &crate::public_api_session::PublicApiPeer,
 ) -> Result<OperationPlan, OperationCompilationError> {
     let desired = super::public_mutation::mutation_intent(
         operation_id,
         PublicOperationMethodV1::OperatorRecover,
         canonical_request,
     );
-    let effect = EffectPlan::public_mutation(
-        PublicOperationMethodV1::OperatorRecover,
-        canonical_request.to_vec(),
-    )
-    .map_err(|_| OperationCompilationError::Rejected)?;
     let public = crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
         .map_err(|_| OperationCompilationError::Rejected)?
         .ok_or(OperationCompilationError::Rejected)?;
+    if public.project() != peer.project() {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let effect = EffectPlan::authorized_public_mutation(
+        PublicOperationMethodV1::OperatorRecover,
+        PublicMutationEffectV1::new(
+            peer.principal(),
+            public.project(),
+            public.accepted_wall_seconds(),
+            canonical_request.to_vec(),
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
 
     OperationPlan::new(
         operation_id,

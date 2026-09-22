@@ -226,6 +226,14 @@ impl PublicOperationAdmissionV1 {
         &self.authorization
     }
 
+    pub(crate) const fn accepted_wall_seconds(&self) -> i64 {
+        self.accepted_wall_seconds
+    }
+
+    pub(crate) const fn project(&self) -> ProjectId {
+        self.authorization.project()
+    }
+
     pub(super) const fn durable(&self) -> DurablePublicOperationV1 {
         DurablePublicOperationV1 {
             method: self.method,

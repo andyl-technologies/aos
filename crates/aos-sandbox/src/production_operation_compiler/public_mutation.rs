@@ -24,7 +24,10 @@ use crate::controller_service::public_projection::{
 };
 use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
-use crate::{EffectPlan, IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan};
+use crate::{
+    EffectPlan, IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan,
+    PublicMutationEffectV1,
+};
 
 const PUBLIC_MUTATION_INTENT_KEY: &[u8] = b"aos.public.mutation-intent.v1\0";
 const PUBLIC_MUTATION_INTENT_MAGIC: &[u8; 8] = b"AOSPMI01";
@@ -273,9 +276,15 @@ fn replay_public_mutation(
     let public = crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
         .map_err(|_| OperationCompilationError::Rejected)?
         .ok_or(OperationCompilationError::Rejected)?;
-    let effect = EffectPlan::public_mutation(
+    let effect = EffectPlan::authorized_public_mutation(
         authorized.request().operation_method(),
-        canonical_request.to_vec(),
+        PublicMutationEffectV1::new(
+            authorized.caller(),
+            authorized.project(),
+            authorized.accepted_wall_seconds(),
+            canonical_request.to_vec(),
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
 
@@ -300,9 +309,15 @@ fn operation_plan(
     canonical_request: &[u8],
     desired: (Vec<u8>, Vec<u8>),
 ) -> Result<OperationPlan, OperationCompilationError> {
-    let effect = EffectPlan::public_mutation(
+    let effect = EffectPlan::authorized_public_mutation(
         authorized.request().operation_method(),
-        canonical_request.to_vec(),
+        PublicMutationEffectV1::new(
+            authorized.caller(),
+            project,
+            authorized.accepted_wall_seconds(),
+            canonical_request.to_vec(),
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
     let plan = OperationPlan::new(

@@ -58,7 +58,7 @@ pub(crate) use runtime_authority::{
 pub use effect::{
     AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
     EffectDomain, EffectPlan, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
-    ValidatedAuthorityEffectReceiptV1, ValidatedHostEffectReceiptV1,
+    PublicMutationEffectV1, ValidatedAuthorityEffectReceiptV1, ValidatedHostEffectReceiptV1,
 };
 use effect::{
     EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,

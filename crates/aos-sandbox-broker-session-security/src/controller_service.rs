@@ -71,10 +71,10 @@ use aos_sandbox::controller_service::journal::{
 use aos_sandbox::controller_service::public_projection::{
     AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1, PublicProjectionRecordV1,
 };
-use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
+use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::production_operation_compiler::ProductionOperationCompilerV1;
 use aos_sandbox::public_policy_planner::PublicPolicyPlanningErrorV1;
@@ -83,8 +83,9 @@ use aos_sandbox::{
     AuthorityEffectObservationV1, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
     EffectObservation, EffectPlan, EffectReceipt, HostCatalogReconciliationError,
     HostCatalogReconciliationV1, Journal, JournalError, MountAttemptError, NodeController,
-    NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1, Reconciler,
-    ResourceInventoryError, SingleNodeEffectExecutor, ValidatedAuthorityEffectReceiptV1,
+    NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1,
+    PublicMutationEffectV1, Reconciler, ResourceInventoryError, SingleNodeEffectExecutor,
+    ValidatedAuthorityEffectReceiptV1,
 };
 
 mod public_api;
@@ -1395,17 +1396,22 @@ impl ProductionEffectExecutor {
         })
     }
 
-    fn validate_source_domains(&mut self) -> Result<(), EffectFailure> {
-        aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
-            &mut self.source_domains,
-        )
-        .and_then(|owner| owner.replay())
-        .map(|_| ())
-        .map_err(|error| {
-            EffectFailure::Permanent(format!(
-                "protected source-domain replay failed: {error}"
-            ))
-        })
+    fn public_mutation_context(
+        &mut self,
+        plan: &EffectPlan,
+    ) -> Result<PublicMutationEffectV1, EffectFailure> {
+        aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut self.source_domains)
+            .and_then(|owner| owner.replay())
+            .map_err(|error| {
+                EffectFailure::Permanent(format!("protected source-domain replay failed: {error}"))
+            })?;
+        plan.public_mutation_context()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            .ok_or_else(|| {
+                EffectFailure::Permanent(
+                    "controller effect lacks authenticated admission context".to_owned(),
+                )
+            })
     }
 
     fn prepared_in_this_process(&self, prepared: &PreparedAuthorityEffectV1) -> bool {
@@ -1433,7 +1439,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         plan: &EffectPlan,
     ) -> Result<EffectObservation, EffectFailure> {
         if plan.public_mutation_method().is_some() {
-            self.validate_source_domains()?;
+            let _context = self.public_mutation_context(plan)?;
             return Err(EffectFailure::Retryable(
                 CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
             ));
@@ -1448,7 +1454,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         plan: &EffectPlan,
     ) -> Result<EffectReceipt, EffectFailure> {
         if plan.public_mutation_method().is_some() {
-            self.validate_source_domains()?;
+            let _context = self.public_mutation_context(plan)?;
             return Err(EffectFailure::Retryable(
                 CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
             ));
@@ -2524,9 +2530,7 @@ pub enum ControllerRuntimeError {
     Journal(#[from] JournalError),
     /// The protected lifecycle source-domain projection failed cold replay.
     #[error(transparent)]
-    LifecycleJournal(
-        #[from] aos_sandbox::lifecycle::LifecycleProtectedJournalErrorV1,
-    ),
+    LifecycleJournal(#[from] aos_sandbox::lifecycle::LifecycleProtectedJournalErrorV1),
     /// Fixed controller configuration is invalid.
     #[error(transparent)]
     Controller(#[from] ControllerServiceError),

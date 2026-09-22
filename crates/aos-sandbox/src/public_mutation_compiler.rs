@@ -7,8 +7,8 @@
 
 use aos_proto::aos::sandbox::v1::{MutationContext, ObjectDescriptor as ProtoObjectDescriptor};
 use aos_sandbox_core::{
-    CapabilityId, MediaType, ObjectDescriptor, ObjectDigest, Operation, ProjectId, ResourceId,
-    ResourceKind, Selector,
+    CapabilityId, MediaType, ObjectDescriptor, ObjectDigest, Operation, PrincipalId, ProjectId,
+    ResourceId, ResourceKind, Selector,
 };
 
 use crate::cli_model::{
@@ -27,6 +27,8 @@ use crate::{IdempotencyKey, Journal, JournalError};
 pub(crate) struct AuthorizedPublicMutationRequestV1 {
     request: ResolvedPublicMutationRequestV1,
     authorization: crate::cli_model::PublicMutationAuthorizationV1,
+    caller: PrincipalId,
+    project: ProjectId,
 }
 
 impl AuthorizedPublicMutationRequestV1 {
@@ -55,6 +57,8 @@ impl AuthorizedPublicMutationRequestV1 {
         Ok(Self {
             request,
             authorization,
+            caller: peer.principal(),
+            project: peer.project(),
         })
     }
 
@@ -68,6 +72,18 @@ impl AuthorizedPublicMutationRequestV1 {
     #[must_use]
     pub(crate) const fn accepted_wall_seconds(&self) -> i64 {
         self.authorization.accepted_wall_seconds()
+    }
+
+    /// Returns the mutually authenticated caller fixed at authorization.
+    #[must_use]
+    pub(crate) const fn caller(&self) -> PrincipalId {
+        self.caller
+    }
+
+    /// Returns the registered project fixed at authorization.
+    #[must_use]
+    pub(crate) const fn project(&self) -> ProjectId {
+        self.project
     }
 }
 
