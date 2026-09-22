@@ -7,6 +7,7 @@
   ncurses,
 }: let
   version = "5.5.1";
+  abiVersion = "5.5";
 in
   mkDerivation {
     pname = "lua";
@@ -48,7 +49,7 @@ in
             object_paths="$object_paths src/$object"
           done
           cc -shared \
-            -Wl,-soname,liblua.so.5.4 \
+            -Wl,-soname,liblua.so.${abiVersion} \
             -o src/liblua.so.${version} \
             $object_paths \
             -ldl -lm -lreadline -lncurses
@@ -59,8 +60,8 @@ in
         script = ''
           make install INSTALL_TOP="$out"
           install -m 755 src/liblua.so.${version} "$out/lib/"
-          ln -s liblua.so.${version} "$out/lib/liblua.so.5.4"
-          ln -s liblua.so.5.4 "$out/lib/liblua.so"
+          ln -s liblua.so.${version} "$out/lib/liblua.so.${abiVersion}"
+          ln -s liblua.so.${abiVersion} "$out/lib/liblua.so"
 
           mkdir -p "$out/lib/pkgconfig"
           cat > "$out/lib/pkgconfig/lua.pc" << EOF
@@ -103,7 +104,7 @@ in
         pname = "tool-lua";
         tool = self;
         command = "lua -e 'print(_VERSION)'";
-        expectedOutput = "Lua 5.4";
+        expectedOutput = "Lua ${abiVersion}";
       };
     };
 

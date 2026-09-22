@@ -21,6 +21,7 @@
   sourcePaths = map discard candidateSources;
   validStorePath = path:
     builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" path != null;
+  invalidSourcePaths = builtins.filter (path: !validStorePath path) sourcePaths;
   checkedReferenceGraph =
     if builtins.isAttrs referenceGraph && (referenceGraph.passthru.referenceGraph or false)
     then referenceGraph
@@ -32,8 +33,8 @@
   validated =
     if !builtins.isList candidateSources
     then throw "evidence-source-graph: candidateSources must be a list"
-    else if !lib.all validStorePath sourcePaths
-    then throw "evidence-source-graph: every candidate source must be a canonical /nix/store path"
+    else if invalidSourcePaths != []
+    then throw "evidence-source-graph: candidate sources must be canonical /nix/store paths: ${builtins.toJSON invalidSourcePaths}"
     else if builtins.length sourcePaths != builtins.length (lib.unique sourcePaths)
     then throw "evidence-source-graph: duplicate candidateSources entry"
     else true;

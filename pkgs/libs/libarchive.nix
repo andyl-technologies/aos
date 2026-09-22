@@ -44,7 +44,8 @@ in
       # fall back to the native build tool's archive.
       xz
     ];
-    propagatedDeps = [];
+    # libarchive.pc exposes its compression and crypto dependencies.
+    propagatedDeps = [openssl zlib zstd bzip2 lz4 expat xz];
 
     # libarchive still uses legacy trailing-array layouts internally. GCC's
     # strict level 3 narrows those arrays enough for Fortify to abort while

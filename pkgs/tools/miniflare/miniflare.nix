@@ -32,7 +32,7 @@
 ##! Linux workerd, esbuild, and sharp/libvips binaries. Cross builds remove those
 ##! build-platform binaries. Their wrappers select source-built target `workerd` and
 ##! Go-built target esbuild through the tools' supported environment variables;
-##! sharp retains its target-neutral WASM implementation. node-gyp itself runs
+##! Sharp uses a source-built target addon and AOS image libraries. node-gyp itself runs
 ##! with native AOS Node/Python/make, while the ccWrapper and target Node headers
 ##! produce the target `better_sqlite3.node` addon. Darwin additionally models
 ##! the Xcode discovery queries required by gyp using the AOS SDK.
@@ -45,6 +45,7 @@
   lib,
   stdenv,
   buildPackages,
+  callPackage,
   nodejs,
   python3,
   gnumake,
@@ -72,11 +73,19 @@
     name = "miniflare-tooling-node-modules";
     src = npmSrc;
     # Iterate: fakeHash → real hash from the mismatch error.
-    hash = "sha256-RXKP78tXoES9TA9m7Y7lGic+BgicQW1mXzXck7vXy2k=";
+    hash = "sha256-AgEq4XbYNd3YVA3Zwu4byu0ywHHBrs2YtIPeJny6yVk=";
   };
+
+  sharpVips = callPackage ../../libs/_sharp-vips.nix {};
+  sharpAddon = callPackage ./_sharp-addon.nix {
+    inherit nodeModules;
+    vips = sharpVips;
+  };
+  modernWorkerd = callPackage ../workerd/_modern.nix {};
 
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  hasModernSourceRuntime = !stdenv.isCross || stdenv.hostPlatform.system == "aarch64-linux";
   targetNodeArch =
     if stdenv.hostPlatform.darwinArch == "arm64" || stdenv.hostPlatform.system == "aarch64-linux"
     then "arm64"
@@ -85,6 +94,10 @@
     if targetNodeArch == "arm64"
     then "arm64"
     else "x86_64";
+  workerdLinuxArch =
+    if targetNodeArch == "arm64"
+    then "arm64"
+    else "64";
 
   # esbuild's JavaScript launcher honors ESBUILD_BINARY_PATH. Building the
   # small Go command directly avoids retaining its Linux npm platform package.
@@ -127,8 +140,9 @@ in
       then [buildPackages.nodejs buildPackages.python3 buildPackages.gnumake buildPackages.file]
       else [nodejs python3 gnumake];
     runtimeDeps =
-      [nodejs]
-      ++ lib.optionals (isDarwinCross || isLinuxCross) [bash workerd targetEsbuild];
+      [nodejs sharpAddon targetEsbuild]
+      ++ [bash workerd]
+      ++ lib.optionals hasModernSourceRuntime [modernWorkerd];
 
     phases = [
       {
@@ -140,7 +154,7 @@ in
 
             # The FOD is instantiated on Linux. Remove every optional ELF
             # platform package before the target closure is assembled. Sharp's
-            # loader falls back to the installed sharp-wasm32 implementation.
+            # source-built addon is installed in the final phase.
             cp -a ${nodeModules} $out/lib/node_modules
             chmod -R u+w $out/lib/node_modules
             NM=$out/lib/node_modules
@@ -232,7 +246,6 @@ in
               "$NM"/@img/sharp-linuxmusl-* \
               "$NM"/@img/sharp-libvips-linux-* \
               "$NM"/@img/sharp-libvips-linuxmusl-*
-            test -d "$NM/@img/sharp-wasm32"
 
             # Run node-gyp on Linux but select Darwin's make flavor, target
             # architecture, compiler wrapper, Node headers, and libc++ flags.
@@ -306,7 +319,7 @@ in
             NM=$out/lib/node_modules
 
             # The vendored optional binaries belong to the build platform.
-            # Select source-built target tools and Sharp's portable WASM backend.
+            # Select source-built target tools; Sharp is replaced in the final phase.
             rm -rf \
               "$NM"/@cloudflare/workerd-linux-* \
               "$NM"/wrangler/node_modules/@cloudflare/workerd-linux-* \
@@ -315,7 +328,6 @@ in
               "$NM"/@img/sharp-linuxmusl-* \
               "$NM"/@img/sharp-libvips-linux-* \
               "$NM"/@img/sharp-libvips-linuxmusl-*
-            test -d "$NM/@img/sharp-wasm32"
 
             # Wrangler imports workerd's npm resolver before consulting
             # Miniflare's override. Give that resolver a source-built binary
@@ -366,7 +378,6 @@ in
               esac
               {
                 printf '%s\n' '#!${bash}/bin/bash'
-                printf '%s\n' 'export MINIFLARE_WORKERD_PATH="${workerd}/bin/workerd"'
                 printf '%s\n' 'export ESBUILD_BINARY_PATH="${targetEsbuild}/bin/esbuild"'
                 printf 'exec %s "%s/%s" "$@"\n' '${nodejs}/bin/node' "$NM" "$entry"
               } > "$out/bin/$command"
@@ -395,6 +406,13 @@ in
             # Sanity-check the compiled addon is present.
             test -f $NM/better-sqlite3/build/Release/better_sqlite3.node
 
+            # Keep only the addon loaded by Node, not compiler intermediates or
+            # the upstream test extension emitted by the same node-gyp build.
+            cp "$NM/better-sqlite3/build/Release/better_sqlite3.node" "$TMPDIR/better_sqlite3.node"
+            rm -rf "$NM/better-sqlite3/build"
+            mkdir -p "$NM/better-sqlite3/build/Release"
+            cp "$TMPDIR/better_sqlite3.node" "$NM/better-sqlite3/build/Release/better_sqlite3.node"
+
             # CLI wrappers: AOS bash execs AOS node on the vendored JS entrypoint.
             # The npm-generated .bin shims carry host-style `/usr/bin/env` shebangs,
             # so we bypass them. The wrapper must run node with the entry as the
@@ -415,6 +433,46 @@ in
               > $out/bin/miniflare
             chmod +x $out/bin/miniflare
           '';
+      }
+      {
+        name = "install-source-workerd";
+        script = lib.optionalString hasModernSourceRuntime ''
+          NM="$out/lib/node_modules"
+          # Each npm resolver must retain its matching runtime version: Wrangler
+          # and the standalone Miniflare command use different protocol releases.
+          rm -rf "$NM"/@cloudflare/workerd-* \
+            "$NM"/wrangler/node_modules/@cloudflare/workerd-*
+          mkdir -p "$NM/@cloudflare/workerd-linux-${workerdLinuxArch}/bin" \
+            "$NM/wrangler/node_modules/@cloudflare/workerd-linux-${workerdLinuxArch}/bin"
+          ln -s ${workerd}/bin/workerd "$NM/@cloudflare/workerd-linux-${workerdLinuxArch}/bin/workerd"
+          ln -s ${modernWorkerd}/bin/workerd \
+            "$NM/wrangler/node_modules/@cloudflare/workerd-linux-${workerdLinuxArch}/bin/workerd"
+        '';
+      }
+      {
+        name = "install-source-esbuild";
+        script = ''
+          NM="$out/lib/node_modules"
+          rm -rf "$NM/@esbuild"
+          platform=${
+            if stdenv.hostPlatform.isDarwin
+            then "darwin"
+            else "linux"
+          }-${targetNodeArch}
+          mkdir -p "$NM/@esbuild/$platform/bin"
+          ln -s ${targetEsbuild}/bin/esbuild "$NM/@esbuild/$platform/bin/esbuild"
+        '';
+      }
+      {
+        name = "install-source-sharp";
+        script = ''
+          NM="$out/lib/node_modules"
+          rm -rf "$NM"/@img/sharp-*
+          mkdir -p "$NM/sharp/src/build/Release"
+          for addon in ${sharpAddon}/lib/sharp-*.node; do
+            ln -s "$addon" "$NM/sharp/src/build/Release/$(basename "$addon")"
+          done
+        '';
       }
     ];
 
