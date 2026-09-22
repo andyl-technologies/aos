@@ -2999,6 +2999,7 @@ in
                    r"request_generation\);\s*qatomic_store_release\("
                    r"&qemu_plugin_rr_control_complete_generation,\s*"
                    r"request_generation\);\s*"
+                   r"qemu_crucible_fault_lifecycle_ready_marker_cancel\(\);\s*"
                    r"if \(request_generation != complete_generation\) \{\s*"
                    r'rr_crucible_sim_trace_control_boundary\(\s*"cancel",\s*'
                    r"request_generation,\s*request_generation,\s*"
