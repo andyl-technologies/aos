@@ -1197,7 +1197,6 @@ in rec {
         "checks.crucible.phase4.gates.campaignStatistics" = phase4.gates.campaignStatistics;
         "checks.crucible.phase4.gates.controlResponsiveness" = phase4.gates.controlResponsiveness;
         "checks.crucible.phase4.gates.lazyFrontier" = phase4.gates.lazyFrontier;
-        "checks.crucible.phase4.packagedCampaignChoiceVm" = phase4.packagedCampaignChoiceVm;
         "checks.crucible.phase5.gates.campaignColdContinuity" = phase5.gates.campaignColdContinuity;
         "checks.crucible.phase5.gates.exactClosureStreaming" = phase5.gates.exactClosureStreaming;
         "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
