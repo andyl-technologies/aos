@@ -7,8 +7,8 @@
 use std::marker::PhantomData;
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyDestinationSlotRequest, ApplyDestinationSlotResponse, ApplyMountRequest,
-    ApplyNetworkRequest, ApplyRuntimeRequest, ApplyStorageRequest, BrokerMethod,
+    ApplyAtomicStorageSnapshotRequest, ApplyDestinationSlotRequest, ApplyDestinationSlotResponse,
+    ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest, ApplyStorageRequest, BrokerMethod,
     DestinationSlotAction, DestinationSlotLifecycle, InventoryDestinationSlotsResponse,
     InventoryMountResourcesResponse, InventoryNetworkResourcesResponse, InventoryRuntimeResponse,
     InventoryStorageResourcesResponse, MountAction, MountLifecycle, MountResult, MountState,
@@ -1225,6 +1225,52 @@ impl CurrentLifecycleEffectV1<'_> {
             || action == RuntimeAction::RUNTIME_ACTION_LAUNCH
             || body.launch_plan.as_option().is_some()
             || body.guardian_arm.as_option().is_some()
+            || wire_fence.sandbox_id.as_slice() != fence.sandbox().as_bytes()
+            || wire_fence.incarnation_id.as_slice() != fence.incarnation().as_bytes()
+            || wire_fence.assignment_epoch != fence.assignment_epoch().get()
+            || wire_fence.desired_generation != desired.expected_generation().get()
+            || wire_fence.assignment_digest.as_slice()
+                != desired.resource_state().digest().as_bytes()
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        Ok(())
+    }
+
+    /// Checks one authenticated grouped Storage request against the reserved lifecycle effect.
+    ///
+    /// The complete plan comes from the protected predecessor inventory. A
+    /// request is not dispatchable merely because its signed grant names the
+    /// assignment: the group bytes and current live fence must also match.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] for a different effect, method,
+    /// group plan, assignment generation, or noncanonical request body.
+    pub fn validate_authenticated_atomic_storage_snapshot_request(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        plan: &super::LifecycleAtomicDatasetSnapshotPlanV1,
+        fence: LiveRuntimeFenceV1,
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        if self.domain() != LifecycleEffectDomainV1::Storage
+            || self.ordinal() != 4
+            || self.request != plan.lifecycle_effect()
+            || plan.operation() != self.operation()
+            || request.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            || request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || request.authorization().is_none()
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        let body = decode_canonical_broker_body::<ApplyAtomicStorageSnapshotRequest>(request)?;
+        let wire_fence = body
+            .fence
+            .as_option()
+            .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;
+        let desired = fence.desired();
+        if body.canonical_plan != plan.canonical_wire_bytes()?
+            || fence.sandbox().as_bytes() != &self.target()
             || wire_fence.sandbox_id.as_slice() != fence.sandbox().as_bytes()
             || wire_fence.incarnation_id.as_slice() != fence.incarnation().as_bytes()
             || wire_fence.assignment_epoch != fence.assignment_epoch().get()

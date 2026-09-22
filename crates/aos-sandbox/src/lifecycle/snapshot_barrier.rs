@@ -125,6 +125,12 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
         self.effect.payload()
     }
 
+    /// Returns the assignment whose Storage grant authorizes this group.
+    #[must_use]
+    pub const fn target_sandbox(&self) -> SandboxId {
+        SandboxId::from_bytes(self.effect.target())
+    }
+
     pub(super) const fn lifecycle_effect(&self) -> super::LifecycleEffectRequestV1 {
         self.effect
     }

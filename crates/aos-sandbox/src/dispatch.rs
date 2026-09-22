@@ -811,7 +811,11 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
                 | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
         ),
-        ProtocolId::StorageBroker => method == BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+        ProtocolId::StorageBroker => matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+                | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+        ),
         ProtocolId::NetworkBroker => method == BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
         _ => return Err(BrokerDispatchTemplateError::MethodMismatch),
     };
@@ -828,6 +832,9 @@ fn validate_method_semantics(
     verb: BrokerVerb,
 ) -> Result<(), BrokerDispatchTemplateError> {
     let semantics_match = match method {
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
+            verb == BrokerVerb::StorageAtomicSnapshot
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE => verb == BrokerVerb::MountAcquireSource,
         BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
             verb == BrokerVerb::MountReleaseSourceAcquisition

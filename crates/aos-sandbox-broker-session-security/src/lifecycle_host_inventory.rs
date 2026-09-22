@@ -11,7 +11,7 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryStorageRequest, RequestHeader,
 };
 use aos_sandbox::lifecycle::{
-    CurrentLifecycleBootInventoryV1, CurrentLifecycleOperationV1,
+    CurrentLifecycleBootInventoryV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
     LifecycleAtomicDatasetSnapshotPlanV1, LifecycleAuthenticatedAtomicStorageSuccessorV1,
     LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
     LifecycleAuthenticatedBrokerDomainInventorySuccessorV1, LifecycleAuthenticatedBrokerEffectV1,
@@ -20,7 +20,7 @@ use aos_sandbox::lifecycle::{
     LifecycleAuthenticatedStorageInventoryBootstrapV1,
     LifecycleAuthenticatedStorageInventorySuccessorV1, LifecycleAuthenticatedStorageInventoryV1,
     LifecycleAuthenticatedStorageReadbackV1, LifecycleBootBootstrapEndpointV1,
-    LifecycleBootInventoryBootstrapChallengeV1, LifecyclePhase6ErrorV1,
+    LifecycleBootInventoryBootstrapChallengeV1, LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
 use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
 use aos_sandbox_linux::boot::KernelBootId;
@@ -831,6 +831,38 @@ pub enum DormantAtomicStorageInventoryFinishProgressV1 {
 }
 
 impl DormantStorageLifecycleInventoryOwnerV1 {
+    /// Sends one lifecycle-bound atomic Storage group through retained session custody.
+    ///
+    /// The caller must retain the predecessor until the authenticated group
+    /// outcome and immediate successor inventory have both joined. A retry
+    /// resumes this exact effect; it never selects a replacement request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EffectFailure`] if pre-send binding, protected custody,
+    /// transport, or the terminal signed response is invalid or ambiguous.
+    pub(crate) fn apply_atomic_snapshot_group(
+        &mut self,
+        lifecycle: &CurrentLifecycleEffectV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        previous: &DormantAtomicStorageInventoryPredecessorV1,
+        fence: LiveRuntimeFenceV1,
+        authority: &PreparedAuthorityEffectV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        if plan.inventory() != previous.inventory.commitment() {
+            return Err(EffectFailure::Permanent(
+                "Storage group plan differs from its retained predecessor inventory".to_owned(),
+            ));
+        }
+        self.0.authority_effects.atomic_storage(
+            &mut self.0.session,
+            lifecycle,
+            plan,
+            fence,
+            authority,
+        )
+    }
+
     /// Issues a fresh query and rechecks its protected terminal currentness.
     pub(crate) fn current_inventory_observation(
         &mut self,

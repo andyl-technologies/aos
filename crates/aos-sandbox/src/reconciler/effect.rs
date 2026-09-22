@@ -6,9 +6,9 @@
 //! dispatches retain the Host boot identity paired with their BOOTTIME value.
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest, ApplyStorageRequest, Audience,
-    BrokerMethod, BrokerRequestEnvelope, QueryRuntimeEffectRequest, QueryRuntimeEffectResponse,
-    RequestHeader, RuntimeEffectStatus,
+    ApplyAtomicStorageSnapshotRequest, ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest,
+    ApplyStorageRequest, Audience, BrokerMethod, BrokerRequestEnvelope, QueryRuntimeEffectRequest,
+    QueryRuntimeEffectResponse, RequestHeader, RuntimeEffectStatus,
 };
 use aos_sandbox_core::{
     BrokerAudience, ObjectDigest, OperationId, PrincipalId, ProjectId, ProtocolVersion,
@@ -1128,6 +1128,9 @@ fn decode_authority_apply_header(
     let header = match method {
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => decode_header!(ApplyRuntimeRequest),
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY => decode_header!(ApplyStorageRequest),
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
+            decode_header!(ApplyAtomicStorageSnapshotRequest)
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY => decode_header!(ApplyMountRequest),
         BrokerMethod::BROKER_METHOD_NETWORK_APPLY => decode_header!(ApplyNetworkRequest),
         _ => Err(ReconcilerError::InvalidExecutorOutput(

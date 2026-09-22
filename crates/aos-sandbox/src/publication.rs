@@ -1368,6 +1368,7 @@ fn broker_method_from_code(code: i32) -> Result<BrokerMethod, AuthorityPublicati
         1 => Ok(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
         4 => Ok(BrokerMethod::BROKER_METHOD_MOUNT_APPLY),
         7 => Ok(BrokerMethod::BROKER_METHOD_STORAGE_APPLY),
+        25 => Ok(BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT),
         9 => Ok(BrokerMethod::BROKER_METHOD_NETWORK_APPLY),
         _ => Err(AuthorityPublicationError::CorruptCurrent),
     }

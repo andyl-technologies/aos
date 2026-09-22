@@ -5,6 +5,9 @@
 //! and outcome-commit ambiguity. It never rebuilds or substitutes the durable
 //! request identity.
 
+use aos_sandbox::lifecycle::{
+    CurrentLifecycleEffectV1, LifecycleAtomicDatasetSnapshotPlanV1, LiveRuntimeFenceV1,
+};
 use aos_sandbox::{
     AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
     ValidatedAuthorityEffectReceiptV1,
@@ -42,6 +45,7 @@ struct PendingAuthorityEffectV1 {
 enum AuthorityEffectExchangeKindV1 {
     Apply,
     HostQuery,
+    AtomicStorage,
 }
 
 enum AuthorityEffectStageV1 {
@@ -127,6 +131,55 @@ impl ControllerAuthorityEffectExchangeV1 {
 
         let outcome = self.drive(session)?;
         validate_apply_terminal(effect, &outcome)
+    }
+
+    /// Drives the exact signed Storage group while retaining ambiguous session custody.
+    pub(crate) fn atomic_storage(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        lifecycle: &CurrentLifecycleEffectV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        fence: LiveRuntimeFenceV1,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        effect.broker_request().map_err(|_| {
+            EffectFailure::Permanent("durable Storage group effect is malformed".to_owned())
+        })?;
+        if self.failed {
+            return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
+        }
+        if self.pending.as_ref().is_some_and(|pending| {
+            pending.effect != *effect
+                || pending.kind != AuthorityEffectExchangeKindV1::AtomicStorage
+        }) {
+            return Err(EffectFailure::Permanent(
+                "Storage group differs from retained recovery custody".to_owned(),
+            ));
+        }
+        if self.pending.is_none() {
+            let preparation = session
+                .prepare_authenticated_authority_effect_checked(effect, |request| {
+                    lifecycle
+                        .validate_authenticated_atomic_storage_snapshot_request(
+                            request, plan, fence,
+                        )
+                        .is_ok()
+                })
+                .map_err(|_| {
+                    EffectFailure::Retryable(
+                        "Storage group could not enter protected session custody".to_owned(),
+                    )
+                })?;
+            self.pending = Some(PendingAuthorityEffectV1 {
+                effect: effect.clone(),
+                kind: AuthorityEffectExchangeKindV1::AtomicStorage,
+                stage: preparation_stage(preparation),
+            });
+        }
+
+        let outcome = self.drive(session)?;
+        validate_apply_terminal(effect, &outcome)?;
+        Ok(outcome)
     }
 
     /// Queries Host for the durable status of one exact prior-process Apply.

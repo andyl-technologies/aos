@@ -188,7 +188,10 @@ pub use journal::{
     PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalPreflight,
     ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
-pub use lifecycle_authority::prepare_runtime_lifecycle_authority_effect_v1;
+pub use lifecycle_authority::{
+    prepare_atomic_storage_lifecycle_authority_effect_v1,
+    prepare_runtime_lifecycle_authority_effect_v1,
+};
 #[cfg(target_os = "linux")]
 pub use mount_attempt::{
     CompletedCurrentMountAttemptV1, CurrentMountInventoryReconciliationV1,
