@@ -1,0 +1,25 @@
+--- a/test/test_formats.sh
++++ b/test/test_formats.sh
+@@ -145,15 +145,19 @@
+ if test_supported webpload; then
+ 	test_format $image webp 90
+ fi
+-test_format $image ppm 0
+-test_format $image pfm 0
++if test_supported ppmload; then
++	test_format $image ppm 0
++	test_format $image pfm 0
++fi
+ if test_supported fitsload; then
+ 	test_format $image fits 0
+ fi
+ 
+ # csv can only do mono
+ test_format $mono csv 0
+-test_format $rad hdr 0
++if test_supported radload; then
++	test_format $rad hdr 0
++fi
+ 
+ # cmyk jpg is a special path
+ if test_supported jpegload; then

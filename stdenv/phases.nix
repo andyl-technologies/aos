@@ -1037,6 +1037,11 @@ in rec {
           else ""
         }
 
+        # Restore the lockfile after replacing its tool-path placeholders.
+        if [ -f "$bazelOut/external/aos-module-lock.json" ]; then
+          cp "$bazelOut/external/aos-module-lock.json" MODULE.bazel.lock
+        fi
+
         # Configure .bazelrc for offline build
         echo "common --repository_cache=\"$bazelOut/external/repository_cache\"" >> .bazelrc
         echo "common --repository_disable_download" >> .bazelrc

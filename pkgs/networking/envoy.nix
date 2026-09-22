@@ -49,6 +49,9 @@
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  isSameTripleLinuxCross =
+    isLinuxCross
+    && stdenv.buildPlatform.config == stdenv.hostPlatform.config;
 
   # Repository rules, generators, and execution-platform actions stay on the
   # Linux build platform. Explicit target toolchains below produce the final
@@ -203,6 +206,14 @@
     if isLinuxCross
     then stdenv.cc.cc
     else gcc;
+  targetCxxIncludePrefix =
+    if isSameTripleLinuxCross
+    then targetGcc
+    else "${targetGcc}/${targetTriple}";
+  targetCxxLibraryDirectory =
+    if isSameTripleLinuxCross
+    then "${targetGcc}/lib64"
+    else "${targetGcc}/${targetTriple}/lib64";
   linuxBazelCpu =
     if stdenv.hostPlatform.isAarch64
     then "aarch64"
@@ -211,6 +222,10 @@
     if stdenv.hostPlatform.isAarch64
     then "aarch64"
     else "x86_64";
+  linuxFileArchitecture =
+    if stdenv.hostPlatform.isAarch64
+    then "ARM aarch64"
+    else "x86-64";
   llvmMajor = builtins.head (lib.splitString "." buildLlvm.version);
 
   tools = [
@@ -496,13 +511,141 @@
       tools/cpp/unix_cc_toolchain_config.bzl \
       -d aos-linux-cross-toolchain
 
+    mkdir -p aos-linux-host-toolchain
+    cp aos-linux-cross-toolchain/unix_cc_toolchain_config.bzl \
+      aos-linux-host-toolchain/unix_cc_toolchain_config.bzl
+
+    # Bazel's local toolchain probe does not retain store-backed include
+    # directories. Declare the native execution toolchain explicitly so
+    # helper binaries use the AOS build compiler with complete include roots.
+    {
+      printf '%s\n' '#!${buildBash}/bin/bash'
+      printf '%s\n' 'set -eu'
+      printf '%s\n' 'compiling=false'
+      printf '%s\n' 'c_source=false'
+      printf '%s\n' 'cxx_source=false'
+      printf '%s\n' 'for arg in "$@"; do'
+      printf '%s\n' '  case "$arg" in'
+      printf '%s\n' '    -c|-S|-E|-M|-MM|-fsyntax-only) compiling=true ;;'
+      printf '%s\n' '    *.c|*.s|*.S) c_source=true ;;'
+      printf '%s\n' '    *.cc|*.cp|*.cpp|*.cxx|*.C) cxx_source=true ;;'
+      printf '%s\n' '  esac'
+      printf '%s\n' 'done'
+      printf '%s\n' 'if [ "$compiling" = true ] && [ "$c_source" = true ] && [ "$cxx_source" = false ]; then'
+      printf '%s\n' '  exec ${buildPackages.cc}/bin/cc "$@"'
+      printf '%s\n' 'fi'
+      printf '%s\n' 'exec ${buildPackages.cc}/bin/c++ "$@"'
+    } > aos-linux-host-toolchain/compiler
+    chmod +x aos-linux-host-toolchain/compiler
+
+    cat > aos-linux-host-toolchain/BUILD.bazel <<'LINUX_HOST_TOOLCHAIN_EOF'
+    load(":unix_cc_toolchain_config.bzl", "cc_toolchain_config")
+    load("@rules_cc//cc:defs.bzl", "cc_toolchain", "cc_toolchain_suite")
+
+    package(default_visibility = ["//visibility:public"])
+
+    filegroup(name = "empty")
+    filegroup(
+        name = "compiler-files",
+        srcs = ["compiler", "unix_cc_toolchain_config.bzl"],
+    )
+
+    cc_toolchain_suite(
+        name = "toolchain",
+        toolchains = {
+            "k8": ":cc-compiler",
+            "k8|gcc": ":cc-compiler",
+        },
+    )
+
+    cc_toolchain(
+        name = "cc-compiler",
+        toolchain_identifier = "aos-${stdenv.buildPlatform.config}",
+        toolchain_config = ":config",
+        all_files = ":compiler-files",
+        ar_files = ":compiler-files",
+        as_files = ":compiler-files",
+        compiler_files = ":compiler-files",
+        dwp_files = ":empty",
+        linker_files = ":compiler-files",
+        objcopy_files = ":empty",
+        strip_files = ":empty",
+        supports_header_parsing = 1,
+        supports_param_files = 1,
+    )
+
+    toolchain(
+        name = "registered-toolchain",
+        exec_compatible_with = [
+            "@platforms//cpu:x86_64",
+            "@platforms//os:linux",
+        ],
+        target_compatible_with = [
+            "@platforms//cpu:x86_64",
+            "@platforms//os:linux",
+        ],
+        toolchain = ":cc-compiler",
+        toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    )
+
+    cc_toolchain_config(
+        name = "config",
+        cpu = "k8",
+        compiler = "gcc",
+        toolchain_identifier = "aos-${stdenv.buildPlatform.config}",
+        host_system_name = "${stdenv.buildPlatform.config}",
+        target_system_name = "${stdenv.buildPlatform.config}",
+        target_libc = "glibc",
+        abi_version = "gnu",
+        abi_libc_version = "glibc",
+        builtin_sysroot = "",
+        cxx_builtin_include_directories = [
+            "${buildPackages.glibc.dev}/include",
+            "${buildGcc}/lib/gcc/${stdenv.buildPlatform.config}/${buildGcc.version}/include",
+            "${buildGcc}/lib/gcc/${stdenv.buildPlatform.config}/${buildGcc.version}/include-fixed",
+            "${buildGcc}/include",
+            "${buildGcc}/include/c++/${buildGcc.version}",
+            "${buildGcc}/include/c++/${buildGcc.version}/${stdenv.buildPlatform.config}",
+        ],
+        tool_paths = {
+            "ar": "${buildGcc}/bin/ar",
+            "c++filt": "${buildBinutils}/bin/c++filt",
+            "cpp": "${buildPackages.cc}/bin/cc",
+            "dwp": "${buildLlvm}/bin/llvm-dwp",
+            "gcc": "compiler",
+            "gcov": "${buildGcc}/bin/gcov",
+            "ld": "compiler",
+            "llvm-cov": "${buildLlvm}/bin/llvm-cov",
+            "llvm-profdata": "${buildLlvm}/bin/llvm-profdata",
+            "nm": "${buildGcc}/bin/nm",
+            "objcopy": "${buildGcc}/bin/objcopy",
+            "objdump": "${buildGcc}/bin/objdump",
+            "strip": "${buildGcc}/bin/strip",
+        },
+        compile_flags = ["-fno-omit-frame-pointer"],
+        dbg_compile_flags = ["-g"],
+        opt_compile_flags = ["-O2", "-DNDEBUG"],
+        conly_flags = [],
+        cxx_flags = [],
+        link_flags = [],
+        archive_flags = [],
+        link_libs = [],
+        opt_link_flags = [],
+        unfiltered_compile_flags = [],
+        coverage_compile_flags = [],
+        coverage_link_flags = [],
+        supports_start_end_lib = False,
+        extra_flags_per_feature = {},
+    )
+    LINUX_HOST_TOOLCHAIN_EOF
+
     # Bazel executes this compiler launcher on x86_64 while every output it
     # produces targets the hosted AArch64 system.
     {
       printf '%s\n' '#!${buildBash}/bin/bash'
       printf '%s\n' 'set -eu'
-      printf '%s\n' 'target_gcc_dir=$(dirname "$(${stdenv.cc}/bin/cc -print-libgcc-file-name)")'
-      printf '%s\n' 'target_cxx_lib_dir="${targetGcc}/${targetTriple}/lib64"'
+      printf '%s\n' 'target_gcc_dir="${targetGcc}/lib/gcc/${targetTriple}/${targetGcc.version}"'
+      printf '%s\n' 'target_cxx_lib_dir="${targetCxxLibraryDirectory}"'
       printf '%s\n' 'target_libc="${glibc}"'
       printf '%s\n' 'target_libc_dev="${glibc.dev}"'
       printf '%s\n' 'target_dynamic_linker="${glibc}/lib/${stdenv.hostPlatform.dynamicLinker}"'
@@ -615,10 +758,11 @@
         builtin_sysroot = "",
         cxx_builtin_include_directories = [
             "${glibc.dev}/include",
+            ${lib.optionalString isSameTripleLinuxCross ''"${buildPackages.glibc.dev}/include",''}
             "${targetGcc}/lib/gcc/${targetTriple}/${targetGcc.version}/include",
             "${targetGcc}/lib/gcc/${targetTriple}/${targetGcc.version}/include-fixed",
-            "${targetGcc}/${targetTriple}/include/c++/${targetGcc.version}",
-            "${targetGcc}/${targetTriple}/include/c++/${targetGcc.version}/${targetTriple}",
+            "${targetCxxIncludePrefix}/include/c++/${targetGcc.version}",
+            "${targetCxxIncludePrefix}/include/c++/${targetGcc.version}/${targetTriple}",
             "${buildLlvm}/lib/clang/${llvmMajor}/include",
         ],
         tool_paths = {
@@ -1043,10 +1187,14 @@ in
         "--cpu=${linuxBazelCpu}"
         "--host_cpu=k8"
         "--crosstool_top=//aos-linux-cross-toolchain:toolchain"
-        "--host_crosstool_top=@local_config_cc//:toolchain"
+        "--host_crosstool_top=//aos-linux-host-toolchain:toolchain"
         "--extra_toolchains=//aos-linux-cross-toolchain:registered-toolchain"
-        "--repo_env=CC=${buildGcc}/bin/gcc"
-        "--repo_env=CXX=${buildGcc}/bin/g++"
+        "--repo_env=CC=${buildPackages.cc}/bin/cc"
+        "--repo_env=CXX=${buildPackages.cc}/bin/c++"
+        "--repo_env=BAZEL_USE_CPP_ONLY_TOOLCHAIN=1"
+      ]
+      ++ lib.optionals (isLinuxCross && !isSameTripleLinuxCross) [
+        "--extra_toolchains=//aos-linux-host-toolchain:registered-toolchain"
       ];
     inherit scrubMap;
 
@@ -1157,6 +1305,14 @@ in
         "--cxxopt=-Wno-error"
       ];
     preBazelBuild = ''
+                ${lib.optionalString isSameTripleLinuxCross ''
+          # Execution-platform generators linked by rules_go do not retain
+          # the compiler launcher's runtime RPATH. The Bazel shell wrapper
+          # supplies the matching GCC runtime when those generators execute.
+          sed -i \
+            's|export LD_LIBRARY_PATH="|export LD_LIBRARY_PATH="${targetCxxLibraryDirectory}:|' \
+            "$TMPDIR/bazel-tools/bash-with-path"
+        ''}
                 # GCC 16 no longer supplies integer types through transitive headers.
                 yaml_emitter="$TMPDIR/repo-overrides/com_github_jbeder_yaml_cpp/src/emitterutils.cpp"
                 test -f "$yaml_emitter"
@@ -1543,12 +1699,12 @@ in
         ${
           if isLinuxCross
           then ''
-            ${buildFile}/bin/file $out/bin/envoy | ${buildGrep}/bin/grep -q 'ARM aarch64'
+            ${buildFile}/bin/file $out/bin/envoy | ${buildGrep}/bin/grep -q '${linuxFileArchitecture}'
 
             mkdir -p $out/lib
             for library in libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
-              test -e "${targetGcc}/${targetTriple}/lib64/$library"
-              cp -L "${targetGcc}/${targetTriple}/lib64/$library" "$out/lib/$library"
+              test -e "${targetCxxLibraryDirectory}/$library"
+              cp -L "${targetCxxLibraryDirectory}/$library" "$out/lib/$library"
             done
 
             # DT_RUNPATH is not transitive: the executable's path does not

@@ -33,6 +33,18 @@
     };
   };
   sourceRoot = builtins.head sourceEvidence.sourcePaths;
+  generatedArchive = pkgs.runCommand "qualification-generated-source-fixture" {} ''
+    echo 'This fixture must not be realized during evidence evaluation.' >&2
+    exit 1
+  '';
+  generatedSourceEvidence = import ../../lib/containers/package-evidence.nix {
+    inherit lib;
+    pkgs = {
+      packageNames = ["fixture"];
+      fixture = sourceFixture // {src = "${generatedArchive}/source.tar";};
+    };
+  };
+  generatedSourceRoot = builtins.head generatedSourceEvidence.sourcePaths;
   testing = import ../../lib/testing {inherit pkgs lib;};
   containerReport = reportOnly:
     (import ../../lib/testing/qualification-container.nix {
@@ -266,6 +278,9 @@ in
   assert lib.hasInfix "lifecycle_cycles" (containerReport true);
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
+  assert generatedSourceRoot == builtins.toString generatedArchive;
+  assert builtins.getContext generatedSourceRoot == builtins.getContext (builtins.toString generatedArchive);
+  assert (builtins.head (builtins.head generatedSourceEvidence.catalog).sources).path == builtins.unsafeDiscardStringContext generatedSourceRoot;
   assert names == builtins.sort builtins.lessThan packageNames;
   assert imageRecovery.regressions != [];
   assert builtins.all (requirement:

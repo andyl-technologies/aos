@@ -129,7 +129,8 @@ in
       bzip2
       zstd
     ];
-    propagatedDeps = [];
+    # Installed libelf/libdw pkg-config metadata exposes compression libraries.
+    propagatedDeps = [zlib xz bzip2 zstd];
 
     # elfutils still uses flexible-array idioms incompatible with
     # -fstrict-flex-arrays=3; step down to level 1 (keeps fortify3 and the

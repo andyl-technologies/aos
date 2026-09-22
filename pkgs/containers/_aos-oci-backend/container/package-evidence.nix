@@ -50,11 +50,16 @@
 
   normalizeSourceValue = source: let
     path = builtins.toString source;
+    storeSubpath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)/.+$" path;
   in
+    # Generated archives can be files within a derivation output. Retain that
+    # output as the evidence root without realizing it during evaluation.
+    if builtins.isString source && storeSubpath != null
+    then builtins.substring 0 (builtins.stringLength (builtins.head storeSubpath)) source
     # A flake source subdirectory is already under /nix/store, but is not a
     # store root. Retain that exact subtree as its own source root, just as
     # when evaluating the same checked-in source from a working checkout.
-    if builtins.isPath source && builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" path == null
+    else if builtins.isPath source && builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" path == null
     then
       builtins.path {
         path = source;

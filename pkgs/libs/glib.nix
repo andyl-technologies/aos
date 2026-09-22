@@ -16,10 +16,11 @@
   bash,
   gobject-introspection ? null,
   enableIntrospection ? false,
+  version ? "2.82.4",
+  sourceHash ? "sha256-N90Id/6WTNFemicQsEShgw+xvZNlKm0Mtriy3/GHxwk=",
   stdenv,
   buildPackages,
 }: let
-  version = "2.82.4";
   majorMinor = builtins.concatStringsSep "." (
     builtins.genList (i: builtins.elemAt (builtins.split "\\." version) (i * 2)) 2
   );
@@ -129,7 +130,7 @@ in
       urls = [
         "https://download.gnome.org/sources/glib/${majorMinor}/glib-${version}.tar.xz"
       ];
-      hash = "sha256-N90Id/6WTNFemicQsEShgw+xvZNlKm0Mtriy3/GHxwk=";
+      hash = sourceHash;
     };
 
     buildDeps =
@@ -308,10 +309,10 @@ in
           PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
             ninja -C build install
 
-          # Keep the default output library-only. Python-backed generators
-          # are build tools, while headers, static archives, and package
-          # metadata belong to the development output. A runtime consumer of
-          # libglib must not retain either class transitively.
+          # Keep libraries and their libexec runtime helpers together so GIO
+          # can resolve gio-launch-desktop relative to its installed library.
+          # Python-backed generators belong to tools; headers, static archives,
+          # and package metadata belong to the development output.
           mkdir -p "$dev/lib" "$dev/share" "$tools"
           if [ -d "$out/include" ]; then
             mv "$out/include" "$dev/include"
@@ -328,9 +329,6 @@ in
           fi
           if [ -d "$out/bin" ]; then
             mv "$out/bin" "$tools/bin"
-          fi
-          if [ -d "$out/libexec" ]; then
-            mv "$out/libexec" "$tools/libexec"
           fi
           if [ -d "$out/lib/glib-2.0/include" ]; then
             mkdir -p "$dev/lib/glib-2.0"
@@ -358,6 +356,8 @@ in
             mv "$out/share/bash-completion" "$tools/share/bash-completion"
           fi
 
+          # Consumers need the unversioned linker symlinks in dev before any
+          # other GLib on their library search path; libdir still names runtime.
           for pc in "$dev/lib/pkgconfig/"*.pc; do
             [ -e "$pc" ] || continue
             sed -i \
@@ -365,6 +365,7 @@ in
               -e "s|^libdir=.*|libdir=$out/lib|" \
               -e "s|^includedir=.*|includedir=$dev/include|" \
               -e "s|^bindir=.*|bindir=$tools/bin|" \
+              -e "s|^Libs: |Libs: -L$dev/lib |" \
               "$pc"
           done
           sed -i \

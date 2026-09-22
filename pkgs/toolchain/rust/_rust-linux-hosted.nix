@@ -44,6 +44,7 @@
     then "AARCH64_UNKNOWN_LINUX_GNU"
     else throw "${pname}: unsupported build triple '${buildTriple}'";
   hostTriple = stdenv.hostPlatform.config;
+  sameTriple = buildTriple == hostTriple;
   hostTripleEnv = builtins.replaceStrings ["-"] ["_"] hostTriple;
   targetList = builtins.toJSON ([hostTriple] ++ additionalTargets);
   toolList = builtins.toJSON tools;
@@ -419,14 +420,19 @@ in
                 else ""
               }
 
-              [target.${buildTriple}]
-              cc = "$PWD/.aos-build-tools/cc-for-build"
-              cxx = "$PWD/.aos-build-tools/cxx-for-build"
-              linker = "$PWD/.aos-build-tools/cc-for-build"
-              ar = "${nativeLlvm}/bin/llvm-ar"
-              ranlib = "${nativeLlvm}/bin/llvm-ranlib"
-              llvm-config = "${nativeLlvm}/bin/llvm-config"
-
+              ${
+                if !sameTriple
+                then ''
+                  [target.${buildTriple}]
+                  cc = "$PWD/.aos-build-tools/cc-for-build"
+                  cxx = "$PWD/.aos-build-tools/cxx-for-build"
+                  linker = "$PWD/.aos-build-tools/cc-for-build"
+                  ar = "${nativeLlvm}/bin/llvm-ar"
+                  ranlib = "${nativeLlvm}/bin/llvm-ranlib"
+                  llvm-config = "${nativeLlvm}/bin/llvm-config"
+                ''
+                else ""
+              }
               [target.${hostTriple}]
               cc = "${crossCc}/bin/cc"
               cxx = "${crossCc}/bin/c++"

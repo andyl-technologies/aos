@@ -592,6 +592,7 @@
           stdenv.coreutils
           stdenv.tar
           stdenv.gzip
+          resolvedBuildPackages.xz
           stdenv.bash
         ];
         # Packaged fetch tools resolve their own runtime libraries. Retain an
@@ -699,6 +700,7 @@
     "postFetch"
     "removeRepos"
     "populateBCR"
+    "captureModuleLock"
     "installPhase"
     "preBazelBuild"
   ];
@@ -1048,6 +1050,7 @@
             "local_jdk"
           ];
         populateBCR = args.populateBCR or true;
+        captureModuleLock = args.captureModuleLock or false;
       });
 
     # Remove bazel-specific attrs before passing to mkDerivation
