@@ -887,9 +887,10 @@ in
                         # The remaining flags tolerate known GCC 14-era sources.
                         find "$dir" -path '*/jdk/make/common/Defs-linux.gmk' 2>/dev/null | while read f; do
                           echo 'OTHER_CFLAGS += -std=gnu17 -fcommon -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types' >> "$f" 2>/dev/null || true
-                          # Fix empty OPENWIN_HOME: bare -I flag eats -c flag, causing
-                          # gcc to link instead of compile in headless AWT build
+                          # Keep the headless X11 stubs on their actual lib directory.
+                          # The legacy makefiles otherwise derive lib64 on x86_64.
                           echo 'OPENWIN_HOME = ${xorg-stubs}' >> "$f" 2>/dev/null || true
+                          echo 'override OPENWIN_LIB = ${xorg-stubs}/lib' >> "$f" 2>/dev/null || true
                         done
                         # Fix GenerateCurrencyData: "time is more than 10 years from present"
                         # The currency data has dates from 2015 which are >10 years from 2026.
