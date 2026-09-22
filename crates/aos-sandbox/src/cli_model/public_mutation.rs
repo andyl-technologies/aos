@@ -121,7 +121,7 @@ impl PublicMutationRequestV1 {
     /// Returns [`PublicMutationRequestError`] when the body is malformed,
     /// noncanonical, inconsistent with the selected method, or fails the
     /// established request validator.
-    pub(crate) fn decode_validated_kind(
+    pub fn decode_validated_kind(
         &self,
     ) -> Result<DormantSandboxRequestKindV1, PublicMutationRequestError> {
         macro_rules! decode {

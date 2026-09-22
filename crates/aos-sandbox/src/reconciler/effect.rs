@@ -113,6 +113,26 @@ impl PublicMutationEffectV1 {
         &self.canonical_request
     }
 
+    /// Decodes the exact public request through the established mutation validator.
+    ///
+    /// This preserves the authenticated caller and project carried by this
+    /// effect while reusing the same canonical protobuf and field validation as
+    /// initial public admission. Lowering code must not decode the retained body
+    /// through a second, weaker request path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidPlan`] when the retained envelope or
+    /// method-selected protobuf is malformed, noncanonical, or semantically
+    /// invalid.
+    pub fn validated_request(
+        &self,
+    ) -> Result<crate::cli_model::DormantSandboxRequestKindV1, ReconcilerError> {
+        crate::cli_model::PublicMutationRequestV1::decode(&self.canonical_request)
+            .and_then(|request| request.decode_validated_kind())
+            .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))
+    }
+
     fn encode(&self) -> Result<Vec<u8>, ReconcilerError> {
         let request_length = u32::try_from(self.canonical_request.len()).map_err(|_| {
             ReconcilerError::InvalidPlan("public mutation effect request exceeds its bound")

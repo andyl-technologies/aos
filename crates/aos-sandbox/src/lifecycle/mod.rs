@@ -31,6 +31,7 @@ pub mod protected_journal_join;
 mod protected_owner;
 mod recovery;
 mod replay_validation;
+mod runtime_admission;
 mod semantic;
 mod semantic_digest;
 mod semantic_format;
@@ -168,6 +169,10 @@ pub use protected_owner::{
     PreparedLifecycleProgressV1,
 };
 pub use recovery::{LifecycleRecoveryActionV1, classify_operation_recovery_v1};
+pub use runtime_admission::{
+    LifecycleRuntimeAdmissionErrorV1, LifecycleRuntimeAdmissionFenceV1,
+    lifecycle_runtime_admission_fence_from_journal_v1,
+};
 pub use semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleAuthoritativeSemanticCommitV1,
     LifecycleCascadePlanDigestV1, LifecycleCascadeTombstonePlanV1, LifecycleCommittedResourceV1,

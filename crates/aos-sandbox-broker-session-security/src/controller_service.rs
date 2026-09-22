@@ -45,14 +45,13 @@ use aos_proto::aos::sandbox::v1::{
     SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{
-    CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId, RawClockProvenance,
-    RawPairedClockSample,
+    CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId, ProjectId,
+    RawClockProvenance, RawPairedClockSample, SandboxId,
 };
 use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
-use buffa::Message as _;
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
 };
@@ -65,14 +64,15 @@ use sha2::{Digest as _, Sha256};
 
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
 use aos_sandbox::cli_model::{
-    AuditAuthorizationV1, PublicApiAuditMethodV1, PublicMutationRequestV1,
+    AuditAuthorizationV1, DormantSandboxRequestKindV1, PublicApiAuditMethodV1,
 };
 use aos_sandbox::controller::DormantControllerCompositionV1;
 use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
 };
 use aos_sandbox::controller_service::public_projection::{
-    AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1, PublicProjectionRecordV1,
+    AuthorizedPublicProjectionReadV1, PublicProjectionKindV1, PublicProjectionQueryV1,
+    PublicProjectionRecordV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
 };
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
@@ -82,7 +82,7 @@ use aos_sandbox::lifecycle::{
     LifecycleCancelIdempotencyDigestV1, LifecycleProgressCommitOutcomeV1,
     LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
     LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedCancellationResolutionV1,
-    LifecycleTimeV1,
+    LifecycleTimeV1, lifecycle_runtime_admission_fence_from_journal_v1,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::production_operation_compiler::ProductionOperationCompilerV1;
@@ -1260,7 +1260,7 @@ fn controller_from_journal(
         ProductionOperationCompilerV1,
         Reconciler::new(
             journal,
-            ProductionEffectExecutor::open(sessions, controller_uid)?,
+            ProductionEffectExecutor::open(sessions, controller_uid, NodeId::from_bytes(node_id))?,
         ),
     ))
 }
@@ -1385,6 +1385,7 @@ fn parse_identity(
 struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
+    node: NodeId,
     process_start: Option<([u8; 16], u64)>,
     pending_source_commit: Option<PendingSourceCommit>,
 }
@@ -1405,6 +1406,7 @@ impl ProductionEffectExecutor {
     fn open(
         sessions: SharedControllerBrokerSessions,
         controller_uid: u32,
+        node: NodeId,
     ) -> Result<Self, ControllerRuntimeError> {
         let (mut source_domains, _) =
             ProtectedSourceDomainJournalOwnerV1::open_fixed_protected_for_uid(controller_uid)?;
@@ -1414,6 +1416,7 @@ impl ProductionEffectExecutor {
         Ok(Self {
             sessions,
             source_domains,
+            node,
             process_start: current_boot_and_boottime(),
             pending_source_commit: None,
         })
@@ -1440,24 +1443,14 @@ impl ProductionEffectExecutor {
     fn cancellation_request(
         context: &PublicMutationEffectV1,
     ) -> Result<ProductionCancellationRequest, EffectFailure> {
-        let envelope = PublicMutationRequestV1::decode(context.canonical_request())
-            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-        if envelope.method() != PublicApiAuditMethodV1::CancelOperation {
+        let DormantSandboxRequestKindV1::CancelOperation(request) = context
+            .validated_request()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        else {
             return Err(EffectFailure::Permanent(
                 "controller cancellation effect has the wrong public method".to_owned(),
             ));
-        }
-        let request =
-            CancelOperationRequest::decode_from_slice(envelope.protobuf_body()).map_err(|_| {
-                EffectFailure::Permanent(
-                    "controller cancellation effect has invalid protobuf".to_owned(),
-                )
-            })?;
-        if request.encode_to_vec() != envelope.protobuf_body() {
-            return Err(EffectFailure::Permanent(
-                "controller cancellation effect is not canonical".to_owned(),
-            ));
-        }
+        };
         let target: [u8; 16] = request.operation_id.as_slice().try_into().map_err(|_| {
             EffectFailure::Permanent(
                 "controller cancellation target identity is invalid".to_owned(),
@@ -1618,6 +1611,107 @@ impl ProductionEffectExecutor {
                     && prepared.preparation_boottime_nanoseconds() >= started_at
             })
     }
+
+    fn validate_runtime_admission_fence(
+        &self,
+        context: &PublicMutationEffectV1,
+        request: &DormantSandboxRequestKindV1,
+        journal: &mut Journal,
+    ) -> Result<(), EffectFailure> {
+        let Some(sandbox) = runtime_bound_sandbox(request, context.project(), journal)? else {
+            return Ok(());
+        };
+
+        lifecycle_runtime_admission_fence_from_journal_v1(
+            journal,
+            context.project(),
+            sandbox,
+            self.node,
+        )
+        .map(|_| ())
+        .map_err(|error| EffectFailure::Permanent(error.to_string()))
+    }
+}
+
+fn runtime_bound_sandbox(
+    request: &DormantSandboxRequestKindV1,
+    project: ProjectId,
+    journal: &Journal,
+) -> Result<Option<SandboxId>, EffectFailure> {
+    use DormantSandboxRequestKindV1 as Request;
+
+    let direct = match request {
+        Request::Stop(request) | Request::Suspend(request) | Request::Resume(request) => {
+            Some(request.sandbox_id.as_slice())
+        }
+        Request::Exec(request) => Some(request.sandbox_id.as_slice()),
+        Request::ViewAttach(request) => Some(request.sandbox_id.as_slice()),
+        Request::Snapshot(request) => Some(request.sandbox_id.as_slice()),
+        _ => None,
+    };
+    if let Some(sandbox) = direct {
+        return exact_sandbox_id(sandbox).map(Some);
+    }
+
+    let related = match request {
+        Request::ExecutionControl(request) => Some((
+            PublicProjectionKindV1::Execution,
+            request.execution_id.as_slice(),
+        )),
+        Request::CancelExec(request) => Some((
+            PublicProjectionKindV1::Execution,
+            request.execution_id.as_slice(),
+        )),
+        Request::ViewReplace(request) => Some((
+            PublicProjectionKindV1::Attachment,
+            request.attachment_id.as_slice(),
+        )),
+        Request::ViewDetach(request) => Some((
+            PublicProjectionKindV1::Attachment,
+            request.attachment_id.as_slice(),
+        )),
+        _ => None,
+    };
+    let Some((kind, identity)) = related else {
+        return Ok(None);
+    };
+    let identity: [u8; 16] = identity.try_into().map_err(|_| {
+        EffectFailure::Permanent("runtime-bound resource identity is invalid".to_owned())
+    })?;
+    let projection = PublicProjectionStoreV1::new(journal)
+        .get(kind, identity)
+        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        .ok_or_else(|| {
+            EffectFailure::Permanent("runtime-bound public resource is unavailable".to_owned())
+        })?;
+    if projection.project() != project {
+        return Err(EffectFailure::Permanent(
+            "runtime-bound public resource belongs to another project".to_owned(),
+        ));
+    }
+    match projection.resource() {
+        PublicProjectionResourceV1::Execution(execution) => {
+            exact_sandbox_id(&execution.sandbox_id).map(Some)
+        }
+        PublicProjectionResourceV1::Attachment(attachment) => {
+            exact_sandbox_id(&attachment.sandbox_id).map(Some)
+        }
+        _ => Err(EffectFailure::Permanent(
+            "runtime-bound public resource has the wrong schema".to_owned(),
+        )),
+    }
+}
+
+fn exact_sandbox_id(bytes: &[u8]) -> Result<SandboxId, EffectFailure> {
+    let identity: [u8; 16] = bytes.try_into().map_err(|_| {
+        EffectFailure::Permanent("runtime-bound sandbox identity is invalid".to_owned())
+    })?;
+    if identity == [0; 16] {
+        return Err(EffectFailure::Permanent(
+            "runtime-bound sandbox identity is invalid".to_owned(),
+        ));
+    }
+    Ok(SandboxId::from_bytes(identity))
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
@@ -1775,6 +1869,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 "cancellation target is awaiting protected lifecycle admission".to_owned(),
             ));
         }
+        let request = context
+            .validated_request()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        self.validate_runtime_admission_fence(&context, &request, journal)?;
         Err(EffectFailure::Retryable(
             CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
         ))
