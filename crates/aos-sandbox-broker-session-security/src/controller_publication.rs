@@ -12,8 +12,9 @@ use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
 use aos_sandbox::lifecycle::{
-    CurrentLifecycleEffectV1, LifecycleBootInventoryBootstrapChallengeV1,
-    LifecycleEffectObservationV1, LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
+    CurrentLifecycleEffectV1, LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
+    LifecycleBootInventoryBootstrapChallengeV1, LifecycleEffectObservationV1,
+    LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
 use aos_sandbox::{
     AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
@@ -176,6 +177,27 @@ impl ControllerHostPublication {
             && !self.authority_effects.has_pending()
             && !self.poisoned
             && self.session.is_some()
+    }
+
+    /// Captures an adjacent challenge-authenticated Host inventory pair.
+    pub(crate) fn bootstrap_runtime_inventory(
+        &mut self,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+    ) -> Result<LifecycleAuthenticatedRuntimeInventoryBootstrapV1, LifecyclePhase6ErrorV1> {
+        if !self.lifecycle_runtime_ready() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let session = self
+            .session
+            .take()
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let mut owner = crate::DormantHostRuntimeInventoryOwnerV1::from_protected_session(session);
+        let result = owner.bootstrap_inventory_pair(challenge);
+        self.session = Some(owner.into_protected_session());
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
     }
 
     /// Reports that the current authenticated session must be replaced.

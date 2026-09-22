@@ -681,6 +681,12 @@ impl DormantHostRuntimeInventoryOwnerV1 {
         })
     }
 
+    /// Returns the protected session after no inventory query remains pending.
+    #[must_use]
+    pub(crate) fn into_protected_session(self) -> DormantAuthenticatedBrokerSessionV1 {
+        self.0.session
+    }
+
     /// Applies or resumes one exact Host authority effect on this session.
     pub(crate) fn apply_authority_effect(
         &mut self,

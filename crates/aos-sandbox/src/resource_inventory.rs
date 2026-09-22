@@ -71,6 +71,33 @@ const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.resource-inventory.controll
 const STORAGE_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const NETWORK_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
+/// Captures controller state before a fresh authenticated Storage inventory.
+///
+/// # Errors
+///
+/// Returns [`ResourceInventoryError`] when protected controller history is
+/// unavailable, corrupt, or incompatible with authenticated observation.
+pub fn begin_authenticated_storage_inventory_v1(
+    journal: &mut Journal,
+) -> Result<StorageInventoryObservationFenceV1, ResourceInventoryError> {
+    authenticated::begin_storage_observation(journal)
+}
+
+/// Commits a fresh authenticated Storage inventory against its exact fence.
+///
+/// # Errors
+///
+/// Returns [`ResourceInventoryError`] for changed controller state, a wrong
+/// authenticated method or direction, broker failure, malformed inventory, or
+/// failed durable persistence.
+pub fn complete_authenticated_storage_inventory_v1(
+    journal: &mut Journal,
+    fence: StorageInventoryObservationFenceV1,
+    outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+) -> Result<DurableStorageResourceInventorySnapshotV1, ResourceInventoryError> {
+    authenticated::complete_storage_observation(journal, fence, outcome)
+}
+
 /// Reports whether a validated broker snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceInventorySnapshotOutcomeV1 {

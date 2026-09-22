@@ -748,6 +748,100 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
     }
 
+    /// Publishes the first six-domain boot root from protected live owners.
+    ///
+    /// The four broker domains must supply challenge-authenticated adjacent
+    /// inventory pairs. Storage's controller snapshot, Cache's protected
+    /// journal, and Transfer's protected source authority are rechecked on both
+    /// sides of derivation before the lifecycle append is attempted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] when any owner is stale, incomplete,
+    /// or changes during the join, the kernel boot rolls over, or protected
+    /// lifecycle persistence cannot settle.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_boot_inventory_bootstrap_from_protected_owners(
+        &mut self,
+        controller_journal: &mut Journal,
+        operation_key: &LifecycleProtectedJournalKeyV1,
+        boot_inventory_key: &LifecycleProtectedJournalKeyV1,
+        challenge: super::LifecycleBootInventoryBootstrapChallengeV1,
+        runtime: &super::LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
+        mounts: &super::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+        storage: &crate::DurableStorageResourceInventorySnapshotV1,
+        storage_inventory: &super::LifecycleAuthenticatedStorageInventoryBootstrapV1,
+        network: &super::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        transfer: &mut crate::multi_node::ProtectedMultiNodeAuthorityOwnerV1,
+        transfer_inventory: &super::LifecycleAuthenticatedTransferInventoryV1,
+        transaction_id: [u8; 16],
+        atomic_join: ResourceId,
+        operation_lineage: ResourceId,
+        inventory_lineage: ResourceId,
+        observed_at: LifecycleTimeV1,
+    ) -> Result<LifecycleProgressCommitOutcomeV1, super::LifecyclePhase6ErrorV1> {
+        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != challenge.host_boot() {
+            return Err(super::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        storage
+            .recheck(controller_journal)
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let cache_inventory = cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let source = super::LifecycleBootInventoryBootstrapSourceV1::from_protected_join(
+            challenge,
+            runtime,
+            mounts,
+            storage_inventory,
+            storage,
+            network,
+            &cache_inventory,
+            transfer_inventory,
+        )?;
+        storage
+            .recheck(controller_journal)
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        if cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?
+            != cache_inventory
+        {
+            return Err(super::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != boot_after {
+            return Err(super::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let prepared = self
+            .prepare_boot_inventory_bootstrap(
+                operation_key,
+                boot_inventory_key,
+                transaction_id,
+                atomic_join,
+                operation_lineage,
+                inventory_lineage,
+                source,
+                observed_at,
+            )
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        self.commit_effect_progress(prepared)
+            .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)
+    }
+
     /// Publishes the initial coordination admission from protected current state.
     ///
     /// The dependency closure is derived from the current operation's complete

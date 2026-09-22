@@ -1391,6 +1391,8 @@ fn parse_identity(
 struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
+    cache_inventory: Option<aos_sandbox::cache_residency::CacheResidencyProtectedOwnerV1>,
+    transfer_inventory: Option<aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1>,
     node: NodeId,
     process_start: Option<([u8; 16], u64)>,
     pending_source_commit: Option<PendingSourceCommit>,
@@ -1428,6 +1430,8 @@ impl ProductionEffectExecutor {
         Ok(Self {
             sessions,
             source_domains,
+            cache_inventory: None,
+            transfer_inventory: None,
             node,
             process_start: current_boot_and_boottime(),
             pending_source_commit: None,
@@ -2187,6 +2191,252 @@ impl ProductionEffectExecutor {
         Ok(true)
     }
 
+    fn ensure_lifecycle_inventory_owners(&mut self) -> Result<(), EffectFailure> {
+        if self.cache_inventory.is_none() {
+            let (owner, _) =
+                aos_sandbox::cache_residency::CacheResidencyProtectedOwnerV1::open_fixed_protected(
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            self.cache_inventory = Some(owner);
+        }
+        if self.transfer_inventory.is_none() {
+            let (mut owner, _, initial) =
+                aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1::open_fixed_protected()
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if let Some(initial) = initial {
+                match initial {
+                    aos_sandbox::multi_node::ProtectedRecordCommitOutcomeV1::Committed(_) => {}
+                    aos_sandbox::multi_node::ProtectedRecordCommitOutcomeV1::RecoveryRequired(
+                        recovery,
+                    ) => match owner.resolve_store_write(recovery) {
+                        aos_sandbox::multi_node::ProtectedStoreRecoveryOutcomeV1::RecordCommitted(
+                            _,
+                        ) => {}
+                        aos_sandbox::multi_node::ProtectedStoreRecoveryOutcomeV1::CheckpointCommitted(
+                            _,
+                        )
+                        | aos_sandbox::multi_node::ProtectedStoreRecoveryOutcomeV1::RecoveryRequired {
+                            ..
+                        } => {
+                            return Err(EffectFailure::Permanent(
+                                "protected Transfer bootstrap durability is unresolved".to_owned(),
+                            ));
+                        }
+                    },
+                }
+            }
+            self.transfer_inventory = Some(owner);
+        }
+        Ok(())
+    }
+
+    fn advance_suspend_terminal_publication(
+        &mut self,
+        operation_id: OperationId,
+        journal: &mut Journal,
+    ) -> Result<bool, EffectFailure> {
+        let (
+            current_key,
+            boot_inventory_key,
+            observation_key,
+            boot_is_current,
+            observation_is_current,
+        ) = {
+            let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (current_key, current) = owner
+                .current_operation_by_id(operation_id)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "lifecycle operation is absent from protected custody".to_owned(),
+                    )
+                })?;
+            if current.operation().terminal_result()
+                != Some(aos_sandbox::lifecycle::LifecycleTerminalResultV1::Succeeded)
+                || current.operation().intent().method()
+                    != aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+            {
+                return Ok(false);
+            }
+            let project = current.operation().project();
+            let inventory_lineage =
+                lifecycle_plan_resource_id(operation_id, b"boot-inventory-lineage");
+            let observation_lineage =
+                lifecycle_plan_resource_id(operation_id, b"suspend-observation-lineage");
+            let boot_inventory_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                project,
+                inventory_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let observation_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                project,
+                observation_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let boot_is_current = owner
+                .current_boot_inventory(&boot_inventory_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .is_some();
+            let observation_is_current = owner
+                .current_suspend_observation(&observation_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .is_some();
+            (
+                current_key,
+                boot_inventory_key,
+                observation_key,
+                boot_is_current,
+                observation_is_current,
+            )
+        };
+        if observation_is_current {
+            return Ok(false);
+        }
+
+        let operation_lineage = lifecycle_plan_resource_id(operation_id, b"operation-lineage");
+        if !boot_is_current {
+            self.ensure_lifecycle_inventory_owners()?;
+            let challenge = {
+                let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                    &mut self.source_domains,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                owner
+                    .begin_boot_inventory_bootstrap(&current_key, &boot_inventory_key)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            };
+            let storage_fence = aos_sandbox::begin_authenticated_storage_inventory_v1(journal)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let (runtime, mounts, storage_outcome, storage_inventory, network) = {
+                let mut sessions = self.sessions.lock().map_err(|_| {
+                    EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+                })?;
+                if sessions.host.is_none()
+                    || sessions.mount.is_none()
+                    || sessions.storage.is_none()
+                    || sessions.network.is_none()
+                {
+                    return Err(EffectFailure::Retryable(
+                        "lifecycle inventory sessions are not connected".to_owned(),
+                    ));
+                }
+                let host = sessions.host.as_mut().ok_or_else(missing_broker_session)?;
+                if !host.lifecycle_runtime_ready() {
+                    return Err(EffectFailure::Retryable(
+                        "protected Host session is completing earlier work".to_owned(),
+                    ));
+                }
+                let runtime = host
+                    .bootstrap_runtime_inventory(&challenge)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                let mounts = sessions
+                    .mount
+                    .as_mut()
+                    .ok_or_else(missing_broker_session)?
+                    .bootstrap_inventory_pair(&challenge)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                let storage_owner = sessions
+                    .storage
+                    .as_mut()
+                    .ok_or_else(missing_broker_session)?;
+                let storage_outcome = storage_owner
+                    .current_inventory_observation()
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                let storage_inventory = storage_owner
+                    .bootstrap_inventory_pair(&challenge)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                let network = sessions
+                    .network
+                    .as_mut()
+                    .ok_or_else(missing_broker_session)?
+                    .bootstrap_inventory_pair(&challenge)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                (runtime, mounts, storage_outcome, storage_inventory, network)
+            };
+            let storage = aos_sandbox::complete_authenticated_storage_inventory_v1(
+                journal,
+                storage_fence,
+                &storage_outcome,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let transfer_inventory = self
+                .transfer_inventory
+                .as_mut()
+                .ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "protected Transfer inventory owner is unavailable".to_owned(),
+                    )
+                })?
+                .lifecycle_transfer_inventory()
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let outcome = {
+                let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                    &mut self.source_domains,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+                owner
+                    .publish_boot_inventory_bootstrap_from_protected_owners(
+                        journal,
+                        &current_key,
+                        &boot_inventory_key,
+                        challenge,
+                        &runtime,
+                        &mounts,
+                        &storage,
+                        &storage_inventory,
+                        &network,
+                        self.cache_inventory.as_mut().ok_or_else(|| {
+                            EffectFailure::Permanent(
+                                "protected Cache inventory owner is unavailable".to_owned(),
+                            )
+                        })?,
+                        self.transfer_inventory.as_mut().ok_or_else(|| {
+                            EffectFailure::Permanent(
+                                "protected Transfer inventory owner is unavailable".to_owned(),
+                            )
+                        })?,
+                        &transfer_inventory,
+                        lifecycle_plan_transaction_id(operation_id, b"boot-inventory-publication"),
+                        lifecycle_plan_resource_id(operation_id, b"boot-inventory-atomic-join"),
+                        operation_lineage,
+                        lifecycle_plan_resource_id(operation_id, b"boot-inventory-lineage"),
+                        current_lifecycle_time()?,
+                    )
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            };
+            self.settle_lifecycle_progress(operation_id, outcome)?;
+            return Ok(true);
+        }
+
+        let disposition = {
+            let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
+                &mut self.source_domains,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let publication = owner
+                .publish_suspend_observation(
+                    &current_key,
+                    &boot_inventory_key,
+                    &observation_key,
+                    lifecycle_plan_transaction_id(operation_id, b"suspend-observation-publication"),
+                    lifecycle_plan_resource_id(operation_id, b"suspend-observation-atomic-join"),
+                    operation_lineage,
+                    lifecycle_plan_resource_id(operation_id, b"suspend-observation-lineage"),
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            auxiliary_publication_disposition(publication)
+        };
+        self.settle_auxiliary_publication(operation_id, disposition, "suspend observation")?;
+        Ok(true)
+    }
+
     fn advance_lifecycle_semantic_commit(
         &mut self,
         operation_id: OperationId,
@@ -2307,6 +2557,26 @@ impl ProductionEffectExecutor {
             != Some(aos_sandbox::lifecycle::LifecycleTerminalResultV1::Succeeded)
         {
             return Ok(None);
+        }
+        if current.operation().intent().method()
+            == aos_sandbox::lifecycle::LifecycleMethodV1::SuspendMemory
+        {
+            let observation_lineage =
+                lifecycle_plan_resource_id(operation_id, b"suspend-observation-lineage");
+            let observation_key = lifecycle_protected_key_v1(
+                LifecycleProtectedRecordKindV1::Auxiliary,
+                current.operation().project(),
+                observation_lineage,
+                operation_id,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if owner
+                .current_suspend_observation(&observation_key)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                .is_none()
+            {
+                return Ok(None);
+            }
         }
         let bytes = [
             b"AOSLIF01".as_slice(),
@@ -2648,6 +2918,11 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             self.settle_lifecycle_admission(operation_id, admission)?;
             self.bind_lifecycle_plan(operation_id)?;
             self.ensure_initial_lifecycle_reservation(operation_id)?;
+            if self.advance_suspend_terminal_publication(operation_id, journal)? {
+                return Err(EffectFailure::Retryable(
+                    CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+                ));
+            }
             if let Some(receipt) = self.lifecycle_terminal_receipt(operation_id)? {
                 return Ok(receipt);
             }
@@ -2662,6 +2937,11 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 ));
             }
             if self.advance_lifecycle_semantic_commit(operation_id, journal)? {
+                return Err(EffectFailure::Retryable(
+                    CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+                ));
+            }
+            if self.advance_suspend_terminal_publication(operation_id, journal)? {
                 return Err(EffectFailure::Retryable(
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
                 ));

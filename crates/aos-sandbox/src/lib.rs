@@ -249,6 +249,7 @@ pub use resource_inventory::{
     DurableNetworkResourceInventorySnapshotV1, DurableStorageResourceInventorySnapshotV1,
     NetworkResourceInventoryClient, ResourceInventoryError, ResourceInventoryServiceIdentity,
     ResourceInventorySnapshotOutcomeV1, StorageResourceInventoryClient,
+    begin_authenticated_storage_inventory_v1, complete_authenticated_storage_inventory_v1,
 };
 pub use sandbox_spec_state::{
     DurableSandboxSpecV1, SandboxSpecCommitOutcomeV1, SandboxSpecPublicationV1,
